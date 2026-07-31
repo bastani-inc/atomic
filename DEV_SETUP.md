@@ -6,7 +6,9 @@ This document covers setup, the local dev loop, testing patterns, and project la
 
 ## Prerequisites
 
-- **[Bun](https://bun.sh) ≥ 1.3.14** — runtime, package manager, and test runner
+- **[Node.js](https://nodejs.org) ≥ 22.13** — runs installs, checks, and the vitest suites (`node:sqlite` is unflagged from 22.13)
+- **[Bun](https://bun.sh) ≥ 1.3.14** — compiles release binaries, runs `scripts/*.ts`, and hosts the Bun-based test fixtures
+- **[Rust](https://rustup.rs)** (stable, with `cargo`) — builds the `@bastani/atomic-natives` N-API module
 - **[uv](https://docs.astral.sh/uv/)** — Python package/environment manager for the `evals/` harness
 - **Docker** — required for local Pier/DeepSWE sandbox runs
 
@@ -20,7 +22,18 @@ This repo runs a hybrid toolchain matching upstream `earendil-works/pi`: **npm**
 git clone --recurse-submodules git@github.com:bastani-inc/atomic.git
 cd atomic
 npm ci --ignore-scripts
+npm run build --workspace=@bastani/atomic-natives
 ```
+
+The natives build is a required one-time step (and again after pulling changes to
+`crates/` or `packages/natives/`). `npm ci --ignore-scripts` deliberately skips
+lifecycle scripts, and the workspace natives package has no install hook anyway —
+only published releases ship prebuilt binaries. Without the compiled
+`packages/natives/native/*.node`, the CLI still runs but silently degrades:
+`pty:true` bash falls back to pipes, native grep/find/tree-sitter block
+resolution fall back to slower JS paths, and several `packages/coding-agent`
+tests fail (`bash-pty-native`, `search-tool-*`, `hashline-tools`). CI builds the
+module explicitly for the same reason (see `.github/workflows/test.yml`).
 
 The committed `.npmrc` applies a three-day minimum release age to anything you add with
 `npm install`, and pins exact versions. `package-lock.json` is the only lockfile.
@@ -98,11 +111,13 @@ If you need to exercise the compiled package layout, use the coding-agent watch 
 bun run --cwd packages/coding-agent dev
 ```
 
-After the first emit, run the compiled CLI from another terminal:
+After the first emit, run the compiled CLI from another terminal. The published
+`atomic` bin runs under `#!/usr/bin/env node`, so `node` is the faithful way to
+exercise the compiled layout; `bun` works too:
 
 ```bash
-bun packages/coding-agent/dist/cli.js --help
-bun packages/coding-agent/dist/cli.js
+node packages/coding-agent/dist/cli.js --help
+node packages/coding-agent/dist/cli.js
 ```
 
 To run the development CLI against a different working directory while keeping source in this checkout:
@@ -116,7 +131,12 @@ For a production-style build, run:
 
 ```bash
 bun run --cwd packages/coding-agent build
+node packages/coding-agent/dist/cli.js --version
 ```
+
+Both the source and dist entrypoints pick up the native module from
+`packages/natives/native/`; if you skipped the natives build in Setup, PTY and
+native search quietly fall back to slower JS paths.
 
 ---
 
@@ -172,6 +192,7 @@ Run these from the workspace root:
 | Command                    | Description                                                      |
 | -------------------------- | ---------------------------------------------------------------- |
 | `npm ci --ignore-scripts`   | Install from `package-lock.json`                                 |
+| `npm run build --workspace=@bastani/atomic-natives` | Build the native N-API module (requires cargo)  |
 | `npm run check`             | Typecheck plus the published-shrinkwrap check                    |
 | `npm run typecheck`         | Type-check the workspace                                         |
 | `npm run test:unit`         | Run unit tests                                                   |
@@ -331,4 +352,4 @@ Bun is the development/test/runtime path. **npm is still the registry publicatio
 
 ## CI
 
-CI runs typecheck and `test:all` on PRs via Bun. See [docs/ci.md](./docs/ci.md) and `.github/workflows/test.yml`.
+CI runs static checks, the root unit/integration suites, the coding-agent suite, and release-archive smoke tests as concurrent jobs behind a fail-closed result gate, on Linux and Windows. It builds `@bastani/atomic-natives` explicitly before the suites. See [docs/ci.md](./docs/ci.md) and `.github/workflows/test.yml`.
