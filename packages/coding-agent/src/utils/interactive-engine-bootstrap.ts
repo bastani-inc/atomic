@@ -68,9 +68,7 @@ export function writeInteractiveEngineBootstrap(
 }
 
 /** Remove a bootstrap record and the directory whose creation this handle proves. */
-export function removeOwnedInteractiveEngineBootstrap(
-	handle: InteractiveEngineBootstrapHandle | undefined,
-): void {
+export function removeOwnedInteractiveEngineBootstrap(handle: InteractiveEngineBootstrapHandle | undefined): void {
 	if (!handle) return;
 	rmSync(handle.directory, { recursive: true, force: true });
 }

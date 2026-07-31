@@ -1,4 +1,4 @@
-import { shouldRenderEngineDiagnosticAsChatError, type ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
+import { type ActivityWatchdogDiagnostic, shouldRenderEngineDiagnosticAsChatError } from "./activity-watchdog.ts";
 
 export interface EngineDiagnosticView {
 	stopWorkingLoader(): void;
@@ -14,10 +14,7 @@ export interface EngineDiagnosticView {
  * a calm status line rather than a red chat error. Heartbeat-watchdog gaps stay
  * internal. Concrete engine failures still surface as chat errors.
  */
-export function renderEngineDiagnostic(
-	diagnostic: ActivityWatchdogDiagnostic,
-	view: EngineDiagnosticView,
-): void {
+export function renderEngineDiagnostic(diagnostic: ActivityWatchdogDiagnostic, view: EngineDiagnosticView): void {
 	if (diagnostic.source === "recovery") {
 		view.stopWorkingLoader();
 		view.showStatus(diagnostic.message);

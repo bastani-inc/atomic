@@ -52,19 +52,21 @@ export function captureInteractiveEngineStartupEnv(
 	bootstrap?: InteractiveEngineBootstrap,
 ): InteractiveEngineStartupEnv {
 	if (snapshot) return snapshot;
-	snapshot = Object.freeze(bootstrap
-		? {
-			child: "1",
-			hostPid: String(bootstrap.hostPid),
-			guardFile: bootstrap.guardFile,
-			apiKey: bootstrap.apiKey,
-		}
-		: {
-			child: process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD,
-			hostPid: process.env.ATOMIC_INTERACTIVE_ENGINE_HOST_PID,
-			guardFile: process.env.ATOMIC_INTERACTIVE_ENGINE_GUARD_FILE,
-			apiKey: process.env.ATOMIC_INTERACTIVE_ENGINE_API_KEY,
-		});
+	snapshot = Object.freeze(
+		bootstrap
+			? {
+					child: "1",
+					hostPid: String(bootstrap.hostPid),
+					guardFile: bootstrap.guardFile,
+					apiKey: bootstrap.apiKey,
+				}
+			: {
+					child: process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD,
+					hostPid: process.env.ATOMIC_INTERACTIVE_ENGINE_HOST_PID,
+					guardFile: process.env.ATOMIC_INTERACTIVE_ENGINE_GUARD_FILE,
+					apiKey: process.env.ATOMIC_INTERACTIVE_ENGINE_API_KEY,
+				},
+	);
 	for (const name of INTERACTIVE_ENGINE_ENV_VARS) delete process.env[name];
 	return snapshot;
 }

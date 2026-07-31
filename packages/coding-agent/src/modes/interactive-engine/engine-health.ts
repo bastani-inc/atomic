@@ -1,4 +1,4 @@
-import { ENGINE_UNRESPONSIVE_MS, type ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
+import { type ActivityWatchdogDiagnostic, ENGINE_UNRESPONSIVE_MS } from "./activity-watchdog.ts";
 import type { InteractiveEngineGenerationEnded } from "./engine-generation.ts";
 
 export type EngineDiagnosticListener = (diagnostic: ActivityWatchdogDiagnostic) => void;
@@ -14,7 +14,6 @@ export interface EngineHealthDeps {
 
 export const UNEXPECTED_ENGINE_LOSS_NOTICE = "Interactive engine stopped unexpectedly; restarting.";
 export const UNRESPONSIVE_ENGINE_NOTICE = "Interactive engine is not responding; restarting.";
-
 
 export interface EngineHealthOptions {
 	/** Injectable clock so tests can cross the unresponsive threshold instantly. */
@@ -214,7 +213,8 @@ export class EngineHealthController {
 		if (this.stopped) return Promise.resolve();
 		if (this.attempt) return this.attempt;
 		if (notice) this.notice(notice);
-		const id = (this.attemptId += 1);
+		this.attemptId += 1;
+		const id = this.attemptId;
 		this.attemptStartedAt = this.now();
 		this.rescueRequested = false;
 		// A new attempt is under way, so the previous failure is no longer the
@@ -226,7 +226,8 @@ export class EngineHealthController {
 		// window and let the first Ctrl+C stop a replacement that never misbehaved.
 		// Only this child's own heartbeat, or its own stall, may set it again.
 		this.unresponsive = false;
-		const run = this.deps.restart()
+		const run = this.deps
+			.restart()
 			.catch((error: Error) => {
 				// An attempt the user deliberately stopped, or one cancelled by
 				// disposal, did not fail on its own.

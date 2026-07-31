@@ -7,12 +7,16 @@
  * simply never announced completion and left the wait hanging until its timeout.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { PassThrough, Readable } from "node:stream";
+import { PassThrough, type Readable } from "node:stream";
+import { test } from "vitest";
 import { attachJsonlLineReader } from "../../packages/coding-agent/src/modes/rpc/jsonl.ts";
+import { sleep } from "../helpers/runtime.js";
 
-function collect(stream: Readable, options?: { maxBytesPerTurn?: number }): {
+function collect(
+	stream: Readable,
+	options?: { maxBytesPerTurn?: number },
+): {
 	lines: string[];
 	drained: number;
 	done: Promise<void>;
@@ -22,10 +26,19 @@ function collect(stream: Readable, options?: { maxBytesPerTurn?: number }): {
 	const done = new Promise<void>((resolve) => {
 		attachJsonlLineReader(stream, (line) => lines.push(line), {
 			...options,
-			onDrained: () => { state.drained += 1; resolve(); },
+			onDrained: () => {
+				state.drained += 1;
+				resolve();
+			},
 		});
 	});
-	return { lines, get drained() { return state.drained; }, done } as never;
+	return {
+		lines,
+		get drained() {
+			return state.drained;
+		},
+		done,
+	} as never;
 }
 
 test("an empty stream still reports drained exactly once", async () => {
@@ -33,7 +46,7 @@ test("an empty stream still reports drained exactly once", async () => {
 	const reader = collect(stream);
 	stream.end();
 	await reader.done;
-	await Bun.sleep(10);
+	await sleep(10);
 	assert.deepEqual(reader.lines, []);
 	assert.equal(reader.drained, 1);
 });

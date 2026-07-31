@@ -1,6 +1,6 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { Writable } from "node:stream";
+import { test } from "vitest";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import {
 	isEngineSendFailure,
@@ -9,7 +9,11 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/interactive-prompt-restore.ts";
 import { QueuedWriter } from "../../packages/coding-agent/src/modes/rpc/queued-writer.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.ts";
-import { asAcceptedRequestFailure, rpcTransportError } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
+import {
+	asAcceptedRequestFailure,
+	rpcTransportError,
+} from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
+import { sleep } from "../helpers/runtime.js";
 
 /** A writable that hands its `_write` callback back so a test can fail it. */
 class ControlledWritable extends Writable {
@@ -54,7 +58,9 @@ function makeStub(options: {
 }): { stub: PromptTurnStub; run: (text: string, draft?: string) => Promise<void> } {
 	const editor = {
 		getText: () => state.editorText,
-		setText: (text: string) => { state.editorText = text; },
+		setText: (text: string) => {
+			state.editorText = text;
+		},
 	};
 	const state: PromptTurnStub = {
 		editorText: "",
@@ -73,12 +79,20 @@ function makeStub(options: {
 		editor,
 		editorContainer: { children: state.editorMounted ? [editor] : [] },
 		ui: {
-			setFocus: (component: unknown) => { state.focused = component; },
-			requestRender: () => { state.renders += 1; },
+			setFocus: (component: unknown) => {
+				state.focused = component;
+			},
+			requestRender: () => {
+				state.renders += 1;
+			},
 		},
 		pendingUserInputs: state.queued,
-		get startupCookedInputRecovered(): boolean { return state.startupCookedInputRecovered; },
-		set startupCookedInputRecovered(value: boolean) { state.startupCookedInputRecovered = value; },
+		get startupCookedInputRecovered(): boolean {
+			return state.startupCookedInputRecovered;
+		},
+		set startupCookedInputRecovered(value: boolean) {
+			state.startupCookedInputRecovered = value;
+		},
 		session: {
 			isStreaming: false,
 			subscribe: options.subscribe ?? (() => () => {}),
@@ -90,16 +104,21 @@ function makeStub(options: {
 		showWorkingLoaderNow: () => {},
 		stopWorkingLoader: () => {},
 		ensureDeferredStartupComplete: async () => {},
-		discardDeferredRenderedUserInput: (text: string) => { state.discarded.push(text); },
-		showError: (message: string) => { state.errors.push(message); },
+		discardDeferredRenderedUserInput: (text: string) => {
+			state.discarded.push(text);
+		},
+		showError: (message: string) => {
+			state.errors.push(message);
+		},
 	};
 	Object.defineProperty(state, "editorRef", { value: editor });
 	return {
 		stub: state,
-		run: (text: string, draft?: string) => InteractiveModeBase.prototype.runUserPromptTurn.call(
-			host as unknown as InteractiveModeBase,
-			{ text, draft: draft ?? options.draft },
-		),
+		run: (text: string, draft?: string) =>
+			InteractiveModeBase.prototype.runUserPromptTurn.call(host as unknown as InteractiveModeBase, {
+				text,
+				draft: draft ?? options.draft,
+			}),
 	};
 }
 
@@ -142,10 +161,16 @@ test("restoreUnsentPromptDraft leaves a started turn alone and never steals focu
 		turnStarted: true,
 		draft: "draft",
 		getEditorText: () => "",
-		setEditorText: (text: string) => { calls.text = text; },
+		setEditorText: (text: string) => {
+			calls.text = text;
+		},
 		editorOwnsInput: () => true,
-		focusEditor: () => { calls.focused += 1; },
-		requestRender: () => { calls.renders += 1; },
+		focusEditor: () => {
+			calls.focused += 1;
+		},
+		requestRender: () => {
+			calls.renders += 1;
+		},
 	};
 	assert.equal(restoreUnsentPromptDraft(rpcTransportError("Agent process stopped"), target), false);
 	assert.equal(calls.text, undefined);
@@ -166,19 +191,22 @@ test("mergeRestoredDraft keeps temporal order and never trims either side", () =
 	// Whitespace-only current text is still text the user entered.
 	assert.equal(mergeRestoredDraft("draft", "   "), "draft\n\n   ");
 	assert.equal(mergeRestoredDraft("  draft  ", "\tlater\n"), "  draft  \n\n\tlater\n");
-	assert.equal(
-		mergeRestoredDraft("first\nsecond", "third\nfourth"),
-		"first\nsecond\n\nthird\nfourth",
-	);
+	assert.equal(mergeRestoredDraft("first\nsecond", "third\nfourth"), "first\nsecond\n\nthird\nfourth");
 });
 
 test("a send that the engine never accepted restores the exact typed draft without a duplicate error", async () => {
-	for (const message of ["Agent process stopped", "Agent process exited (code=1 signal=null). Stderr: ", "Client not started"]) {
+	for (const message of [
+		"Agent process stopped",
+		"Agent process exited (code=1 signal=null). Stderr: ",
+		"Client not started",
+	]) {
 		const { stub, run } = makeStub({
 			// Untrimmed: the prompt loop only sees the trimmed text, but the editor
 			// gets back exactly what the submit callback handed over.
 			draft: "  hello engine\n",
-			prompt: async () => { throw rpcTransportError(message); },
+			prompt: async () => {
+				throw rpcTransportError(message);
+			},
 		});
 		await run("hello engine");
 		assert.equal(stub.editorText, "  hello engine\n", `draft was not restored verbatim for ${message}`);
@@ -209,7 +237,7 @@ test("a raw EPIPE from the writer restores the draft instead of reporting a red 
 			draft: "  /freeze-test\n",
 			prompt: async () => {
 				const sent = writer.write('{"type":"prompt","message":"/freeze-test"}\n');
-				await Bun.sleep(0);
+				await sleep(0);
 				stream.failActive(raw);
 				// The user keeps typing while the doomed send is still pending.
 				stub.editorText = "typed during the hang";
@@ -233,10 +261,13 @@ test("a raw writer failure after the agent turn started keeps the text in the tr
 	const writer = new QueuedWriter(stream);
 	const { stub, run } = makeStub({
 		draft: "  /freeze-test\n",
-		subscribe: (listener) => { listener({ type: "agent_start" }); return () => {}; },
+		subscribe: (listener) => {
+			listener({ type: "agent_start" });
+			return () => {};
+		},
 		prompt: async () => {
 			const sent = writer.write('{"type":"prompt"}\n');
-			await Bun.sleep(0);
+			await sleep(0);
 			stream.failActive(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
 			await sent;
 		},
@@ -249,13 +280,16 @@ test("a raw writer failure after the agent turn started keeps the text in the tr
 test("a raw writer failure restores queued submissions in FIFO order too", async () => {
 	const stream = new ControlledWritable();
 	const writer = new QueuedWriter(stream);
-	const queued = [{ text: "second", draft: "  second  " }, { text: "third", draft: "third\n" }];
+	const queued = [
+		{ text: "second", draft: "  second  " },
+		{ text: "third", draft: "third\n" },
+	];
 	const { stub, run } = makeStub({
 		draft: " first ",
 		queued,
 		prompt: async () => {
 			const sent = writer.write('{"type":"prompt"}\n');
-			await Bun.sleep(0);
+			await sleep(0);
 			stream.failActive(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
 			await sent;
 		},
@@ -280,12 +314,14 @@ test("overlapping submissions that normalize identically keep their own exact dr
 		prompt: () => {
 			sends += 1;
 			return sends === 1
-				? new Promise<void>((_, reject) => { failFirst = reject; })
+				? new Promise<void>((_, reject) => {
+						failFirst = reject;
+					})
 				: Promise.resolve();
 		},
 	});
 	const firstTurn = run("first", " first ");
-	await Bun.sleep(0);
+	await sleep(0);
 	// A second Enter with a different raw buffer while the first is still pending.
 	await run("first", "  first  ");
 	assert.equal(stub.editorText, "", "a successful send leaves nothing behind");
@@ -308,7 +344,9 @@ test("still-queued submissions come back in order behind the failed one", async 
 	const { stub, run } = makeStub({
 		draft: " first ",
 		queued,
-		prompt: async () => { throw rpcTransportError("Agent process stopped"); },
+		prompt: async () => {
+			throw rpcTransportError("Agent process stopped");
+		},
 	});
 	await run("first");
 	assert.equal(stub.editorText, " first \n\n  second  \n\nthird\n");
@@ -320,7 +358,9 @@ test("a failure that restores nothing leaves the queue untouched", async () => {
 	const { stub, run } = makeStub({
 		draft: "first",
 		queued,
-		prompt: async () => { throw new Error("Model provider returned 500"); },
+		prompt: async () => {
+			throw new Error("Model provider returned 500");
+		},
 	});
 	await run("first");
 	assert.equal(stub.editorText, "");
@@ -381,7 +421,9 @@ test("multiline text typed during the pending send is preserved verbatim", async
 test("a restored draft is a draft, never cooked startup input", async () => {
 	const { stub, run } = makeStub({
 		draft: "/freeze-test",
-		prompt: async () => { throw rpcTransportError("Agent process exited (code=null signal=SIGKILL). Stderr: "); },
+		prompt: async () => {
+			throw rpcTransportError("Agent process exited (code=null signal=SIGKILL). Stderr: ");
+		},
 	});
 	await run("/freeze-test");
 	assert.equal(stub.editorText, "/freeze-test");
@@ -391,7 +433,9 @@ test("a restored draft is a draft, never cooked startup input", async () => {
 test("a failure that does not restore anything leaves startup-input recovery alone", async () => {
 	const { stub, run } = makeStub({
 		draft: "/freeze-test",
-		prompt: async () => { throw new Error("Model provider returned 500"); },
+		prompt: async () => {
+			throw new Error("Model provider returned 500");
+		},
 	});
 	await run("/freeze-test");
 	assert.equal(stub.startupCookedInputRecovered, false);
@@ -400,8 +444,13 @@ test("a failure that does not restore anything leaves startup-input recovery alo
 test("a failure after the agent turn started keeps the text in the transcript", async () => {
 	const { stub, run } = makeStub({
 		draft: "run something",
-		subscribe: (listener) => { listener({ type: "agent_start" }); return () => {}; },
-		prompt: async () => { throw rpcTransportError("Agent process exited (code=null signal=SIGKILL). Stderr: "); },
+		subscribe: (listener) => {
+			listener({ type: "agent_start" });
+			return () => {};
+		},
+		prompt: async () => {
+			throw rpcTransportError("Agent process exited (code=null signal=SIGKILL). Stderr: ");
+		},
 	});
 	await run("run something");
 	assert.equal(stub.editorText, "", "a started turn must not resurrect the submission");
@@ -411,7 +460,9 @@ test("a failure after the agent turn started keeps the text in the transcript", 
 test("an unrelated prompt failure is reported without touching the editor", async () => {
 	const { stub, run } = makeStub({
 		draft: "hello",
-		prompt: async () => { throw new Error("Model provider returned 500"); },
+		prompt: async () => {
+			throw new Error("Model provider returned 500");
+		},
 	});
 	await run("hello");
 	assert.equal(stub.editorText, "");
@@ -423,5 +474,4 @@ test("a successful send leaves the editor empty", async () => {
 	await run("hello");
 	assert.equal(stub.editorText, "");
 	assert.deepEqual(stub.errors, []);
-
 });

@@ -1,10 +1,11 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { test } from "vitest";
 import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import type { InteractiveEngineMessage } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { GenerationBuffer } from "../../packages/coding-agent/src/modes/rpc/rpc-generation-buffer.ts";
+import { bunExecutable, moduleDir, sleep } from "../helpers/runtime.js";
 
 /**
  * Engine death is host-local lifecycle state, not a wire event: a killed child
@@ -21,16 +22,21 @@ import { GenerationBuffer } from "../../packages/coding-agent/src/modes/rpc/rpc-
 
 function startupCustomUiClient(): RpcClient {
 	return new RpcClient({
-		cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(import.meta.dir, "../.."),
-		runtimeExecutable: process.execPath,
+		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+		cwd: join(moduleDir(import.meta.url), "../.."),
+		runtimeExecutable: bunExecutable(),
 		provider: "isolation-fixture",
 		model: "blocking-model",
 		env: { ATOMIC_STARTUP_CUSTOM_UI: "1" },
 		args: [
-			"--no-session", "--no-extensions", "--extension",
-			join(import.meta.dir, "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
+			"--no-session",
+			"--no-extensions",
+			"--extension",
+			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
 		],
 		interactiveEngine: { onDiagnostic: () => {} },
 	});
@@ -40,12 +46,12 @@ async function waitForEnginePid(client: RpcClient): Promise<number> {
 	for (let attempt = 0; attempt < 200; attempt += 1) {
 		const pid = client.getEnginePid();
 		if (pid !== undefined) return pid;
-		await Bun.sleep(10);
+		await sleep(10);
 	}
 	throw new Error("engine child never reported its pid");
 }
 
-test.serial("a child that exits before the host subscribes still reports its death exactly once", async () => {
+test.sequential("a child that exits before the host subscribes still reports its death exactly once", async () => {
 	const client = startupCustomUiClient();
 	try {
 		await client.start();
@@ -53,14 +59,14 @@ test.serial("a child that exits before the host subscribes still reports its dea
 		process.kill(pid, "SIGKILL");
 		// Let the exit land with nobody listening yet — the startup-window race.
 		for (let attempt = 0; attempt < 200 && client.getStderr() !== undefined; attempt += 1) {
-			await Bun.sleep(10);
+			await sleep(10);
 			try {
 				process.kill(pid, 0);
 			} catch {
 				break;
 			}
 		}
-		await Bun.sleep(50);
+		await sleep(50);
 
 		const seen: InteractiveEngineGenerationEnded[] = [];
 		const unsubscribe = client.onGenerationEnded((event) => seen.push(event));
@@ -79,16 +85,16 @@ test.serial("a child that exits before the host subscribes still reports its dea
 	}
 }, 30_000);
 
-test.serial("a dead generation's buffered custom-UI frames are never delivered", async () => {
+test.sequential("a dead generation's buffered custom-UI frames are never delivered", async () => {
 	const client = startupCustomUiClient();
 	try {
 		await client.start();
 		const pid = await waitForEnginePid(client);
 		// The fixture opens a custom UI during startup; with no host controller
 		// attached yet it is buffered. That buffer belongs to this generation.
-		await Bun.sleep(150);
+		await sleep(150);
 		process.kill(pid, "SIGKILL");
-		await Bun.sleep(150);
+		await sleep(150);
 
 		const messages: InteractiveEngineMessage[] = [];
 		const deaths: InteractiveEngineGenerationEnded[] = [];

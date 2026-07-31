@@ -20,8 +20,7 @@ export interface RpcTransportFailure extends Error {
 }
 
 export function isRpcTransportFailure(error: unknown): error is RpcTransportFailure {
-	return error instanceof Error
-		&& (error as { rpcFailureKind?: unknown }).rpcFailureKind === "transport";
+	return error instanceof Error && (error as { rpcFailureKind?: unknown }).rpcFailureKind === "transport";
 }
 
 /**
@@ -69,8 +68,7 @@ export interface RpcAcceptedRequestFailure extends RpcTransportFailure {
 }
 
 export function isRpcRequestAcceptedFailure(error: unknown): error is RpcAcceptedRequestFailure {
-	return isRpcTransportFailure(error)
-		&& (error as { rpcRequestAccepted?: unknown }).rpcRequestAccepted === true;
+	return isRpcTransportFailure(error) && (error as { rpcRequestAccepted?: unknown }).rpcRequestAccepted === true;
 }
 
 /**

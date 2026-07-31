@@ -54,10 +54,7 @@ export function registerRemoteProxyOwnership(
  * whether the component sitting in the editor's place is a remote proxy;
  * widgets never own keyboard input and never appear there.
  */
-export function remoteEngineProxyOwner(
-	runtime: AgentSessionRuntime,
-	host: HostInputOwnership,
-): unknown {
+export function remoteEngineProxyOwner(runtime: AgentSessionRuntime, host: HostInputOwnership): unknown {
 	const source = sources.get(runtime);
 	if (!source) return undefined;
 	const overlay = source.focusedRemoteOverlay();

@@ -1,17 +1,27 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { test } from "vitest";
 import {
+	hasInteractiveEngineBootstrapArg,
 	INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
 	INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
-	hasInteractiveEngineBootstrapArg,
 	readInteractiveEngineBootstrap,
 	removeOwnedInteractiveEngineBootstrap,
 	takeInteractiveEngineBootstrapArg,
 	writeInteractiveEngineBootstrap,
 } from "../../packages/coding-agent/src/utils/interactive-engine-bootstrap.ts";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 /**
  * The engine's startup metadata cannot travel in the environment: under Bun a
@@ -125,13 +135,16 @@ test("the CLI consumes a hostile --internal-engine-bootstrap path without touchi
 	const victim = mkdtempSync(join(tmpdir(), "atomic-bootstrap-cli-victim-"));
 	const sibling = join(victim, "important.txt");
 	writeFileSync(sibling, "keep me", "utf8");
-	const result = Bun.spawnSync([
-		process.execPath,
-		join(import.meta.dir, "..", "..", "packages", "coding-agent", "src", "cli.ts"),
-		"--version",
-		INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
-		join(victim, "bootstrap.json"),
-	], { stdout: "pipe", stderr: "pipe" });
+	const result = spawnSyncCollect(
+		[
+			bunExecutable(),
+			join(moduleDir(import.meta.url), "..", "..", "packages", "coding-agent", "src", "cli.ts"),
+			"--version",
+			INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
+			join(victim, "bootstrap.json"),
+		],
+		{ stdout: "pipe", stderr: "pipe" },
+	);
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	assert.equal(existsSync(victim), true, "the CLI removed a directory it does not own");
 	assert.equal(readFileSync(sibling, "utf8"), "keep me");
@@ -139,18 +152,37 @@ test("the CLI consumes a hostile --internal-engine-bootstrap path without touchi
 });
 
 test("a failed publication leaves no temporary file, no directory, and no secret", () => {
-	const before = new Set(readdirSync(tmpdir()).filter((entry) => entry.startsWith("atomic-engine-bootstrap-")));
-	const unwritable = { toJSON(): never { throw new Error("serialization failed"); } };
-	assert.throws(
-		() => writeInteractiveEngineBootstrap({
-			hostPid: 1,
-			guardFile: "/tmp/guard",
-			apiKey: unwritable as unknown as string,
-		}),
-		/serialization failed/,
-	);
-	const after = readdirSync(tmpdir()).filter((entry) => entry.startsWith("atomic-engine-bootstrap-") && !before.has(entry));
-	assert.deepEqual(after, [], "a failed publication must not leave its owned directory behind");
+	// Scope the observed temp root: under vitest other test files run in
+	// parallel and create their own atomic-engine-bootstrap-* directories in the
+	// shared tmpdir, so a before/after snapshot of the real tmpdir races.
+	const scoped = mkdtempSync(join(tmpdir(), "atomic-bootstrap-scope-"));
+	const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
+	process.env.TMPDIR = scoped;
+	process.env.TMP = scoped;
+	process.env.TEMP = scoped;
+	try {
+		const unwritable = {
+			toJSON(): never {
+				throw new Error("serialization failed");
+			},
+		};
+		assert.throws(
+			() =>
+				writeInteractiveEngineBootstrap({
+					hostPid: 1,
+					guardFile: "/tmp/guard",
+					apiKey: unwritable as unknown as string,
+				}),
+			/serialization failed/,
+		);
+		assert.deepEqual(readdirSync(scoped), [], "a failed publication must not leave its owned directory behind");
+	} finally {
+		for (const [key, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		rmSync(scoped, { recursive: true, force: true });
+	}
 });
 
 test("a missing record reads as undefined without throwing", () => {
@@ -163,12 +195,19 @@ test("a missing record reads as undefined without throwing", () => {
 
 test("the private argument is stripped before normal CLI parsing", () => {
 	const separate = takeInteractiveEngineBootstrapArg([
-		"--mode", "rpc", INTERACTIVE_ENGINE_BOOTSTRAP_FLAG, "/tmp/b/bootstrap.json", "--approve",
+		"--mode",
+		"rpc",
+		INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
+		"/tmp/b/bootstrap.json",
+		"--approve",
 	]);
 	assert.deepEqual(separate.args, ["--mode", "rpc", "--approve"]);
 	assert.equal(separate.path, "/tmp/b/bootstrap.json");
 
-	const inline = takeInteractiveEngineBootstrapArg([`${INTERACTIVE_ENGINE_BOOTSTRAP_FLAG}=/tmp/c/bootstrap.json`, "--offline"]);
+	const inline = takeInteractiveEngineBootstrapArg([
+		`${INTERACTIVE_ENGINE_BOOTSTRAP_FLAG}=/tmp/c/bootstrap.json`,
+		"--offline",
+	]);
 	assert.deepEqual(inline.args, ["--offline"]);
 	assert.equal(inline.path, "/tmp/c/bootstrap.json");
 
@@ -176,11 +215,16 @@ test("the private argument is stripped before normal CLI parsing", () => {
 	assert.deepEqual(absent.args, ["--mode", "rpc"]);
 	assert.equal(absent.path, undefined);
 	// A trailing flag with no value is not a bootstrap and must not be swallowed.
-	assert.deepEqual(takeInteractiveEngineBootstrapArg([INTERACTIVE_ENGINE_BOOTSTRAP_FLAG]).args, [INTERACTIVE_ENGINE_BOOTSTRAP_FLAG]);
+	assert.deepEqual(takeInteractiveEngineBootstrapArg([INTERACTIVE_ENGINE_BOOTSTRAP_FLAG]).args, [
+		INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
+	]);
 });
 
 test("engine mode is selected by the bootstrap argument, which nothing inherits", () => {
-	assert.equal(hasInteractiveEngineBootstrapArg(["--mode", "rpc", INTERACTIVE_ENGINE_BOOTSTRAP_FLAG, "/tmp/b.json"]), true);
+	assert.equal(
+		hasInteractiveEngineBootstrapArg(["--mode", "rpc", INTERACTIVE_ENGINE_BOOTSTRAP_FLAG, "/tmp/b.json"]),
+		true,
+	);
 	assert.equal(hasInteractiveEngineBootstrapArg(["--mode", "rpc"]), false);
 	assert.equal(hasInteractiveEngineBootstrapArg([]), false);
 });

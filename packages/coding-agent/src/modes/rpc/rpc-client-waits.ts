@@ -50,7 +50,10 @@ export async function runUserBashWithUpdates(
 	command: string,
 	onUpdate: (delta: string, channel: BashOutputChannel) => void,
 	options: { excludeFromContext?: boolean; onRequestId?: (id: string) => void } | undefined,
-	send: (body: { type: "user_bash"; command: string; excludeFromContext?: boolean }, onRequestId: (id: string) => void) => Promise<RpcResponse>,
+	send: (
+		body: { type: "user_bash"; command: string; excludeFromContext?: boolean },
+		onRequestId: (id: string) => void,
+	) => Promise<RpcResponse>,
 ): Promise<BashResult> {
 	let requestId: string | undefined;
 	const unsubscribe = source.onEvent((event) => {
@@ -59,7 +62,10 @@ export async function runUserBashWithUpdates(
 	try {
 		const response = await send(
 			{ type: "user_bash", command, excludeFromContext: options?.excludeFromContext },
-			(id) => { requestId = id; options?.onRequestId?.(id); },
+			(id) => {
+				requestId = id;
+				options?.onRequestId?.(id);
+			},
 		);
 		if (!response.success) throw new Error(response.error);
 		return (response as Extract<RpcResponse, { success: true; data: unknown }>).data as BashResult;

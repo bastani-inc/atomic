@@ -7,16 +7,17 @@
  * stay classified as unsent so its text can go back to the editor.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
+import { EXIT_DRAIN_TIMEOUT_MS } from "../../packages/coding-agent/src/modes/rpc/rpc-command-timeouts.ts";
 import { RpcPendingRequests } from "../../packages/coding-agent/src/modes/rpc/rpc-pending-requests.ts";
 import { RpcTerminalDrain } from "../../packages/coding-agent/src/modes/rpc/rpc-terminal-drain.ts";
-import { EXIT_DRAIN_TIMEOUT_MS } from "../../packages/coding-agent/src/modes/rpc/rpc-command-timeouts.ts";
 import {
 	isRpcRequestAcceptedFailure,
 	isRpcTransportFailure,
 	rpcTransportError,
 } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
+import { sleep } from "../helpers/runtime.js";
 
 interface Settled {
 	rejected?: unknown;
@@ -26,8 +27,12 @@ interface Settled {
 function track(pending: RpcPendingRequests, id: string): Settled {
 	const settled: Settled = {};
 	pending.add(id, {
-		resolve: (response) => { settled.resolved = response; },
-		reject: (error) => { settled.rejected = error; },
+		resolve: (response) => {
+			settled.resolved = response;
+		},
+		reject: (error) => {
+			settled.rejected = error;
+		},
 	});
 	return settled;
 }
@@ -55,7 +60,9 @@ test("a request accepted while the exit rejection waits for the drain is not rep
 	const pending = new RpcPendingRequests();
 	const settled = track(pending, "req_1");
 	let markDrained!: () => void;
-	const drained = new Promise<void>((resolve) => { markDrained = resolve; });
+	const drained = new Promise<void>((resolve) => {
+		markDrained = resolve;
+	});
 
 	const drain = new RpcTerminalDrain();
 	void drain.begin(1, drained, EXIT(), (error) => pending.rejectAll(error));
@@ -64,7 +71,7 @@ test("a request accepted while the exit rejection waits for the drain is not rep
 	// The admission frame was still in the pipe when the child exited.
 	pending.markAccepted("req_1");
 	markDrained();
-	await Bun.sleep(0);
+	await sleep(0);
 
 	assert.ok(isRpcRequestAcceptedFailure(settled.rejected), "the queued admission was ignored");
 });
@@ -74,7 +81,7 @@ test("a drain that never completes still fails pending requests", async () => {
 	const settled = track(pending, "req_1");
 	void new RpcTerminalDrain().begin(1, new Promise<void>(() => {}), EXIT(), (error) => pending.rejectAll(error));
 
-	await Bun.sleep(EXIT_DRAIN_TIMEOUT_MS + 50);
+	await sleep(EXIT_DRAIN_TIMEOUT_MS + 50);
 	assert.ok(isRpcTransportFailure(settled.rejected), "a descendant holding stdout must not strand the caller");
 	assert.equal(isRpcRequestAcceptedFailure(settled.rejected), false);
 });
@@ -85,7 +92,9 @@ test("the first terminal cause owns the error, and settlement happens once", asy
 	const drain = new RpcTerminalDrain();
 	const exit = EXIT();
 	let markDrained!: () => void;
-	const drained = new Promise<void>((resolve) => { markDrained = resolve; });
+	const drained = new Promise<void>((resolve) => {
+		markDrained = resolve;
+	});
 
 	const first = drain.begin(2, drained, exit, (error) => pending.rejectAll(error));
 	// A recovery stop joins the same phase; its own error must not take over.
@@ -106,11 +115,17 @@ test("only ownership frames survive a dead generation", () => {
 	const drain = new RpcTerminalDrain();
 	const accepted: string[] = [];
 	const observe = (line: string) => drain.observe(1, line, (id) => accepted.push(id));
-	assert.equal(observe(JSON.stringify({ type: "engine_request_accepted", requestId: "req_1", command: "prompt" })), false,
-		"a generation that never died has nothing to drain");
+	assert.equal(
+		observe(JSON.stringify({ type: "engine_request_accepted", requestId: "req_1", command: "prompt" })),
+		false,
+		"a generation that never died has nothing to drain",
+	);
 
 	void drain.begin(1, new Promise<void>(() => {}), EXIT(), () => {});
-	assert.equal(observe(JSON.stringify({ type: "engine_request_accepted", requestId: "req_1", command: "prompt" })), true);
+	assert.equal(
+		observe(JSON.stringify({ type: "engine_request_accepted", requestId: "req_1", command: "prompt" })),
+		true,
+	);
 	assert.deepEqual(accepted, ["req_1"]);
 	// Every other frame from the dead generation is swallowed, not applied.
 	assert.equal(observe(JSON.stringify({ type: "engine_heartbeat", at: 1 })), true);

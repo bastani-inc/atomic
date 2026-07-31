@@ -433,13 +433,13 @@ describe("engine-death teardown of remote custom UI", () => {
 				{ overlay: true },
 			)
 			.then(() => settled.push({ resolved: true }));
-		await Bun.sleep(0);
+		await sleep(0);
 		assert.equal(bridge.focus, "overlay");
 		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
 		const commandsBeforeDeath = bridge.childCommands.length;
 
 		bridge.emitGenerationEnded(1);
-		await Bun.sleep(0);
+		await sleep(0);
 
 		assert.equal(bridge.focus, "editor", "the dead overlay kept input ownership");
 		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
@@ -465,10 +465,10 @@ describe("engine-death teardown of remote custom UI", () => {
 			handleInput: () => {},
 			invalidate: () => {},
 		}));
-		await Bun.sleep(0);
+		await sleep(0);
 		const commandsBeforeDeath = bridge.childCommands.length;
 		bridge.emitGenerationEnded(1);
-		await Bun.sleep(0);
+		await sleep(0);
 		assert.deepEqual(
 			bridge.childCommands.slice(commandsBeforeDeath).map((command) => command.type),
 			[],
@@ -487,18 +487,18 @@ test("generation death closes nested remote mounts newest-first", async () => {
 	void bridge.child.custom(() => ({ render: () => ["inline"], handleInput: () => {}, invalidate: () => {} }), {
 		overlay: false,
 	});
-	await Bun.sleep(0);
+	await sleep(0);
 	void bridge.child.custom(() => ({ render: () => ["overlay"], handleInput: () => {}, invalidate: () => {} }), {
 		overlay: true,
 	});
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(bridge.mounts.length, 2, "both layers must be mounted");
 	const [inlineMount, overlayMount] = bridge.mounts;
 	assert.equal(inlineMount!.overlay, false);
 	assert.equal(overlayMount!.overlay, true);
 
 	bridge.emitGenerationEnded(1);
-	await Bun.sleep(0);
+	await sleep(0);
 
 	assert.deepEqual(
 		bridge.closeOrder,

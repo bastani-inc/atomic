@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
 import {
 	INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
+	type InteractiveEngineBootstrapHandle,
 	removeOwnedInteractiveEngineBootstrap,
 	writeInteractiveEngineBootstrap,
-	type InteractiveEngineBootstrapHandle,
 } from "../../utils/interactive-engine-bootstrap.ts";
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
@@ -122,7 +122,10 @@ export function restartCliArgs(args: readonly string[] | undefined, sessionFile:
 	for (let index = 0; index < (args?.length ?? 0); index += 1) {
 		const value = args![index]!;
 		if (value === "--no-session") continue;
-		if (value === "--session") { index += 1; continue; }
+		if (value === "--session") {
+			index += 1;
+			continue;
+		}
 		result.push(value);
 	}
 	result.push(sessionFile ? "--session" : "--no-session");

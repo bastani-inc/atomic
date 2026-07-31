@@ -10,14 +10,27 @@
  * on the mount options, and the panel behavior the declaration protects.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { test } from "vitest";
 import { openMcpAuthPanel, openMcpPanel, openMcpSetup } from "../../packages/mcp/commands.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const CTRL_C = "\x03";
+
+/**
+ * The mount happens on the panel's own async path, so a fixed sleep races the
+ * event loop under full-suite load. Poll until the mount lands; the deadline
+ * only bounds a genuinely broken panel.
+ */
+const MOUNT_DEADLINE_MS = 5_000;
+
+async function waitForMount(mounts: MountedPanel[]): Promise<void> {
+	const deadline = performance.now() + MOUNT_DEADLINE_MS;
+	while (mounts.length === 0 && performance.now() < deadline) await sleep(10);
+}
 
 interface MountedPanel {
 	options: { overlay?: boolean; handlesCtrlC?: boolean } | undefined;
@@ -67,7 +80,7 @@ const PLAIN_SERVER = { command: "npx", args: ["-y", "@example/server"] };
 
 test("the /mcp panel declares handlesCtrlC and its own Ctrl+C still cancels it", async () => {
 	const h = harness(openMcpPanel, { example: PLAIN_SERVER });
-	await Bun.sleep(20);
+	await waitForMount(h.mounts);
 	try {
 		assert.equal(h.mounts.length, 1, "the panel did not mount");
 		assert.equal(h.mounts[0]!.options?.handlesCtrlC, true, "an undeclared panel loses its Ctrl+C to the host");
@@ -82,7 +95,7 @@ test("the /mcp panel declares handlesCtrlC and its own Ctrl+C still cancels it",
 
 test("the MCP OAuth panel declares handlesCtrlC and its own Ctrl+C still cancels it", async () => {
 	const h = harness(openMcpAuthPanel, { oauth: OAUTH_SERVER as never });
-	await Bun.sleep(20);
+	await waitForMount(h.mounts);
 	try {
 		assert.equal(h.mounts.length, 1, "the OAuth panel did not mount");
 		assert.equal(h.mounts[0]!.options?.handlesCtrlC, true);
@@ -95,7 +108,7 @@ test("the MCP OAuth panel declares handlesCtrlC and its own Ctrl+C still cancels
 
 test("the /mcp setup panel declares handlesCtrlC and its own Ctrl+C still closes it", async () => {
 	const h = harness(openMcpSetup, {});
-	await Bun.sleep(20);
+	await waitForMount(h.mounts);
 	try {
 		assert.equal(h.mounts.length, 1, "the setup panel did not mount");
 		assert.equal(h.mounts[0]!.options?.handlesCtrlC, true);

@@ -1,5 +1,5 @@
-import { beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
+import { beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	resetGlobalClearRouteState,
@@ -56,33 +56,46 @@ function makeRoute(overrides: RouteOverrides = {}): {
 	const engineRoute = overrides.withEngineRoute !== false;
 	return {
 		calls,
-		setRemoteOwner: (owner: unknown) => { remoteOwner = owner; },
-		press: (data: string) => routeGlobalClearInput(data, {
-			matchesCtrlC: isPhysicalCtrlC,
-			matchesEscape: isPhysicalEscape,
-			isSafetyKeyRelease,
-			matchesClear: (candidate) => keybindings.matches(candidate, "app.clear"),
-			hasOverlay: () => overrides.hasOverlay === true,
-			blockingInlineCustomUiActive: () => overrides.blockingInline === true,
-			editorOwnsInput: () => overrides.editorOwnsInput !== false,
-			...(engineRoute
-				? {
-					remoteEngineProxyOwner: () => remoteOwner,
-					remoteProxyHandlesCtrlC: declaresCtrlC,
-					onRemoteProxyDismiss: (owner: unknown) => { calls.dismissed.push(owner); },
-					engineNeedsExplicitTermination: () => overrides.engineNeedsExplicitTermination === true,
-					onEngineTerminate: () => { calls.terminated += 1; },
-				}
-				: {}),
-			onClear: () => { calls.cleared += 1; },
-			requestRender: () => { calls.renders += 1; },
-		}),
+		setRemoteOwner: (owner: unknown) => {
+			remoteOwner = owner;
+		},
+		press: (data: string) =>
+			routeGlobalClearInput(data, {
+				matchesCtrlC: isPhysicalCtrlC,
+				matchesEscape: isPhysicalEscape,
+				isSafetyKeyRelease,
+				matchesClear: (candidate) => keybindings.matches(candidate, "app.clear"),
+				hasOverlay: () => overrides.hasOverlay === true,
+				blockingInlineCustomUiActive: () => overrides.blockingInline === true,
+				editorOwnsInput: () => overrides.editorOwnsInput !== false,
+				...(engineRoute
+					? {
+							remoteEngineProxyOwner: () => remoteOwner,
+							remoteProxyHandlesCtrlC: declaresCtrlC,
+							onRemoteProxyDismiss: (owner: unknown) => {
+								calls.dismissed.push(owner);
+							},
+							engineNeedsExplicitTermination: () => overrides.engineNeedsExplicitTermination === true,
+							onEngineTerminate: () => {
+								calls.terminated += 1;
+							},
+						}
+					: {}),
+				onClear: () => {
+					calls.cleared += 1;
+				},
+				requestRender: () => {
+					calls.renders += 1;
+				},
+			}),
 	};
 }
 
 const IDLE: RouteCalls = { cleared: 0, terminated: 0, dismissed: [], renders: 0 };
 
-beforeEach(() => { resetGlobalClearRouteState(); });
+beforeEach(() => {
+	resetGlobalClearRouteState();
+});
 
 test("a non-safety, non-clear key is never consumed", () => {
 	const route = makeRoute();

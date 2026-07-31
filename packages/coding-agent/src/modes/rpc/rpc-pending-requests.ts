@@ -1,5 +1,5 @@
-import type { RpcResponse } from "./rpc-types.ts";
 import { asAcceptedRequestFailure } from "./rpc-transport-error.ts";
+import type { RpcResponse } from "./rpc-types.ts";
 
 interface PendingRequest {
 	/** True once the child announced it owns this request (`engine_request_accepted`). */
@@ -65,5 +65,4 @@ export class RpcPendingRequests {
 			request.reject(request.accepted ? asAcceptedRequestFailure(error) : error);
 		}
 	}
-
 }

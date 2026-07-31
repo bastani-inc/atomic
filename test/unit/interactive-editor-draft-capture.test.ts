@@ -1,11 +1,11 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { TUI } from "@earendil-works/pi-tui";
+import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
-import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
 import { rpcTransportError } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
 
@@ -96,7 +96,9 @@ test("the submit handler falls back to the callback text for editors without cap
 	const editor = {
 		getText: () => state.editorText,
 		getExpandedText: () => state.editorText,
-		setText: (text: string) => { state.editorText = text; },
+		setText: (text: string) => {
+			state.editorText = text;
+		},
 		addToHistory: () => {},
 		onSubmit: undefined as ((text: string) => Promise<void> | void) | undefined,
 	};
@@ -113,12 +115,16 @@ test("the submit handler falls back to the callback text for editors without cap
 			isStreaming: false,
 			isBashRunning: false,
 			queuedMessagesPaused: false,
-			prompt: async () => { throw rpcTransportError("Agent process stopped"); },
+			prompt: async () => {
+				throw rpcTransportError("Agent process stopped");
+			},
 		},
 		isExtensionCommand: () => false,
 		flushPendingBashComponents: () => {},
 		renderDeferredUserInput: () => {},
-		showError: (message: string) => { state.errors.push(message); },
+		showError: (message: string) => {
+			state.errors.push(message);
+		},
 		advanceStartupInputReplay: () => {},
 	};
 	const mode = host as unknown as InteractiveModeBase;

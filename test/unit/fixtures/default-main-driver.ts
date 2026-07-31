@@ -8,6 +8,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunExecutable, decodeStream, moduleDir, readStreamText, sleep, type SpawnedProcess, spawnProcess } from "../../helpers/runtime.js";
 
 export const PREFIX = "@@ATOMIC_TEST@@";
 
@@ -36,7 +37,7 @@ export interface HarnessReport {
 }
 
 export class DefaultMainDriver {
-	readonly process: ReturnType<typeof Bun.spawn>;
+	readonly process: SpawnedProcess;
 	readonly reports: HarnessReport[] = [];
 	private readonly waiters = new Set<() => void>();
 	private stderr = "";
@@ -49,12 +50,12 @@ export class DefaultMainDriver {
 		for (const key of Object.keys(baseEnv)) {
 			if (key.startsWith("ATOMIC_INTERACTIVE_ENGINE_")) delete baseEnv[key];
 		}
-		this.process = Bun.spawn([
-			process.execPath,
-			join(import.meta.dir, "default-main-interactive-host.ts"),
+		this.process = spawnProcess([
+			bunExecutable(),
+			join(moduleDir(import.meta.url), "default-main-interactive-host.ts"),
 			...args,
 		], {
-			cwd: join(import.meta.dir, "../../.."),
+			cwd: join(moduleDir(import.meta.url), "../../.."),
 			env: { ...baseEnv, ...env },
 			stdin: "pipe",
 			stdout: "pipe",
@@ -124,7 +125,7 @@ export class DefaultMainDriver {
 	private async readReports(): Promise<void> {
 		const stdout = this.process.stdout;
 		if (!stdout || typeof stdout === "number") return;
-		const reader = stdout.pipeThrough(new TextDecoderStream()).getReader();
+		const reader = decodeStream(stdout).getReader();
 		let buffer = "";
 		while (true) {
 			const { done, value } = await reader.read();
@@ -148,7 +149,7 @@ export class DefaultMainDriver {
 	private async readStderr(): Promise<void> {
 		const stderr = this.process.stderr;
 		if (!stderr || typeof stderr === "number") return;
-		this.stderr = await new Response(stderr).text();
+		this.stderr = await readStreamText(stderr);
 	}
 }
 
@@ -163,7 +164,7 @@ export async function waitForFile(path: string, timeoutMs = 5_000): Promise<numb
 			const pid = Number(readFileSync(path, "utf8"));
 			if (Number.isSafeInteger(pid) && pid > 0) return pid;
 		} catch {}
-		await Bun.sleep(10);
+		await sleep(10);
 	}
 	throw new Error(`Timed out waiting for ${path}`);
 }
@@ -172,7 +173,7 @@ export async function waitForExit(pid: number, timeoutMs = 4_000): Promise<void>
 	const deadline = performance.now() + timeoutMs;
 	while (performance.now() < deadline) {
 		if (!isAlive(pid)) return;
-		await Bun.sleep(20);
+		await sleep(20);
 	}
 	throw new Error(`PID ${pid} remained alive`);
 }

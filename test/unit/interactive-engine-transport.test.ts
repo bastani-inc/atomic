@@ -53,7 +53,7 @@ test("a writer callback failure rejects every frame as a classified transport fa
 	const writer = new QueuedWriter(stream);
 	const first = writer.write('{"type":"prompt"}\n');
 	const second = writer.write('{"type":"abort"}\n');
-	await Bun.sleep(0);
+	await sleep(0);
 
 	const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
 	stream.failActive(epipe);
@@ -86,7 +86,7 @@ test("a non-Error write rejection is wrapped without losing its cause or code", 
 	const stream = new ControlledWritable();
 	const writer = new QueuedWriter(stream);
 	const pending = writer.write('{"type":"prompt"}\n');
-	await Bun.sleep(0);
+	await sleep(0);
 	stream.failActive(
 		Object.freeze(
 			Object.assign(new Error("Cannot call write after a stream was destroyed"), { code: "ERR_STREAM_DESTROYED" }),

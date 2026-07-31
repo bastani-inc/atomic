@@ -1,15 +1,16 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import {
-	ENGINE_UNRESPONSIVE_MS,
 	type ActivityWatchdogDiagnostic,
+	ENGINE_UNRESPONSIVE_MS,
 } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
+import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import {
 	EngineHealthController,
 	UNEXPECTED_ENGINE_LOSS_NOTICE,
 	UNRESPONSIVE_ENGINE_NOTICE,
 } from "../../packages/coding-agent/src/modes/interactive-engine/engine-health.ts";
-import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
+import { sleep } from "../helpers/runtime.js";
 
 function ended(overrides?: Partial<InteractiveEngineGenerationEnded>): InteractiveEngineGenerationEnded {
 	return {
@@ -32,19 +33,34 @@ interface Harness {
 }
 
 function harness(restart: () => Promise<void>): Harness {
-	const state = { stops: 0, restarts: 0, activityClears: 0 } as Omit<Harness, "controller" | "diagnostics" | "advance">;
+	const state = { stops: 0, restarts: 0, activityClears: 0 } as Omit<
+		Harness,
+		"controller" | "diagnostics" | "advance"
+	>;
 	const diagnostics: ActivityWatchdogDiagnostic[] = [];
 	let clock = 1_000;
-	const controller = new EngineHealthController({
-		stop: async () => { state.stops += 1; },
-		restart: () => { state.restarts += 1; return restart(); },
-		clearActivity: () => { state.activityClears += 1; },
-	}, { now: () => clock });
+	const controller = new EngineHealthController(
+		{
+			stop: async () => {
+				state.stops += 1;
+			},
+			restart: () => {
+				state.restarts += 1;
+				return restart();
+			},
+			clearActivity: () => {
+				state.activityClears += 1;
+			},
+		},
+		{ now: () => clock },
+	);
 	controller.onDiagnostic((diagnostic) => diagnostics.push(diagnostic));
 	return Object.assign(state, {
 		controller,
 		diagnostics,
-		advance: (ms: number) => { clock += ms; },
+		advance: (ms: number) => {
+			clock += ms;
+		},
 	}) as Harness;
 }
 
@@ -59,7 +75,7 @@ const watchdogUnresponsive: ActivityWatchdogDiagnostic = {
 test("an expected generation loss clears activity and never restarts", async () => {
 	const h = harness(async () => {});
 	h.controller.handleGenerationEnded(ended({ expected: true, kind: "explicit-stop" }));
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.activityClears, 1);
 	assert.equal(h.restarts, 0);
 	assert.deepEqual(h.diagnostics, []);
@@ -67,24 +83,34 @@ test("an expected generation loss clears activity and never restarts", async () 
 
 test("an unexpected generation loss runs exactly one automatic restart with a calm notice", async () => {
 	let resolveRestart!: () => void;
-	const h = harness(() => new Promise<void>((resolve) => { resolveRestart = resolve; }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve) => {
+				resolveRestart = resolve;
+			}),
+	);
 	h.controller.handleGenerationEnded(ended());
 	assert.equal(h.controller.isRecovering(), true);
 	// A second death while the attempt is in flight must not start another engine.
 	h.controller.handleGenerationEnded(ended({ generation: 2 }));
 	assert.equal(h.restarts, 1);
-	assert.deepEqual(h.diagnostics.map((d) => d.message), [UNEXPECTED_ENGINE_LOSS_NOTICE]);
+	assert.deepEqual(
+		h.diagnostics.map((d) => d.message),
+		[UNEXPECTED_ENGINE_LOSS_NOTICE],
+	);
 	assert.equal(h.diagnostics[0]!.source, "recovery");
 	assert.equal(h.diagnostics[0]!.level, "blocking");
 	resolveRestart();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.controller.isRecovering(), false);
 });
 
 test("a failed restart surfaces a concrete failure, stops retrying, and stays user-recoverable", async () => {
-	const h = harness(async () => { throw new Error("Agent process exited immediately. Stderr: boom"); });
+	const h = harness(async () => {
+		throw new Error("Agent process exited immediately. Stderr: boom");
+	});
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(10);
+	await sleep(10);
 	assert.equal(h.controller.isRecovering(), false, "no attempt keeps running");
 	const failure = h.diagnostics.at(-1)!;
 	assert.equal(failure.message, "Interactive engine restart failed: Agent process exited immediately. Stderr: boom");
@@ -96,7 +122,7 @@ test("a failed restart surfaces a concrete failure, stops retrying, and stays us
 test("a hung restart keeps the host in recovery without terminating anything else", async () => {
 	const h = harness(() => new Promise<void>(() => {}));
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(10);
+	await sleep(10);
 	assert.equal(h.controller.isRecovering(), true);
 	assert.equal(h.stops, 0);
 	assert.equal(h.restarts, 1);
@@ -107,11 +133,14 @@ test("explicit termination force-stops first and supersedes a hung automatic att
 	let attempts = 0;
 	const h = harness(() => {
 		attempts += 1;
-		if (attempts === 1) return new Promise<void>((_, reject) => { pendingReject = reject; });
+		if (attempts === 1)
+			return new Promise<void>((_, reject) => {
+				pendingReject = reject;
+			});
 		return Promise.resolve();
 	});
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(5);
+	await sleep(5);
 	const termination = h.controller.terminate();
 	// Same-turn repeats join the in-flight termination instead of stacking.
 	assert.equal(h.controller.terminate(), termination);
@@ -127,7 +156,7 @@ test("shutdown stops accepting recovery work", async () => {
 	const h = harness(async () => {});
 	h.controller.shutdown();
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.restarts, 0);
 	assert.equal(h.activityClears, 1, "activity is still cleared on shutdown");
 });
@@ -173,7 +202,7 @@ test("an abort left unanswered past the watchdog threshold arms the escape hatch
 test("a replacement still waiting for readiness arms the escape hatch after the threshold", async () => {
 	const h = harness(() => new Promise<void>(() => {}));
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(h.controller.isRecovering(), true);
 	assert.equal(h.controller.needsExplicitTermination(), false, "a fresh replacement must not arm the hatch");
 	h.advance(ENGINE_UNRESPONSIVE_MS - 1);
@@ -192,7 +221,7 @@ test("a dead generation's unresponsive verdict does not arm the hatch against it
 	h.controller.publish(watchdogUnresponsive);
 	assert.equal(h.controller.needsExplicitTermination(), true, "the stalled child itself must arm Ctrl+C");
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(h.controller.isRecovering(), true);
 	assert.equal(
 		h.controller.needsExplicitTermination(),
@@ -207,29 +236,39 @@ test("a dead generation's unresponsive verdict does not arm the hatch against it
 
 test("a successful replacement disarms the escape hatch", async () => {
 	let settle!: () => void;
-	const h = harness(() => new Promise<void>((resolve) => { settle = resolve; }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve) => {
+				settle = resolve;
+			}),
+	);
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(0);
+	await sleep(0);
 	h.advance(ENGINE_UNRESPONSIVE_MS);
 	assert.equal(h.controller.needsExplicitTermination(), true);
 	settle();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.controller.isRecovering(), false);
 	assert.equal(h.controller.needsExplicitTermination(), false);
 });
 
 test("Ctrl+C stops an overdue pre-ready replacement before starting the next one", async () => {
 	const restarts: Array<{ reject: (error: Error) => void; resolve: () => void }> = [];
-	const h = harness(() => new Promise<void>((resolve, reject) => { restarts.push({ resolve, reject }); }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve, reject) => {
+				restarts.push({ resolve, reject });
+			}),
+	);
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(h.stops, 0, "automatic recovery must not stop anything on its own");
 	h.advance(ENGINE_UNRESPONSIVE_MS);
 
 	const termination = h.controller.terminate();
 	assert.equal(h.stops, 1, "the escape hatch must stop the hung child before replacing it");
 	restarts[0]!.reject(new Error("Agent process stopped"));
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(restarts.length, 2, "an explicit termination starts its own replacement");
 
 	// The replacement started by that termination hangs too: a repeat Ctrl+C must
@@ -237,10 +276,10 @@ test("Ctrl+C stops an overdue pre-ready replacement before starting the next one
 	h.advance(ENGINE_UNRESPONSIVE_MS);
 	assert.equal(h.controller.needsExplicitTermination(), true);
 	assert.equal(h.controller.terminate(), termination, "a repeat press joins the live termination");
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.stops, 2, "the repeat press must force-stop the overdue replacement");
 	restarts[1]!.reject(new Error("Agent process stopped"));
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(restarts.length, 3, "the rescued termination starts one more replacement");
 
 	restarts[2]!.resolve();
@@ -251,19 +290,24 @@ test("Ctrl+C stops an overdue pre-ready replacement before starting the next one
 
 test("repeat presses cannot stack stops on a healthy replacement", async () => {
 	const restarts: Array<() => void> = [];
-	const h = harness(() => new Promise<void>((resolve) => { restarts.push(resolve); }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve) => {
+				restarts.push(resolve);
+			}),
+	);
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(0);
+	await sleep(0);
 	h.advance(ENGINE_UNRESPONSIVE_MS);
 	const termination = h.controller.terminate();
 	assert.equal(h.stops, 1);
-	restarts[0]!();               // the automatic attempt releases the slot
-	await Bun.sleep(5);
+	restarts[0]!(); // the automatic attempt releases the slot
+	await sleep(5);
 	assert.equal(restarts.length, 2, "the termination started its own replacement");
 	// That replacement is fresh, so further presses must leave it alone.
 	h.controller.terminate();
 	h.controller.terminate();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.stops, 1, "a healthy replacement must never be stopped by a repeat press");
 	restarts[1]!();
 	await termination;
@@ -275,7 +319,7 @@ test("Escape's cooperative path never stops or restarts the engine", async () =>
 	h.controller.markCooperativeAbortStarted();
 	h.advance(ENGINE_UNRESPONSIVE_MS * 5);
 	h.controller.markCooperativeAbortSettled();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.stops, 0);
 	assert.equal(h.restarts, 0);
 	assert.equal(h.controller.isRecovering(), false);
@@ -298,14 +342,19 @@ test("diagnostics emitted before any listener attaches are replayed once", () =>
 
 test("an attempt the user deliberately stopped is not reported as a restart failure", async () => {
 	const restarts: Array<{ reject: (error: Error) => void; resolve: () => void }> = [];
-	const h = harness(() => new Promise<void>((resolve, reject) => { restarts.push({ resolve, reject }); }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve, reject) => {
+				restarts.push({ resolve, reject });
+			}),
+	);
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(0);
+	await sleep(0);
 	h.advance(ENGINE_UNRESPONSIVE_MS);
 	const termination = h.controller.terminate();
 	// The explicit stop is what makes this attempt fail, so it must stay silent.
 	restarts[0]!.reject(new Error("Agent process stopped"));
-	await Bun.sleep(5);
+	await sleep(5);
 	restarts[1]!.resolve();
 	await termination;
 	assert.deepEqual(
@@ -316,9 +365,11 @@ test("an attempt the user deliberately stopped is not reported as a restart fail
 });
 
 test("a replacement that genuinely fails on its own is still reported", async () => {
-	const h = harness(async () => { throw new Error("Agent process exited immediately. Stderr: boom"); });
+	const h = harness(async () => {
+		throw new Error("Agent process exited immediately. Stderr: boom");
+	});
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(10);
+	await sleep(10);
 	assert.equal(
 		h.diagnostics.at(-1)?.message,
 		"Interactive engine restart failed: Agent process exited immediately. Stderr: boom",
@@ -333,23 +384,28 @@ test("a replacement that genuinely fails on its own is still reported", async ()
 test("a failed replacement keeps Ctrl+C armed and each press starts exactly one attempt", async () => {
 	const outcomes: Array<() => void> = [];
 	const restarts: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
-	const h = harness(() => new Promise<void>((resolve, reject) => { restarts.push({ resolve, reject }); }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve, reject) => {
+				restarts.push({ resolve, reject });
+			}),
+	);
 
 	h.controller.handleGenerationEnded(ended());
-	await Bun.sleep(0);
+	await sleep(0);
 	restarts[0]!.reject(new Error("Agent process exited immediately. Stderr: boom"));
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.controller.isRecovering(), false, "the automatic attempt is finished");
 	assert.equal(h.controller.needsExplicitTermination(), true, "a failed replacement must arm Ctrl+C");
 	assert.equal(h.restarts, 1, "automatic recovery stays single-shot");
 
 	// Nothing may retry on its own while the user has not pressed anything.
 	h.advance(ENGINE_UNRESPONSIVE_MS * 5);
-	await Bun.sleep(10);
+	await sleep(10);
 	assert.equal(h.restarts, 1, "no automatic retry loop");
 
 	const first = h.controller.terminate();
-	await Bun.sleep(5);   // terminate() stops before it restarts
+	await sleep(5); // terminate() stops before it restarts
 	assert.equal(h.restarts, 2, "Ctrl+C starts exactly one new attempt");
 	restarts[1]!.reject(new Error("Agent process exited immediately. Stderr: again"));
 	await first;
@@ -357,7 +413,7 @@ test("a failed replacement keeps Ctrl+C armed and each press starts exactly one 
 	assert.equal(h.restarts, 2, "still no automatic retry");
 
 	const second = h.controller.terminate();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.restarts, 3);
 	restarts[2]!.resolve();
 	await second;
@@ -374,29 +430,34 @@ test("a failed replacement keeps Ctrl+C armed and each press starts exactly one 
  */
 test("a death during an active replacement latches Ctrl+C without starting a second restart", async () => {
 	const restarts: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
-	const h = harness(() => new Promise<void>((resolve, reject) => { restarts.push({ resolve, reject }); }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve, reject) => {
+				restarts.push({ resolve, reject });
+			}),
+	);
 
 	h.controller.handleGenerationEnded(ended({ generation: 1 }));
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(h.restarts, 1, "one automatic attempt");
 
 	// Generation 2 dies while attempt A is still in flight.
 	h.controller.handleGenerationEnded(ended({ generation: 2 }));
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.restarts, 1, "the nested death must not start another automatic restart");
 
 	restarts[0]!.resolve();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.controller.isRecovering(), false, "the attempt settled");
 	assert.equal(h.controller.needsExplicitTermination(), true, "the nested death must keep Ctrl+C armed");
 
 	// Still nothing automatic, however long we wait.
 	h.advance(ENGINE_UNRESPONSIVE_MS * 5);
-	await Bun.sleep(10);
+	await sleep(10);
 	assert.equal(h.restarts, 1, "no automatic retry loop");
 
 	const termination = h.controller.terminate();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.restarts, 2, "Ctrl+C starts exactly one replacement");
 	restarts[1]!.resolve();
 	await termination;
@@ -405,10 +466,15 @@ test("a death during an active replacement latches Ctrl+C without starting a sec
 
 test("a death during a user-requested replacement re-arms Ctrl+C", async () => {
 	const restarts: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
-	const h = harness(() => new Promise<void>((resolve, reject) => { restarts.push({ resolve, reject }); }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve, reject) => {
+				restarts.push({ resolve, reject });
+			}),
+	);
 	h.controller.publish(watchdogUnresponsive);
 	const termination = h.controller.terminate();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.restarts, 1);
 	h.controller.handleGenerationEnded(ended({ generation: 3 }));
 	restarts[0]!.resolve();
@@ -419,12 +485,17 @@ test("a death during a user-requested replacement re-arms Ctrl+C", async () => {
 
 test("an expected generation end during a replacement does not latch", async () => {
 	const restarts: Array<() => void> = [];
-	const h = harness(() => new Promise<void>((resolve) => { restarts.push(resolve); }));
+	const h = harness(
+		() =>
+			new Promise<void>((resolve) => {
+				restarts.push(resolve);
+			}),
+	);
 	h.controller.handleGenerationEnded(ended({ generation: 1 }));
-	await Bun.sleep(0);
+	await sleep(0);
 	h.controller.handleGenerationEnded(ended({ generation: 2, expected: true, kind: "explicit-stop" }));
 	restarts[0]!();
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.controller.needsExplicitTermination(), false, "an expected end is not a failure");
 	assert.equal(h.restarts, 1);
 });
@@ -434,7 +505,7 @@ test("shutdown ignores a later death entirely", async () => {
 	h.controller.shutdown();
 	h.controller.handleGenerationEnded(ended({ generation: 1 }));
 	h.controller.handleGenerationEnded(ended({ generation: 2 }));
-	await Bun.sleep(5);
+	await sleep(5);
 	assert.equal(h.restarts, 0);
 	assert.equal(h.controller.needsExplicitTermination(), false);
 });

@@ -1,8 +1,9 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-custom-ui.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { sleep } from "../helpers/runtime.js";
 
 initTheme("dark");
 
@@ -40,15 +41,24 @@ function makeStub(options?: { overlayStaysUp?: boolean }): CustomUiStub {
 		editor,
 		keybindings: {},
 		editorContainer: {
-			clear: () => { state.inline.length = 0; },
-			addChild: (child: unknown) => { state.inline.push(child); },
-			get children(): unknown[] { return state.inline; },
+			clear: () => {
+				state.inline.length = 0;
+			},
+			addChild: (child: unknown) => {
+				state.inline.push(child);
+			},
+			get children(): unknown[] {
+				return state.inline;
+			},
 		},
 		ui: {
 			showOverlay: () => {
 				state.overlayVisible = true;
 				return {
-					hide: () => { state.handleHides += 1; state.overlayVisible = options?.overlayStaysUp === true; },
+					hide: () => {
+						state.handleHides += 1;
+						state.overlayVisible = options?.overlayStaysUp === true;
+					},
 					setHidden: () => {},
 					isHidden: () => false,
 					focus: () => {},
@@ -56,9 +66,14 @@ function makeStub(options?: { overlayStaysUp?: boolean }): CustomUiStub {
 					isFocused: () => true,
 				};
 			},
-			hideOverlay: () => { state.genericHides += 1; state.overlayVisible = false; },
+			hideOverlay: () => {
+				state.genericHides += 1;
+				state.overlayVisible = false;
+			},
 			hasOverlay: () => state.overlayVisible,
-			setFocus: (component: unknown) => { state.focused.push(component); },
+			setFocus: (component: unknown) => {
+				state.focused.push(component);
+			},
 			requestRender: () => {},
 		},
 		shouldDeferInlineCustomUiFocus: () => false,
@@ -83,7 +98,7 @@ test("closing an overlay custom UI hides that exact overlay, not the top one", a
 		},
 		{ overlay: true },
 	);
-	await Bun.sleep(0);
+	await sleep(0);
 	done(undefined);
 	await settled;
 	assert.equal(stub.handleHides, 1, "the overlay's own handle must be used");
@@ -103,7 +118,7 @@ test("an inline custom UI restores the editor but never takes focus from a survi
 		},
 		{ overlay: false },
 	);
-	await Bun.sleep(0);
+	await sleep(0);
 	done(undefined);
 	await settled;
 	assert.equal(stub.inline.length, 1, "the editor is remounted");
@@ -122,7 +137,7 @@ test("an inline custom UI focuses the editor when nothing else owns input", asyn
 		},
 		{ overlay: false },
 	);
-	await Bun.sleep(0);
+	await sleep(0);
 	done(undefined);
 	await settled;
 	assert.equal(stub.focused.length, 2, "the component is focused on mount and the editor on close");

@@ -90,12 +90,14 @@ export class QueuedWriter {
 
 	private async runPump(): Promise<void> {
 		try {
-			let frame: PendingFrame | undefined;
-			while (!this.closedError && (frame = this.next())) {
+			for (;;) {
+				if (this.closedError) break;
+				const frame = this.next();
+				if (frame === undefined) break;
 				this.active = frame;
 				this.queuedBytes -= frame.bytes.length;
 				await new Promise<void>((resolve, reject) => {
-					this.stream.write(frame!.bytes, (error) => (error ? reject(error) : resolve()));
+					this.stream.write(frame.bytes, (error) => (error ? reject(error) : resolve()));
 				});
 				this.active = undefined;
 				frame.resolve?.();

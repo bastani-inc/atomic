@@ -1,10 +1,14 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { EngineDialogHostController } from "../../packages/coding-agent/src/modes/interactive-engine/engine-dialog-host.ts";
-import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
+import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
+import type {
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+} from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
+import { sleep } from "../helpers/runtime.js";
 
 /**
  * `select`, `confirm`, `input`, and `editor` mount real host components on
@@ -41,11 +45,15 @@ function harness(): Harness {
 		new Promise((resolve) => {
 			const record: Mount = { method, resolve, aborted: false };
 			mounts.push(record);
-			signal?.addEventListener("abort", () => {
-				record.aborted = true;
-				// The real host dialogs resolve undefined (cancelled) when aborted.
-				resolve(undefined);
-			}, { once: true });
+			signal?.addEventListener(
+				"abort",
+				() => {
+					record.aborted = true;
+					// The real host dialogs resolve undefined (cancelled) when aborted.
+					resolve(undefined);
+				},
+				{ once: true },
+			);
 		});
 
 	const ui = {
@@ -55,14 +63,21 @@ function harness(): Harness {
 		editor: (_title: string, _prefill?: string, opts?: { signal?: AbortSignal }) => mount("editor", opts?.signal),
 		notify: () => {},
 		setStatus: () => {},
-		setWidget: (key: string, lines: string[] | undefined) => { widgetWrites.push({ key, cleared: lines === undefined }); },
+		setWidget: (key: string, lines: string[] | undefined) => {
+			widgetWrites.push({ key, cleared: lines === undefined });
+		},
 		setTitle: () => {},
 		setEditorText: () => {},
 	} as unknown as ExtensionUIContext;
 
 	const runtime = {
 		getEngineGeneration: () => state.generation,
-		setExtensionUIHandler: (next: typeof handler) => { handler = next; return () => { handler = undefined; }; },
+		setExtensionUIHandler: (next: typeof handler) => {
+			handler = next;
+			return () => {
+				handler = undefined;
+			};
+		},
 		onGenerationEnded: (listener: (event: InteractiveEngineGenerationEnded) => void) => {
 			generationListeners.push(listener);
 			return () => {};
@@ -75,9 +90,15 @@ function harness(): Harness {
 		mounts,
 		widgetWrites,
 		responses,
-		get generation(): number { return state.generation; },
-		set generation(value: number) { state.generation = value; },
-		send: async (request) => { responses.push(await handler!(request)); },
+		get generation(): number {
+			return state.generation;
+		},
+		set generation(value: number) {
+			state.generation = value;
+		},
+		send: async (request) => {
+			responses.push(await handler!(request));
+		},
 		endGeneration: (generation) => {
 			state.generation = generation + 1;
 			for (const listener of [...generationListeners]) {
@@ -88,8 +109,20 @@ function harness(): Harness {
 }
 
 const REQUESTS: Record<string, RpcExtensionUIRequest> = {
-	select: { type: "extension_ui_request", id: "r1", method: "select", title: "pick", options: ["a"] } as RpcExtensionUIRequest,
-	confirm: { type: "extension_ui_request", id: "r2", method: "confirm", title: "sure?", message: "really" } as RpcExtensionUIRequest,
+	select: {
+		type: "extension_ui_request",
+		id: "r1",
+		method: "select",
+		title: "pick",
+		options: ["a"],
+	} as RpcExtensionUIRequest,
+	confirm: {
+		type: "extension_ui_request",
+		id: "r2",
+		method: "confirm",
+		title: "sure?",
+		message: "really",
+	} as RpcExtensionUIRequest,
 	input: { type: "extension_ui_request", id: "r3", method: "input", title: "name" } as RpcExtensionUIRequest,
 	editor: { type: "extension_ui_request", id: "r4", method: "editor", title: "edit" } as RpcExtensionUIRequest,
 };
@@ -98,7 +131,7 @@ for (const [method, request] of Object.entries(REQUESTS)) {
 	test(`${method}: engine death closes the dialog and suppresses the reply`, async () => {
 		const h = harness();
 		const settled = h.send(request);
-		await Bun.sleep(0);
+		await sleep(0);
 		assert.equal(h.mounts.length, 1, `${method} did not mount`);
 		assert.equal(h.mounts[0]!.method, method);
 
@@ -113,7 +146,7 @@ for (const [method, request] of Object.entries(REQUESTS)) {
 	test(`${method}: an ordinary answer still reaches the engine`, async () => {
 		const h = harness();
 		const settled = h.send(request);
-		await Bun.sleep(0);
+		await sleep(0);
 		h.mounts[0]!.resolve(method === "confirm" ? true : "value");
 		await settled;
 		assert.equal(h.responses.length, 1);
@@ -126,13 +159,13 @@ for (const [method, request] of Object.entries(REQUESTS)) {
 test("a dialog opened by the replacement generation survives stale cleanup", async () => {
 	const h = harness();
 	const stale = h.send(REQUESTS.select!);
-	await Bun.sleep(0);
+	await sleep(0);
 
 	// The replacement child opens its own dialog before the old generation's
 	// teardown runs.
 	h.generation = 2;
 	const fresh = h.send({ ...REQUESTS.input!, id: "r9" });
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(h.mounts.length, 2);
 
 	h.endGeneration(1);
@@ -160,7 +193,7 @@ test("non-mounting requests are handled without ownership bookkeeping", async ()
 test("disposing the controller cancels every live dialog", async () => {
 	const h = harness();
 	const settled = h.send(REQUESTS.editor!);
-	await Bun.sleep(0);
+	await sleep(0);
 	h.controller.dispose();
 	await settled;
 	assert.equal(h.mounts[0]!.aborted, true);
@@ -173,7 +206,13 @@ test("disposing the controller cancels every live dialog", async () => {
  * tracked per key and released only for the generation that last wrote it.
  */
 function widgetRequest(id: string, key: string, lines: string[] | undefined): RpcExtensionUIRequest {
-	return { type: "extension_ui_request", id, method: "setWidget", widgetKey: key, widgetLines: lines } as RpcExtensionUIRequest;
+	return {
+		type: "extension_ui_request",
+		id,
+		method: "setWidget",
+		widgetKey: key,
+		widgetLines: lines,
+	} as RpcExtensionUIRequest;
 }
 
 test("a line widget is released when its owning generation dies", async () => {
@@ -222,6 +261,12 @@ test("disposing the controller releases every widget key it still owns", async (
 	await h.send(widgetRequest("w1", "a", ["x"]));
 	await h.send(widgetRequest("w2", "b", ["y"]));
 	h.controller.dispose();
-	assert.deepEqual(h.widgetWrites.slice(-2).map((write) => write.key).sort(), ["a", "b"]);
+	assert.deepEqual(
+		h.widgetWrites
+			.slice(-2)
+			.map((write) => write.key)
+			.sort(),
+		["a", "b"],
+	);
 	assert.ok(h.widgetWrites.slice(-2).every((write) => write.cleared));
 });

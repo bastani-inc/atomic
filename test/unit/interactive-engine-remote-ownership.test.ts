@@ -1,10 +1,10 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import {
+	type RemoteProxyOwnershipSource,
 	registerRemoteProxyOwnership,
 	remoteEngineProxyOwner,
-	type RemoteProxyOwnershipSource,
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-input-ownership.ts";
 
 /**

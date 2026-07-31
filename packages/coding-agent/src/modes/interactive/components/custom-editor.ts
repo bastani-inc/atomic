@@ -8,8 +8,8 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
-import { theme } from "../theme/theme.ts";
 import { isPhysicalEscape } from "../interactive-key-identity.ts";
+import { theme } from "../theme/theme.ts";
 
 export interface CustomEditorOptions extends EditorOptions {
 	promptPrefix?: string;

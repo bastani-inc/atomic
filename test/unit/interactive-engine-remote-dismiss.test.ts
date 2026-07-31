@@ -8,20 +8,21 @@
  * Ctrl+C itself keeps receiving the key instead.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Component } from "@earendil-works/pi-tui";
+import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
-import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
-	parseInteractiveEngineMessage,
-	serializeInteractiveEngineFrame,
 	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
+import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
+import { sleep } from "../helpers/runtime.js";
 
 interface HostMount {
 	readonly componentId: string;
@@ -91,12 +92,20 @@ function makeBridge(): Bridge {
 					mount.settled = true;
 					resolve(result);
 				};
-				const tui = { terminal: { rows: 40, columns: 100, write: () => {} }, requestRender: () => {}, setFocus: () => {} };
+				const tui = {
+					terminal: { rows: 40, columns: 100, write: () => {} },
+					requestRender: () => {},
+					setFocus: () => {},
+				};
 				(mount as { component: Component }).component = factory(tui, {}, {}, done);
 				mounts.push(mount);
 				options.onHandle?.({
-					hide: () => {}, setHidden: () => {}, isHidden: () => false,
-					focus: () => {}, unfocus: () => {}, isFocused: () => true,
+					hide: () => {},
+					setHidden: () => {},
+					isHidden: () => false,
+					focus: () => {},
+					unfocus: () => {},
+					isFocused: () => true,
 				});
 			}),
 	} as unknown as ExtensionUIContext;
@@ -119,13 +128,15 @@ function panel(): (tui: unknown, theme: unknown, keys: unknown, done: (result: u
 test("the host closes exactly the focused undeclared proxy and the child promise settles", async () => {
 	const bridge = makeBridge();
 	let childResult: unknown = "unsettled";
-	void bridge.child.custom(panel(), { overlay: false }).then((result) => { childResult = result; });
-	await Bun.sleep(0);
+	void bridge.child.custom(panel(), { overlay: false }).then((result) => {
+		childResult = result;
+	});
+	await sleep(0);
 	const mount = bridge.mounts[0]!;
 	assert.equal(bridge.controller.remoteProxyHandlesCtrlC(mount.component), false);
 
 	assert.equal(bridge.controller.dismissRemoteProxy(mount.component), true);
-	await Bun.sleep(0);
+	await sleep(0);
 
 	assert.equal(mount.settled, true, "the host ui.custom() promise must settle");
 	assert.equal(childResult, undefined, "the extension's own promise must resolve like a cancel");
@@ -140,7 +151,7 @@ test("the host closes exactly the focused undeclared proxy and the child promise
 test("a component that declared handlesCtrlC keeps the key", async () => {
 	const bridge = makeBridge();
 	void bridge.child.custom(panel(), { overlay: false, handlesCtrlC: true });
-	await Bun.sleep(0);
+	await sleep(0);
 	assert.equal(bridge.controller.remoteProxyHandlesCtrlC(bridge.mounts[0]!.component), true);
 	// Still closable: the route only forwards the first press to it.
 	assert.equal(bridge.controller.dismissRemoteProxy(bridge.mounts[0]!.component), true);
@@ -150,13 +161,13 @@ test("a component that declared handlesCtrlC keeps the key", async () => {
 test("closing the focused overlay leaves the component nested below it alive", async () => {
 	const bridge = makeBridge();
 	void bridge.child.custom(panel(), { overlay: false });
-	await Bun.sleep(0);
+	await sleep(0);
 	void bridge.child.custom(panel(), { overlay: true });
-	await Bun.sleep(0);
+	await sleep(0);
 	const [inline, overlay] = bridge.mounts as [HostMount, HostMount];
 
 	assert.equal(bridge.controller.dismissRemoteProxy(overlay.component), true);
-	await Bun.sleep(0);
+	await sleep(0);
 
 	assert.equal(overlay.settled, true);
 	assert.equal(inline.settled, false, "an unrelated nested component must survive the escape");
@@ -166,8 +177,12 @@ test("closing the focused overlay leaves the component nested below it alive", a
 
 test("widget proxies are never dismissible and unknown components are ignored", async () => {
 	const bridge = makeBridge();
-	bridge.child.setWidget("remote-widget", () => ({ render: () => ["w"], handleInput: () => {}, invalidate: () => {} }));
-	await Bun.sleep(0);
+	bridge.child.setWidget("remote-widget", () => ({
+		render: () => ["w"],
+		handleInput: () => {},
+		invalidate: () => {},
+	}));
+	await sleep(0);
 	assert.deepEqual(bridge.widgets, ["remote-widget"]);
 	// Widgets never own keyboard input, so they are not an escape target.
 	assert.equal(bridge.controller.dismissRemoteProxy({}), false);

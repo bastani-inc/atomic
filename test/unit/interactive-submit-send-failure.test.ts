@@ -1,12 +1,15 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-process-lifecycle.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-bash-compact.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.ts";
-import { asAcceptedRequestFailure, rpcTransportError } from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import {
+	asAcceptedRequestFailure,
+	rpcTransportError,
+} from "../../packages/coding-agent/src/modes/rpc/rpc-transport-error.ts";
 
 // handleBashCommand builds themed components; the theme is process-global.
 initTheme("dark");
@@ -57,15 +60,17 @@ function makeSubmitStub(options?: {
 		// A transport rejection is what the RPC client actually raises for a frame
 		// the engine never took; `failWith` injects an ordinary failure instead, so
 		// the two paths stay distinguishable by admission rather than by wording.
-		throw options?.failWith === undefined
-			? rpcTransportError(SEND_FAILURE)
-			: new Error(options.failWith);
+		throw options?.failWith === undefined ? rpcTransportError(SEND_FAILURE) : new Error(options.failWith);
 	};
 	const editor = {
 		getText: () => state.editorText,
 		getExpandedText: () => state.editorText,
-		setText: (text: string) => { state.editorText = text; },
-		addToHistory: (text: string) => { state.history.push(text); },
+		setText: (text: string) => {
+			state.editorText = text;
+		},
+		addToHistory: (text: string) => {
+			state.history.push(text);
+		},
 		onSubmit: undefined as ((text: string) => Promise<void> | void) | undefined,
 	};
 	const host = {
@@ -79,8 +84,12 @@ function makeSubmitStub(options?: {
 		editorContainer: { children: options?.editorMounted === false ? [] : [editor] },
 		ui: { setFocus: () => {}, requestRender: () => {} },
 		pendingUserInputs: [],
-		get startupCookedInputRecovered(): boolean { return state.startupCookedInputRecovered; },
-		set startupCookedInputRecovered(value: boolean) { state.startupCookedInputRecovered = value; },
+		get startupCookedInputRecovered(): boolean {
+			return state.startupCookedInputRecovered;
+		},
+		set startupCookedInputRecovered(value: boolean) {
+			state.startupCookedInputRecovered = value;
+		},
 		session: {
 			isCompacting: options?.isCompacting === true,
 			isStreaming: options?.isStreaming === true,
@@ -88,7 +97,10 @@ function makeSubmitStub(options?: {
 			queuedMessagesPaused: false,
 			prompt: async (text: string, promptOptions?: { streamingBehavior?: string }) => {
 				if (options?.failSend) fail();
-				state.prompted.push({ text, ...(promptOptions?.streamingBehavior ? { streamingBehavior: promptOptions.streamingBehavior } : {}) });
+				state.prompted.push({
+					text,
+					...(promptOptions?.streamingBehavior ? { streamingBehavior: promptOptions.streamingBehavior } : {}),
+				});
 			},
 		},
 		isExtensionCommand: () => options?.isExtensionCommand === true,
@@ -98,7 +110,9 @@ function makeSubmitStub(options?: {
 		flushPendingBashComponents: () => {},
 		renderDeferredUserInput: () => {},
 		ensureDeferredStartupComplete: async () => {},
-		showError: (message: string) => { state.errors.push(message); },
+		showError: (message: string) => {
+			state.errors.push(message);
+		},
 		showWarning: () => {},
 		advanceStartupInputReplay: () => {},
 		handleBashCommand: async (command: string) => {
@@ -131,7 +145,11 @@ const DIRECT_BRANCHES: Array<{
 }> = [
 	{ name: "/atomic", text: "/atomic do the thing" },
 	{ name: "deferred slash command", text: "/some-extension-command", options: { deferredStartupPending: true } },
-	{ name: "extension command during compaction", text: "/ext", options: { isCompacting: true, isExtensionCommand: true } },
+	{
+		name: "extension command during compaction",
+		text: "/ext",
+		options: { isCompacting: true, isExtensionCommand: true },
+	},
 	{ name: "streaming steer", text: "steer me", options: { isStreaming: true } },
 	{ name: "bash", text: "!echo hi" },
 	{ name: "/compact", text: "/compact" },
@@ -219,11 +237,19 @@ test("Alt+Enter clears the editor when the send is accepted", async () => {
  */
 test("idle Alt+Enter restores the exact expanded buffer when the send fails", async () => {
 	const raw = "  draft with outer spaces  ";
-	const state = { editorText: raw, errors: [] as string[], prompted: [] as string[], startupCookedInputRecovered: false, renders: 0 };
+	const state = {
+		editorText: raw,
+		errors: [] as string[],
+		prompted: [] as string[],
+		startupCookedInputRecovered: false,
+		renders: 0,
+	};
 	const editor = {
 		getText: () => state.editorText,
 		getExpandedText: () => state.editorText,
-		setText: (text: string) => { state.editorText = text; },
+		setText: (text: string) => {
+			state.editorText = text;
+		},
 		addToHistory: () => {},
 		onSubmit: undefined as ((text: string) => Promise<void> | void) | undefined,
 	};
@@ -239,10 +265,19 @@ test("idle Alt+Enter restores the exact expanded buffer when the send fails", as
 		defaultEditor: editor,
 		editor,
 		editorContainer: { children: [editor] },
-		ui: { setFocus: () => {}, requestRender: () => { state.renders += 1; } },
+		ui: {
+			setFocus: () => {},
+			requestRender: () => {
+				state.renders += 1;
+			},
+		},
 		pendingUserInputs: [],
-		get startupCookedInputRecovered(): boolean { return state.startupCookedInputRecovered; },
-		set startupCookedInputRecovered(value: boolean) { state.startupCookedInputRecovered = value; },
+		get startupCookedInputRecovered(): boolean {
+			return state.startupCookedInputRecovered;
+		},
+		set startupCookedInputRecovered(value: boolean) {
+			state.startupCookedInputRecovered = value;
+		},
 		session: {
 			isCompacting: false,
 			isStreaming: false,
@@ -267,14 +302,18 @@ test("idle Alt+Enter restores the exact expanded buffer when the send fails", as
 		showWorkingLoaderNow: () => {},
 		stopWorkingLoader: () => {},
 		ensureDeferredStartupComplete: async () => {},
-		showError: (message: string) => { state.errors.push(message); },
+		showError: (message: string) => {
+			state.errors.push(message);
+		},
 		showWarning: () => {},
 		advanceStartupInputReplay: () => {},
 	};
 	const mode = host as unknown as InteractiveModeBase;
 	InteractiveModeBase.prototype.setupEditorSubmitHandler.call(mode);
 	// The prompt loop is what consumes a normal submission.
-	mode.onInputCallback = (submission) => { turn = InteractiveModeBase.prototype.runUserPromptTurn.call(mode, submission); };
+	mode.onInputCallback = (submission) => {
+		turn = InteractiveModeBase.prototype.runUserPromptTurn.call(mode, submission);
+	};
 
 	await InteractiveModeBase.prototype.handleFollowUp.call(mode);
 	await turn;
@@ -313,7 +352,9 @@ function makeBashStub(options: {
 		pendingBashComponents: [] as unknown[],
 		pendingUserInputs: [],
 		ui: { requestRender: () => {} },
-		showError: (message: string) => { errors.push(message); },
+		showError: (message: string) => {
+			errors.push(message);
+		},
 	};
 	// Replace the real component construction with a stub: this test is about the
 	// failure policy, not about bash rendering.
@@ -322,14 +363,22 @@ function makeBashStub(options: {
 }
 
 test("bash rethrows a send the engine never accepted and renders every other failure", async () => {
-	const rejected = makeBashStub({ executeBash: async () => { throw rpcTransportError(SEND_FAILURE); } });
+	const rejected = makeBashStub({
+		executeBash: async () => {
+			throw rpcTransportError(SEND_FAILURE);
+		},
+	});
 	await assert.rejects(
 		() => InteractiveModeBase.prototype.handleBashCommand.call(rejected.mode, "echo hi"),
 		/Agent process exited/,
 	);
 	assert.deepEqual(rejected.errors, [], "an unaccepted send must not also render a bash error");
 
-	const runtimeFailure = makeBashStub({ executeBash: async () => { throw new Error("spawn ENOENT"); } });
+	const runtimeFailure = makeBashStub({
+		executeBash: async () => {
+			throw new Error("spawn ENOENT");
+		},
+	});
 	await InteractiveModeBase.prototype.handleBashCommand.call(runtimeFailure.mode, "echo hi");
 	assert.deepEqual(runtimeFailure.errors, ["Bash command failed: spawn ENOENT"]);
 });
@@ -355,7 +404,9 @@ test("bash keeps an accepted transport failure local, with or without output", a
 
 test("bash still rethrows a quiet unaccepted send so the draft is restored", async () => {
 	const unaccepted = makeBashStub({
-		executeBash: async () => { throw rpcTransportError(SEND_FAILURE); },
+		executeBash: async () => {
+			throw rpcTransportError(SEND_FAILURE);
+		},
 	});
 	await assert.rejects(
 		() => InteractiveModeBase.prototype.handleBashCommand.call(unaccepted.mode, "echo hi"),
@@ -365,22 +416,28 @@ test("bash still rethrows a quiet unaccepted send so the draft is restored", asy
 });
 
 test("/compact rethrows a send the engine never accepted and ignores other failures", async () => {
-	const makeCompactStub = (compact: () => Promise<void>) => ({
-		session: { isCompacting: false, compact },
-		sessionManager: { getEntries: () => [{ type: "message" }, { type: "message" }] },
-		loadingAnimation: undefined,
-		statusContainer: { clear: () => {} },
-		showWarning: () => {},
-	}) as unknown as InteractiveModeBase;
+	const makeCompactStub = (compact: () => Promise<void>) =>
+		({
+			session: { isCompacting: false, compact },
+			sessionManager: { getEntries: () => [{ type: "message" }, { type: "message" }] },
+			loadingAnimation: undefined,
+			statusContainer: { clear: () => {} },
+			showWarning: () => {},
+		}) as unknown as InteractiveModeBase;
 
 	await assert.rejects(
-		() => InteractiveModeBase.prototype.handleCompactCommand.call(
-			makeCompactStub(async () => { throw rpcTransportError(SEND_FAILURE); }),
-		),
+		() =>
+			InteractiveModeBase.prototype.handleCompactCommand.call(
+				makeCompactStub(async () => {
+					throw rpcTransportError(SEND_FAILURE);
+				}),
+			),
 		/Agent process exited/,
 	);
 	// Ordinary compaction failures still surface through session events only.
 	await InteractiveModeBase.prototype.handleCompactCommand.call(
-		makeCompactStub(async () => { throw new Error("compaction model error"); }),
+		makeCompactStub(async () => {
+			throw new Error("compaction model error");
+		}),
 	);
 });
