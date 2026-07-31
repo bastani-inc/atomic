@@ -1,4 +1,4 @@
-import { ChatSessionHost } from "@bastani/atomic";
+import { type AgentSessionEvent, ChatSessionHost } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
@@ -112,8 +112,29 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		// stage can see that a live delivery authorizes it.
 		ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
 		ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
+		rehydrateQueuedMessages(ctx);
 	}
 	ctx.chatHost.syncAnimationTick();
+}
+
+/**
+ * Replay the stage's pending queue into a freshly mounted chat host.
+ *
+ * The queue lives on the session, but its display lives in the host that is
+ * destroyed on detach. A new host starts empty and only sees future
+ * `queue_update` events, so a message queued while attached would silently
+ * vanish on reattach. The snapshot comes from the handle rather than from a
+ * concrete `AgentSession`, so an adapter-backed stage rehydrates too.
+ * Subscribing before this runs means a real update that arrives later wins.
+ */
+function rehydrateQueuedMessages(ctx: StageChatViewContext): void {
+	const queued = liveHandle(ctx)?.queuedUserMessages?.();
+	if (!queued) return;
+	const steering = [...queued.steering];
+	const followUp = [...queued.followUp];
+	if (steering.length === 0 && followUp.length === 0) return;
+	const event: AgentSessionEvent = { type: "queue_update", steering, followUp };
+	ctx.chatHost.applyAgentEvent(event);
 }
 
 function installFocusHold(ctx: StageChatViewContext): void {
@@ -132,9 +153,21 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 			ensureAttached: async () => {
 				await liveHandle(ctx)?.ensureAttached();
 			},
-			prompt: async (text) => {
+			prompt: async (text, mode) => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
+				// Typed Enter is a steering intent even when this chat reads the
+				// handle as idle: workflow admission can still own a retiring turn,
+				// and the unspecified `sendUserMessage` default would demote the
+				// message to a follow-up delivered at the end of the turn. Naming
+				// the mode keeps manual input on the steering boundary. A genuinely
+				// idle session ignores `deliverAs` and starts a fresh turn. Ctrl+F
+				// reaches this same command and carries its own mode, so the choice
+				// is scoped to this submission rather than to the view.
+				if (handle.sendUserMessage !== undefined) {
+					await handle.sendUserMessage(text, { deliverAs: mode === "followUp" ? "followUp" : "steer" });
+					return;
+				}
 				await handle.prompt(text);
 			},
 			steer: async (text) => {

@@ -1,6 +1,7 @@
 import { isTerminalStage } from "./executor-scheduler.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
 import type { AgentSessionEventListener, StageControlHandle } from "./stage-control-registry.js";
+import { StageQueuedUserMessageBuffer } from "./stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction, StageUserMessagePreparation } from "./stage-runner-types.js";
 import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 
@@ -30,7 +31,13 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		runtime.captureStageSessionMeta();
 	};
 	const toolExecutions = new StageToolExecutionBuffer();
-	const unsubscribeToolExecutions = runtime.innerCtx.subscribe((event) => toolExecutions.record(event));
+	const queuedUserMessages = new StageQueuedUserMessageBuffer();
+	// One lifetime subscription feeds both runtime projections, so the queue stays
+	// current while no stage chat is mounted.
+	const unsubscribeStageEvents = runtime.innerCtx.subscribe((event) => {
+		toolExecutions.record(event);
+		queuedUserMessages.record(event);
+	});
 
 	return {
 		runId: runtime.runId,
@@ -59,6 +66,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		},
 		pendingToolExecutionEvents() {
 			return toolExecutions.replayEvents();
+		},
+		queuedUserMessages() {
+			return queuedUserMessages.snapshot();
 		},
 		async ensureAttached() {
 			runtime.throwIfStageMutationBlocked();
@@ -206,8 +216,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			return runtime.innerCtx.__subscribeDeliveryActivity(listener);
 		},
 		async dispose() {
-			unsubscribeToolExecutions();
+			unsubscribeStageEvents();
 			toolExecutions.clear();
+			queuedUserMessages.clear();
 			await runtime.releaseLiveHandle();
 		},
 	};

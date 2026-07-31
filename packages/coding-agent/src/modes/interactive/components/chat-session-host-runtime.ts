@@ -1,6 +1,7 @@
 import { ATOMIC_WORKING_FRAME_MS, ATOMIC_WORKING_FRAMES } from "./atomic-working-status.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
+import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
 import { ANIMATION_FRAME_MS, STREAMING_RENDER_THROTTLE_MS } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 
@@ -203,16 +204,25 @@ export function notifyChatSessionStatus<TExtraEntry extends ChatTranscriptEntryL
 	state.requestRender?.();
 }
 
+/**
+ * The prompt command is the one command that needs the submitting key's mode,
+ * so it has its own accessor rather than a `text`-only signature that would
+ * drop it.
+ */
+export function requiredChatSessionPromptCommand<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): (text: string, mode: ChatSessionSubmitMode) => Promise<void> {
+	return async (text, mode) => {
+		if (!state.commands.prompt) throw new Error("no prompt command configured for this chat session");
+		await state.commands.prompt(text, mode);
+	};
+}
+
 export function requiredChatSessionCommand<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
-	name: "prompt" | "steer" | "followUp" | "resume",
+	name: "steer" | "followUp" | "resume",
 ): (text?: string) => Promise<void> {
 	switch (name) {
-		case "prompt":
-			return async (text) => {
-				if (!state.commands.prompt) throw new Error("no prompt command configured for this chat session");
-				await state.commands.prompt(text ?? "");
-			};
 		case "steer":
 			return async (text) => {
 				if (!state.commands.steer) throw new Error("no steer command configured for this chat session");

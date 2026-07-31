@@ -11,6 +11,7 @@
 import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
@@ -122,11 +123,22 @@ export class WorkflowAttachPane implements Component {
 			getViewportRows: this.getViewportRows,
 			piKeybindings: this.piKeybindings,
 			footerData: this.footerData,
+			getStageQueuedMessageCount: (runId, stageId) => this._stageQueuedMessageCount(runId, stageId),
 			requestRender: () => {
 				if (this.mode !== "graph") return;
 				this.hostRequestRender?.();
 			},
 		});
+	}
+	/**
+	 * Pending-message count for a stage, read straight from the registry so the
+	 * graph can badge a node whose chat is not mounted. It comes from the
+	 * handle's own `queue_update` projection rather than a concrete
+	 * `AgentSession`, so an adapter-backed stage is counted too. `peek`
+	 * deliberately does not claim a provisional detached handle.
+	 */
+	private _stageQueuedMessageCount(runId: string, stageId: string): number {
+		return stageQueuedUserMessageCount(this.registry?.peek(runId, stageId)?.queuedUserMessages?.());
 	}
 	private _resolveRunId(): string | null {
 		if (this.runId) return this.runId;

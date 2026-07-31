@@ -79,6 +79,58 @@ describe("renderNodeCard — geometry", () => {
 	});
 });
 
+describe("renderNodeCard — queued-message badge", () => {
+	test("claims the dim metadata row on an ordinary card, keeping status and duration", () => {
+		const stage = makeStage({ status: "running", startedAt: 1, parentIds: ["upstream"] });
+		const plain = stripAnsi(renderNodeCard(stage, { theme }).join("\n"));
+		assert.match(plain, /1 dep/);
+		const lines = renderNodeCard(stage, { theme, queuedMessageCount: 2 });
+		assert.equal(lines.length, NODE_H);
+		for (const line of lines) assert.equal(stripAnsi(line).length, NODE_W);
+		const badged = stripAnsi(lines.join("\n"));
+		assert.match(badged, /2 queued/);
+		assert.match(badged, /running/);
+		assert.doesNotMatch(badged, /1 dep/);
+	});
+
+	test("renders a single queued message count verbatim", () => {
+		const lines = renderNodeCard(makeStage({ status: "running", startedAt: 1 }), {
+			theme,
+			queuedMessageCount: 1,
+		});
+		assert.match(stripAnsi(lines.join("\n")), /1 queued/);
+	});
+
+	test("keeps the awaiting-input action hint and replaces the redundant row", () => {
+		const stage = makeStage({ status: "awaiting_input", startedAt: 1 });
+		const plain = renderNodeCard(stage, { theme });
+		assert.match(stripAnsi(plain.join("\n")), /waiting for response/);
+		const badged = renderNodeCard(stage, { theme, queuedMessageCount: 3 });
+		assert.equal(badged.length, NODE_H);
+		assert.equal(badged.length, plain.length);
+		for (let i = 0; i < badged.length; i++) {
+			assert.equal(stripAnsi(badged[i]!).length, stripAnsi(plain[i]!).length, `row ${i} width must not shift`);
+		}
+		const rendered = stripAnsi(badged.join("\n"));
+		assert.match(rendered, /3 queued/);
+		assert.match(rendered, /↵ enter to respond/);
+		assert.match(rendered, /awaiting input/);
+		assert.doesNotMatch(rendered, /waiting for response/);
+	});
+
+	test("omits the badge for zero, negative, and absent counts", () => {
+		for (const queuedMessageCount of [undefined, 0, -1, Number.NaN]) {
+			const lines = renderNodeCard(makeStage({ status: "running", startedAt: 1 }), {
+				theme,
+				queuedMessageCount,
+			});
+			assert.doesNotMatch(stripAnsi(lines.join("\n")), /queued/, `count ${String(queuedMessageCount)}`);
+			assert.equal(lines.length, NODE_H);
+			for (const line of lines) assert.equal(stripAnsi(line).length, NODE_W);
+		}
+	});
+});
+
 describe("renderNodeCard — focused tab marker", () => {
 	test("focused card uses an accent title slot without a caret glyph", () => {
 		const lines = renderNodeCard(makeStage({ name: "deploy" }), {

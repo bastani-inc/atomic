@@ -64,4 +64,10 @@ export interface GraphViewOpts {
 	piKeybindings?: unknown;
 	/** Host footer/status provider used to surface non-workflow extension statuses inside the fullscreen graph overlay. */
 	footerData?: ReadonlyFooterDataProvider;
+	/**
+	 * Live pending steering/follow-up count for one stage, read on every graph
+	 * repaint so a message queued from the stage chat stays visible after the
+	 * user detaches. Runtime-only: queue state never enters a store snapshot.
+	 */
+	getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
 }

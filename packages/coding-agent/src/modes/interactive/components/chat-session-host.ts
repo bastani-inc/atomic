@@ -35,7 +35,12 @@ import {
 	syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
 import { ChatSessionHostState } from "./chat-session-host-state.ts";
-import type { AgentSnapshotMessage, ChatSessionHostEntry, ChatSessionHostOpts } from "./chat-session-host-types.ts";
+import type {
+	AgentSnapshotMessage,
+	ChatSessionHostEntry,
+	ChatSessionHostOpts,
+	ChatSessionSubmitMode,
+} from "./chat-session-host-types.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 
 export type {
@@ -44,6 +49,7 @@ export type {
 	ChatSessionHostEntry,
 	ChatSessionHostOpts,
 	ChatSessionHostStyle,
+	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 
 export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never> implements Component, Focusable {
@@ -141,7 +147,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		await interruptChatSession(this.state);
 	}
 
-	async submit(mode: "auto" | "followUp" = "auto", submittedText?: string): Promise<void> {
+	async submit(mode: ChatSessionSubmitMode = "auto", submittedText?: string): Promise<void> {
 		await submitChatSession(this.state, mode, submittedText);
 	}
 

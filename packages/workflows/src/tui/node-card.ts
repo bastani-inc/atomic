@@ -42,11 +42,27 @@ export interface NodeCardOpts {
 	theme: GraphTheme;
 	/** Run stages, used to resolve blockedByStageId into a short upstream name. */
 	stages?: readonly StageSnapshot[];
+	/**
+	 * Pending steering/follow-up messages on this stage's live session. A
+	 * nonzero count claims the final body row so a queued message stays visible
+	 * while the user is detached from the stage chat.
+	 */
+	queuedMessageCount?: number;
 }
 
 /** Sine-eased pulse `t ∈ [0, 1]`. Phase 0 ≈ quiet, 0.5 ≈ peak. */
 function pulseT(phase: number): number {
 	return (Math.sin(phase * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+}
+
+/** Normalize a caller-supplied queue count to a non-negative whole number. */
+function queuedBadgeCount(count: number | undefined): number {
+	if (typeof count !== "number" || !Number.isFinite(count)) return 0;
+	return Math.max(0, Math.trunc(count));
+}
+
+function queuedBadgeText(count: number): string {
+	return `✉ ${count} queued`;
 }
 
 function pickBorder(status: StageStatus, focused: boolean, phase: number, theme: GraphTheme): string {
@@ -294,6 +310,15 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 				]
 			: [durLine, statusLine, metaLine];
 
+	// A queued steer/follow-up is invisible once the user leaves the stage chat,
+	// so it claims one existing body row rather than competing for space inside a
+	// line that would truncate. Card geometry is unchanged: the row is replaced,
+	// not added. Pick the least useful row: the dim metadata row on an ordinary
+	// card, and the redundant "waiting for response" row on an awaiting-input
+	// card, which keeps its status row and its `↵ enter to respond` action hint.
+	const queuedCount = queuedBadgeCount(opts.queuedMessageCount);
+	const preferredBadgeRow = stage.status === "awaiting_input" ? 1 : interior.length - 1;
+
 	// Pad / clip to exactly `height` lines.
 	const contentRows = Math.max(0, height - 2);
 	while (interior.length < contentRows) {
@@ -301,6 +326,15 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 	}
 	if (interior.length > contentRows) {
 		interior.length = contentRows;
+	}
+
+	if (queuedCount > 0 && interior.length > 0) {
+		const badgeRow =
+			preferredBadgeRow >= 0 && preferredBadgeRow < interior.length ? preferredBadgeRow : interior.length - 1;
+		interior[badgeRow] =
+			`${bg}${bc}│${RESET}` +
+			centreColored(queuedBadgeText(queuedCount), innerWidth, theme.info, bg, { bold: true }) +
+			`${bg}${bc}│${RESET}`;
 	}
 
 	return [top, ...interior, bottom];

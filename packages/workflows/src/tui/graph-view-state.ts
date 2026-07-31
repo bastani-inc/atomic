@@ -58,6 +58,7 @@ export abstract class GraphViewState {
 	protected requestRender?: () => void;
 	protected piKeybindings?: unknown;
 	protected footerData?: ReadonlyFooterDataProvider;
+	protected getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
 
 	/** Active HIL prompt state, set when `_rebuildLayout` sees a new prompt id. */
 	protected promptState: PromptCardState | null = null;
@@ -104,6 +105,7 @@ export abstract class GraphViewState {
 		this.requestRender = opts.requestRender;
 		this.piKeybindings = opts.piKeybindings;
 		this.footerData = opts.footerData;
+		this.getStageQueuedMessageCount = opts.getStageQueuedMessageCount;
 
 		this._unsubscribe = this.store.subscribe((snap) => {
 			this.currentSnapshot = snap;
@@ -286,6 +288,21 @@ export abstract class GraphViewState {
 	protected _stageChatTarget(stage: StageSnapshot | undefined): ExpandedWorkflowStageTarget | undefined {
 		if (!stage || stage.nodeKind === "tool") return undefined;
 		return expandedStageTarget(this.expandedGraph, stage.id);
+	}
+
+	/**
+	 * Pending queued messages for a rendered node. Tool nodes own no session, and
+	 * a nested stage's virtual graph id is not a registry key, so resolve the
+	 * real `{runId, stageId}` first.
+	 */
+	protected _stageQueuedMessageCount(stage: StageSnapshot | undefined): number {
+		const read = this.getStageQueuedMessageCount;
+		if (!read) return 0;
+		const target = this._stageChatTarget(stage);
+		if (!target) return 0;
+		const count = read(target.runId, target.stageId);
+		if (typeof count !== "number" || !Number.isFinite(count)) return 0;
+		return Math.max(0, Math.trunc(count));
 	}
 
 	protected _focusedStageChatTarget(): ExpandedWorkflowStageTarget | undefined {

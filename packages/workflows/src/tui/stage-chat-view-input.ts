@@ -70,13 +70,14 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	const blocked = isBlocked(ctx);
 	if (matchesKey(data, Key.ctrl("f"))) {
 		if (blocked) return true;
+		// The mode travels with this submission and reaches the stage-chat prompt
+		// command, so an idle-looking Ctrl+F stays a follow-up.
 		void ctx.chatHost.submit("followUp");
 		return true;
 	}
 	if (blocked) return true;
 	return ctx.chatHost.handleInput(data);
 }
-
 function handleToolsExpandInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	if (!matchesAction(keybindings, data, APP_ACTION.toolsExpand)) return false;

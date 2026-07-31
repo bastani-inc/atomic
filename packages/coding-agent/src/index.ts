@@ -335,6 +335,7 @@ export {
 	type ChatSessionHostEntry,
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
+	type ChatSessionSubmitMode,
 	ChatTranscriptComponent,
 	type ChatTranscriptEntryLike,
 	type ChatTranscriptRenderer,

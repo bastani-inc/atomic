@@ -7,13 +7,13 @@ import {
 	notifyChatSessionWarning,
 } from "./chat-session-host-runtime.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
-import type { ChatSessionHostOpts } from "./chat-session-host-types.ts";
+import type { ChatSessionHostOpts, ChatSessionSubmitMode } from "./chat-session-host-types.ts";
 import { matchesKey } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 import { CustomEditor } from "./custom-editor.ts";
 
 export interface ChatSessionEditorCallbacks {
-	submit: (mode: "auto" | "followUp", submittedText?: string) => void | Promise<void>;
+	submit: (mode: ChatSessionSubmitMode, submittedText?: string) => void | Promise<void>;
 	restoreQueuedMessagesToEditor: () => boolean;
 	abortCompaction: () => void | Promise<void>;
 	interrupt: () => void | Promise<void>;

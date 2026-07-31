@@ -70,6 +70,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 				pulsePhase,
 				theme: this.graphTheme,
 				stages: this.cachedLayout.map((layoutNode) => layoutNode.stage),
+				queuedMessageCount: this._stageQueuedMessageCount(node.stage),
 			});
 			for (let li = 0; li < cardLines.length; li++) {
 				const rowIdx = node.y + li;

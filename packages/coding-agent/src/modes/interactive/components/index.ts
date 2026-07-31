@@ -18,6 +18,7 @@ export {
 	type ChatSessionHostEntry,
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
+	type ChatSessionSubmitMode,
 } from "./chat-session-host.ts";
 export {
 	addChatTranscriptEntry,

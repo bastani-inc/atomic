@@ -33,9 +33,17 @@ export interface ChatSessionHostBashRequest {
 	onChunk: (chunk: string) => void;
 }
 
+/**
+ * Which key produced one submission. `auto` is Enter; `followUp` is the
+ * explicit follow-up binding. The mode travels with the submission so a host
+ * whose idle `prompt` command has to pick a delivery queue reads this
+ * invocation's intent rather than shared state a concurrent submission owns.
+ */
+export type ChatSessionSubmitMode = "auto" | "followUp";
+
 export interface ChatSessionHostCommands {
 	ensureAttached?: () => Promise<void>;
-	prompt?: (text: string) => Promise<void>;
+	prompt?: (text: string, mode: ChatSessionSubmitMode) => Promise<void>;
 	steer?: (text: string) => Promise<void>;
 	followUp?: (text: string) => Promise<void>;
 	interrupt?: () => Promise<void>;

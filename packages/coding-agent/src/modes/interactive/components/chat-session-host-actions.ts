@@ -11,12 +11,14 @@ import {
 	notifyChatSessionStatus,
 	notifyChatSessionWarning,
 	requiredChatSessionCommand,
+	requiredChatSessionPromptCommand,
 	settleChatSessionPromptLifecycle,
 	startChatSessionWorkingLifecycle,
 	stopChatSessionWorkingLifecycle,
 	syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
+import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
 import { errorMessage, parseBashInput, userMessageSignature } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 
@@ -86,7 +88,7 @@ async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscript
 
 export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
-	mode: "auto" | "followUp" = "auto",
+	mode: ChatSessionSubmitMode = "auto",
 	submittedText?: string,
 ): Promise<void> {
 	const text = (submittedText ?? state.inputBuffer).trim();
@@ -161,7 +163,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			state.requestRender?.();
 			await agentSession.resumeQueuedMessages();
 			await state.commands.ensureAttached?.();
-			await requiredChatSessionCommand(state, "prompt")(text);
+			await requiredChatSessionPromptCommand(state)(text, mode);
 			state.sdkBusy = false;
 			state.statusMessage = "";
 			syncChatSessionAnimationTick(state);
@@ -181,7 +183,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();
 			await state.commands.ensureAttached?.();
-			await requiredChatSessionCommand(state, "prompt")(text);
+			await requiredChatSessionPromptCommand(state)(text, mode);
 			settleSubmittedPromptLifecycle(state, submittedPromptLifecycleGeneration);
 			syncChatSessionAnimationTick(state);
 			state.requestRender?.();
@@ -239,7 +241,8 @@ export async function flushChatSessionCompactionQueue<TExtraEntry extends ChatTr
 	try {
 		const first = queued[0];
 		if (first !== undefined) {
-			await requiredChatSessionCommand(state, "prompt")(first);
+			// A message parked during compaction resumes the ordinary Enter path.
+			await requiredChatSessionPromptCommand(state)(first, "auto");
 			nextIndex = 1;
 		}
 		for (; nextIndex < queued.length; nextIndex++) {

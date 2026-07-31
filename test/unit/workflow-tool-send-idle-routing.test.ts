@@ -213,6 +213,47 @@ describe("workflow send — idle-aware live-stage routing", () => {
 		assert.equal(result.message, "Steered live stage.");
 	});
 
+	test("streaming auto selects steering, matching a manually typed message", async () => {
+		const runId = "streaming-auto";
+		const calls: string[] = [];
+		liveHandle({ runId, streaming: true, calls });
+
+		const result = await workflowSendAction({
+			runId,
+			stageId: "stage-a",
+			text: "change direction",
+			delivery: "auto",
+		});
+
+		assert.deepEqual(calls, ["steer:change direction"]);
+		assert.equal(result.delivery, "steer");
+	});
+
+	test("sequential sends preserve submission order within each queue", async () => {
+		const runId = "streaming-order";
+		const calls: string[] = [];
+		liveHandle({ runId, streaming: true, calls });
+
+		for (const text of ["first steer", "second steer"]) {
+			const result = await workflowSendAction({ runId, stageId: "stage-a", text, delivery: "steer" });
+			assert.equal(result.delivery, "steer");
+		}
+		for (const text of ["first follow-up", "second follow-up"]) {
+			const result = await workflowSendAction({ runId, stageId: "stage-a", text, delivery: "followUp" });
+			assert.equal(result.delivery, "followUp");
+		}
+
+		// FIFO holds within each queue class. Nothing here asserts a global FIFO
+		// across steering and follow-up: steering keeps semantic priority even
+		// when a follow-up was submitted first.
+		assert.deepEqual(calls, [
+			"steer:first steer",
+			"steer:second steer",
+			"followUp:first follow-up",
+			"followUp:second follow-up",
+		]);
+	});
+
 	test("expanded root target sends to the hydrated child owner", async () => {
 		const rootId = "hydrated-routing-root";
 		const childId = "hydrated-routing-child";

@@ -22,6 +22,7 @@ import { beforeAll } from "vitest";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageDeliveryActivityEvent } from "../../packages/workflows/src/runs/foreground/stage-delivery-activity.js";
 import { StageDeliveryActivity } from "../../packages/workflows/src/runs/foreground/stage-delivery-activity.js";
+import { StageQueuedUserMessageBuffer } from "../../packages/workflows/src/runs/foreground/stage-queued-user-messages.js";
 import { StageToolExecutionBuffer } from "../../packages/workflows/src/runs/foreground/stage-tool-execution-buffer.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -34,6 +35,11 @@ beforeAll(() => {
 	initTheme("dark", false);
 });
 
+export interface StageChatSendUserMessageCall {
+	text: string;
+	deliverAs: "steer" | "followUp" | undefined;
+}
+
 interface HandleState {
 	promptCalls: Array<string>;
 	steerCalls: Array<string>;
@@ -41,6 +47,12 @@ interface HandleState {
 	pauseCalls: number;
 	resumeCalls: Array<string | undefined>;
 	isStreaming: boolean;
+	/**
+	 * Opt-in: supplying an array makes the handle expose the admission-aware
+	 * `sendUserMessage` surface a real live stage handle has. Left undefined,
+	 * the handle stays on the older prompt/steer/followUp-only shape.
+	 */
+	sendUserMessageCalls?: Array<StageChatSendUserMessageCall>;
 }
 
 export function makeHandle(
@@ -69,6 +81,9 @@ export function makeHandle(
 	const deliveryActivity = new StageDeliveryActivity();
 	let listener: ((e: AgentSessionEvent) => void) | undefined;
 	const toolExecutions = new StageToolExecutionBuffer();
+	// Mirror the real handle: the queue projection is kept by the handle itself,
+	// so it survives a stage chat being disposed and remounted.
+	const queuedUserMessages = new StageQueuedUserMessageBuffer();
 	let handleStatus = status;
 	const handle: StageControlHandle = {
 		runId: "run-1",
@@ -86,6 +101,9 @@ export function makeHandle(
 		agentSession,
 		pendingToolExecutionEvents() {
 			return toolExecutions.replayEvents();
+		},
+		queuedUserMessages() {
+			return queuedUserMessages.snapshot();
 		},
 		async ensureAttached() {},
 		async prompt(text: string) {
@@ -121,11 +139,18 @@ export function makeHandle(
 			};
 		},
 	};
+	if (state.sendUserMessageCalls !== undefined) {
+		handle.sendUserMessage = async (text, options) => {
+			state.sendUserMessageCalls?.push({ text, deliverAs: options?.deliverAs });
+			return options?.deliverAs ?? "prompt";
+		};
+	}
 	return {
 		handle,
 		state,
 		emit: (event: AgentSessionEvent) => {
 			toolExecutions.record(event);
+			queuedUserMessages.record(event);
 			listener?.(event);
 		},
 		emitDeliveryActivity: (event: StageDeliveryActivityEvent) => {

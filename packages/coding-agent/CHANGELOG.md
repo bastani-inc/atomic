@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `ChatSessionHostCommands.prompt` now receives the submitting key's mode as a second argument, and the new `ChatSessionSubmitMode` (`"auto" | "followUp"`) type is exported alongside the other chat-session host types. A host whose idle prompt command chooses a delivery queue can now read the mode of the invocation it is serving instead of shared state a concurrent submission may still own. Existing single-argument `prompt` implementations keep working unchanged ([#2074](https://github.com/bastani-inc/atomic/issues/2074)).
+
 ### Fixed
 
 - Fixed `/reload` re-transpiling and re-evaluating the entire transitive TypeScript graph of every extension on Windows and in single-file (compiled) builds even when nothing changed. Transformed extension evaluations now record a per-extension graph manifest mapping every file jiti reads to a SHA256 content hash, persisted under the versioned transpile cache directory. On reload, an unchanged graph — every recorded file rehashes identically and the stored manifest matches — reuses the previously evaluated factory instead of re-importing; any hash mismatch, missing file, missing or corrupt manifest, or graph-shape change falls back to a full fresh re-evaluation, which rewrites the manifest, so edited extension source is always picked up. Measured on Windows, reloading the five builtin packages drops from ~25 s cold / ~16 s warm (jiti fsCache) to ~90 ms — the cost of rehashing the recorded graph ([#2069](https://github.com/bastani-inc/atomic/issues/2069)).

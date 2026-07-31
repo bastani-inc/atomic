@@ -27,6 +27,7 @@
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
+import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 export type StageControlStatus =
@@ -63,6 +64,14 @@ export interface StageControlHandle {
 	readonly agentSession?: AgentSession;
 	/** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
 	pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
+	/**
+	 * Pending steering/follow-up text on this stage's session, kept current from
+	 * `queue_update` for the handle's whole lifetime so a detached graph node and
+	 * a remounted stage chat can both read it. Deliberately independent of
+	 * `agentSession`: an adapter-backed runtime that publishes the ordinary
+	 * events keeps queue-aware UI.
+	 */
+	queuedUserMessages?(): StageQueuedUserMessages;
 	/** Ensure the SDK session exists. Cheap when already attached. */
 	ensureAttached(): Promise<void>;
 	/**

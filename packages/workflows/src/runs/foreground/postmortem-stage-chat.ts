@@ -34,6 +34,7 @@ import type {
 	StageControlHandle,
 	StageControlRegistry,
 } from "./stage-control-registry.js";
+import { StageQueuedUserMessageBuffer } from "./stage-queued-user-messages.js";
 import { createStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageUserMessagePreparation } from "./stage-runner-types.js";
 
@@ -167,6 +168,10 @@ export function createPostMortemStageHandle(
 			await context.__ensureSessionFromFile(sessionFileToRestore);
 		}
 	};
+	// Same runtime queue projection the live handle keeps, so a retained-session
+	// chat rehydrates its pending rows on reattach too.
+	const queuedUserMessages = new StageQueuedUserMessageBuffer();
+	const unsubscribeQueuedUserMessages = context.subscribe((event) => queuedUserMessages.record(event));
 	return {
 		runId,
 		stageId: stage.id,
@@ -189,6 +194,9 @@ export function createPostMortemStageHandle(
 		},
 		get agentSession() {
 			return context.__agentSession();
+		},
+		queuedUserMessages() {
+			return queuedUserMessages.snapshot();
 		},
 		async ensureAttached() {
 			await ensureAttached();
@@ -229,6 +237,8 @@ export function createPostMortemStageHandle(
 		async dispose() {
 			if (disposed) return;
 			disposed = true;
+			unsubscribeQueuedUserMessages();
+			queuedUserMessages.clear();
 			await context.__dispose();
 		},
 	};
