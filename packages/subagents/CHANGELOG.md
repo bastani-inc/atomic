@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed startup artifact cleanup escaping isolated agent directories. When the host provides a non-default session directory (for example an isolated programmatic `agentDir` used by tests and embedders), the global artifact scan now stays inside that sessions root; the real global and legacy `~/.pi` sessions roots are only scanned when no host-provided root is available ([#2070](https://github.com/bastani-inc/atomic/issues/2070)).
 - Fixed every extension activation rescanning all historical session directories for stale subagent artifacts. The global scan now runs at most once per 24 hours per sessions root via a root-level `.last-cleanup` marker, takes an exclusive `.cleanup.lock` so concurrent activations never race the same scan, and is deferred ten minutes after startup instead of running on the activation macrotask; the deferral stays unref'd and is cancelled by extension shutdown ([#2070](https://github.com/bastani-inc/atomic/issues/2070)).
 - Fixed startup maintenance walking every file under the nested subagent runtime directories on each activation. The stale-directory scan now stops at the first entry newer than the cleanup cutoff instead of recursively stat-ing whole subtrees to compute the true newest mtime, eliminating tens of thousands of synchronous fs calls on long-lived machines ([#2070](https://github.com/bastani-inc/atomic/issues/2070)).
 

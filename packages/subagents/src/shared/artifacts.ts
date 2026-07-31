@@ -167,10 +167,13 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 	}
 }
 
-export function cleanupAllArtifactDirs(maxAgeDays: number): void {
+export function cleanupAllArtifactDirs(maxAgeDays: number, sessionsRoots?: readonly string[]): void {
 	cleanupOldArtifacts(TEMP_ARTIFACTS_DIR, maxAgeDays);
 
-	for (const sessionsBase of getAgentConfigPaths("sessions")) {
+	// Host-provided sessions roots keep isolated/programmatic agent directories from
+	// leaking into the real global (and legacy) session roots; only the env/global
+	// derivation scans those.
+	for (const sessionsBase of sessionsRoots ?? getAgentConfigPaths("sessions")) {
 		cleanupSessionsRoot(sessionsBase, maxAgeDays);
 	}
 }

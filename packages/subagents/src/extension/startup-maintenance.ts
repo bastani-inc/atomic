@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { cleanupOldNestedRuntimeDirs } from "../runs/shared/nested-events.ts";
@@ -64,6 +65,19 @@ export function createSubagentStartupMaintenance(
 		options.resultTtlMs,
 	);
 	const cancelTasks = new Set<() => void>();
+	// The sessions root derived from a host-provided (non-default, e.g. isolated
+	// programmatic agentDir) session directory. When set, the global artifact scan
+	// stays inside it instead of touching the real global/legacy sessions roots.
+	let contextSessionsRoots: readonly string[] | undefined;
+	const noteSessionContext = (ctx: ExtensionContext): void => {
+		try {
+			if (ctx.sessionManager.usesDefaultSessionDir()) return;
+			const sessionDir = ctx.sessionManager.getSessionDir();
+			if (sessionDir) contextSessionsRoots = [path.dirname(sessionDir)];
+		} catch {
+			// A stale or partial context leaves cleanup on the env/global fallback.
+		}
+	};
 	const schedule = (task: () => void): void => {
 		const cancel = (options.scheduleMacrotask ?? scheduleMacrotask)(() => {
 			cancelTasks.delete(cancel);
@@ -88,7 +102,7 @@ export function createSubagentStartupMaintenance(
 				// directories, so it waits until well after startup instead of running on the
 				// activation macrotask.
 				scheduleDelayed(
-					() => swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays)),
+					() => swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots)),
 					STARTUP_ARTIFACT_SCAN_DELAY_MS,
 				);
 			});
@@ -100,6 +114,7 @@ export function createSubagentStartupMaintenance(
 			schedule(primeExistingResults);
 		},
 		cleanupSessionArtifactsDeferred(ctx) {
+			noteSessionContext(ctx);
 			let sessionFile: string | null | undefined;
 			try {
 				sessionFile = ctx.sessionManager.getSessionFile();
