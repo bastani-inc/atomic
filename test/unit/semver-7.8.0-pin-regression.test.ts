@@ -26,15 +26,20 @@ import { moduleDir, readJson } from "../helpers/runtime.js";
  *   7.8.4 - reject a numeric segment after an x-range (`validRange`)
  *
  * This file is the evidence that the downgrade changes nothing this repository
- * relies on. It does not rest on hand-written expectations alone: every case is
- * also run against a real 7.8.5 build and required to agree, so "unchanged" is
- * measured rather than recalled.
+ * relies on. It does not rest on hand-written expectations: every `BASELINE_*`
+ * table below was *measured* against a real semver 7.8.5 build, so "unchanged"
+ * means the pinned build reproduces recorded 7.8.5 output, case for case.
  *
- * The 7.8.5 build is the copy `@napi-rs/cli` pulls. That package declares
- * `semver@^7.8.2`, which 7.8.0 does not satisfy, so the lockfile keeps a nested
- * 7.8.5 beside the hoisted 7.8.0 - the differential baseline is a committed
- * lockfile fact, not a coincidence. If a future `@napi-rs/cli` moves off 7.8.5
- * this file fails loudly, and BASELINE_SEMVER_VERSION is what needs revisiting.
+ * The baseline is recorded rather than linked because the root `overrides` entry
+ * collapses the whole tree onto 7.8.0 - `package-lock.json` resolves exactly one
+ * `semver` node, which the first test asserts, so there is no second build in
+ * this tree to compare against and no version-skew a transitive bump could
+ * introduce behind the comparison. To re-record after a future pin move, unpack
+ * the baseline outside this tree and replay the same calls against it:
+ *
+ *   npm pack semver@7.8.5 --pack-destination "$TMPDIR"
+ *   tar -xzf "$TMPDIR/semver-7.8.5.tgz" -C "$TMPDIR"
+ *   node -e "const baseline = require('$TMPDIR/package')"   # then replay each call below against it
  */
 
 const PINNED_SEMVER_VERSION = "7.8.0";
@@ -42,8 +47,16 @@ const BASELINE_SEMVER_VERSION = "7.8.5";
 
 const root = join(moduleDir(import.meta.url), "../..");
 const codingAgentDir = join(root, "packages/coding-agent");
-const baselineSemverDir = join(root, "node_modules/@napi-rs/cli/node_modules/semver");
 const requireFromTest = createRequire(import.meta.url);
+
+/** The two lockfile shapes this file reads. */
+interface Manifest {
+	version: string;
+}
+
+interface Lockfile {
+	packages: Record<string, { version: string }>;
+}
 
 /** The six functions this repository imports from `semver`, and nothing else. */
 interface SemverApi {
@@ -57,7 +70,6 @@ interface SemverApi {
 
 /** The instance the shipped code links against, imported the way the shipped code imports it. */
 const pinned: SemverApi = { compare, maxSatisfying, rcompare, satisfies, valid, validRange };
-const baseline: SemverApi = requireFromTest(baselineSemverDir) as SemverApi;
 
 /** Versions in this project's own release shape, prereleases included. */
 const PROJECT_SHAPED_VERSIONS = [
@@ -104,8 +116,43 @@ const REPOSITORY_RANGE_FORMS = [
 	"not-a-range",
 ] as const;
 
-/** The normalized `validRange` output for each form above, at both builds. */
-const REPOSITORY_RANGE_RESULTS = new Map<string, string | null>([
+/** `rcompare` head of PROJECT_SHAPED_VERSIONS at 7.8.5. */
+const BASELINE_PROJECT_RCOMPARE_HEAD = "0.10.0-alpha.1";
+
+/** `maxSatisfying(PROJECT_SHAPED_VERSIONS, range)` at 7.8.5. */
+const BASELINE_PROJECT_MAX_SATISFYING = new Map<string, string | null>([
+	["^0.9.0", "0.9.11"],
+	["0.9.x", "0.9.11"],
+	["*", "0.9.11"],
+	["0.9.11-alpha.8", "0.9.11-alpha.8"],
+	["^0.9.11-alpha.1", "0.9.11"],
+	["~0.9.11-alpha.1", "0.9.11"],
+	["^0.10.0-alpha.1", "0.10.0-alpha.1"],
+	[">=0.9.11-alpha.1 <0.10.0", "0.9.11"],
+]);
+
+/** `maxSatisfying(BUILD_METADATA_VERSIONS, range)` at 7.8.5. */
+const BASELINE_BUILD_METADATA_MAX_SATISFYING = new Map<string, string | null>([
+	["^1.2.0", "1.2.4+build.2"],
+	["^1.2.3+build.1", "1.2.4+build.2"],
+	["1.2.3+build.1", "1.2.3+build.1"],
+	["~1.2.3", "1.2.4+build.2"],
+	[">=1.2.3+build.1 <2.0.0", "1.2.4+build.2"],
+	["*", "2.0.0+build.4"],
+]);
+
+/** `satisfies(version, range)` at 7.8.5, one flag per BUILD_METADATA_VERSIONS entry, in order. */
+const BASELINE_BUILD_METADATA_SATISFIES = new Map<string, readonly boolean[]>([
+	["^1.2.0", [true, true, false, false]],
+	["^1.2.3+build.1", [true, true, false, false]],
+	["1.2.3+build.1", [true, false, false, false]],
+	["~1.2.3", [true, true, false, false]],
+	[">=1.2.3+build.1 <2.0.0", [true, true, false, false]],
+	["*", [true, true, false, true]],
+]);
+
+/** `validRange(form)` at 7.8.5 for each form above. */
+const BASELINE_RANGE_VALID_RANGE = new Map<string, string | null>([
 	["1.2.3", "1.2.3"],
 	["2.0.0", "2.0.0"],
 	["v1.2.3", "1.2.3"],
@@ -128,6 +175,44 @@ const REPOSITORY_RANGE_RESULTS = new Map<string, string | null>([
 	["beta", null],
 	["next", null],
 	["not-a-range", null],
+]);
+
+/** `valid(form)` at 7.8.5 for each form above - what `parseSource` reads as "pinned". */
+const BASELINE_RANGE_VALID = new Map<string, string | null>([
+	["1.2.3", "1.2.3"],
+	["2.0.0", "2.0.0"],
+	["v1.2.3", "1.2.3"],
+	["=1.0.0", null],
+	["^1.0.0", null],
+	["^0.9.0", null],
+	["~1.2.0", null],
+	["1.x", null],
+	["1.2.x", null],
+	["0.9.x", null],
+	["*", null],
+	[">=1.0.0 <2.0.0", null],
+	["1.2.3 - 2.0.0", null],
+	["1.0.0 || 2.0.0", null],
+	["0.9.11-alpha.8", "0.9.11-alpha.8"],
+	["^0.9.11-alpha.1", null],
+	[">=0.9.11-alpha.1 <0.10.0", null],
+	["1.2.3+build.4", "1.2.3"],
+	["latest", null],
+	["beta", null],
+	["next", null],
+	["not-a-range", null],
+]);
+
+/**
+ * A numeric segment after an x-range: accepted at 7.8.0, rejected at 7.8.5 by the
+ * 7.8.4 fix. Measured at both builds; the value here is the 7.8.0 reading, and
+ * 7.8.5 returned `null` for every one.
+ */
+const XRANGE_NUMERIC_TAIL_AT_PINNED_VERSION = new Map<string, string | null>([
+	["1.x.3", ">=1.0.0 <2.0.0-0"],
+	["1.x.2", ">=1.0.0 <2.0.0-0"],
+	["1.X.4", ">=1.0.0 <2.0.0-0"],
+	["0.x.9", "<1.0.0-0"],
 ]);
 
 const tempDirs: string[] = [];
@@ -192,22 +277,37 @@ async function installedPackage(version: string): Promise<string> {
 	return dir;
 }
 
+/** Recorded 7.8.5 output for `key`, or a failure naming the table that is missing it. */
+function baselineFor<T>(table: Map<string, T>, key: string, tableName: string): T {
+	const recorded = table.get(key);
+	if (recorded === undefined) {
+		throw new Error(`${tableName} has no recorded ${BASELINE_SEMVER_VERSION} value for ${key}`);
+	}
+	return recorded;
+}
+
 describe("semver pinned at 7.8.0", () => {
-	test("the shipped code and this test link against the same 7.8.0 build, beside a real 7.8.5", async () => {
+	test("exactly one semver resolves, at 7.8.0, and the shipped code links against it", async () => {
 		assert.equal(
 			requireFromTest.resolve("semver", { paths: [codingAgentDir] }),
 			requireFromTest.resolve("semver"),
 			"this test must exercise the same semver instance packages/coding-agent resolves",
 		);
 
-		const pinnedManifest = await readJson<{ version: string }>(join(root, "node_modules/semver/package.json"));
+		const pinnedManifest = await readJson<Manifest>(join(root, "node_modules/semver/package.json"));
 		assert.equal(pinnedManifest.version, PINNED_SEMVER_VERSION);
 
-		const baselineManifest = await readJson<{ version: string }>(join(baselineSemverDir, "package.json"));
-		assert.equal(
-			baselineManifest.version,
-			BASELINE_SEMVER_VERSION,
-			"the differential baseline moved; re-derive this file's expectations against the new version",
+		// The root `overrides` entry is what collapses the tree; without it a
+		// transitive range such as `@napi-rs/cli`'s `^7.8.2` nests a second build
+		// beside the pin and the downgrade stops being a downgrade.
+		const lockfile = await readJson<Lockfile>(join(root, "package-lock.json"));
+		const resolved = Object.entries(lockfile.packages)
+			.filter(([path]) => path.split("node_modules/").pop() === "semver")
+			.map(([path, node]) => `${path}@${node.version}`);
+		assert.deepEqual(
+			resolved,
+			[`node_modules/semver@${PINNED_SEMVER_VERSION}`],
+			"package-lock.json must resolve exactly one semver node, at the pinned version",
 		);
 	});
 
@@ -217,52 +317,31 @@ describe("semver pinned at 7.8.0", () => {
 		// No range: `getLatestNpmVersion` sorts with rcompare and takes the head.
 		const calls: string[] = [];
 		const context = await npmContext(versions, calls);
-		assert.equal(await getLatestNpmVersion(context, "example"), "0.10.0-alpha.1");
+		assert.equal(await getLatestNpmVersion(context, "example"), BASELINE_PROJECT_RCOMPARE_HEAD);
 		assert.deepEqual(calls, ["npm view example version --json"]);
-		assert.equal([...versions].sort(pinned.rcompare)[0], [...versions].sort(baseline.rcompare)[0]);
+		assert.equal([...versions].sort(pinned.rcompare)[0], BASELINE_PROJECT_RCOMPARE_HEAD);
 
 		// With a range: maxSatisfying, never with includePrerelease, so a caret over
 		// a stable release keeps ignoring 0.9.11-alpha.8 while an explicit prerelease
 		// floor admits that line.
-		const selections = new Map([
-			["^0.9.0", "0.9.11"],
-			["0.9.x", "0.9.11"],
-			["*", "0.9.11"],
-			["0.9.11-alpha.8", "0.9.11-alpha.8"],
-			["^0.9.11-alpha.1", "0.9.11"],
-			["~0.9.11-alpha.1", "0.9.11"],
-			["^0.10.0-alpha.1", "0.10.0-alpha.1"],
-			[">=0.9.11-alpha.1 <0.10.0", "0.9.11"],
-		]);
-		for (const [range, selected] of selections) {
+		for (const [range, selected] of BASELINE_PROJECT_MAX_SATISFYING) {
 			const rangeCalls: string[] = [];
 			const rangeContext = await npmContext(versions, rangeCalls);
 			assert.equal(await getLatestNpmVersion(rangeContext, "example", range), selected, range);
 			assert.equal(pinned.maxSatisfying(versions, range), selected, range);
-			assert.equal(baseline.maxSatisfying(versions, range), selected, `${range} at ${BASELINE_SEMVER_VERSION}`);
 		}
 	});
 
 	test("build metadata in satisfies and maxSatisfying is unchanged", async () => {
 		const versions = [...BUILD_METADATA_VERSIONS];
-		const selections = new Map([
-			["^1.2.0", "1.2.4+build.2"],
-			["^1.2.3+build.1", "1.2.4+build.2"],
-			["1.2.3+build.1", "1.2.3+build.1"],
-			["~1.2.3", "1.2.4+build.2"],
-			[">=1.2.3+build.1 <2.0.0", "1.2.4+build.2"],
-			["*", "2.0.0+build.4"],
-		]);
-		for (const [range, selected] of selections) {
+		for (const [range, selected] of BASELINE_BUILD_METADATA_MAX_SATISFYING) {
 			assert.equal(pinned.maxSatisfying(versions, range), selected, range);
-			assert.equal(baseline.maxSatisfying(versions, range), selected, `${range} at ${BASELINE_SEMVER_VERSION}`);
-			for (const version of versions) {
-				assert.equal(
-					pinned.satisfies(version, range),
-					baseline.satisfies(version, range),
-					`satisfies(${version}, ${range})`,
-				);
-			}
+			const recorded = baselineFor(BASELINE_BUILD_METADATA_SATISFIES, range, "BASELINE_BUILD_METADATA_SATISFIES");
+			assert.deepEqual(
+				versions.map((version) => pinned.satisfies(version, range)),
+				[...recorded],
+				`satisfies over ${range}`,
+			);
 		}
 
 		// The door: an installed package whose manifest version carries build
@@ -283,22 +362,19 @@ describe("semver pinned at 7.8.0", () => {
 	});
 
 	test("validRange over every range form this repository emits and consumes is unchanged", () => {
-		assert.equal(REPOSITORY_RANGE_RESULTS.size, REPOSITORY_RANGE_FORMS.length);
+		assert.equal(BASELINE_RANGE_VALID_RANGE.size, REPOSITORY_RANGE_FORMS.length);
+		assert.equal(BASELINE_RANGE_VALID.size, REPOSITORY_RANGE_FORMS.length);
 
 		for (const form of REPOSITORY_RANGE_FORMS) {
-			const normalized = REPOSITORY_RANGE_RESULTS.get(form) ?? null;
+			const normalized = baselineFor(BASELINE_RANGE_VALID_RANGE, form, "BASELINE_RANGE_VALID_RANGE");
+			const exact = baselineFor(BASELINE_RANGE_VALID, form, "BASELINE_RANGE_VALID");
 			assert.equal(pinned.validRange(form), normalized, form);
-			assert.equal(baseline.validRange(form), normalized, `${form} at ${BASELINE_SEMVER_VERSION}`);
+			assert.equal(pinned.valid(form), exact, form);
 
 			// The door: `parseSource` is what actually reaches validRange and valid.
 			const source = parseNpmSource(`npm:example@${form}`);
 			assert.equal(source.range, normalized ?? undefined, `parseSource range for ${form}`);
-			assert.equal(source.pinned, pinned.valid(form) !== null, `parseSource pinned for ${form}`);
-			assert.equal(
-				source.pinned,
-				baseline.valid(form) !== null,
-				`parseSource pinned for ${form} at ${BASELINE_SEMVER_VERSION}`,
-			);
+			assert.equal(source.pinned, exact !== null, `parseSource pinned for ${form}`);
 		}
 
 		// A bare name carries no version, so validRange is never reached with "".
@@ -312,22 +388,9 @@ describe("semver pinned at 7.8.0", () => {
 		// 7.8.4 rejects a numeric segment after an x-range. At 7.8.0 it is still
 		// accepted, read as the x-range with the trailing segment dropped. Across
 		// every case in this file that is the entire measured difference.
-		const acceptedOnlyAtPinnedVersion = new Map([
-			["1.x.3", ">=1.0.0 <2.0.0-0"],
-			["1.x.2", ">=1.0.0 <2.0.0-0"],
-			["1.X.4", ">=1.0.0 <2.0.0-0"],
-			["0.x.9", "<1.0.0-0"],
-		]);
-		for (const [form, normalized] of acceptedOnlyAtPinnedVersion) {
+		for (const [form, normalized] of XRANGE_NUMERIC_TAIL_AT_PINNED_VERSION) {
 			assert.equal(pinned.validRange(form), normalized, form);
-			assert.equal(baseline.validRange(form), null, `${form} at ${BASELINE_SEMVER_VERSION}`);
-			assert.equal(REPOSITORY_RANGE_RESULTS.has(form), false, `${form} must not be a form this repository emits`);
-		}
-
-		// Reachable only if a user types it after `npm:<name>@`. Nothing this
-		// repository writes has that shape, so no emitted form depends on the pin.
-		for (const form of REPOSITORY_RANGE_FORMS) {
-			assert.equal(pinned.validRange(form), baseline.validRange(form), `${form} must not depend on the semver pin`);
+			assert.equal(BASELINE_RANGE_VALID_RANGE.has(form), false, `${form} must not be a form this repository emits`);
 		}
 	});
 });
