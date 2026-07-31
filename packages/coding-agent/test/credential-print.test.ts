@@ -64,16 +64,16 @@ function args(overrides: Partial<Args> = {}): Args {
  * consume. Each provider gets one model whose id is `modelId`, so provider
  * selection is what the assertions actually exercise.
  *
- * `providers` defaults to the providers holding a persisted credential. Pass it
- * explicitly to model a provider that authenticates from the environment or a
- * custom resolver: it offers the model but never appears in `listCredentials()`.
- * `oauthProviders` is the set that declares OAuth in `provider.auth`, which is
- * what separates an unpersisted OAuth credential from an unpersisted API key.
+ * `credentials` is what `auth.json` holds. `providers` defaults to those same
+ * providers; pass it to model one that offers the model while persisting
+ * nothing. `resolvedAuth` is what `checkAuth` reports — the auth a request would
+ * actually use — and defaults to the persisted type, so a provider with no
+ * persisted credential and no explicit entry reads as unconfigured.
  */
 function runtimeStub(options: {
 	credentials: Array<{ providerId: string; type: "api_key" | "oauth" }>;
 	providers?: string[];
-	oauthProviders?: string[];
+	resolvedAuth?: Record<string, "api_key" | "oauth">;
 	modelId?: string;
 	getAuth: (
 		model: { provider: string },
@@ -82,10 +82,8 @@ function runtimeStub(options: {
 }): ModelRuntime {
 	const modelId = options.modelId ?? "claude-sonnet-4-5";
 	const providerIds = options.providers ?? options.credentials.map(({ providerId }) => providerId);
-	const oauthProviders = new Set(
-		options.oauthProviders ??
-			options.credentials.filter(({ type }) => type === "oauth").map(({ providerId }) => providerId),
-	);
+	const persisted = new Map(options.credentials.map(({ providerId, type }) => [providerId, type]));
+	const resolved = new Map<string, "api_key" | "oauth">([...persisted, ...Object.entries(options.resolvedAuth ?? {})]);
 	const models = providerIds.map((providerId) => ({
 		id: modelId,
 		name: modelId,
@@ -95,8 +93,11 @@ function runtimeStub(options: {
 	}));
 	return {
 		listCredentials: async () => options.credentials,
-		getProviders: () =>
-			providerIds.map((id) => ({ id, auth: oauthProviders.has(id) ? { oauth: {} } : { apiKey: {} } })),
+		checkAuth: async (providerId: string) => {
+			const type = resolved.get(providerId);
+			return type ? { type } : undefined;
+		},
+		getProviders: () => providerIds.map((id) => ({ id, auth: { apiKey: {} } })),
 		getModels: () => models,
 		getAuth: options.getAuth,
 	} as unknown as ModelRuntime;
@@ -283,11 +284,12 @@ describe("bearer token extraction", () => {
 
 describe("provider inference", () => {
 	it("resolves a provider whose credential comes from the environment, not auth.json", async () => {
-		// openai authenticates from OPENAI_API_KEY: it offers the model but has
-		// nothing persisted, so it never appears in listCredentials().
+		// openai authenticates from OPENAI_API_KEY: checkAuth reports api_key, but
+		// it never appears in listCredentials().
 		const runtime = runtimeStub({
 			credentials: [],
 			providers: ["openai"],
+			resolvedAuth: { openai: "api_key" },
 			modelId: "gpt-4.1",
 			getAuth: async () => ({ auth: { apiKey: "sk-env-openai" } }),
 		});
@@ -302,6 +304,7 @@ describe("provider inference", () => {
 			runtimeStub({
 				credentials: [],
 				providers: ["openai"],
+				resolvedAuth: { openai: "api_key" },
 				modelId: "gpt-4.1",
 				getAuth: async () => ({ auth: { apiKey: "sk-env-openai" } }),
 			});
@@ -316,6 +319,7 @@ describe("provider inference", () => {
 		const runtime = runtimeStub({
 			credentials: [],
 			providers: ["anthropic", "openai"],
+			resolvedAuth: { anthropic: "api_key", openai: "api_key" },
 			modelId: "shared-model",
 			getAuth: async (model) => {
 				if (model.provider === "anthropic") throw new Error("no credential for anthropic");
@@ -357,13 +361,12 @@ describe("provider inference", () => {
 	});
 
 	it("exports an OAuth bearer token the provider resolves without persisting it", async () => {
-		// A custom resolver or environment-supplied OAuth credential: the provider
-		// declares OAuth and answers with an Authorization header, but auth.json
-		// holds nothing for it.
+		// A custom resolver or environment-supplied OAuth credential: checkAuth
+		// reports oauth, but auth.json holds nothing for it.
 		const runtime = runtimeStub({
 			credentials: [],
 			providers: ["custom-oauth"],
-			oauthProviders: ["custom-oauth"],
+			resolvedAuth: { "custom-oauth": "oauth" },
 			modelId: "custom-model",
 			getAuth: async () => ({ auth: { headers: { Authorization: "Bearer resolved-token-value" } } }),
 		});
@@ -374,13 +377,12 @@ describe("provider inference", () => {
 	});
 
 	it("never prints an environment API key as a bearer token", async () => {
-		// openai sends `Authorization: Bearer <api key>`. Nothing is persisted, so
-		// the header alone cannot certify a token — the provider declaring no OAuth
-		// is what refuses it.
+		// openai sends `Authorization: Bearer <api key>`, so the header cannot be
+		// what decides. checkAuth reporting api_key is what refuses it.
 		const runtime = runtimeStub({
 			credentials: [],
 			providers: ["openai"],
-			oauthProviders: [],
+			resolvedAuth: { openai: "api_key" },
 			modelId: "gpt-4.1",
 			getAuth: async () => ({
 				auth: { apiKey: "sk-env-openai", headers: { Authorization: "Bearer sk-env-openai" } },
@@ -396,19 +398,39 @@ describe("provider inference", () => {
 		expect(asKey.take()).toBe("sk-env-openai");
 	});
 
-	it("refuses an unpersisted credential an OAuth-capable provider returns as an API key", async () => {
-		// anthropic supports both. With ANTHROPIC_API_KEY set and nothing persisted,
-		// getAuth answers with `apiKey`, which is not an OAuth bearer token.
+	it("resolves a dual-auth provider by the credential in force, not by its capability", async () => {
+		// anthropic offers both. With ANTHROPIC_API_KEY set and nothing persisted,
+		// checkAuth reports api_key — and getAuth would hand back that key under an
+		// Authorization: Bearer header if asked, so capability alone would have
+		// exported an API key through the bearer-token interface.
 		const runtime = runtimeStub({
 			credentials: [],
 			providers: ["anthropic"],
-			oauthProviders: ["anthropic"],
-			getAuth: async () => ({ auth: { apiKey: "sk-ant-env" } }),
+			resolvedAuth: { anthropic: "api_key" },
+			getAuth: async () => ({
+				auth: { apiKey: "sk-ant-env", headers: { Authorization: "Bearer sk-ant-env" } },
+			}),
 		});
 
 		await expect(
 			resolveCredentialForPrint(args({ model: "claude-sonnet-4-5" }), runtime, "bearer_token"),
 		).rejects.toMatchObject({ code: "NoCredentialConfigured", exitCode: 2 });
+
+		const asKey = await resolveCredentialForPrint(args({ model: "claude-sonnet-4-5" }), runtime, "api_key");
+		expect(asKey.take()).toBe("sk-ant-env");
+	});
+
+	it("exports the OAuth token when the same dual-auth provider resolves to OAuth", async () => {
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["anthropic"],
+			resolvedAuth: { anthropic: "oauth" },
+			getAuth: async () => ({ auth: { headers: { Authorization: "Bearer oauth-token-value" } } }),
+		});
+
+		const secret = await resolveCredentialForPrint(args({ model: "claude-sonnet-4-5" }), runtime, "bearer_token");
+
+		expect(secret.take()).toBe("oauth-token-value");
 	});
 });
 

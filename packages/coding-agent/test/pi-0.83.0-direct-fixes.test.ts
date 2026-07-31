@@ -196,6 +196,78 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		expect(ctx.scopedModels).not.toBe(ctx.scopedModels);
 	});
 
+	it("04b15259/b6fb91e5: the shortcut context copies the scope too, not just the runner's", () => {
+		// Shortcut handlers get a context built by hand in
+		// interactive-extension-runtime.ts rather than by createExtensionContext, so
+		// the copy has to exist on both paths or the guarantee has a second door.
+		const scopedModels: ScopedModel[] = [
+			{ model: { id: "gpt-5.5", provider: "openai" } as never, thinkingLevel: "high" },
+		];
+		let handlerContext: { scopedModels: readonly ScopedModel[] } | undefined;
+		let onExtensionShortcut: ((data: string) => boolean) | undefined;
+
+		const context = {
+			keybindings: { getEffectiveConfig: () => ({}) },
+			sessionManager: { getCwd: () => "/tmp/shortcut-scope" },
+			session: {
+				scopedModels,
+				model: undefined,
+				modelRuntime: {},
+				isStreaming: false,
+				settingsManager: { isProjectTrusted: () => true },
+				agent: { signal: new AbortController().signal },
+				pendingMessageCount: 0,
+				systemPrompt: "",
+				abort: () => {},
+				getContextUsage: () => undefined,
+				compact: async () => undefined,
+			},
+			createExtensionExtensionUIContext: () => ({}),
+			createExtensionUIContext: () => ({}),
+			get defaultEditor() {
+				return {
+					set onExtensionShortcut(handler: (data: string) => boolean) {
+						onExtensionShortcut = handler;
+					},
+				};
+			},
+			showError: () => {},
+		};
+
+		const setup = Reflect.get(InteractiveModeBase.prototype, "setupExtensionShortcuts") as (
+			this: typeof context,
+			runner: { getShortcuts: () => Map<string, { handler: (ctx: unknown) => void }> },
+		) => void;
+
+		setup.call(context, {
+			getShortcuts: () =>
+				new Map([
+					[
+						"ctrl+g",
+						{
+							handler: (ctx: unknown) => {
+								handlerContext = ctx as { scopedModels: readonly ScopedModel[] };
+							},
+						},
+					],
+				]),
+		});
+
+		expect(onExtensionShortcut).toBeTypeOf("function");
+		// The control byte the terminal sends for ctrl+g, which is what the editor
+		// hands the shortcut dispatcher.
+		onExtensionShortcut?.("\x07");
+
+		expect(handlerContext).toBeDefined();
+		const received = handlerContext as { scopedModels: readonly ScopedModel[] };
+		expect(received.scopedModels).toEqual(scopedModels);
+		expect(received.scopedModels).not.toBe(scopedModels);
+		(received.scopedModels as ScopedModel[]).push({
+			model: { id: "out-of-scope", provider: "openai" } as never,
+		});
+		expect(scopedModels).toHaveLength(1);
+	});
+
 	it("cced6a21: loads a nested linked worktree's context file once, not twice", () => {
 		const root = tempDir("atomic-nested-worktree-");
 		const mainRepo = join(root, "repo");

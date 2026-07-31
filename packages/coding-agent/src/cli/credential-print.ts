@@ -14,7 +14,7 @@
  */
 
 import { inspect } from "node:util";
-import type { Api, CredentialInfo, Model } from "@earendil-works/pi-ai";
+import type { Api, AuthType, Model } from "@earendil-works/pi-ai";
 import { ModelsError } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.ts";
 import { resolveCliModel } from "../core/model-resolver.ts";
@@ -277,19 +277,24 @@ export async function resolveCredentialForPrint(
 ): Promise<Secret> {
 	validateCredentialPrintArgs(args);
 
-	const credentialTypes = new Map<string, CredentialInfo["type"]>(
-		(await modelRuntime.listCredentials()).map((credential) => [credential.providerId, credential.type]),
-	);
-	// Providers that declare OAuth. A provider holding no persisted credential can
-	// still authenticate from the environment or a custom resolver, and this is the
-	// only signal available for what such a credential *is*.
-	const oauthCapableProviders = new Set(
-		modelRuntime
-			.getProviders()
-			.filter((provider) => provider.auth.oauth)
-			.map((provider) => provider.id),
-	);
+	// The effective auth type per candidate provider, taken from the runtime
+	// rather than from auth.json.
+	//
+	// `checkAuth` reports what a provider would actually authenticate with,
+	// including a credential supplied by an environment variable or a custom
+	// resolver that persists nothing, and it answers without refreshing OAuth.
+	// `listCredentials()` sees only what was stored, which both hid working
+	// credentials and — for a provider offering an API key *and* OAuth — could not
+	// say which of the two a request would use. Provider capability cannot say
+	// either: several providers send an API key as `Authorization: Bearer`, so
+	// neither that header nor `apiKey` identifies the credential's kind on its own.
+	const wantedAuthType: AuthType = kind === "api_key" ? "api_key" : "oauth";
+	const resolvedAuthTypes = new Map<string, AuthType | undefined>();
 	const models = candidateModels(args, modelRuntime);
+	for (const { provider } of models) {
+		if (resolvedAuthTypes.has(provider)) continue;
+		resolvedAuthTypes.set(provider, (await modelRuntime.checkAuth(provider))?.type);
+	}
 	// A named provider, or a single candidate, is the one the caller meant, so its
 	// authentication failure is reported with its own exit code. Among several
 	// inferred candidates a failure only means "not this one" — reporting it would
@@ -299,15 +304,8 @@ export async function resolveCredentialForPrint(
 
 	const credentials: Array<{ providerId: string; value: string }> = [];
 	for (const model of models) {
-		const type = credentialTypes.get(model.provider);
-		if (kind === "api_key" && type === "oauth") continue;
-		// A persisted credential that is not OAuth cannot answer a bearer-token
-		// request. One that was never persisted still can, so it reaches getAuth
-		// when the provider declares OAuth — but only its `Authorization: Bearer`
-		// header is accepted below. An API key read from the environment arrives as
-		// `apiKey` too, so taking that here would print an API key as a token.
-		const unpersistedOAuth = type === undefined && oauthCapableProviders.has(model.provider);
-		if (kind === "bearer_token" && type !== "oauth" && !unpersistedOAuth) continue;
+		const type = resolvedAuthTypes.get(model.provider);
+		if (type !== wantedAuthType) continue;
 
 		let auth: Awaited<ReturnType<ModelRuntime["getAuth"]>>;
 		try {
@@ -325,10 +323,8 @@ export async function resolveCredentialForPrint(
 			);
 		}
 
-		const bearer = unpersistedOAuth
-			? bearerFromHeaders(auth?.auth.headers)
-			: (auth?.auth.apiKey ?? bearerFromHeaders(auth?.auth.headers));
-		const value = kind === "bearer_token" ? bearer : auth?.auth.apiKey;
+		const value =
+			kind === "bearer_token" ? (auth?.auth.apiKey ?? bearerFromHeaders(auth?.auth.headers)) : auth?.auth.apiKey;
 		if (value) credentials.push({ providerId: model.provider, value });
 	}
 
@@ -336,14 +332,14 @@ export async function resolveCredentialForPrint(
 
 	if (credentials.length === 0) {
 		const providerId = models[0]?.provider;
-		const type = providerId ? credentialTypes.get(providerId) : undefined;
+		const type = providerId ? resolvedAuthTypes.get(providerId) : undefined;
 		if (args.provider && kind === "api_key" && type === "oauth") {
 			throw new CredentialPrintError(
 				"KindUnsupportedForProvider",
 				`Provider "${providerId}" is configured with OAuth, not an API key`,
 			);
 		}
-		if (args.provider && kind === "bearer_token" && type !== "oauth") {
+		if (args.provider && kind === "bearer_token" && type === "api_key") {
 			throw new CredentialPrintError(
 				"KindUnsupportedForProvider",
 				`Provider "${providerId}" is not configured with an OAuth bearer token`,
