@@ -6,7 +6,9 @@
  *    keeps a rehydrated chat and a detached graph badge in step with the
  *    session as entries are consumed;
  *  - duplicates, text, and per-queue order survive verbatim;
- *  - unrelated events and malformed payloads leave the snapshot alone.
+ *  - unrelated events and malformed payloads leave the snapshot alone;
+ *  - the snapshot replayed when a session is attached reports only a queue that
+ *    session is really holding, copied rather than aliased.
  *
  * cross-ref: src/runs/foreground/stage-queued-user-messages.ts
  */
@@ -17,6 +19,7 @@ import { describe, test } from "vitest";
 import {
 	StageQueuedUserMessageBuffer,
 	stageQueuedUserMessageCount,
+	stageSessionQueueUpdateEvent,
 } from "../../packages/workflows/src/runs/foreground/stage-queued-user-messages.js";
 
 function queueUpdate(steering: readonly unknown[], followUp: readonly unknown[]): AgentSessionEvent {
@@ -83,5 +86,50 @@ describe("StageQueuedUserMessageBuffer", () => {
 
 	test("counts an absent snapshot as zero", () => {
 		assert.equal(stageQueuedUserMessageCount(undefined), 0);
+	});
+});
+
+describe("stageSessionQueueUpdateEvent", () => {
+	test("reports the queue a session is already holding", () => {
+		const event = stageSessionQueueUpdateEvent({
+			getSteeringMessages: () => ["redirect", "redirect"],
+			getFollowUpMessages: () => ["afterwards"],
+		});
+		assert.deepEqual(event, {
+			type: "queue_update",
+			steering: ["redirect", "redirect"],
+			followUp: ["afterwards"],
+		});
+	});
+
+	test("copies the session's lists instead of aliasing them", () => {
+		const steering = ["redirect"];
+		const event = stageSessionQueueUpdateEvent({
+			getSteeringMessages: () => steering,
+			getFollowUpMessages: () => [],
+		});
+		steering.push("later");
+		assert.deepEqual((event as unknown as { steering: readonly string[] }).steering, ["redirect"]);
+	});
+
+	test("is absent for an empty queue and for a runtime that exposes none", () => {
+		assert.equal(
+			stageSessionQueueUpdateEvent({ getSteeringMessages: () => [], getFollowUpMessages: () => [] }),
+			undefined,
+		);
+		assert.equal(stageSessionQueueUpdateEvent({}), undefined);
+		assert.equal(stageSessionQueueUpdateEvent({ getSteeringMessages: () => ["orphan"] }), undefined);
+	});
+
+	test("feeds the buffer the one update the session never re-publishes", () => {
+		const buffer = new StageQueuedUserMessageBuffer();
+		const event = stageSessionQueueUpdateEvent({
+			getSteeringMessages: () => ["redirect"],
+			getFollowUpMessages: () => ["afterwards"],
+		});
+		assert.notEqual(event, undefined);
+		if (event === undefined) return;
+		buffer.record(event);
+		assert.deepEqual(buffer.snapshot(), { steering: ["redirect"], followUp: ["afterwards"] });
 	});
 });

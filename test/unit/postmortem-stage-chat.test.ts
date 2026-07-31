@@ -257,6 +257,35 @@ describe("ensurePostMortemStageHandle", () => {
 		assert.equal(first.ok && second.ok && first.handle === second.handle, true);
 	});
 
+	test("adopts the queue a restored session already holds", async () => {
+		const registry = createStageControlRegistry();
+		const sessionFile = retainedSession("restored-queue");
+		const stage = completedStage({ sessionFile });
+		// The session this adapter hands back already carries queued text: it
+		// published that queue while the stage's own listeners were bound to the
+		// session it replaced, so no later `queue_update` will ever repeat it.
+		const restored: StageSessionRuntime = {
+			...mockSession(),
+			sessionFile,
+			getSteeringMessages: () => ["redirect"],
+			getFollowUpMessages: () => ["afterwards"],
+		};
+		const result = ensurePostMortemStageHandle("run-1", stage, {
+			registry,
+			adapters: adaptersRecording(restored, { creates: 0 }),
+			cwd: tempDir,
+		});
+		assert.equal(result.ok, true);
+		if (!result.ok) return;
+		assert.deepEqual(result.handle.queuedUserMessages?.(), { steering: [], followUp: [] });
+
+		await result.handle.ensureAttached();
+		assert.deepEqual(result.handle.queuedUserMessages?.(), {
+			steering: ["redirect"],
+			followUp: ["afterwards"],
+		});
+	});
+
 	test("does not reuse a retained handle after the authoritative stage becomes non-resumable", () => {
 		const registry = createStageControlRegistry();
 		const sessionFile = retainedSession("became-failed");

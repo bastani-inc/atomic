@@ -374,6 +374,35 @@ describe("StageChatView", () => {
 		}
 	});
 
+	test("ctrl+f reaches the follow-up queue on a compatibility handle the view reads as idle", async () => {
+		const store = createStore();
+		// The stage has gone terminal while its handle still streams the retiring
+		// turn, so the chat takes its idle prompt branch. That is the same window
+		// Enter's explicit steering covers; ctrl+f must keep its own queue in it.
+		setupRun(store, "run-1", "stage-a", "completed");
+		const { handle, state } = makeHandle(
+			{
+				promptCalls: [],
+				steerCalls: [],
+				followUpCalls: [],
+				pauseCalls: 0,
+				resumeCalls: [],
+				isStreaming: true,
+			},
+			[],
+			"completed",
+		);
+		assert.equal(handle.sendUserMessage, undefined);
+		const view = new StageChatView(stageChatViewOpts(store, handle));
+		for (const ch of "afterwards") view.handleInput(ch);
+		view.handleInput("\x06");
+		await flush();
+		await flush();
+		assert.deepEqual(state.followUpCalls, ["afterwards"]);
+		assert.deepEqual(state.promptCalls, []);
+		view.dispose();
+	});
+
 	test("ctrl+f variants queue a follow-up while streaming", async () => {
 		const ctrlFVariants = ["\x06", "\x1b[102;5u", "\x1b[102;5:1u", "\x1b[27;5;102~"];
 

@@ -62,6 +62,32 @@ export class StageQueuedUserMessageBuffer {
 	}
 }
 
+/**
+ * The `queue_update` a session would publish for the queue it is already
+ * holding, or `undefined` when it holds nothing or does not expose its queues.
+ *
+ * A session announces its queue by event, so a queue that exists before this
+ * stage's listeners are bound to that session is announced to nobody: the
+ * retirement transfer publishes on the adopting session while the stage's
+ * listeners are still unsubscribed, and a reopened retained session publishes
+ * before a post-mortem handle's projection reaches it. Reading the session once
+ * at attach closes that window; every later change still arrives as an event.
+ *
+ * The lists are copied, never aliased: a session returns its live arrays.
+ */
+export function stageSessionQueueUpdateEvent(session: {
+	getSteeringMessages?(): readonly string[];
+	getFollowUpMessages?(): readonly string[];
+}): AgentSessionEvent | undefined {
+	if (typeof session.getSteeringMessages !== "function" || typeof session.getFollowUpMessages !== "function") {
+		return undefined;
+	}
+	const steering = queuedTexts(session.getSteeringMessages());
+	const followUp = queuedTexts(session.getFollowUpMessages());
+	if (steering.length === 0 && followUp.length === 0) return undefined;
+	return { type: "queue_update", steering, followUp };
+}
+
 /** Total pending entries across both queues. */
 export function stageQueuedUserMessageCount(queued: StageQueuedUserMessages | undefined): number {
 	if (!queued) return 0;

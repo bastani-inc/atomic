@@ -22,6 +22,7 @@ import {
 	workflowModelId,
 } from "../shared/model-fallback.js";
 import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
+import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
 import { candidateLabel, effectiveCandidateReasoning, modelAttemptReasoning } from "./stage-runner-candidate.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
 import {
@@ -424,6 +425,15 @@ export class StageSessionController {
 		if (this.pendingThinkingLevel !== undefined) result.session.setThinkingLevel(this.pendingThinkingLevel);
 		for (const listener of this.pendingListeners) {
 			this.listenerUnsubscribes.set(listener, result.session.subscribe(listener));
+		}
+		// The session may already hold a queue — transferred from the session it
+		// just replaced, or restored with it — and it published that queue while
+		// these listeners were bound to nothing. Replay the one snapshot they
+		// missed, so a handle's projection and any mounted chat start from the
+		// session's real pending state rather than from empty.
+		const missedQueueUpdate = stageSessionQueueUpdateEvent(result.session);
+		if (missedQueueUpdate !== undefined) {
+			for (const listener of this.pendingListeners) listener(missedQueueUpdate);
 		}
 		this.unsubscribeTerminateWatcher?.();
 		this.unsubscribeTerminateWatcher = result.session.subscribe((event) => {

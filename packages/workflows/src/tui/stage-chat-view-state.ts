@@ -168,6 +168,16 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 					await handle.sendUserMessage(text, { deliverAs: mode === "followUp" ? "followUp" : "steer" });
 					return;
 				}
+				// A handle without that surface cannot be idle-aware on the caller's
+				// behalf, so make the same choice here that `sendUserMessage` makes:
+				// a follow-up needs a turn to trail, and `followUp()` on a session
+				// that is not streaming queues text no turn would ever consume. Ctrl+F
+				// therefore reaches the follow-up queue exactly while the stage
+				// streams, and otherwise starts a turn like Enter.
+				if (mode === "followUp" && handle.isStreaming) {
+					await handle.followUp(text);
+					return;
+				}
 				await handle.prompt(text);
 			},
 			steer: async (text) => {

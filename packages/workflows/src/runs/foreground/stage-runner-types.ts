@@ -69,6 +69,15 @@ export interface StageSessionRuntime {
 	readonly isStreaming: AgentSession["isStreaming"];
 	/** Number of SDK-level queued steering/follow-up messages, when supported. */
 	readonly pendingMessageCount?: number;
+	/**
+	 * Pending queued text this session already holds, when the runtime exposes
+	 * it. Read once at attach, because a session created with a queue — one
+	 * adopting a retired stage session's transferred messages, or a retained
+	 * session reopened for post-mortem chat — announced that queue before any
+	 * listener of this stage could be bound to it.
+	 */
+	getSteeringMessages?(): readonly string[];
+	getFollowUpMessages?(): readonly string[];
 	/** Settings manager supplied by the Atomic SDK when the adapter did not pre-create one. */
 	readonly settingsManager?: WorkflowFastModeSettingsManager;
 	navigateTree: AgentSession["navigateTree"];
