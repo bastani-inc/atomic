@@ -9,6 +9,8 @@ const CLEANUP_MARKER_FILE = ".last-cleanup";
 const CLEANUP_LOCK_FILE = ".cleanup.lock";
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CLEANUP_LOCK_STALE_MS = 60 * 60 * 1000;
+// How many session dirs a scan may process between lock-ownership rechecks.
+const CLEANUP_LOCK_RECHECK_EVERY = 200;
 
 export function getArtifactsDir(sessionFile: string | null): string {
 	if (sessionFile) {
@@ -154,7 +156,8 @@ function breakStaleLock(lockPath: string, observedMtimeMs: number): boolean {
 	try {
 		if (displacedFreshLock) publishFileExclusive(breakPath, lockPath);
 	} catch {
-		// Best-effort hand-back; the displaced holder's release is token-checked.
+		// Best-effort hand-back. A holder whose lock could not be restored notices the
+		// loss at its next ownership recheck and aborts its scan.
 	}
 	try {
 		unlinkIfPresent(breakPath);
@@ -162,6 +165,14 @@ function breakStaleLock(lockPath: string, observedMtimeMs: number): boolean {
 		// A leftover break file is harmless.
 	}
 	return !displacedFreshLock;
+}
+
+function ownsCleanupLock(lockPath: string, token: string): boolean {
+	try {
+		return fs.readFileSync(lockPath, "utf-8") === token;
+	} catch {
+		return false;
+	}
 }
 
 function releaseCleanupLock(lockPath: string, token: string): void {
@@ -193,8 +204,12 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 			return;
 		}
 
-		for (const dir of dirs) {
+		for (const [index, dir] of dirs.entries()) {
 			if (dir === CLEANUP_MARKER_FILE || dir === CLEANUP_LOCK_FILE) continue;
+			// A holder displaced by a stale-lock takeover that could not be handed its
+			// lock back must not keep scanning alongside the new lock owner; recheck
+			// ownership periodically and abort the scan once the lock is lost.
+			if (index % CLEANUP_LOCK_RECHECK_EVERY === 0 && !ownsCleanupLock(lockPath, lockToken)) return;
 			const artifactsDir = path.join(sessionsBase, dir, "subagent-artifacts");
 			try {
 				cleanupOldArtifacts(artifactsDir, maxAgeDays);
@@ -205,7 +220,7 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 		}
 
 		try {
-			fs.writeFileSync(markerPath, String(now));
+			if (ownsCleanupLock(lockPath, lockToken)) fs.writeFileSync(markerPath, String(now));
 		} catch {
 			// Failing to record the marker only means the scan may repeat sooner.
 		}
