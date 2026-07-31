@@ -114,6 +114,8 @@ interface Usage {
 }
 ```
 
+The pi-ai `StopReason` type also includes `"pending"`, the reason a message carries while it is still streaming. The terminal event replaces it before the assistant message is written, so `"pending"` does not appear in session JSONL.
+
 ### Extended Message Types (from Atomic coding-agent)
 
 ```typescript

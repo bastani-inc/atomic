@@ -1039,6 +1039,8 @@ Access to models and API keys.
 
 The value is resolved at access time, so it tracks session replacement. Under the isolated interactive engine it reflects the engine's catalogue rather than a stale host snapshot.
 
+It reports the scope and cannot change it. `ctx.scopedModels` is a getter with no setter, typed `readonly ScopedModel[]`, so assigning to it or pushing an entry is a compile error rather than a way for an extension to widen the set of models the session may use. Read it, and change scope through the commands and settings that own it.
+
 ```typescript
 for (const { model, thinkingLevel } of ctx.scopedModels) {
   console.log(`${model.provider}/${model.id}${thinkingLevel ? `:${thinkingLevel}` : ""}`);

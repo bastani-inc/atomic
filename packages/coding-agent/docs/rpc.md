@@ -1459,7 +1459,7 @@ The `content` field can be a string or an array of `TextContent`/`ImageContent` 
 }
 ```
 
-Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`
+Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`. A partial message inside a `message_update` event carries `"pending"` until the terminal event replaces it, so a client that switches on the reason needs that case; a completed message never carries it.
 
 ### ToolResultMessage
 

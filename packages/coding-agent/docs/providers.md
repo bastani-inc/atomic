@@ -9,6 +9,7 @@ Atomic supports subscription-based providers via OAuth and API-key providers via
 - [Auth File](#auth-file)
 - [Cloud Providers](#cloud-providers)
 - [llama.cpp](#llamacpp)
+- [Stop Reasons](#stop-reasons)
 - [Resolution Order](#resolution-order)
 - [Custom Providers](#custom-providers)
 
@@ -24,11 +25,15 @@ Use `/login` in interactive mode, then select a provider:
 - xAI (Grok/X subscription)
 - Radius
 
-Use `/login <provider>` (for example `/login openrouter` or `/login kimi-coding`) to jump directly to a provider, then select subscription or API-key authentication when both are available. OpenRouter opens its provider-owned browser PKCE flow and asks whether it should mint a new API key; complete the browser redirect before returning to Atomic. Kimi Code displays its provider-owned device URL/code and polls until approval, then refreshes expired tokens automatically. Built-in and extension-provided OAuth use the same direct and isolated-session lifecycle: engine-only extensions expose only safe display metadata to the terminal, while acquisition, transactional persistence, model refresh, rollback, and logout remain engine-owned. Credentials and executable provider functions never cross to the isolated frontend.
+Use `/login <provider>` (for example `/login openrouter` or `/login kimi-coding`) to jump directly to a provider, then select subscription or API-key authentication when both are available. OpenRouter opens its provider-owned browser PKCE flow and asks whether it should mint a new API key; complete the browser redirect before returning to Atomic. On a remote or headless machine the browser cannot reach the loopback callback, so the OpenRouter login also accepts a pasted value: give it the final redirect URL, or the authorization code on its own. Kimi Code displays its provider-owned device URL/code and polls until approval, then refreshes expired tokens automatically. Built-in and extension-provided OAuth use the same direct and isolated-session lifecycle: engine-only extensions expose only safe display metadata to the terminal, while acquisition, transactional persistence, model refresh, rollback, and logout remain engine-owned. Credentials and executable provider functions never cross to the isolated frontend.
 
 Escape or Ctrl+C quietly cancels the matching login, including immediate/pre-device native aborts, and leaves the previously committed credential and catalog unchanged. Provider denial, device expiry, timeout, browser/network/protocol failure, malformed responses, token exchange, persistence, and post-login refresh failures remain visible. Atomic does not claim success until the provider flow and credential transaction complete.
 
-Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source. Stored tokens auto-refresh when expired.
+Use `/logout` to clear credentials. Logout immediately invalidates authentication in the active interactive engine and removes the selected provider from both `~/.atomic/agent/auth.json` and any effective legacy `~/.pi/agent/auth.json`, so the provider remains logged out after restart. Environment variables, command-line credentials, and `models.json` configuration cannot be cleared by Atomic; when one of those sources still authenticates the provider, the logout status names the remaining source.
+
+### Token Refresh
+
+A stored OAuth token is refreshed once fewer than **five minutes** of validity remain, rather than at expiry, so a long turn is not started on a credential that dies mid-request. The refresh runs inside the `auth.json` lock and re-checks the stored expiry after taking it, so concurrent sessions sharing one credential file — subagents, workflow stages, RPC children — refresh it once between them rather than once each, and a session that arrives after the rotation finds nothing to do. A token still outside the window is not touched.
 
 ### OpenAI Codex
 
@@ -325,6 +330,14 @@ For router-mode discovery, load/unload management, and Hugging Face downloads wi
 **Via models.json:** Add Ollama, LM Studio, vLLM, or any provider that speaks a supported API (OpenAI Completions, OpenAI Responses, Anthropic Messages, Google Generative AI). See [Custom models](/models).
 
 **Via extensions:** For providers that need custom API implementations or OAuth flows, create an extension. See [Custom providers](/custom-provider) and [examples/extensions/custom-provider-gitlab-duo](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo).
+
+## Stop Reasons
+
+Every provider reports why it ended a turn. Atomic stores one of `stop`, `length`, `toolUse`, `error`, or `aborted`; the provider's own string (`end_turn`, `MAX_TOKENS`, `tool_calls`, and so on) is mapped onto it.
+
+A terminal reason the mapping does not recognise is now reported as a **provider error** naming the raw value, instead of being reported as an ordinary successful stop. The turn fails visibly rather than looking like a model that chose to stop early, which matters most for a truncation or safety stop a new provider version invents. Reasons that already mapped to a successful stop are unchanged, and a provider that stops on its own safety or refusal signal still surfaces the raw reason in the error text (for example `Provider stopped with: SAFETY`).
+
+While a response is still streaming the partial message carries the reason `pending`. It is replaced by the terminal reason before the message is finished, so `pending` is not a state a completed turn can be left in: a stream that ends while still `pending` is a provider error. See [Custom providers](/custom-provider) for what this requires of a provider you implement yourself.
 
 ## Resolution Order
 

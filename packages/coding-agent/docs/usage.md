@@ -184,6 +184,8 @@ Print one configured credential for an external client — a proxy, a script, or
 
 `--model` is required. There is no ambient "current model", so the command cannot emit a credential you did not name. When several configured providers offer the model, pass `--provider` to choose one. `--provider` and `--model` are the only options either subcommand accepts: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
 
+`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. Any other subcommand exits `1` and names the two valid ones. Help never uses stdout, so stdout from this command family is a credential or empty.
+
 `print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error — an API key has no expiry. A failed refresh leaves your stored credential untouched.
 
 | Exit | Meaning |
