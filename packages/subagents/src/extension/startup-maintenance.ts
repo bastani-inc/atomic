@@ -74,12 +74,17 @@ export function createSubagentStartupMaintenance(
 	// cleanup never broadens into an arbitrary directory's siblings.
 	let contextSessionsRoots: readonly string[] | undefined;
 	const noteSessionContext = (ctx: ExtensionContext): void => {
-		// A default, partial, or throwing context always resets any previously noted
-		// root so cleanup returns to the env/global fallback.
-		contextSessionsRoots = undefined;
 		try {
-			if (ctx.sessionManager.usesDefaultSessionDir()) return;
+			if (ctx.sessionManager.usesDefaultSessionDir()) {
+				// Only a valid default-session context intentionally restores the
+				// env/global cleanup roots.
+				contextSessionsRoots = undefined;
+				return;
+			}
 			const sessionDir = ctx.sessionManager.getSessionDir();
+			// A partial or throwing context keeps the last validated root: destructive
+			// cleanup must never broaden from an isolated root to the global roots on
+			// the strength of an unusable context.
 			if (!sessionDir) return;
 			const parent = path.dirname(sessionDir);
 			const safeCwd = `--${path
