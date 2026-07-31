@@ -75,7 +75,10 @@ export function createSubagentStartupMaintenance(
 	let contextSessionsRoots: readonly string[] | undefined;
 	const noteSessionContext = (ctx: ExtensionContext): void => {
 		try {
-			if (ctx.sessionManager.usesDefaultSessionDir()) return;
+			if (ctx.sessionManager.usesDefaultSessionDir()) {
+				contextSessionsRoots = undefined;
+				return;
+			}
 			const sessionDir = ctx.sessionManager.getSessionDir();
 			if (!sessionDir) return;
 			const parent = path.dirname(sessionDir);

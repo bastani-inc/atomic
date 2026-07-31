@@ -200,6 +200,37 @@ describe("agentDir isolation of the global artifact scan", () => {
 		}
 	});
 
+	test("a later default-session context resets the root back to the env/global derivation", () => {
+		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
+		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
+		const isolated = makeAgentDirWithStaleArtifacts("atomic-isolation-agent-", SAFE_CWD);
+		const sessionDir = join(isolated.agentDir, "sessions", SAFE_CWD);
+		const defaultContext = {
+			cwd: CWD,
+			sessionManager: {
+				usesDefaultSessionDir: () => true,
+				getSessionDir: () => join(globalDir.agentDir, "sessions", "session-g"),
+				getSessionFile: () => null,
+			},
+		} as unknown as ExtensionContext;
+
+		const { maintenance, runStartupScan } = makeMaintenance(join(globalDir.agentDir, "results"));
+		try {
+			maintenance.scheduleStartupCleanup();
+			maintenance.cleanupSessionArtifactsDeferred(isolatedContext(sessionDir));
+			maintenance.cleanupSessionArtifactsDeferred(defaultContext);
+			runStartupScan();
+		} finally {
+			maintenance.stop();
+		}
+
+		assert.equal(
+			fs.existsSync(globalDir.staleFile),
+			false,
+			"a default-session context must clear the isolated override so global roots are scanned",
+		);
+	});
+
 	test("falls back to the env/global derivation when the context supplies no isolated root", () => {
 		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
 		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
