@@ -13,6 +13,9 @@ export interface SubagentStartupMaintenance {
 	stop(): void;
 }
 
+/** How long after startup to defer the slow global session-artifact scan. */
+export const STARTUP_ARTIFACT_SCAN_DELAY_MS = 10 * 60 * 1000;
+
 function scheduleMacrotask(task: () => void): () => void {
 	let cancelled = false;
 	const handle = setImmediate(() => {
@@ -22,6 +25,18 @@ function scheduleMacrotask(task: () => void): () => void {
 	return () => {
 		cancelled = true;
 		clearImmediate(handle);
+	};
+}
+
+function scheduleDelayedTask(task: () => void, delayMs: number): () => void {
+	let cancelled = false;
+	const handle = setTimeout(() => {
+		if (!cancelled) task();
+	}, delayMs);
+	handle.unref?.();
+	return () => {
+		cancelled = true;
+		clearTimeout(handle);
 	};
 }
 
@@ -39,6 +54,7 @@ export function createSubagentStartupMaintenance(
 		artifactCleanupDays: number;
 		resultTtlMs: number;
 		scheduleMacrotask?: (task: () => void) => () => void;
+		scheduleDelayed?: (task: () => void, delayMs: number) => () => void;
 	},
 ): SubagentStartupMaintenance {
 	const { startResultWatcher, primeExistingResults, stopResultWatcher } = createResultWatcher(
@@ -55,13 +71,26 @@ export function createSubagentStartupMaintenance(
 		});
 		cancelTasks.add(cancel);
 	};
+	const scheduleDelayed = (task: () => void, delayMs: number): void => {
+		const cancel = (options.scheduleDelayed ?? scheduleDelayedTask)(() => {
+			cancelTasks.delete(cancel);
+			task();
+		}, delayMs);
+		cancelTasks.add(cancel);
+	};
 
 	return {
 		scheduleStartupCleanup() {
 			schedule(() => {
 				swallowCleanup(cleanupOldChainDirs);
-				swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays));
 				swallowCleanup(() => cleanupOldNestedRuntimeDirs(options.artifactCleanupDays));
+				// The global session-artifact scan can touch thousands of historical session
+				// directories, so it waits until well after startup instead of running on the
+				// activation macrotask.
+				scheduleDelayed(
+					() => swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays)),
+					STARTUP_ARTIFACT_SCAN_DELAY_MS,
+				);
 			});
 		},
 		startResultWatcherDeferred() {

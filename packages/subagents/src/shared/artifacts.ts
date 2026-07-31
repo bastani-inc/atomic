@@ -2,9 +2,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentConfigPaths } from "@bastani/atomic";
 import { appendToActiveEventWriter } from "./event-jsonl-writer.ts";
+import { publishFileExclusive, unlinkIfPresent } from "./exclusive-file-publication.ts";
 import { type ArtifactPaths, TEMP_ARTIFACTS_DIR } from "./types.ts";
 
 const CLEANUP_MARKER_FILE = ".last-cleanup";
+const CLEANUP_LOCK_FILE = ".cleanup.lock";
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_LOCK_STALE_MS = 60 * 60 * 1000;
 
 export function getArtifactsDir(sessionFile: string | null): string {
 	if (sessionFile) {
@@ -69,7 +73,7 @@ export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 
 	if (fs.existsSync(markerPath)) {
 		const stat = fs.statSync(markerPath);
-		if (now - stat.mtimeMs < 24 * 60 * 60 * 1000) return;
+		if (now - stat.mtimeMs < CLEANUP_INTERVAL_MS) return;
 	}
 
 	const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
@@ -83,22 +87,67 @@ export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 	fs.writeFileSync(markerPath, String(now));
 }
 
-export function cleanupAllArtifactDirs(maxAgeDays: number): void {
-	cleanupOldArtifacts(TEMP_ARTIFACTS_DIR, maxAgeDays);
+function markerIsFresh(markerPath: string, now: number): boolean {
+	try {
+		return now - fs.statSync(markerPath).mtimeMs < CLEANUP_INTERVAL_MS;
+	} catch {
+		return false;
+	}
+}
 
-	for (const sessionsBase of getAgentConfigPaths("sessions")) {
-		if (!fs.existsSync(sessionsBase)) continue;
+/**
+ * Take an exclusive lock at lockPath so concurrent activations never race the same
+ * sessions-root scan. A lock left behind by a crashed process is broken once stale.
+ */
+function acquireCleanupLock(lockPath: string, now: number): boolean {
+	const source = `${lockPath}.${process.pid}.tmp`;
+	try {
+		fs.writeFileSync(source, String(now));
+		for (let attempt = 0; attempt < 2; attempt++) {
+			if (publishFileExclusive(source, lockPath) === "published") return true;
+			let lockMtimeMs: number;
+			try {
+				lockMtimeMs = fs.statSync(lockPath).mtimeMs;
+			} catch {
+				// The holder released between publish and stat; retry once.
+				continue;
+			}
+			if (now - lockMtimeMs < CLEANUP_LOCK_STALE_MS) return false;
+			unlinkIfPresent(lockPath);
+		}
+		return false;
+	} catch {
+		return false;
+	} finally {
+		try {
+			unlinkIfPresent(source);
+		} catch {
+			// Lock acquisition is best-effort; a leftover temp source is harmless.
+		}
+	}
+}
 
+function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
+	if (!fs.existsSync(sessionsBase)) return;
+
+	const now = Date.now();
+	const markerPath = path.join(sessionsBase, CLEANUP_MARKER_FILE);
+	if (markerIsFresh(markerPath, now)) return;
+
+	const lockPath = path.join(sessionsBase, CLEANUP_LOCK_FILE);
+	if (!acquireCleanupLock(lockPath, now)) return;
+	try {
 		let dirs: string[];
 		try {
 			dirs = fs.readdirSync(sessionsBase);
 		} catch {
 			// Session artifact cleanup is best-effort. If the sessions root cannot be read,
 			// skip cleanup instead of failing extension startup.
-			continue;
+			return;
 		}
 
 		for (const dir of dirs) {
+			if (dir === CLEANUP_MARKER_FILE || dir === CLEANUP_LOCK_FILE) continue;
 			const artifactsDir = path.join(sessionsBase, dir, "subagent-artifacts");
 			try {
 				cleanupOldArtifacts(artifactsDir, maxAgeDays);
@@ -107,5 +156,21 @@ export function cleanupAllArtifactDirs(maxAgeDays: number): void {
 				// does not block cleanup for the rest.
 			}
 		}
+
+		try {
+			fs.writeFileSync(markerPath, String(now));
+		} catch {
+			// Failing to record the marker only means the scan may repeat sooner.
+		}
+	} finally {
+		unlinkIfPresent(lockPath);
+	}
+}
+
+export function cleanupAllArtifactDirs(maxAgeDays: number): void {
+	cleanupOldArtifacts(TEMP_ARTIFACTS_DIR, maxAgeDays);
+
+	for (const sessionsBase of getAgentConfigPaths("sessions")) {
+		cleanupSessionsRoot(sessionsBase, maxAgeDays);
 	}
 }
