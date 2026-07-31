@@ -34,7 +34,11 @@ describe("extension graph manifest recording", () => {
 	});
 
 	function writeChainFixture(): { entry: string; chain: string[] } {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-graph-manifest-"));
+		// Realpath the temp root: on macOS os.tmpdir() is a /var -> /private/var
+		// symlink, and jiti resolves transitive imports to realpaths, so manifest
+		// keys would use /private/var while the fixture paths compared against
+		// them kept the literal /var prefix.
+		const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-graph-manifest-"));
 		roots.push(root);
 		const entry = path.join(root, "extension.ts");
 		const chainA = path.join(root, "chain-a.ts");
