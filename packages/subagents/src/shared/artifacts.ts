@@ -117,7 +117,7 @@ function acquireCleanupLock(lockPath: string, now: number): string | null {
 				continue;
 			}
 			if (now - lockMtimeMs < CLEANUP_LOCK_STALE_MS) return null;
-			unlinkIfPresent(lockPath);
+			if (!breakStaleLock(lockPath, lockMtimeMs)) return null;
 		}
 		return null;
 	} catch {
@@ -129,6 +129,39 @@ function acquireCleanupLock(lockPath: string, now: number): string | null {
 			// Lock acquisition is best-effort; a leftover temp source is harmless.
 		}
 	}
+}
+
+/**
+ * Atomically claim a stale lock via rename, then verify it is still the lock
+ * observed during stale detection. A lock that changed identity in between
+ * belongs to a new holder: it is handed back and the takeover is treated as
+ * contention instead of deleting the fresh lock.
+ */
+function breakStaleLock(lockPath: string, observedMtimeMs: number): boolean {
+	const breakPath = `${lockPath}.break.${process.pid}.${Math.random().toString(36).slice(2)}`;
+	try {
+		fs.renameSync(lockPath, breakPath);
+	} catch {
+		// Another activation released or broke the lock first; contend for publish.
+		return false;
+	}
+	let displacedFreshLock = false;
+	try {
+		displacedFreshLock = fs.statSync(breakPath).mtimeMs !== observedMtimeMs;
+	} catch {
+		displacedFreshLock = false;
+	}
+	try {
+		if (displacedFreshLock) publishFileExclusive(breakPath, lockPath);
+	} catch {
+		// Best-effort hand-back; the displaced holder's release is token-checked.
+	}
+	try {
+		unlinkIfPresent(breakPath);
+	} catch {
+		// A leftover break file is harmless.
+	}
+	return !displacedFreshLock;
 }
 
 function releaseCleanupLock(lockPath: string, token: string): void {
