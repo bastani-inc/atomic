@@ -67,17 +67,25 @@ function args(overrides: Partial<Args> = {}): Args {
  * `providers` defaults to the providers holding a persisted credential. Pass it
  * explicitly to model a provider that authenticates from the environment or a
  * custom resolver: it offers the model but never appears in `listCredentials()`.
+ * `oauthProviders` is the set that declares OAuth in `provider.auth`, which is
+ * what separates an unpersisted OAuth credential from an unpersisted API key.
  */
 function runtimeStub(options: {
 	credentials: Array<{ providerId: string; type: "api_key" | "oauth" }>;
 	providers?: string[];
+	oauthProviders?: string[];
 	modelId?: string;
-	getAuth: (model: {
-		provider: string;
-	}) => Promise<{ auth: { apiKey?: string; headers?: Record<string, string> } } | undefined>;
+	getAuth: (
+		model: { provider: string },
+		overrides?: { minOAuthValidityMs?: number },
+	) => Promise<{ auth: { apiKey?: string; headers?: Record<string, string> } } | undefined>;
 }): ModelRuntime {
 	const modelId = options.modelId ?? "claude-sonnet-4-5";
 	const providerIds = options.providers ?? options.credentials.map(({ providerId }) => providerId);
+	const oauthProviders = new Set(
+		options.oauthProviders ??
+			options.credentials.filter(({ type }) => type === "oauth").map(({ providerId }) => providerId),
+	);
 	const models = providerIds.map((providerId) => ({
 		id: modelId,
 		name: modelId,
@@ -87,7 +95,8 @@ function runtimeStub(options: {
 	}));
 	return {
 		listCredentials: async () => options.credentials,
-		getProviders: () => providerIds.map((id) => ({ id })),
+		getProviders: () =>
+			providerIds.map((id) => ({ id, auth: oauthProviders.has(id) ? { oauth: {} } : { apiKey: {} } })),
 		getModels: () => models,
 		getAuth: options.getAuth,
 	} as unknown as ModelRuntime;
@@ -344,6 +353,61 @@ describe("provider inference", () => {
 
 		await expect(
 			resolveCredentialForPrint(args({ model: "claude-sonnet-4-5" }), runtime, "api_key"),
+		).rejects.toMatchObject({ code: "NoCredentialConfigured", exitCode: 2 });
+	});
+
+	it("exports an OAuth bearer token the provider resolves without persisting it", async () => {
+		// A custom resolver or environment-supplied OAuth credential: the provider
+		// declares OAuth and answers with an Authorization header, but auth.json
+		// holds nothing for it.
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["custom-oauth"],
+			oauthProviders: ["custom-oauth"],
+			modelId: "custom-model",
+			getAuth: async () => ({ auth: { headers: { Authorization: "Bearer resolved-token-value" } } }),
+		});
+
+		const secret = await resolveCredentialForPrint(args({ model: "custom-model" }), runtime, "bearer_token");
+
+		expect(secret.take()).toBe("resolved-token-value");
+	});
+
+	it("never prints an environment API key as a bearer token", async () => {
+		// openai sends `Authorization: Bearer <api key>`. Nothing is persisted, so
+		// the header alone cannot certify a token — the provider declaring no OAuth
+		// is what refuses it.
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["openai"],
+			oauthProviders: [],
+			modelId: "gpt-4.1",
+			getAuth: async () => ({
+				auth: { apiKey: "sk-env-openai", headers: { Authorization: "Bearer sk-env-openai" } },
+			}),
+		});
+
+		await expect(
+			resolveCredentialForPrint(args({ model: "gpt-4.1" }), runtime, "bearer_token"),
+		).rejects.toMatchObject({ code: "NoCredentialConfigured", exitCode: 2 });
+
+		// The same credential is still exportable as what it actually is.
+		const asKey = await resolveCredentialForPrint(args({ model: "gpt-4.1" }), runtime, "api_key");
+		expect(asKey.take()).toBe("sk-env-openai");
+	});
+
+	it("refuses an unpersisted credential an OAuth-capable provider returns as an API key", async () => {
+		// anthropic supports both. With ANTHROPIC_API_KEY set and nothing persisted,
+		// getAuth answers with `apiKey`, which is not an OAuth bearer token.
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["anthropic"],
+			oauthProviders: ["anthropic"],
+			getAuth: async () => ({ auth: { apiKey: "sk-ant-env" } }),
+		});
+
+		await expect(
+			resolveCredentialForPrint(args({ model: "claude-sonnet-4-5" }), runtime, "bearer_token"),
 		).rejects.toMatchObject({ code: "NoCredentialConfigured", exitCode: 2 });
 	});
 });

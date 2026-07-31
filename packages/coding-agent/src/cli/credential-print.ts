@@ -280,6 +280,15 @@ export async function resolveCredentialForPrint(
 	const credentialTypes = new Map<string, CredentialInfo["type"]>(
 		(await modelRuntime.listCredentials()).map((credential) => [credential.providerId, credential.type]),
 	);
+	// Providers that declare OAuth. A provider holding no persisted credential can
+	// still authenticate from the environment or a custom resolver, and this is the
+	// only signal available for what such a credential *is*.
+	const oauthCapableProviders = new Set(
+		modelRuntime
+			.getProviders()
+			.filter((provider) => provider.auth.oauth)
+			.map((provider) => provider.id),
+	);
 	const models = candidateModels(args, modelRuntime);
 	// A named provider, or a single candidate, is the one the caller meant, so its
 	// authentication failure is reported with its own exit code. Among several
@@ -292,7 +301,13 @@ export async function resolveCredentialForPrint(
 	for (const model of models) {
 		const type = credentialTypes.get(model.provider);
 		if (kind === "api_key" && type === "oauth") continue;
-		if (kind === "bearer_token" && type !== "oauth") continue;
+		// A persisted credential that is not OAuth cannot answer a bearer-token
+		// request. One that was never persisted still can, so it reaches getAuth
+		// when the provider declares OAuth — but only its `Authorization: Bearer`
+		// header is accepted below. An API key read from the environment arrives as
+		// `apiKey` too, so taking that here would print an API key as a token.
+		const unpersistedOAuth = type === undefined && oauthCapableProviders.has(model.provider);
+		if (kind === "bearer_token" && type !== "oauth" && !unpersistedOAuth) continue;
 
 		let auth: Awaited<ReturnType<ModelRuntime["getAuth"]>>;
 		try {
@@ -310,8 +325,10 @@ export async function resolveCredentialForPrint(
 			);
 		}
 
-		const value =
-			kind === "bearer_token" ? (auth?.auth.apiKey ?? bearerFromHeaders(auth?.auth.headers)) : auth?.auth.apiKey;
+		const bearer = unpersistedOAuth
+			? bearerFromHeaders(auth?.auth.headers)
+			: (auth?.auth.apiKey ?? bearerFromHeaders(auth?.auth.headers));
+		const value = kind === "bearer_token" ? bearer : auth?.auth.apiKey;
 		if (value) credentials.push({ providerId: model.provider, value });
 	}
 
