@@ -96,6 +96,7 @@ export type {
 	ExtensionMode,
 	// Runtime
 	ExtensionRuntime,
+	ExtensionScopedModels,
 	ExtensionShortcut,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -150,6 +151,7 @@ export type {
 	// Events - Resources
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
+	ScopedModel,
 	SendMessageHandler,
 	SendMessageOptions,
 	SendMessagesHandler,

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
+import type { ExtensionScopedModels, ScopedModel as PublicScopedModel } from "../src/core/extensions/types.ts";
 import type { ScopedModel } from "../src/core/model-resolver.ts";
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { loadProjectContextFiles } from "../src/core/resource-loader-context-files.ts";
@@ -158,6 +159,12 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 
 		const ctx = createExtensionContext(source);
 		expect(ctx.scopedModels).toEqual(scopedModels);
+
+		// The public extension import path names both the accessor's type and its
+		// element type, so an extension never reaches into an internal module to
+		// describe what it just read.
+		const publicScope: ExtensionScopedModels = scopedModels satisfies PublicScopedModel[];
+		expect(ctx.scopedModels).toEqual(publicScope);
 
 		active = false;
 		expect(() => ctx.scopedModels).toThrow("inactive");

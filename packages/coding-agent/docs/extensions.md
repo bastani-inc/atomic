@@ -1045,6 +1045,16 @@ for (const { model, thinkingLevel } of ctx.scopedModels) {
 }
 ```
 
+Both types are exported: `ScopedModel` for one entry, `ExtensionScopedModels` for the accessor's own type. They are declared at the public extension type path (`core/extensions/types.ts`) and re-exported from the package root, so an extension never reaches into an internal module to describe what it just read.
+
+```typescript
+import type { ExtensionScopedModels, ScopedModel } from "@bastani/atomic";
+
+function firstScoped(scope: ExtensionScopedModels): ScopedModel | undefined {
+  return scope[0];
+}
+```
+
 ### ctx.signal
 
 The current agent abort signal, or `undefined` when no agent turn is active.
