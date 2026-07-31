@@ -35,6 +35,7 @@ InteractiveModeBase.prototype.setupExtensionShortcuts = function (
 		sessionManager: this.sessionManager,
 		modelRegistry: new ModelRegistry(this.session.modelRuntime),
 		model: this.session.model,
+		scopedModels: this.session.scopedModels,
 		isIdle: () => !this.session.isStreaming,
 		isProjectTrusted: () => this.session.settingsManager.isProjectTrusted(),
 		signal: this.session.agent.signal,

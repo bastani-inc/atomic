@@ -1031,9 +1031,19 @@ ctx.sessionManager.getBranch()        // Current branch
 ctx.sessionManager.getLeafId()        // Current leaf entry ID
 ```
 
-### ctx.modelRegistry / ctx.model
+### ctx.modelRegistry / ctx.model / ctx.scopedModels
 
 Access to models and API keys.
+
+`ctx.scopedModels` is the read-only list of models scoped to the current session — the same set the `/scoped-models` command shows. It is resolved from the `--models` CLI flag and the `enabledModels` setting, matched against the available catalogue. It is empty when no scoping is configured, meaning every available model is usable. Each entry is `{ model, thinkingLevel? }`, where `thinkingLevel` is set only when a pattern pinned it (for example `anthropic/*:high`). Use it to populate a model picker that mirrors the built-in one instead of enumerating the whole catalogue.
+
+The value is resolved at access time, so it tracks session replacement. Under the isolated interactive engine it reflects the engine's catalogue rather than a stale host snapshot.
+
+```typescript
+for (const { model, thinkingLevel } of ctx.scopedModels) {
+  console.log(`${model.provider}/${model.id}${thinkingLevel ? `:${thinkingLevel}` : ""}`);
+}
+```
 
 ### ctx.signal
 

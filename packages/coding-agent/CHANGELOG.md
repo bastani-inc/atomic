@@ -16,14 +16,28 @@
   | `Type.AsyncIterator(items)` | none | Same as `Type.Iterator`: drain first and validate with `Type.Array(items)`, or use `Type.Unsafe<AsyncIterable<T>>({})`. |
   | `Value.Mutate(current, next)` | `Value.Patch(current, Value.Diff(current, next))` | `Patch` returns a **new** value rather than assigning into `current` in place, so code that relied on `Mutate` retaining internal references as a redraw signal must now assign the result and re-read the reference. |
 
+### Added
+
+- Added `ctx.scopedModels` to the extension context: the read-only list of models scoped to the current session, resolved from the `--models` flag and the `enabledModels` setting — the same set `/scoped-models` shows. It is empty when no scoping is configured. The value resolves at access time, so it follows session replacement, and under the isolated interactive engine it reflects the engine's catalogue rather than a stale host snapshot. Documented in `docs/extensions.md`.
+
 ### Changed
 
 - `ChatSessionHostCommands.prompt` now receives the submitting key's mode as a second argument, and the new `ChatSessionSubmitMode` (`"auto" | "followUp"`) type is exported alongside the other chat-session host types. A host whose idle prompt command chooses a delivery queue can now read the mode of the invocation it is serving instead of shared state a concurrent submission may still own. Existing single-argument `prompt` implementations keep working unchanged ([#2074](https://github.com/bastani-inc/atomic/issues/2074)).
+- The `/model` selector now highlights the top row whenever a filter query is typed, so the best match is the one Enter selects. Clearing the query restores the previous position, clamped to the restored list.
+- Toggling tool-output expansion now reports the new state (`Tool output: expanded` / `Tool output: collapsed`) on the status line instead of re-rendering silently.
+- The startup RESOURCES disclosure now lists `SYSTEM.md` and `APPEND_SYSTEM.md` alongside the `AGENTS.md`/`CLAUDE.md` context files, in the order they reach the prompt. Those files shape the system prompt exactly like a context file, so leaving them out of the listing hid them.
+- llama.cpp models now declare streaming usage support, so token usage is reported during a streamed response instead of only at the end.
 
 ### Fixed
 
 - Fixed `/reload` re-transpiling and re-evaluating the entire transitive TypeScript graph of every extension on Windows and in single-file (compiled) builds even when nothing changed. Transformed extension evaluations now record a per-extension graph manifest mapping every file jiti reads to a SHA256 content hash, persisted under the versioned transpile cache directory. On reload, an unchanged graph — every recorded file rehashes identically and the stored manifest matches — reuses the previously evaluated factory instead of re-importing; any hash mismatch, missing file, missing or corrupt manifest, or graph-shape change falls back to a full fresh re-evaluation, which rewrites the manifest, so edited extension source is always picked up. Measured on Windows, reloading the five builtin packages drops from ~25 s cold / ~16 s warm (jiti fsCache) to ~90 ms — the cost of rehashing the recorded graph ([#2069](https://github.com/bastani-inc/atomic/issues/2069)).
 - Hardened the archive and SQLite path-selector parsers used by the read, search, and write tools against polynomial-time regex backtracking (CodeQL `js/polynomial-redos`). The ambiguous greedy `(.+\.ext)` prefixes were replaced with linear right-to-left scans; accepted selector syntax and parsing results are unchanged.
+- Fixed a failed `git` package install leaving a half-written checkout behind. Because the next install treats an existing target directory as installed, that partial clone silently suppressed the repair. A clone, checkout, or dependency install that fails now removes the target directory and prunes the host/owner directories it created.
+- Fixed the RPC `bash` command bypassing extension `user_bash` handlers. A sandbox or remote-shell extension that intercepts user shell commands now sees an RPC `bash` request exactly as it sees `user_bash`, with request-scoped ownership, streaming correlation, and result recording unchanged.
+- Fixed a startup session switch rendering every agent event twice. A session replacement that began while the startup rebind was still binding extensions produced two live agent subscriptions; the superseded rebind now returns without subscribing.
+- Fixed session-tree navigation being accepted while a response was still streaming, which stranded the in-flight turn's tool results on the abandoned branch. Navigation now rejects while streaming, the interactive tree selector stops the active response (restoring queued messages to the editor) before navigating, and a session replacement settles its active response before the outgoing session is torn down. The isolated engine's host facade deliberately does not re-enter its cooperative-abort round trip during teardown, so an unresponsive or dead engine still cannot hang a session switch.
+- Fixed a nested linked git worktree loading the repository's `AGENTS.md`/`CLAUDE.md` twice. When a worktree created inside its own main repository has its own copy of the same tracked context file, the main repository's copy is now skipped. Ordinary repositories, sibling worktrees, bare layouts, and submodules keep normal ancestor inheritance.
+- Fixed extension-contributed skills, prompt templates, and themes losing their package source metadata when they were registered after a resource reload. The reload's resolved metadata is now retained on the loader so later `extendResources` passes still resolve it.
 
 ## [0.9.11-alpha.8] - 2026-07-29
 

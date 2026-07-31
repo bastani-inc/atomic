@@ -152,6 +152,7 @@ function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorCont
 		hasUI: uiResult !== undefined,
 		ui: makeUiContext(uiResult),
 		model: undefined,
+		scopedModels: [],
 		modelRegistry: makeModelRegistry(),
 		sessionManager: {
 			getSessionFile: () => undefined,

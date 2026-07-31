@@ -110,8 +110,9 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 			realLeafId,
 			this.ui.terminal.rows,
 			async (entryId) => {
-				// Selecting the current leaf is a no-op (already there)
-				if (entryId === realLeafId) {
+				// Compare against the live leaf: a response that was streaming while the
+				// selector was open may have advanced it past the captured value.
+				if (entryId === this.sessionManager.getLeafId()) {
 					done();
 					this.showStatus("Already at this point");
 					return;
@@ -171,6 +172,14 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 					);
 					this.statusContainer.addChild(summaryLoader);
 					this.ui.requestRender();
+				}
+
+				// The user committed to navigating: stop the active response first, so the
+				// aborted turn is settled on the branch it belongs to. navigateTree()
+				// rejects while streaming.
+				if (this.session.isStreaming) {
+					this.restoreQueuedMessagesToEditor();
+					await this.session.abort();
 				}
 
 				try {

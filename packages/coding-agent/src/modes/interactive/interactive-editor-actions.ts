@@ -77,7 +77,7 @@ InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveMode
 			child.setExpanded(expanded);
 		}
 	}
-	this.ui.requestRender();
+	this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
 };
 
 InteractiveModeBase.prototype.toggleThinkingBlockVisibility = function (this: InteractiveModeBase): void {

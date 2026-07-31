@@ -41,7 +41,9 @@ export interface ResourceLoader {
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
 	getSystemPrompt(): string | undefined;
+	getSystemPromptSource(): { path: string } | undefined;
 	getAppendSystemPrompt(): string[];
+	getAppendSystemPromptSources(): Array<{ path: string }>;
 	extendResources(paths: ResourceExtensionPaths): Promise<void>;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
 }

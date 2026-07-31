@@ -218,6 +218,11 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 		},
 		{
 			getModel: () => this.model,
+			// Read through the public accessor, not `_scopedModels`: in the isolated
+			// engine the host-side facade session has `scopedModels` redefined by
+			// RemoteModelCatalog to the engine's catalogue, and the private field it
+			// shadows is never refreshed.
+			getScopedModels: () => this.scopedModels,
 			getThinkingLevel: () => this.thinkingLevel,
 			isIdle: () => !this.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),

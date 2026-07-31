@@ -1,0 +1,63 @@
+845d6ff1f6643aba440341cce877ce1c43ebbc39 2026-07-30 Armin Ronacher Release v0.83.0
+44b26c9b44a0758d6610e1c5f722d773c1d9fd15 2026-07-30 Armin Ronacher fix(tui): format image fallback changes
+f0499a63ff5563ff041c689f680ecbf01436a5e2 2026-07-30 Armin Ronacher docs: audit changelogs since v0.82.1
+34239180ac5c80366def592b529a3a1b882b4a16 2026-07-29 Armin Ronacher fix(ai): preserve function arguments with empty custom payloads
+21f579a9a7e2cd717548b403fd6e05425fbe0cf6 2026-07-29 github-actions[bot] chore: approve contributors from issue #7160
+d7b02636a0c7e8e615d0cff70679d18d2ff59573 2026-07-29 David Brailovsky Merge pull request #7272 from earendil-works/preserve-original-stop-reason
+5a2539a7bdb9be06ce70f9f7ce02decece89762a 2026-07-29 David Brailovsky update error messages copy to be more generic
+bff5ab71743b442efa234dbed369e0a96da791f3 2026-07-29 David Brailovsky fix(coding-agent): show system prompt files in startup context (#7266)
+4c1a0b92e50edaef297226a9edc4e04e05bd05d5 2026-07-29 David Brailovsky fix(ai): use Qwen thinking controls for token plan reasoning models
+4f0437e2d58d651dd934119ecabea2893975f62f 2026-07-29 Mario Zechner docs(agent): harness design v2 (harness-v2.md)
+5a53f086ee678613462e61685fee166abe22eae9 2026-07-29 David Brailovsky fix(ai): preserve raw Mistral stop reasons
+e5ef8d0654b57f559aa427b4d89b70cd9dab3c31 2026-07-29 David Brailovsky fix(ai): preserve raw OpenAI response statuses
+fe1c9b6d52eb011eff9891f0b7b0e117138e6fa1 2026-07-29 David Brailovsky fix(ai): preserve raw OpenAI completion stop reasons
+637737ca71d673b209908d17a00170040db90ba6 2026-07-29 David Brailovsky fix(ai): preserve raw Bedrock stop reasons
+926eb15c18ad6f03c621f5b557a13e76a1fddb51 2026-07-29 David Brailovsky fix(ai): preserve raw Anthropic stop reasons
+23cb385b672b4d7d552fe080fd327c5cb77e9e33 2026-07-29 David Brailovsky fix(ai): preserve google providers raw stop reason
+cced6a21da273b26ee4a23a803680614bbe8dd1e 2026-07-29 Arunprasad Rajkumar fix(coding-agent): stop loading AGENTS.md twice in nested git worktrees (#7221)
+f9476a61e557bfdce2fbf3ffeaad0988fe47c184 2026-07-29 Petr Houška fix(ai): update TypeBox nullable array validation (#7243)
+fb4ecd633e10680063e6cd38c607361e03c19181 2026-07-29 Mario Zechner fix(tui): shorten image fallback paths and clamp width (#7262)
+7796481e62d85f3eca6cc2e84e54ceb06c8e3877 2026-07-29 github-actions[bot] chore: approve contributors from issue #7217
+a5db0e4f173ece71980e9df97f41af563bc51537 2026-07-29 github-actions[bot] chore: approve contributors from issue #7219
+e9e86e1c832de1edfff2d42041c8f9087d72a0cf 2026-07-29 github-actions[bot] chore: approve contributors from issue #7224
+0c32e83a352a4284133b2544f730a23814948ac3 2026-07-29 Steve Immanuel fix(coding-agent): enable streaming usage for llama.cpp provider (#7258)
+027a5847901b5dde30270abaa1041046cd2b4b55 2026-07-28 Armin Ronacher feat(ai): add per-request fetch injection
+fdbedcad8aeb7c1e2ebd3b85f16e60e5fab0b2c3 2026-07-28 Mario Zechner docs(agent): add refs to harness design
+47ca25fcd8535b80710fad5be758f1f2cf81443c 2026-07-28 David Brailovsky Revert "fix(coding-agent): build-check-test (#7206)"
+0d008b746892ad33d3fe15c0c4bc86a14369e0e8 2026-07-28 David Brailovsky fix(coding-agent): show tool expansion status
+f14519551682cd0fddac2e4b4e8b1f333667e94c 2026-07-28 xu0o0 fix(coding-agent): build-check-test (#7206)
+cefa40ed8f8dbcd6ffd67b5e7a0eaa75a5050d1a 2026-07-28 Thomas Mustier ***WIP it's a PoC *** fix(coding-agent): guard tree navigation during responses (#7022)
+2fe21b407fcbf7625036afd46e39900ff8c081d1 2026-07-28 HyeokjaeLee fix(ai): send max_tokens for Z.AI providers (#7174)
+0563a7c0174d873b6368cf67349f7fc1be950292 2026-07-28 xu0o0 fix(coding-agent): clean up failed git installs (#7210)
+f1ea6c0d05a5707a483268dbd42f8c60f38377ed 2026-07-28 Christian Basch fix(coding-agent): reset model selector selection to top row when filtering (#7211)
+5d548ae969454d23ef8fec627c5be896be888d47 2026-07-28 Cristina Poncela Cubeiro fix: rpc bash no longer bypass user_bash (#7214)
+66eead65249b0623e2c77f8f40447b2af094ec8b 2026-07-28 David Brailovsky fix(coding-agent): preserve resource metadata after extension resource reloads (#7218)
+b6fb91e5b3a35a4361ae7d697d66eb7ed4dd9850 2026-07-28 Cristina Poncela Cubeiro fix(coding-agent): include scoped models in TUI extension context (#7215)
+063fb963c5c33d099faa593d17e60e0a875430cd 2026-07-28 Thomas Mustier fix(coding-agent): isolate autoload-disabled package test from real home directory (#7167)
+b63403a50f57fa0e3098684e927a63279598ec89 2026-07-28 Christian Basch fix(ai): prefer configured Bedrock profile over ambient AWS keys (#7176)
+04b15259b216294038169664aa4782d777b0281f 2026-07-28 pungggi feat(extensions): expose ctx.scopedModels to extensions (#7191)
+2903063d2c7df8c5e5a1840bb7ffe8bccfff4d49 2026-07-28 github-actions[bot] chore: approve contributors from issue #7171
+c820aa26fe0907e053e881a957722693fc094c9c 2026-07-28 Mario Zechner Merge branch 'design/durable-agent-harness'
+e8f9c07153da4814169a91bd93e7d4daa8ca2aad 2026-07-28 Mario Zechner docs(agent): durable AgentHarness design (harness.md)
+a597371bda2af70372d1323d550483b5f4a0ae36 2026-07-27 Christian Klotz Merge pull request #7117 from earendil-works/feat/coding-agent-evals
+b0864a66cdd758f80c2b8e1186b7f1710f66efd5 2026-07-27 Christian Klotz fix(coding-agent): preserve eval run diagnostics
+b56a35f90fcdc99ccac02aeec5cdb1f8c69f307c 2026-07-27 Christian Klotz fix(coding-agent): project typed eval outputs
+99e34013d13a71c2aef1958fd5ab44fa9bfc75dd 2026-07-27 Cristina Poncela Cubeiro feat: auth print (#7168)
+af19a9eea8e065be87b8262e7d1b5822dc3b2805 2026-07-27 Christian Klotz fix(coding-agent): simplify extension eval prompt
+95d1c60fe27f5e3bb97ab6e9acc14d7d452baddb 2026-07-27 Christian Klotz fix(coding-agent): simplify multi-step eval input
+9423204c6bd99f435b92ba0722b34e8d4d1e4270 2026-07-27 Christian Klotz fix(coding-agent): clarify eval harness errors
+8a97632459c699497868c9a03df7f7970026687c 2026-07-27 Christian Klotz fix(coding-agent): keep eval scenarios in test cases
+2efa728d2ee90ef597626e96b1e28ef2b279f07c 2026-07-27 Michael Yu fix(coding-agent): support concurrent user bash cancellation (#7103)
+c2275d670316d271de5f766c8a9ebdc473bdfd5a 2026-07-27 Michael Yu fix(coding-agent): prevent duplicate messages on startup session switch (#7110)
+61da9e2f374000593e6d4fc4a7a9c376c602cdcf 2026-07-27 Rafael feat(ai): add manual redirect URL fallback to OpenRouter OAuth login (#7114)
+f9a49869c20c5dd1eae2e15370d6dfdc8e63dcb8 2026-07-27 Lucas Meijer feat(ai): expose pending stop reason while streaming (#7151)
+60f6a8034d15d77137b364fd184a0b47d8b70ca9 2026-07-27 Jack Rose feat(ai): add GitHub Copilot Claude Opus 5 support (#7158)
+f08f58f5f9525d3f532eda1df9082f1831241e2f 2026-07-27 Thomas Mustier fix(coding-agent): run coding-agent tests offline by default (#7031)
+5f9d025e7a85e0623e06bddfe8f2f864b1cb23b0 2026-07-27 github-actions[bot] chore: approve contributors from issue #7143
+3cd39163cbaa678f67fba446ea528d588301a2e7 2026-07-27 github-actions[bot] chore: approve contributors from issue #7132
+cee5ff7520d8828bed9955ef00419e995d1f91e0 2026-07-26 Armin Ronacher ref: remove openclaw reference from readme
+a0ac81c0a1bde538bf816a6a98b45203db9e96a2 2026-07-26 Christian Klotz fix(coding-agent): distinguish eval invariants
+4b8accab8ba02c047dc1ee73013b049bae823e38 2026-07-25 Christian Klotz fix(coding-agent): simplify eval normalization
+73c1696d9559a3cf0aeda971d60cd1be26c310f8 2026-07-25 Christian Klotz fix(coding-agent): use focused eval harness
+66fbdb1c59e1a46da76e18b0f3200d01f7ec2393 2026-07-25 Christian Klotz feat(coding-agent): add extension creation eval
+5bc1c2c0a6f07e00e8c240304182f213ab8d311f 2026-07-25 Armin Ronacher Add [Unreleased] section for next cycle

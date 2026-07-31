@@ -1,0 +1,308 @@
+/**
+ * Focused regressions for the Pi v0.82.1..v0.83.0 coding-agent port.
+ *
+ * Each test names the upstream commit it covers; see
+ * `research/pi-0.83.0-port-matrix.md` for the full classification.
+ */
+
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
+import type { ScopedModel } from "../src/core/model-resolver.ts";
+import { DefaultPackageManager } from "../src/core/package-manager.ts";
+import { loadProjectContextFiles } from "../src/core/resource-loader-context-files.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
+import type { LlamaModelInfo } from "../src/extensions/llama/client.ts";
+import { createLlamaProvider } from "../src/extensions/llama/provider.ts";
+import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
+import { createHarness } from "./suite/harness.ts";
+import "../src/modes/interactive/interactive-editor-actions.ts";
+import "../src/modes/interactive/interactive-session-runtime.ts";
+
+const tempDirs: string[] = [];
+afterEach(() => {
+	vi.restoreAllMocks();
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+function tempDir(prefix: string): string {
+	const dir = mkdtempSync(join(tmpdir(), prefix));
+	tempDirs.push(dir);
+	return dir;
+}
+
+describe("Pi 0.83.0 direct coding-agent parity", () => {
+	it("0c32e83a: reports llama.cpp models as supporting usage in streaming", () => {
+		const controller = createLlamaProvider();
+		const model = {
+			id: "qwen3",
+			status: { value: "loaded" },
+			meta: { n_ctx: 8192 },
+		} as unknown as LlamaModelInfo;
+
+		controller.setCatalog([model], "http://127.0.0.1:8080");
+
+		const models = controller.provider.getModels?.() ?? [];
+		expect(models).toHaveLength(1);
+		expect(models[0].compat?.supportsUsageInStreaming).toBe(true);
+	});
+
+	it("f1ea6c0d: moves the model selector to the top row when a filter query is applied", () => {
+		const filterModels = Reflect.get(ModelSelectorComponent.prototype, "filterModels") as (
+			this: {
+				activeModels: unknown[];
+				filteredModels: unknown[];
+				selectedIndex: number;
+				updateList: () => void;
+			},
+			query: string,
+		) => void;
+		const activeModels = [
+			{ id: "alpha", provider: "p", model: { name: "alpha" } },
+			{ id: "beta", provider: "p", model: { name: "beta" } },
+			{ id: "gamma", provider: "p", model: { name: "gamma" } },
+		];
+		const context = { activeModels, filteredModels: activeModels, selectedIndex: 2, updateList: () => {} };
+
+		filterModels.call(context, "beta");
+		expect(context.selectedIndex).toBe(0);
+
+		// Clearing the query restores the full list and keeps the clamped position.
+		context.selectedIndex = 2;
+		filterModels.call(context, "");
+		expect(context.filteredModels).toHaveLength(3);
+		expect(context.selectedIndex).toBe(2);
+	});
+
+	it("0d008b74: reports the new tool-output expansion state on the status line", () => {
+		const statuses: string[] = [];
+		const setToolsExpanded = Reflect.get(InteractiveModeBase.prototype, "setToolsExpanded") as (
+			this: object,
+			expanded: boolean,
+		) => void;
+		const context = {
+			toolOutputExpanded: false,
+			customHeader: undefined,
+			builtInHeader: undefined,
+			chatContainer: { children: [] as unknown[] },
+			showStatus: (message: string) => statuses.push(message),
+		};
+
+		setToolsExpanded.call(context, true);
+		setToolsExpanded.call(context, false);
+
+		expect(statuses).toEqual(["Tool output: expanded", "Tool output: collapsed"]);
+	});
+
+	it("c2275d67: does not subscribe from a startup rebind the session switch superseded", async () => {
+		const startupSession = {};
+		const replacementSession = {};
+		let resolveStartupBind!: () => void;
+		const startupBind = new Promise<void>((resolve) => {
+			resolveStartupBind = resolve;
+		});
+
+		const subscribeToAgent = vi.fn();
+		const updateTerminalTitle = vi.fn();
+		let bindCount = 0;
+
+		const context = {
+			session: startupSession as object,
+			unsubscribe: undefined as (() => void) | undefined,
+			applyRuntimeSettings: () => {},
+			bindCurrentSessionExtensions: () => {
+				bindCount += 1;
+				return bindCount === 1 ? startupBind : Promise.resolve();
+			},
+			subscribeToAgent,
+			updateAvailableProviderCount: async () => {},
+			updateEditorBorderColor: () => {},
+			updateTerminalTitle,
+		};
+
+		const rebind = Reflect.get(InteractiveModeBase.prototype, "rebindCurrentSession") as (
+			this: typeof context,
+		) => Promise<void>;
+
+		const startupRebind = rebind.call(context);
+		context.session = replacementSession;
+		await rebind.call(context);
+
+		expect(subscribeToAgent).toHaveBeenCalledTimes(1);
+		expect(updateTerminalTitle).toHaveBeenCalledTimes(1);
+
+		resolveStartupBind();
+		await startupRebind;
+
+		// The stale rebind returns without a second subscription: that duplicate is
+		// what rendered every agent event twice on a startup session switch.
+		expect(subscribeToAgent).toHaveBeenCalledTimes(1);
+		expect(updateTerminalTitle).toHaveBeenCalledTimes(1);
+	});
+
+	it("04b15259/b6fb91e5: exposes the session's scoped models to extensions", () => {
+		const scopedModels: ScopedModel[] = [
+			{ model: { id: "gpt-5.5", provider: "openai" } as never, thinkingLevel: "high" },
+		];
+		let active = true;
+		const source = {
+			assertActive: () => {
+				if (!active) throw new Error("inactive");
+			},
+			getScopedModels: () => scopedModels,
+		} as unknown as ExtensionContextSource;
+
+		const ctx = createExtensionContext(source);
+		expect(ctx.scopedModels).toEqual(scopedModels);
+
+		active = false;
+		expect(() => ctx.scopedModels).toThrow("inactive");
+	});
+
+	it("cced6a21: loads a nested linked worktree's context file once, not twice", () => {
+		const root = tempDir("atomic-nested-worktree-");
+		const mainRepo = join(root, "repo");
+		const gitDir = join(mainRepo, ".git");
+		const worktree = join(mainRepo, "feature-checkout");
+		const worktreeGitDir = join(gitDir, "worktrees", "feature");
+		mkdirSync(worktreeGitDir, { recursive: true });
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+		writeFileSync(join(worktreeGitDir, "HEAD"), "ref: refs/heads/feature\n");
+		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
+		writeFileSync(join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
+		writeFileSync(join(mainRepo, "AGENTS.md"), "main copy");
+		writeFileSync(join(worktree, "AGENTS.md"), "worktree copy");
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+
+		const files = loadProjectContextFiles({ cwd: worktree, agentDir });
+
+		expect(files.map((file) => file.content)).toEqual(["worktree copy"]);
+	});
+
+	it("cced6a21: still inherits an ancestor context file outside a linked worktree", () => {
+		const root = tempDir("atomic-plain-repo-");
+		const repo = join(root, "repo");
+		const nested = join(repo, "nested");
+		mkdirSync(join(repo, ".git"), { recursive: true });
+		mkdirSync(nested, { recursive: true });
+		writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+		writeFileSync(join(repo, "AGENTS.md"), "repo instructions");
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+
+		const files = loadProjectContextFiles({ cwd: nested, agentDir });
+
+		expect(files.map((file) => file.content)).toEqual(["repo instructions"]);
+	});
+
+	it("0563a7c0: removes a half-written clone and its empty parents when a git install fails", async () => {
+		const root = tempDir("atomic-git-install-fail-");
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const packageManager = new DefaultPackageManager({
+			cwd: root,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+		});
+		const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+
+		vi.spyOn(packageManager as unknown as PackageManagerCommandInternals, "runCommand").mockImplementation(
+			async (command, args) => {
+				if (command === "git" && args[0] === "clone") {
+					mkdirSync(targetDir, { recursive: true });
+					throw new Error("simulated git clone failure");
+				}
+			},
+		);
+
+		await expect(packageManager.install("git:github.com/user/repo")).rejects.toThrow("simulated git clone failure");
+
+		expect(existsSync(targetDir)).toBe(false);
+		expect(existsSync(join(agentDir, "git", "github.com"))).toBe(false);
+	});
+
+	it("0563a7c0: removes a cloned checkout when its dependency install fails", async () => {
+		const root = tempDir("atomic-git-deps-fail-");
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const packageManager = new DefaultPackageManager({
+			cwd: root,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+		});
+		const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+
+		vi.spyOn(packageManager as unknown as PackageManagerCommandInternals, "runCommand").mockImplementation(
+			async (command, args) => {
+				if (command === "git" && args[0] === "clone") {
+					mkdirSync(targetDir, { recursive: true });
+					writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+					return;
+				}
+				if (command === "npm") throw new Error("simulated dependency install failure");
+			},
+		);
+
+		await expect(packageManager.install("git:github.com/user/repo")).rejects.toThrow(
+			"simulated dependency install failure",
+		);
+
+		expect(existsSync(targetDir)).toBe(false);
+	});
+
+	it("cefa40ed: refuses tree navigation while a response is still streaming", async () => {
+		const harness = await createHarness();
+		try {
+			const targetId = harness.sessionManager.appendMessage({ role: "user", content: "first" } as never);
+			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
+			const activeLeafId = harness.sessionManager.getLeafId();
+
+			await expect(harness.session.navigateTree(targetId, { summarize: false })).rejects.toThrow(
+				"Wait for the current response to finish before navigating the session tree.",
+			);
+			expect(harness.sessionManager.getLeafId()).toBe(activeLeafId);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
+	it("5d548ae9: routes the plain RPC bash command through user_bash handlers", async () => {
+		const commands: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("user_bash", async (event) => {
+						commands.push(event.command);
+						return { result: { output: "intercepted", exitCode: 0, cancelled: false, truncated: false } };
+					});
+				},
+			],
+		});
+		await harness.session.bindExtensions({ shutdownHandler: () => {} });
+		try {
+			const handle = createRpcCommandHandler({
+				runtimeHost: { session: harness.session, services: { agentDir: "/tmp/unused" } } as never,
+				getSession: () => harness.session,
+				rebindSession: async () => {},
+				output: () => {},
+			});
+
+			const response = await handle({ id: "rpc-bash", type: "bash", command: "echo hi" });
+
+			expect(commands).toEqual(["echo hi"]);
+			expect(response).toMatchObject({ success: true, data: { output: "intercepted", exitCode: 0 } });
+		} finally {
+			harness.cleanup();
+		}
+	});
+});
+
+interface PackageManagerCommandInternals {
+	runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void>;
+}

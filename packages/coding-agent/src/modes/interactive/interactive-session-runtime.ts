@@ -107,10 +107,24 @@ InteractiveModeBase.prototype.applyRuntimeSettings = function (this: Interactive
 };
 
 InteractiveModeBase.prototype.rebindCurrentSession = async function (this: InteractiveModeBase): Promise<void> {
+	// The session this rebind was started for. Binding extensions is async, and a
+	// session replacement (startup switch, /new, resume) can install a different
+	// session and start its own rebind while this one is still awaiting. Without
+	// the guard below both rebinds call subscribeToAgent() and every agent event
+	// is rendered twice.
+	const session = this.session;
+
 	this.unsubscribe?.();
 	this.unsubscribe = undefined;
 	this.applyRuntimeSettings();
 	await this.bindCurrentSessionExtensions();
+
+	if (this.session !== session) {
+		// A newer rebind owns the current session; it subscribes and finishes the
+		// remaining runtime updates itself.
+		return;
+	}
+
 	this.subscribeToAgent();
 	await this.updateAvailableProviderCount();
 	this.updateEditorBorderColor();

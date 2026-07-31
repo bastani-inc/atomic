@@ -145,7 +145,14 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 	}
 
 	if (showListing) {
-		const contextFiles = this.session.resourceLoader.getAgentsFiles().agentsFiles;
+		// SYSTEM.md / APPEND_SYSTEM.md shape the prompt exactly like AGENTS.md does,
+		// so the startup CONTEXT listing names them too.
+		const systemPromptSource = this.session.resourceLoader.getSystemPromptSource();
+		const contextFiles = [
+			...(systemPromptSource ? [systemPromptSource] : []),
+			...this.session.resourceLoader.getAppendSystemPromptSources(),
+			...this.session.resourceLoader.getAgentsFiles().agentsFiles,
+		];
 		const templates = this.session.promptTemplates;
 		const customThemes = themesResult.themes.filter((t) => t.sourcePath);
 

@@ -49,6 +49,7 @@ function stageContext(cwd: string): ExtensionContext {
 		hasUI: false,
 		ui: { custom: async <T>() => undefined as T } as unknown as ExtensionContext["ui"],
 		model: undefined,
+		scopedModels: [],
 		modelRegistry: { getAvailable: () => [] } as unknown as ExtensionContext["modelRegistry"],
 		sessionManager: {
 			getSessionFile: () => undefined,

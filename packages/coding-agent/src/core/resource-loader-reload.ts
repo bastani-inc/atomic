@@ -10,7 +10,12 @@ import {
 	updateSkillsFromPathsAsync,
 	updateThemesFromPathsAsync,
 } from "./resource-loader-assets.ts";
-import { loadProjectContextFiles, resolvePromptInput } from "./resource-loader-context-files.ts";
+import {
+	loadProjectContextFiles,
+	resolveExistingPromptSourcePath,
+	resolveExistingPromptSourcePaths,
+	resolvePromptInput,
+} from "./resource-loader-context-files.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./resource-loader-discovery.ts";
 import {
@@ -169,6 +174,7 @@ export async function reloadDefaultResourceLoader(
 		state.extensionPromptSourceInfos = new Map();
 		state.extensionThemeSourceInfos = new Map();
 		state.workflowResources = [];
+		state.resourceMetadataByPath = new Map();
 		state.lastSkillPaths = [];
 		const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
 		state.skills = emptySkills?.skills ?? [];
@@ -189,6 +195,7 @@ export async function reloadDefaultResourceLoader(
 			? resolvePromptInput(state.systemPromptSource, "system prompt")
 			: undefined;
 		state.systemPrompt = state.systemPromptOverride ? state.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
+		state.systemPromptSourcePath = resolveExistingPromptSourcePath(state.systemPromptSource);
 		const appendSources = state.appendSystemPromptSource ?? [];
 		const baseAppend = appendSources
 			.map((s) => resolvePromptInput(s, "append system prompt"))
@@ -196,6 +203,7 @@ export async function reloadDefaultResourceLoader(
 		state.appendSystemPrompt = state.appendSystemPromptOverride
 			? state.appendSystemPromptOverride(baseAppend)
 			: baseAppend;
+		state.appendSystemPromptSourcePaths = resolveExistingPromptSourcePaths(appendSources);
 		state.loaded = true;
 		return;
 	}
@@ -204,7 +212,10 @@ export async function reloadDefaultResourceLoader(
 		trustedBorrowedProjectLocalSources: state.trustedBorrowedProjectLocalSources,
 	});
 	endTimingSpan(resolveSpan);
-	const metadataByPath = new Map<string, PathMetadata>();
+	// Kept on the loader so post-reload passes (extendResources) can still resolve
+	// package metadata for paths this reload discovered.
+	state.resourceMetadataByPath = new Map();
+	const metadataByPath = state.resourceMetadataByPath;
 
 	state.extensionSkillSourceInfos = new Map();
 	state.extensionPromptSourceInfos = new Map();
@@ -355,11 +366,10 @@ export async function reloadDefaultResourceLoader(
 
 	const promptFilesStartedAt = Date.now();
 	const promptFilesSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePromptFiles");
-	const baseSystemPrompt = resolvePromptInput(
-		state.systemPromptSource ?? discoverSystemPromptFile(loader),
-		"system prompt",
-	);
+	const systemPromptSource = state.systemPromptSource ?? discoverSystemPromptFile(loader);
+	const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
 	state.systemPrompt = state.systemPromptOverride ? state.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
+	state.systemPromptSourcePath = resolveExistingPromptSourcePath(systemPromptSource);
 
 	const discoveredAppend = discoverAppendSystemPromptFile(loader);
 	const appendSources = state.appendSystemPromptSource ?? (discoveredAppend ? [discoveredAppend] : []);
@@ -369,6 +379,7 @@ export async function reloadDefaultResourceLoader(
 	state.appendSystemPrompt = state.appendSystemPromptOverride
 		? state.appendSystemPromptOverride(baseAppend)
 		: baseAppend;
+	state.appendSystemPromptSourcePaths = resolveExistingPromptSourcePaths(appendSources);
 	state.loaded = true;
 	endTimingSpan(promptFilesSpan);
 	await yieldToEventLoopIfSlow(promptFilesStartedAt);

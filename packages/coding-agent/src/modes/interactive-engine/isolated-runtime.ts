@@ -275,6 +275,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return { cancelled: false, selectedText };
 	}
 
+	/**
+	 * The child engine already settled (and persisted) its own turn before it
+	 * reported the replacement, and the host facade's `abort()` is `abortAndRecover()`
+	 * — an unbounded cooperative round trip. Re-entering it during teardown would
+	 * hang session replacement on an unresponsive or dead engine, which is exactly
+	 * what engine recovery exists to survive.
+	 */
+	protected override async settleActiveResponseBeforeTeardown(): Promise<void> {}
+
 	override async dispose(): Promise<void> {
 		// Joins any in-flight replacement: shutdown voids the client's restart
 		// permit and waits for the attempt, so nothing spawns after this returns.

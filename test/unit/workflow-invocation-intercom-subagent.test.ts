@@ -57,6 +57,7 @@ function stageContext(
 		hasUI: false,
 		ui: ui as ExtensionContext["ui"],
 		model: undefined,
+		scopedModels: [],
 		modelRegistry: modelRegistry as ExtensionContext["modelRegistry"],
 		sessionManager: sessionManager as ExtensionContext["sessionManager"],
 		orchestrationContext,

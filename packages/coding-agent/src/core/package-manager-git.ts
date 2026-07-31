@@ -102,13 +102,22 @@ export async function installGit(context: PackageManagerContext, source: GitSour
 	if (!/^[A-Za-z0-9._~:@/%+-]+$/.test(cloneUrl)) {
 		throw new Error(`Refusing to clone repository with unsafe URL: ${cloneUrl}`);
 	}
-	await runGitProcess(context, "git", ["clone", "--", cloneUrl, targetDir]);
-	if (safeRef) {
-		await runGitProcess(context, "git", ["checkout", safeRef], { cwd: targetDir });
-	}
-	const packageJsonPath = join(targetDir, "package.json");
-	if (existsSync(packageJsonPath)) {
-		await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
+	try {
+		await runGitProcess(context, "git", ["clone", "--", cloneUrl, targetDir]);
+		if (safeRef) {
+			await runGitProcess(context, "git", ["checkout", safeRef], { cwd: targetDir });
+		}
+		const packageJsonPath = join(targetDir, "package.json");
+		if (existsSync(packageJsonPath)) {
+			await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
+		}
+	} catch (error) {
+		// A half-written clone would otherwise be treated as installed by the
+		// `existsSync(targetDir)` check above, so the next install silently skips
+		// the repair. Remove it, then drop the now-empty host/owner directories.
+		rmSync(targetDir, { recursive: true, force: true });
+		pruneEmptyGitParents(targetDir, gitRoot);
+		throw error;
 	}
 }
 

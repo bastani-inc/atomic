@@ -1,0 +1,194 @@
+---
+date: 2026-07-31
+researcher: Claude Opus 5
+git_commit: a2dfa210d14f1f80f833af83b7b7a9b084839c18
+branch: pi-0.83.0/port-coding-agent
+repository: atomic-monorepo (linked worktree atomic-pi-0.83.0)
+topic: Pi v0.82.1..v0.83.0 upstream commit and file port matrix
+tags: [implementation, evidence, pi-0.83.0, port-matrix]
+status: complete
+last_updated: 2026-07-31
+last_updated_by: Claude Opus 5
+breaking_changes_allowed: false
+compatibility_context: Preserve Atomic public SDK, branding, CLI, paths, legacy PI_*/.pi aliases, providers, isolated runtime, Verbatim Compaction, and versionless manifests.
+---
+
+# Pi v0.83.0 Port Matrix
+
+This matrix classifies **every one of the 63 commits** in upstream `v0.82.1..v0.83.0` against
+Atomic's own `packages/coding-agent/src`. Each row carries the upstream SHA so the
+classification is checkable against the recorded evidence files, plus the Atomic file and line
+evidence for the outcome.
+
+Classification vocabulary — exactly one per commit:
+
+| Classification | Meaning |
+| --- | --- |
+| **ported** | Upstream behaviour now present in Atomic-owned source, adapted only where Atomic's file split requires it. |
+| **intentionally adapted** | Upstream behaviour is present, but the mechanism differs because Atomic's architecture differs. The difference is deliberate and stated. |
+| **inherited dependency** | The change lives in `packages/ai`, `packages/tui`, or `packages/agent`, which Atomic consumes as exact-resolved `@earendil-works/pi-*` `0.83.0`. Atomic vendors no copy. |
+| **equivalent** | Atomic already had the behaviour before this range; nothing to do. |
+| **not applicable** | No Atomic counterpart exists: upstream release stamps, upstream-only packages, repository governance, upstream test-harness maintenance, or bookkeeping commits. |
+
+## Source and counting basis
+
+- Commit inventory (63 rows): [`research/upstream-v0.82.1-v0.83.0-commits.txt:1-63`](upstream-v0.82.1-v0.83.0-commits.txt).
+- Per-commit changed paths: [`research/upstream-v0.82.1-v0.83.0-commit-paths.txt:1-352`](upstream-v0.82.1-v0.83.0-commit-paths.txt).
+- File inventory (124 rows): [`research/upstream-v0.82.1-v0.83.0-name-status.txt:1-124`](upstream-v0.82.1-v0.83.0-name-status.txt).
+- Range summary: [`research/upstream-v0.82.1-v0.83.0-log-stat.txt:1-937`](upstream-v0.82.1-v0.83.0-log-stat.txt).
+- Full upstream coding-agent patch: [`research/upstream-v0.82.1-v0.83.0-coding-agent.diff:1-2918`](upstream-v0.82.1-v0.83.0-coding-agent.diff).
+
+Atomic declares and resolves exact pi `0.83.0` for agent-core, AI, and TUI
+(`packages/coding-agent/package.json:83-85`; `package-lock.json:742-745`), adopted on the
+branch below this one (`pi-0.83.0/adopt-upstream`, commit `fb2025ea7`). Every
+**inherited dependency** row below rests on that resolution; this branch adds no copy of those
+packages.
+
+## Scope boundary of this change
+
+Upstream `99e34013` (`feat: auth print`) adds a door that emits a live credential to stdout. It
+is **deliberately not implemented in this change** and is classified below as **not applicable
+(to this layer)** with its own row, because it is delivered as a separate layer with its own
+security review (`pi-0.83.0/credential-export`). No credential-printing command, flag, help
+text, or credential resolver is added here. That is verifiable:
+
+```
+$ grep -rn "print-api-key\|print-bearer-token\|credential-print" packages/coding-agent/src
+(no matches)
+```
+
+One name upstream's commit also touches, `ModelRuntimeAuthOverrides.minOAuthValidityMs`, is
+already declared in Atomic and is **not** introduced by this branch: it arrived with the
+`ModelRuntime` adoption (`5ef323e3f`) at `packages/coding-agent/src/core/model-runtime-types.ts:21`
+and has no reader today. `git diff` for this branch does not touch that file. The credential-export
+layer is where it acquires a consumer.
+
+## Commit matrix (63/63)
+
+| # | Commit | Subject | Classification | Evidence |
+|---:|---|---|---|---|
+| 1 | `845d6ff1` | Release v0.83.0 | **not applicable** | Version stamps across upstream manifests, changelogs, and locks (`…commit-paths.txt:1-28`). Atomic keeps every `packages/*/package.json` at the `0.0.0` versionless placeholder (`packages/coding-agent/package.json:3`) and its own release identity. |
+| 2 | `44b26c9b` | fix(tui): format image fallback changes | **inherited dependency** | `packages/tui/src/terminal-image.ts` + its test (`…commit-paths.txt:29-32`). TUI is consumed as exact `@earendil-works/pi-tui@0.83.0` (`package-lock.json` `node_modules/@earendil-works/pi-tui`); Atomic vendors no TUI source. |
+| 3 | `f0499a63` | docs: audit changelogs since v0.82.1 | **not applicable** | Upstream `packages/{ai,coding-agent,tui}/CHANGELOG.md` only (`…commit-paths.txt:33-37`). Atomic maintains its own `[Unreleased]` history (`packages/coding-agent/CHANGELOG.md:3`). |
+| 4 | `34239180` | fix(ai): preserve function arguments with empty custom payloads | **inherited dependency** | `packages/ai/src/api/openai-completions.ts` (`…commit-paths.txt:38-41`). Tool-argument serialization is owned by `pi-ai`. |
+| 5 | `21f579a9` | chore: approve contributors from issue #7160 | **not applicable** | `.github/APPROVED_CONTRIBUTORS` only (`…commit-paths.txt:42-44`). Repository governance; no runtime symbol. |
+| 6 | `d7b02636` | Merge pull request #7272 (preserve-original-stop-reason) | **not applicable** | Merge bookkeeping; no independently listed paths (`…commit-paths.txt:45`). The merged behaviour is classified under rows 11–16. |
+| 7 | `5a2539a7` | update error messages copy to be more generic | **inherited dependency** | `packages/ai/src/api/{anthropic-messages,bedrock-converse-stream,google-generative-ai,google-vertex,mistral-conversations}.ts` (`…commit-paths.txt:46-56`). Provider error copy is `pi-ai`-owned. |
+| 8 | `bff5ab71` | fix(coding-agent): show system prompt files in startup context (#7266) | **intentionally adapted** | Upstream adds `getSystemPromptSource()`/`getAppendSystemPromptSources()` to one `resource-loader.ts` (`…coding-agent.diff:1032-1041,1120-1135,1177-1209`). Atomic's loader is split across thirteen modules, so the same contract lands as: interface (`packages/coding-agent/src/core/resource-loader-types.ts:44,46`), state (`core/resource-loader-internals.ts:59,61`), fields/getters (`core/resource-loader-core.ts:80,82,162,211-216`), path resolution helpers beside their reader (`core/resource-loader-context-files.ts:25-37`), and both reload branches — deferred (`core/resource-loader-reload.ts:198,206`) and full (`core/resource-loader-reload.ts:372,382`). The startup listing is in `modes/interactive/interactive-resource-rendering.ts:148-155`, not `interactive-mode.ts`. Test: `packages/coding-agent/test/interactive-mode-status-resources.suite.ts:415-429`. |
+| 9 | `4c1a0b92` | fix(ai): use Qwen thinking controls for token plan reasoning models | **inherited dependency** | `packages/ai/{scripts/generate-models.ts,src/types.ts}` (`…commit-paths.txt:68-72`). Generated reasoning capability metadata is AI-owned. |
+| 10 | `4f0437e2` | docs(agent): harness design v2 (harness-v2.md) | **not applicable** | `packages/agent/docs/harness-v2.md` only (`…commit-paths.txt:73-75`). Design documentation for the upstream agent package. |
+| 11 | `5a53f086` | fix(ai): preserve raw Mistral stop reasons | **inherited dependency** | `packages/ai/src/api/mistral-conversations.ts` (`…commit-paths.txt:76-79`). See the stop-reason note below. |
+| 12 | `e5ef8d06` | fix(ai): preserve raw OpenAI response statuses | **inherited dependency** | `packages/ai/src/api/openai-responses.ts` (`…commit-paths.txt:80-83`). |
+| 13 | `fe1c9b6d` | fix(ai): preserve raw OpenAI completion stop reasons | **inherited dependency** | `packages/ai/src/api/openai-completions.ts` (`…commit-paths.txt:84-87`). |
+| 14 | `637737ca` | fix(ai): preserve raw Bedrock stop reasons | **inherited dependency** | `packages/ai/src/api/bedrock-converse-stream.ts` (`…commit-paths.txt:88-91`). |
+| 15 | `926eb15c` | fix(ai): preserve raw Anthropic stop reasons | **inherited dependency** | `packages/ai/src/api/anthropic-messages.ts` (`…commit-paths.txt:92-95`). |
+| 16 | `23cb385b` | fix(ai): preserve google providers raw stop reason | **inherited dependency** | `packages/ai/src/api/{google-generative-ai,google-vertex}.ts` (`…commit-paths.txt:96-101`). |
+| 17 | `cced6a21` | fix(coding-agent): stop loading AGENTS.md twice in nested git worktrees (#7221) | **intentionally adapted** | Upstream puts `findShadowedContextFile` in `resource-loader.ts` (`…coding-agent.diff:1046-1091`). Atomic's context-file loading is its own module and its ancestor walk is `getAncestorDirectories`, not an inline `while (true)` loop, so the guard lands in `core/resource-loader-context-files.ts:69-95,122-130` and the shared `findGitPaths`/`GitPaths` export in `core/footer-data-provider.ts:12,22`. Tests (both the shadowed and the ordinary-repo case): `packages/coding-agent/test/pi-0.83.0-direct-fixes.test.ts:159-196`. |
+| 18 | `f9476a61` | fix(ai): update TypeBox nullable array validation (#7243) | **inherited dependency** | `packages/ai` TypeBox usage (`…commit-paths.txt:107-115`). Resolved by the single hoisted `typebox@1.3.7`: `grep -c '"node_modules/[^"]*typebox"' package-lock.json` is `1`. Adopted on `pi-0.83.0/reconcile-deps`/`adopt-upstream`; the removal is documented as a Breaking Change in `packages/coding-agent/CHANGELOG.md:7-17`. |
+| 19 | `fb4ecd63` | fix(tui): shorten image fallback paths and clamp width (#7262) | **inherited dependency** | `packages/tui/src/terminal-image.ts` (`…commit-paths.txt:116-120`). |
+| 20 | `7796481e` | chore: approve contributors from issue #7217 | **not applicable** | `.github/APPROVED_CONTRIBUTORS` (`…commit-paths.txt:121-123`). |
+| 21 | `a5db0e4f` | chore: approve contributors from issue #7219 | **not applicable** | `.github/APPROVED_CONTRIBUTORS` (`…commit-paths.txt:124-126`). |
+| 22 | `e9e86e1c` | chore: approve contributors from issue #7224 | **not applicable** | `.github/APPROVED_CONTRIBUTORS` (`…commit-paths.txt:127-129`). |
+| 23 | `0c32e83a` | fix(coding-agent): enable streaming usage for llama.cpp provider (#7258) | **ported** | `packages/coding-agent/src/extensions/llama/provider.ts:46` now sets `supportsUsageInStreaming: true`, matching `…coding-agent.diff:1215-1223` exactly. Test: `test/pi-0.83.0-direct-fixes.test.ts:36-49`. |
+| 24 | `027a5847` | feat(ai): add per-request fetch injection | **inherited dependency** | Thirteen `packages/ai` files plus `fetch-option.test.ts` (`…commit-paths.txt:133-148`). Transport injection is `pi-ai`-owned; Atomic's HTTP dispatcher (`core/http-dispatcher.ts`) is unaffected. |
+| 25 | `fdbedcad` | docs(agent): add refs to harness design | **not applicable** | Documentation-only, no independently listed paths (`…commit-paths.txt:149-151`). |
+| 26 | `47ca25fc` | Revert "fix(coding-agent): build-check-test (#7206)" | **not applicable** | Reverts `f1451955` inside the same range, so the range's net effect on Atomic is nil. Paired with row 28. |
+| 27 | `0d008b74` | fix(coding-agent): show tool expansion status | **ported** | Upstream replaces `this.ui.requestRender()` with a status line (`…coding-agent.diff:1383-1389`). Atomic: `src/modes/interactive/interactive-editor-actions.ts:80` now calls `this.showStatus(\`Tool output: ${expanded ? "expanded" : "collapsed"}\`)`; `showStatus` itself requests the render (`modes/interactive/interactive-render-chat.ts:44,54`), so no render is lost. Tests: `test/pi-0.83.0-direct-fixes.test.ts:76-93` and `test/interactive-mode-status-basic.suite.ts:72,80`. |
+| 28 | `f1451955` | fix(coding-agent): build-check-test (#7206) | **not applicable** | Reverted in-range by `47ca25fc` (row 26); nothing from it survives to `v0.83.0`. |
+| 29 | `cefa40ed` | fix(coding-agent): guard tree navigation during responses (#7022) | **intentionally adapted** | Three upstream hunks (`…coding-agent.diff:782-791,857-866,1392-1410`). Atomic ports the guard verbatim into its split tree module (`core/agent-session-tree.ts:35-39`, same message) and the interactive caller (`modes/interactive/interactive-session-routing.ts:113-118` live-leaf comparison; `:177-183` abort-before-navigate with queued-message restore). The teardown settle is **adapted**: upstream's unconditional `await this.session.abort()` inside `teardownCurrent` is replaced by an overridable `settleActiveResponseBeforeTeardown()` that no-ops unless the session is streaming (`core/agent-session-runtime.ts:232-249`), and `IsolatedInteractiveRuntime` overrides it to a no-op (`modes/interactive-engine/isolated-runtime.ts:278-285`). Reason: in the isolated engine the host facade's `abort` is `abortAndRecover()`, an unbounded cooperative round trip (`modes/interactive-engine/isolated-runtime.ts:312,469-484`); calling it during teardown would hang every session replacement on an unresponsive or dead engine, which is precisely what Atomic's engine-recovery work (`2a6b716f1`, `#2076`) exists to survive. The child engine settles and persists its own turn before it reports the replacement. Test: `test/pi-0.83.0-direct-fixes.test.ts:257-271`. |
+| 30 | `2fe21b40` | fix(ai): send max_tokens for Z.AI providers (#7174) | **inherited dependency** | `packages/ai/{scripts/generate-models.ts,src/api/openai-completions.ts}` (`…commit-paths.txt:170-174`). |
+| 31 | `0563a7c0` | fix(coding-agent): clean up failed git installs (#7210) | **ported** | Upstream wraps clone/checkout/install in `try`/`catch` with `rmSync` + `pruneEmptyGitParents` (`…coding-agent.diff:986-1011`). Atomic's git install lives in `core/package-manager-git.ts`; the same wrapper is at `:105-121`, reusing the `pruneEmptyGitParents` helper Atomic already had at `:184-202`. Tests (clone failure and dependency-install failure): `test/pi-0.83.0-direct-fixes.test.ts:198-255`. |
+| 32 | `f1ea6c0d` | fix(coding-agent): reset model selector selection to top row when filtering (#7211) | **ported** | `src/modes/interactive/components/model-selector.ts:241-244` is upstream's line verbatim, comment included (`…coding-agent.diff:1318-1322`). Test: `test/pi-0.83.0-direct-fixes.test.ts:51-74`. |
+| 33 | `5d548ae9` | fix: rpc bash no longer bypass user_bash (#7214) | **intentionally adapted** | Upstream edits one `case "bash"` in `rpc-mode.ts` (`…coding-agent.diff:1418-1442`). Atomic's RPC is split: command dispatch is `modes/rpc/rpc-command-handler.ts` and the correlated client wait is `modes/rpc/rpc-client-waits.ts:48-75`. The interception is added inside Atomic's request-owner wrapper (`modes/rpc/rpc-command-handler.ts:258-289`) rather than around a bare `executeBash`, so request-scoped ownership, streaming correlation, single terminal response, and the owner-side `recordBashResult` persist/defer policy (`modes/rpc/rpc-bash-request-owners.ts:35-53`) are all preserved — upstream's inline `session.recordBashResult` would have bypassed them. `bash` and `user_bash` now share one executor body. Test: `test/pi-0.83.0-direct-fixes.test.ts:273-303`. |
+| 34 | `66eead65` | fix(coding-agent): preserve resource metadata after extension resource reloads (#7218) | **intentionally adapted** | Upstream promotes the reload-local `metadataByPath` to an instance field (`…coding-agent.diff:1103,1116,1139-1163,1170-1173`). Atomic's reload is a free function over a state object, so the map is declared on the internals contract (`core/resource-loader-internals.ts:68-72`), initialized in the constructor (`core/resource-loader-core.ts:87,169`), reset and reused by both reload branches (`core/resource-loader-reload.ts:177,215-218`), and passed by `extendResources` to all three async updaters (`core/resource-loader-core.ts:270,278,286`) — Atomic's updaters are the `…Async` variants that already accept an optional metadata map (`core/resource-loader-assets.ts:45-55,75-105,127-137`). |
+| 35 | `b6fb91e5` | fix(coding-agent): include scoped models in TUI extension context (#7215) | **ported** | Upstream adds `scopedModels: this.session.scopedModels` to the TUI shortcut context (`…coding-agent.diff:1375-1382`). Atomic's counterpart literal is `modes/interactive/interactive-extension-runtime.ts:38`. |
+| 36 | `063fb963` | fix(coding-agent): isolate autoload-disabled package test from real home directory (#7167) | **not applicable** | `packages/coding-agent/test/package-manager.test.ts` only (`…commit-paths.txt:194-196`), an upstream test-isolation fix (`vi.stubEnv("HOME", …)`, `…coding-agent.diff:1818-1825`). Atomic's package-manager suites are independently organized and already isolate the agent directory per fixture. |
+| 37 | `b63403a5` | fix(ai): prefer configured Bedrock profile over ambient AWS keys (#7176) | **inherited dependency** | `packages/ai/src/api/bedrock-converse-stream.ts` + `bedrock-credentials.test.ts` (`…commit-paths.txt:197-200`). |
+| 38 | `04b15259` | feat(extensions): expose ctx.scopedModels to extensions (#7191) | **ported** | Upstream touches `core/extensions/{types,runner}.ts`, `core/agent-session.ts`, and `docs/extensions.md` (`…coding-agent.diff:868-946`). Atomic's `core/extensions/types.ts` is a re-export barrel (`:20,25`), so the declarations land in the responsibility modules it re-exports: `ExtensionContext.scopedModels` in `core/extensions/context-types.ts:97-101`, `ExtensionContextActions.getScopedModels` in `core/extensions/runtime-types.ts:172`, the runner field/wiring in `core/extensions/runner.ts:12,128,193,401`, the context source and lazy getter in `core/extensions/runner-context.ts:5,35,93-96`, and the session binding in `core/agent-session-extension-bindings.ts:221-225`. **Isolated-engine adaptation:** the binding reads the public `this.scopedModels` accessor rather than the `_scopedModels` field, because under the isolated engine `RemoteModelCatalog` redefines `scopedModels` on the host-side facade session to the engine's catalogue (`modes/interactive-engine/remote-model-catalog.ts:58`) and never refreshes the private field. Documented at `packages/coding-agent/docs/extensions.md:1034-1047`; changelog entry at `packages/coding-agent/CHANGELOG.md:19-21`. Test: `test/pi-0.83.0-direct-fixes.test.ts:139-157`. |
+| 39 | `2903063d` | chore: approve contributors from issue #7171 | **not applicable** | `.github/APPROVED_CONTRIBUTORS` (`…commit-paths.txt:208-210`). |
+| 40 | `c820aa26` | Merge branch 'design/durable-agent-harness' | **not applicable** | Merge bookkeeping; no independently listed paths (`…commit-paths.txt:211`). |
+| 41 | `e8f9c071` | docs(agent): durable AgentHarness design (harness.md) | **not applicable** | `packages/agent/docs/harness.md` (`…commit-paths.txt:212-214`). |
+| 42 | `a597371b` | Merge pull request #7117 (coding-agent evals) | **not applicable** | Merge bookkeeping (`…commit-paths.txt:215`). Its content is rows 43, 44, 46–49. |
+| 43 | `b0864a66` | fix(coding-agent): preserve eval run diagnostics | **not applicable** | `packages/evals/src/{extensions.eval,pi-harness}.ts` (`…commit-paths.txt:216-219`). Atomic's eval suite is the independent Python Harbor/Pier suite under root `evals/`, not upstream's Vitest `packages/evals`. |
+| 44 | `b56a35f9` | fix(coding-agent): project typed eval outputs | **not applicable** | `packages/evals/{README.md,src/extensions.eval.ts,src/pi-harness.ts}` (`…commit-paths.txt:220-224`). |
+| 45 | `99e34013` | feat: auth print (#7168) | **not applicable (to this layer)** | Adds `packages/coding-agent/src/cli/credential-print.ts`, `cli/args.ts` help text, a `main.ts` dispatch branch, `core/model-runtime.ts` `minOAuthValidityMs`, and `test/credential-print.test.ts` (`…commit-paths.txt:225-234`; `…coding-agent.diff:593-777,969-981,1224-1305,1443-1552`). This is the only door in the range that emits a live secret, and it is delivered as its own reviewed layer (`pi-0.83.0/credential-export`), not here. Verified absent from this branch: `grep -rn "print-api-key\|print-bearer-token\|credential-print" packages/coding-agent/src` returns nothing. `minOAuthValidityMs` is pre-existing and unread — see "Scope boundary of this change" above. |
+| 46 | `af19a9ee` | fix(coding-agent): simplify extension eval prompt | **not applicable** | `packages/evals/src/extensions.eval.ts` (`…commit-paths.txt:235-237`). |
+| 47 | `95d1c60f` | fix(coding-agent): simplify multi-step eval input | **not applicable** | `packages/evals/src/{extensions.eval,pi-harness}.ts` (`…commit-paths.txt:238-241`). |
+| 48 | `9423204c` | fix(coding-agent): clarify eval harness errors | **not applicable** | `packages/evals/src/pi-harness.ts` (`…commit-paths.txt:242-244`). |
+| 49 | `8a976324` | fix(coding-agent): keep eval scenarios in test cases | **not applicable** | `packages/evals/{README.md,src/extensions.eval.ts,src/pi-harness.ts}` (`…commit-paths.txt:245-249`). |
+| 50 | `2efa728d` | fix(coding-agent): support concurrent user bash cancellation (#7103) | **intentionally adapted** | Upstream replaces a single `_bashAbortController` with a `Set` (`…coding-agent.diff:800-854`). Atomic already carried a strictly stronger structure from the 0.82.1 port: a **request-keyed `Map`** (`core/agent-session.ts:111`) that supports both concurrent execution and *targeted* cancellation by request id (`core/agent-session-bash.ts:22-24,53,95-102`), with `isBashRunning` as `size > 0` (`core/agent-session-accessors.ts:124-127`) and RPC-level owners on top (`modes/rpc/rpc-bash-request-owners.ts:56-60`). The map is retained; the one behaviour upstream's `[...set]` copy contributes — a cancellation sweep that a listener mutating the collection cannot shorten — is adopted at `core/agent-session-bash.ts:100-102`. |
+| 51 | `c2275d67` | fix(coding-agent): prevent duplicate messages on startup session switch (#7110) | **ported** | Upstream captures the session before the async extension bind and returns if it changed (`…coding-agent.diff:1347-1374`). Atomic: `modes/interactive/interactive-session-runtime.ts:109-127`. Upstream's `renderBeforeBind` reordering is not carried because Atomic renders outside `rebindCurrentSession` (`modes/interactive/interactive-session-routing.ts:34,289,310`); only the stale-rebind guard is load-bearing. Test: `test/pi-0.83.0-direct-fixes.test.ts:95-137`. |
+| 52 | `61da9e2f` | feat(ai): add manual redirect URL fallback to OpenRouter OAuth login (#7114) | **inherited dependency** | `packages/ai/src/auth/oauth/openrouter.ts` + test; the coding-agent change is `docs/providers.md` copy (`…commit-paths.txt:258-262`). The OpenRouter PKCE protocol is `pi-ai`-owned; the doc line is P6 docs-sync scope. |
+| 53 | `f9a49869` | feat(ai): expose pending stop reason while streaming (#7151) | **inherited dependency** | Fourteen `packages/ai` files plus `packages/agent/src/proxy.ts`; the coding-agent changes are docs and upstream test-harness updates (`…commit-paths.txt:263-291`). The new `pending` streaming stop reason is produced by `pi-ai`. See the risk note below. |
+| 54 | `60f6a803` | feat(ai): add GitHub Copilot Claude Opus 5 support (#7158) | **inherited dependency** | `packages/ai/{CHANGELOG.md,scripts/generate-models.ts,test/github-copilot-anthropic.test.ts}` (`…commit-paths.txt:292-296`). Generated model metadata only; Atomic removed all Copilot-specific handling, so `github-copilot` behaves exactly like upstream and there is no Atomic seam. |
+| 55 | `f08f58f5` | fix(coding-agent): run coding-agent tests offline by default (#7031) | **not applicable** | Upstream test-harness policy: `test/test-network-env.ts`, seven upstream test files, and upstream's `vitest.config.ts` (`…commit-paths.txt:297-307`). Atomic already gates network-dependent suites on its own credentials/offline conditions (for example `describe.skipIf(!API_KEY)` in `packages/coding-agent/test/agent-session-tree-navigation.test.ts:15`), and its per-test timeout policy is repository-owned (`AGENTS.md`, `test/helpers/test-timeout.ts`). |
+| 56 | `5f9d025e` | chore: approve contributors from issue #7143 | **not applicable** | `.github/APPROVED_CONTRIBUTORS` (`…commit-paths.txt:308-310`). |
+| 57 | `3cd39163` | chore: approve contributors from issue #7132 | **not applicable** | `.github/APPROVED_CONTRIBUTORS` (`…commit-paths.txt:311-313`). |
+| 58 | `cee5ff75` | ref: remove openclaw reference from readme | **not applicable** | `packages/coding-agent/README.md` copy (`…commit-paths.txt:314-316`). Atomic's README is separately branded and carries no such reference. |
+| 59 | `a0ac81c0` | fix(coding-agent): distinguish eval invariants | **not applicable** | `packages/evals/src/extensions.eval.ts` (`…commit-paths.txt:317-319`). |
+| 60 | `4b8accab` | fix(coding-agent): simplify eval normalization | **not applicable** | `packages/evals/*` plus the upstream root lock (`…commit-paths.txt:320-324`). |
+| 61 | `73c1696d` | fix(coding-agent): use focused eval harness | **not applicable** | `packages/evals/*`, upstream `biome.json`, upstream lock (`…commit-paths.txt:325-334`). |
+| 62 | `66fbdb1c` | feat(coding-agent): add extension creation eval | **not applicable** | `packages/evals/*`, upstream `biome.json`, upstream lock (`…commit-paths.txt:335-344`). |
+| 63 | `5bc1c2c0` | Add [Unreleased] section for next cycle | **not applicable** | Changelog headings in four upstream packages (`…commit-paths.txt:345-352`). Atomic already has its own `[Unreleased]` section. |
+
+### Totals
+
+| Classification | Commits | Count |
+| --- | --- | ---: |
+| **ported** | `0c32e83a`, `0d008b74`, `0563a7c0`, `f1ea6c0d`, `b6fb91e5`, `04b15259`, `c2275d67` | 7 |
+| **intentionally adapted** | `bff5ab71`, `cced6a21`, `cefa40ed`, `5d548ae9`, `66eead65`, `2efa728d` | 6 |
+| **inherited dependency** | `44b26c9b`, `34239180`, `5a2539a7`, `4c1a0b92`, `5a53f086`, `e5ef8d06`, `fe1c9b6d`, `637737ca`, `926eb15c`, `23cb385b`, `f9476a61`, `fb4ecd63`, `027a5847`, `2fe21b40`, `b63403a5`, `61da9e2f`, `f9a49869`, `60f6a803` | 18 |
+| **equivalent** | — | 0 |
+| **not applicable** | rows 1, 3, 5, 6, 10, 20, 21, 22, 25, 26, 28, 36, 39–44, 46–49, 55–63 | 31 |
+| **not applicable (to this layer)** | `99e34013` (row 45) — credential export, delivered on `pi-0.83.0/credential-export` | 1 |
+| **total** | every SHA in `upstream-v0.82.1-v0.83.0-commits.txt`, exactly once | **63** |
+
+`7 + 6 + 18 + 0 + 31 + 1 = 63`. `04b15259` and `b6fb91e5` are two commits delivering one
+feature (`ctx.scopedModels`) and are counted as the two commits they are.
+
+## File matrix — the fifteen upstream `coding-agent/src` files (15/15)
+
+`research/upstream-v0.82.1-v0.83.0-name-status.txt` lists 124 changed files, of which 15 are
+under `packages/coding-agent/src`. Everything else is `packages/{agent,ai,tui,evals,server,storage}`,
+upstream tests, upstream docs, upstream examples, upstream locks/manifests, or repository
+governance, and is covered by its commit row above.
+
+| Upstream file | Atomic counterpart | Classification |
+| --- | --- | --- |
+| `src/cli/args.ts` | — | **not applicable (to this layer)** — help text for `auth print-*` only; ships with `pi-0.83.0/credential-export`. |
+| `src/cli/credential-print.ts` (new) | — | **not applicable (to this layer)** — see row 45. |
+| `src/core/agent-session-runtime.ts` | `src/core/agent-session-runtime.ts:232-249` | **intentionally adapted** (`cefa40ed`) — overridable settle instead of an unconditional abort. |
+| `src/core/agent-session.ts` | `src/core/agent-session-tree.ts:35-39`; `src/core/agent-session-bash.ts:22-24,53,95-102`; `src/core/agent-session-extension-bindings.ts:221-225` | **ported** + **intentionally adapted** — Atomic splits `AgentSession` across the `agent-session-*.ts` modules. |
+| `src/core/extensions/runner.ts` | `src/core/extensions/runner.ts:12,128,193,401`; `runner-context.ts:5,35,93-96` | **ported** (`04b15259`). |
+| `src/core/extensions/types.ts` | `src/core/extensions/types.ts:20,25` (barrel) → `context-types.ts:97-101`, `runtime-types.ts:172` | **ported** (`04b15259`). |
+| `src/core/footer-data-provider.ts` | `src/core/footer-data-provider.ts:12,22` | **ported** (`cced6a21`) — `GitPaths`/`findGitPaths` exported verbatim. |
+| `src/core/model-runtime.ts` | `src/core/model-runtime-types.ts:21` | **equivalent** — `ModelRuntimeAuthOverrides.minOAuthValidityMs` is already declared in Atomic (`5ef323e3f`); this branch does not touch the file. Its reader ships with `pi-0.83.0/credential-export`. |
+| `src/core/package-manager.ts` | `src/core/package-manager-git.ts:105-121` | **ported** (`0563a7c0`). |
+| `src/core/resource-loader.ts` | `resource-loader-types.ts`, `-internals.ts`, `-core.ts`, `-context-files.ts`, `-reload.ts` | **intentionally adapted** (`bff5ab71`, `cced6a21`, `66eead65`) — thirteen-module split. |
+| `src/extensions/llama/provider.ts` | `src/extensions/llama/provider.ts:46` | **ported** (`0c32e83a`). |
+| `src/main.ts` | — | **not applicable (to this layer)** — the `runCredentialPrintCommand` dispatch. |
+| `src/modes/interactive/components/model-selector.ts` | same path, `:241-244` | **ported** (`f1ea6c0d`). |
+| `src/modes/interactive/interactive-mode.ts` | `interactive-resource-rendering.ts:148-155`; `interactive-session-runtime.ts:110-127`; `interactive-extension-runtime.ts:38`; `interactive-editor-actions.ts:80`; `interactive-session-routing.ts:113-118,177-183` | **ported** + **intentionally adapted** — Atomic splits `InteractiveMode` across `interactive-*.ts` prototype modules. |
+| `src/modes/rpc/rpc-mode.ts` | `src/modes/rpc/rpc-command-handler.ts:258-289` (with `rpc-client-waits.ts:48-75`, `rpc-bash-request-owners.ts:35-60`) | **intentionally adapted** (`5d548ae9`). |
+
+## Atomic-owned risks carried forward (P4)
+
+These are **not** resolved by this branch; they are the probe list for the regression-probe
+layer, restated here because the inheritance claim above depends on them holding.
+
+- **Raw stop reasons** (`926eb15c`, `637737ca`, `23cb385b`, `5a53f086`, `e5ef8d06`, `fe1c9b6d`).
+  Upstream states that unmapped terminal reasons now surface as provider errors rather than
+  successful stops. Atomic's isolated engine, RPC projection, branch summaries, and Verbatim
+  Compaction all consume stop reasons. A path that previously completed and now errors is a
+  regression, not an inheritance.
+- **`pending` streaming stop reason** (`f9a49869`). The isolated-engine protocol is at version
+  `2`; an unhandled `pending` reaching that protocol or the RPC message projection is a defect.
+
+## Verification for this branch
+
+```
+npm run check                                   # biome + tsc --noEmit + shrinkwrap check — green
+npm run test:unit                               # 5646 passed, 2 skipped
+npm run test:integration                        # 484 passed, 1 skipped
+npm run test --workspace=@bastani/atomic        # 2940 passed, 29 skipped, 0 failed
+```

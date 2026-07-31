@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
@@ -31,6 +32,7 @@ export interface ExtensionContextSource {
 	getSessionManager(): SessionManager;
 	getModelRegistry(): ModelRegistry;
 	getModel(): Model<Api> | undefined;
+	getScopedModels(): readonly ScopedModel[];
 	getThinkingLevel(): ThinkingLevel | undefined;
 	getOrchestrationContext(): OrchestrationContext | undefined;
 	isIdle(): boolean;
@@ -87,6 +89,10 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		get model() {
 			source.assertActive();
 			return source.getModel();
+		},
+		get scopedModels() {
+			source.assertActive();
+			return source.getScopedModels();
 		},
 		get thinkingLevel() {
 			source.assertActive();

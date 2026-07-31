@@ -97,7 +97,9 @@ export function abortBash(this: AgentSession, id?: string): void {
 		this._bashAbortControllers.get(id)?.abort();
 		return;
 	}
-	for (const controller of this._bashAbortControllers.values()) controller.abort();
+	// Snapshot first: aborting settles owners, and a listener that removes its own
+	// entry must not shorten the cancellation sweep.
+	for (const controller of [...this._bashAbortControllers.values()]) controller.abort();
 }
 
 /** Whether a bash command is currently running */

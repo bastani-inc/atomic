@@ -4,6 +4,7 @@ import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-a
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { ResourceOverlap } from "../diagnostics.ts";
 import type { CustomMessage } from "../messages.ts";
+import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
@@ -168,6 +169,7 @@ export interface ExtensionActions {
  */
 export interface ExtensionContextActions {
 	getModel: () => Model<Api> | undefined;
+	getScopedModels: () => readonly ScopedModel[];
 	getThinkingLevel: () => ThinkingLevel | undefined;
 	isIdle: () => boolean;
 	isProjectTrusted: () => boolean;

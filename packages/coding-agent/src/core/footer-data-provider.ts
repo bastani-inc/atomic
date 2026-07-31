@@ -9,7 +9,7 @@ import {
 } from "../utils/fs-watch.ts";
 import { createGitEnvironment } from "../utils/git-env.ts";
 
-type GitPaths = {
+export type GitPaths = {
 	repoDir: string;
 	commonGitDir: string;
 	headPath: string;
@@ -19,7 +19,7 @@ type GitPaths = {
  * Find git metadata paths by walking up from cwd.
  * Handles both regular git repos (.git is a directory) and worktrees (.git is a file).
  */
-function findGitPaths(cwd: string): GitPaths | null {
+export function findGitPaths(cwd: string): GitPaths | null {
 	let dir = cwd;
 	while (true) {
 		const gitPath = join(dir, ".git");

@@ -32,6 +32,12 @@ export async function navigateTree(
 	targetId: string,
 	options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
 ): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
+	// Navigating away mid-response would strand the in-flight turn's tool calls on
+	// the abandoned branch. Callers abort first, then navigate.
+	if (this.isStreaming) {
+		throw new Error("Wait for the current response to finish before navigating the session tree.");
+	}
+
 	const oldLeafId = this.sessionManager.getLeafId();
 
 	// No-op if already at target

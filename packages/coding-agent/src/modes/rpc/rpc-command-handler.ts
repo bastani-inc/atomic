@@ -264,13 +264,26 @@ export function createRpcCommandHandler({
 						excludeFromContext: command.excludeFromContext,
 						isCurrent: () => getSession() === session,
 					},
-					(onUpdate) =>
-						session.executeBash(command.command, onUpdate, {
+					// A `bash` command is still a user-initiated shell request, so it must
+					// reach `user_bash` handlers (sandboxes, remote shells) exactly like the
+					// `user_bash` command does. Ownership, streaming correlation, and result
+					// recording stay with the owning request either way.
+					async (onUpdate) => {
+						const intercepted = await session.extensionRunner.emitUserBash({
+							type: "user_bash",
+							command: command.command,
+							excludeFromContext: command.excludeFromContext === true,
+							cwd: session.sessionManager.getCwd(),
+						});
+						if (intercepted?.result) return intercepted.result;
+						return session.executeBash(command.command, onUpdate, {
 							excludeFromContext: command.excludeFromContext,
 							id,
+							operations: intercepted?.operations,
 							emitEvent: false,
 							recordResult: false,
-						}),
+						});
+					},
 				);
 				return createRpcSuccessResponse(id, "bash", result);
 			}

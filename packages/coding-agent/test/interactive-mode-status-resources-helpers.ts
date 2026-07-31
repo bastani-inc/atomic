@@ -13,6 +13,8 @@ export function createShowLoadedResourcesThis(options: {
 	skills?: Array<{ filePath: string; name: string }>;
 	skillDiagnostics?: Array<{ type: "warning" | "error" | "collision"; message: string }>;
 	overlaps?: ResourceOverlap[];
+	systemPromptSource?: { path: string };
+	appendSystemPromptSources?: Array<{ path: string }>;
 	useRealScopeGroups?: boolean;
 }) {
 	const fakeThis: any = {
@@ -35,6 +37,8 @@ export function createShowLoadedResourcesThis(options: {
 			resourceLoader: {
 				getPathMetadata: () => new Map(),
 				getAgentsFiles: () => ({ agentsFiles: options.contextFiles ?? [] }),
+				getSystemPromptSource: () => options.systemPromptSource,
+				getAppendSystemPromptSources: () => options.appendSystemPromptSources ?? [],
 				getSkills: () => ({
 					skills: options.skills ?? [],
 					diagnostics: options.skillDiagnostics ?? [],

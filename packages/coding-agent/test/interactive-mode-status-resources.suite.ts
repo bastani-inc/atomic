@@ -412,6 +412,22 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).not.toContain("available");
 	});
 
+	test("lists system prompt sources before project context files", () => {
+		const cwd = path.join(homedir(), "Development", "pi-mono");
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			cwd,
+			systemPromptSource: { path: path.join(cwd, ".atomic", "SYSTEM.md") },
+			appendSystemPromptSources: [{ path: path.join(cwd, ".atomic", "APPEND_SYSTEM.md") }],
+			contextFiles: [{ path: path.join(cwd, "AGENTS.md") }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+
+		const output = renderAll(fakeThis.chatContainer).replace(/\\/g, "/");
+		expect(output).toContain(".atomic/SYSTEM.md, .atomic/APPEND_SYSTEM.md, AGENTS.md");
+	});
+
 	test("shows full context paths when expanded", () => {
 		const home = homedir();
 		const cwd = path.join(home, "Development", "pi-mono");

@@ -229,7 +229,23 @@ export class AgentSessionRuntime {
 		this.session.dispose();
 	}
 
+	/**
+	 * Settle an active response before the session it belongs to is replaced, so the
+	 * aborted turn (including its tool results) is persisted to the outgoing session
+	 * rather than stranded.
+	 *
+	 * Overridable because the isolated engine must not re-enter its cooperative
+	 * abort wait here: the child engine settles its own turn before it reports the
+	 * replacement, and the host facade's `abort()` is an unbounded round trip that
+	 * would hang teardown on an unresponsive or dead engine.
+	 */
+	protected async settleActiveResponseBeforeTeardown(): Promise<void> {
+		if (!this.session.isStreaming) return;
+		await this.session.abort();
+	}
+
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
+		await this.settleActiveResponseBeforeTeardown();
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason,
