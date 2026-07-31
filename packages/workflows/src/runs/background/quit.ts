@@ -26,6 +26,7 @@ import {
 	type StageControlHandle,
 	type StageControlRegistry,
 } from "../foreground/stage-control-registry.js";
+import { jobTracker as defaultJobTracker, type JobTracker } from "./job-tracker.js";
 import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
 
 export type QuitRunResult =
@@ -81,11 +82,13 @@ export async function quitRun(
 		store?: Store;
 		stageControlRegistry?: StageControlRegistry;
 		toolControlRegistry?: ToolControlRegistry;
+		jobs?: JobTracker;
 	},
 ): Promise<QuitRunResult> {
 	const activeStore = opts?.store ?? defaultStore;
 	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
 	const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
+	const jobs = opts?.jobs ?? defaultJobTracker;
 	const run = activeStore.runs().find((candidate) => candidate.id === runId);
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
@@ -158,6 +161,12 @@ export async function quitRun(
 	if (durableTransition === "refused") return { ok: false, runId, reason: "already_ended" };
 	for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
 	activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
+	// An abandoned callback keeps its executor alive, but that executor is no
+	// longer authoritative for this run id: detach it so `/workflow resume`
+	// relaunches a fresh executor instead of adopting the stale job and
+	// reporting a running run nothing is actually running. Cooperative quits
+	// settle on their own and unregister themselves.
+	if (abandonedTools.length > 0) jobs.detach(runId, jobs.get(runId));
 	return { ok: true, runId, paused, cancelledTools, abandonedTools };
 }
 
@@ -297,6 +306,7 @@ export async function quitAllRuns(opts?: {
 	store?: Store;
 	stageControlRegistry?: StageControlRegistry;
 	toolControlRegistry?: ToolControlRegistry;
+	jobs?: JobTracker;
 }): Promise<QuitAllRunResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
@@ -305,6 +315,7 @@ export async function quitAllRuns(opts?: {
 			store: activeStore,
 			stageControlRegistry: opts?.stageControlRegistry,
 			toolControlRegistry: opts?.toolControlRegistry,
+			jobs: opts?.jobs,
 		}),
 	);
 	const settled = await Promise.allSettled(attempts);

@@ -26,7 +26,7 @@ import type { RunOpts, RunResult } from "../foreground/executor.js";
 import { run as syncRun } from "../foreground/executor.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
 import { cancellationRegistry as defaultCancellationRegistry } from "./cancellation-registry.js";
-import type { JobTracker } from "./job-tracker.js";
+import type { JobEntry, JobTracker } from "./job-tracker.js";
 import { jobTracker as defaultJobTracker } from "./job-tracker.js";
 
 // ---------------------------------------------------------------------------
@@ -136,15 +136,19 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 	// 5-7. Register the job BEFORE starting the executor, so a registration
 	//   failure can never leave a started (and now-orphaned) executor running.
 	//   The job promise settles when the executor settles; it is wired below.
+	//   Cleanup is identity-conditional throughout: an abandoned executor may
+	//   settle long after a resume registered its replacement under the same run
+	//   id, and it must never evict that replacement.
 	let settleJob: () => void = () => {};
 	const voidPromise: Promise<void> = new Promise<void>((resolve) => {
 		settleJob = resolve;
 	});
+	const jobEntry: JobEntry = { runId, controller, promise: voidPromise };
 	try {
-		tracker.register({ runId, controller, promise: voidPromise });
+		tracker.register(jobEntry);
 	} catch (error) {
 		controller.abort(error);
-		registry.unregister(runId);
+		registry.unregister(runId, controller);
 		settleJob();
 		throw error;
 	}
@@ -153,8 +157,8 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 		backgroundPromise = syncRun(def, inputs, execOpts);
 	} catch (error) {
 		controller.abort(error);
-		registry.unregister(runId);
-		tracker.unregister(runId);
+		registry.unregister(runId, controller);
+		tracker.unregister(runId, jobEntry);
 		settleJob();
 		throw error;
 	}
@@ -162,8 +166,8 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 		try {
 			onRawSettled?.(ok, result, error);
 		} finally {
-			registry.unregister(runId);
-			tracker.unregister(runId);
+			registry.unregister(runId, controller);
+			tracker.unregister(runId, jobEntry);
 			settleJob();
 		}
 	};

@@ -86,7 +86,11 @@ import { toolControlRegistry as defaultToolControlRegistry } from "./run-tool-co
 import { createTrackedToolPrimitive } from "./run-tool-node-lifecycle.js";
 import { EngineRuntime } from "./runtime.js";
 import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
-import { findWorkflowGracefulQuit, WORKFLOW_GRACEFUL_QUIT_EXIT_REASON } from "./workflow-tool-abort.js";
+import {
+	findWorkflowGracefulQuit,
+	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+	type WorkflowGracefulQuitSignal,
+} from "./workflow-tool-abort.js";
 
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 export function run<
@@ -197,7 +201,11 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		return classified;
 	};
 	activeStore.recordRunStart(runSnapshot);
-	if (!opts.signal) opts.cancellation?.register(runId, ownController);
+	// Only the registration's owner may remove it, and only while it is still the
+	// registered controller: an abandoned executor finalizing late must not evict
+	// the replacement run that now owns this id.
+	const ownsCancellationRegistration = opts.signal === undefined && opts.cancellation !== undefined;
+	if (ownsCancellationRegistration) opts.cancellation?.register(runId, ownController);
 	opts.onRunStart?.(runSnapshot);
 	if (opts.persistence) {
 		appendRunStart(opts.persistence, {
@@ -390,7 +398,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		isChildRun: opts.parentRun !== undefined,
 		continuationSourceId: opts.continuation?.source.id,
 	});
-	const { tool, admittedTools, abandonInFlightAsCancelled } = createTrackedToolPrimitive({
+	const { tool, admittedTools, abandonInFlightAsCancelled, observedQuitCancellation } = createTrackedToolPrimitive({
 		workflowId: runId,
 		backend: durableBackend,
 		nextCheckpointId: checkpointIdGenerator,
@@ -404,6 +412,25 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		toolAdmission,
 	});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
+	/**
+	 * Suspend the executor for a whole-run graceful quit.
+	 *
+	 * `quitRun()` owns the local and durable paused/resumable publication, so
+	 * this deliberately records no run end, no terminal persistence, no durable
+	 * terminal status, and no `endedAt`. Unsettled callbacks are abandoned rather
+	 * than drained so the background job releases and resume can relaunch.
+	 * Both the success and failure paths return through here so they cannot drift.
+	 */
+	const suspendForGracefulQuit = (reason: WorkflowGracefulQuitSignal): RunResult => {
+		abandonInFlightAsCancelled(reason);
+		return {
+			runId,
+			status: "paused",
+			exitReason: WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+			stages: [...runSnapshot.stages],
+			toolNodes: [...(runSnapshot.toolNodes ?? [])],
+		};
+	};
 	// Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
 	const resolvePromptNodeTopology = createDurableStageTopologyResolver(durableBackend, runId);
 	let promptNodeUi: ReturnType<typeof buildPromptNodeUiAdapter> | undefined;
@@ -538,6 +565,16 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		}
 		selectedAdmittedToolFailure = admittedTools.firstFailure();
 		if (normalTerminalEvent?.kind === "failure") throw normalTerminalEvent.error;
+		// Whole-run quit is authoritative even when author code caught the tool
+		// rejection and returned normally: this executor observed its own call
+		// aborted (or refused) by that quit, so the caught call's later return must
+		// not become a terminal completion over quit's paused record. A catch may
+		// clean up; it is not an opt-out. Targeted node abort (scope "node") never
+		// closes admission, and a quit that only paused stages — which a later
+		// resume legitimately releases — never reaches a tool, so neither suspends
+		// a run here.
+		const quitDuringSuccess = observedQuitCancellation();
+		if (quitDuringSuccess !== undefined) return suspendForGracefulQuit(quitDuringSuccess);
 
 		const result = normalizeWorkflowRunOutput(def.name, rawResult);
 		assertWorkflowRunOutputs(def.name, result, def.outputs);
@@ -569,19 +606,13 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		terminalEvents.selectFailure(err);
 		// Graceful quit is a suspension, not a terminal outcome: `quitRun` owns the
 		// paused/resumable record, so the executor must not write a terminal store
-		// or durable status here. Unsettled callbacks are abandoned rather than
-		// drained so the background job releases and durable resume can relaunch.
-		const gracefulQuit = findWorkflowGracefulQuit(err) ?? findWorkflowGracefulQuit(ownController.signal.reason);
-		if (gracefulQuit !== undefined) {
-			abandonInFlightAsCancelled(gracefulQuit);
-			return {
-				runId,
-				status: "paused",
-				exitReason: WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
-				stages: [...runSnapshot.stages],
-				toolNodes: [...(runSnapshot.toolNodes ?? [])],
-			};
-		}
+		// or durable status here. The admission reason comes first so author code
+		// that catches the quit error and throws something else cannot erase it.
+		const gracefulQuit =
+			observedQuitCancellation() ??
+			findWorkflowGracefulQuit(err) ??
+			findWorkflowGracefulQuit(ownController.signal.reason);
+		if (gracefulQuit !== undefined) return suspendForGracefulQuit(gracefulQuit);
 		await admittedTools.closeAndDrain();
 		const observedAdmittedToolFailure = selectedAdmittedToolFailure ?? admittedTools.uniqueFailureFor(err);
 		const selectedExit =
@@ -655,7 +686,9 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			});
 		} finally {
 			try {
-				gitWorktreeSetupCacheOwner.release(() => opts.cancellation?.unregister(runId));
+				gitWorktreeSetupCacheOwner.release(() => {
+					if (ownsCancellationRegistration) opts.cancellation?.unregister(runId, ownController);
+				});
 			} finally {
 				try {
 					unregisterToolAdmission();

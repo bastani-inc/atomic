@@ -354,8 +354,11 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 			// a `return_failure` outcome, so resume re-executes it at the same
 			// ordinal instead of replaying a cancellation as data. Return mode still
 			// keeps one inspection-only `tool-failure:` record, which the backend
-			// excludes from replay lookup.
-			if (returnFailure && !callbackCompleted) {
+			// excludes from replay lookup. The record is written for every
+			// cancellation timing — while the callback awaits, when it throws, and
+			// when it fulfills after abort but before persistence — because this
+			// branch runs at most once per logical invocation.
+			if (returnFailure) {
 				await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
 			}
 			input.onNodeEnd?.(node.id, {

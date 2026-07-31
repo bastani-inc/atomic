@@ -1124,4 +1124,108 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 			await execution;
 		}
 	});
+
+	test("author catch cannot overwrite a tool-only quit pause", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-caught-cancellation";
+		const entered = Promise.withResolvers<void>();
+		let authorCatchRan = false;
+		const definition = workflow({
+			name: "quit-tool-caught-cancellation",
+			description: "",
+			inputs: {},
+			outputs: { done: Type.Boolean() },
+			run: async (ctx) => {
+				try {
+					await ctx.tool("caught", {}, async ({ signal }) => {
+						entered.resolve();
+						await abortObserved(signal);
+						throw new Error("caught observed cancellation");
+					});
+				} catch {
+					// Cleanup only: a catch is not an opt-out from a whole-run quit.
+					authorCatchRan = true;
+				}
+				return { done: true };
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+
+		const quit = await quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+		const executionResult = await execution;
+
+		assert.equal(quit.ok, true);
+		assert.equal(authorCatchRan, true, "the author catch must still run");
+		assert.equal(executionResult.status, "paused", "a caught quit cancellation cannot report completion");
+		assert.equal(executionResult.result, undefined, "no declared output is published for a quit run");
+		const snapshot = store.runs().find((candidate) => candidate.id === runId);
+		assert.equal(snapshot?.status, "paused");
+		assert.equal(snapshot?.endedAt, undefined, "quit must not be overwritten by a terminal run end");
+		assert.equal(snapshot?.exitReason, "quit");
+		assert.equal(snapshot?.resumable, true);
+		assert.equal(snapshot?.result, undefined);
+		assert.equal(snapshot?.toolNodes?.[0]?.status, "cancelled");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+		assert.equal(backend.getWorkflow(runId)?.resumable, true);
+	});
+
+	test("a stage-only quit that is resumed still completes normally", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-stage-only-resumed";
+		let status: StageControlStatus = "running";
+		const releaseStage = Promise.withResolvers<void>();
+		store.recordRunStart({ id: runId, name: "stage-only", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
+		backend.registerWorkflow({ workflowId: runId, name: "stage-only", inputs: {}, createdAt: 1, status: "running" });
+		registry.register(
+			stageHandle({
+				runId,
+				stageId: "stage-1",
+				status: () => status,
+				pause: async () => {
+					status = "paused";
+				},
+				resume: async () => {
+					status = "running";
+					releaseStage.resolve();
+					return undefined;
+				},
+			}),
+		);
+
+		const quit = await quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+		assert.equal(quit.ok, true);
+		if (quit.ok) assert.deepEqual(quit.cancelledTools, [], "no tool work was aborted by this quit");
+
+		const resumed = await resumeRun(runId, { store, stageControlRegistry: registry });
+		assert.equal(resumed.ok, true);
+		await releaseStage.promise;
+		assert.equal(
+			store.runs().find((candidate) => candidate.id === runId)?.status,
+			"running",
+			"a quit that only paused stages stays completable after resume",
+		);
+	});
 });

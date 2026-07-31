@@ -186,7 +186,7 @@ describe("RunOpts port fields", () => {
 			registerChild: () => {},
 			abort: () => false,
 			abortAll: () => 0,
-			unregister: () => {},
+			unregister: () => false,
 			isAborted: () => false,
 		};
 

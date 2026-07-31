@@ -27,7 +27,14 @@ export interface CancellationRegistry {
 	registerChild(runId: string, controller: AbortController): void;
 	abort(runId: string, reason?: unknown): boolean;
 	abortAll(reason?: unknown): number;
-	unregister(runId: string): void;
+	/**
+	 * Remove a run's registration.
+	 *
+	 * When `expectedController` is supplied the entry is removed only if it is
+	 * still the registered primary, so a stale executor's finalizer cannot evict
+	 * the replacement that now owns this run id. Returns true when it removed.
+	 */
+	unregister(runId: string, expectedController?: AbortController): boolean;
 	isAborted(runId: string): boolean;
 }
 
@@ -86,8 +93,12 @@ class CancellationRegistryImpl implements CancellationRegistry {
 		return count;
 	}
 
-	unregister(runId: string): void {
+	unregister(runId: string, expectedController?: AbortController): boolean {
+		const entry = this._runs.get(runId);
+		if (entry === undefined) return false;
+		if (expectedController !== undefined && entry.controller !== expectedController) return false;
 		this._runs.delete(runId);
+		return true;
 	}
 
 	isAborted(runId: string): boolean {

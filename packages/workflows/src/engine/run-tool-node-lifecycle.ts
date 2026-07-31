@@ -10,6 +10,7 @@ import type { RunTerminalEventArbiter } from "./run-terminal-event.js";
 import type { ToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
 import type { ToolControlRegistry } from "./run-tool-control-registry.js";
 import { type AdmittedToolExecutionTracker, createAdmittedToolExecutionTracker } from "./run-tool-execution-tracker.js";
+import { isWorkflowToolAbortError, type WorkflowGracefulQuitSignal } from "./workflow-tool-abort.js";
 
 type ToolNodeLifecycle = Pick<
 	CreateToolPrimitiveInput,
@@ -23,6 +24,15 @@ export function createToolNodeLifecycle(input: {
 	readonly sourceToReplayedNodeIds: Map<string, string>;
 }): ToolNodeLifecycle {
 	const { store, tracker, run, sourceToReplayedNodeIds } = input;
+	/**
+	 * True while this executor's own run snapshot is the one the store holds.
+	 *
+	 * A resume relaunches under the *same* run id, so a stale callback abandoned
+	 * by quit could otherwise mutate the replacement run's tool node. Object
+	 * identity, not the id, decides which generation owns the store row. The
+	 * abandoned callback may still settle its own private graph tracker.
+	 */
+	const ownsCurrentRun = (): boolean => store.runs().some((candidate) => candidate === run);
 	return {
 		onNodeStart: (node) => {
 			const inferredParents = tracker.onSpawn(node.id, node.name);
@@ -33,13 +43,13 @@ export function createToolNodeLifecycle(input: {
 			tracker.replaceParents(node.id, parentIds);
 			(node as ToolNodeSnapshot & { parentIds: readonly string[] }).parentIds = Object.freeze([...parentIds]);
 			sourceToReplayedNodeIds.set(node.id, node.id);
-			store.recordToolNodeStart(run.id, node);
+			if (ownsCurrentRun()) store.recordToolNodeStart(run.id, node);
 		},
 		onNodeRunning: (nodeId, startedAt) => {
-			store.recordToolNodeRunning(run.id, nodeId, startedAt);
+			if (ownsCurrentRun()) store.recordToolNodeRunning(run.id, nodeId, startedAt);
 		},
 		onNodeEnd: (nodeId, update) => {
-			store.recordToolNodeEnd(run.id, nodeId, update);
+			if (ownsCurrentRun()) store.recordToolNodeEnd(run.id, nodeId, update);
 		},
 		onNodeSettle: (nodeId) => {
 			tracker.onSettle(nodeId);
@@ -66,7 +76,17 @@ export function createTrackedToolPrimitive(input: {
 	readonly admittedTools: AdmittedToolExecutionTracker;
 	/** Abandon still-unsettled tool executions and publish them as cancelled. */
 	readonly abandonInFlightAsCancelled: (reason: unknown) => readonly string[];
+	/**
+	 * The whole-run quit this executor's own tool work observed, if any: a node
+	 * aborted with quit scope, or a call refused after quit closed admission.
+	 *
+	 * `run()` uses this rather than the boundary's closed state so a quit that
+	 * only paused stages (and was later resumed) can still complete normally,
+	 * while a caught tool cancellation cannot convert quit into completion.
+	 */
+	readonly observedQuitCancellation: () => WorkflowGracefulQuitSignal | undefined;
 } {
+	let observedQuit: WorkflowGracefulQuitSignal | undefined;
 	const admittedTools = createAdmittedToolExecutionTracker({
 		onFailureObserved: ({ error, nodeId }) => {
 			input.terminalEvents.selectFailure(error, nodeId);
@@ -86,15 +106,28 @@ export function createTrackedToolPrimitive(input: {
 		},
 		signal: input.controller.signal,
 		trackExecution: admittedTools.track,
-		registerNodeControl: (registration) =>
-			input.toolControls.register({
+		registerNodeControl: (registration) => {
+			registration.controller.signal.addEventListener(
+				"abort",
+				() => {
+					const reason: unknown = registration.controller.signal.reason;
+					if (isWorkflowToolAbortError(reason) && reason.scope === "quit") observedQuit ??= reason;
+				},
+				{ once: true },
+			);
+			return input.toolControls.register({
 				runId: input.run.id,
 				nodeId: registration.nodeId,
 				name: registration.name,
 				controller: registration.controller,
 				settled: registration.settled,
-			}),
-		admitToolCall: () => input.toolAdmission.admit(),
+			});
+		},
+		admitToolCall: () => {
+			const admission = input.toolAdmission.admit();
+			if (!admission.accepted) observedQuit ??= admission.error;
+			return admission;
+		},
 		...lifecycle,
 	});
 	const abandonInFlightAsCancelled = (reason: unknown): readonly string[] => {
@@ -115,5 +148,5 @@ export function createTrackedToolPrimitive(input: {
 		},
 		{ once: true },
 	);
-	return { tool, admittedTools, abandonInFlightAsCancelled };
+	return { tool, admittedTools, abandonInFlightAsCancelled, observedQuitCancellation: () => observedQuit };
 }

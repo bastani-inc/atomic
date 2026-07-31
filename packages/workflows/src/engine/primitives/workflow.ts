@@ -75,6 +75,7 @@ export function createChildWorkflowRunner(input: {
 		await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
 		let childRunId: string | undefined;
 		let detachParentAbort: (() => void) | undefined;
+		let childControllerForCleanup: AbortController | undefined;
 		try {
 			if (boundary.replayedChild !== undefined) {
 				await Promise.resolve();
@@ -93,6 +94,7 @@ export function createChildWorkflowRunner(input: {
 
 			childRunId = durableInvocation?.identity.childRunId ?? crypto.randomUUID();
 			const childController = new AbortController();
+			childControllerForCleanup = childController;
 			const childRef: WorkflowChildRunRef = { alias: childName, workflow: child.normalizedName, runId: childRunId };
 			boundary.linkChildRun(childRef, childController);
 
@@ -199,7 +201,10 @@ export function createChildWorkflowRunner(input: {
 			throw err;
 		} finally {
 			detachParentAbort?.();
-			if (childRunId !== undefined) runtime.childRunOptions.cancellation?.unregister(childRunId);
+			// Identity-conditional: a stale child finalizer must not evict a newer
+			// registration that reused this child run id.
+			if (childRunId !== undefined && childControllerForCleanup !== undefined)
+				runtime.childRunOptions.cancellation?.unregister(childRunId, childControllerForCleanup);
 		}
 	};
 }

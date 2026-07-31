@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { isDurableWorkflowResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import {
 	prepareRuntimeDurableResumable,
 	resolveDurableEntry,
@@ -418,5 +419,60 @@ describe("resumeDurableWorkflow", () => {
 		assert.equal(catalog.length, 1);
 		const result = await resumeDurableWorkflow("wf-hydrated", { ...deps(), durableBackend: hydrating });
 		assert.equal(result.ok, true);
+	});
+});
+
+describe("durable resume eligibility", () => {
+	test("a zero-progress paused workflow is not resumable even when marked resumable", () => {
+		// Policy retained from the restored-orphan contract: `resumable: true` alone
+		// never manufactures a resume target. A quit with unfinished tool work
+		// relies on ordinary durable progress from its completed calls.
+		assert.equal(
+			isDurableWorkflowResumable({
+				workflowId: "zero-progress",
+				status: "paused",
+				completedCheckpoints: 0,
+				pendingPrompts: 0,
+				resumable: true,
+			}),
+			false,
+		);
+	});
+
+	test("a paused workflow with checkpoint progress is resumable unless refused", () => {
+		assert.equal(
+			isDurableWorkflowResumable({
+				workflowId: "quit-with-progress",
+				status: "paused",
+				completedCheckpoints: 1,
+				pendingPrompts: 0,
+				resumable: true,
+			}),
+			true,
+		);
+		assert.equal(
+			isDurableWorkflowResumable({
+				workflowId: "refused",
+				status: "paused",
+				completedCheckpoints: 1,
+				pendingPrompts: 0,
+				resumable: false,
+			}),
+			false,
+		);
+	});
+
+	test("a nested child workflow is never a resume target", () => {
+		assert.equal(
+			isDurableWorkflowResumable({
+				workflowId: "child",
+				rootWorkflowId: "root",
+				status: "paused",
+				completedCheckpoints: 1,
+				pendingPrompts: 0,
+				resumable: true,
+			}),
+			false,
+		);
 	});
 });

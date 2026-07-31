@@ -482,4 +482,63 @@ describe("runDetached — rejection swallowed, failed status recorded", () => {
 
 		assert.equal(jobs.has(accepted.runId), false);
 	});
+
+	test("a detached stale job cannot unregister the replacement that reused its run id", async () => {
+		const jobs = createJobTracker();
+		const runId = "stale-job-identity";
+		const staleSettled = Promise.withResolvers<void>();
+		const stale = { runId, controller: new AbortController(), promise: staleSettled.promise };
+		jobs.register(stale);
+
+		// Quit abandons the stale executor: it stays alive but stops being the
+		// active job, so a resume may register a replacement under the same id.
+		assert.equal(jobs.detach(runId, stale), stale);
+		assert.equal(jobs.has(runId), false);
+
+		const replacementSettled = Promise.withResolvers<void>();
+		const replacement = { runId, controller: new AbortController(), promise: replacementSettled.promise };
+		jobs.register(replacement);
+		assert.equal(jobs.get(runId), replacement);
+
+		// The stale executor settles late and cleans up with its own identity.
+		staleSettled.resolve();
+		await stale.promise;
+		assert.equal(jobs.unregister(runId, stale), false, "a stale entry must not evict its replacement");
+		assert.equal(jobs.get(runId), replacement);
+
+		replacementSettled.resolve();
+		await replacement.promise;
+		assert.equal(jobs.unregister(runId, replacement), true);
+		assert.deepEqual(jobs.runIds(), []);
+	});
+
+	test("registering over a still-active job is a loud error", () => {
+		const jobs = createJobTracker();
+		const runId = "duplicate-dispatch";
+		const active = { runId, controller: new AbortController(), promise: Promise.resolve() };
+		jobs.register(active);
+
+		assert.throws(
+			() => jobs.register({ runId, controller: new AbortController(), promise: Promise.resolve() }),
+			/already registered for run duplicate-dispatch/,
+		);
+		assert.equal(jobs.get(runId), active);
+	});
+
+	test("a stale executor cleanup cannot unregister a replacement cancellation entry", () => {
+		const registry = createCancellationRegistry();
+		const runId = "stale-cancellation-identity";
+		const staleController = new AbortController();
+		registry.register(runId, staleController);
+
+		const replacementController = new AbortController();
+		registry.register(runId, replacementController);
+
+		assert.equal(registry.unregister(runId, staleController), false, "stale cleanup must be a no-op");
+		assert.equal(registry.abort(runId), true, "the replacement registration survives");
+		assert.equal(replacementController.signal.aborted, true);
+		assert.equal(staleController.signal.aborted, false);
+		assert.equal(registry.unregister(runId, replacementController), true);
+		assert.equal(registry.abort(runId), false);
+	});
 });

@@ -41,6 +41,15 @@ export interface ToolAdmissionBoundary {
 	 */
 	closeForQuit(reason: WorkflowGracefulQuitError): Promise<void>;
 	readonly closed: boolean;
+	/**
+	 * The reason a whole-run quit closed this workflow tree, when one did.
+	 *
+	 * This is the authoritative signal that quit owns the run's outcome, even
+	 * when author code caught the tool rejection: `run()` reads it on both the
+	 * success and failure paths so a later author return cannot convert an
+	 * operator-selected quit into a terminal completion.
+	 */
+	readonly quitReason: WorkflowGracefulQuitError | undefined;
 	/** True while a `ctx.tool` call is between admission and node registration. */
 	readonly hasPendingAdmissions: boolean;
 }
@@ -57,6 +66,9 @@ export function createToolAdmissionBoundary(): ToolAdmissionBoundary {
 	return {
 		get closed(): boolean {
 			return closedReason !== undefined;
+		},
+		get quitReason(): WorkflowGracefulQuitError | undefined {
+			return closedReason;
 		},
 		get hasPendingAdmissions(): boolean {
 			return openSections > 0;
