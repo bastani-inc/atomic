@@ -212,6 +212,21 @@ layer, restated here because the inheritance claim above depends on them holding
 - **`pending` streaming stop reason** (`f9a49869`). The isolated-engine protocol is at version
   `2`; an unhandled `pending` reaching that protocol or the RPC message projection is a defect.
 
+## Probe coverage (P4, `pi-0.83.0/regression-probes`)
+
+The layer above this one closes the list above. Each probe also covers the path that
+*already worked*, because a probe that only asserts the new behaviour would pass against a
+build that had broken every previously successful stop.
+
+| Risk | Probe |
+| --- | --- |
+| Raw stop reasons | `test/unit/pi-0.83.0-stop-reason-probes.test.ts` — every raw reason that mapped to a successful stop still does, per provider family, over the real pi-ai streams; one unmapped reason per family proves the assertions discriminate |
+| `pending` across the four consumers | `test/unit/pi-0.83.0-pending-stop-reason-probes.test.ts` — `pending` measured as the reason every streaming partial carries, then driven through the isolated-engine protocol (version `2`), the RPC JSONL projection, branch summaries and the Verbatim Compaction planner |
+| Nested worktree context files, RPC bash `user_bash`, resource metadata across reload | `test/unit/pi-0.83.0-inherited-surface-probes.test.ts` — a real `git worktree add` layout, an RPC bash command with and without an intercepting handler, and package-sourced skills/prompts/themes read back after a later `extendResources` |
+| Shorter OAuth refresh window (`#7168`, risk R2) | `test/unit/pi-0.83.0-oauth-refresh-window-probe.test.ts` — concurrent sessions over one shared `auth.json` refresh once, and a credential outside the window is not refreshed at all |
+| `actions/cache` 4.3.0 -> 6.1.0 (D1) | `test/ci/actions-cache-bump-contract.test.ts`, with `npm run test:ci-contracts` green |
+| `@dbos-inc/dbos-sdk` 4.24.16 (D2) | `test/unit/pi-0.83.0-dbos-replay-probe.test.ts` — the three required parts |
+
 ## Verification for this branch
 
 ```
