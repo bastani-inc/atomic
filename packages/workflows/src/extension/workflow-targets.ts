@@ -150,6 +150,52 @@ export function resolveToolStageTarget(runId: string, stageTarget?: string): Too
 	return resolveStageTarget(runId, stageTarget);
 }
 
+/**
+ * Control target resolved across stages *and* tool nodes.
+ *
+ * Tool nodes are abort-only control targets: `quit` and `interrupt` may name
+ * them by expanded id, local `tool:<argsHash>` id, or tool name, with the same
+ * ambiguity handling stages get. They are never chat/attach targets.
+ */
+export type ControlNodeTarget =
+	| { ok: true; kind: "run" }
+	| { ok: true; kind: "stage"; runId: string; stageId: string }
+	| { ok: true; kind: "tool"; runId: string; nodeId: string; name: string }
+	| { ok: false; message: string };
+
+export function resolveControlNodeTarget(runId: string, stageTarget?: string): ControlNodeTarget {
+	const target = stageTarget?.trim();
+	if (!target) return { ok: true, kind: "run" };
+	const graph = expandWorkflowGraph(store.snapshot(), runId);
+	const nodes = graph.renderStages;
+	const candidates: Array<readonly ExpandedWorkflowStage[]> = [
+		nodes.filter((node) => node.id === target),
+		nodes.filter((node) => node.workflowGraphTarget.stageId === target),
+		nodes.filter((node) => node.name === target),
+		nodes.filter((node) => stageMatchesExpandedIdentifier(node, target)),
+	];
+	for (const matches of candidates) {
+		if (matches.length === 1) return resolvedControlNodeTarget(matches[0]!);
+		if (matches.length > 1)
+			return {
+				ok: false,
+				message: `Ambiguous stage identifier "${target}" matches: ${matches.map(expandedStageLabel).join(", ")}`,
+			};
+	}
+	return { ok: false, message: `Stage not found in run ${runId.slice(0, 8)}: ${target}` };
+}
+
+function resolvedControlNodeTarget(node: ExpandedWorkflowStage): ControlNodeTarget {
+	const graphTarget = node.workflowGraphTarget;
+	return node.nodeKind === "tool"
+		? { ok: true, kind: "tool", runId: graphTarget.runId, nodeId: graphTarget.stageId, name: node.name }
+		: { ok: true, kind: "stage", runId: graphTarget.runId, stageId: graphTarget.stageId };
+}
+
+export function toolNodePauseRejectionMessage(name: string, nodeId: string): string {
+	return `Tool nodes cannot be paused; ctx.tool ${name} (${nodeId}) has no turn boundary. Use interrupt or quit to abort it.`;
+}
+
 export function ambiguousRunMessage(target: string, matches: readonly string[]): string {
 	return `Ambiguous run prefix "${target}" matches: ${matches.map((id) => id.slice(0, 12)).join(", ")}`;
 }

@@ -29,7 +29,11 @@ export interface ExpandedWorkflowGraph {
 	readonly nodes: readonly ExpandedWorkflowNode[];
 	/** All stage-compatible render projections, including non-attachable tool cards. */
 	readonly renderStages: readonly ExpandedWorkflowStage[];
-	/** Stage targets only; tool nodes intentionally have no chat/control target. */
+	/**
+	 * Control targets for stages and tool nodes. Tool entries are abort-only
+	 * control targets: they stay `attachable: false` and never become chat
+	 * targets (see `graph-view-state._stageChatTarget`).
+	 */
 	readonly targets: ReadonlyMap<string, ExpandedWorkflowStageTarget>;
 }
 
@@ -198,6 +202,7 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
 					attachable: false,
 					workflowGraphTarget: projectionTarget,
 				};
+				targets.set(id, projectionTarget);
 				tools.push(tool);
 				stages.push(projection);
 				nodes.push({ kind: "tool", tool });

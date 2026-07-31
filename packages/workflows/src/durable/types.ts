@@ -111,7 +111,10 @@ export interface DurableToolCheckpoint {
 	readonly output: WorkflowSerializableValue;
 	/** Explicit return-mode result kind; absent for legacy/default successful tools. */
 	readonly outcomeKind?: "return_success" | "return_failure";
-	/** Inspection-only error for a throwing-mode failure; never used as a replay cache hit. */
+	/**
+	 * Inspection-only message for a non-replayable tool failure or cancellation;
+	 * never used as a replay cache hit, so the call runs again on resume.
+	 */
 	readonly throwingFailureError?: string;
 	readonly completedAt: number;
 	/** Additive graph topology; omitted by pre-#1991 checkpoints. */

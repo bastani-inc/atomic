@@ -22,6 +22,11 @@ import type {
 	WorkflowRunChildOptions,
 } from "../../shared/types.js";
 import type { EngineRuntime } from "../runtime.js";
+import {
+	findWorkflowGracefulQuit,
+	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+	WorkflowGracefulQuitError,
+} from "../workflow-tool-abort.js";
 
 export function createChildWorkflowRunner(input: {
 	readonly runtime: EngineRuntime;
@@ -127,6 +132,15 @@ export function createChildWorkflowRunner(input: {
 			const childRun = await childRunPromise;
 			runtime.exit.throwIfWorkflowExitSelected();
 
+			// A gracefully quit child is a suspension, not a child failure: carry the
+			// quit up so the parent also suspends without a terminal boundary record.
+			if (
+				childRun.status === "paused" &&
+				childRun.exitReason === WORKFLOW_GRACEFUL_QUIT_EXIT_REASON &&
+				childRunId !== undefined
+			) {
+				throw new WorkflowGracefulQuitError(childRunId, `child workflow "${childName}" (${child.name})`);
+			}
 			if (!isWorkflowExitStatus(childRun.status)) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
 				throw new Error(
@@ -169,6 +183,9 @@ export function createChildWorkflowRunner(input: {
 			await durableInvocation?.recordTerminal("completed", childResult);
 			return childResult;
 		} catch (err) {
+			// Suspension leaves the boundary untouched: quit owns the paused record and
+			// a later resume replays this boundary instead of a failed child.
+			if (findWorkflowGracefulQuit(err) !== undefined) throw err;
 			const exit =
 				findWorkflowExitSignal(err, runtime.exit.exitScope) ??
 				findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);

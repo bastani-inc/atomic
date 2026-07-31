@@ -197,7 +197,10 @@ describe("non-attachable tool interactions", () => {
 		assert.equal(paused.status, "noop");
 		assert.equal(interrupted.status, "noop");
 		assert.match(sent.message, /workflow tool-interaction-run has terminated with status completed/);
-		assert.match(`${paused.message}\n${interrupted.message}`, /Stage not found/);
+		// Tool nodes are abort-only control targets: pause rejects them explicitly and
+		// interrupt reports that this settled node has nothing in flight to abort.
+		assert.match(paused.message, /Tool nodes cannot be paused/);
+		assert.match(interrupted.message, /Tool node tool:publish is not running/);
 		assert.equal(postMortemCreates, 0);
 		const resumed = await workflowResumeAction(
 			{ action: "resume", runId: "tool-interaction-run", stageId: "tool:publish" },

@@ -33,6 +33,8 @@ export type EngineChildRunOptions = Pick<
 	| "models"
 	| "registry"
 	| "stageControlRegistry"
+	| "toolControlRegistry"
+	| "toolAdmissionBoundary"
 	| "onStageStart"
 	| "onStageEnd"
 	| "onStageSession"

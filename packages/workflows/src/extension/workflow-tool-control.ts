@@ -1,11 +1,12 @@
 import { getDurableBackend } from "../durable/factory.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
+import { abortToolNode } from "../runs/background/quit-tool-node.js";
 import { interruptAllRuns, interruptRun, pauseAllRuns, pauseRun, resumeRun } from "../runs/background/status.js";
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
-import type { WorkflowExecutionPolicy } from "../shared/types.js";
+import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -17,9 +18,11 @@ import {
 	allStageConflictMessage,
 	ambiguousRunMessage,
 	reloadFailureMessage,
+	resolveControlNodeTarget,
 	resolveToolRunTarget,
 	resolveToolStageTarget,
 	stageFailureMessage,
+	toolNodePauseRejectionMessage,
 } from "./workflow-targets.js";
 
 export interface WorkflowControlActionDeps {
@@ -86,6 +89,18 @@ export async function workflowPauseAction(args: WorkflowToolArgs): Promise<Workf
 			message: ambiguousRunMessage(target.target, target.matches),
 		};
 	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
+	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
+	// Tool nodes have no turn boundary to stop at, so pause rejects them loudly
+	// instead of silently resolving to nothing.
+	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
+	if (controlNode.kind === "tool") {
+		return {
+			action,
+			runId: target.runId,
+			status: "noop",
+			message: toolNodePauseRejectionMessage(controlNode.name, controlNode.nodeId),
+		};
+	}
 	const stage = resolveToolStageTarget(target.runId, args.stageId);
 	if (!stage.ok) return { action, runId: target.runId, status: "noop", message: stage.message };
 	const stageRunId = stage.runId ?? target.runId;
@@ -142,11 +157,86 @@ function bulkQuitFailureMessage(results: Awaited<ReturnType<typeof quitAllRuns>>
 	const outcomes = results
 		.map((result) =>
 			result.ok
-				? `${result.runId}: quit`
+				? `${result.runId}: quit${abandonedToolSuffix(result.abandonedTools)}`
 				: `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`,
 		)
 		.join(", ");
 	return `${successes > 0 ? `Quit ${successes} run(s); ` : ""}failed to quit ${failures} run(s); outcomes: ${outcomes}.`;
+}
+
+/** Machine-readable identities also appear in the quit result; this is the readable copy. */
+function abandonedToolSuffix(abandonedTools: readonly WorkflowToolNodeIdentity[]): string {
+	return abandonedTools.length === 0
+		? ""
+		: ` (abandoned tool node(s): ${abandonedTools.map(formatToolNodeIdentity).join(", ")})`;
+}
+
+/** Nested runs can share a local node id, so identities are printed run-qualified. */
+function formatToolNodeIdentity(identity: WorkflowToolNodeIdentity): string {
+	return `${identity.runId}/${identity.nodeId}`;
+}
+
+function cancelledToolSummary(result: {
+	readonly cancelledTools: readonly WorkflowToolNodeIdentity[];
+	readonly abandonedTools: readonly WorkflowToolNodeIdentity[];
+}): string {
+	if (result.cancelledTools.length === 0 && result.abandonedTools.length === 0) return "";
+	const cancelled =
+		result.cancelledTools.length === 0
+			? ""
+			: ` Cancelled ${result.cancelledTools.length} in-flight ctx.tool node(s): ${result.cancelledTools
+					.map(formatToolNodeIdentity)
+					.join(", ")}.`;
+	const abandoned =
+		result.abandonedTools.length === 0
+			? ""
+			: ` Abandoned ${result.abandonedTools.length} callback(s) that ignored cancellation: ${result.abandonedTools
+					.map(formatToolNodeIdentity)
+					.join(", ")}.`;
+	return `${cancelled}${abandoned}`;
+}
+
+/**
+ * Abort one in-flight tool node.
+ *
+ * The result separates the node outcome (`status: "cancelled"`) from the run's
+ * observed status: this action never pauses the run, and whether the run
+ * survives its cancelled call is ordinary author control flow.
+ */
+async function quitToolNodeAction(
+	runId: string,
+	nodeId: string,
+	action: "quit" | "interrupt",
+): Promise<WorkflowToolResult> {
+	const aborted = await abortToolNode(runId, nodeId);
+	if (!aborted.ok) {
+		return {
+			action,
+			runId,
+			status: "noop",
+			message: `Tool node ${nodeId} is not running on run ${runId.slice(0, 8)}.`,
+		};
+	}
+	// Let the rejected tool promise reach workflow code before the run status is
+	// read, so the reported status is what an author would observe, not a stale
+	// pre-abort snapshot.
+	await Promise.resolve();
+	await Promise.resolve();
+	const workflowStatus = store.runs().find((candidate) => candidate.id === runId)?.status ?? "cancelled";
+	const abandonedNote = aborted.abandoned ? " The callback ignored its abort signal and was abandoned." : "";
+	return {
+		action,
+		runId,
+		stageId: nodeId,
+		status: "cancelled",
+		workflowStatus,
+		abandoned: aborted.abandoned,
+		message:
+			`Cancelled ctx.tool ${aborted.name} (${nodeId}) on run ${runId.slice(0, 8)}.${abandonedNote}` +
+			` Sibling work was not aborted. Current workflow status: ${workflowStatus}.` +
+			" If workflow code awaited this call without catching cancellation, the workflow may fail." +
+			" A later resume re-runs this call.",
+	};
 }
 
 export async function workflowQuitAction(args: WorkflowToolArgs): Promise<WorkflowToolResult> {
@@ -181,6 +271,9 @@ export async function workflowQuitAction(args: WorkflowToolArgs): Promise<Workfl
 		};
 	}
 	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
+	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
+	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
+	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action);
 	try {
 		const result = await quitRun(target.runId);
 		if (result.ok) {
@@ -188,7 +281,7 @@ export async function workflowQuitAction(args: WorkflowToolArgs): Promise<Workfl
 				action,
 				runId: result.runId,
 				status: "paused",
-				message: `Run ${result.runId} quit and can be resumed with /workflow resume.`,
+				message: `Run ${result.runId} quit and can be resumed with /workflow resume.${cancelledToolSummary(result)}`,
 			};
 		}
 		return {
@@ -235,6 +328,9 @@ export async function workflowInterruptAction(args: WorkflowToolArgs): Promise<W
 			message: ambiguousRunMessage(target.target, target.matches),
 		};
 	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
+	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
+	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
+	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action);
 	const stage = resolveToolStageTarget(target.runId, args.stageId);
 	if (!stage.ok) return { action, runId: target.runId, status: "noop", message: stage.message };
 	const stageRunId = stage.runId ?? target.runId;

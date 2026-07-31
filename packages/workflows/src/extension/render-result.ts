@@ -169,6 +169,24 @@ type ReloadResult = WorkflowReloadReport & { action: "reload"; status: "ok" | "n
 type InterruptResult = { action: "interrupt"; runId: string; status: string; message: string };
 type QuitResult = { action: "quit"; runId: string; status: string; message: string };
 type ResumeResult = { action: "resume"; runId: string; status: string; message: string };
+
+/**
+ * Outcome of aborting one in-flight `ctx.tool` node with `quit`/`interrupt`.
+ *
+ * The node status and the workflow status are reported separately: the action
+ * cancels exactly one node and never pauses the run, while what happens to the
+ * run afterwards is ordinary author control flow. `workflowStatus` is the
+ * status observed when the action returned, not a prediction.
+ */
+export type ToolNodeControlResult<TAction extends "quit" | "interrupt" = "quit" | "interrupt"> = {
+	readonly action: TAction;
+	readonly runId: string;
+	readonly stageId: string;
+	readonly status: "cancelled";
+	readonly workflowStatus: RunStatus;
+	readonly abandoned: boolean;
+	readonly message: string;
+};
 export interface ModelCatalogEntry {
 	provider: string;
 	id: string;
@@ -194,6 +212,7 @@ export type WorkflowToolResult =
 	| InterruptResult
 	| QuitResult
 	| ResumeResult
+	| ToolNodeControlResult
 	| ModelsResult;
 
 export interface RenderResultOpts {

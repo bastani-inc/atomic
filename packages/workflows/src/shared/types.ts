@@ -16,6 +16,7 @@ import type {
 } from "@bastani/atomic";
 import type { TSchema } from "typebox";
 import type * as AuthoringContract from "./authoring-contract.js";
+import type { ToolNodeSnapshot } from "./store-types.js";
 
 export type { AgentSessionEvent, ModelCycleResult, PromptOptions, TSchema, VerbatimCompactionResult };
 
@@ -445,6 +446,7 @@ export interface WorkflowRunContext<
 	readonly models?: WorkflowModelCatalogPort;
 }
 
+export type WorkflowToolContext = AuthoringContract.WorkflowToolContext;
 export type WorkflowToolError = AuthoringContract.WorkflowToolError;
 export type WorkflowToolFailure = AuthoringContract.WorkflowToolFailure;
 export type WorkflowToolOptions = AuthoringContract.WorkflowToolOptions;
@@ -455,6 +457,23 @@ export type WorkflowToolReturnOptions = AuthoringContract.WorkflowToolReturnOpti
 export type WorkflowToolSuccess<TValue extends WorkflowSerializableValue> =
 	AuthoringContract.WorkflowToolSuccess<TValue>;
 export type WorkflowToolThrowOptions = AuthoringContract.WorkflowToolThrowOptions;
+
+/**
+ * Stable identity of one `ctx.tool` graph node.
+ *
+ * The local `tool:<argsHash>` id is unique only inside its own run: two nested
+ * child runs executing the same call produce the same local id, so control
+ * results carry the owning run alongside it.
+ */
+export interface WorkflowToolNodeIdentity {
+	readonly runId: string;
+	readonly nodeId: string;
+}
+
+/** A tool node cancelled by a control action, with its owning run identity. */
+export interface WorkflowCancelledToolNode extends WorkflowToolNodeIdentity {
+	readonly node: ToolNodeSnapshot;
+}
 
 // ---------------------------------------------------------------------------
 // WorkflowRuntimeConfig — resolved runtime tunables injected at composition root

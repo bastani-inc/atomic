@@ -1,3 +1,5 @@
+import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
+import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
 import type * as AuthoringContract from "../../shared/authoring-contract.js";
 import type { Store } from "../../shared/store.js";
 import type {
@@ -42,6 +44,8 @@ export interface RunOpts
 		| "overlay"
 		| "registry"
 		| "stageControlRegistry"
+		| "toolControlRegistry"
+		| "toolAdmissionBoundary"
 		| "continuation"
 		| "onRunStart"
 		| "onStageStart"
@@ -97,6 +101,13 @@ export interface RunOpts
 	depth?: number;
 	/** Live stage-control registry. */
 	stageControlRegistry?: StageControlRegistry;
+	/** Live tool-node control registry used to abort in-flight `ctx.tool` calls. */
+	toolControlRegistry?: ToolControlRegistry;
+	/**
+	 * Root-shared `ctx.tool` admission boundary. Set only by the engine when it
+	 * hands a nested run the boundary its root created.
+	 */
+	toolAdmissionBoundary?: ToolAdmissionBoundary;
 	/** Pre-allocated runId. */
 	runId?: string;
 	/** Internal reusable-worktree cache shared with direct output persistence. */

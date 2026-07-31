@@ -19,6 +19,7 @@ import { runCallback } from "@bastani/atomic";
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
 import type {
 	WorkflowSerializableValue,
+	WorkflowToolContext,
 	WorkflowToolOptions,
 	WorkflowToolOutcome,
 	WorkflowToolPrimitive,
@@ -40,13 +41,40 @@ import {
 	type DurableToolCheckpoint,
 } from "./types.js";
 
-export type { WorkflowToolOptions, WorkflowToolPrimitive } from "../shared/types.js";
+export type { WorkflowToolContext, WorkflowToolOptions, WorkflowToolPrimitive } from "../shared/types.js";
 
 type WorkflowToolInvocationResult<TValue extends WorkflowSerializableValue> = TValue | WorkflowToolOutcome<TValue>;
 
 export type WorkflowToolExecutionAdmission =
-	| { readonly accepted?: true; bindNode(nodeId: string): void }
-	| { readonly accepted: false; readonly error: Error; bindNode(nodeId: string): void };
+	| { readonly accepted?: true; bindNode(nodeId: string): void; noteCancelled?(): void }
+	| { readonly accepted: false; readonly error: Error; bindNode(nodeId: string): void; noteCancelled?(): void };
+
+/** Per-node abort control published while one logical tool call is in flight. */
+export interface ToolNodeControlRegistration {
+	readonly nodeId: string;
+	readonly name: string;
+	readonly controller: AbortController;
+	readonly settled: Promise<void>;
+}
+
+interface ToolInvocationAdmissionControl {
+	bindNode(nodeId: string): void;
+	noteCancelled(): void;
+	/**
+	 * End this call's admission registration section. Called as soon as the live
+	 * node controller is published, or as soon as the call resolves without a
+	 * live callback, so a quit closing admission waits microseconds.
+	 */
+	releaseAdmission(): void;
+}
+
+/**
+ * Result of entering the root-shared admission boundary. Structural on purpose:
+ * the boundary itself lives in the engine, and `durable/` must not depend on it.
+ */
+export type ToolCallAdmission =
+	| { readonly accepted: true; readonly lease: { release(): void } }
+	| { readonly accepted: false; readonly error: Error };
 
 export interface CreateToolPrimitiveInput {
 	readonly workflowId: string;
@@ -55,8 +83,18 @@ export interface CreateToolPrimitiveInput {
 	readonly nextCheckpointId: () => string;
 	/** Abort check; throws if the workflow has been cancelled. */
 	readonly throwIfCancelled: () => void;
-	/** Optional signal for aborting retry backoff sleeps. */
+	/** Optional run-level signal; combined with the per-node signal handed to `fn`. */
 	readonly signal?: AbortSignal;
+	/**
+	 * Publish the per-node abort control so `/workflow quit|interrupt` can abort
+	 * one in-flight node. The returned disposer runs when the node settles.
+	 */
+	readonly registerNodeControl?: (registration: ToolNodeControlRegistration) => (() => void) | undefined;
+	/**
+	 * Enter the root-shared tool-admission boundary. A refusal means graceful
+	 * quit already closed admission for this workflow tree; the call never runs.
+	 */
+	readonly admitToolCall?: () => ToolCallAdmission;
 	/** Track the final logical execution promise and bind it to its graph node. */
 	readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | undefined;
 	/** Observe a logical throwing-mode failure before graph publication or promise rejection. */
@@ -80,7 +118,7 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
 	return (<T extends WorkflowSerializableValue>(
 		name: string,
 		args: Readonly<Record<string, WorkflowSerializableValue>>,
-		fn: () => Promise<T>,
+		fn: (toolCtx: WorkflowToolContext) => Promise<T>,
 		options?: WorkflowToolOptions,
 	): Promise<WorkflowToolInvocationResult<T>> => {
 		let resolveExecution!: (
@@ -91,15 +129,32 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
 			resolveExecution = resolve;
 			rejectExecution = reject;
 		});
+		// The admission boundary is checked before tracker admission so a refused
+		// post-quit call is a suspension, never an observed run failure.
+		const boundaryAdmission = input.admitToolCall?.();
+		if (boundaryAdmission?.accepted === false) {
+			void execution.catch(() => undefined);
+			rejectExecution(boundaryAdmission.error);
+			return execution;
+		}
+		const lease = boundaryAdmission?.accepted === true ? boundaryAdmission.lease : undefined;
 		const admission = input.trackExecution?.(execution);
 		if (admission?.accepted === false) {
+			lease?.release();
 			void execution.catch(() => undefined);
 			rejectExecution(admission.error);
 			return execution;
 		}
-		void executeToolInvocation(input, ordinals, name, args, fn, options, (nodeId) =>
-			admission?.bindNode(nodeId),
-		).then(resolveExecution, rejectExecution);
+		const control: ToolInvocationAdmissionControl = {
+			bindNode: (nodeId) => admission?.bindNode(nodeId),
+			noteCancelled: () => admission?.noteCancelled?.(),
+			releaseAdmission: () => lease?.release(),
+		};
+		void executeToolInvocation(input, ordinals, name, args, fn, options, control)
+			// Backstop for a throw before either explicit release point; the lease
+			// release itself is idempotent.
+			.finally(() => lease?.release())
+			.then(resolveExecution, rejectExecution);
 		return execution;
 	}) as WorkflowToolPrimitive;
 }
@@ -109,9 +164,9 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 	ordinals: Map<string, number>,
 	name: string,
 	args: Readonly<Record<string, WorkflowSerializableValue>>,
-	fn: () => Promise<T>,
+	fn: (toolCtx: WorkflowToolContext) => Promise<T>,
 	options: WorkflowToolOptions | undefined,
-	bindNode: (nodeId: string) => void,
+	control: ToolInvocationAdmissionControl,
 ): Promise<WorkflowToolInvocationResult<T>> {
 	input.throwIfCancelled();
 	if (
@@ -143,9 +198,12 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		...(cached?.topology?.startedAt !== undefined ? { startedAt: cached.topology.startedAt } : {}),
 		attachable: false,
 	};
-	bindNode(node.id);
+	control.bindNode(node.id);
 	input.onNodeStart?.(node);
 	if (cached !== undefined) {
+		// A replayed call has no live callback to abort, so its registration
+		// section ends here rather than at node-controller publication.
+		control.releaseAdmission();
 		const endedAt = cached.topology?.endedAt ?? cached.completedAt;
 		try {
 			await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
@@ -167,10 +225,11 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 			input.onNodeSettle?.(node.id);
 			return output;
 		} catch (error) {
-			const status = input.signal?.aborted === true ? "cancelled" : "failed";
-			if (status === "failed") input.onFailureObserved?.(error, node.id);
+			const cancelled = input.signal?.aborted === true;
+			if (cancelled) control.noteCancelled();
+			else input.onFailureObserved?.(error, node.id);
 			input.onNodeEnd?.(node.id, {
-				status,
+				status: cancelled ? "cancelled" : "failed",
 				endedAt: Date.now(),
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -178,6 +237,56 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 			throw error;
 		}
 	}
+	return executeLiveToolInvocation({
+		input,
+		node,
+		name,
+		argsHash,
+		ordinal,
+		fn,
+		options,
+		control,
+		returnFailure,
+	});
+}
+
+interface LiveToolInvocation<T extends WorkflowSerializableValue> {
+	readonly input: CreateToolPrimitiveInput;
+	readonly node: ToolNodeSnapshot;
+	readonly name: string;
+	readonly argsHash: string;
+	readonly ordinal: number;
+	readonly fn: (toolCtx: WorkflowToolContext) => Promise<T>;
+	readonly options: WorkflowToolOptions | undefined;
+	readonly control: ToolInvocationAdmissionControl;
+	readonly returnFailure: boolean;
+}
+
+/**
+ * Execute one uncached tool call under its own abort controller.
+ *
+ * The callback signal combines the run signal with this node's controller, so a
+ * run abort cascades to every node while `/workflow quit|interrupt` can abort
+ * exactly one node without touching its siblings. A cancelled call never writes
+ * a replayable checkpoint, so resume re-executes it at the same ordinal.
+ */
+async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
+	live: LiveToolInvocation<T>,
+): Promise<WorkflowToolInvocationResult<T>> {
+	const { input, node, name, argsHash, ordinal, fn, options, control, returnFailure } = live;
+	const nodeController = new AbortController();
+	const toolSignal =
+		input.signal === undefined ? nodeController.signal : AbortSignal.any([input.signal, nodeController.signal]);
+	const settlement = Promise.withResolvers<void>();
+	const unregisterControl = input.registerNodeControl?.({
+		nodeId: node.id,
+		name,
+		controller: nodeController,
+		settled: settlement.promise,
+	});
+	// The node is now abortable by quit, so this call's admission registration
+	// section ends. Everything after this point is observable to `quitRun`.
+	control.releaseAdmission();
 	let callbackError: unknown;
 
 	const startedAt = Date.now();
@@ -188,16 +297,16 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		const result = await executeWithRetries(
 			() => {
 				attempts += 1;
-				return runCallback({ kind: "workflow.ctx_tool", name, runId: input.workflowId }, fn).catch(
-					(error: unknown) => {
-						callbackError = error;
-						throw error;
-					},
-				);
+				return runCallback({ kind: "workflow.ctx_tool", name, runId: input.workflowId }, () =>
+					fn({ signal: toolSignal }),
+				).catch((error: unknown) => {
+					callbackError = error;
+					throw error;
+				});
 			},
 			options,
-			input.throwIfCancelled,
-			input.signal,
+			() => throwIfInvocationCancelled(input, toolSignal),
+			toolSignal,
 		);
 		callbackCompleted = true;
 		const output = returnFailure ? workflowToolSuccess(result, attempts, false) : result;
@@ -205,7 +314,9 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		// Linearization policy: cancellation observed before persistence prevents
 		// a checkpoint. Once the durable write begins, a successful commit wins
 		// for this node; the root still observes its aborted signal and is killed.
-		input.throwIfCancelled();
+		// An abandoned callback that ignores its signal and returns late is
+		// caught here, so its value can never become a replayable checkpoint.
+		throwIfInvocationCancelled(input, toolSignal);
 		const completedAt = Date.now();
 		const checkpoint: DurableToolCheckpoint = {
 			kind: "tool",
@@ -236,16 +347,24 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		input.onNodeSettle?.(node.id);
 		return output;
 	} catch (error) {
-		try {
-			throwIfInvocationCancelled(input);
-		} catch (cancelledError) {
+		const cancellation = invocationCancellation(input, toolSignal);
+		if (cancellation !== undefined) {
+			control.noteCancelled();
+			// A cancelled call never writes a replayable `tool:` checkpoint and never
+			// a `return_failure` outcome, so resume re-executes it at the same
+			// ordinal instead of replaying a cancellation as data. Return mode still
+			// keeps one inspection-only `tool-failure:` record, which the backend
+			// excludes from replay lookup.
+			if (returnFailure && !callbackCompleted) {
+				await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
+			}
 			input.onNodeEnd?.(node.id, {
 				status: "cancelled",
 				endedAt: Date.now(),
-				error: cancelledError instanceof Error ? cancelledError.message : String(cancelledError),
+				error: cancellation.message,
 			});
 			input.onNodeSettle?.(node.id);
-			throw cancelledError;
+			throw cancellation;
 		}
 		const callbackFailure = callbackError ?? error;
 		if (returnFailure && !callbackCompleted && isExplicitCallbackCancellation(callbackFailure)) {
@@ -298,7 +417,7 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 			}
 			input.onNodeEnd?.(node.id, { status: "failed", endedAt: completedAt, error: outcome.error.message });
 			input.onNodeSettle?.(node.id);
-			throwIfInvocationCancelled(input);
+			throwIfInvocationCancelled(input, toolSignal);
 			return outcome;
 		}
 		input.onFailureObserved?.(error, node.id);
@@ -312,13 +431,54 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		input.onNodeEnd?.(node.id, { status: "failed", endedAt: failure.failedAt, error: failure.message });
 		input.onNodeSettle?.(node.id);
 		throw error;
+	} finally {
+		settlement.resolve();
+		unregisterControl?.();
 	}
 }
 
-function throwIfInvocationCancelled(input: CreateToolPrimitiveInput): void {
-	input.throwIfCancelled();
-	if (!input.signal?.aborted) return;
-	throw input.signal.reason instanceof Error ? input.signal.reason : new Error("atomic-workflows: workflow cancelled");
+/**
+ * Persist exactly one inspection-only cancellation record for a
+ * `failureMode: "return"` call.
+ *
+ * The record uses the non-replayable `tool-failure:` id, so
+ * `getToolCheckpoint()` still returns undefined and resume re-runs the call. It
+ * is best effort: a diagnostic write failure must not turn cancellation into a
+ * storage failure, and no `return_failure` outcome is ever written.
+ */
+async function recordCancelledToolInspection<T extends WorkflowSerializableValue>(
+	live: LiveToolInvocation<T>,
+	startedAt: number,
+	cancellation: Error,
+	attempts: number,
+): Promise<void> {
+	try {
+		await recordThrowingToolFailure(
+			live.input,
+			live.node,
+			{ name: live.name, argsHash: live.argsHash, ordinal: live.ordinal, startedAt },
+			cancellation,
+			attempts,
+		);
+	} catch {
+		// Inspection metadata is optional; the cancellation itself is authoritative.
+	}
+}
+
+/** Resolve the cancellation reason for this invocation, if it was cancelled. */
+function invocationCancellation(input: CreateToolPrimitiveInput, signal: AbortSignal): Error | undefined {
+	try {
+		input.throwIfCancelled();
+	} catch (error) {
+		return error instanceof Error ? error : new Error(String(error));
+	}
+	if (!signal.aborted) return undefined;
+	return signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled");
+}
+
+function throwIfInvocationCancelled(input: CreateToolPrimitiveInput, signal: AbortSignal): void {
+	const cancellation = invocationCancellation(input, signal);
+	if (cancellation !== undefined) throw cancellation;
 }
 
 const CALLBACK_CANCELLATION_NAMES = new Set([

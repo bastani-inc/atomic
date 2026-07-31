@@ -206,12 +206,16 @@ describe("ctx.tool recoverable failures", () => {
 
 		assert.equal(result.status, "killed");
 		assert.equal(result.toolNodes?.[0]?.status, "cancelled");
-		assert.equal(
-			backend
-				.listCheckpoints(result.runId)
-				.some((entry) => entry.kind === "tool" && entry.name === "cancelled-check"),
-			false,
-		);
+		// Return-mode cancellation keeps one inspection-only record and nothing
+		// replayable, so a resume re-runs the call instead of replaying the
+		// cancellation as data.
+		const toolRecords = backend
+			.listCheckpoints(result.runId)
+			.filter((entry) => entry.kind === "tool" && entry.name === "cancelled-check");
+		assert.equal(toolRecords.length, 1);
+		assert.match(toolRecords[0]!.checkpointId, /^tool-failure:/);
+		assert.equal(toolRecords[0]!.kind === "tool" ? toolRecords[0]!.outcomeKind : "unexpected", undefined);
+		assert.equal(backend.getToolCheckpoint(result.runId, result.toolNodes![0]!.argsHash), undefined);
 	});
 
 	test("fails and notifies for a nested callback-origin AbortError without a run abort", async () => {

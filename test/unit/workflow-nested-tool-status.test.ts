@@ -284,7 +284,14 @@ describe("nested ctx.tool status projection", () => {
 				},
 			],
 		);
-		assert.deepEqual([...graph.targets.keys()], []);
+		assert.deepEqual(
+			[...graph.targets.entries()].map(([id, target]) => [id, target.runId, target.stageId]),
+			[
+				["left-child:tool:same", "left-child", "tool:same"],
+				["right-child:tool:same", "right-child", "tool:same"],
+			],
+			"nested tool nodes are abort-only control targets keyed by their expanded id",
+		);
 		assert.deepEqual(graph.tools[1]?.parentIds, ["left-child:tool:same"]);
 	});
 });

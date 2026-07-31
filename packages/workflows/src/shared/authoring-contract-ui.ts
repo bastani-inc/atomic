@@ -158,24 +158,37 @@ export interface WorkflowToolOptions {
 export type WorkflowToolReturnOptions = WorkflowToolOptions & { readonly failureMode: "return" };
 export type WorkflowToolThrowOptions = WorkflowToolOptions & { readonly failureMode?: "throw" };
 
+/**
+ * Cancellation handle handed to every `ctx.tool` callback.
+ *
+ * The signal aborts when the run is cancelled, when the run is gracefully quit,
+ * or when this single tool node is aborted through `/workflow quit|interrupt`
+ * with the node's id or name. Callbacks that forward it to `fetch`, a child
+ * process, or a network client unblock promptly; callbacks that ignore it are
+ * abandoned after a bounded wait.
+ */
+export interface WorkflowToolContext {
+	readonly signal: AbortSignal;
+}
+
 /** `ctx.tool` runs an async function and durably caches its serializable result. */
 export interface WorkflowToolPrimitive {
 	<TValue extends WorkflowSerializableValue>(
 		name: string,
 		args: Readonly<Record<string, WorkflowSerializableValue>>,
-		fn: () => Promise<TValue>,
+		fn: (toolCtx: WorkflowToolContext) => Promise<TValue>,
 		options: WorkflowToolReturnOptions,
 	): Promise<WorkflowToolOutcome<TValue>>;
 	<TValue extends WorkflowSerializableValue>(
 		name: string,
 		args: Readonly<Record<string, WorkflowSerializableValue>>,
-		fn: () => Promise<TValue>,
+		fn: (toolCtx: WorkflowToolContext) => Promise<TValue>,
 		options?: WorkflowToolThrowOptions,
 	): Promise<TValue>;
 	<TValue extends WorkflowSerializableValue>(
 		name: string,
 		args: Readonly<Record<string, WorkflowSerializableValue>>,
-		fn: () => Promise<TValue>,
+		fn: (toolCtx: WorkflowToolContext) => Promise<TValue>,
 		options?: WorkflowToolOptions,
 	): Promise<TValue | WorkflowToolOutcome<TValue>>;
 }
@@ -279,6 +292,8 @@ export interface RunOpts {
 	readonly registry?: object;
 	readonly depth?: number;
 	readonly stageControlRegistry?: object;
+	readonly toolControlRegistry?: object;
+	readonly toolAdmissionBoundary?: object;
 	readonly runId?: string;
 	readonly continuation?: RunContinuationOpts;
 	readonly parentRun?: WorkflowParentRunLink;

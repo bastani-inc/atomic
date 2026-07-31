@@ -7,6 +7,9 @@ export function expandedControlRunIds(store: Store, runId: string): string[] {
 	const graph = expandWorkflowGraph(store.snapshot(), runId);
 	const ids = new Set<string>([runId]);
 	for (const stage of graph.stages) ids.add(stage.workflowGraphTarget.runId);
+	// Tool-only nested runs own no stage, yet their in-flight ctx.tool nodes are
+	// controllable work below this boundary.
+	for (const tool of graph.tools) ids.add(tool.runId);
 	return [...ids];
 }
 

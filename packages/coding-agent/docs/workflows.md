@@ -2063,22 +2063,37 @@ type WorkflowToolOutcome<TValue extends WorkflowSerializableValue> =
       cached: boolean;
     };
 
+interface WorkflowToolContext {
+  signal: AbortSignal;
+}
+
 ctx.tool<TValue extends WorkflowSerializableValue>(
   name: string,
   args: Readonly<Record<string, WorkflowSerializableValue>>,
-  fn: () => Promise<TValue>,
+  fn: (toolCtx: WorkflowToolContext) => Promise<TValue>,
   options?: WorkflowToolThrowOptions,
 ): Promise<TValue>;
 
 ctx.tool<TValue extends WorkflowSerializableValue>(
   name: string,
   args: Readonly<Record<string, WorkflowSerializableValue>>,
-  fn: () => Promise<TValue>,
+  fn: (toolCtx: WorkflowToolContext) => Promise<TValue>,
   options: WorkflowToolOptions & { failureMode: "return" },
 ): Promise<WorkflowToolOutcome<TValue>>;
 ```
 
 Runs arbitrary TypeScript code as a tracked, non-attachable durable workflow graph node and caches its serializable result by call order plus the content hash of `name` and `args`. The node is created before `fn` runs and may appear before, between, after, or without model stages. A completed call replays without rerunning `fn`, so use this primitive for workflow-owned durable side effects; keep pure computation as ordinary TypeScript.
+
+**Cancellation.** Every callback receives a `WorkflowToolContext` whose `signal` aborts when the run is cancelled, when the run is gracefully quit, or when this single node is aborted with `workflow({ action: "quit"|"interrupt", runId, stageId: "<tool node id or name>" })`. Forward it to `fetch`, a child process, or any client that accepts an `AbortSignal` so a stuck call can be stopped:
+
+```ts
+await ctx.tool("fetch-dataset", { source }, async ({ signal }) => {
+  const response = await fetch(source, { signal });
+  return await response.text();
+});
+```
+
+Zero-argument callbacks stay valid — `async () => { ... }` still compiles and runs — but a callback that ignores its signal cannot be stopped: quit abandons it after a bounded wait and reports its owning run and node id, and it keeps running until it finishes on its own. A cancelled call writes no replayable checkpoint, so resume re-executes exactly that call at the same ordinal and node id; under `failureMode: "return"` it also writes one inspection-only `tool-failure:` record, which is never a replay cache hit.
 
 **Options:**
 - `failureMode` — `"throw"` keeps the default throw-on-failure behavior; `"return"` returns a typed success or failure outcome after retries.
@@ -2086,6 +2101,8 @@ Runs arbitrary TypeScript code as a tracked, non-attachable durable workflow gra
 - `maxAttempts` — positive integer maximum when retries are enabled; default `3`. Invalid enabled retry bounds throw before the callback runs.
 - `intervalMs` — initial retry interval; default `1000`.
 - `backoffRate` — retry interval multiplier; default `2`.
+
+Retries share one signal per logical call, so an abort stops the current attempt and its backoff sleep instead of starting another attempt.
 
 See [`ctx.tool` — durable cached tool execution](#ctxtool--durable-cached-tool-execution) for durable failure replay, process-output safety, explicit repair handoffs, and cancellation behavior.
 
@@ -2870,6 +2887,10 @@ workflow({ action: "resume", runId: "<id-or-prefix>", stageId: "review", message
 workflow({ action: "quit", runId: "<id-or-prefix>" })
 workflow({ action: "quit", all: true })
 
+// Abort one in-flight ctx.tool node without pausing the run.
+workflow({ action: "quit", runId: "<id-or-prefix>", stageId: "tool:<argsHash>" })
+workflow({ action: "interrupt", runId: "<id-or-prefix>", stageId: "publish-artifact" })
+
 workflow({ action: "reload", reason: "added team workflow" })
 ```
 
@@ -2892,12 +2913,16 @@ Control behavior:
   - While the root remains nonterminal, follow-up messaging to an eligible completed child stage can reuse its retained `sessionFile`. After the root terminates, use explicit `/workflow attach <run-id> <stage>` post-mortem chat instead; `workflow send` never admits a retained-session turn after terminal publication.
   - Arbitrary `ctx.ui.custom<T>` widget prompts require the interactive workflow graph and return a clear unsupported message when targeted through `send`.
 - On a nonterminal root, `delivery: "auto"` first answers a pending prompt, then resumes paused work, then steers a streaming stage, and finally starts a fresh prompt when the live stage is idle.
-- `pause`, `interrupt`, and `quit` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped `pause` and `interrupt` controls can target a visible nested child stage from the expanded graph; `quit` remains run-level. Atomic routes stage controls to the owning nested run internally.
+- `pause`, `interrupt`, and `quit` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped `pause` and `interrupt` controls can target a visible nested child stage from the expanded graph. Atomic routes stage controls to the owning nested run internally.
+- `interrupt` and `quit` can also name one in-flight `ctx.tool` node with `stageId`, by expanded node id, local `tool:<argsHash>` id, or tool name. Both mean the same thing for a tool: abort that single call now. Tool nodes stay non-attachable — this is an abort control, not a chat target. Identifiers resolve exactly first and then uniquely; a name shared by two tool nodes (or by a stage and a tool) returns the same ambiguity diagnostic stages get, listing each match as `<name> (tool)`.
+- Aborting one tool node leaves every sibling stage and sibling tool node running and does not pause the run. The node becomes `cancelled`, writes no replayable checkpoint, and re-runs on a later resume. Whether the run itself survives is ordinary author control flow: an awaited `ctx.tool` that is aborted rejects, exactly as it would for any other failure, unless the workflow catches it. A node that has already settled reports that it is not running rather than silently succeeding.
+- A targeted tool abort reports the node outcome and the run separately: `status: "cancelled"` for the node it cancelled, `stageId` for that node, `abandoned` when the callback ignored its signal, and `workflowStatus` for the run status *observed* when the action returned. It never reports `paused`, and it never predicts what the run does next.
+- `pause` never accepts a tool node: `ctx.tool` has no turn boundary to stop at, so Atomic rejects it with `Tool nodes cannot be paused; ... Use interrupt or quit to abort it.` instead of a silent no-op.
 - `interrupt` is resumable: it pauses live work when pausable stages exist and keeps the run in live history/status.
 - `pause` is useful for pausing a live run or a single live stage without treating it as a destructive abort.
 - `resume` can target a stage with `stageId`; the target may be a stage id, unique prefix, or stage name. `message` is forwarded to paused work. For a live interrupted streaming prompt, Atomic preserves the existing prompt loop without duplicating the user message and injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` when required before normal readiness-gate completion. For a paused stage that was idle waiting for a new stage-chat turn, a non-empty message resumes the stage and starts exactly one fresh prompt containing that message; an empty resume releases the pause without creating a prompt.
 - An explicit workflow-tool `resume` target that is absent from the current session store triggers targeted DBOS discovery before Atomic returns `Run not found`. Eligible exact IDs and unique prefixes resume under the original workflow ID; durable prefix collisions return every matching ID. Resource-loading and durable-backend failures remain visible. Ordinary workflow-tool `status` listing stays session-local and does not eagerly hydrate durable history.
-- `quit` gracefully pauses in-flight work, marks the run resumable, and leaves it available to `/workflow resume`.
+- Run-level `quit` gracefully pauses in-flight work, marks the run resumable, and leaves it available to `/workflow resume`. A run whose only in-flight work is a `ctx.tool` node is quit like any other: it pauses as resumable instead of reporting that there are no controllable stages.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
 Use slash commands for graph connect and stage attach because those are interactive TUI surfaces. When a run needs user input or attention, tell the user instead of polling silently.
@@ -2905,6 +2930,14 @@ Use slash commands for graph connect and stage attach because those are interact
 ### Pausing, quitting, and resuming
 
 Graceful quit is idempotent for an already-paused resumable run. If a run is waiting on `ctx.ui`, quit preserves its current DBOS prompt reservation. Answers cannot advance paused workflow code until explicit resume; checkpointing the answer releases exactly that reservation generation. Concurrent and nested prompts use composed scopes and independent DBOS reservation tokens.
+
+**Quit closes `ctx.tool` admission before it becomes a durability boundary.** A run-level quit pauses controllable stages and waits for their acknowledgements, then closes the root-shared tool-admission boundary shared by the root run and every nested run. Closing is what makes the following scan final: a call admitted while the stage pauses were still being acknowledged is included, and no call can start afterwards — not even while the durable write is in flight. Quit then aborts that complete set, waits a bounded interval for the callbacks to settle, and only then records the durable paused transition and marks the run resumable.
+
+A `ctx.tool` call attempted after admission closed never runs: it receives the graceful-quit signal, so it suspends the workflow instead of failing it, and creates no graph node, checkpoint, or side effect.
+
+A callback that ignores its abort signal is abandoned rather than pinning quit forever — mirroring the failure path — and the quit result reports each abandoned call in `abandonedTools` alongside the cancelled nodes in `cancelledTools`. Both carry the owning `{runId, nodeId}` identity, because two nested child runs legitimately share one local `tool:<argsHash>` id; slash/tool output prints them as `<runId>/<nodeId>`.
+
+A run whose only in-flight work is a `ctx.tool` node counts as controllable work: it pauses as resumable instead of returning `no_active_stages`. Because a cancelled tool node has no replayable checkpoint, resume re-executes exactly that callback at the same ordinal and node id; completed sibling tools replay from cache.
 
 When a paused stage interrupted an active model turn, Atomic preserves that turn's existing pause loop: a non-empty resume message is delivered exactly once through the resumed loop, and (if the stage has not finalized) Atomic injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` before normal completion/readiness handling. A no-message interrupted-turn resume injects the same continuation directly. A different state applies when the stage was idle and waiting for a new stage-chat turn: resuming with a non-empty message starts exactly one fresh prompt containing the text, while an empty resume only releases the pause and does not fabricate a user turn or continuation.
 
@@ -3009,7 +3042,7 @@ When two sessions race to resume the same paused workflow, a durable first-write
 ### How it works
 
 - **Only `ctx.*` blocks are checkpointed**: code outside `ctx.*` is not durable.
-- **Durable side effects and graph nodes**: every `ctx.tool` invocation creates a tracked, non-chat graph node before its callback runs. Atomic flushes successful outputs and opt-in recoverable failure outcomes before exposing them, so resume does not repeat an already-settled callback. Tool nodes can appear before, between, after, or without model stages.
+- **Durable side effects and graph nodes**: every `ctx.tool` invocation creates a tracked, non-chat graph node before its callback runs. Atomic flushes successful outputs and opt-in recoverable failure outcomes before exposing them, so resume does not repeat an already-settled callback. Tool nodes can appear before, between, after, or without model stages. An unfinished, aborted, or abandoned tool node has no replayable result and runs again on resume, while completed siblings stay cache hits.
 - **Durable child identity before dispatch**: before a nested `ctx.workflow(...)` can run child code or a child side effect, Atomic persists and awaits a versioned boundary-start record containing its stable boundary and child run ids, root/parent ownership, source order and parents, composed replay scope, alias, workflow, lifecycle state, and a deterministic fingerprint of the definition plus exact validated inputs. Distinct-input parallel calls keep stable independent scopes even when restart reverses dispatch order; identical calls share that fingerprint and use their own ordinal. Replay validates and reuses that identity before allocating any UUID.
 - **Symmetric nested scopes**: child effects stay stored under the durable root, while every child sees only its own local checkpoint view. Each nesting layer strips exactly one scope and never suffix-matches sibling or root data, so the rule composes at any depth.
 - **Stable durable graph**: tool, stage, task, chain, parallel, and child-workflow checkpoints preserve stable source identity/order, parent DAG edges, actual status, owning-run/boundary metadata, timing, output summary, model, retained chat-session references, and exact `{ runId, stageId }` targets. Fresh-process resume and completed inspection reconstruct tool-only, nested-child, mixed, and parallel topology directly from DBOS.
@@ -3040,6 +3073,10 @@ Recoverable output is explicit data flow. Atomic does not add a failed tool outc
 
 Cancellation, closed tool admission, and durable-storage faults still throw. They never become ordinary `{ ok: false }` callback outcomes. Omitting `failureMode: "return"` also keeps the existing behavior: an exhausted callback error rejects `ctx.tool` and fails the workflow unless author code catches it. Atomic persists that failed node and the root's selected tool link for later inspection, but excludes the failure record from the replay cache, so a resume or rerun calls the function again. Command failures that expose `exitCode`, `stdout`, or `stderr` remain failures even when a wrapper also uses cancellation-like text or codes; only a real run cancellation that wins the terminal race produces a killed/cancelled root.
 
+**Per-node cancellation.** Each logical `ctx.tool` call runs under its own `AbortController`, combined with the run's signal and handed to the callback as `{ signal }`. A run abort cascades to every live node; `workflow({ action: "quit"|"interrupt", runId, stageId })` naming one tool node aborts exactly that node and leaves its siblings alone. All retries of one call share that single signal.
+
+A cancelled call is recorded as `cancelled`, not `failed`, and is never a run failure by itself: it writes no replayable `tool:` checkpoint and no `return_failure` outcome even under `failureMode: "return"`, so a cancellation can never replay as data. Return mode does keep exactly one inspection-only `tool-failure:` record carrying the cancellation message; that id is excluded from replay lookup, so `getToolCheckpoint()` still misses and the call runs again. A callback that ignores its signal and returns late is caught before persistence, so its value cannot become a checkpoint either. Resume recomputes the same ordinal and `argsHash` from authored order, so the re-run occupies the same `tool:<argsHash>` graph node instead of creating a new one.
+
 Tool admission stays open while the workflow body runs and while already-admitted tools drain, including immediate promise-settlement continuations. Before any completed, failed, blocked, exited, or cancelled executor outcome is published, admission closes atomically. A detached call through a retained `ctx.tool` function after that point returns a rejected native promise without starting its callback, retries, graph node, or durable checkpoint; ignoring that promise does not emit an unhandled rejection.
 
 ```ts
@@ -3048,11 +3085,13 @@ export default workflow({
   inputs: { source: Type.String() },
   run: async (ctx) => {
     // This side effect is cached durably. On resume, it will NOT re-execute.
+    // Forwarding `signal` lets a quit or targeted abort stop a hung fetch instead of
+    // pinning the run until the request gives up on its own.
     const data = await ctx.tool(
       "fetch-dataset",
       { source: ctx.inputs.source },
-      async () => {
-        const res = await fetch(ctx.inputs.source);
+      async ({ signal }) => {
+        const res = await fetch(ctx.inputs.source, { signal });
         return await res.text();
       },
       { retriesAllowed: true, maxAttempts: 3 },
@@ -3097,6 +3136,8 @@ Only current-format DBOS records are selectable. Atomic hides unsupported or mal
 
 Selecting a paused, resumable failed, blocked, or crash-recovery target follows the existing resume path unchanged: Atomic re-dispatches the workflow with its cached inputs and the **original workflow id**. Every nested invocation validates and reuses its durable boundary and child identity before dispatch. Previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child boundaries replay from checkpoints instead of executing again; only incomplete work continues.
 
+A run quit while a `ctx.tool` call was in flight resumes the same way: the unfinished call left no replayable checkpoint, so resume re-executes exactly that callback at the same ordinal and `tool:<argsHash>` node id, while every completed tool — including a sibling that finished before the quit — replays from cache. A cancelled node never replays a cancellation as a value.
+
 Selecting a completed target—or a checkpointed failed target marked non-resumable—follows a separate read-only open path. Atomic reconstructs root and reciprocal nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage, boundary, and tool references into a stable expanded hierarchy, and never calls the resume dispatcher or runs workflow code, tools, tasks, or prompts. These graphs remain inspectable even when no retained chat transcript survives, including tool-only graphs.
 
 A terminal child stage with a valid retained session may be reopened for detached post-mortem conversation through `/workflow attach` or completed graph inspection. Follow-up is routed to that real child `{runId, stageId}` and may append chat, but it cannot pause, resume, retry, mutate root or child execution state, write a terminal checkpoint, or emit a duplicate lifecycle notice. Programmatic `workflow send` rejects the terminal root before nested-owner routing or session probing. Tool nodes never offer chat attachment.
@@ -3128,8 +3169,11 @@ Validation uses the final retained transcript for a repeated stage replay key, s
 | **Stage failure (recoverable)** | Workflow marked `failed` or `blocked` and remains resumable by default. `/workflow resume <id>` continues from the last completed checkpoint unless durable metadata explicitly sets `resumable: false`. |
 | **Stage failure (non-recoverable)** | Workflow marked `failed` or `blocked` with `resumable: false`, so it cannot resume execution. A failed root with saved checkpoint progress may still appear in read-only history for inspection; a blocked root does not. |
 | **Process crash** | Workflow remains `running` in durable state. On next session start, it appears in resume discovery when it has a durable checkpoint or pending prompt. Resume re-executes from the last completed checkpoint. |
-| **`ctx.tool` retry/default failure** | When `retriesAllowed: true`, the tool function is retried with exponential backoff. Cancellation is checked before each attempt and during retry backoff. Without `failureMode: "return"`, an exhausted callback error propagates and the workflow fails. |
+| **`ctx.tool` retry/default failure** | When `retriesAllowed: true`, the tool function is retried with exponential backoff. Cancellation is checked before each attempt, during retry backoff, and through the callback's own `signal`. Without `failureMode: "return"`, an exhausted callback error propagates and the workflow fails. |
 | **Recoverable `ctx.tool` failure** | With `failureMode: "return"`, exhausted callback failures are durably returned after retries. The tool node remains failed, downstream handoff is explicit, and replay returns the same outcome with `cached: true`. Cancellation and storage faults still throw. |
+| **`ctx.tool` node quit/interrupt** | `quit`/`interrupt` with a tool node id or name aborts that call's signal, marks the node `cancelled`, and leaves sibling stages and tools running. The action returns `status: "cancelled"` with the separately observed `workflowStatus`; it never reports the run as paused. No replayable `tool:` checkpoint and no `return_failure` outcome are written — return mode writes only inspection metadata — so resume re-runs exactly that call at the same ordinal and node id. |
+| **Run quit with in-flight tools** | Quit closes tool admission after stage pauses acknowledge, rescans every root/nested node, aborts that set, and waits a bounded interval before recording the durable paused/resumable transition, so the run is not declared quiesced while a callback still runs and no late call can slip in. A tool-only run pauses as resumable instead of reporting no controllable stages. A call attempted after the close is refused with the graceful-quit signal. |
+| **Abandoned `ctx.tool` callback** | A callback that ignores its abort signal is abandoned after the bounded wait: quit proceeds, the node is published as `cancelled`, and each abandoned call is reported in the result as an owning `{runId, nodeId}` identity. A late return from that callback is discarded before persistence and can never become a checkpoint. |
 | **`ctx.ui` pending prompt** | If a UI prompt was not answered before interruption, resume leaves off on that prompt — the user must answer it to continue. |
 
 ### Configuring DBOS/Postgres

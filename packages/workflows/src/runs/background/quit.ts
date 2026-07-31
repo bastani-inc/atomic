@@ -5,19 +5,45 @@ import {
 	getLoadableDurableWorkflow,
 	transitionDurableWorkflowStatus,
 } from "../../durable/workflow-status-transition.js";
+import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
+import {
+	toolControlRegistry as defaultToolControlRegistry,
+	sameToolNodeIdentity,
+	settleAbortedToolNodes,
+	TOOL_QUIT_SETTLEMENT_TIMEOUT_MS,
+	type ToolControlHandle,
+	type ToolControlRegistry,
+} from "../../engine/run-tool-control-registry.js";
+import { WorkflowGracefulQuitError } from "../../engine/workflow-tool-abort.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import { store as defaultStore } from "../../shared/store.js";
 import type { Store } from "../../shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot } from "../../shared/store-types.js";
+import type { WorkflowCancelledToolNode, WorkflowToolNodeIdentity } from "../../shared/types.js";
 import {
 	stageControlRegistry as defaultStageControlRegistry,
 	type StageControlHandle,
 	type StageControlRegistry,
 } from "../foreground/stage-control-registry.js";
-import type { PauseResult } from "./status.js";
+import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
 
-export type QuitRunResult = PauseResult;
+export type QuitRunResult =
+	| {
+			readonly ok: true;
+			readonly runId: string;
+			readonly paused: readonly StageSnapshot[];
+			/** Tool nodes aborted by this quit, settled or abandoned, with owning run. */
+			readonly cancelledTools: readonly WorkflowCancelledToolNode[];
+			/** Aborted nodes whose callback ignored its signal within the bounded wait. */
+			readonly abandonedTools: readonly WorkflowToolNodeIdentity[];
+	  }
+	| {
+			readonly ok: false;
+			readonly runId: string;
+			readonly reason: "not_found" | "already_ended" | "no_active_stages" | "stage_not_found";
+	  };
+
 type QuitAllRunResult =
 	| QuitRunResult
 	| {
@@ -30,33 +56,54 @@ type QuitAllRunResult =
 /**
  * Gracefully quit workflow work without destructive cancellation.
  *
- * This is the graceful public quit primitive: it waits for every currently
- * controllable stage to acknowledge its pause, then annotates the run as
- * resumable via `/workflow resume`. It deliberately does NOT abort through the
- * cancellation registry or append a terminal `workflow.run.end` entry.
- * Destructive cancellation remains an internal lifecycle mechanism.
+ * This is the graceful public quit primitive. Order matters, because quit is
+ * documented as an exact durability boundary:
+ *
+ * 1. pause every controllable stage and await its acknowledgement;
+ * 2. close the root-shared `ctx.tool` admission boundary, so no root or nested
+ *    run can admit another callback, and await open registration sections;
+ * 3. rescan every root/nested tool handle — after the close the set can only
+ *    shrink, so one scan is enough and no rescan loop can spin;
+ * 4. abort that set, wait a bounded interval, and publish settled/abandoned
+ *    nodes as cancelled;
+ * 5. only then record the durable paused transition and the resumable run.
+ *
+ * A callback that ignores its signal is abandoned rather than pinning quit; its
+ * `{runId, nodeId}` identity is reported in `abandonedTools`.
+ *
+ * It deliberately does NOT abort through the cancellation registry or append a
+ * terminal `workflow.run.end` entry. Destructive cancellation remains an
+ * internal lifecycle mechanism.
  */
 export async function quitRun(
 	runId: string,
 	opts?: {
 		store?: Store;
 		stageControlRegistry?: StageControlRegistry;
+		toolControlRegistry?: ToolControlRegistry;
 	},
 ): Promise<QuitRunResult> {
 	const activeStore = opts?.store ?? defaultStore;
 	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
+	const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
 	const run = activeStore.runs().find((candidate) => candidate.id === runId);
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
 
 	const graph = expandWorkflowGraph(activeStore.snapshot(), runId);
 	const handles = controllableHandles(activeStore, registry, runId);
+	const admissionBoundaries = controllableAdmissionBoundaries(activeStore, toolControls, runId);
 	const promptStages = graph.stages.filter(
 		(stage) =>
 			stage.pendingPrompt !== undefined || stage.inputRequest !== undefined || stage.status === "awaiting_input",
 	);
 	const hasPausedState = run.status === "paused" || graph.stages.some((stage) => stage.status === "paused");
-	if (handles.length === 0 && promptStages.length === 0 && !hasPausedState) {
+	const hasLiveToolWork =
+		controllableToolHandles(activeStore, toolControls, runId).length > 0 ||
+		admissionBoundaries.some((boundary) => boundary.hasPendingAdmissions);
+	// Nothing controllable: leave admission open so an ordinary between-stages run
+	// keeps working exactly as before.
+	if (handles.length === 0 && !hasLiveToolWork && promptStages.length === 0 && !hasPausedState) {
 		return { ok: false, runId, reason: "no_active_stages" };
 	}
 
@@ -93,6 +140,17 @@ export async function quitRun(
 		activeStore.recordStagePaused(target.runId, target.stageId);
 		pausedRunIds.add(target.runId);
 	}
+	// Durability boundary. Closing admission first is what makes the following
+	// scan final: a callback admitted while the stage pauses were still being
+	// acknowledged is included, and none can start afterwards — not even while
+	// `markDurableQuit()` awaits the backend.
+	await closeToolAdmission(admissionBoundaries, runId);
+	const toolHandles = controllableToolHandles(activeStore, toolControls, runId);
+	const abandonedTools = await abortInFlightTools(activeStore, toolHandles);
+	const cancelledTools = collectCancelledToolNodes(activeStore, toolHandles);
+	// A nested run whose tool was aborted has no paused stage of its own; mark it
+	// paused too so the boundary's live state matches the root's.
+	for (const handle of toolHandles) if (handle.runId !== runId) pausedRunIds.add(handle.runId);
 	const current = activeStore.runs().find((candidate) => candidate.id === runId);
 	if (current === undefined) return { ok: false, runId, reason: "not_found" };
 	if (current.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
@@ -100,7 +158,79 @@ export async function quitRun(
 	if (durableTransition === "refused") return { ok: false, runId, reason: "already_ended" };
 	for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
 	activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
-	return { ok: true, runId, paused };
+	return { ok: true, runId, paused, cancelledTools, abandonedTools };
+}
+
+/** Distinct admission boundaries owned by this workflow boundary's runs. */
+function controllableAdmissionBoundaries(
+	activeStore: Store,
+	toolControls: ToolControlRegistry,
+	runId: string,
+): readonly ToolAdmissionBoundary[] {
+	const boundaries = new Set<ToolAdmissionBoundary>();
+	for (const controlRunId of expandedControlRunIds(activeStore, runId)) {
+		const boundary = toolControls.admissionBoundary(controlRunId);
+		if (boundary !== undefined) boundaries.add(boundary);
+	}
+	return [...boundaries];
+}
+
+/**
+ * Refuse further `ctx.tool` admissions and wait for calls already inside their
+ * short registration section. A call refused after this point receives the
+ * graceful-quit signal, so it suspends the executor instead of failing the run.
+ */
+async function closeToolAdmission(boundaries: readonly ToolAdmissionBoundary[], runId: string): Promise<void> {
+	if (boundaries.length === 0) return;
+	const reason = new WorkflowGracefulQuitError(runId, `run ${runId.slice(0, 8)}`);
+	await Promise.all(boundaries.map((boundary) => boundary.closeForQuit(reason)));
+}
+
+/** In-flight tool nodes below this workflow boundary, including nested runs. */
+function controllableToolHandles(
+	activeStore: Store,
+	toolControls: ToolControlRegistry,
+	runId: string,
+): readonly ToolControlHandle[] {
+	return expandedControlRunIds(activeStore, runId).flatMap((controlRunId) => [...toolControls.active(controlRunId)]);
+}
+
+/**
+ * Abort every selected tool node, wait a bounded interval for settlement, and
+ * publish anything still unsettled as cancelled. Returns the abandoned
+ * identities, keyed by owning run so nested duplicates stay distinguishable.
+ */
+async function abortInFlightTools(
+	activeStore: Store,
+	toolHandles: readonly ToolControlHandle[],
+): Promise<readonly WorkflowToolNodeIdentity[]> {
+	if (toolHandles.length === 0) return [];
+	for (const handle of toolHandles) handle.abort("quit");
+	const abandoned = await settleAbortedToolNodes(toolHandles, TOOL_QUIT_SETTLEMENT_TIMEOUT_MS);
+	const endedAt = Date.now();
+	for (const handle of toolHandles) {
+		if (!abandoned.some((identity) => sameToolNodeIdentity(identity, handle))) continue;
+		activeStore.recordToolNodeEnd(handle.runId, handle.nodeId, {
+			status: "cancelled",
+			endedAt,
+			error: `atomic-workflows: ctx.tool ${handle.name} abandoned after quit; the callback ignored its abort signal`,
+		});
+	}
+	return abandoned;
+}
+
+function collectCancelledToolNodes(
+	activeStore: Store,
+	toolHandles: readonly ToolControlHandle[],
+): readonly WorkflowCancelledToolNode[] {
+	return toolHandles.flatMap((handle) => {
+		const node = activeStore
+			.runs()
+			.find((candidate) => candidate.id === handle.runId)
+			?.toolNodes?.find((candidate) => candidate.id === handle.nodeId);
+		if (node === undefined || node.status !== "cancelled") return [];
+		return [{ runId: handle.runId, nodeId: handle.nodeId, node: structuredClone(node) }];
+	});
 }
 
 function controllableHandles(
@@ -166,11 +296,16 @@ function discoverDurableQuitBackend(runId: string): DurableWorkflowBackend | und
 export async function quitAllRuns(opts?: {
 	store?: Store;
 	stageControlRegistry?: StageControlRegistry;
+	toolControlRegistry?: ToolControlRegistry;
 }): Promise<QuitAllRunResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
 	const attempts = inFlight.map((run) =>
-		quitRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry }),
+		quitRun(run.id, {
+			store: activeStore,
+			stageControlRegistry: opts?.stageControlRegistry,
+			toolControlRegistry: opts?.toolControlRegistry,
+		}),
 	);
 	const settled = await Promise.allSettled(attempts);
 	return settled.map((result, index) => {

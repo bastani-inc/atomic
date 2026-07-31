@@ -53,7 +53,7 @@ export const WorkflowParametersSchema = Type.Object(
 		stageId: Type.Optional(
 			Type.String({
 				description:
-					"Stage id, unique prefix, or stage name for stage-scoped inspection, transcript, send, pause, or resume.",
+					"Stage id, unique prefix, or stage name for stage-scoped inspection, transcript, send, pause, or resume. For interrupt and quit it may also name an in-flight ctx.tool node by its tool:<argsHash> id or tool name, which aborts that single call.",
 			}),
 		),
 		message: Type.Optional(

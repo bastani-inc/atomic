@@ -23,6 +23,7 @@ import type {
 	WorkflowTaskOptions,
 	WorkflowTaskResult,
 	WorkflowTaskStep,
+	WorkflowToolContext,
 	WorkflowUIContext,
 } from "../../packages/workflows/src/shared/types.js";
 
@@ -209,12 +210,12 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 		tool: async <T extends WorkflowSerializableValue>(
 			name: string,
 			args: Readonly<Record<string, WorkflowSerializableValue>>,
-			fn: () => Promise<T>,
+			fn: (toolCtx: WorkflowToolContext) => Promise<T>,
 		): Promise<T> => {
 			calls.tool.push(name);
 			const override = responders.tool?.(name, args, calls);
 			if (override !== undefined) return override as T;
-			return fn();
+			return fn({ signal: new AbortController().signal });
 		},
 	};
 

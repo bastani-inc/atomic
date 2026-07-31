@@ -81,9 +81,12 @@ import {
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createRunTerminalEventArbiter } from "./run-terminal-event.js";
 import { finalizeTerminalFailure } from "./run-terminal-failure.js";
+import { createToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
+import { toolControlRegistry as defaultToolControlRegistry } from "./run-tool-control-registry.js";
 import { createTrackedToolPrimitive } from "./run-tool-node-lifecycle.js";
 import { EngineRuntime } from "./runtime.js";
 import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
+import { findWorkflowGracefulQuit, WORKFLOW_GRACEFUL_QUIT_EXIT_REASON } from "./workflow-tool-abort.js";
 
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 export function run<
@@ -292,6 +295,12 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		onStageStart: opts.onStageStart,
 		onStageEnd: opts.onStageEnd,
 	};
+	const toolControls = opts.toolControlRegistry ?? defaultToolControlRegistry;
+	// One admission boundary per workflow tree: the root creates it and every
+	// nested run inherits the same instance, so a single `closeForQuit()` stops
+	// admission everywhere below the quit boundary.
+	const toolAdmission = opts.toolAdmissionBoundary ?? createToolAdmissionBoundary();
+	const unregisterToolAdmission = toolControls.registerAdmissionBoundary(runId, toolAdmission);
 	const childRunOptions: EngineChildRunOptions = {
 		adapters: opts.adapters,
 		ui: opts.ui,
@@ -308,6 +317,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		models: opts.models,
 		registry: opts.registry,
 		stageControlRegistry: opts.stageControlRegistry,
+		toolControlRegistry: opts.toolControlRegistry,
+		toolAdmissionBoundary: toolAdmission,
 		onStageStart: opts.onStageStart,
 		onStageEnd: opts.onStageEnd,
 		onStageSession: opts.onStageSession,
@@ -379,7 +390,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		isChildRun: opts.parentRun !== undefined,
 		continuationSourceId: opts.continuation?.source.id,
 	});
-	const { tool, admittedTools } = createTrackedToolPrimitive({
+	const { tool, admittedTools, abandonInFlightAsCancelled } = createTrackedToolPrimitive({
 		workflowId: runId,
 		backend: durableBackend,
 		nextCheckpointId: checkpointIdGenerator,
@@ -389,6 +400,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		tracker,
 		run: runSnapshot,
 		sourceToReplayedNodeIds,
+		toolControls,
+		toolAdmission,
 	});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
 	// Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
@@ -554,6 +567,21 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		);
 	} catch (err) {
 		terminalEvents.selectFailure(err);
+		// Graceful quit is a suspension, not a terminal outcome: `quitRun` owns the
+		// paused/resumable record, so the executor must not write a terminal store
+		// or durable status here. Unsettled callbacks are abandoned rather than
+		// drained so the background job releases and durable resume can relaunch.
+		const gracefulQuit = findWorkflowGracefulQuit(err) ?? findWorkflowGracefulQuit(ownController.signal.reason);
+		if (gracefulQuit !== undefined) {
+			abandonInFlightAsCancelled(gracefulQuit);
+			return {
+				runId,
+				status: "paused",
+				exitReason: WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
+				stages: [...runSnapshot.stages],
+				toolNodes: [...(runSnapshot.toolNodes ?? [])],
+			};
+		}
 		await admittedTools.closeAndDrain();
 		const observedAdmittedToolFailure = selectedAdmittedToolFailure ?? admittedTools.uniqueFailureFor(err);
 		const selectedExit =
@@ -629,7 +657,11 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			try {
 				gitWorktreeSetupCacheOwner.release(() => opts.cancellation?.unregister(runId));
 			} finally {
-				terminalEvents.dispose();
+				try {
+					unregisterToolAdmission();
+				} finally {
+					terminalEvents.dispose();
+				}
 			}
 		}
 	}

@@ -99,6 +99,7 @@ export type {
 	WorkflowTaskSessionOptions,
 	WorkflowTaskStep,
 	WorkflowThinkingLevel,
+	WorkflowToolContext,
 	WorkflowToolError,
 	WorkflowToolFailure,
 	WorkflowToolOptions,

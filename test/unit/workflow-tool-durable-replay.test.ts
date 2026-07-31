@@ -7,6 +7,8 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
+import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 
@@ -171,5 +173,122 @@ describe("workflow tool durable-only checkpoint replay", () => {
 			status: "noop",
 			message: "Resume does not support --all.",
 		});
+	});
+
+	test.sequential("quit with an in-flight tool re-runs only that call at the same node identity", async () => {
+		const workflowId = "tool-durable-replay-quit-in-flight";
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const args = { path: "artifact.txt" };
+		const firstArgsHash = durableHash({ name: "write-twice", args, ordinal: 1, failureMode: "return" });
+		const secondArgsHash = durableHash({ name: "write-twice", args, ordinal: 2, failureMode: "return" });
+		let firstCalls = 0;
+		let secondCalls = 0;
+		let secondEntered = Promise.withResolvers<void>();
+		const definition = workflow({
+			name: "tool-durable-replay-quit",
+			description: "",
+			inputs: {},
+			outputs: { done: Type.Boolean() },
+			run: async (ctx) => {
+				await ctx.tool(
+					"write-twice",
+					args,
+					async () => {
+						firstCalls += 1;
+						return "first-output";
+					},
+					{ failureMode: "return" },
+				);
+				await ctx.tool(
+					"write-twice",
+					args,
+					async ({ signal }) => {
+						secondCalls += 1;
+						if (secondCalls === 1) {
+							secondEntered.resolve();
+							await new Promise<void>((resolve) => {
+								signal.addEventListener("abort", () => resolve(), { once: true });
+							});
+							throw new Error("second call observed cancellation");
+						}
+						return "second-output";
+					},
+					{ failureMode: "return" },
+				);
+				return { done: true };
+			},
+		});
+		const runtime = createExtensionRuntime({ definitions: [definition], store });
+		const execute = makeExecuteWorkflowTool(
+			runtime,
+			() => undefined,
+			() => undefined,
+		);
+
+		runDetached(definition, {}, { runId: workflowId, store });
+		await secondEntered.promise;
+		const quit = await quitRun(workflowId, { store });
+		assert.equal(quit.ok, true);
+		if (quit.ok) {
+			assert.deepEqual(
+				quit.cancelledTools.map((entry) => [entry.node.name, entry.node.status, entry.node.ordinal]),
+				[["write-twice", "cancelled", 2]],
+			);
+			assert.deepEqual(quit.abandonedTools, []);
+		}
+		await jobTracker.get(workflowId)?.promise;
+
+		const pausedRun = store.runs().find((run) => run.id === workflowId);
+		const cancelledNode = pausedRun?.toolNodes?.find((node) => node.ordinal === 2);
+		assert.equal(cancelledNode?.status, "cancelled");
+		assert.equal(cancelledNode?.argsHash, secondArgsHash);
+		assert.equal(cancelledNode?.id, `tool:${secondArgsHash}`);
+		assert.equal(backend.getToolCheckpoint(workflowId, secondArgsHash), undefined, "no replayable cancelled result");
+		assert.equal(backend.getToolCheckpoint(workflowId, firstArgsHash)?.outcomeKind, "return_success");
+		const cancelledRecords = backend
+			.listCheckpoints(workflowId)
+			.filter((entry) => entry.kind === "tool" && entry.argsHash === secondArgsHash);
+		assert.equal(cancelledRecords.length, 1, "a cancelled return-mode call writes exactly one inspection record");
+		const cancelledRecord = cancelledRecords[0]!;
+		assert.match(cancelledRecord.checkpointId, /^tool-failure:/);
+		assert.equal(cancelledRecord.kind, "tool");
+		if (cancelledRecord.kind === "tool") {
+			assert.match(cancelledRecord.throwingFailureError ?? "", /aborted by workflow quit/);
+			assert.equal(cancelledRecord.outcomeKind, undefined, "inspection metadata is never a return outcome");
+		}
+		assert.equal(
+			backend
+				.listCheckpoints(workflowId)
+				.some((entry) => entry.kind === "tool" && entry.outcomeKind === "return_failure"),
+			false,
+			"cancellation must never replay as return_failure data",
+		);
+		assert.equal(backend.getWorkflow(workflowId)?.status, "paused");
+		assert.equal(firstCalls, 1);
+		assert.equal(secondCalls, 1);
+
+		secondEntered = Promise.withResolvers<void>();
+		const resumed = await execute({ action: "resume", runId: workflowId }, {} as never);
+		assert.equal(resumed.action, "resume");
+		if (resumed.action === "resume") {
+			assert.equal(resumed.status, "running");
+			assert.equal(resumed.runId, workflowId);
+		}
+		await jobTracker.get(workflowId)?.promise;
+
+		assert.equal(firstCalls, 1, "the completed sibling replays from cache");
+		assert.equal(secondCalls, 2, "only the aborted call runs again");
+		const resumedRun = store.runs().find((run) => run.id === workflowId);
+		assert.equal(resumedRun?.status, "completed");
+		assert.deepEqual(
+			resumedRun?.toolNodes?.map((node) => [node.id, node.ordinal, node.status]),
+			[
+				[`tool:${firstArgsHash}`, 1, "cached"],
+				[`tool:${secondArgsHash}`, 2, "completed"],
+			],
+			"resume occupies the same graph nodes it left behind",
+		);
+		assert.equal(backend.getToolCheckpoint(workflowId, secondArgsHash)?.outcomeKind, "return_success");
 	});
 });

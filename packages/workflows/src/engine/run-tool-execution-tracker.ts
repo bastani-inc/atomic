@@ -5,8 +5,8 @@ export interface AdmittedToolFailure {
 }
 
 export type AdmittedToolExecutionAdmission =
-	| { readonly accepted: true; bindNode(nodeId: string): void }
-	| { readonly accepted: false; readonly error: Error; bindNode(nodeId: string): void };
+	| { readonly accepted: true; bindNode(nodeId: string): void; noteCancelled(): void }
+	| { readonly accepted: false; readonly error: Error; bindNode(nodeId: string): void; noteCancelled(): void };
 
 export interface AdmittedToolExecutionTracker {
 	track<T>(execution: Promise<T>): AdmittedToolExecutionAdmission;
@@ -31,6 +31,7 @@ export function createAdmittedToolExecutionTracker(
 		readonly admissionOrder: number;
 		nodeId?: string;
 		failure?: AdmittedToolFailure;
+		cancelled: boolean;
 		settled: boolean;
 		observed?: Promise<void>;
 	}> = [];
@@ -90,18 +91,22 @@ export function createAdmittedToolExecutionTracker(
 			if (state === "CLOSED") {
 				const error = new Error("atomic-workflows: ctx.tool admission is closed for this run");
 				void execution.catch(() => undefined);
-				return { accepted: false, error, bindNode(): void {} };
+				return { accepted: false, error, bindNode(): void {}, noteCancelled(): void {} };
 			}
 			const admission: (typeof admissions)[number] = {
 				admissionOrder: ++nextAdmissionOrder,
 				nodeId: undefined,
 				failure: undefined,
+				cancelled: false,
 				settled: false,
 			};
 			admissions.push(admission);
 			const observed = execution.then(
 				() => undefined,
 				(error: unknown) => {
+					// A cancelled node is not a run failure: it must never become the
+					// selected terminal failure nor abort the run controller on drain.
+					if (admission.cancelled) return;
 					recordFailure(admission, error, admission.nodeId);
 					reportDrainFailure();
 				},
@@ -116,6 +121,9 @@ export function createAdmittedToolExecutionTracker(
 				accepted: true,
 				bindNode(id: string): void {
 					admission.nodeId = id;
+				},
+				noteCancelled(): void {
+					admission.cancelled = true;
 				},
 			};
 		},

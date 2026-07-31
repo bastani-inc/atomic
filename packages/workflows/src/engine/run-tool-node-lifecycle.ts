@@ -7,6 +7,8 @@ import type { WorkflowToolPrimitive } from "../shared/types.js";
 import type { GraphFrontierTracker } from "./graph-inference.js";
 import { durableRunTopology } from "./run-durable-topology.js";
 import type { RunTerminalEventArbiter } from "./run-terminal-event.js";
+import type { ToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
+import type { ToolControlRegistry } from "./run-tool-control-registry.js";
 import { type AdmittedToolExecutionTracker, createAdmittedToolExecutionTracker } from "./run-tool-execution-tracker.js";
 
 type ToolNodeLifecycle = Pick<
@@ -57,7 +59,14 @@ export function createTrackedToolPrimitive(input: {
 	readonly tracker: GraphFrontierTracker;
 	readonly run: RunSnapshot;
 	readonly sourceToReplayedNodeIds: Map<string, string>;
-}): { readonly tool: WorkflowToolPrimitive; readonly admittedTools: AdmittedToolExecutionTracker } {
+	readonly toolControls: ToolControlRegistry;
+	readonly toolAdmission: ToolAdmissionBoundary;
+}): {
+	readonly tool: WorkflowToolPrimitive;
+	readonly admittedTools: AdmittedToolExecutionTracker;
+	/** Abandon still-unsettled tool executions and publish them as cancelled. */
+	readonly abandonInFlightAsCancelled: (reason: unknown) => readonly string[];
+} {
 	const admittedTools = createAdmittedToolExecutionTracker({
 		onFailureObserved: ({ error, nodeId }) => {
 			input.terminalEvents.selectFailure(error, nodeId);
@@ -77,20 +86,34 @@ export function createTrackedToolPrimitive(input: {
 		},
 		signal: input.controller.signal,
 		trackExecution: admittedTools.track,
+		registerNodeControl: (registration) =>
+			input.toolControls.register({
+				runId: input.run.id,
+				nodeId: registration.nodeId,
+				name: registration.name,
+				controller: registration.controller,
+				settled: registration.settled,
+			}),
+		admitToolCall: () => input.toolAdmission.admit(),
 		...lifecycle,
 	});
+	const abandonInFlightAsCancelled = (reason: unknown): readonly string[] => {
+		const endedAt = Date.now();
+		const error = unknownErrorMessage(reason);
+		const abandoned = admittedTools.abandonNonFailed();
+		for (const nodeId of abandoned) {
+			lifecycle.onNodeEnd?.(nodeId, { status: "cancelled", endedAt, error });
+			lifecycle.onNodeSettle?.(nodeId);
+		}
+		return abandoned;
+	};
 	input.controller.signal.addEventListener(
 		"abort",
 		() => {
 			if (input.terminalEvents.winner()?.kind !== "failure") return;
-			const endedAt = Date.now();
-			const error = unknownErrorMessage(input.controller.signal.reason);
-			for (const nodeId of admittedTools.abandonNonFailed()) {
-				lifecycle.onNodeEnd?.(nodeId, { status: "cancelled", endedAt, error });
-				lifecycle.onNodeSettle?.(nodeId);
-			}
+			abandonInFlightAsCancelled(input.controller.signal.reason);
 		},
 		{ once: true },
 	);
-	return { tool, admittedTools };
+	return { tool, admittedTools, abandonInFlightAsCancelled };
 }

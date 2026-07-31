@@ -5,6 +5,10 @@ import { afterEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import {
+	createToolControlRegistry,
+	TOOL_QUIT_SETTLEMENT_TIMEOUT_MS,
+} from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { quitAllRuns, quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
@@ -526,5 +530,598 @@ describe("graceful workflow quit acknowledgement", () => {
 		const run = store.runs().find((candidate) => candidate.id === runId);
 		assert.notEqual(run?.exitReason, "quit");
 		assert.notEqual(run?.resumable, true);
+	});
+});
+
+function abortObserved(signal: AbortSignal): Promise<void> {
+	return new Promise<void>((resolve) => {
+		if (signal.aborted) {
+			resolve();
+			return;
+		}
+		signal.addEventListener("abort", () => resolve(), { once: true });
+	});
+}
+
+describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
+	test("tool-only run pauses as resumable instead of reporting no controllable stages", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-only";
+		const entered = Promise.withResolvers<void>();
+		let observedAbort = false;
+		const definition = workflow({
+			name: "quit-tool-only",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("hang", {}, async ({ signal }) => {
+					entered.resolve();
+					await abortObserved(signal);
+					observedAbort = true;
+					return "late";
+				});
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				stageControlRegistry: registry,
+				toolControlRegistry: toolControls,
+				durableBackend: backend,
+			},
+		);
+		await entered.promise;
+		assert.equal(registry.run(runId).stages().length, 0, "the only in-flight work is a tool node");
+
+		const result = await quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+
+		assert.equal(result.ok, true);
+		if (result.ok) {
+			assert.deepEqual(
+				result.cancelledTools.map((entry) => [entry.node.name, entry.node.status]),
+				[["hang", "cancelled"]],
+			);
+			assert.deepEqual(result.abandonedTools, []);
+		}
+		assert.equal(observedAbort, true, "the callback must unblock on its abort signal");
+		const quitRunSnapshot = store.runs().find((candidate) => candidate.id === runId);
+		assert.equal(quitRunSnapshot?.status, "paused");
+		assert.equal(quitRunSnapshot?.exitReason, "quit");
+		assert.equal(quitRunSnapshot?.resumable, true);
+		assert.equal(quitRunSnapshot?.toolNodes?.[0]?.status, "cancelled");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+		assert.equal(
+			backend.listCheckpoints(runId).some((entry) => entry.kind === "tool" && entry.name === "hang"),
+			false,
+			"a cancelled call must leave no replayable checkpoint",
+		);
+
+		const finished = await execution;
+		assert.equal(finished.status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.endedAt, undefined);
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
+	});
+
+	test("durable paused transition waits for the aborted callback to settle", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-settlement-order";
+		const entered = Promise.withResolvers<void>();
+		const sawAbort = Promise.withResolvers<void>();
+		const releaseSettlement = Promise.withResolvers<void>();
+		const definition = workflow({
+			name: "quit-tool-settlement-order",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("slow-teardown", {}, async ({ signal }) => {
+					entered.resolve();
+					await abortObserved(signal);
+					sawAbort.resolve();
+					await releaseSettlement.promise;
+					return "torn-down";
+				});
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+		let quitSettled = false;
+		const quitting = quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		}).finally(() => {
+			quitSettled = true;
+		});
+		await sawAbort.promise;
+		await Promise.resolve();
+
+		assert.equal(quitSettled, false, "quit must not settle while the callback is still tearing down");
+		assert.equal(backend.getWorkflow(runId)?.status, "running", "durable pause must follow tool settlement");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "running");
+
+		releaseSettlement.resolve();
+		const result = await quitting;
+		assert.equal(result.ok, true);
+		if (result.ok) assert.deepEqual(result.abandonedTools, []);
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.toolNodes?.[0]?.status, "cancelled");
+		assert.equal((await execution).status, "paused");
+	});
+
+	test("a callback that ignores its signal is abandoned after the bounded wait and reported", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-abandoned";
+		const entered = Promise.withResolvers<void>();
+		const neverReleasedUntilTeardown = Promise.withResolvers<void>();
+		const definition = workflow({
+			name: "quit-tool-abandoned",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("ignores-signal", {}, async () => {
+					entered.resolve();
+					await neverReleasedUntilTeardown.promise;
+					return "late";
+				});
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+		const quitting = quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+		await new Promise((resolve) => setTimeout(resolve, TOOL_QUIT_SETTLEMENT_TIMEOUT_MS / 5));
+		assert.equal(
+			backend.getWorkflow(runId)?.status,
+			"running",
+			"durable pause must not be recorded while the bounded wait is still running",
+		);
+
+		const result = await quitting;
+		assert.equal(result.ok, true);
+		const nodeId = store.runs().find((candidate) => candidate.id === runId)?.toolNodes?.[0]?.id;
+		assert.ok(nodeId);
+		if (result.ok) {
+			assert.deepEqual(result.abandonedTools, [{ runId, nodeId }]);
+			assert.deepEqual(
+				result.cancelledTools.map((entry) => [entry.runId, entry.node.name, entry.node.status]),
+				[[runId, "ignores-signal", "cancelled"]],
+			);
+		}
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.toolNodes?.[0]?.status, "cancelled");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+
+		neverReleasedUntilTeardown.resolve();
+		assert.equal((await execution).status, "paused");
+		assert.equal(
+			backend.listCheckpoints(runId).some((entry) => entry.kind === "tool" && entry.name === "ignores-signal"),
+			false,
+			"an abandoned callback that returns late must not become a replayable checkpoint",
+		);
+	});
+
+	test("mixed run pauses its stage and aborts its tool before the durable transition", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-mixed";
+		const entered = Promise.withResolvers<void>();
+		const stagePauseAcknowledged = Promise.withResolvers<void>();
+		const sawAbort = Promise.withResolvers<void>();
+		const releaseSettlement = Promise.withResolvers<void>();
+		let stageStatus: StageControlStatus = "running";
+		const definition = workflow({
+			name: "quit-tool-mixed",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("mixed-hang", {}, async ({ signal }) => {
+					entered.resolve();
+					await abortObserved(signal);
+					sawAbort.resolve();
+					await releaseSettlement.promise;
+					return "late";
+				});
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+		store.recordStageStart(runId, {
+			id: "sibling-stage",
+			name: "sibling",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		registry.register(
+			stageHandle({
+				runId,
+				stageId: "sibling-stage",
+				status: () => stageStatus,
+				pause: async () => {
+					await stagePauseAcknowledged.promise;
+					stageStatus = "paused";
+				},
+			}),
+		);
+
+		const quitting = quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+		await Promise.resolve();
+		assert.equal(backend.getWorkflow(runId)?.status, "running", "stage pause must precede the durable transition");
+		stagePauseAcknowledged.resolve();
+		await sawAbort.promise;
+		assert.equal(backend.getWorkflow(runId)?.status, "running", "tool abort must precede the durable transition");
+		releaseSettlement.resolve();
+
+		const result = await quitting;
+		assert.equal(result.ok, true);
+		if (result.ok) {
+			assert.deepEqual(
+				result.paused.map((stage) => stage.id),
+				["sibling-stage"],
+			);
+			assert.deepEqual(
+				result.cancelledTools.map((entry) => entry.node.name),
+				["mixed-hang"],
+			);
+			assert.deepEqual(result.abandonedTools, []);
+		}
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
+		assert.equal((await execution).status, "paused");
+	});
+
+	test("aborts a nested child run's tool node and suspends the whole boundary", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-nested";
+		const entered = Promise.withResolvers<void>();
+		const child = workflow({
+			name: "quit-tool-nested-child",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Boolean() },
+			run: async (ctx) => {
+				await ctx.tool("child-hang", {}, async ({ signal }) => {
+					entered.resolve();
+					await abortObserved(signal);
+					throw new Error("child-hang observed cancellation");
+				});
+				return { ok: true };
+			},
+		});
+		const parent = workflow({
+			name: "quit-tool-nested-parent",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Boolean() },
+			run: async (ctx) => {
+				await ctx.workflow(child, {});
+				return { ok: true };
+			},
+		});
+
+		const execution = run(
+			parent,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+
+		const result = await quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+
+		assert.equal(result.ok, true);
+		if (result.ok) {
+			assert.deepEqual(
+				result.cancelledTools.map((entry) => [entry.node.name, entry.node.status]),
+				[["child-hang", "cancelled"]],
+			);
+			assert.deepEqual(result.abandonedTools, []);
+		}
+		assert.equal((await execution).status, "paused");
+		const root = store.runs().find((candidate) => candidate.id === runId);
+		assert.equal(root?.status, "paused");
+		assert.equal(root?.endedAt, undefined, "a suspended boundary must not record a terminal child failure");
+		assert.equal(root?.resumable, true);
+		const childRun = store.runs().find((candidate) => candidate.parentRunId === runId);
+		assert.equal(childRun?.status, "paused");
+		assert.equal(childRun?.toolNodes?.[0]?.status, "cancelled");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+	});
+
+	test("a tool admitted while a stage pause is pending is included in quit", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-late-admission";
+		const pauseEntered = Promise.withResolvers<void>();
+		const pauseAcknowledged = Promise.withResolvers<void>();
+		const releaseWorkflowToTool = Promise.withResolvers<void>();
+		const lateToolStarted = Promise.withResolvers<void>();
+		const cleanupRelease = Promise.withResolvers<void>();
+		let lateSignal: AbortSignal | undefined;
+		let lateObservedAbort = false;
+		let stageStatus: StageControlStatus = "running";
+		const definition = workflow({
+			name: "quit-tool-late-admission",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				// The call is admitted only after quit has started and is waiting on
+				// the stage pause acknowledgement.
+				await releaseWorkflowToTool.promise;
+				await ctx.tool("late-admission", {}, async ({ signal }) => {
+					lateSignal = signal;
+					lateToolStarted.resolve();
+					await Promise.race([abortObserved(signal), cleanupRelease.promise]);
+					lateObservedAbort = signal.aborted;
+					return "late";
+				});
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await Promise.resolve();
+		store.recordStageStart(runId, {
+			id: "slow-pause-stage",
+			name: "slow-pause",
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+		registry.register(
+			stageHandle({
+				runId,
+				stageId: "slow-pause-stage",
+				status: () => stageStatus,
+				pause: async () => {
+					pauseEntered.resolve();
+					await pauseAcknowledged.promise;
+					stageStatus = "paused";
+				},
+			}),
+		);
+
+		try {
+			const quitting = quitRun(runId, {
+				store,
+				stageControlRegistry: registry,
+				toolControlRegistry: toolControls,
+			});
+			await pauseEntered.promise;
+			releaseWorkflowToTool.resolve();
+			await lateToolStarted.promise;
+			assert.equal(lateSignal?.aborted, false, "the late callback starts before quit can abort it");
+			assert.equal(
+				backend.getWorkflow(runId)?.status,
+				"running",
+				"durable pause must not be recorded while a stage pause is still pending",
+			);
+
+			pauseAcknowledged.resolve();
+			const result = await quitting;
+
+			assert.equal(result.ok, true);
+			assert.equal(lateObservedAbort, true, "quit must abort a tool admitted during the stage-pause wait");
+			const nodeId = store.runs().find((candidate) => candidate.id === runId)?.toolNodes?.[0]?.id;
+			assert.ok(nodeId);
+			if (result.ok) {
+				assert.deepEqual(
+					result.cancelledTools.map((entry) => [entry.runId, entry.nodeId, entry.node.status]),
+					[[runId, nodeId, "cancelled"]],
+				);
+				assert.deepEqual(result.abandonedTools, []);
+			}
+			assert.equal(store.runs().find((candidate) => candidate.id === runId)?.toolNodes?.[0]?.status, "cancelled");
+			assert.equal(backend.getWorkflow(runId)?.status, "paused");
+			assert.equal((await execution).status, "paused");
+		} finally {
+			cleanupRelease.resolve();
+		}
+	});
+
+	test("refuses a ctx.tool call admitted after quit closed admission", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-post-close";
+		const entered = Promise.withResolvers<void>();
+		let secondCallStarted = false;
+		let secondCallRejection: unknown;
+		const definition = workflow({
+			name: "quit-tool-post-close",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				try {
+					await ctx.tool("first", {}, async ({ signal }) => {
+						entered.resolve();
+						await abortObserved(signal);
+						throw new Error("first observed cancellation");
+					});
+				} catch {
+					// Author code that swallows cancellation must still not be able to
+					// start new durable work after quit closed admission.
+				}
+				try {
+					await ctx.tool("second", {}, async () => {
+						secondCallStarted = true;
+						return "should never run";
+					});
+				} catch (error) {
+					secondCallRejection = error;
+					throw error;
+				}
+				return {};
+			},
+		});
+
+		const execution = run(
+			definition,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		await entered.promise;
+		const result = await quitRun(runId, {
+			store,
+			stageControlRegistry: registry,
+			toolControlRegistry: toolControls,
+		});
+
+		assert.equal(result.ok, true);
+		assert.equal((await execution).status, "paused");
+		assert.equal(secondCallStarted, false, "a post-close ctx.tool callback must never run");
+		assert.equal(secondCallRejection instanceof Error, true);
+		assert.match(String(secondCallRejection), /suspended by workflow quit/);
+		assert.deepEqual(
+			store
+				.runs()
+				.find((candidate) => candidate.id === runId)
+				?.toolNodes?.map((node) => node.name),
+			["first"],
+			"a refused call creates no graph node",
+		);
+		assert.equal(store.runs().find((candidate) => candidate.id === runId)?.status, "paused");
+		assert.equal(backend.getWorkflow(runId)?.status, "paused");
+	});
+
+	test("keeps nested abandoned identities distinct when children share a local node id", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		const toolControls = createToolControlRegistry();
+		const runId = "quit-tool-nested-identity";
+		const started = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+		let startedCount = 0;
+		const cleanupRelease = Promise.withResolvers<void>();
+		const child = workflow({
+			name: "quit-tool-nested-identity-child",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Boolean() },
+			run: async (ctx) => {
+				// Identical name and args in both children, so each child produces the
+				// same local `tool:<argsHash>` node id.
+				await ctx.tool("shared", { slot: 1 }, async () => {
+					started[startedCount++]?.resolve();
+					await cleanupRelease.promise;
+					return "late";
+				});
+				return { ok: true };
+			},
+		});
+		const parent = workflow({
+			name: "quit-tool-nested-identity-parent",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Boolean() },
+			run: async (ctx) => {
+				await Promise.allSettled([ctx.workflow(child, {}), ctx.workflow(child, {})]);
+				return { ok: true };
+			},
+		});
+
+		const execution = run(
+			parent,
+			{},
+			{ runId, store, stageControlRegistry: registry, toolControlRegistry: toolControls, durableBackend: backend },
+		);
+		try {
+			await Promise.all(started.map((resolver) => resolver.promise));
+
+			const result = await quitRun(runId, {
+				store,
+				stageControlRegistry: registry,
+				toolControlRegistry: toolControls,
+			});
+
+			assert.equal(result.ok, true);
+			if (result.ok) {
+				assert.equal(result.abandonedTools.length, 2);
+				assert.equal(new Set(result.abandonedTools.map((id) => `${id.runId}/${id.nodeId}`)).size, 2);
+				assert.equal(
+					new Set(result.abandonedTools.map((id) => id.nodeId)).size,
+					1,
+					"nested children legitimately share one local node id",
+				);
+				assert.equal(result.cancelledTools.length, 2);
+				assert.equal(new Set(result.cancelledTools.map((entry) => entry.runId)).size, 2);
+				for (const entry of result.cancelledTools) assert.equal(entry.node.status, "cancelled");
+			}
+		} finally {
+			cleanupRelease.resolve();
+			await execution;
+		}
 	});
 });
