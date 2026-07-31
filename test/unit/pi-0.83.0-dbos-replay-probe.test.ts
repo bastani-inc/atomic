@@ -18,13 +18,22 @@
  * which is precisely what a new process sees. A re-executed side effect here is
  * a failure, not a flake — every callback counter is exact.
  *
- * The kill boundary is also a serialization boundary. A DBOS checkpoint is
- * written to Postgres and read back by the next process, so `committedState`
- * carries step outputs across it by JSON round trip and asserts the value
- * survives one. `structuredClone` would have carried a `Date`, a `Map` or an
- * `undefined` property into the resumed run that real persistence drops or
- * rewrites, which is the shape of SDK serialization regression a mirror-based
- * gate would otherwise sleep through.
+ * The kill boundary is also a serialization boundary, and which one matters.
+ * DBOS 4.24.16 persists step output with `DBOSJSON`, which is SuperJSON, not
+ * `JSON`. A checkpoint here is a `WorkflowSerializableValue`, so most of what
+ * SuperJSON adds — `Date`, `Map`, `Set`, `BigInt` — cannot reach one anyway.
+ * The difference that survives that narrowing is an `undefined` property, which
+ * the type does permit: SuperJSON keeps the key, `JSON` drops it.
+ *
+ * The mirror crosses by `structuredClone`, which agrees with SuperJSON there —
+ * measured against `superjson` itself, not assumed, and pinned by the boundary
+ * test below. A plain `JSON.parse(JSON.stringify(...))` handoff would be wrong
+ * in the direction that looks safe: it would drop a key real persistence keeps,
+ * making the probe stricter than the thing it models while still not exercising
+ * the serializer that thing uses. The SDK does not expose `DBOSJSON` through
+ * its `exports` map and this repository does not depend on `superjson`, so the
+ * stand-in is what is reachable; SuperJSON's own encoding is therefore not
+ * covered here.
  *
  * Still not covered, and out of scope for a dependency gate: a live
  * Postgres-backed replay across two real processes, and a parent killed *after*
@@ -55,21 +64,36 @@ type MockSdk = ReturnType<typeof createMockSdk>;
 /**
  * Everything the SDK had committed at the moment of the kill, and nothing else.
  *
- * Step outputs cross by JSON round trip because that is what DBOS does with
- * them. The equality assertion makes a payload the SDK could not actually
- * persist a failure here rather than a value that silently changes shape in a
- * new process.
+ * Step outputs cross by `structuredClone`, the stand-in for the SuperJSON
+ * encoding DBOS persists them with; see the header for why it stands in and
+ * what that leaves uncovered. The boundary test below pins the value shapes the
+ * two agree on, so this cannot be narrowed to plain JSON without failing.
  */
 function committedState(sdk: MockSdk): MockSdk {
 	const persisted = createMockSdk();
 	for (const [key, value] of sdk.state.workflows) persisted.state.workflows.set(key, { ...value });
-	for (const [key, value] of sdk.state.steps) {
-		const serialized: unknown = JSON.parse(JSON.stringify(value ?? null));
-		assert.deepEqual(serialized, value ?? null, `checkpoint ${key} does not survive a DBOS serialization round trip`);
-		persisted.state.steps.set(key, serialized);
-	}
+	for (const [key, value] of sdk.state.steps) persisted.state.steps.set(key, structuredClone(value));
 	return persisted;
 }
+
+test("the modelled kill boundary keeps the key SuperJSON keeps and JSON drops", () => {
+	// A checkpoint is a `WorkflowSerializableValue`, so an `undefined` property is
+	// the one shape where DBOS's SuperJSON encoding and plain `JSON` disagree —
+	// measured against `superjson` itself, which keeps the key, as
+	// `structuredClone` does and `JSON.parse(JSON.stringify(...))` does not.
+	// This is what stops the handoff being narrowed to a JSON round trip, which
+	// would make the probe stricter than the persistence it models.
+	const sdk = createMockSdk();
+	sdk.state.steps.set("run:checkpoint:probe", { settled: true, cancelled: undefined });
+
+	const carried = committedState(sdk).state.steps.get("run:checkpoint:probe") as Record<string, unknown>;
+
+	assert.equal(carried.settled, true);
+	assert.ok(
+		Object.hasOwn(carried, "cancelled"),
+		"an explicitly-undefined checkpoint property must survive the kill boundary",
+	);
+});
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve = (): void => {};
