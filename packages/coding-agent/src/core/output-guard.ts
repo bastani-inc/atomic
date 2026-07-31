@@ -141,14 +141,37 @@ export function writeRawStdout(text: string): void {
 }
 
 /**
+ * A `writeRawStdoutOnce` failure, carrying whether the payload ever reached the
+ * stream.
+ *
+ * `submitted` is false only when the write call itself threw, which happens
+ * before any byte can leave. Once `write()` has accepted the chunk, a later
+ * callback error reports that the stream failed — not that it failed *before*
+ * emitting. A pipe can flush part or all of the payload and then report EPIPE.
+ * A caller that must not claim an empty stdout has to tell those two apart.
+ */
+export class RawStdoutWriteError extends Error {
+	readonly submitted: boolean;
+
+	constructor(message: string, options: { cause: unknown; submitted: boolean }) {
+		super(message, { cause: options.cause });
+		this.name = "RawStdoutWriteError";
+		this.submitted = options.submitted;
+	}
+}
+
+/**
  * Write one chunk to the real stdout as a single awaited operation.
  *
  * Differs from `writeRawStdout` in the two ways the credential egress needs.
  * The rejection reaches the caller instead of exiting the process, so the
  * caller can report a cause of its own. And the chunk is handed to stdout
  * exactly once — the ENOBUFS/EAGAIN retry in `writeRawStdoutChunk` would
- * re-send the whole payload, which for a secret risks emitting it twice — so a
- * rejection here means those bytes were not written.
+ * re-send the whole payload, which for a secret risks emitting it twice.
+ *
+ * Rejects with `RawStdoutWriteError`. Only `submitted: false` means the bytes
+ * cannot have been written; a callback error leaves that unknowable, so callers
+ * must not report it as an empty-output failure.
  */
 export function writeRawStdoutOnce(text: string): Promise<void> {
 	if (text.length === 0) {
@@ -159,11 +182,19 @@ export function writeRawStdoutOnce(text: string): Promise<void> {
 			new Promise<void>((resolve, reject) => {
 				try {
 					getRawStdoutWrite()(text, (error) => {
-						if (error) reject(error);
-						else resolve();
+						if (error) {
+							reject(new RawStdoutWriteError(error.message, { cause: error, submitted: true }));
+						} else {
+							resolve();
+						}
 					});
 				} catch (error) {
-					reject(error instanceof Error ? error : new Error(String(error)));
+					reject(
+						new RawStdoutWriteError(error instanceof Error ? error.message : String(error), {
+							cause: error,
+							submitted: false,
+						}),
+					);
 				}
 			}),
 	);

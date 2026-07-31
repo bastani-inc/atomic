@@ -264,11 +264,17 @@ describe("emitCredential", () => {
 	/**
 	 * `writeRawStdoutOnce` and the trailing drain both resolve against the real
 	 * stdout writer, so stubbing `process.stdout.write` is what puts each of the
-	 * two failure points under test.
+	 * failure points under test.
+	 *
+	 * `onWrite` models a stream that accepted the chunk and then reported a
+	 * failure — the EPIPE-on-flush shape — so the text is still recorded as having
+	 * reached stdout. `onSubmit` models the write call throwing instead, which is
+	 * the only failure that happens before a byte can leave.
 	 */
 	function withStubbedStdout<T>(
 		onWrite: (text: string) => Error | undefined,
 		body: (written: string[]) => Promise<T>,
+		options: { onSubmit?: (text: string) => Error | undefined; emitOnCallbackError?: boolean } = {},
 	): Promise<T> {
 		const original = process.stdout.write;
 		const written: string[] = [];
@@ -279,8 +285,10 @@ describe("emitCredential", () => {
 		): boolean => {
 			const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
 			const text = String(chunk);
+			const refused = options.onSubmit?.(text);
+			if (refused) throw refused;
 			const failure = onWrite(text);
-			if (!failure) written.push(text);
+			if (!failure || options.emitOnCallbackError) written.push(text);
 			done?.(failure ?? null);
 			return true;
 		}) as typeof process.stdout.write;
@@ -341,6 +349,7 @@ describe("emitCredential", () => {
 		const cases: Array<{
 			code: CredentialPrintErrorCode;
 			onWrite?: (text: string) => Error | undefined;
+			onSubmit?: (text: string) => Error | undefined;
 			run: () => Promise<unknown>;
 		}> = [
 			{
@@ -411,8 +420,10 @@ describe("emitCredential", () => {
 			},
 			{
 				code: "CredentialNotEmitted",
-				// The write itself fails, so the credential never reaches stdout.
-				onWrite: (text) => (text.length > 0 ? new Error("EPIPE before the credential was written") : undefined),
+				// The write call itself throws, which is the only payload failure that
+				// happens before a byte can leave. A callback error after the stream
+				// took the chunk is not this, and is covered separately below.
+				onSubmit: (text) => (text.length > 0 ? new Error("stdout destroyed before the write") : undefined),
 				run: () => emitCredential(new Secret("sk-not-emitted")),
 			},
 		];
@@ -433,27 +444,31 @@ describe("emitCredential", () => {
 		const nonZero = Object.entries(EXIT_CODES).filter(([, exitCode]) => exitCode !== 0);
 		expect(cases.map(({ code }) => code).sort()).toEqual(nonZero.map(([code]) => code).sort());
 
-		for (const { code, onWrite, run } of cases) {
-			await withStubbedStdout(onWrite ?? (() => undefined), async (written) => {
-				const failure = await Promise.resolve()
-					.then(run)
-					.then(
-						() => undefined,
-						(error: unknown) => error as CredentialPrintError,
-					);
+		for (const { code, onWrite, onSubmit, run } of cases) {
+			await withStubbedStdout(
+				onWrite ?? (() => undefined),
+				async (written) => {
+					const failure = await Promise.resolve()
+						.then(run)
+						.then(
+							() => undefined,
+							(error: unknown) => error as CredentialPrintError,
+						);
 
-				expect(failure, `${code} did not fail`).toBeInstanceOf(CredentialPrintError);
-				expect(failure?.code).toBe(code);
-				expect(failure?.exitCode).toBe(EXIT_CODES[code]);
-				// The invariant: a non-zero exit means nothing reached stdout.
-				expect(written, `${code} wrote to stdout`).toEqual([]);
-			});
+					expect(failure, `${code} did not fail`).toBeInstanceOf(CredentialPrintError);
+					expect(failure?.code).toBe(code);
+					expect(failure?.exitCode).toBe(EXIT_CODES[code]);
+					// The invariant: a non-zero exit means nothing reached stdout.
+					expect(written, `${code} wrote to stdout`).toEqual([]);
+				},
+				onSubmit ? { onSubmit } : {},
+			);
 		}
 	});
 
-	it("reports a failed payload write as its own code, with nothing emitted", async () => {
+	it("reports a payload write that never reached the stream, with nothing emitted", async () => {
 		await withStubbedStdout(
-			(text) => (text.length > 0 ? new Error("EPIPE before the credential was written") : undefined),
+			() => undefined,
 			async (written) => {
 				const failure = await emitCredential(new Secret("sk-y")).then(
 					() => undefined,
@@ -464,7 +479,39 @@ describe("emitCredential", () => {
 				expect(failure?.code).toBe("CredentialNotEmitted");
 				expect(toCredentialPrintError(failure).exitCode).toBe(8);
 			},
+			{ onSubmit: (text) => (text.length > 0 ? new Error("stdout destroyed before the write") : undefined) },
 		);
+	});
+
+	it("never exits non-zero over a payload the stream already accepted", async () => {
+		// A pipe can flush part or all of the payload and only then report EPIPE.
+		// Treating that callback error as "nothing was emitted" produced exit 8
+		// with the credential on stdout — the one thing this door must never do.
+		const reported: string[] = [];
+		const originalConsoleError = console.error;
+		console.error = ((...parts: unknown[]) => {
+			reported.push(parts.map(String).join(" "));
+		}) as typeof console.error;
+		const originalExitCode = process.exitCode;
+		process.exitCode = undefined;
+
+		try {
+			await withStubbedStdout(
+				(text) => (text.length > 0 ? new Error("EPIPE after the payload was flushed") : undefined),
+				async (written) => {
+					await expect(emitCredential(new Secret("sk-flushed"))).resolves.toBeUndefined();
+
+					expect(written).toEqual(["sk-flushed\n"]);
+					expect(process.exitCode ?? 0).toBe(0);
+					expect(reported.join("\n")).toContain("did not complete cleanly");
+					expect(reported.join("\n")).not.toContain("sk-flushed");
+				},
+				{ emitOnCallbackError: true },
+			);
+		} finally {
+			console.error = originalConsoleError;
+			process.exitCode = originalExitCode;
+		}
 	});
 });
 

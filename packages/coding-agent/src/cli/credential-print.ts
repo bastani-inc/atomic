@@ -25,7 +25,7 @@ import { ModelsError } from "@earendil-works/pi-ai";
 import { APP_NAME } from "../config.ts";
 import { resolveCliModel } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
-import { flushRawStdout, writeRawStdoutOnce } from "../core/output-guard.ts";
+import { flushRawStdout, RawStdoutWriteError, writeRawStdoutOnce } from "../core/output-guard.ts";
 import type { Args } from "./args.ts";
 
 export type CredentialPrintKind = "api_key" | "bearer_token";
@@ -129,12 +129,18 @@ export class Secret {
  * receives a `Secret` it cannot read, print, or serialize, so a second export
  * path cannot be grafted on without moving this function.
  *
- * The one failure that can still be reported is a failure of the payload write
- * itself. `writeRawStdoutOnce` hands the payload to the stream exactly once and
- * never re-sends it, so its rejection means the credential was not emitted
- * (`CredentialNotEmitted`, exit 8) and stdout is empty, which is what every
- * non-zero exit from this door promises. It must not fall through to the
- * caller's credential-resolution catch, which would report exit 2.
+ * The one failure that can still be reported as a failure is the payload write
+ * never reaching the stream at all. `writeRawStdoutOnce` rejects with
+ * `submitted: false` only when the write call threw, before any byte could
+ * leave; that alone is `CredentialNotEmitted` (exit 8) with stdout provably
+ * empty, which is what every non-zero exit from this door promises. It must not
+ * fall through to the caller's credential-resolution catch, which would report
+ * exit 2.
+ *
+ * A write the stream accepted and then failed is not that. The payload may be
+ * wholly or partly on stdout already — a pipe can flush and then report EPIPE —
+ * so it is reported on stderr with the exit code left at 0, for the same reason
+ * the trailing drain is.
  *
  * Once that write resolves the credential is on stdout and the command has
  * succeeded. A failure of the trailing drain is therefore reported on stderr
@@ -151,6 +157,15 @@ export async function emitCredential(secret: Secret): Promise<void> {
 	try {
 		await writeRawStdoutOnce(payload);
 	} catch (error) {
+		if (error instanceof RawStdoutWriteError && error.submitted) {
+			// Those bytes were handed to stdout. Whether they arrived is not
+			// knowable here, so the one thing that must not happen is claiming they
+			// did not and exiting non-zero over a stream that may carry them.
+			console.error(
+				`Warning: the credential was handed to stdout but the write did not complete cleanly: ${error.message}`,
+			);
+			return;
+		}
 		throw new CredentialPrintError(
 			"CredentialNotEmitted",
 			"Failed to write the credential to stdout; nothing was emitted",
