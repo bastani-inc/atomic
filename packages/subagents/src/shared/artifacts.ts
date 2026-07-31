@@ -9,8 +9,6 @@ const CLEANUP_MARKER_FILE = ".last-cleanup";
 const CLEANUP_LOCK_FILE = ".cleanup.lock";
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CLEANUP_LOCK_STALE_MS = 60 * 60 * 1000;
-// How many session dirs a scan may process between lock-ownership rechecks.
-const CLEANUP_LOCK_RECHECK_EVERY = 200;
 
 export function getArtifactsDir(sessionFile: string | null): string {
 	if (sessionFile) {
@@ -204,12 +202,13 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 			return;
 		}
 
-		for (const [index, dir] of dirs.entries()) {
+		for (const dir of dirs) {
 			if (dir === CLEANUP_MARKER_FILE || dir === CLEANUP_LOCK_FILE) continue;
 			// A holder displaced by a stale-lock takeover that could not be handed its
-			// lock back must not keep scanning alongside the new lock owner; recheck
-			// ownership periodically and abort the scan once the lock is lost.
-			if (index % CLEANUP_LOCK_RECHECK_EVERY === 0 && !ownsCleanupLock(lockPath, lockToken)) return;
+			// lock back must not keep deleting alongside the new lock owner; recheck
+			// ownership before every destructive per-session cleanup and abort the
+			// scan as soon as the lock is lost.
+			if (!ownsCleanupLock(lockPath, lockToken)) return;
 			const artifactsDir = path.join(sessionsBase, dir, "subagent-artifacts");
 			try {
 				cleanupOldArtifacts(artifactsDir, maxAgeDays);
