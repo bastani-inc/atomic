@@ -294,8 +294,12 @@ function withDeferredGraphRecording(extensionPath: string, factory: ExtensionFac
 		};
 		try {
 			const result = factory(pi);
-			if (result instanceof Promise) {
-				return result.finally(finish);
+			if (
+				result !== null &&
+				typeof result === "object" &&
+				typeof (result as PromiseLike<void>).then === "function"
+			) {
+				return Promise.resolve(result).finally(finish);
 			}
 			finish();
 			return result;
