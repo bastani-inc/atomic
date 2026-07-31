@@ -218,7 +218,18 @@ function classifyOAuthFailure(error: ModelsError): CredentialPrintError {
 			});
 }
 
-function candidateModels(args: Args, modelRuntime: ModelRuntime, configured: ReadonlySet<string>): Model<Api>[] {
+/**
+ * Providers whose credential the caller could have meant.
+ *
+ * With `--provider` the caller named one, so failing to resolve it is an error.
+ * Without it, eligibility is *not* narrowed to providers holding a persisted
+ * credential: a provider authenticated by an environment variable or a custom
+ * resolver has nothing in `auth.json`, and filtering on that list dropped it
+ * before `getAuth()` could produce its working key. Candidacy is therefore
+ * "offers the named model", and `getAuth()` — the same call a real request
+ * makes — decides which candidate actually authenticates.
+ */
+function candidateModels(args: Args, modelRuntime: ModelRuntime): Model<Api>[] {
 	if (args.provider) {
 		const resolved = resolveCliModel({ cliProvider: args.provider, cliModel: args.model, modelRuntime });
 		if (resolved.error || !resolved.model) {
@@ -232,7 +243,6 @@ function candidateModels(args: Args, modelRuntime: ModelRuntime, configured: Rea
 
 	const models: Model<Api>[] = [];
 	for (const provider of modelRuntime.getProviders()) {
-		if (!configured.has(provider.id)) continue;
 		const resolved = resolveCliModel({ cliProvider: provider.id, cliModel: args.model, modelRuntime });
 		if (resolved.model && !resolved.error && !resolved.warning?.includes("Using custom model id")) {
 			models.push(resolved.model);
@@ -241,7 +251,7 @@ function candidateModels(args: Args, modelRuntime: ModelRuntime, configured: Rea
 	if (models.length === 0) {
 		throw new CredentialPrintError(
 			"NoCredentialConfigured",
-			`Model "${args.model}" not found among providers with configured credentials. Use --list-models to see available models.`,
+			`Model "${args.model}" not found among the available providers. Use --list-models to see available models.`,
 		);
 	}
 	return models;
@@ -270,7 +280,13 @@ export async function resolveCredentialForPrint(
 	const credentialTypes = new Map<string, CredentialInfo["type"]>(
 		(await modelRuntime.listCredentials()).map((credential) => [credential.providerId, credential.type]),
 	);
-	const models = candidateModels(args, modelRuntime, new Set(credentialTypes.keys()));
+	const models = candidateModels(args, modelRuntime);
+	// A named provider, or a single candidate, is the one the caller meant, so its
+	// authentication failure is reported with its own exit code. Among several
+	// inferred candidates a failure only means "not this one" — reporting it would
+	// let an unrelated provider that happens to offer the model decide the exit
+	// code for a request another candidate can satisfy.
+	const authFailureIsFatal = args.provider !== undefined || models.length === 1;
 
 	const credentials: Array<{ providerId: string; value: string }> = [];
 	for (const model of models) {
@@ -285,6 +301,7 @@ export async function resolveCredentialForPrint(
 				kind === "bearer_token" ? { minOAuthValidityMs: minExpiryMs ?? DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS } : {},
 			);
 		} catch (error) {
+			if (!authFailureIsFatal) continue;
 			if (error instanceof ModelsError && error.code === "oauth") throw classifyOAuthFailure(error);
 			throw new CredentialPrintError(
 				"NoCredentialConfigured",

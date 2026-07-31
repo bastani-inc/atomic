@@ -170,6 +170,32 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		expect(() => ctx.scopedModels).toThrow("inactive");
 	});
 
+	it("04b15259/b6fb91e5: hands extensions a copy, so the accessor cannot widen the scope", () => {
+		const scopedModels: ScopedModel[] = [
+			{ model: { id: "gpt-5.5", provider: "openai" } as never, thinkingLevel: "high" },
+		];
+		const source = {
+			assertActive: () => {},
+			getScopedModels: () => scopedModels,
+		} as unknown as ExtensionContextSource;
+
+		const ctx = createExtensionContext(source);
+
+		// `readonly ScopedModel[]` is a compile-time claim only. A JavaScript
+		// extension, or one asserting the readonly away as below, reaches the same
+		// object; if that object were the session's backing array the pushed entry
+		// would become an in-scope model that `cycleModel()` would switch to.
+		(ctx.scopedModels as ScopedModel[]).push({
+			model: { id: "out-of-scope", provider: "openai" } as never,
+		});
+
+		expect(scopedModels).toHaveLength(1);
+		expect(ctx.scopedModels).toHaveLength(1);
+		expect(ctx.scopedModels.map(({ model }) => model.id)).toEqual(["gpt-5.5"]);
+		// Each read is its own copy, so one reader cannot poison the next.
+		expect(ctx.scopedModels).not.toBe(ctx.scopedModels);
+	});
+
 	it("cced6a21: loads a nested linked worktree's context file once, not twice", () => {
 		const root = tempDir("atomic-nested-worktree-");
 		const mainRepo = join(root, "repo");

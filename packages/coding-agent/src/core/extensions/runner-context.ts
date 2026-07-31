@@ -92,7 +92,12 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		},
 		get scopedModels() {
 			source.assertActive();
-			return source.getScopedModels();
+			// A copy, not the session's backing array. `readonly ScopedModel[]` only
+			// stops a TypeScript caller; a JavaScript extension — or one using a
+			// mutable assertion — could otherwise push onto the array this returns
+			// and have `cycleModel()` treat the entry as in scope. The accessor
+			// reports the scope, so it must not be a way to widen it.
+			return [...source.getScopedModels()];
 		},
 		get thinkingLevel() {
 			source.assertActive();

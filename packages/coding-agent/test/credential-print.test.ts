@@ -61,16 +61,24 @@ function args(overrides: Partial<Args> = {}): Args {
 
 /**
  * A ModelRuntime stub narrowed to the members this door and `resolveCliModel`
- * consume. Each configured provider gets one model whose id is `modelId`, so
- * provider selection is what the assertions actually exercise.
+ * consume. Each provider gets one model whose id is `modelId`, so provider
+ * selection is what the assertions actually exercise.
+ *
+ * `providers` defaults to the providers holding a persisted credential. Pass it
+ * explicitly to model a provider that authenticates from the environment or a
+ * custom resolver: it offers the model but never appears in `listCredentials()`.
  */
 function runtimeStub(options: {
 	credentials: Array<{ providerId: string; type: "api_key" | "oauth" }>;
+	providers?: string[];
 	modelId?: string;
-	getAuth: () => Promise<{ auth: { apiKey?: string; headers?: Record<string, string> } } | undefined>;
+	getAuth: (model: {
+		provider: string;
+	}) => Promise<{ auth: { apiKey?: string; headers?: Record<string, string> } } | undefined>;
 }): ModelRuntime {
 	const modelId = options.modelId ?? "claude-sonnet-4-5";
-	const models = options.credentials.map(({ providerId }) => ({
+	const providerIds = options.providers ?? options.credentials.map(({ providerId }) => providerId);
+	const models = providerIds.map((providerId) => ({
 		id: modelId,
 		name: modelId,
 		provider: providerId,
@@ -79,7 +87,7 @@ function runtimeStub(options: {
 	}));
 	return {
 		listCredentials: async () => options.credentials,
-		getProviders: () => options.credentials.map(({ providerId }) => ({ id: providerId })),
+		getProviders: () => providerIds.map((id) => ({ id })),
 		getModels: () => models,
 		getAuth: options.getAuth,
 	} as unknown as ModelRuntime;
@@ -261,6 +269,82 @@ describe("bearer token extraction", () => {
 		);
 
 		expect(secret.take()).toBe("header-token-value");
+	});
+});
+
+describe("provider inference", () => {
+	it("resolves a provider whose credential comes from the environment, not auth.json", async () => {
+		// openai authenticates from OPENAI_API_KEY: it offers the model but has
+		// nothing persisted, so it never appears in listCredentials().
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["openai"],
+			modelId: "gpt-4.1",
+			getAuth: async () => ({ auth: { apiKey: "sk-env-openai" } }),
+		});
+
+		const secret = await resolveCredentialForPrint(args({ model: "gpt-4.1" }), runtime, "api_key");
+
+		expect(secret.take()).toBe("sk-env-openai");
+	});
+
+	it("infers the same credential that naming the provider returns", async () => {
+		const stub = () =>
+			runtimeStub({
+				credentials: [],
+				providers: ["openai"],
+				modelId: "gpt-4.1",
+				getAuth: async () => ({ auth: { apiKey: "sk-env-openai" } }),
+			});
+
+		const inferred = await resolveCredentialForPrint(args({ model: "gpt-4.1" }), stub(), "api_key");
+		const named = await resolveCredentialForPrint(args({ model: "gpt-4.1", provider: "openai" }), stub(), "api_key");
+
+		expect(inferred.take()).toBe(named.take());
+	});
+
+	it("passes over an inferred candidate that cannot authenticate", async () => {
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["anthropic", "openai"],
+			modelId: "shared-model",
+			getAuth: async (model) => {
+				if (model.provider === "anthropic") throw new Error("no credential for anthropic");
+				return { auth: { apiKey: "sk-env-openai" } };
+			},
+		});
+
+		const secret = await resolveCredentialForPrint(args({ model: "shared-model" }), runtime, "api_key");
+
+		// One candidate failing means "not this one", not a failed request: the
+		// provider that can authenticate still answers.
+		expect(secret.take()).toBe("sk-env-openai");
+	});
+
+	it("still reports the failure, with its exit code, when the caller named the provider", async () => {
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["anthropic"],
+			getAuth: async () => {
+				throw new Error("no credential for anthropic");
+			},
+		});
+
+		await expect(
+			resolveCredentialForPrint(args({ model: "claude-sonnet-4-5", provider: "anthropic" }), runtime, "api_key"),
+		).rejects.toMatchObject({ code: "NoCredentialConfigured", exitCode: 2 });
+	});
+
+	it("keeps an OAuth-only provider out of an inferred API-key request", async () => {
+		const runtime = runtimeStub({
+			credentials: [{ providerId: "anthropic", type: "oauth" }],
+			providers: ["anthropic"],
+			getAuth: async () => ({ auth: { apiKey: "should-not-be-reached" } }),
+		});
+
+		await expect(
+			resolveCredentialForPrint(args({ model: "claude-sonnet-4-5" }), runtime, "api_key"),
+		).rejects.toMatchObject({ code: "NoCredentialConfigured", exitCode: 2 });
 	});
 });
 
