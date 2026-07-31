@@ -266,10 +266,11 @@ describe("emitCredential", () => {
 	 * stdout writer, so stubbing `process.stdout.write` is what puts each of the
 	 * failure points under test.
 	 *
-	 * `onWrite` models a stream that accepted the chunk and then reported a
-	 * failure — the EPIPE-on-flush shape — so the text is still recorded as having
-	 * reached stdout. `onSubmit` models the write call throwing instead, which is
-	 * the only failure that happens before a byte can leave.
+	 * The stub also models `bytesWritten`, because that counter is how the guard
+	 * tells an emitted payload from a dropped one. `emitOnCallbackError` means the
+	 * stream flushed bytes and *then* failed, so the counter advances and the text
+	 * is recorded; without it the chunk was buffered and dropped, and neither
+	 * moves. `onSubmit` models the write call throwing, before either can happen.
 	 */
 	function withStubbedStdout<T>(
 		onWrite: (text: string) => Error | undefined,
@@ -277,7 +278,13 @@ describe("emitCredential", () => {
 		options: { onSubmit?: (text: string) => Error | undefined; emitOnCallbackError?: boolean } = {},
 	): Promise<T> {
 		const original = process.stdout.write;
+		const originalBytesWritten = Object.getOwnPropertyDescriptor(process.stdout, "bytesWritten");
 		const written: string[] = [];
+		let bytesWritten = 0;
+		Object.defineProperty(process.stdout, "bytesWritten", {
+			configurable: true,
+			get: () => bytesWritten,
+		});
 		process.stdout.write = ((
 			chunk: string | Uint8Array,
 			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
@@ -288,12 +295,17 @@ describe("emitCredential", () => {
 			const refused = options.onSubmit?.(text);
 			if (refused) throw refused;
 			const failure = onWrite(text);
-			if (!failure || options.emitOnCallbackError) written.push(text);
+			if (!failure || options.emitOnCallbackError) {
+				written.push(text);
+				bytesWritten += Buffer.byteLength(text);
+			}
 			done?.(failure ?? null);
 			return true;
 		}) as typeof process.stdout.write;
 		return body(written).finally(() => {
 			process.stdout.write = original;
+			if (originalBytesWritten) Object.defineProperty(process.stdout, "bytesWritten", originalBytesWritten);
+			else delete (process.stdout as { bytesWritten?: unknown }).bytesWritten;
 		});
 	}
 
@@ -512,6 +524,28 @@ describe("emitCredential", () => {
 			console.error = originalConsoleError;
 			process.exitCode = originalExitCode;
 		}
+	});
+
+	it("an accepted write that emitted nothing is still exit 8, not a silent success", async () => {
+		// The other half of the same ambiguity: stdout can take the chunk into its
+		// buffer and report EPIPE before any byte reaches the OS. Treating an
+		// accepted write as success would hand the caller exit 0 and an empty
+		// stream — a successful export of nothing — which is the mirror of the
+		// non-zero-with-bytes failure the emitted case avoids. `bytesWritten` is
+		// what tells them apart: here it never moves.
+		await withStubbedStdout(
+			(text) => (text.length > 0 ? new Error("EPIPE before any byte was flushed") : undefined),
+			async (written) => {
+				const failure = await emitCredential(new Secret("sk-buffered")).then(
+					() => undefined,
+					(error: unknown) => error as CredentialPrintError,
+				);
+
+				expect(written).toEqual([]);
+				expect(failure?.code).toBe("CredentialNotEmitted");
+				expect(toCredentialPrintError(failure).exitCode).toBe(8);
+			},
+		);
 	});
 });
 

@@ -129,18 +129,19 @@ export class Secret {
  * receives a `Secret` it cannot read, print, or serialize, so a second export
  * path cannot be grafted on without moving this function.
  *
- * The one failure that can still be reported as a failure is the payload write
- * never reaching the stream at all. `writeRawStdoutOnce` rejects with
- * `submitted: false` only when the write call threw, before any byte could
- * leave; that alone is `CredentialNotEmitted` (exit 8) with stdout provably
- * empty, which is what every non-zero exit from this door promises. It must not
- * fall through to the caller's credential-resolution catch, which would report
- * exit 2.
+ * A failed payload write is reported as a failure exactly when nothing was
+ * emitted. `writeRawStdoutOnce` answers that from the stream rather than from
+ * the shape of the error: the write call throwing, or a callback error with
+ * `bytesWritten` unmoved, means stdout is provably empty, and that alone is
+ * `CredentialNotEmitted` (exit 8) — which is what every non-zero exit from this
+ * door promises. It must not fall through to the caller's credential-resolution
+ * catch, which would report exit 2.
  *
- * A write the stream accepted and then failed is not that. The payload may be
- * wholly or partly on stdout already — a pipe can flush and then report EPIPE —
- * so it is reported on stderr with the exit code left at 0, for the same reason
- * the trailing drain is.
+ * A callback error after `bytesWritten` advanced is the opposite case: part or
+ * all of the credential is already on stdout. That is reported on stderr with
+ * the exit code left at 0, for the same reason the trailing drain is. Reading
+ * the counter is what keeps those two apart; guessing either way trades one
+ * broken promise for the other.
  *
  * Once that write resolves the credential is on stdout and the command has
  * succeeded. A failure of the trailing drain is therefore reported on stderr
@@ -157,12 +158,12 @@ export async function emitCredential(secret: Secret): Promise<void> {
 	try {
 		await writeRawStdoutOnce(payload);
 	} catch (error) {
-		if (error instanceof RawStdoutWriteError && error.submitted) {
-			// Those bytes were handed to stdout. Whether they arrived is not
-			// knowable here, so the one thing that must not happen is claiming they
-			// did not and exiting non-zero over a stream that may carry them.
+		if (error instanceof RawStdoutWriteError && error.emitted) {
+			// Bytes are on stdout. Exiting non-zero here would be a non-zero exit
+			// over a stream carrying a credential, which is the one thing this door
+			// never does.
 			console.error(
-				`Warning: the credential was handed to stdout but the write did not complete cleanly: ${error.message}`,
+				`Warning: the credential reached stdout but the write did not complete cleanly: ${error.message}`,
 			);
 			return;
 		}

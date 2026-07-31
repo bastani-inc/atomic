@@ -141,23 +141,37 @@ export function writeRawStdout(text: string): void {
 }
 
 /**
- * A `writeRawStdoutOnce` failure, carrying whether the payload ever reached the
- * stream.
+ * A `writeRawStdoutOnce` failure, carrying whether any byte of the payload
+ * reached the stream.
  *
- * `submitted` is false only when the write call itself threw, which happens
- * before any byte can leave. Once `write()` has accepted the chunk, a later
- * callback error reports that the stream failed — not that it failed *before*
- * emitting. A pipe can flush part or all of the payload and then report EPIPE.
- * A caller that must not claim an empty stdout has to tell those two apart.
+ * `emitted` is the answer to the only question the credential egress needs: may
+ * these bytes be on stdout? Three cases produce it, and none of them guesses.
+ *
+ *   - the write call threw, before the stream could accept anything: `false`;
+ *   - the callback reported an error and `bytesWritten` did not move, so the
+ *     chunk was buffered and dropped without a syscall: `false`;
+ *   - the callback reported an error after `bytesWritten` advanced, so part or
+ *     all of the payload went out before the failure: `true`.
+ *
+ * `bytesWritten` exists on the socket stdout is when it is a TTY or a pipe. A
+ * file redirect gets `SyncWriteStream`, which has no counter and writes
+ * synchronously — there a callback error means the `writeSync` itself failed,
+ * so nothing was emitted.
  */
 export class RawStdoutWriteError extends Error {
-	readonly submitted: boolean;
+	readonly emitted: boolean;
 
-	constructor(message: string, options: { cause: unknown; submitted: boolean }) {
+	constructor(message: string, options: { cause: unknown; emitted: boolean }) {
 		super(message, { cause: options.cause });
 		this.name = "RawStdoutWriteError";
-		this.submitted = options.submitted;
+		this.emitted = options.emitted;
 	}
+}
+
+/** Bytes stdout has handed to the OS, when the stream counts them. */
+function rawStdoutBytesWritten(): number | undefined {
+	const counted = (process.stdout as { bytesWritten?: unknown }).bytesWritten;
+	return typeof counted === "number" ? counted : undefined;
 }
 
 /**
@@ -169,9 +183,10 @@ export class RawStdoutWriteError extends Error {
  * exactly once — the ENOBUFS/EAGAIN retry in `writeRawStdoutChunk` would
  * re-send the whole payload, which for a secret risks emitting it twice.
  *
- * Rejects with `RawStdoutWriteError`. Only `submitted: false` means the bytes
- * cannot have been written; a callback error leaves that unknowable, so callers
- * must not report it as an empty-output failure.
+ * Rejects with `RawStdoutWriteError`, whose `emitted` says whether any byte
+ * left. A caller that must never report a failure over a stream carrying a
+ * credential — nor claim success over one that carries nothing — branches on it
+ * rather than on the presence of an error.
  */
 export function writeRawStdoutOnce(text: string): Promise<void> {
 	if (text.length === 0) {
@@ -180,19 +195,25 @@ export function writeRawStdoutOnce(text: string): Promise<void> {
 	const write = rawStdoutWriteTail.then(
 		() =>
 			new Promise<void>((resolve, reject) => {
+				const before = rawStdoutBytesWritten();
 				try {
 					getRawStdoutWrite()(text, (error) => {
-						if (error) {
-							reject(new RawStdoutWriteError(error.message, { cause: error, submitted: true }));
-						} else {
+						if (!error) {
 							resolve();
+							return;
 						}
+						const after = rawStdoutBytesWritten();
+						// Unknown counter means a synchronous stream, where a failed
+						// write emitted nothing. A counter that has not moved means the
+						// chunk never reached a syscall.
+						const emitted = before !== undefined && after !== undefined && after > before;
+						reject(new RawStdoutWriteError(error.message, { cause: error, emitted }));
 					});
 				} catch (error) {
 					reject(
 						new RawStdoutWriteError(error instanceof Error ? error.message : String(error), {
 							cause: error,
-							submitted: false,
+							emitted: false,
 						}),
 					);
 				}
