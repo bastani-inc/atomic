@@ -65,7 +65,13 @@ test("a bootstrap record is owner-only and its filename carries no secret", () =
 		apiKey: "sk-secret-material",
 	});
 	try {
-		assert.equal(statSync(handle.path).mode & 0o777, 0o600);
+		// POSIX mode bits do not exist on Windows: writeFileSync's mode option
+		// maps only to the read-only attribute, and stat reports 0o666 for any
+		// writable file. There the record's protection is the per-user temp
+		// directory ACL, so only the POSIX platforms can assert owner-only bits.
+		if (process.platform !== "win32") {
+			assert.equal(statSync(handle.path).mode & 0o777, 0o600);
+		}
 		assert.ok(!handle.path.includes("sk-secret-material"));
 		assert.ok(!handle.directory.includes("sk-secret-material"));
 	} finally {
