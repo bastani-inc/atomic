@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed startup maintenance walking every file under the nested subagent runtime directories on each activation. The stale-directory scan now stops at the first entry newer than the cleanup cutoff instead of recursively stat-ing whole subtrees to compute the true newest mtime, eliminating tens of thousands of synchronous fs calls on long-lived machines ([#2070](https://github.com/bastani-inc/atomic/issues/2070)).
+
 ## [0.9.11-alpha.6] - 2026-07-28
 
 ### Changed
