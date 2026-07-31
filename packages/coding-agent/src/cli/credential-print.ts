@@ -202,18 +202,46 @@ export function validateCredentialPrintArgs(args: Args): void {
 }
 
 /**
+ * Provider-supplied text with anything credential-shaped masked.
+ *
+ * A failed refresh is reported on stderr, and the provider composes that
+ * message. Most describe the failure; some quote the request they sent or the
+ * body they got back, either of which can carry the very value this door exists
+ * to keep off every stream except stdout. Masking the shapes a secret takes
+ * keeps the diagnosis — which is what makes the exit code actionable — without
+ * putting the secret in a log, a terminal scrollback, or a CI transcript.
+ */
+const CREDENTIAL_SHAPES: readonly RegExp[] = [
+	// `Authorization: Bearer <token>`, the form an echoed request header takes.
+	/\bBearer\s+[\w.~+/-]+=*/giu,
+	// JWTs, which several providers return verbatim in an error body.
+	/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]+/gu,
+	// Prefixed API keys: sk-…, sk_live_…, api-key-…, and the same shapes again.
+	/\b(?:sk|pk|rk|api|key|tok|token|secret)[-_][\w-]{12,}/giu,
+];
+
+export function redactCredentialShapes(text: string): string {
+	return CREDENTIAL_SHAPES.reduce((masked, shape) => masked.replace(shape, "[redacted]"), text);
+}
+
+/**
  * pi-ai reports both refresh outcomes as `ModelsError` with code `oauth`. The
  * post-refresh validity failure is the only one that carries this phrase, and it
  * is the only signal available to separate exit 6 from exit 5.
+ *
+ * The provider's own words are redacted before they become a message a caller
+ * prints; the unredacted error stays reachable as `cause`, which this door never
+ * logs.
  */
 function classifyOAuthFailure(error: ModelsError): CredentialPrintError {
+	const detail = redactCredentialShapes(error.message);
 	return /expires too soon/iu.test(error.message)
 		? new CredentialPrintError(
 				"MinValidityUnreachable",
-				`The provider refreshed the token but it still expires sooner than requested: ${error.message}`,
+				`The provider refreshed the token but it still expires sooner than requested: ${detail}`,
 				{ cause: error },
 			)
-		: new CredentialPrintError("RefreshFailed", `${error.message} (the stored credential was left untouched)`, {
+		: new CredentialPrintError("RefreshFailed", `${detail} (the stored credential was left untouched)`, {
 				cause: error,
 			});
 }
@@ -303,12 +331,14 @@ export async function resolveCredentialForPrint(
 	const authFailureIsFatal = args.provider !== undefined || models.length === 1;
 
 	const credentials: Array<{ providerId: string; value: string }> = [];
-	// An OAuth diagnosis seen while evaluating inferred candidates. Skipping a
-	// candidate must not discard why it failed: a refresh that failed, or a token
-	// that cannot reach the requested validity, is the real answer if nothing else
-	// produces a credential, and reporting it keeps exits 5 and 6 reachable
-	// instead of collapsing every inferred OAuth failure into exit 2.
-	let deferredOAuthFailure: CredentialPrintError | undefined;
+	// The classified diagnosis from a candidate that could not authenticate.
+	// Skipping a candidate must not discard why it failed: a refresh that failed,
+	// or a token that cannot reach the requested validity, is the real answer if
+	// nothing else produces a credential, and keeping it is what leaves exits 5
+	// and 6 reachable instead of collapsing every inferred failure into exit 2.
+	// It holds a `CredentialPrintError`, never a credential — the provider's text
+	// is redacted on the way in.
+	let deferredDiagnosis: CredentialPrintError | undefined;
 	for (const model of models) {
 		const type = resolvedAuthTypes.get(model.provider);
 		if (type !== wantedAuthType) continue;
@@ -320,16 +350,16 @@ export async function resolveCredentialForPrint(
 				kind === "bearer_token" ? { minOAuthValidityMs: minExpiryMs ?? DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS } : {},
 			);
 		} catch (error) {
-			const oauthFailure =
+			const diagnosis =
 				error instanceof ModelsError && error.code === "oauth" ? classifyOAuthFailure(error) : undefined;
 			if (!authFailureIsFatal) {
-				deferredOAuthFailure ??= oauthFailure;
+				deferredDiagnosis ??= diagnosis;
 				continue;
 			}
-			if (oauthFailure) throw oauthFailure;
+			if (diagnosis) throw diagnosis;
 			throw new CredentialPrintError(
 				"NoCredentialConfigured",
-				error instanceof Error ? error.message : String(error),
+				redactCredentialShapes(error instanceof Error ? error.message : String(error)),
 				{ cause: error },
 			);
 		}
@@ -342,7 +372,7 @@ export async function resolveCredentialForPrint(
 	if (credentials.length === 1) return new Secret(credentials[0].value);
 
 	if (credentials.length === 0) {
-		if (deferredOAuthFailure) throw deferredOAuthFailure;
+		if (deferredDiagnosis) throw deferredDiagnosis;
 		const providerId = models[0]?.provider;
 		const type = providerId ? resolvedAuthTypes.get(providerId) : undefined;
 		if (args.provider && kind === "api_key" && type === "oauth") {
