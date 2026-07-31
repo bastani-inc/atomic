@@ -42,6 +42,25 @@ updates:
           # upstream Pi's resolved lockfile (see #1489); bumps here are no-ops.
           - dependency-name: "@types/node"
 
+    # npm packages (packages/natives)
+    #
+    # `@napi-rs/cli` lives only in this workspace's devDependencies and was
+    # proposed solely by the removed bun ecosystem, so it recurred as an orphan
+    # that had to be carried by hand. An explicit npm entry makes it a normal
+    # proposal again. `cooldown` matches every other entry, and therefore the
+    # `min-release-age=2` gate in the committed .npmrc.
+    - package-ecosystem: "npm"
+      directory: "/packages/natives"
+      schedule:
+          interval: "weekly"
+      cooldown:
+          default-days: 2
+      commit-message:
+          prefix: "deps"
+      labels:
+          - "dependencies"
+          - "npm"
+
     # Rust crates (workspace)
     - package-ecosystem: "cargo"
       directory: "/"

@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         if: runner.os == 'Linux'
         with:
           # LFS fixtures are required by the coding-agent test suite.
@@ -121,7 +121,7 @@ jobs:
     # to shard first if a further cut is wanted.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         if: runner.os == 'Linux'
         with:
           # The only LFS fixtures in the repository live under
@@ -186,7 +186,7 @@ jobs:
     # itself (see the Rust toolchain note below).
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         if: runner.os == 'Linux'
         with:
           lfs: true
@@ -329,7 +329,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 6
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         with:
           lfs: true
           fetch-depth: 0

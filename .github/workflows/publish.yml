@@ -41,7 +41,7 @@ jobs:
       version: ${{ steps.verify.outputs.version }}
       npm-tag: ${{ steps.verify.outputs.npm-tag }}
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
@@ -95,7 +95,7 @@ jobs:
     steps:
       # Sticky disks are Blacksmith-Linux-only; elsewhere this action stalls ~78s
       # before falling back to a normal clone.
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         if: runner.os == 'Linux'
         with:
           ref: ${{ env.SOURCE_REF }}
@@ -195,7 +195,7 @@ jobs:
       # under this key; bump the `xwin-v1` epoch to force a refresh.
       - name: Restore MSVC CRT and Windows SDK
         if: matrix.platform == 'win32'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/cargo-xwin
           key: xwin-v1-${{ matrix.arch }}-17
@@ -229,7 +229,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -320,7 +320,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
