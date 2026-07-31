@@ -68,12 +68,17 @@ export function createSubagentStartupMaintenance(
 	// The sessions root derived from a host-provided (non-default, e.g. isolated
 	// programmatic agentDir) session directory. When set, the global artifact scan
 	// stays inside it instead of touching the real global/legacy sessions roots.
+	// A custom session dir that does not follow the <agentDir>/sessions/<safe-cwd>
+	// layout yields no roots at all, so cleanup never broadens into an arbitrary
+	// directory's siblings.
 	let contextSessionsRoots: readonly string[] | undefined;
 	const noteSessionContext = (ctx: ExtensionContext): void => {
 		try {
 			if (ctx.sessionManager.usesDefaultSessionDir()) return;
 			const sessionDir = ctx.sessionManager.getSessionDir();
-			if (sessionDir) contextSessionsRoots = [path.dirname(sessionDir)];
+			if (!sessionDir) return;
+			const parent = path.dirname(sessionDir);
+			contextSessionsRoots = path.basename(parent) === "sessions" ? [parent] : [];
 		} catch {
 			// A stale or partial context leaves cleanup on the env/global fallback.
 		}

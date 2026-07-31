@@ -159,6 +159,34 @@ describe("agentDir isolation of the global artifact scan", () => {
 		assert.deepEqual(touchedGlobal, [], "no fs call may touch a path under the global sessions roots");
 	});
 
+	test("a custom standalone session dir never broadens cleanup into its parent's siblings", () => {
+		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
+		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
+		const parent = fs.mkdtempSync(join(tmpdir(), "atomic-isolation-custom-"));
+		roots.push(parent);
+		const customSessionDir = join(parent, "my-sessions");
+		fs.mkdirSync(customSessionDir, { recursive: true });
+		const siblingArtifacts = join(parent, "sibling", "subagent-artifacts");
+		fs.mkdirSync(siblingArtifacts, { recursive: true });
+		const siblingStale = join(siblingArtifacts, "run_worker_output.md");
+		fs.writeFileSync(siblingStale, "stale\n");
+		const old = new Date(Date.now() - 10 * DAY_MS);
+		fs.utimesSync(siblingStale, old, old);
+
+		const { maintenance, runStartupScan } = makeMaintenance(join(parent, "results"));
+		try {
+			maintenance.scheduleStartupCleanup();
+			maintenance.cleanupSessionArtifactsDeferred(isolatedContext(customSessionDir));
+			runStartupScan();
+		} finally {
+			maintenance.stop();
+		}
+
+		assert.equal(fs.existsSync(siblingStale), true, "siblings of a custom session dir must stay untouched");
+		assert.equal(fs.existsSync(join(parent, ".last-cleanup")), false, "no marker may be written into the parent");
+		assert.equal(fs.existsSync(globalDir.staleFile), true, "the global sessions root must stay untouched");
+	});
+
 	test("falls back to the env/global derivation when the context supplies no isolated root", () => {
 		const globalDir = makeAgentDirWithStaleArtifacts("atomic-isolation-global-", "session-g");
 		process.env[AGENT_DIR_ENV] = globalDir.agentDir;
