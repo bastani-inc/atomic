@@ -28,6 +28,7 @@
 - Toggling tool-output expansion now reports the new state (`Tool output: expanded` / `Tool output: collapsed`) on the status line instead of re-rendering silently.
 - The startup RESOURCES disclosure now lists `SYSTEM.md` and `APPEND_SYSTEM.md` alongside the `AGENTS.md`/`CLAUDE.md` context files, in the order they reach the prompt. Those files shape the system prompt exactly like a context file, so leaving them out of the listing hid them.
 - llama.cpp models now declare streaming usage support, so token usage is reported during a streamed response instead of only at the end.
+- The OpenRouter login now accepts a pasted final redirect URL, or the authorization code on its own, for remote and headless machines where the browser cannot reach the loopback callback. pi 0.83.0 added that fallback to the OpenRouter OAuth flow, which races the callback against a manual-entry prompt; Atomic's terminal only offers the input for providers whose metadata declares a callback server, so inheriting the flow alone left the prompt waiting on an input that was never shown and the login ended at the callback timeout. Documented in `docs/providers.md`.
 
 ### Fixed
 

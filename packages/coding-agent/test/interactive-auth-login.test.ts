@@ -1,5 +1,7 @@
 import { type Api, getModel, type Model } from "@earendil-works/pi-ai/compat";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.ts";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -180,6 +182,59 @@ describe("interactive OAuth cancellation", () => {
 		expect(dialog.render(100).join("\n")).toContain("Sign in to Corp");
 		expect(completeProviderAuthentication).toHaveBeenCalledOnce();
 		expect(vi.mocked(openBrowser)).toHaveBeenCalledWith("https://corp.invalid/login");
+	}, 1_000);
+
+	it("offers the paste input for a real OpenRouter login, so a headless host has a way through", async () => {
+		// pi 0.83.0 races OpenRouter's loopback callback against a `manual_code`
+		// prompt (upstream 61da9e2). The host answers that prompt with a promise
+		// only `showManualInput` resolves, so without OpenRouter's real metadata
+		// declaring a callback server the prompt waits on an input that is never
+		// shown and the login ends at the callback timeout.
+		const showManualInput = vi
+			.spyOn(LoginDialogComponent.prototype, "showManualInput")
+			.mockResolvedValue("https://openrouter.ai/callback?code=pasted");
+		const completeProviderAuthentication = vi.fn(async () => {});
+		const loginOAuthProvider = vi.fn(
+			async (
+				_provider: string,
+				callbacks: {
+					onAuth(info: { url: string; instructions?: string }): void;
+					onManualCodeInput?(): Promise<string>;
+				},
+			) => {
+				callbacks.onAuth({ url: "https://openrouter.ai/auth" });
+				expect(await callbacks.onManualCodeInput?.()).toBe("https://openrouter.ai/callback?code=pasted");
+				return { modelsRefreshed: true };
+			},
+		);
+		const harness = {
+			session: {
+				model: undefined,
+				modelRuntime: {
+					// The shipped metadata, not a hand-written stub: this asserts the
+					// provider set the terminal actually reads.
+					getOAuthProviderMetadata: () => collectOAuthProviderMetadata(builtinProviders(), new Map()),
+				},
+			},
+			runtimeHost: { loginOAuthProvider },
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+			editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+			editor: {},
+			showError: vi.fn(),
+			completeProviderAuthentication,
+			showOAuthLoginSelect: vi.fn(),
+		};
+		const showLoginDialog = InteractiveModeBase.prototype.showLoginDialog as (
+			this: typeof harness,
+			providerId: string,
+			providerName: string,
+		) => Promise<void>;
+
+		await showLoginDialog.call(harness, "openrouter", "OpenRouter");
+
+		expect(showManualInput).toHaveBeenCalledWith("Paste redirect URL below, or complete login in browser:");
+		expect(harness.showError).not.toHaveBeenCalled();
+		expect(completeProviderAuthentication).toHaveBeenCalledOnce();
 	}, 1_000);
 
 	it("keeps a post-login refresh AbortError visible", async () => {
