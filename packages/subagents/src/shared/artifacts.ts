@@ -98,13 +98,17 @@ function markerIsFresh(markerPath: string, now: number): boolean {
 /**
  * Take an exclusive lock at lockPath so concurrent activations never race the same
  * sessions-root scan. A lock left behind by a crashed process is broken once stale.
+ * Returns an ownership token on success; release only removes a lock that still
+ * carries the caller's token, so a holder whose stale lock was taken over cannot
+ * erase the new holder's lock.
  */
-function acquireCleanupLock(lockPath: string, now: number): boolean {
-	const source = `${lockPath}.${process.pid}.tmp`;
+function acquireCleanupLock(lockPath: string, now: number): string | null {
+	const token = `${process.pid}.${now}.${Math.random().toString(36).slice(2)}`;
+	const source = `${lockPath}.${token}.tmp`;
 	try {
-		fs.writeFileSync(source, String(now));
+		fs.writeFileSync(source, token);
 		for (let attempt = 0; attempt < 2; attempt++) {
-			if (publishFileExclusive(source, lockPath) === "published") return true;
+			if (publishFileExclusive(source, lockPath) === "published") return token;
 			let lockMtimeMs: number;
 			try {
 				lockMtimeMs = fs.statSync(lockPath).mtimeMs;
@@ -112,18 +116,27 @@ function acquireCleanupLock(lockPath: string, now: number): boolean {
 				// The holder released between publish and stat; retry once.
 				continue;
 			}
-			if (now - lockMtimeMs < CLEANUP_LOCK_STALE_MS) return false;
+			if (now - lockMtimeMs < CLEANUP_LOCK_STALE_MS) return null;
 			unlinkIfPresent(lockPath);
 		}
-		return false;
+		return null;
 	} catch {
-		return false;
+		return null;
 	} finally {
 		try {
 			unlinkIfPresent(source);
 		} catch {
 			// Lock acquisition is best-effort; a leftover temp source is harmless.
 		}
+	}
+}
+
+function releaseCleanupLock(lockPath: string, token: string): void {
+	try {
+		if (fs.readFileSync(lockPath, "utf-8") === token) fs.unlinkSync(lockPath);
+	} catch {
+		// Lock release is best-effort; a failure only means the lock goes stale and is
+		// broken by a later scan, and must never abort cleanup of the remaining roots.
 	}
 }
 
@@ -135,7 +148,8 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 	if (markerIsFresh(markerPath, now)) return;
 
 	const lockPath = path.join(sessionsBase, CLEANUP_LOCK_FILE);
-	if (!acquireCleanupLock(lockPath, now)) return;
+	const lockToken = acquireCleanupLock(lockPath, now);
+	if (lockToken === null) return;
 	try {
 		let dirs: string[];
 		try {
@@ -163,7 +177,7 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 			// Failing to record the marker only means the scan may repeat sooner.
 		}
 	} finally {
-		unlinkIfPresent(lockPath);
+		releaseCleanupLock(lockPath, lockToken);
 	}
 }
 
