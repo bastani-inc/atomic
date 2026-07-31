@@ -334,6 +334,44 @@ describe("provider inference", () => {
 		expect(secret.take()).toBe("sk-env-openai");
 	});
 
+	it("reports an inferred OAuth failure by its own exit code when nothing else answers", async () => {
+		// Two candidates, both OAuth, both failing. Skipping the first must not
+		// throw away why it failed: exit 6 is the answer, not a generic exit 2.
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["anthropic", "openai-codex"],
+			resolvedAuth: { anthropic: "oauth", "openai-codex": "oauth" },
+			modelId: "shared-model",
+			getAuth: async (model) => {
+				if (model.provider === "anthropic") {
+					throw new ModelsError("oauth", "refreshed token expires too soon for anthropic");
+				}
+				throw new ModelsError("oauth", "refresh failed for openai-codex");
+			},
+		});
+
+		await expect(
+			resolveCredentialForPrint(args({ model: "shared-model" }), runtime, "bearer_token"),
+		).rejects.toMatchObject({ code: "MinValidityUnreachable", exitCode: 6 });
+	});
+
+	it("prefers a working credential over an inferred candidate's OAuth failure", async () => {
+		const runtime = runtimeStub({
+			credentials: [],
+			providers: ["anthropic", "openai-codex"],
+			resolvedAuth: { anthropic: "oauth", "openai-codex": "oauth" },
+			modelId: "shared-model",
+			getAuth: async (model) => {
+				if (model.provider === "anthropic") throw new ModelsError("oauth", "refresh failed for anthropic");
+				return { auth: { headers: { Authorization: "Bearer codex-token" } } };
+			},
+		});
+
+		const secret = await resolveCredentialForPrint(args({ model: "shared-model" }), runtime, "bearer_token");
+
+		expect(secret.take()).toBe("codex-token");
+	});
+
 	it("still reports the failure, with its exit code, when the caller named the provider", async () => {
 		const runtime = runtimeStub({
 			credentials: [],

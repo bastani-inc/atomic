@@ -303,6 +303,12 @@ export async function resolveCredentialForPrint(
 	const authFailureIsFatal = args.provider !== undefined || models.length === 1;
 
 	const credentials: Array<{ providerId: string; value: string }> = [];
+	// An OAuth diagnosis seen while evaluating inferred candidates. Skipping a
+	// candidate must not discard why it failed: a refresh that failed, or a token
+	// that cannot reach the requested validity, is the real answer if nothing else
+	// produces a credential, and reporting it keeps exits 5 and 6 reachable
+	// instead of collapsing every inferred OAuth failure into exit 2.
+	let deferredOAuthFailure: CredentialPrintError | undefined;
 	for (const model of models) {
 		const type = resolvedAuthTypes.get(model.provider);
 		if (type !== wantedAuthType) continue;
@@ -314,8 +320,13 @@ export async function resolveCredentialForPrint(
 				kind === "bearer_token" ? { minOAuthValidityMs: minExpiryMs ?? DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS } : {},
 			);
 		} catch (error) {
-			if (!authFailureIsFatal) continue;
-			if (error instanceof ModelsError && error.code === "oauth") throw classifyOAuthFailure(error);
+			const oauthFailure =
+				error instanceof ModelsError && error.code === "oauth" ? classifyOAuthFailure(error) : undefined;
+			if (!authFailureIsFatal) {
+				deferredOAuthFailure ??= oauthFailure;
+				continue;
+			}
+			if (oauthFailure) throw oauthFailure;
 			throw new CredentialPrintError(
 				"NoCredentialConfigured",
 				error instanceof Error ? error.message : String(error),
@@ -331,6 +342,7 @@ export async function resolveCredentialForPrint(
 	if (credentials.length === 1) return new Secret(credentials[0].value);
 
 	if (credentials.length === 0) {
+		if (deferredOAuthFailure) throw deferredOAuthFailure;
 		const providerId = models[0]?.provider;
 		const type = providerId ? resolvedAuthTypes.get(providerId) : undefined;
 		if (args.provider && kind === "api_key" && type === "oauth") {
