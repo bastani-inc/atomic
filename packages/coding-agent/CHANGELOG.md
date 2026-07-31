@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Adopted pi 0.83.0 (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` at `^0.83.0`), which moves the bundled TypeBox to 1.3.7. TypeBox 1.3.7 **removes seven deprecated APIs**. Atomic inherits the removal exactly as upstream shipped it and does not provide a compatibility shim, so an extension, skill, workflow, or MCP schema that still calls one of these will now fail to compile and to run. Atomic's own sources use none of them; the migration below is for package authors. TypeBox 1.3.7 also fixes compiled validation of nullable array tool arguments, and — because `typebox` is pinned to a single hoisted `1.3.7` node — an Atomic-defined tool schema and a pi-defined one now validate identically in the same process.
+
+  | Removed API | Replacement | Migration |
+  | --- | --- | --- |
+  | `Type.Options(type, options)` | `Type.With(type, options)` | Straight rename; same arguments, same result. `Options` was already an alias of `With`. |
+  | `Type.Base` | `Type.Refine()` + `Type.Unsafe()` | `class DateType extends Type.Base<Date> { Check(value) { return value instanceof Date } }` becomes `const DateType = Type.Refine(Type.Unsafe<Date>({}), (value) => value instanceof Date)`. Class-instance schemas lost their prototype methods through TypeBox's clone/spread compositor, which is why the class form is gone. |
+  | `Type.Promise(item)` | none | Model the resolved value directly and validate after `await`, or hold the slot with `Type.Unsafe<Promise<T>>({})` when a schema entry is required. A promise was never checkable without settling it. |
+  | `Type.Awaited(type)` | none | Nothing is left to unwrap once `Type.Promise` is gone: use the resolved type itself where `Type.Awaited(Type.Promise(T))` appeared. |
+  | `Type.Iterator(items)` | none | Validate the materialized sequence with `Type.Array(items)` after draining the iterator, or hold the slot with `Type.Unsafe<Iterable<T>>({})`. |
+  | `Type.AsyncIterator(items)` | none | Same as `Type.Iterator`: drain first and validate with `Type.Array(items)`, or use `Type.Unsafe<AsyncIterable<T>>({})`. |
+  | `Value.Mutate(current, next)` | `Value.Patch(current, Value.Diff(current, next))` | `Patch` returns a **new** value rather than assigning into `current` in place, so code that relied on `Mutate` retaining internal references as a redraw signal must now assign the result and re-read the reference. |
+
 ### Changed
 
 - `ChatSessionHostCommands.prompt` now receives the submitting key's mode as a second argument, and the new `ChatSessionSubmitMode` (`"auto" | "followUp"`) type is exported alongside the other chat-session host types. A host whose idle prompt command chooses a delivery queue can now read the mode of the invocation it is serving instead of shared state a concurrent submission may still own. Existing single-argument `prompt` implementations keep working unchanged ([#2074](https://github.com/bastani-inc/atomic/issues/2074)).
