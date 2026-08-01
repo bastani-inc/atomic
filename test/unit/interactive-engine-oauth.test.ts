@@ -94,7 +94,7 @@ test.sequential("real isolated child discovers and acquires engine-only custom O
 		assert.equal(JSON.stringify(result).includes("engine-token"), false);
 		const engineLog = readFileSync(logFile, "utf8");
 		assert.match(engineLog, new RegExp(`engine:(?!${process.pid}\\b)\\d+`));
-		assert.ok((engineLog.match(/^refresh:/gm)?.length ?? 0) > refreshesBeforeLogin);
+		assert.equal(engineLog.match(/^refresh:/gm)?.length ?? 0, refreshesBeforeLogin);
 		assert.match(readFileSync(join(agentDir, "auth.json"), "utf8"), /engine-token-acme-primary-code/);
 		const logout = await client.logoutProvider("corp-oauth");
 		assert.equal(

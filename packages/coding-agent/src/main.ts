@@ -51,6 +51,7 @@ import {
 	resolveAppMode,
 	resolveCliPaths,
 	resolveExcludedToolsForAppMode,
+	shouldStartRpcCatalogRefresh,
 	toPrintOutputMode,
 } from "./main-app-mode.ts";
 import {
@@ -87,7 +88,7 @@ import {
 	readInteractiveEngineBootstrap,
 	takeInteractiveEngineBootstrapArg,
 } from "./utils/interactive-engine-bootstrap.ts";
-import { captureInteractiveEngineStartupEnv } from "./utils/interactive-engine-env.ts";
+import { captureInteractiveEngineStartupEnv, isInteractiveEngineChild } from "./utils/interactive-engine-env.ts";
 import { normalizePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -603,7 +604,13 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 
 	if (appMode === "rpc") {
-		if (!offlineMode) void modelRuntime.refresh().catch(() => {});
+		// Standalone RPC preserves its eager catalog refresh. The isolated
+		// interactive engine does not: /model owns its bounded refresh, while an
+		// eager unbounded refresh can hold credential locks and lend its in-flight
+		// promise to later cache-only or timed refreshes.
+		if (shouldStartRpcCatalogRefresh(offlineMode, isInteractiveEngineChild())) {
+			void modelRuntime.refresh().catch(() => {});
+		}
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {

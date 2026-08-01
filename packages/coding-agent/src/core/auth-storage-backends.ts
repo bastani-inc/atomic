@@ -11,6 +11,13 @@ export type LockResult<T> = {
 };
 
 const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
+const AUTH_DELETE_LOCK_RETRY_OPTIONS = {
+	retries: 5,
+	factor: 2,
+	minTimeout: 100,
+	maxTimeout: 2_000,
+	randomize: true,
+} as const;
 
 export interface AuthStorageBackend {
 	/**
@@ -149,7 +156,11 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 				releases.push(
 					await lockfile.lock(path, {
 						realpath: false,
-						retries: { retries: 10, factor: 2, minTimeout: 100, maxTimeout: 10000, randomize: true },
+						// Keep layered-file deletion below the logout RPC's 30-second
+						// deadline even if every auth path is actively locked. A caller
+						// then receives the actionable lock error instead of an abandoned
+						// request that poisons the engine's ordinary command lane.
+						retries: AUTH_DELETE_LOCK_RETRY_OPTIONS,
 						stale: 30000,
 					}),
 				);

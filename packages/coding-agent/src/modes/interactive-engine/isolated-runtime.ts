@@ -112,7 +112,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async logoutProvider(provider: string) {
 		const result = await this.client.logoutProvider(provider);
 		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] });
-		await super.session.modelRuntime.reloadCredentials();
+		await super.session.modelRuntime.reloadCredentials({ refreshAvailability: false });
+		super.session.modelRuntime.applyExternalProviderAuthStatus(provider, result.authStatus);
 		super.session.refreshCurrentModelFromRegistry();
 		return result;
 	}

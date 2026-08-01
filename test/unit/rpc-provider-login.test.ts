@@ -14,6 +14,7 @@ async function createSessionRuntime() {
 	assert.ok(template);
 	let refreshCount = 0;
 	runtime.registerProvider("extension-login", {
+		models: [{ ...template, id: "extension-model" }],
 		refreshModels: async ({ credential }) => {
 			refreshCount += 1;
 			return credential ? [{ ...template, provider: "extension-login", id: "extension-model" }] : [];
@@ -26,7 +27,7 @@ function runtimeHost(): AgentSessionRuntime {
 	return { services: { agentDir: process.cwd() } } as AgentSessionRuntime;
 }
 
-test("login_provider prompts in the host, persists the credential, refreshes, and returns provider metadata", async () => {
+test("login_provider persists and returns the current provider snapshot without refreshing", async () => {
 	const state = await createSessionRuntime();
 	const session = { modelRuntime: state.runtime, scopedModels: [] } as unknown as AgentSession;
 	const handle = createRpcCommandHandler({
@@ -49,7 +50,7 @@ test("login_provider prompts in the host, persists the credential, refreshes, an
 	assert.equal(response.command, "login_provider");
 	assert.equal(response.data.cancelled, false);
 	assert.deepEqual(await state.authStorage.read("extension-login"), { type: "api_key", key: "child-secret" });
-	assert.ok(state.refreshCount() > 0);
+	assert.equal(state.refreshCount(), 0);
 	if (!response.data.cancelled) {
 		assert.deepEqual(response.data.customAuthProviders, []);
 		assert.equal(

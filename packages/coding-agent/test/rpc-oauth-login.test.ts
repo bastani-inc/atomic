@@ -60,22 +60,6 @@ async function createRuntimeHarness() {
 	return { harness, handler };
 }
 
-async function expectSuccessfulLoginAndRetainedCredential(
-	refresh: () => Promise<never> | Promise<{ aborted: boolean; errors: Map<string, Error> }>,
-) {
-	const { harness, handler } = await createRuntimeHarness();
-	vi.spyOn(harness.session.modelRuntime, "refresh").mockImplementation(refresh);
-	const response = await handler({
-		id: "login",
-		type: "login_provider",
-		provider: "corp-oauth",
-		authType: "oauth",
-	});
-	expect(response).toMatchObject({ success: true, data: { provider: "corp-oauth", cancelled: false } });
-	expect(await harness.authStorage.read("corp-oauth")).toMatchObject({ type: "oauth", access: "new-secret" });
-	expect(vi.mocked(harness.session.modelRuntime.refresh).mock.calls[0]?.[0]).not.toHaveProperty("signal");
-}
-
 describe("RPC OAuth descriptors", () => {
 	it("serializes provider metadata without OAuth secrets or function-valued fields", async () => {
 		const { handler } = await createRuntimeHarness();
@@ -323,7 +307,8 @@ describe("isolated OAuth frontend transport", () => {
 			onSelect: async () => undefined,
 		});
 		expect(apply).toHaveBeenCalledWith(expect.objectContaining({ provider: "corp", cancelled: false }));
-		expect(reload).toHaveBeenCalledTimes(1);
+		expect(reload).toHaveBeenCalledOnce();
+		expect(reload).toHaveBeenCalledWith({ refreshAvailability: false });
 	});
 
 	it("does not apply or reload cancelled or failed isolated OAuth results", async () => {
@@ -514,32 +499,57 @@ describe("RPC OAuth failed transaction isolation", () => {
 	});
 });
 describe("RPC OAuth credential survival", () => {
-	it("keeps the acquired credential when post-login model refresh reports provider errors", async () => {
-		await expectSuccessfulLoginAndRetainedCredential(async () => ({
-			aborted: false,
-			errors: new Map([["corp-oauth", new Error("catalog unavailable")]]),
-		}));
-	});
-
-	it("keeps a thrown post-login model refresh failure visible without rolling back", async () => {
+	it("returns the acquired credential without starting post-login model refresh work", async () => {
 		const { harness, handler } = await createRuntimeHarness();
-		vi.spyOn(harness.session.modelRuntime, "refresh").mockRejectedValue(
-			new DOMException("refresh transport aborted", "AbortError"),
-		);
+		const refresh = vi
+			.spyOn(harness.session.modelRuntime, "refresh")
+			.mockImplementation(() => new Promise<never>(() => {}));
 
-		await expect(
+		const response = await Promise.race([
 			handler({
 				id: "login",
 				type: "login_provider",
 				provider: "corp-oauth",
 				authType: "oauth",
-			}),
-		).rejects.toThrow("refresh transport aborted");
+			}).then((result) => ({ state: "resolved" as const, result })),
+			new Promise<{ state: "stuck" }>((resolve) => setTimeout(() => resolve({ state: "stuck" }), 25)),
+		]);
+
+		expect(response).toMatchObject({
+			state: "resolved",
+			result: { success: true, data: { provider: "corp-oauth", cancelled: false } },
+		});
+		expect(refresh).not.toHaveBeenCalled();
 		expect(await harness.authStorage.read("corp-oauth")).toMatchObject({ type: "oauth", access: "new-secret" });
 	});
 
-	it("keeps the acquired credential when post-login model refresh reports an aborted result", async () => {
-		await expectSuccessfulLoginAndRetainedCredential(async () => ({ aborted: true, errors: new Map() }));
+	it("acknowledges persisted logout without starting post-logout model refresh work", async () => {
+		const { harness, handler } = await createRuntimeHarness();
+		const providerModel = harness.session.modelRuntime.getModel("corp-oauth", "corp-model");
+		expect(providerModel).toBeDefined();
+		harness.session.setScopedModels([{ model: providerModel! }]);
+		const refresh = vi
+			.spyOn(harness.session.modelRuntime, "refresh")
+			.mockImplementation(() => new Promise<never>(() => {}));
+
+		const response = await Promise.race([
+			handler({ id: "logout", type: "logout_provider", provider: "corp-oauth" }).then((result) => ({
+				state: "resolved" as const,
+				result,
+			})),
+			new Promise<{ state: "stuck" }>((resolve) => setTimeout(() => resolve({ state: "stuck" }), 25)),
+		]);
+
+		expect(response).toMatchObject({
+			state: "resolved",
+			result: {
+				success: true,
+				data: { provider: "corp-oauth", authStatus: { configured: false }, scopedModels: [] },
+			},
+		});
+		expect(refresh).not.toHaveBeenCalled();
+		expect(await harness.authStorage.read("corp-oauth")).toBeUndefined();
+		expect(await handler({ id: "state-after-logout", type: "get_state" })).toMatchObject({ success: true });
 	});
 });
 
@@ -557,5 +567,26 @@ describe("RPC model refresh timeout", () => {
 			success: true,
 			data: { aborted: true },
 		});
+	});
+
+	it("starts the refresh deadline before credential reload work", async () => {
+		const { harness, handler } = await createRuntimeHarness();
+		vi.spyOn(harness.session.modelRuntime, "reloadCredentials").mockImplementation(
+			() => new Promise<never>(() => {}),
+		);
+		const refresh = vi.spyOn(harness.session.modelRuntime, "refresh");
+
+		const response = await Promise.race([
+			handler({ id: "refresh", type: "refresh_models", timeoutMs: 5 }),
+			new Promise<"stuck">((resolve) => setTimeout(() => resolve("stuck"), 25)),
+		]);
+
+		expect(response).toMatchObject({
+			id: "refresh",
+			command: "refresh_models",
+			success: true,
+			data: { aborted: true },
+		});
+		expect(refresh).not.toHaveBeenCalled();
 	});
 });

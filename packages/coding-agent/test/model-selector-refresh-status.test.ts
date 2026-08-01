@@ -89,21 +89,26 @@ describe("model selector catalog refresh status", () => {
 		expect(rendered).toContain("Could not refresh 2 model catalogs; showing cached models.");
 	});
 
-	it("aborts a slow refresh after the selector timeout and keeps cached models", async () => {
+	it("stops waiting after the selector timeout even when refresh ignores cancellation", async () => {
 		vi.useFakeTimers();
-		const selector = createSelector(
-			(options) =>
-				new Promise<RefreshResult>((resolve) => {
-					options?.signal?.addEventListener("abort", () => resolve({ aborted: true, errors: new Map() }), {
-						once: true,
-					});
-				}),
-		);
+		const selector = createSelector(() => new Promise<never>(() => {}));
 		await vi.advanceTimersByTimeAsync(15_000);
 		vi.useRealTimers();
 		const rendered = await renderedAfterWork(selector);
 		expect(rendered).toContain("cached-model");
 		expect(rendered).toContain("Model refresh timed out; showing cached models.");
+	});
+
+	it("replaces the refreshing status when refresh rejects", async () => {
+		const selector = createSelector(async () => {
+			throw new Error("engine unavailable");
+		});
+		await vi.waitFor(() => {
+			const rendered = selector.render(100).join("\n");
+			expect(rendered).toContain("cached-model");
+			expect(rendered).toContain("Could not refresh model catalogs; showing cached models.");
+			expect(rendered).not.toContain("Refreshing model catalogs");
+		});
 	});
 
 	it("delegates network gating to the runtime instead of passing allowNetwork", async () => {

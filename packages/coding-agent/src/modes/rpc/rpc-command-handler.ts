@@ -179,7 +179,6 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "logout_provider", result);
 			}
 			case "refresh_models": {
-				await session.modelRuntime.reloadCredentials();
 				const controller = command.timeoutMs === undefined ? undefined : new AbortController();
 				const timedOut = Symbol("model refresh timed out");
 				let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -193,11 +192,15 @@ export function createRpcCommandHandler({
 							})
 						: undefined;
 				try {
-					const refresh = session.modelRuntime.refresh({
-						allowNetwork: command.allowNetwork,
-						force: command.force,
-						signal: controller?.signal,
-					});
+					const refresh = (async () => {
+						await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
+						if (controller?.signal.aborted) return { aborted: true, errors: new Map<string, Error>() };
+						return session.modelRuntime.refresh({
+							allowNetwork: command.allowNetwork,
+							force: command.force,
+							signal: controller?.signal,
+						});
+					})();
 					const outcome = timeoutResult ? await Promise.race([refresh, timeoutResult]) : await refresh;
 					const result = outcome === timedOut ? { aborted: true, errors: new Map<string, Error>() } : outcome;
 					return createRpcSuccessResponse(id, "refresh_models", {

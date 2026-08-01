@@ -48,6 +48,10 @@ export function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
 	return appMode === "json" ? "json" : "text";
 }
 
+export function shouldStartRpcCatalogRefresh(offline: boolean, interactiveEngineChild: boolean): boolean {
+	return !offline && !interactiveEngineChild;
+}
+
 export async function prepareInitialMessage(
 	parsed: Args,
 	autoResizeImages: boolean,

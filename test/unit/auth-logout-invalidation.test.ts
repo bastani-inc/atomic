@@ -324,10 +324,12 @@ describe("logout credential invalidation (#1919)", () => {
 		};
 		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 		let reloadCalls = 0;
+		let reloadOptions: { refreshAvailability?: boolean } | undefined;
 		const originalReloadCredentials = modelRuntime.reloadCredentials.bind(modelRuntime);
-		modelRuntime.reloadCredentials = async () => {
+		modelRuntime.reloadCredentials = async (options) => {
 			reloadCalls += 1;
-			await originalReloadCredentials();
+			reloadOptions = options;
+			await originalReloadCredentials(options);
 		};
 		const session = {
 			modelRuntime,
@@ -380,6 +382,9 @@ describe("logout credential invalidation (#1919)", () => {
 		assert.deepEqual(runtime.session.modelRuntime.getAvailableSnapshot(), []);
 		assert.equal(deleteCalls, 0);
 		assert.equal(reloadCalls, 1);
+		assert.deepEqual(reloadOptions, { refreshAvailability: false });
+		assert.equal(modelRuntime.getStoredCredentialType("github-copilot"), undefined);
+		assert.deepEqual(modelRuntime.getProviderAuthStatus("github-copilot"), { configured: false });
 		assert.notEqual(await authStorage.read("github-copilot"), undefined);
 	});
 

@@ -21,6 +21,6 @@ export async function loginIsolatedOAuthProvider(
 	catalog.apply(remoteCatalog);
 	// The engine owns persistence. Refresh the frontend snapshot only after its
 	// credential transaction and catalog refresh both complete successfully.
-	await session.modelRuntime.reloadCredentials();
+	await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
 	return { modelsRefreshed: true };
 }

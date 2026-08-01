@@ -163,13 +163,17 @@ export class AgentSessionRuntime {
 	async logoutProvider(provider: string): Promise<LogoutProviderResult> {
 		const registry = this.session.modelRuntime;
 		await registry.logout(provider);
-		await registry.refresh({ allowNetwork: false });
+		const availableIds = new Set(registry.getAvailableSnapshot().map((model) => `${model.provider}\0${model.id}`));
+		const scopedModels = this.session.scopedModels.filter(({ model }) =>
+			availableIds.has(`${model.provider}\0${model.id}`),
+		);
+		this.session.setScopedModels([...scopedModels]);
 		this.session.refreshCurrentModelFromRegistry();
 		return {
 			provider,
 			authStatus: registry.getProviderAuthStatus(provider),
 			models: [...registry.getAvailableSnapshot()],
-			scopedModels: [...this.session.scopedModels],
+			scopedModels: [...scopedModels],
 		};
 	}
 
