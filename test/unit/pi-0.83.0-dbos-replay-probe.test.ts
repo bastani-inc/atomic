@@ -18,38 +18,31 @@
  * which is precisely what a new process sees. A re-executed side effect here is
  * a failure, not a flake — every callback counter is exact.
  *
- * The kill boundary is also a serialization boundary, and which one matters.
- * DBOS 4.24.16 persists step output with `DBOSJSON`, which is SuperJSON, not
- * `JSON`. A checkpoint here is a `WorkflowSerializableValue`, so most of what
- * SuperJSON adds — `Date`, `Map`, `Set`, `BigInt` — cannot reach one anyway.
- * The difference that survives that narrowing is an `undefined` property, which
- * the type does permit: SuperJSON keeps the key, `JSON` drops it.
+ * The kill boundary is also a serialization boundary, and this probe crosses the
+ * real one. DBOS 4.24.16 persists step output with `DBOSJSON`: a `superjson`
+ * serialization wrapped in a JSON envelope branded with an explicit
+ * `__dbos_serializer` marker. `dbosPersistedCopy` below is that encoding,
+ * transcribed from `node_modules/@dbos-inc/dbos-sdk/dist/src/serialization.js`,
+ * and every checkpoint the mirror carries across the modelled kill is written and
+ * read back through it — so a payload the SDK could not persist fails here rather
+ * than quietly changing shape in a new process.
  *
- * The mirror crosses by `structuredClone`, and the boundary test below verifies
- * exactly that — `structuredClone` keeps the key — and nothing more. It does not
- * execute SuperJSON, so it cannot detect the stand-in and the real serializer
- * diverging. Saying otherwise would overstate it.
+ * It is transcribed rather than imported because the SDK does not list
+ * `./dist/src/serialization` in its `exports` map, so a deep import of
+ * `DBOSJSON` fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`. `superjson` itself is
+ * imported rather than reached through hoisting: the root workspace declares it
+ * at the 1.13.3 the SDK resolves. Two guards keep the transcription from going
+ * stale — the SDK version is pinned at the one it was taken against, and the
+ * marker constants are read back out of the installed serializer — so a bump
+ * that moves either fails here instead of leaving a stale copy running.
  *
- * That the two agree today is a recorded measurement, not an assumption, taken
- * against the `superjson` build DBOS depends on and reproducible with:
- *
- *   node -e "const sj=require('superjson').default??require('superjson');
- *     const v={settled:true,cancelled:undefined};
- *     console.log(Object.hasOwn(sj.parse(sj.stringify(v)),'cancelled'),
- *                 Object.hasOwn(structuredClone(v),'cancelled'),
- *                 Object.hasOwn(JSON.parse(JSON.stringify(v)),'cancelled'))"
- *   // -> true true false
- *
- * It is recorded rather than asserted because the SDK does not expose
- * `DBOSJSON` through its `exports` map — a deep import fails with
- * `ERR_PACKAGE_PATH_NOT_EXPORTED` — and this repository does not depend on
- * `superjson`, so reaching it from a test would rest on hoisting. Re-run the
- * line above when the SDK moves.
- *
- * What the test does buy is the direction that would otherwise be easy to get
- * wrong: a plain `JSON.parse(JSON.stringify(...))` handoff drops a key real
- * persistence keeps, which would make the probe stricter than the thing it
- * models while still not exercising the serializer that thing uses.
+ * Which serializer runs is not cosmetic. A checkpoint is a
+ * `WorkflowSerializableValue`, so most of what SuperJSON adds — `Date`, `Map`,
+ * `Set`, `BigInt` — cannot reach one. The difference that survives that
+ * narrowing is an `undefined` property, which the type does permit: SuperJSON
+ * keeps the key, plain `JSON` drops it. A `JSON.parse(JSON.stringify(...))`
+ * handoff would therefore be stricter than the persistence it models, and the
+ * boundary test below fails if the handoff is narrowed to one.
  *
  * Still not covered, and out of scope for a dependency gate: a live
  * Postgres-backed replay across two real processes, and a parent killed *after*
@@ -61,6 +54,9 @@
  */
 
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import superjson from "superjson";
+import type { SuperJSONResult } from "superjson/dist/types.js";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -73,35 +69,94 @@ import type {
 } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import { moduleDir, readJson, readText } from "../helpers/runtime.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 type MockSdk = ReturnType<typeof createMockSdk>;
 
+/** The SDK version this file's `DBOSJSON` transcription was taken against. */
+const MEASURED_DBOS_SDK_VERSION = "4.24.16";
+
+const dbosSdkDir = join(moduleDir(import.meta.url), "../../node_modules/@dbos-inc/dbos-sdk");
+
+/**
+ * The envelope `DBOSJSON` brands its SuperJSON writes with, so a reader can tell
+ * them from the legacy format. Both constants are read back out of the installed
+ * serializer by the boundary test, so a bump that renames either fails there.
+ */
+const DBOS_SERIALIZER_MARKER_KEY = "__dbos_serializer";
+const DBOS_SERIALIZER_MARKER_VALUE = "superjson";
+
+function isDbosBrandedSuperjsonRecord(value: unknown): value is SuperJSONResult {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		DBOS_SERIALIZER_MARKER_KEY in value &&
+		value[DBOS_SERIALIZER_MARKER_KEY] === DBOS_SERIALIZER_MARKER_VALUE &&
+		"json" in value
+	);
+}
+
+/** `DBOSJSON.stringify`, transcribed: SuperJSON, branded, then plain JSON. */
+function dbosStringify(value: WorkflowSerializableValue): string {
+	return JSON.stringify({
+		...superjson.serialize(value),
+		[DBOS_SERIALIZER_MARKER_KEY]: DBOS_SERIALIZER_MARKER_VALUE,
+	});
+}
+
+/** `DBOSJSON.parse`, transcribed, on the branded path this file always writes. */
+function dbosParse(text: string): WorkflowSerializableValue {
+	const parsed: unknown = JSON.parse(text);
+	assert.ok(isDbosBrandedSuperjsonRecord(parsed), "a DBOSJSON write must carry the SuperJSON marker");
+	return superjson.deserialize<WorkflowSerializableValue>(parsed);
+}
+
+/** One `DBOSJSON` write, and the read the next process performs against it. */
+function dbosPersistedCopy(value: WorkflowSerializableValue): WorkflowSerializableValue {
+	return dbosParse(dbosStringify(value));
+}
+
 /**
  * Everything the SDK had committed at the moment of the kill, and nothing else.
  *
- * Step outputs cross by `structuredClone`, the stand-in for the SuperJSON
- * encoding DBOS persists them with; see the header for why it stands in and
- * what that leaves uncovered. The boundary test below pins the value shapes the
- * two agree on, so this cannot be narrowed to plain JSON without failing.
+ * Step outputs cross through `DBOSJSON` — the serializer DBOS persists them
+ * with — rather than through a clone, so a checkpoint the SDK could not write
+ * fails here instead of surviving a boundary production would not let it cross.
  */
 function committedState(sdk: MockSdk): MockSdk {
 	const persisted = createMockSdk();
 	for (const [key, value] of sdk.state.workflows) persisted.state.workflows.set(key, { ...value });
-	for (const [key, value] of sdk.state.steps) persisted.state.steps.set(key, structuredClone(value));
+	for (const [key, value] of sdk.state.steps) persisted.state.steps.set(key, dbosPersistedCopy(value));
 	return persisted;
 }
 
-test("the modelled kill boundary carries an explicitly-undefined checkpoint property", () => {
-	// What this verifies is `structuredClone`'s behaviour, not SuperJSON's: it
-	// executes no serializer, and the header records the measurement showing the
-	// two agree on this key today, with the line to re-run when the SDK moves.
-	//
-	// Its job is to stop the handoff being narrowed to a JSON round trip, which
-	// drops the key and would make the probe stricter than the persistence it
-	// models.
+test("the modelled kill boundary is the DBOS serializer, and it keeps an explicitly-undefined property", async () => {
+	// The transcription's two anchors. Pin the SDK version it was taken against,
+	// and read the marker constants back out of the installed serializer, so a
+	// bump that changes either fails here rather than leaving this file writing
+	// an envelope DBOS no longer reads.
+	const sdkManifest = await readJson<{ version: string }>(join(dbosSdkDir, "package.json"));
+	assert.equal(sdkManifest.version, MEASURED_DBOS_SDK_VERSION);
+
+	const installedSerializer = await readText(join(dbosSdkDir, "dist/src/serialization.js"));
+	assert.ok(
+		installedSerializer.includes(`SERIALIZER_MARKER_KEY = '${DBOS_SERIALIZER_MARKER_KEY}'`),
+		`the installed serializer no longer brands with ${DBOS_SERIALIZER_MARKER_KEY}`,
+	);
+	assert.ok(
+		installedSerializer.includes(`SERIALIZER_MARKER_VALUE = '${DBOS_SERIALIZER_MARKER_VALUE}'`),
+		`the installed serializer no longer brands with ${DBOS_SERIALIZER_MARKER_VALUE}`,
+	);
+
+	// The handoff really runs SuperJSON: the encoded text carries DBOS's brand,
+	// which a clone or a JSON round trip cannot produce.
+	const checkpoint: WorkflowSerializableValue = { settled: true, cancelled: undefined };
+	assert.ok(isDbosBrandedSuperjsonRecord(JSON.parse(dbosStringify(checkpoint))));
+
 	const sdk = createMockSdk();
-	sdk.state.steps.set("run:checkpoint:probe", { settled: true, cancelled: undefined });
+	sdk.state.steps.set("run:checkpoint:probe", checkpoint);
 
 	const carried = committedState(sdk).state.steps.get("run:checkpoint:probe") as Record<string, unknown>;
 
@@ -110,6 +165,11 @@ test("the modelled kill boundary carries an explicitly-undefined checkpoint prop
 		Object.hasOwn(carried, "cancelled"),
 		"an explicitly-undefined checkpoint property must survive the kill boundary",
 	);
+
+	// And the direction that would be easy to get wrong: plain JSON drops that
+	// key, so narrowing the handoff to a JSON round trip makes the probe stricter
+	// than the persistence it models.
+	assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(checkpoint)) as object, "cancelled"), false);
 });
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {

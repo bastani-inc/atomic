@@ -225,7 +225,7 @@ build that had broken every previously successful stop.
 | Nested worktree context files, RPC bash `user_bash`, resource metadata across reload | `test/unit/pi-0.83.0-inherited-surface-probes.test.ts` — a real `git worktree add` layout, an RPC bash command with and without an intercepting handler, and package-sourced skills/prompts/themes read back after a later `extendResources` |
 | Shorter OAuth refresh window (`#7168`, risk R2) | `test/unit/pi-0.83.0-oauth-refresh-window-probe.test.ts` — concurrent sessions over one shared `auth.json` refresh once, and a credential outside the window is not refreshed at all |
 | `actions/cache` 4.3.0 -> 6.1.0 (D1) | `test/ci/actions-cache-bump-contract.test.ts`, with `npm run test:ci-contracts` green |
-| `@dbos-inc/dbos-sdk` 4.24.16 (D2) | `test/unit/pi-0.83.0-dbos-replay-probe.test.ts` — the three required parts |
+| `@dbos-inc/dbos-sdk` 4.24.16 (D2) | `test/unit/pi-0.83.0-dbos-replay-probe.test.ts` — the three required parts, with the modelled kill crossing `DBOSJSON` itself rather than a clone |
 
 ## Verification for this branch
 
