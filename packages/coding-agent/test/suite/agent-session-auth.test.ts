@@ -40,13 +40,14 @@ describe("provider-metadata authentication runtime", () => {
 		});
 		vi.spyOn(harness.session.modelRuntime, "refresh").mockResolvedValue({ ok: true, providers: [] });
 
-		await runtimeFor(harness).loginOAuthProvider(providerId, {
+		const result = await runtimeFor(harness).loginOAuthProvider(providerId, {
 			onAuth: () => {},
 			onDeviceCode: () => {},
 			onPrompt: async () => "",
 			onSelect: async () => undefined,
 		});
 
+		expect(result).toEqual({ modelsRefreshed: true });
 		expect(await harness.authStorage.read(providerId)).toMatchObject({
 			type: "oauth",
 			access: "access-token",

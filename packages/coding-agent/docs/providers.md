@@ -96,7 +96,9 @@ export ANTHROPIC_API_KEY=sk-ant-...
 atomic
 ```
 
-After a successful API-key or OAuth login, Atomic refreshes provider credentials and model discovery in the active session. Newly authenticated models are immediately available in `/model` without restarting Atomic, including providers with dynamically discovered catalogs.
+After a successful API-key or OAuth login, Atomic persists the credential and immediately rebuilds the active session from bundled and cached model catalogs. It does not make login wait for a second model-catalog network request. Open `/model` to use the authenticated snapshot immediately; the selector refreshes dynamic catalogs in the background with a 15-second deadline and keeps selection responsive if a provider is slow or unavailable.
+
+On a remote or headless machine, paste the authorization code or final redirect URL into the login prompt when the provider offers manual entry. A completed exchange must either return to the editor or show an error; it does not require deleting `~/.atomic`. Existing OAuth credentials use the same `auth.json` schema after the pi-ai model-runtime migration and are loaded in place.
 
 Remote pi.dev catalogs persist their ETag and are revalidated with `If-None-Match`; an empty `304` keeps the cached models and counts as a successful check. Atomic renders the cached snapshot immediately, preserves each provider's last usable catalog on refresh failure, and prefers newer bundled data over stale remote overlays. See [Custom Models](/models#catalog-freshness-and-precedence).
 

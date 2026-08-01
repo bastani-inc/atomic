@@ -227,6 +227,25 @@ describe("correlated RPC bash streaming", () => {
 		releases.get("bash-b")?.();
 	});
 
+	it("does not let a model refresh block a model selection on the ordinary lane", async () => {
+		const started: string[] = [];
+		let releaseRefresh!: () => void;
+		const scheduler = createRpcInputScheduler(async (line) => {
+			const value = JSON.parse(line) as { id: string; type: string };
+			started.push(value.id);
+			if (value.type === "refresh_models") {
+				await new Promise<void>((resolve) => {
+					releaseRefresh = resolve;
+				});
+			}
+		});
+
+		scheduler(JSON.stringify({ id: "refresh", type: "refresh_models" }));
+		scheduler(JSON.stringify({ id: "select", type: "set_model", provider: "openai", modelId: "gpt" }));
+		await vi.waitFor(() => expect(started).toEqual(["refresh", "select"]));
+		releaseRefresh();
+	});
+
 	it("streams correlated channels through the isolated runtime and maps targeted cancellation", async () => {
 		const harness = await createHarness();
 		let release!: () => void;

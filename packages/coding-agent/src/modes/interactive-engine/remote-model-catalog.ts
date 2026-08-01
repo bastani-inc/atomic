@@ -1,6 +1,7 @@
 import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../../core/agent-session.ts";
+import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../../core/model-refresh-timeout.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcModelCatalog } from "../rpc/rpc-types.ts";
 
@@ -62,7 +63,10 @@ export class RemoteModelCatalog {
 		const generation = ++this.refreshGeneration;
 		if (options.signal?.aborted) return { aborted: true, errors: new Map() };
 		const remoteRefresh = this.client.refreshModels({
-			timeoutMs: options.timeoutMs,
+			// AbortSignal cannot cross the RPC boundary. Give the engine the same
+			// deadline so an abandoned frontend refresh cannot occupy its command
+			// scheduler after the selector has already returned to cached models.
+			timeoutMs: options.timeoutMs ?? (options.signal ? INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS : undefined),
 			force: options.force,
 			allowNetwork: options.allowNetwork,
 		});

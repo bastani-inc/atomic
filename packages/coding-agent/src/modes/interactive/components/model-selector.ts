@@ -9,6 +9,7 @@ import {
 	Text,
 	type TUI,
 } from "@earendil-works/pi-tui";
+import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../../../core/model-refresh-timeout.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
@@ -160,12 +161,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshModels(): Promise<void> {
-		const timeoutMs = 15_000;
 		let timedOut = false;
 		this.refreshTimeout = setTimeout(() => {
 			timedOut = true;
 			this.refreshAbortController.abort();
-		}, timeoutMs);
+		}, INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS);
 		try {
 			const result = await this.modelRuntime.refresh({ signal: this.refreshAbortController.signal });
 			if (this.closed) return;

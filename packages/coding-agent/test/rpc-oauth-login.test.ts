@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
+import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../src/core/model-refresh-timeout.ts";
 import type { AtomicOAuthLoginCallbacks } from "../src/core/oauth-login.ts";
 import { loginIsolatedOAuthProvider } from "../src/modes/interactive-engine/isolated-auth.ts";
 import { RemoteModelCatalog } from "../src/modes/interactive-engine/remote-model-catalog.ts";
@@ -107,6 +108,25 @@ describe("isolated OAuth frontend transport", () => {
 		expect(harness.session.modelRuntime.getOAuthProviderMetadata()).toEqual([
 			{ id: "corp-oauth", name: "Corp OAuth", loginLabel: "Sign in", usesCallbackServer: true },
 		]);
+	});
+
+	it("transports the frontend refresh deadline to the isolated engine", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		const refreshModels = vi.fn(() => new Promise<never>(() => {}));
+		const catalog = new RemoteModelCatalog({ refreshModels } as never);
+		catalog.patch(harness.session);
+		const controller = new AbortController();
+
+		const refresh = harness.session.modelRuntime.refresh({ signal: controller.signal });
+		controller.abort();
+
+		await expect(refresh).resolves.toEqual({ aborted: true, errors: new Map() });
+		expect(refreshModels).toHaveBeenCalledWith({
+			timeoutMs: INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS,
+			force: undefined,
+			allowNetwork: undefined,
+		});
 	});
 
 	it("dispatches correlated OAuth callbacks in the frontend", async () => {
@@ -520,5 +540,22 @@ describe("RPC OAuth credential survival", () => {
 
 	it("keeps the acquired credential when post-login model refresh reports an aborted result", async () => {
 		await expectSuccessfulLoginAndRetainedCredential(async () => ({ aborted: true, errors: new Map() }));
+	});
+});
+
+describe("RPC model refresh timeout", () => {
+	it("releases a refresh command even when provider work ignores cancellation", async () => {
+		const { harness, handler } = await createRuntimeHarness();
+		vi.spyOn(harness.session.modelRuntime, "reloadCredentials").mockResolvedValue();
+		vi.spyOn(harness.session.modelRuntime, "refresh").mockImplementation(() => new Promise<never>(() => {}));
+
+		const response = await handler({ id: "refresh", type: "refresh_models", timeoutMs: 5 });
+
+		expect(response).toMatchObject({
+			id: "refresh",
+			command: "refresh_models",
+			success: true,
+			data: { aborted: true },
+		});
 	});
 });

@@ -382,7 +382,11 @@ export class ModelRuntime implements Models {
 	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
 		const credential = await this.models.login(providerId, type, interaction);
 		try {
-			await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+			// Login already performed the provider-owned network transaction. Rebuild
+			// the authenticated snapshot from static/cached catalogs here so a slow or
+			// unreachable catalog endpoint cannot keep the login dialog open forever.
+			// The /model selector owns its bounded background network refresh.
+			await this.refresh({ allowNetwork: false });
 		} catch (error) {
 			throw new OAuthLoginTransactionError(error);
 		}

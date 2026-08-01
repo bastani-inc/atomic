@@ -49,4 +49,21 @@ describe("model refresh timeout boundaries", () => {
 
 		expect(createSignal).toBeInstanceOf(AbortSignal);
 	});
+
+	it("rebuilds the post-login snapshot without an unbounded network refresh", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const refresh = vi.spyOn(runtime, "refresh").mockResolvedValue({ aborted: false, errors: new Map() });
+
+		await runtime.login("anthropic", "api_key", {
+			prompt: async () => "secret",
+			notify: () => {},
+		});
+
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
+	});
 });

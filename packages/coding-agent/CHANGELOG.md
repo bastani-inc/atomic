@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Anthropic subscription login on Bun-hosted Linux sessions remaining at `Exchanging authorization code for tokens...`. Atomic's HTTP setup relied on Undici's CommonJS `install()` helper, but Bun does not expose that helper through its ESM namespace, so source-mode and compiled interactive-engine processes silently kept Bun's native `fetch` instead of the configured Undici transport. Atomic now installs the exported Undici web globals explicitly under Bun. A successful provider login also rebuilds its authenticated model snapshot from static and cached catalogs without starting a second, unbounded network refresh, so a slow model-catalog endpoint cannot hold the completed credential exchange open.
+- Fixed existing authenticated users being unable to select a model after the isolated `/model` refresh timed out. The frontend's 15-second abort previously never crossed the engine RPC boundary, leaving the abandoned `refresh_models` command at the head of the serialized input lane; the subsequent `set_model` command then waited behind it indefinitely. The shared deadline is now sent to the engine, the engine releases the request at that deadline even if provider work ignores cancellation, and model refreshes use a concurrent correlated lane so selection remains responsive while catalogs update. Existing `auth.json` credentials remain compatible and no `~/.atomic` reset is required.
+
 ## [0.9.11-alpha.9] - 2026-08-01
 
 ### Breaking Changes

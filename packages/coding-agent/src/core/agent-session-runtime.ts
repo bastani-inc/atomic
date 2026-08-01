@@ -157,7 +157,7 @@ export class AgentSessionRuntime {
 		callbacks: AtomicOAuthLoginCallbacks,
 	): Promise<{ modelsRefreshed: boolean }> {
 		await loginRuntimeOAuthProvider(this.session, provider, callbacks);
-		return { modelsRefreshed: false };
+		return { modelsRefreshed: true };
 	}
 
 	async logoutProvider(provider: string): Promise<LogoutProviderResult> {
