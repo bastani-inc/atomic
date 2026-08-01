@@ -9,6 +9,7 @@ import {
 	buildLivePreviewDisplayPrompt,
 	buildLiveReviewGateMessage,
 	buildReferenceDiscoveryPrompt,
+	isUiUnavailableRejection,
 	LIVE_REVIEW_GATE_OPTIONS,
 	persistReferencesBrief,
 	REFERENCE_DESIGN_SITES,
@@ -191,6 +192,26 @@ describe("open-claude-design setup", () => {
 				[...LIVE_REVIEW_GATE_OPTIONS],
 				["Start live review", "Skip remaining review rounds and export as-is"],
 			);
+		});
+
+		test("isUiUnavailableRejection accepts only the executor's unavailable-UI rejections", () => {
+			const unavailableMessages = [
+				"atomic-workflows: HIL ctx.ui.select is unavailable because Atomic runtime did not provide a UI adapter",
+				"atomic-workflows: interactive ctx.ui.select is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage",
+				"atomic-workflows: ctx.ui.custom prompt node is unavailable",
+			];
+			for (const message of unavailableMessages) {
+				assert.equal(isUiUnavailableRejection(new Error(message)), true, message);
+			}
+			const lifecycleFailures = [
+				new Error("durable checkpoint persistence failed"),
+				new Error("workflow interrupted"),
+				new Error("run aborted"),
+				"ctx.ui.select is unavailable", // not an Error instance
+			];
+			for (const failure of lifecycleFailures) {
+				assert.equal(isUiUnavailableRejection(failure), false, String(failure));
+			}
 		});
 	});
 

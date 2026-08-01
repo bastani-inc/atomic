@@ -210,7 +210,7 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
-	test("a headless/unavailable UI proceeds with the review round instead of blocking", async () => {
+	test("the executor's unavailable-UI rejection proceeds with the review round instead of blocking", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -221,7 +221,10 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 					return undefined;
 				},
 				uiSelect: () => {
-					throw new Error("workflow UI unavailable in headless mode");
+					// Verbatim executor rejection from makeHeadlessUnavailableUIContext.
+					throw new Error(
+						"atomic-workflows: interactive ctx.ui.select is unavailable in headless (non-interactive) mode; run the workflow in interactive mode or remove the interactive prompt from this stage",
+					);
 				},
 			},
 		);
@@ -232,5 +235,23 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 		assert.equal(result.approved_for_export, true);
 		const artifactDir = result.artifact_dir as string;
 		rmSync(artifactDir, { recursive: true, force: true });
+	});
+
+	test("a gate lifecycle failure propagates instead of opening the review round", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Design a dashboard", max_refinements: 2 },
+			{
+				uiSelect: () => {
+					throw new Error("durable checkpoint persistence failed");
+				},
+			},
+		);
+
+		await assert.rejects(() => d.run(ctx), /durable checkpoint persistence failed/);
+		assert.ok(ctx.calls.task.includes("generate-1"));
+		assert.equal(ctx.calls.task.includes("user-feedback-1"), false);
+		assert.equal(ctx.calls.task.includes("exporter"), false);
 	});
 });

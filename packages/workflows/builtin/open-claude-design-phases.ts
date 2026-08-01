@@ -17,6 +17,7 @@ import {
   LIVE_REVIEW_GATE_OPTIONS,
   buildLiveReviewGateMessage,
   buildLivePreviewDisplayPrompt,
+  isUiUnavailableRejection,
   type LiveReviewGateUi,
 } from "./open-claude-design-setup.js";
 
@@ -113,13 +114,18 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     // waits on a browser long-poll that never sets `awaiting_input`, so raise
     // a run-level `ctx.ui` prompt first. It fires the needs-attention badge,
     // names the preview URL, and syncs the review to the user's presence.
-    // Headless / promptless adapters reject; proceed with the review as before.
+    // Only the executor's unavailable-UI rejection (headless / no adapter)
+    // degrades to running the review; lifecycle failures such as interruption
+    // or a failed durable checkpoint must propagate and stop the workflow.
     const gateChoice = await options.ui
       .select(
         buildLiveReviewGateMessage({ iteration, maxRefinements, previewPath, previewFileUrl }),
         LIVE_REVIEW_GATE_OPTIONS,
       )
-      .catch(() => LIVE_REVIEW_GATE_OPTIONS[0]);
+      .catch((error: unknown) => {
+        if (isUiUnavailableRejection(error)) return LIVE_REVIEW_GATE_OPTIONS[0];
+        throw error;
+      });
     if (gateChoice === LIVE_REVIEW_GATE_OPTIONS[1]) {
       approvedForExport = true;
       break;

@@ -314,3 +314,15 @@ export function buildLiveReviewGateMessage(args: {
     `"${LIVE_REVIEW_GATE_OPTIONS[1]}" accepts the current design and proceeds to export.`,
   ].join("\n");
 }
+
+/**
+ * True only for the executor's unavailable-UI rejections (no UI adapter, or
+ * headless/non-interactive mode; see `executor-hil.ts` `makeRejectingUIContext`
+ * and the prompt-node unavailable errors). The live-review gate degrades to
+ * running the review for exactly these; every other rejection — interruption,
+ * durable checkpoint persistence failure, exit — must propagate so the
+ * workflow stops instead of opening a review against an invalid run state.
+ */
+export function isUiUnavailableRejection(error: unknown): boolean {
+  return error instanceof Error && /ctx\.ui\.\w+ (?:prompt node )?is unavailable/.test(error.message);
+}
