@@ -232,9 +232,20 @@ const CREDENTIAL_SHAPES: readonly RegExp[] = [
  */
 const CREDENTIAL_FIELD_NAME = String.raw`(?:x-)?(?:api[-_]?key|apikey|auth(?:orization)?|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|session[-_]?key|password|passwd|token|secret|key)`;
 
+/**
+ * Auth schemes that stand between the field name and the value it introduces.
+ *
+ * Without them the header matcher stops at the space after `Bearer`: it redacts
+ * the scheme and leaves the token, and having consumed the `Bearer` the shape
+ * pass depends on, that pass can no longer reach the token either. An opaque
+ * `Authorization: Bearer <token>` then survives both passes.
+ */
+const CREDENTIAL_AUTH_SCHEME = String.raw`(?:Bearer|Basic|Digest|Token|ApiKey|OAuth)`;
+
 const CREDENTIAL_CONTEXTS: readonly RegExp[] = [
-	// Header or YAML-ish: `x-api-key: abc123`, to end of line.
-	new RegExp(String.raw`\b${CREDENTIAL_FIELD_NAME}\s*:\s*[^\s,;}"']+`, "giu"),
+	// Header or YAML-ish: `x-api-key: abc123`, to end of line, and the scheme
+	// form `Authorization: Bearer abc123` with it.
+	new RegExp(String.raw`\b${CREDENTIAL_FIELD_NAME}\s*:\s*(?:${CREDENTIAL_AUTH_SCHEME}\s+)?[^\s,;}"']+`, "giu"),
 	// JSON: `"api_key": "abc123"` / `'token':'abc123'`, quoted value.
 	new RegExp(String.raw`(["']?)${CREDENTIAL_FIELD_NAME}\1\s*:\s*(["'])(?:(?!\2).)*\2`, "giu"),
 	// Query string or form body: `?api_key=abc123&…`.

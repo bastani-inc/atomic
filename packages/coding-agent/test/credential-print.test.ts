@@ -285,6 +285,13 @@ describe("OAuth failure classification", () => {
 			{ text: `"api_key": "${OPAQUE}"`, value: OPAQUE },
 			{ text: `?access_token=${OPAQUE}`, value: OPAQUE },
 			{ text: `Authorization: ${OPAQUE}`, value: OPAQUE },
+			// An opaque value behind an auth scheme, which neither pass reaches on
+			// its own: the shape pass needs the `Bearer` the header pass consumes,
+			// and the header pass stops at the space unless it takes the scheme too.
+			{ text: `Authorization: Bearer ${OPAQUE}`, value: OPAQUE },
+			{ text: `authorization: bearer ${OPAQUE}`, value: OPAQUE },
+			{ text: `Authorization: Basic ${OPAQUE}`, value: OPAQUE },
+			{ text: `"Authorization": "Bearer ${OPAQUE}"`, value: OPAQUE },
 		];
 
 		for (const { text, value } of quoted) {
