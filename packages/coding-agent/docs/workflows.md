@@ -728,6 +728,8 @@ Inputs:
 
 The workflow establishes or loads project design context, extracts user-provided references, can browse curated galleries, writes a live `preview.html`, and keeps separate generator and feedback session lineages. It exports an HTML spec and implementation handoff after approval. Browser-backed preview and feedback use the `playwright-cli` skill when available.
 
+**Where the feedback gate appears.** The browser review inside a `user-feedback-*` stage is a long-poll, not an `awaiting_input` graph node, so the stage itself reports `running` while it waits. Each round therefore pauses first at a deterministic run-level prompt: the needs-attention badge fires, and the prompt names the preview path and `file://` URL. Answer `Start live review` to begin the browser session — the stage prints the live `http://` review URL in its first lines of output, visible via `/workflow connect <run-id>` — or `Skip remaining review rounds and export as-is` to accept the current design and move to export. In headless runs the gate is skipped and the review degrades as before.
+
 Declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. It has no implicit `result` output.
 
 ```text

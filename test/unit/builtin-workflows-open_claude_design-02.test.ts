@@ -145,3 +145,92 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 });
+
+describe("open-claude-design — deterministic live-review gate (#2060)", () => {
+	const previewWithAnnotations = [
+		"display_method: live",
+		"preview_path: /tmp/preview.html",
+		"user_notes:",
+		"- Tighten the hero spacing.",
+		"next_action_hint: proceed to refinement",
+	].join("\n");
+
+	test("raises a run-level ui.select naming the preview before each user-feedback stage", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Design a dashboard", max_refinements: 2 },
+			{
+				task: (name) => {
+					if (name === "user-feedback-1") return previewWithAnnotations;
+					if (name === "user-feedback-2") return "user_notes: none";
+					return undefined;
+				},
+			},
+		);
+
+		const result = await d.run(ctx);
+
+		assert.equal(ctx.calls.uiSelects.length, 2);
+		const gate = ctx.calls.uiSelects[0];
+		assert.match(gate.message, /review round 1 of 2/i);
+		assert.ok(gate.message.includes(result.preview_path as string));
+		assert.ok(gate.message.includes(result.preview_file_url as string));
+		assert.ok(gate.message.includes("/workflow connect"));
+		assert.deepEqual([...gate.options], ["Start live review", "Skip remaining review rounds and export as-is"]);
+		assert.match(ctx.calls.uiSelects[1].message, /review round 2 of 2/i);
+		assert.ok(ctx.calls.task.includes("user-feedback-1"));
+		assert.ok(ctx.calls.task.includes("user-feedback-2"));
+		const artifactDir = result.artifact_dir as string;
+		rmSync(artifactDir, { recursive: true, force: true });
+	});
+
+	test("choosing skip accepts the current design without running the feedback stage", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Design a dashboard", max_refinements: 3 },
+			{
+				uiSelect: (_message, options) => options[1],
+			},
+		);
+
+		const result = await d.run(ctx);
+
+		assert.ok(ctx.calls.task.includes("generate-1"));
+		assert.equal(ctx.calls.task.includes("user-feedback-1"), false);
+		assert.equal(ctx.calls.task.includes("generate-2"), false);
+		assert.deepEqual(
+			ctx.calls.task.filter((name) => name === "exporter" || name === "final-display"),
+			["exporter", "final-display"],
+		);
+		assert.equal(result.approved_for_export, true);
+		assert.equal(result.refinements_completed, 1);
+		const artifactDir = result.artifact_dir as string;
+		rmSync(artifactDir, { recursive: true, force: true });
+	});
+
+	test("a headless/unavailable UI proceeds with the review round instead of blocking", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Design a dashboard", max_refinements: 2 },
+			{
+				task: (name) => {
+					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					return undefined;
+				},
+				uiSelect: () => {
+					throw new Error("workflow UI unavailable in headless mode");
+				},
+			},
+		);
+
+		const result = await d.run(ctx);
+
+		assert.ok(ctx.calls.task.includes("user-feedback-1"));
+		assert.equal(result.approved_for_export, true);
+		const artifactDir = result.artifact_dir as string;
+		rmSync(artifactDir, { recursive: true, force: true });
+	});
+});

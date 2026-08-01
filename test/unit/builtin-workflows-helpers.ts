@@ -56,6 +56,7 @@ export interface MockCalls {
 	readonly prompts: Record<string, string[]>;
 	readonly taskOptions: Record<string, WorkflowTaskOptions[]>;
 	readonly tool: string[];
+	readonly uiSelects: { message: string; options: readonly string[] }[];
 }
 
 interface MockResponders {
@@ -74,6 +75,8 @@ interface MockResponders {
 		args: Readonly<Record<string, WorkflowSerializableValue>>,
 		calls: MockCalls,
 	) => WorkflowSerializableValue | undefined;
+	/** Override a ctx.ui.select call; return an option string, or throw to simulate headless UI. */
+	uiSelect?: (message: string, options: readonly string[], calls: MockCalls) => string | undefined;
 }
 
 export function promptText(options: WorkflowTaskOptions): string {
@@ -126,12 +129,17 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 		prompts: {},
 		taskOptions: {},
 		tool: [],
+		uiSelects: [],
 	};
 
 	const ui: WorkflowUIContext = {
 		input: async (prompt: string) => `mock-input:${prompt.slice(0, 20)}`,
 		confirm: async () => false,
-		select: async <T extends string>(_message: string, options: readonly T[]) => options[0]!,
+		select: async <T extends string>(message: string, options: readonly T[]) => {
+			calls.uiSelects.push({ message, options });
+			const override = responders.uiSelect?.(message, options, calls);
+			return (override as T | undefined) ?? options[0]!;
+		},
 		editor: async (initial?: string) => initial ?? "mock-editor-content",
 		custom: async () => {
 			throw new Error("mock custom UI unavailable");

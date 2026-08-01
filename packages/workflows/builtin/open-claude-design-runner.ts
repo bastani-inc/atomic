@@ -17,6 +17,7 @@ import {
   buildReferenceDiscoveryPrompt,
   persistReferencesBrief,
   runDiscoveryAndInit,
+  type LiveReviewGateUi,
 } from "./open-claude-design-setup.js";
 
 const GROUNDED_REPORTING =
@@ -37,6 +38,7 @@ type OpenClaudeDesignContext = {
   exit?(options?: { readonly status?: string; readonly reason?: string; readonly outputs?: Partial<OpenClaudeDesignOutputs> }): never;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
+  readonly ui: LiveReviewGateUi;
 };
 
 export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext): Promise<OpenClaudeDesignOutputs> {
@@ -291,6 +293,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     workflowCwd,
     referencesBrief,
     importContext,
+    ui: designContext.ui,
   });
   latestDesign = refinement.latestDesign;
   approvedForExport = refinement.approvedForExport;

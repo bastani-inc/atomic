@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
 	buildLivePreviewDisplayPrompt,
+	buildLiveReviewGateMessage,
 	buildReferenceDiscoveryPrompt,
+	LIVE_REVIEW_GATE_OPTIONS,
 	persistReferencesBrief,
 	REFERENCE_DESIGN_SITES,
 	runDiscoveryAndInit,
@@ -140,6 +142,8 @@ describe("open-claude-design setup", () => {
 			assert.match(prompt, /`annotated_snapshot`/);
 			assert.match(prompt, /`live_changes`/);
 			assert.match(prompt, /the just-generated HTML artifact/);
+			assert.match(prompt, /BEFORE starting any long-poll wait/);
+			assert.match(prompt, /print the exact review URL/i);
 			assert.ok(prompt.includes("/tmp/run/preview.html"));
 		});
 
@@ -167,6 +171,26 @@ describe("open-claude-design setup", () => {
 			assert.match(prompt, /FINAL refinement pass/);
 			assert.match(prompt, /re-run/i);
 			assert.match(prompt, /do NOT (solicit|collect)/i);
+		});
+
+		test("live-review gate message names the preview, round, and connect affordance", () => {
+			const message = buildLiveReviewGateMessage({
+				iteration: 2,
+				maxRefinements: 3,
+				previewPath: "/tmp/run/preview.html",
+				previewFileUrl: "file:///tmp/run/preview.html",
+			});
+			assert.match(message, /review round 2 of 3/i);
+			assert.ok(message.includes("/tmp/run/preview.html"));
+			assert.ok(message.includes("file:///tmp/run/preview.html"));
+			assert.ok(message.includes("/workflow connect"));
+			for (const option of LIVE_REVIEW_GATE_OPTIONS) {
+				assert.ok(message.includes(option), option);
+			}
+			assert.deepEqual(
+				[...LIVE_REVIEW_GATE_OPTIONS],
+				["Start live review", "Skip remaining review rounds and export as-is"],
+			);
 		});
 	});
 

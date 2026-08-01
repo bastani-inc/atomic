@@ -226,9 +226,10 @@ export function buildLivePreviewDisplayPrompt(args: {
       ].join("\n")
     : [
         `1. Run \`/skill:impeccable live\` targeted at the preview file so the user can pick elements in the browser, annotate them, and compare on-brand variants. The preview is a single static HTML file at ${args.previewPath}; point live at it (configure \`.impeccable/live/config.json\` for that file or pass \`--target ${args.previewPath}\` per the live reference) and open ${args.previewFileUrl} in the browser.`,
-        "2. For each element the user picks, follow the live contract: read any annotation screenshot, extract the page identity FIRST, then generate three DISTINCT on-brand variants and let the user accept one. Accepted variants are written into the preview HTML in place; do NOT branch the artifact.",
-        "3. Also handle the live `steer` path for page-level direction the user types/speaks, and treat any freeform prompt as the ceiling on direction.",
-        "4. Keep iterating until the user signals they are done with this round.",
+        `2. The moment the live review is reachable — and BEFORE starting any long-poll wait — print the exact review URL in plain text: the live \`http://\` URL when the live server is up, plus ${args.previewFileUrl} as the manual fallback. Anyone attaching to this stage mid-run must see where the review is happening from your first lines of output.`,
+        "3. For each element the user picks, follow the live contract: read any annotation screenshot, extract the page identity FIRST, then generate three DISTINCT on-brand variants and let the user accept one. Accepted variants are written into the preview HTML in place; do NOT branch the artifact.",
+        "4. Also handle the live `steer` path for page-level direction the user types/speaks, and treat any freeform prompt as the ceiling on direction.",
+        "5. Keep iterating until the user signals they are done with this round.",
       ].join("\n");
   const outputFormat = isFinal
     ? [
@@ -264,4 +265,52 @@ export function buildLivePreviewDisplayPrompt(args: {
     ],
     ["output_format", `${outputFormat}\nKeep the report under 250 words. ${GROUNDED_REPORTING}`],
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// 3. Deterministic live-review gate (run-level HIL prompt, issue #2060)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal structural slice of `ctx.ui` the live-review gate needs. Kept
+ * structural so the runner/phases modules stay decoupled from the full
+ * WorkflowRunContext type.
+ */
+export type LiveReviewGateUi = {
+  select<T extends string>(message: string, options: readonly T[]): Promise<T>;
+};
+
+/**
+ * Choices for the deterministic gate raised before every `user-feedback-*`
+ * stage. The first entry starts the browser review round; the second accepts
+ * the current design and skips straight to export.
+ */
+export const LIVE_REVIEW_GATE_OPTIONS = [
+  "Start live review",
+  "Skip remaining review rounds and export as-is",
+] as const;
+
+/**
+ * Message for the deterministic run-level prompt raised before each
+ * `user-feedback-*` stage. The stage's browser long-poll never sets
+ * `awaiting_input`, so without this gate the run is indistinguishable from
+ * active compute while it waits on a human (issue #2060). Raising a `ctx.ui`
+ * prompt sets the run-level pending prompt, which fires the needs-attention
+ * badge and carries the preview URL to the root session deterministically.
+ */
+export function buildLiveReviewGateMessage(args: {
+  readonly iteration: number;
+  readonly maxRefinements: number;
+  readonly previewPath: string;
+  readonly previewFileUrl: string;
+}): string {
+  return [
+    `Design review round ${args.iteration} of ${args.maxRefinements} is ready for your browser review.`,
+    "",
+    `Preview file: ${args.previewPath}`,
+    `Preview URL: ${args.previewFileUrl}`,
+    "",
+    `"${LIVE_REVIEW_GATE_OPTIONS[0]}" opens an interactive browser session; the user-feedback stage prints the live http:// review URL as soon as its server is up (attach with /workflow connect to see it, or open the preview URL above directly).`,
+    `"${LIVE_REVIEW_GATE_OPTIONS[1]}" accepts the current design and proceeds to export.`,
+  ].join("\n");
 }

@@ -763,6 +763,8 @@ For either workflow, keep PR/MR creation out of the task text and pass the origi
 
 Combined discovery/init → design-system/reference research → curated reference discovery with user preference check → separate forked generate and user-feedback chains → export/handoff pipeline. The `discovery` stage asks for output type and references, then runs impeccable init in the same stage so PRODUCT.md/DESIGN.md are detected, created, or reconciled. `ds-*` stages handle user-provided URL/file reference extraction directly, then `reference-discovery` uses that context and asks which curated direction you prefer (or asks for a reference image/path/URL if none fit). Export is only `exporter` plus `final-display`.
 
+Each refinement round pauses at a deterministic run-level prompt before its `user-feedback-*` stage starts (the stage's browser long-poll never sets `awaiting_input`, so the gate is where the wait surfaces). The prompt fires the needs-attention badge and names the preview path and `file://` URL; choose `Start live review` to open the browser session (the stage prints the live `http://` review URL first — see it with `/workflow connect`), or `Skip remaining review rounds and export as-is` to accept the current design. Headless runs skip the gate.
+
 ```text
 /workflow open-claude-design prompt="Design a kanban board component"
 ```
