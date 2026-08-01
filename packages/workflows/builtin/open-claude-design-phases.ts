@@ -137,22 +137,28 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
       break;
     }
 
-    const userFeedbackResult = await designContext
-      .task(`user-feedback-${iteration}`, {
-        prompt: buildLivePreviewDisplayPrompt({
-          previewPath,
-          previewFileUrl,
-          browserBootstrapRules,
-          iteration,
-          maxRefinements,
-        }),
-        ...designModelConfig,
-        ...forkContinuationOptions(latestUserFeedbackSessionFile),
-      })
-      .catch(() => undefined);
+    // A rejected feedback stage propagates and fails the run (issue #2123;
+    // the #1499 catch-then-approve path). Browser/tooling trouble never
+    // rejects: playwright-cli is auto-installed up front, the runner exits
+    // early when the browser is unavailable, and the stage prompt requires a
+    // degraded non-empty report instead of failing. What rejects here is
+    // model/infra failure — provider errors, fallback exhaustion, broken
+    // session forks — and that must never be laundered into approval. Only a
+    // resolved result with no meaningful notes means the user approved.
+    const userFeedbackResult = await designContext.task(`user-feedback-${iteration}`, {
+      prompt: buildLivePreviewDisplayPrompt({
+        previewPath,
+        previewFileUrl,
+        browserBootstrapRules,
+        iteration,
+        maxRefinements,
+      }),
+      ...designModelConfig,
+      ...forkContinuationOptions(latestUserFeedbackSessionFile),
+    });
 
     latestUserFeedbackSessionFile =
-      userFeedbackResult?.sessionFile ?? latestUserFeedbackSessionFile;
+      userFeedbackResult.sessionFile ?? latestUserFeedbackSessionFile;
     const feedback = toPreviewFeedback({
       iteration,
       stageName: `user-feedback-${iteration}`,

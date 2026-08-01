@@ -255,3 +255,47 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 		assert.equal(ctx.calls.task.includes("exporter"), false);
 	});
 });
+
+describe("open-claude-design — rejected feedback stage is not approval (#2123)", () => {
+	test("a rejecting user-feedback stage fails the run without approving or exporting", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Design a dashboard", max_refinements: 2 },
+			{
+				task: (name) => {
+					if (name === "user-feedback-1") throw new Error("provider 413 request_too_large");
+					return undefined;
+				},
+			},
+		);
+
+		await assert.rejects(() => d.run(ctx), /request_too_large/);
+		assert.ok(ctx.calls.task.includes("generate-1"));
+		assert.ok(ctx.calls.task.includes("user-feedback-1"));
+		assert.equal(ctx.calls.task.includes("generate-2"), false);
+		assert.equal(ctx.calls.task.includes("exporter"), false);
+		assert.equal(ctx.calls.task.includes("final-display"), false);
+	});
+
+	test("a resolved degraded feedback report with no notes still approves", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Design a dashboard", max_refinements: 2 },
+			{
+				task: (name) => {
+					if (name.startsWith("user-feedback-")) return ["display_method: manual", "user_notes: none"].join("\n");
+					return undefined;
+				},
+			},
+		);
+
+		const result = await d.run(ctx);
+
+		assert.equal(result.approved_for_export, true);
+		assert.ok(ctx.calls.task.includes("exporter"));
+		const artifactDir = result.artifact_dir as string;
+		rmSync(artifactDir, { recursive: true, force: true });
+	});
+});
