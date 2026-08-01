@@ -11,6 +11,12 @@
  * - there is no `--output <file>` and no clipboard path — stdout only;
  * - every failure is a distinct exit code, and stdout stays empty on all of them;
  * - a failed OAuth refresh never mutates the stored credential.
+ *
+ * One residual, and it is upstream: when a model infers several eligible
+ * providers, each is asked for its credential before the ambiguity is known, so
+ * a *successful* refresh can rotate and persist a credential this command then
+ * declines to emit (exit 3). See the note on the `getAuth()` call in the
+ * candidate loop.
  */
 
 import { inspect } from "node:util";
@@ -385,6 +391,18 @@ export async function resolveCredentialForPrint(
 		const type = resolvedAuthTypes.get(model.provider);
 		if (type !== wantedAuthType) continue;
 
+		// Every eligible candidate is asked here, before `ProviderAmbiguous` is
+		// known, so an ambiguous export can refresh and persist credentials it
+		// emits nothing for. Deciding eligibility earlier is not available:
+		// `checkAuth()` is the only non-mutating probe and cannot tell a candidate
+		// that will authenticate from one that will fail, which is what keeps
+		// exits 5 and 6 reachable. Nor does resolving without refreshing exist —
+		// `resolveStoredOAuth` in `@earendil-works/pi-ai` refreshes whenever the
+		// token falls inside `max(DEFAULT_OAUTH_MINIMUM_VALIDITY_MS,
+		// minOAuthValidityMs ?? 0)`, so omitting `minOAuthValidityMs` only lowers
+		// that window to five minutes and drops the post-refresh check exit 6 is
+		// decided by. Bounded: the refresh rotates a valid credential, it does not
+		// invalidate one. Closing it needs a non-mutating probe upstream.
 		let auth: Awaited<ReturnType<ModelRuntime["getAuth"]>>;
 		try {
 			auth = await modelRuntime.getAuth(
