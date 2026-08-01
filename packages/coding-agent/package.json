@@ -99,7 +99,7 @@
     "linkedom": "^0.18.13",
     "lru-cache": "11.5.2",
     "markit-ai": "0.5.3",
-    "minimatch": "10.2.5",
+    "minimatch": "10.2.6",
     "open": "^11.0.0",
     "p-limit": "^7.3.0",
     "proper-lockfile": "4.1.2",
