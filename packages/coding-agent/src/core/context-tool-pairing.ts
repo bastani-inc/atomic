@@ -3,10 +3,10 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 /**
  * Structural tool-pairing guard for provider-bound context.
  *
- * `repairOrphanToolResults` already collapses the recoverable half of this
- * invariant at conversion time: an orphaned `tool_result`, and a second
- * `tool_result` for a `tool_use` id that was already answered. Neither needs to
- * reach the provider.
+ * `repairOrphanToolResults` already collapses the recoverable forms of this
+ * invariant at conversion time: orphaned or duplicate `tool_result` blocks and
+ * tool calls interrupted before their result was persisted. None need to reach
+ * the provider.
  *
  * A `tool_use` id announced by more than one assistant message is a different
  * problem. It means the transcript itself carries the same assistant turn twice,

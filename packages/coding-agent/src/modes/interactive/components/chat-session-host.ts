@@ -1,5 +1,6 @@
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import type { AgentSessionEvent } from "../../../core/agent-session.ts";
+import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import {
 	abortChatSessionBash,
@@ -81,7 +82,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (this.state.transcript.length > 0 || sessionFile === undefined) return;
 		let messages: readonly AgentSnapshotMessage[];
 		try {
-			messages = SessionManager.open(sessionFile).buildSessionContext().messages as readonly AgentSnapshotMessage[];
+			messages = repairOrphanToolResults(SessionManager.open(sessionFile).buildSessionContext().messages, {
+				repairTrailing: true,
+			}) as readonly AgentSnapshotMessage[];
 		} catch {
 			return;
 		}

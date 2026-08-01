@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
-import { convertToLlm } from "../src/core/messages.ts";
+import { convertToLlm, repairOrphanToolResults } from "../src/core/messages.ts";
 
 function assistantWithToolCalls(ids: string[]): AssistantMessage {
 	return {
@@ -50,11 +50,12 @@ describe("convertToLlm", () => {
 			{ role: "user", content: "hello", timestamp: 1 } as AgentMessage,
 			toolResult("missing-call"),
 			assistantWithToolCalls(["call-a"]),
+			toolResult("call-a"),
 			{ role: "user", content: "intervening user", timestamp: 1 } as AgentMessage,
 			toolResult("call-a"),
 		]);
 
-		expect(converted.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+		expect(converted.map((message) => message.role)).toEqual(["user", "assistant", "toolResult", "user"]);
 	});
 
 	test("collapses a duplicated tool result for one tool call id", () => {
@@ -83,6 +84,75 @@ describe("convertToLlm", () => {
 		]);
 
 		expect(converted.map((message) => message.role)).toEqual(["assistant", "toolResult", "assistant", "toolResult"]);
+	});
+
+	test("repairs an unanswered tool call before a resumed user turn", () => {
+		const durable = [
+			assistantWithToolCalls(["commit-call"]),
+			{ role: "user", content: "continue after engine restart", timestamp: 2 } as AgentMessage,
+		];
+		const before = JSON.stringify(durable);
+
+		const converted = convertToLlm(durable);
+
+		expect(converted.map((message) => message.role)).toEqual(["assistant", "toolResult", "user"]);
+		expect(converted[1]).toEqual({
+			role: "toolResult",
+			toolCallId: "commit-call",
+			toolName: "read",
+			content: [
+				{
+					type: "text",
+					text: "Tool execution was interrupted after it started; its result is unavailable. Inspect side effects before deciding whether to retry it.",
+				},
+			],
+			isError: true,
+			timestamp: 1,
+		});
+		expect(JSON.stringify(durable)).toBe(before);
+	});
+
+	test("repairs only unanswered calls in a partially persisted tool batch", () => {
+		const converted = convertToLlm([
+			assistantWithToolCalls(["call-a", "call-b"]),
+			toolResult("call-a"),
+			{ role: "user", content: "resume", timestamp: 2 } as AgentMessage,
+		]);
+
+		expect(converted.map((message) => message.role)).toEqual(["assistant", "toolResult", "toolResult", "user"]);
+		expect(
+			converted
+				.filter((message) => message.role === "toolResult")
+				.map((message) => [(message as ToolResultMessage).toolCallId, (message as ToolResultMessage).isError]),
+		).toEqual([
+			["call-a", false],
+			["call-b", true],
+		]);
+	});
+
+	test("leaves a trailing unanswered assistant turn unchanged until a continuation exists", () => {
+		const converted = convertToLlm([assistantWithToolCalls(["call-a"])]);
+
+		expect(converted.map((message) => message.role)).toEqual(["assistant"]);
+	});
+
+	test("closes a trailing unanswered tool call when reopening an inactive session", () => {
+		const durable = [assistantWithToolCalls(["call-a"])] as AgentMessage[];
+		const before = JSON.stringify(durable);
+
+		const recovered = repairOrphanToolResults(durable, { repairTrailing: true });
+
+		expect(recovered.map((message) => message.role)).toEqual(["assistant", "toolResult"]);
+		expect(recovered[1]).toMatchObject({ toolCallId: "call-a", toolName: "read", isError: true });
+		expect(JSON.stringify(durable)).toBe(before);
+	});
+
+	test("does not invent results for aborted partial tool calls", () => {
+		const aborted = { ...assistantWithToolCalls(["partial-call"]), stopReason: "aborted" as const };
+
+		const recovered = repairOrphanToolResults([aborted], { repairTrailing: true });
+
+		expect(recovered).toEqual([aborted]);
 	});
 
 	test("normalizes null and omitted assistant content without mutating durable messages", () => {

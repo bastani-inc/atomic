@@ -15,6 +15,21 @@ export interface EngineHealthDeps {
 export const UNEXPECTED_ENGINE_LOSS_NOTICE = "Interactive engine stopped unexpectedly; restarting.";
 export const UNRESPONSIVE_ENGINE_NOTICE = "Interactive engine is not responding; restarting.";
 
+/**
+ * Keep the actionable transport cause in the recovery notice. Child stderr can
+ * contain provider output or secrets, so only the bounded summary before the
+ * RpcClient's `. Stderr:` suffix is safe to render.
+ */
+export function formatUnexpectedEngineLossNotice(event: InteractiveEngineGenerationEnded): string {
+	const firstLine = event.error.message.split(/\r?\n/u, 1)[0]?.trim() ?? "";
+	const stderrIndex = firstLine.indexOf(". Stderr:");
+	const withoutStderr = (stderrIndex === -1 ? firstLine : firstLine.slice(0, stderrIndex)).trim();
+	const summary = withoutStderr.slice(0, 240).replace(/[.!?]+$/u, "");
+	return summary
+		? `${UNEXPECTED_ENGINE_LOSS_NOTICE} Cause (${event.kind}): ${summary}.`
+		: `${UNEXPECTED_ENGINE_LOSS_NOTICE} Cause: ${event.kind}.`;
+}
+
 export interface EngineHealthOptions {
 	/** Injectable clock so tests can cross the unresponsive threshold instantly. */
 	now?: () => number;
@@ -150,7 +165,7 @@ export class EngineHealthController {
 			this.replacementNeeded = true;
 			return;
 		}
-		void this.recover(UNEXPECTED_ENGINE_LOSS_NOTICE).catch(() => {});
+		void this.recover(formatUnexpectedEngineLossNotice(event)).catch(() => {});
 	}
 
 	terminate(): Promise<void> {

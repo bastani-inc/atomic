@@ -7,6 +7,7 @@ import {
 import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import {
 	EngineHealthController,
+	formatUnexpectedEngineLossNotice,
 	UNEXPECTED_ENGINE_LOSS_NOTICE,
 	UNRESPONSIVE_ENGINE_NOTICE,
 } from "../../packages/coding-agent/src/modes/interactive-engine/engine-health.ts";
@@ -96,13 +97,26 @@ test("an unexpected generation loss runs exactly one automatic restart with a ca
 	assert.equal(h.restarts, 1);
 	assert.deepEqual(
 		h.diagnostics.map((d) => d.message),
-		[UNEXPECTED_ENGINE_LOSS_NOTICE],
+		[`${UNEXPECTED_ENGINE_LOSS_NOTICE} Cause (exit): Agent process exited (code=null signal=SIGKILL).`],
 	);
 	assert.equal(h.diagnostics[0]!.source, "recovery");
 	assert.equal(h.diagnostics[0]!.level, "blocking");
 	resolveRestart();
 	await sleep(5);
 	assert.equal(h.controller.isRecovering(), false);
+});
+
+test("unexpected-loss diagnostics retain the exit cause without exposing child stderr", () => {
+	assert.equal(
+		formatUnexpectedEngineLossNotice(
+			ended({
+				error: new Error(
+					"Agent process exited (code=1 signal=null). Stderr: provider secret and arbitrary child output",
+				),
+			}),
+		),
+		`${UNEXPECTED_ENGINE_LOSS_NOTICE} Cause (exit): Agent process exited (code=1 signal=null).`,
+	);
 });
 
 test("a failed restart surfaces a concrete failure, stops retrying, and stays user-recoverable", async () => {

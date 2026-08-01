@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
+import type { ImageContent, Message, TextContent, ToolResultMessage } from "@earendil-works/pi-ai/compat";
 
 export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
 
@@ -232,19 +232,26 @@ export function createCustomMessage(
 	return message;
 }
 
-function collectAssistantToolCallIds(message: Message): Set<string> {
-	const content = (message as { content?: unknown }).content;
-	const ids = new Set<string>();
-	if (!Array.isArray(content)) return ids;
-	for (const block of content) {
-		if (!block || typeof block !== "object") continue;
-		const candidate = block as { type?: unknown; id?: unknown };
-		if (candidate.type === "toolCall" && typeof candidate.id === "string") ids.add(candidate.id);
-	}
-	return ids;
+interface AssistantToolCallRef {
+	id: string;
+	name: string;
 }
 
-function getToolResultCallId(message: Message): string | undefined {
+function collectAssistantToolCalls(message: AgentMessage): AssistantToolCallRef[] {
+	const content = (message as { content?: unknown }).content;
+	const calls: AssistantToolCallRef[] = [];
+	if (!Array.isArray(content)) return calls;
+	for (const block of content) {
+		if (!block || typeof block !== "object") continue;
+		const candidate = block as { type?: unknown; id?: unknown; name?: unknown };
+		if (candidate.type === "toolCall" && typeof candidate.id === "string" && typeof candidate.name === "string") {
+			calls.push({ id: candidate.id, name: candidate.name });
+		}
+	}
+	return calls;
+}
+
+function getToolResultCallId(message: AgentMessage): string | undefined {
 	if (message.role !== "toolResult") return undefined;
 	const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
 	return typeof toolCallId === "string" ? toolCallId : undefined;
@@ -253,19 +260,62 @@ function getToolResultCallId(message: Message): string | undefined {
 /**
  * Enforce the provider's tool-pairing invariant on a converted message list.
  *
- * A provider rejects both an orphaned `tool_result` and a second `tool_result`
- * carrying a `tool_use` id that was already answered. Keep exactly the first
- * result for each id the preceding assistant message announced.
+ * A provider rejects orphaned/duplicate `tool_result` blocks and any later turn
+ * that crosses an unanswered `tool_use`. Keep exactly the first result for each
+ * announced id. If a persisted session continues after its engine died before
+ * recording every result, insert provider-only error results before that later
+ * turn. The repair exists only in derived context; the durable transcript stays
+ * unchanged, and the text makes no claim about whether admitted work completed
+ * or produced side effects.
  */
-export function repairOrphanToolResults(messages: Message[]): Message[] {
+export interface ToolCallPairRepairOptions {
+	/** Close a final unanswered tool call when reopening an inactive session. */
+	repairTrailing?: boolean;
+}
+
+export function repairOrphanToolResults<TMessage extends AgentMessage>(
+	messages: TMessage[],
+	options: ToolCallPairRepairOptions = {},
+): (TMessage | ToolResultMessage)[] {
 	let allowedToolCallIds: Set<string> | undefined;
 	let answeredToolCallIds: Set<string> | undefined;
+	let pendingToolCalls: AssistantToolCallRef[] = [];
+	let pendingTimestamp = 0;
 	let changed = false;
-	const repaired: Message[] = [];
+	const repaired: (TMessage | ToolResultMessage)[] = [];
+	const flushUnanswered = (): void => {
+		for (const call of pendingToolCalls) {
+			if (answeredToolCallIds?.has(call.id)) continue;
+			const interrupted: ToolResultMessage = {
+				role: "toolResult",
+				toolCallId: call.id,
+				toolName: call.name,
+				content: [
+					{
+						type: "text",
+						text: "Tool execution was interrupted after it started; its result is unavailable. Inspect side effects before deciding whether to retry it.",
+					},
+				],
+				isError: true,
+				timestamp: pendingTimestamp,
+			};
+			repaired.push(interrupted);
+			changed = true;
+		}
+		allowedToolCallIds = undefined;
+		answeredToolCallIds = undefined;
+		pendingToolCalls = [];
+	};
 	for (const message of messages) {
 		if (message.role === "assistant") {
-			allowedToolCallIds = collectAssistantToolCallIds(message);
+			flushUnanswered();
+			const announcedToolCalls = collectAssistantToolCalls(message);
+			// Only toolUse turns represent admitted executions. Error, aborted, and
+			// length-limited turns may contain partial calls that providers discard.
+			pendingToolCalls = message.stopReason === "toolUse" ? announcedToolCalls : [];
+			allowedToolCallIds = new Set(announcedToolCalls.map((call) => call.id));
 			answeredToolCallIds = new Set<string>();
+			pendingTimestamp = message.timestamp;
 			repaired.push(message);
 			continue;
 		}
@@ -279,10 +329,10 @@ export function repairOrphanToolResults(messages: Message[]): Message[] {
 			changed = true;
 			continue;
 		}
-		allowedToolCallIds = undefined;
-		answeredToolCallIds = undefined;
+		flushUnanswered();
 		repaired.push(message);
 	}
+	if (options.repairTrailing) flushUnanswered();
 	return changed ? repaired : messages;
 }
 
