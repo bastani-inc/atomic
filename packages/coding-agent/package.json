@@ -84,7 +84,7 @@
     "@earendil-works/pi-ai": "^0.83.0",
     "@earendil-works/pi-tui": "^0.83.0",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
-    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@mozilla/readability": "^0.6.0",
     "@silvia-odwyer/photon-node": "0.3.4",
     "chalk": "5.6.2",
