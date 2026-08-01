@@ -45,7 +45,8 @@ import { moduleDir, readJson } from "../helpers/runtime.js";
  * only one build to run against: the root `overrides` entry collapses every edge
  * that reaches shipped code onto 7.8.0, and `package-lock.json` resolves exactly
  * one `semver` node there, which the first test asserts. The single node beside
- * it is the build-only copy `@napi-rs/cli` keeps so no edge in this tree resolves
+ * it is the build-only copy `@napi-rs/cli` keeps — nested beside
+ * `packages/natives` since the 3.8.1 bump — so no edge in this tree resolves
  * below its declared range; that copy is 7.8.5, so the last test runs the CLI's
  * own semver surface against the real baseline rather than a recorded table. To
  * re-record the shipped-surface tables after a future pin move, unpack the
@@ -121,25 +122,32 @@ interface SemverApi {
 const pinned: SemverApi = { compare, maxSatisfying, rcompare, satisfies, valid, validRange };
 
 /**
- * `@napi-rs/cli` 3.7.4 declares `semver@^7.8.2`, which the pin does not satisfy.
+ * `@napi-rs/cli` 3.8.1 declares `semver@^7.8.2`, which the pin does not satisfy.
  * A flat `semver` override held it below that range and `npm ls` reported the
  * edge invalid, so the override is scoped instead: everything collapses onto
  * 7.8.0 except the CLI, which keeps 7.8.5. The CLI is a build-time
  * devDependency of `packages/natives`, reaches no shipped code and is absent
  * from the published shrinkwrap, so the second copy costs the pin nothing.
+ * Since 3.8.1 npm nests the CLI and that copy under
+ * `packages/natives/node_modules` rather than hoisting them to the root.
  *
  * That the two builds agree is measured rather than assumed. The CLI imports
  * exactly `Comparator`, `Range`, `minVersion` and `subset`, and reaches all four
  * from one function — `restrictWasiNodeEngine`, which narrows a package's
- * `engines.node` to the WASI target's floor. `NAPI_WASI_NODE_FLOOR` and the body
- * below are transcribed from `node_modules/@napi-rs/cli/dist/index.js`, and the
- * last test drives it over both builds.
+ * `engines.node` to the WASI-supported Node.js lines. At 3.8.1 that function
+ * raised its floor from `>=14.0.0` to the supported-line union below,
+ * intersects every comparator set of the declared range with every supported
+ * set, stabilizes prerelease comparators first, and throws instead of silently
+ * flooring when nothing intersects. `MINIMUM_WASI_NODE_VERSION` and the body
+ * below are transcribed from
+ * `packages/natives/node_modules/@napi-rs/cli/dist/index.js`, and the last
+ * test drives it over both builds.
  *
  * Both of the 7.8.0 -> 7.8.2 changes land in code this function runs — `subset`
  * switched to `c.test(...)` from `satisfies(..., String(c))`, and `Range` gained
  * build-metadata stripping — so this is where a real difference would appear.
  */
-const NAPI_WASI_NODE_FLOOR = ">=14.0.0";
+const MINIMUM_WASI_NODE_VERSION = "^20.19.0 || ^22.13.0 || >=23.5.0";
 
 /** The four `semver` entry points `@napi-rs/cli` imports, and nothing else. */
 type NapiSemverApi = Pick<typeof import("semver"), "Comparator" | "Range" | "minVersion" | "subset">;
@@ -147,37 +155,8 @@ type NapiSemverApi = Pick<typeof import("semver"), "Comparator" | "Range" | "min
 /** The pinned build, and the build `@napi-rs/cli` itself resolves. */
 const pinnedNapiSurface: NapiSemverApi = { Comparator, Range, minVersion, subset };
 const napiCliSemver = requireFromTest(
-	requireFromTest.resolve("semver", { paths: [join(root, "node_modules/@napi-rs/cli")] }),
+	requireFromTest.resolve("semver", { paths: [join(root, "packages/natives/node_modules/@napi-rs/cli")] }),
 ) as NapiSemverApi;
-
-function normalizeComparatorSet(comparators: readonly Comparator[]): string | undefined {
-	const exactMatch = comparators.find(({ operator }) => operator === "");
-	if (exactMatch) {
-		return comparators.every((comparator) => comparator.test(exactMatch.semver)) ? exactMatch.value : undefined;
-	}
-	let lowerBound: Comparator | undefined;
-	let upperBound: Comparator | undefined;
-	for (const comparator of comparators) {
-		if (comparator.operator === ">" || comparator.operator === ">=") {
-			if (
-				!lowerBound ||
-				comparator.semver.compare(lowerBound.semver) > 0 ||
-				(comparator.semver.compare(lowerBound.semver) === 0 && comparator.operator === ">")
-			) {
-				lowerBound = comparator;
-			}
-		} else if (comparator.operator === "<" || comparator.operator === "<=") {
-			if (
-				!upperBound ||
-				comparator.semver.compare(upperBound.semver) < 0 ||
-				(comparator.semver.compare(upperBound.semver) === 0 && comparator.operator === "<")
-			) {
-				upperBound = comparator;
-			}
-		}
-	}
-	return [lowerBound?.value, upperBound?.value].filter(Boolean).join(" ");
-}
 
 function restrictWasiNodeEngine(semverBuild: NapiSemverApi, nodeRange: string): string {
 	const {
@@ -186,34 +165,76 @@ function restrictWasiNodeEngine(semverBuild: NapiSemverApi, nodeRange: string): 
 		minVersion: buildMinVersion,
 		subset: buildSubset,
 	} = semverBuild;
-	try {
-		if (buildSubset(nodeRange, NAPI_WASI_NODE_FLOOR)) return nodeRange;
-		if (buildSubset(NAPI_WASI_NODE_FLOOR, nodeRange)) return NAPI_WASI_NODE_FLOOR;
-		const minimumComparator = new BuildComparator(NAPI_WASI_NODE_FLOOR);
-		const restricted = new BuildRange(nodeRange).set
-			.map((comparators) => normalizeComparatorSet([...comparators, minimumComparator]))
-			.filter((candidate) => candidate !== undefined && buildMinVersion(candidate) !== null);
-		if (restricted.length > 0) return restricted.join(" || ");
-	} catch {
-		/* the CLI swallows this too, falling through to the floor */
+
+	function stabilizePrereleaseComparator(comparator: Comparator): Comparator {
+		if (comparator.semver.prerelease.length === 0) return comparator;
+		const stableVersion = `${comparator.semver.major}.${comparator.semver.minor}.${comparator.semver.patch}`;
+		if (comparator.operator === ">" || comparator.operator === ">=") return new BuildComparator(`>=${stableVersion}`);
+		if (comparator.operator === "<" || comparator.operator === "<=")
+			return new BuildComparator(`<${stableVersion}-0`);
+		return comparator;
 	}
-	return NAPI_WASI_NODE_FLOOR;
+
+	function normalizeComparatorSet(comparators: readonly Comparator[]): string | undefined {
+		const exactMatch = comparators.find(({ operator }) => operator === "");
+		if (exactMatch) {
+			return comparators.every((comparator) => comparator.test(exactMatch.semver)) ? exactMatch.value : undefined;
+		}
+		let lowerBound: Comparator | undefined;
+		let upperBound: Comparator | undefined;
+		for (const rawComparator of comparators) {
+			const comparator = stabilizePrereleaseComparator(rawComparator);
+			if (comparator.operator === ">" || comparator.operator === ">=") {
+				if (
+					!lowerBound ||
+					comparator.semver.compare(lowerBound.semver) > 0 ||
+					(comparator.semver.compare(lowerBound.semver) === 0 && comparator.operator === ">")
+				) {
+					lowerBound = comparator;
+				}
+			} else if (comparator.operator === "<" || comparator.operator === "<=") {
+				if (
+					!upperBound ||
+					comparator.semver.compare(upperBound.semver) < 0 ||
+					(comparator.semver.compare(upperBound.semver) === 0 && comparator.operator === "<")
+				) {
+					upperBound = comparator;
+				}
+			}
+		}
+		return [lowerBound?.value, upperBound?.value].filter(Boolean).join(" ");
+	}
+
+	try {
+		if (buildSubset(nodeRange, MINIMUM_WASI_NODE_VERSION)) return nodeRange;
+		if (buildSubset(MINIMUM_WASI_NODE_VERSION, nodeRange)) return MINIMUM_WASI_NODE_VERSION;
+		const supportedRangeSets = new BuildRange(MINIMUM_WASI_NODE_VERSION).set;
+		const restrictedRangeSets = new BuildRange(nodeRange).set
+			.flatMap((comparators) =>
+				supportedRangeSets.map((supportedComparators) =>
+					normalizeComparatorSet([...comparators, ...supportedComparators]),
+				),
+			)
+			.filter((candidate) => candidate !== undefined && buildMinVersion(candidate) !== null);
+		if (restrictedRangeSets.length > 0) return restrictedRangeSets.join(" || ");
+	} catch {
+		return MINIMUM_WASI_NODE_VERSION;
+	}
+	throw new Error(`Cannot restrict engines.node "${nodeRange}" to the Node.js versions supported by WASI packages`);
 }
 
 /**
  * `restrictWasiNodeEngine(range)` at 7.8.5, for every `engines.node` this
- * repository declares plus the floor itself. 7.8.2 was measured alongside and
- * agrees with both, so the pinned build and the build the CLI resolves answer
- * every one of them the same way.
+ * repository declares plus the WASI minimum itself. 7.8.0 was measured
+ * alongside and agrees with every entry, so the pinned build and the build the
+ * CLI resolves answer each of them the same way.
  */
 const BASELINE_NAPI_WASI_ENGINE = new Map<string, string>([
-	[
-		">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0",
-		">=14.17.0 <15.0.0-0 || >=15.12.0 <16.0.0-0 || >=16.0.0",
-	],
-	[">=22.19.0", ">=22.19.0"],
-	[">=14.0.0", ">=14.0.0"],
-	[">=18", ">=18"],
+	[">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0", "^20.19.0 || ^22.13.0 || >=23.5.0"],
+	["^20.19.0 || ^22.13.0 || >=23.5.0", "^20.19.0 || ^22.13.0 || >=23.5.0"],
+	[">=22.19.0", ">=22.19.0 <23.0.0-0 || >=23.5.0"],
+	[">=14.0.0", "^20.19.0 || ^22.13.0 || >=23.5.0"],
+	[">=18", "^20.19.0 || ^22.13.0 || >=23.5.0"],
 ]);
 
 /** Versions in this project's own release shape, prereleases included. */
@@ -445,8 +466,9 @@ describe("semver pinned at 7.8.0", () => {
 		// The root `overrides` entry is what collapses the tree; without it a
 		// transitive range nests a second build beside the pin and the downgrade
 		// stops being a downgrade. The one node beside it is the build-only copy
-		// `@napi-rs/cli` needs to stay inside its declared range — nothing under
-		// `packages/` can reach it, and the published shrinkwrap does not carry it.
+		// `@napi-rs/cli` needs to stay inside its declared range — it sits beside
+		// `packages/natives`, whose manifest declares no semver edge, and the
+		// published shrinkwrap does not carry it.
 		const lockfile = await readJson<Lockfile>(join(root, "package-lock.json"));
 		const resolved = Object.entries(lockfile.packages)
 			.filter(([path]) => path.split("node_modules/").pop() === "semver")
@@ -454,8 +476,8 @@ describe("semver pinned at 7.8.0", () => {
 		assert.deepEqual(
 			resolved,
 			[
-				`node_modules/@napi-rs/cli/node_modules/semver@${BASELINE_SEMVER_VERSION}`,
 				`node_modules/semver@${PINNED_SEMVER_VERSION}`,
+				`packages/natives/node_modules/semver@${BASELINE_SEMVER_VERSION}`,
 			],
 			"package-lock.json must resolve the pinned semver plus the build-only copy, and nothing else",
 		);
@@ -548,9 +570,11 @@ describe("semver pinned at 7.8.0", () => {
 		// @napi-rs/cli asks for ^7.8.2 and the scoped override gives it 7.8.5.
 		// Delete that scope and it drops to 7.8.0, `npm ls` reports the edge
 		// invalid again, and this fails.
-		const napiManifest = await readJson<CliManifest>(join(root, "node_modules/@napi-rs/cli/package.json"));
+		const napiManifest = await readJson<CliManifest>(
+			join(root, "packages/natives/node_modules/@napi-rs/cli/package.json"),
+		);
 		const napiSemverManifest = await readJson<Manifest>(
-			join(root, "node_modules/@napi-rs/cli/node_modules/semver/package.json"),
+			join(root, "packages/natives/node_modules/semver/package.json"),
 		);
 		assert.equal(napiSemverManifest.version, BASELINE_SEMVER_VERSION);
 		assert.ok(
@@ -589,15 +613,22 @@ describe("semver pinned at 7.8.0", () => {
 		}
 
 		const natives = await readJson<{
+			dependencies?: Record<string, string>;
 			devDependencies: Record<string, string>;
 			engines: { node: string };
 			napi: { targets: string[] };
 		}>(join(root, "packages/natives/package.json"));
 
+		// The 7.8.5 copy now sits beside packages/natives, so the day that
+		// package declares its own semver edge it starts resolving the CLI's
+		// build instead of the pin. Keep that day loud.
+		assert.equal(natives.dependencies?.semver, undefined, "packages/natives must not declare a semver dependency");
+		assert.equal(natives.devDependencies.semver, undefined, "packages/natives must not declare a semver dependency");
+
 		// The declared range this measurement is about. If @napi-rs/cli moves off
-		// 3.7.4 its semver surface has to be re-measured, so pin the version the
+		// 3.8.1 its semver surface has to be re-measured, so pin the version the
 		// table above was taken against.
-		assert.equal(natives.devDependencies["@napi-rs/cli"], "3.7.4");
+		assert.equal(natives.devDependencies["@napi-rs/cli"], "3.8.1");
 		assert.ok(
 			BASELINE_NAPI_WASI_ENGINE.has(natives.engines.node),
 			`packages/natives engines.node ${natives.engines.node} is not in BASELINE_NAPI_WASI_ENGINE`,
