@@ -15,6 +15,7 @@ import {
 	fieldKind,
 	fieldRequired,
 	makeMockCtx,
+	readPathEndsWith,
 } from "./builtin-workflows-helpers.js";
 
 describe("open-claude-design", () => {
@@ -58,7 +59,7 @@ describe("open-claude-design", () => {
 		assert.ok(fieldDescription(schema).length > 0);
 	});
 
-	test("runs reference-discovery by default and feeds the generator reference inspiration", async () => {
+	test("runs reference-discovery by default and hands research context to the generator by file", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
@@ -70,7 +71,7 @@ describe("open-claude-design", () => {
 				},
 			},
 		);
-		await d.run(ctx);
+		const result = await d.run(ctx);
 		assert.ok(ctx.calls.task.includes("reference-discovery"));
 		assert.ok(ctx.calls.parallel.some((names) => names.includes("ds-locator")));
 		assert.equal(
@@ -81,11 +82,31 @@ describe("open-claude-design", () => {
 		const refPrompt = ctx.calls.prompts["reference-discovery"]?.[0] ?? "";
 		assert.match(refPrompt, /awwwards\.com\/websites/);
 		assert.match(refPrompt, /motionsites\.ai/);
-		assert.match(refPrompt, /\[mock-task:ds-locator\]/);
 		assert.match(refPrompt, /ask_user_question/);
 		assert.match(refPrompt, /reference image, screenshot, URL, or local file path/i);
+
+		// Research context travels by artifact file + reads, never inline (#2121).
+		const artifactDir = result.artifact_dir as string;
+		const designContext = readFileSync(join(artifactDir, "design-context.md"), "utf8");
+		assert.match(designContext, /\[mock-task:ds-locator\]/);
+		assert.doesNotMatch(refPrompt, /\[mock-task:ds-locator\]/);
+		assert.match(refPrompt, /Read the file at .*design-context\.md/);
+		assert.ok(readPathEndsWith(ctx.calls.taskOptions["reference-discovery"]?.[0], "design-context.md"));
+		assert.equal(ctx.calls.taskOptions["reference-discovery"]?.[0]?.previous, undefined);
+
+		assert.ok(existsSync(join(artifactDir, "references.md")));
 		const genPrompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
-		assert.match(genPrompt, /<reference_inspiration>/);
+		assert.match(genPrompt, /<reference_inspiration_file>/);
+		assert.match(genPrompt, /<design_context_file>/);
+		assert.doesNotMatch(genPrompt, /\[mock-task:ds-locator\]/);
+		const generateOptions = ctx.calls.taskOptions["generate-1"]?.[0];
+		assert.ok(readPathEndsWith(generateOptions, "design-context.md"));
+		assert.ok(readPathEndsWith(generateOptions, "references.md"));
+		assert.equal(generateOptions?.previous, undefined);
+
+		const exporterOptions = ctx.calls.taskOptions.exporter?.[0];
+		assert.ok(readPathEndsWith(exporterOptions, "design-context.md"));
+		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
 	test("runs /skill:impeccable shape and init in one discovery stage", async () => {
@@ -111,7 +132,10 @@ describe("open-claude-design", () => {
 			assert.match(discoveryPrompt, /Let impeccable init perform its own PRODUCT\.md\/DESIGN\.md detection/);
 			assert.equal(ctx.calls.task.includes("design-system-builder"), false);
 			const genPrompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
-			assert.match(genPrompt, /shape.*init/s);
+			assert.match(genPrompt, /Read the file at .*design-context\.md/);
+			const runArtifactDir = result.artifact_dir as string;
+			const designContext = readFileSync(join(runArtifactDir, "design-context.md"), "utf8");
+			assert.match(designContext, /shape.*init/s);
 			const artifactDir = result.artifact_dir as string | undefined;
 			if (artifactDir) rmSync(artifactDir, { recursive: true, force: true });
 		} finally {

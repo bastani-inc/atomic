@@ -130,10 +130,22 @@ export const REFERENCE_DESIGN_SITES: readonly { readonly name: string; readonly 
 export const NO_REFERENCES_BRIEF =
   "Reference discovery was skipped. Generate from the project design system and the prompt; do not fabricate external references.";
 
+/** Artifact filenames for large stage-to-stage context handoffs (issue #2121). */
+export const DESIGN_CONTEXT_FILENAME = "design-context.md";
+export const REFERENCES_BRIEF_FILENAME = "references.md";
+
+export function designContextPath(artifactDir: string): string {
+  return join(artifactDir, DESIGN_CONTEXT_FILENAME);
+}
+
+export function referencesBriefPath(artifactDir: string): string {
+  return join(artifactDir, REFERENCES_BRIEF_FILENAME);
+}
+
 export function buildReferenceDiscoveryPrompt(args: {
   readonly prompt: string;
   readonly outputType: string;
-  readonly designContextHint: string;
+  readonly designContextFile: string;
   readonly artifactDir: string;
   readonly browserBootstrapRules: string;
 }): string {
@@ -142,7 +154,10 @@ export function buildReferenceDiscoveryPrompt(args: {
   ).join("\n");
   return taggedPrompt([
     ["reference_galleries", siteList],
-    ["design_context", args.designContextHint],
+    [
+      "design_context_file",
+      `Read the file at ${args.designContextFile} for the project design context (PRODUCT.md/DESIGN.md summary) and the ds-* discovery evidence before curating. Do not proceed from assumptions when the file is readable; if it is missing, say so and curate from the brief alone.`,
+    ],
     ["browser_use_guidelines", args.browserBootstrapRules],
     ["screenshot_dir", args.artifactDir],
     [
@@ -161,7 +176,7 @@ export function buildReferenceDiscoveryPrompt(args: {
         `Capture motion across the entire page: start \`playwright-cli video-start ${join(args.artifactDir, "ref-<site>-<n>.webm")}\`, scroll smoothly in small increments with waits (using \`playwright-cli run-code\` or repeated \`playwright-cli mousewheel 0 600\`) so animations fire and lazy content loads, then run \`playwright-cli video-stop\`.`,
         `Also run \`playwright-cli screenshot --full-page --filename=${join(args.artifactDir, "ref-<site>-<n>.png")}\`; this still is the minimum when video is unavailable.`,
         "Record the actual destination URL, title, and author. For each reference, cite observed layout, typography, color, spacing, and motion traits rather than inferred traits.",
-        "Assess fit against DESIGN.md, PRODUCT.md, and the ds-* discovery evidence in <design_context>; prefer on-brand references and flag departures.",
+        "Assess fit against DESIGN.md, PRODUCT.md, and the ds-* discovery evidence in the design-context file; prefer on-brand references and flag departures.",
         "Use ask_user_question to ask which reference direction they prefer, offering 2-4 strongest options plus `None of these fit`. If none fit, ask them to provide a reference image, screenshot, URL, or local file path and record the answer.",
         "If `playwright-cli` is unavailable or automation is blocked, use web search / page fetch to reach actual pages and mark missing recordings or screenshots. Never fabricate references or visual claims; report galleries with no usable result.",
       ].join("\n"),
@@ -181,11 +196,31 @@ export function buildReferenceDiscoveryPrompt(args: {
   ]);
 }
 
-/** Persist the curated references brief to `<artifactDir>/references.md`. Best-effort. */
+/**
+ * Persist the curated references brief to `<artifactDir>/references.md`.
+ * Best-effort. Downstream generate stages consume this file via `reads`
+ * instead of an inline prompt embed (issue #2121).
+ */
 export function persistReferencesBrief(artifactDir: string, brief: string): void {
   try {
     mkdirSync(artifactDir, { recursive: true });
-    writeFileSync(join(artifactDir, "references.md"), `${brief}\n`);
+    writeFileSync(referencesBriefPath(artifactDir), `${brief}\n`);
+  } catch {
+    /* best-effort durability; never block the workflow */
+  }
+}
+
+/**
+ * Persist the composed project design context (impeccable init summary plus
+ * ds-* discovery evidence) to `<artifactDir>/design-context.md`. Best-effort.
+ * Reference-discovery, generate, and exporter stages consume this file via
+ * `reads` instead of an inline prompt embed, so one oversized research result
+ * cannot become an oversized single prompt message (issue #2121).
+ */
+export function persistDesignContext(artifactDir: string, content: string): void {
+  try {
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(designContextPath(artifactDir), `${content}\n`);
   } catch {
     /* best-effort durability; never block the workflow */
   }

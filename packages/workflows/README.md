@@ -765,6 +765,8 @@ Combined discovery/init → design-system/reference research → curated referen
 
 Each refinement round pauses at a deterministic run-level prompt before its `user-feedback-*` stage starts (the stage's browser long-poll never sets `awaiting_input`, so the gate is where the wait surfaces). The prompt fires the needs-attention badge and names the preview path and `file://` URL; choose `Start live review` to open the browser session (the stage prints the live `http://` review URL first — see it with `/workflow connect`), or `Skip remaining review rounds and export as-is` to accept the current design. Headless runs skip the gate.
 
+Research context moves between stages as artifact files, not inline prompt payloads: the project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`, and the reference-discovery, generate, and exporter stages read both via `reads`. Only verbatim user annotations and the word-capped prior design summary travel inline.
+
 ```text
 /workflow open-claude-design prompt="Design a kanban board component"
 ```

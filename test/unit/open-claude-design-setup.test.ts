@@ -98,8 +98,7 @@ describe("open-claude-design setup", () => {
 			const prompt = buildReferenceDiscoveryPrompt({
 				prompt: "Design a landing page",
 				outputType: "page",
-				designContextHint:
-					"PRODUCT.md=/p DESIGN.md=/d\n\nDesign-system/reference discovery evidence from ds-* stages:\n### ds-locator\nFound tokens.",
+				designContextFile: "/tmp/run/design-context.md",
 				artifactDir: "/tmp/run",
 				browserBootstrapRules: "which playwright-cli ... @playwright/cli",
 			});
@@ -107,7 +106,10 @@ describe("open-claude-design setup", () => {
 				assert.ok(prompt.includes(site.url), site.url);
 			}
 			assert.match(prompt, /<browser_use_guidelines>/);
-			assert.match(prompt, /<design_context>/);
+			assert.match(prompt, /<design_context_file>/);
+			assert.ok(prompt.includes("Read the file at /tmp/run/design-context.md"));
+			// The research payload must not travel inline (issue #2121).
+			assert.doesNotMatch(prompt, /Found tokens/);
 			assert.match(prompt, /video-start/);
 			assert.match(prompt, /scroll-through video/i);
 			assert.match(prompt, /screenshot --full-page/);
@@ -125,6 +127,16 @@ describe("open-claude-design setup", () => {
 			persistReferencesBrief(dir, "## Curated references\n\n- Awwwards hero.");
 			assert.ok(existsSync(join(dir, "references.md")));
 			assert.match(readFileSync(join(dir, "references.md"), "utf8"), /Awwwards hero/);
+		});
+
+		test("persistDesignContext writes design-context.md at the shared path", async () => {
+			const mod = await import("../../packages/workflows/builtin/open-claude-design-setup.js");
+			const dir = tempDir();
+			mod.persistDesignContext(dir, "## Project design context\n\nds-locator evidence.");
+			const path = mod.designContextPath(dir);
+			assert.ok(existsSync(path));
+			assert.match(readFileSync(path, "utf8"), /ds-locator evidence/);
+			assert.equal(mod.referencesBriefPath(dir), join(dir, "references.md"));
 		});
 	});
 
