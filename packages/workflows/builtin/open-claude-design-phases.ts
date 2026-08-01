@@ -291,20 +291,26 @@ type ExportOptions = {
   readonly browserBootstrapRules: string;
   /** Path to the persisted design-context.md artifact (issue #2121). */
   readonly designContextFile: string;
+  /** Path to the persisted references.md artifact (issue #2121). */
+  readonly referencesFile: string;
   readonly latestDesign: string;
   readonly designModelConfig: ModelConfig;
 };
 
 export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ readonly latestDesign: string; readonly handoff: WorkflowTaskResult; }> {
-  const { designContext, prompt, outputType, previewPath, previewFileUrl, specPath, specFileUrl, browserBootstrapRules, designContextFile, designModelConfig } = options;
+  const { designContext, prompt, outputType, previewPath, previewFileUrl, specPath, specFileUrl, browserBootstrapRules, designContextFile, referencesFile, designModelConfig } = options;
   const latestDesign = options.latestDesign;
 
   const handoff = await designContext.task("exporter", {
-    reads: [designContextFile],
+    reads: [designContextFile, referencesFile],
     prompt: taggedPrompt([
       [
         "design_context_file",
         `Read the file at ${designContextFile} for the project design context (PRODUCT.md/DESIGN.md summary) and the ds-* design-system evidence to document.`,
+      ],
+      [
+        "reference_inspiration_file",
+        `Read the file at ${referencesFile} for the curated reference research that informed the approved design; use it wherever the spec cites visual direction or reference provenance.`,
       ],
       ["preview_artifact_path", previewPath],
       ["spec_artifact_path", specPath],

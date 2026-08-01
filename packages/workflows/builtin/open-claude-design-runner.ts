@@ -336,6 +336,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     specFileUrl,
     browserBootstrapRules,
     designContextFile,
+    referencesFile,
     latestDesign,
     designModelConfig,
   });

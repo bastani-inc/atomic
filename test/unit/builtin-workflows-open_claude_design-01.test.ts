@@ -106,6 +106,8 @@ describe("open-claude-design", () => {
 
 		const exporterOptions = ctx.calls.taskOptions.exporter?.[0];
 		assert.ok(readPathEndsWith(exporterOptions, "design-context.md"));
+		assert.ok(readPathEndsWith(exporterOptions, "references.md"));
+		assert.match(ctx.calls.prompts.exporter?.[0] ?? "", /<reference_inspiration_file>/);
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
