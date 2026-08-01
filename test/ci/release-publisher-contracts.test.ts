@@ -51,7 +51,17 @@ test("prepared native root tarball contains all six exact-version optional depen
 		writeFileSync(join(stage, "package.json"), `${JSON.stringify({ ...sourceManifest, version }, null, 2)}\n`);
 		for (const file of nativeBinaryNames) writeFileSync(join(nativeDir, file), "fixture");
 
-		const toolPath = [join(root, "node_modules/.bin"), process.env.PATH].filter(Boolean).join(delimiter);
+		// The publish pipeline runs `bun run --cwd packages/natives <script>`, which
+		// resolves bins from packages/natives/node_modules/.bin first. Since the
+		// @napi-rs/cli 3.8.1 bump npm nests the CLI there instead of hoisting it to
+		// the root .bin, so this staged copy needs the same lookup order.
+		const toolPath = [
+			join(root, "packages/natives/node_modules/.bin"),
+			join(root, "node_modules/.bin"),
+			process.env.PATH,
+		]
+			.filter(Boolean)
+			.join(delimiter);
 		const env = { ...process.env, PATH: toolPath };
 		// Bun's `$` shell was the only import of the `bun` module in the suites. The
 		// commands themselves are unchanged, including `bun pm pack`, which is what
