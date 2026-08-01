@@ -9,7 +9,9 @@
  * - `--model` is required, so no ambient "current model" can emit a credential
  *   the caller did not name;
  * - there is no `--output <file>` and no clipboard path — stdout only;
- * - every failure is a distinct exit code, and stdout stays empty on all of them;
+ * - every failure is a distinct exit code, and stdout stays empty on all of
+ *   them but one — `CredentialTruncated` (exit 9) exists to report the case
+ *   where it cannot be, because bytes already left and cannot be recalled;
  * - a failed OAuth refresh never mutates the stored credential.
  *
  * One residual, and it is upstream: when a model infers several eligible
@@ -241,7 +243,7 @@ export function printCredentialPrintHelp(): void {
 
 Prints one configured credential alone on stdout. Everything else — warnings,
 provider selection, refresh notices — goes to stderr, and stdout stays empty on
-any failure.
+every failure but exit 9, which reports that it could not be.
 
 --model is required: there is no ambient "current model". Provider inference
 uses configured credentials; pass --provider to select one explicitly.
@@ -259,7 +261,9 @@ Exit codes:
   5  refresh failed (the stored credential is left untouched)
   6  provider cannot mint a token that lives long enough
   7  the provider's OAuth credential could not be used
-  8  the credential could not be written (nothing was emitted)`);
+  8  the credential could not be written (nothing was emitted)
+  9  the credential was written only in part; stdout holds an unusable
+     fragment, which the caller must discard rather than use`);
 }
 
 function parseDuration(value: string | undefined): number {

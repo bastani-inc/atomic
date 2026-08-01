@@ -25,6 +25,7 @@ import {
 	OAUTH_EXPIRES_TOO_SOON_PHRASE,
 	OAUTH_REFRESH_FAILED_PHRASE,
 	parseCredentialPrintCommand,
+	printCredentialPrintHelp,
 	resolveCredentialForPrint,
 	Secret,
 	STDOUT_EMPTY_ON_EXIT,
@@ -512,6 +513,37 @@ describe("emitCredential", () => {
 				},
 			);
 		}
+	});
+
+	/**
+	 * The help text is the contract a caller automates against, so it has to name
+	 * every exit code the door can actually produce. Exit 9 shipped documented
+	 * only in the source: `atomic auth --help` stopped at 8 and still promised an
+	 * empty stdout on every failure, so a caller reading it had no way to know a
+	 * truncated credential can reach stdout and must be discarded.
+	 */
+	it("documents every exit code it can produce, and the one that leaves bytes behind", () => {
+		const lines: string[] = [];
+		const originalError = console.error;
+		console.error = (text: string) => {
+			lines.push(text);
+		};
+		try {
+			printCredentialPrintHelp();
+		} finally {
+			console.error = originalError;
+		}
+
+		const help = lines.join("\n");
+		const documented = new Set([...help.matchAll(/^ {2}(\d+) {2}\S/gmu)].map(([, code]) => Number(code)));
+
+		// 0 is success, which the help lists alongside the failures.
+		expect([...documented].sort((a, b) => a - b)).toEqual([0, ...Object.values(EXIT_CODES)].sort((a, b) => a - b));
+
+		// And the promise the taxonomy actually keeps: empty stdout on every
+		// failure except the one whose purpose is reporting that it could not be.
+		expect(help).not.toContain("stdout stays empty on\nany failure");
+		expect(help).toContain(`stdout holds an unusable`);
 	});
 
 	it("reports a payload write that never reached the stream, with nothing emitted", async () => {
