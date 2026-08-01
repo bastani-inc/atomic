@@ -25,15 +25,31 @@
  * The difference that survives that narrowing is an `undefined` property, which
  * the type does permit: SuperJSON keeps the key, `JSON` drops it.
  *
- * The mirror crosses by `structuredClone`, which agrees with SuperJSON there —
- * measured against `superjson` itself, not assumed, and pinned by the boundary
- * test below. A plain `JSON.parse(JSON.stringify(...))` handoff would be wrong
- * in the direction that looks safe: it would drop a key real persistence keeps,
- * making the probe stricter than the thing it models while still not exercising
- * the serializer that thing uses. The SDK does not expose `DBOSJSON` through
- * its `exports` map and this repository does not depend on `superjson`, so the
- * stand-in is what is reachable; SuperJSON's own encoding is therefore not
- * covered here.
+ * The mirror crosses by `structuredClone`, and the boundary test below verifies
+ * exactly that — `structuredClone` keeps the key — and nothing more. It does not
+ * execute SuperJSON, so it cannot detect the stand-in and the real serializer
+ * diverging. Saying otherwise would overstate it.
+ *
+ * That the two agree today is a recorded measurement, not an assumption, taken
+ * against the `superjson` build DBOS depends on and reproducible with:
+ *
+ *   node -e "const sj=require('superjson').default??require('superjson');
+ *     const v={settled:true,cancelled:undefined};
+ *     console.log(Object.hasOwn(sj.parse(sj.stringify(v)),'cancelled'),
+ *                 Object.hasOwn(structuredClone(v),'cancelled'),
+ *                 Object.hasOwn(JSON.parse(JSON.stringify(v)),'cancelled'))"
+ *   // -> true true false
+ *
+ * It is recorded rather than asserted because the SDK does not expose
+ * `DBOSJSON` through its `exports` map — a deep import fails with
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED` — and this repository does not depend on
+ * `superjson`, so reaching it from a test would rest on hoisting. Re-run the
+ * line above when the SDK moves.
+ *
+ * What the test does buy is the direction that would otherwise be easy to get
+ * wrong: a plain `JSON.parse(JSON.stringify(...))` handoff drops a key real
+ * persistence keeps, which would make the probe stricter than the thing it
+ * models while still not exercising the serializer that thing uses.
  *
  * Still not covered, and out of scope for a dependency gate: a live
  * Postgres-backed replay across two real processes, and a parent killed *after*
@@ -76,13 +92,14 @@ function committedState(sdk: MockSdk): MockSdk {
 	return persisted;
 }
 
-test("the modelled kill boundary keeps the key SuperJSON keeps and JSON drops", () => {
-	// A checkpoint is a `WorkflowSerializableValue`, so an `undefined` property is
-	// the one shape where DBOS's SuperJSON encoding and plain `JSON` disagree —
-	// measured against `superjson` itself, which keeps the key, as
-	// `structuredClone` does and `JSON.parse(JSON.stringify(...))` does not.
-	// This is what stops the handoff being narrowed to a JSON round trip, which
-	// would make the probe stricter than the persistence it models.
+test("the modelled kill boundary carries an explicitly-undefined checkpoint property", () => {
+	// What this verifies is `structuredClone`'s behaviour, not SuperJSON's: it
+	// executes no serializer, and the header records the measurement showing the
+	// two agree on this key today, with the line to re-run when the SDK moves.
+	//
+	// Its job is to stop the handoff being narrowed to a JSON round trip, which
+	// drops the key and would make the probe stricter than the persistence it
+	// models.
 	const sdk = createMockSdk();
 	sdk.state.steps.set("run:checkpoint:probe", { settled: true, cancelled: undefined });
 
