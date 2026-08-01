@@ -230,6 +230,64 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		expect(scopedModels[0].model.id).toBe("gpt-5.5");
 	});
 
+	it("04b15259/b6fb91e5: a nested value inside the model cannot change the scope either", () => {
+		// A spread and `Object.freeze` both stop at the first level, so copying the
+		// entry and its model still handed out the session's own `headers`, `input`,
+		// `cost.tiers`, `thinkingLevelMap` and `compat`. Writing through any of them
+		// changed the model used for selection and request composition, and the
+		// freeze reported nothing, because it never reached them.
+		const sessionModel = {
+			id: "gpt-5.5",
+			provider: "openai",
+			input: ["text"],
+			headers: { "x-scope": "session" },
+			cost: { input: 1, output: 2, tiers: [{ inputTokensAbove: 100, input: 3 }] },
+			thinkingLevelMap: { high: "high" },
+			compat: { toolCalls: true },
+		};
+		const scopedModels: ScopedModel[] = [{ model: sessionModel as never, thinkingLevel: "high" }];
+		const source = {
+			assertActive: () => {},
+			getScopedModels: () => scopedModels,
+		} as unknown as ExtensionContextSource;
+
+		const ctx = createExtensionContext(source);
+		const [entry] = ctx.scopedModels as ScopedModel[];
+		const exposed = entry.model as unknown as typeof sessionModel;
+
+		// Every nested container is the copy's own, not the session's.
+		expect(exposed.headers).not.toBe(sessionModel.headers);
+		expect(exposed.input).not.toBe(sessionModel.input);
+		expect(exposed.cost).not.toBe(sessionModel.cost);
+		expect(exposed.cost.tiers).not.toBe(sessionModel.cost.tiers);
+		expect(exposed.cost.tiers[0]).not.toBe(sessionModel.cost.tiers[0]);
+		expect(exposed.thinkingLevelMap).not.toBe(sessionModel.thinkingLevelMap);
+		expect(exposed.compat).not.toBe(sessionModel.compat);
+
+		// And frozen all the way down, so each attempt throws rather than landing.
+		expect(() => {
+			exposed.headers["x-scope"] = "extension";
+		}).toThrow();
+		expect(() => {
+			exposed.input.push("image");
+		}).toThrow();
+		expect(() => {
+			exposed.cost.tiers[0].input = 999;
+		}).toThrow();
+		expect(() => {
+			exposed.thinkingLevelMap.high = "low";
+		}).toThrow();
+		expect(() => {
+			exposed.compat.toolCalls = false;
+		}).toThrow();
+
+		expect(sessionModel.headers).toEqual({ "x-scope": "session" });
+		expect(sessionModel.input).toEqual(["text"]);
+		expect(sessionModel.cost.tiers).toEqual([{ inputTokensAbove: 100, input: 3 }]);
+		expect(sessionModel.thinkingLevelMap).toEqual({ high: "high" });
+		expect(sessionModel.compat).toEqual({ toolCalls: true });
+	});
+
 	it("04b15259/b6fb91e5: the shortcut context copies the scope too, not just the runner's", () => {
 		// Shortcut handlers get a context built by hand in
 		// interactive-extension-runtime.ts rather than by createExtensionContext, so
