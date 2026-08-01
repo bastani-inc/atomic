@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -137,6 +137,16 @@ describe("open-claude-design setup", () => {
 			assert.ok(existsSync(path));
 			assert.match(readFileSync(path, "utf8"), /ds-locator evidence/);
 			assert.equal(mod.referencesBriefPath(dir), join(dir, "references.md"));
+		});
+
+		test("required context artifact write failures propagate instead of being swallowed", async () => {
+			const mod = await import("../../packages/workflows/builtin/open-claude-design-setup.js");
+			const dir = tempDir();
+			// A regular file where the artifact dir should be makes mkdirSync throw.
+			const blocker = join(dir, "blocker");
+			writeFileSync(blocker, "not a directory");
+			assert.throws(() => mod.persistDesignContext(blocker, "content"), /required design-context artifact/);
+			assert.throws(() => persistReferencesBrief(blocker, "content"), /required references-brief artifact/);
 		});
 	});
 

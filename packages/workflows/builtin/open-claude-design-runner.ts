@@ -66,6 +66,10 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   );
   const previewFileUrl = `file://${previewPath}`;
   const specFileUrl = `file://${specPath}`;
+  const partialArtifactOutputs = {
+    playwright_cli_status: playwrightCli.summary, run_id: runId, artifact_dir: artifactDir,
+    preview_path: previewPath, preview_file_url: previewFileUrl, spec_path: specPath, spec_file_url: specFileUrl,
+  };
 
   // Browser-centric workflow: the discovery/preview review and the interactive
   // `live` QA loop need the playwright-cli browser. If it is unavailable, exit
@@ -77,12 +81,30 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   ) {
     designContext.exit({
       reason: `open-claude-design needs the playwright-cli skill's browser for interactive design review, which is unavailable (${playwrightCli.error ?? playwrightCli.summary}). No design was generated. Install it (\`npm install -g @playwright/cli@latest\` + \`npx playwright install chromium\`) and re-run.`,
-      outputs: {
-        playwright_cli_status: playwrightCli.summary, run_id: runId, artifact_dir: artifactDir,
-        preview_path: previewPath, preview_file_url: previewFileUrl, spec_path: specPath, spec_file_url: specFileUrl,
-      },
+      outputs: partialArtifactOutputs,
     });
   }
+
+  // design-context.md / references.md are required `reads` inputs for the
+  // reference-discovery, generate, and exporter stages. A failed write must
+  // not let those stages dispatch against nonexistent context: exit the run
+  // as `blocked` through ctx.exit (mirroring the browser early-exit) with the
+  // artifact paths surfaced, or propagate the error when ctx.exit is absent.
+  const persistRequiredContextOrExit = (persist: () => void): void => {
+    try {
+      persist();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (typeof designContext.exit === "function") {
+        designContext.exit({
+          status: "blocked",
+          reason: `${detail} No design was generated.`,
+          outputs: partialArtifactOutputs,
+        });
+      }
+      throw error;
+    }
+  };
 
   // Anthropic-heavy chain for design taste. Opus stays at :xhigh here because
   // visual quality, rather than cost per task, is the primary objective.
@@ -245,7 +267,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     "Design-system and user-reference evidence:",
     onboardingSummary,
   ].join("\n\n");
-  persistDesignContext(artifactDir, designSystem);
+  persistRequiredContextOrExit(() => persistDesignContext(artifactDir, designSystem));
   const designContextFile = designContextPath(artifactDir);
 
   const referenceResult = discoverReferences
@@ -267,7 +289,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     referencesBriefRaw.length > 0 ? referencesBriefRaw : NO_REFERENCES_BRIEF;
   // Always persist so the generate stages' `reads` target exists even when
   // discovery is skipped or returned nothing.
-  persistReferencesBrief(artifactDir, referencesBrief);
+  persistRequiredContextOrExit(() => persistReferencesBrief(artifactDir, referencesBrief));
   const referencesFile = referencesBriefPath(artifactDir);
 
   const importContext = references.length > 0

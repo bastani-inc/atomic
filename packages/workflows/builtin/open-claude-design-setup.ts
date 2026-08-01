@@ -197,33 +197,50 @@ export function buildReferenceDiscoveryPrompt(args: {
 }
 
 /**
- * Persist the curated references brief to `<artifactDir>/references.md`.
- * Best-effort. Downstream generate stages consume this file via `reads`
- * instead of an inline prompt embed (issue #2121).
+ * Write a context artifact that downstream stages consume via `reads`.
+ * These files are required stage inputs, not best-effort durability copies:
+ * a swallowed write failure would let reference-discovery, generate, and
+ * exporter stages dispatch against nonexistent design/reference context, so
+ * a failure propagates and stops the workflow (issue #2121, Greptile P1).
  */
-export function persistReferencesBrief(artifactDir: string, brief: string): void {
+function writeRequiredContextArtifact(
+  artifactDir: string,
+  filePath: string,
+  content: string,
+  label: string,
+): void {
   try {
     mkdirSync(artifactDir, { recursive: true });
-    writeFileSync(referencesBriefPath(artifactDir), `${brief}\n`);
-  } catch {
-    /* best-effort durability; never block the workflow */
+    writeFileSync(filePath, `${content}\n`);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `open-claude-design: failed to write the required ${label} artifact at ${filePath}. Downstream stages read this file via \`reads\` and must not run without it (${detail})`,
+      { cause: error },
+    );
   }
 }
 
 /**
+ * Persist the curated references brief to `<artifactDir>/references.md`.
+ * Downstream generate stages consume this file via `reads` instead of an
+ * inline prompt embed; a write failure propagates (issue #2121).
+ */
+export function persistReferencesBrief(artifactDir: string, brief: string): void {
+  writeRequiredContextArtifact(artifactDir, referencesBriefPath(artifactDir), brief, "references-brief");
+}
+
+/**
  * Persist the composed project design context (impeccable init summary plus
- * ds-* discovery evidence) to `<artifactDir>/design-context.md`. Best-effort.
+ * ds-* discovery evidence) to `<artifactDir>/design-context.md`.
  * Reference-discovery, generate, and exporter stages consume this file via
  * `reads` instead of an inline prompt embed, so one oversized research result
- * cannot become an oversized single prompt message (issue #2121).
+ * cannot become an oversized single prompt message. A write failure
+ * propagates rather than letting those stages run without their design
+ * context (issue #2121).
  */
 export function persistDesignContext(artifactDir: string, content: string): void {
-  try {
-    mkdirSync(artifactDir, { recursive: true });
-    writeFileSync(designContextPath(artifactDir), `${content}\n`);
-  } catch {
-    /* best-effort durability; never block the workflow */
-  }
+  writeRequiredContextArtifact(artifactDir, designContextPath(artifactDir), content, "design-context");
 }
 
 // ---------------------------------------------------------------------------
