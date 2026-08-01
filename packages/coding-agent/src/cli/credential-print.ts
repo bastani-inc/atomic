@@ -387,7 +387,8 @@ const CREDENTIAL_SHAPES: readonly RegExp[] = [
  * Field names whose value is the credential, however opaque that value looks.
  * `x-api-key` is the case shape-matching cannot reach: the value is just bytes.
  */
-const CREDENTIAL_FIELD_NAME = String.raw`(?:x-)?(?:api[-_]?key|apikey|auth(?:orization)?|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|session[-_]?key|password|passwd|token|secret|key)`;
+const CREDENTIAL_FIELD_NAME =
+	"(?:x-)?(?:api[-_]?key|apikey|auth(?:orization)?|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|secret[-_]?key|private[-_]?key|session[-_]?key|password|passwd|token|secret|key)";
 
 /**
  * Auth schemes that stand between the field name and the value it introduces.
@@ -397,7 +398,7 @@ const CREDENTIAL_FIELD_NAME = String.raw`(?:x-)?(?:api[-_]?key|apikey|auth(?:ori
  * pass depends on, that pass can no longer reach the token either. An opaque
  * `Authorization: Bearer <token>` then survives both passes.
  */
-const CREDENTIAL_AUTH_SCHEME = String.raw`(?:Bearer|Basic|Digest|Token|ApiKey|OAuth)`;
+const CREDENTIAL_AUTH_SCHEME = "(?:Bearer|Basic|Digest|Token|ApiKey|OAuth)";
 
 const CREDENTIAL_CONTEXTS: readonly RegExp[] = [
 	// Header or YAML-ish: `x-api-key: abc123`, to end of line, and the scheme
