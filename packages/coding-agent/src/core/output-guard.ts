@@ -141,27 +141,32 @@ export function writeRawStdout(text: string): void {
 }
 
 /**
- * A `writeRawStdoutOnce` failure, carrying whether any byte of the payload
- * reached the stream.
+ * A `writeRawStdoutOnce` failure, carrying how much of the payload reached the
+ * stream.
  *
- * `emitted` is the answer to the only question the credential egress needs: may
- * these bytes be on stdout? Three cases produce it, and none of them guesses.
+ * `emitted` is the answer the credential egress needs, and "some" is a distinct
+ * answer from "all": bytes that escaped cannot be recalled, but a caller told
+ * only that *something* left would report a truncated secret as a whole one.
  *
- *   - the write call threw, before the stream could accept anything: `false`;
- *   - the callback reported an error and `bytesWritten` did not move, so the
- *     chunk was buffered and dropped without a syscall: `false`;
- *   - the callback reported an error after `bytesWritten` advanced, so part or
- *     all of the payload went out before the failure: `true`.
+ *   - `"none"` — the write call threw before the stream accepted anything, or
+ *     the callback failed with `bytesWritten` unmoved, so the chunk was
+ *     buffered and dropped without a syscall. stdout is provably empty.
+ *   - `"partial"` — the counter advanced by less than the payload. stdout
+ *     carries a fragment, which is not a usable credential.
+ *   - `"all"` — the counter advanced by the whole payload and the failure came
+ *     after. stdout carries the credential.
  *
  * `bytesWritten` exists on the socket stdout is when it is a TTY or a pipe. A
  * file redirect gets `SyncWriteStream`, which has no counter and writes
  * synchronously — there a callback error means the `writeSync` itself failed,
  * so nothing was emitted.
  */
-export class RawStdoutWriteError extends Error {
-	readonly emitted: boolean;
+export type RawStdoutEmission = "none" | "partial" | "all";
 
-	constructor(message: string, options: { cause: unknown; emitted: boolean }) {
+export class RawStdoutWriteError extends Error {
+	readonly emitted: RawStdoutEmission;
+
+	constructor(message: string, options: { cause: unknown; emitted: RawStdoutEmission }) {
 		super(message, { cause: options.cause });
 		this.name = "RawStdoutWriteError";
 		this.emitted = options.emitted;
@@ -174,6 +179,17 @@ function rawStdoutBytesWritten(): number | undefined {
 	return typeof counted === "number" ? counted : undefined;
 }
 
+function classifyEmission(
+	before: number | undefined,
+	after: number | undefined,
+	payloadBytes: number,
+): RawStdoutEmission {
+	if (before === undefined || after === undefined) return "none";
+	const flushed = after - before;
+	if (flushed <= 0) return "none";
+	return flushed >= payloadBytes ? "all" : "partial";
+}
+
 /**
  * Write one chunk to the real stdout as a single awaited operation.
  *
@@ -183,15 +199,16 @@ function rawStdoutBytesWritten(): number | undefined {
  * exactly once — the ENOBUFS/EAGAIN retry in `writeRawStdoutChunk` would
  * re-send the whole payload, which for a secret risks emitting it twice.
  *
- * Rejects with `RawStdoutWriteError`, whose `emitted` says whether any byte
- * left. A caller that must never report a failure over a stream carrying a
- * credential — nor claim success over one that carries nothing — branches on it
- * rather than on the presence of an error.
+ * Rejects with `RawStdoutWriteError`, whose `emitted` says how much left. A
+ * caller that must never report a failure over a stream carrying a whole
+ * credential — nor claim success over one carrying none of it, nor part of it —
+ * branches on that rather than on the presence of an error.
  */
 export function writeRawStdoutOnce(text: string): Promise<void> {
 	if (text.length === 0) {
 		return Promise.resolve();
 	}
+	const payloadBytes = Buffer.byteLength(text);
 	const write = rawStdoutWriteTail.then(
 		() =>
 			new Promise<void>((resolve, reject) => {
@@ -202,18 +219,14 @@ export function writeRawStdoutOnce(text: string): Promise<void> {
 							resolve();
 							return;
 						}
-						const after = rawStdoutBytesWritten();
-						// Unknown counter means a synchronous stream, where a failed
-						// write emitted nothing. A counter that has not moved means the
-						// chunk never reached a syscall.
-						const emitted = before !== undefined && after !== undefined && after > before;
+						const emitted = classifyEmission(before, rawStdoutBytesWritten(), payloadBytes);
 						reject(new RawStdoutWriteError(error.message, { cause: error, emitted }));
 					});
 				} catch (error) {
 					reject(
 						new RawStdoutWriteError(error instanceof Error ? error.message : String(error), {
 							cause: error,
-							emitted: false,
+							emitted: "none",
 						}),
 					);
 				}

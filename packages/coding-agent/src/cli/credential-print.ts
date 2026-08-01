@@ -45,12 +45,18 @@ export type CredentialPrintErrorCode =
 	| "RefreshFailed"
 	| "MinValidityUnreachable"
 	| "OAuthUnavailable"
-	| "CredentialNotEmitted";
+	| "CredentialNotEmitted"
+	| "CredentialTruncated";
 
 /**
  * Exported so a test can walk the whole taxonomy: every declared code has to
- * name an exercised path that leaves stdout empty, and the record type makes a
- * new member without an exit code a compile error rather than a review miss.
+ * name an exercised path, and the record type makes a new member without an
+ * exit code a compile error rather than a review miss.
+ *
+ * Every one of these leaves stdout empty except `CredentialTruncated`, which
+ * exists to report the one case where it cannot be: bytes already went out and
+ * cannot be recalled. `STDOUT_EMPTY_ON_EXIT` names that split so the taxonomy
+ * test asserts it rather than assuming it.
  */
 export const EXIT_CODES: Record<CredentialPrintErrorCode, number> = {
 	Usage: 1,
@@ -61,7 +67,13 @@ export const EXIT_CODES: Record<CredentialPrintErrorCode, number> = {
 	MinValidityUnreachable: 6,
 	OAuthUnavailable: 7,
 	CredentialNotEmitted: 8,
+	CredentialTruncated: 9,
 };
+
+/** The codes whose contract is an empty stdout. See `EXIT_CODES`. */
+export const STDOUT_EMPTY_ON_EXIT: ReadonlySet<CredentialPrintErrorCode> = new Set(
+	(Object.keys(EXIT_CODES) as CredentialPrintErrorCode[]).filter((code) => code !== "CredentialTruncated"),
+);
 
 export class CredentialPrintError extends Error {
 	readonly code: CredentialPrintErrorCode;
@@ -129,25 +141,27 @@ export class Secret {
  * receives a `Secret` it cannot read, print, or serialize, so a second export
  * path cannot be grafted on without moving this function.
  *
- * A failed payload write is reported as a failure exactly when nothing was
- * emitted. `writeRawStdoutOnce` answers that from the stream rather than from
- * the shape of the error: the write call throwing, or a callback error with
- * `bytesWritten` unmoved, means stdout is provably empty, and that alone is
- * `CredentialNotEmitted` (exit 8) — which is what every non-zero exit from this
- * door promises. It must not fall through to the caller's credential-resolution
- * catch, which would report exit 2.
+ * A failed payload write is answered from the stream rather than from the shape
+ * of the error, because `bytesWritten` says how much of the credential actually
+ * left and the right report differs for each amount.
  *
- * A callback error after `bytesWritten` advanced is the opposite case: part or
- * all of the credential is already on stdout. That is reported on stderr with
- * the exit code left at 0, for the same reason the trailing drain is. Reading
- * the counter is what keeps those two apart; guessing either way trades one
- * broken promise for the other.
+ * Nothing left — the write call threw, or the callback failed with the counter
+ * unmoved — is `CredentialNotEmitted` (exit 8) with stdout provably empty,
+ * which is what that exit promises. It must not fall through to the caller's
+ * credential-resolution catch, which would report exit 2.
  *
- * Once that write resolves the credential is on stdout and the command has
- * succeeded. A failure of the trailing drain is therefore reported on stderr
- * and the exit code is left at 0: a non-zero exit carrying bytes on stdout is
- * the single thing this door must never produce, and a broken reader is not a
- * reason to break that.
+ * All of it left and the failure came after: the caller holds the credential it
+ * asked for, so this is reported on stderr with the exit code left at 0, for
+ * the same reason the trailing drain is. A non-zero exit over a stream carrying
+ * a whole credential is the thing this door never produces.
+ *
+ * Part of it left is neither. Those bytes cannot be recalled, so stdout is not
+ * empty and cannot be made empty; but they are a fragment, not a credential,
+ * and reporting success over them would hand a caller a truncated secret it
+ * cannot tell from a whole one. That case gets `CredentialTruncated` (exit 9),
+ * the one code in this taxonomy whose contract is *not* an empty stdout —
+ * stated as such in `EXIT_CODES` and asserted through `STDOUT_EMPTY_ON_EXIT`,
+ * rather than left for a caller to discover.
  *
  * `test/credential-print.test.ts` asserts that chokepoint against the whole of
  * `packages/coding-agent/src`.
@@ -158,14 +172,20 @@ export async function emitCredential(secret: Secret): Promise<void> {
 	try {
 		await writeRawStdoutOnce(payload);
 	} catch (error) {
-		if (error instanceof RawStdoutWriteError && error.emitted) {
-			// Bytes are on stdout. Exiting non-zero here would be a non-zero exit
-			// over a stream carrying a credential, which is the one thing this door
-			// never does.
+		if (error instanceof RawStdoutWriteError && error.emitted === "all") {
+			// The caller holds the whole credential. Exiting non-zero here would be
+			// a non-zero exit over a stream carrying it, which this door never does.
 			console.error(
 				`Warning: the credential reached stdout but the write did not complete cleanly: ${error.message}`,
 			);
 			return;
+		}
+		if (error instanceof RawStdoutWriteError && error.emitted === "partial") {
+			throw new CredentialPrintError(
+				"CredentialTruncated",
+				"Only part of the credential reached stdout; discard the output, it is not a usable credential",
+				{ cause: error },
+			);
 		}
 		throw new CredentialPrintError(
 			"CredentialNotEmitted",

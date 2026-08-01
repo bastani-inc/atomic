@@ -27,6 +27,7 @@ import {
 	parseCredentialPrintCommand,
 	resolveCredentialForPrint,
 	Secret,
+	STDOUT_EMPTY_ON_EXIT,
 	toCredentialPrintError,
 	validateCredentialPrintArgs,
 } from "../src/cli/credential-print.ts";
@@ -275,7 +276,12 @@ describe("emitCredential", () => {
 	function withStubbedStdout<T>(
 		onWrite: (text: string) => Error | undefined,
 		body: (written: string[]) => Promise<T>,
-		options: { onSubmit?: (text: string) => Error | undefined; emitOnCallbackError?: boolean } = {},
+		options: {
+			onSubmit?: (text: string) => Error | undefined;
+			emitOnCallbackError?: boolean;
+			/** Bytes the stream flushed before failing, for the truncated case. */
+			flushedOnCallbackError?: number;
+		} = {},
 	): Promise<T> {
 		const original = process.stdout.write;
 		const originalBytesWritten = Object.getOwnPropertyDescriptor(process.stdout, "bytesWritten");
@@ -298,6 +304,10 @@ describe("emitCredential", () => {
 			if (!failure || options.emitOnCallbackError) {
 				written.push(text);
 				bytesWritten += Buffer.byteLength(text);
+			} else if (options.flushedOnCallbackError !== undefined && text.length > 0) {
+				// A fragment reached the reader before the stream failed.
+				written.push(text.slice(0, options.flushedOnCallbackError));
+				bytesWritten += options.flushedOnCallbackError;
 			}
 			done?.(failure ?? null);
 			return true;
@@ -345,10 +355,11 @@ describe("emitCredential", () => {
 
 	/**
 	 * The taxonomy, walked rather than sampled. Adding a code to `EXIT_CODES`
-	 * without an exercised path here fails the first assertion; adding one whose
-	 * path puts bytes on stdout fails the second.
+	 * without an exercised path here fails the first assertion; adding one that
+	 * puts bytes on stdout without declaring itself in `STDOUT_EMPTY_ON_EXIT`
+	 * fails the second.
 	 */
-	it("every declared exit code leaves stdout empty", async () => {
+	it("every declared exit code keeps the stdout contract it declares", async () => {
 		const oauthFailure = (message: string) =>
 			runtimeStub({
 				credentials: [{ providerId: "anthropic", type: "oauth" }],
@@ -362,6 +373,7 @@ describe("emitCredential", () => {
 			code: CredentialPrintErrorCode;
 			onWrite?: (text: string) => Error | undefined;
 			onSubmit?: (text: string) => Error | undefined;
+			flushedOnCallbackError?: number;
 			run: () => Promise<unknown>;
 		}> = [
 			{
@@ -438,6 +450,14 @@ describe("emitCredential", () => {
 				onSubmit: (text) => (text.length > 0 ? new Error("stdout destroyed before the write") : undefined),
 				run: () => emitCredential(new Secret("sk-not-emitted")),
 			},
+			{
+				code: "CredentialTruncated",
+				// The stream flushed a fragment and then failed. Those bytes cannot be
+				// recalled, so this is the one code whose stdout is not empty.
+				onWrite: (text) => (text.length > 0 ? new Error("EPIPE after a partial flush") : undefined),
+				flushedOnCallbackError: 3,
+				run: () => emitCredential(new Secret("sk-truncated-value")),
+			},
 		];
 
 		// The reviewed taxonomy, restated so a new member is a failure here
@@ -451,12 +471,20 @@ describe("emitCredential", () => {
 			MinValidityUnreachable: 6,
 			OAuthUnavailable: 7,
 			CredentialNotEmitted: 8,
+			CredentialTruncated: 9,
 		});
 
 		const nonZero = Object.entries(EXIT_CODES).filter(([, exitCode]) => exitCode !== 0);
 		expect(cases.map(({ code }) => code).sort()).toEqual(nonZero.map(([code]) => code).sort());
+		// Exactly one code is allowed to leave bytes behind, and it is the one whose
+		// whole purpose is reporting that they escaped.
+		expect([...STDOUT_EMPTY_ON_EXIT].sort()).toEqual(
+			Object.keys(EXIT_CODES)
+				.filter((code) => code !== "CredentialTruncated")
+				.sort(),
+		);
 
-		for (const { code, onWrite, onSubmit, run } of cases) {
+		for (const { code, onWrite, onSubmit, flushedOnCallbackError, run } of cases) {
 			await withStubbedStdout(
 				onWrite ?? (() => undefined),
 				async (written) => {
@@ -470,10 +498,18 @@ describe("emitCredential", () => {
 					expect(failure, `${code} did not fail`).toBeInstanceOf(CredentialPrintError);
 					expect(failure?.code).toBe(code);
 					expect(failure?.exitCode).toBe(EXIT_CODES[code]);
-					// The invariant: a non-zero exit means nothing reached stdout.
-					expect(written, `${code} wrote to stdout`).toEqual([]);
+					if (STDOUT_EMPTY_ON_EXIT.has(code)) {
+						// The invariant these codes promise: nothing reached stdout.
+						expect(written, `${code} wrote to stdout`).toEqual([]);
+					} else {
+						// And the one that cannot: it reports bytes that already left.
+						expect(written.join(""), `${code} claimed a truncation with nothing written`).not.toBe("");
+					}
 				},
-				onSubmit ? { onSubmit } : {},
+				{
+					...(onSubmit ? { onSubmit } : {}),
+					...(flushedOnCallbackError !== undefined ? { flushedOnCallbackError } : {}),
+				},
 			);
 		}
 	});

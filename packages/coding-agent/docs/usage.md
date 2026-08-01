@@ -197,10 +197,11 @@ Print one configured credential for an external client — a proxy, a script, or
 | `6` | The provider cannot mint a token that lives as long as `--min-expiry` |
 | `7` | The provider's OAuth credential could not be used — no claim is made about the stored credential |
 | `8` | The credential could not be written; nothing was emitted |
+| `9` | Only part of the credential was written; discard the output |
 
 Exit `5` is reported only for a refresh that itself failed, which happens before anything is persisted; that is the only exit that promises your stored credential is untouched. Any other OAuth failure exits `7` and makes no such promise.
 
-Stdout is empty on every non-zero exit. Once the credential reaches stdout the command has succeeded: if the stream then fails to drain — a reader that closed the pipe, for example — that is reported on stderr and the exit code stays `0`, because a non-zero exit here would contradict the bytes the caller already holds. See [Security](/security#credential-export) before wiring this into a script.
+Stdout is empty on every non-zero exit but one. Once the credential reaches stdout the command has succeeded: if the stream then fails to drain — a reader that closed the pipe, for example — that is reported on stderr and the exit code stays `0`, because a non-zero exit here would contradict the bytes the caller already holds. The exception is exit `9`, which reports that only part of the credential was written before the stream failed; those bytes cannot be recalled, so stdout is not empty, and the output is a fragment to discard rather than a credential to use. See [Security](/security#credential-export) before wiring this into a script.
 
 ### Modes
 
