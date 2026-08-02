@@ -134,12 +134,7 @@ export class StageSessionController {
 	}
 
 	lastAssistantText(fallback: string | undefined): string | undefined {
-		return lastAssistantTextFromSession(
-			this.session,
-			fallback,
-			this.terminatingToolCallIds,
-			this.lastPromptStartIndex,
-		);
+		return lastAssistantTextFromSession(this.session, fallback, this.terminatingToolCallIds);
 	}
 
 	subscribe(listener: (event: StageSessionEvent) => void): () => void {

@@ -6,10 +6,20 @@ import type { AgentSession } from "@bastani/atomic";
 import { test } from "vitest";
 import { finalizePromptOutput } from "../../packages/workflows/src/runs/foreground/stage-runner-output.js";
 
+/**
+ * The stage-output receipt reports facts only.
+ *
+ * An earlier revision tried to classify a non-empty artifact as a "pointer" or
+ * an "acknowledgement" through byte-size ratios and a bank of English-phrasing
+ * regexes. That is an inference about intent, it cannot be made correctly, and
+ * it produced false alarms on short genuine deliverables while staying silent
+ * on the failure that mattered. The companion transcript named in every receipt
+ * is the recovery path instead.
+ */
+
 async function runOutputCase(
 	text: string | ((outputPath: string) => string),
 	messages?: AgentSession["messages"],
-	promptStartIndex?: number,
 ): Promise<{ receipt: string; outputPath: string; fullOutput: string; transcriptPath?: string }> {
 	const directory = await mkdtemp(join(tmpdir(), "stage-runner-output-degenerate-"));
 	const outputPath = join(directory, "report.md");
@@ -20,7 +30,6 @@ async function runOutputCase(
 		process.cwd(),
 		`degenerate-test-${Date.now()}-${Math.random()}`,
 		messages,
-		promptStartIndex,
 	);
 	const transcriptMatch = receipt.match(/Transcript saved to: ([^ ]+) \(/);
 	return {
@@ -36,148 +45,44 @@ async function cleanupOutputCase(result: { outputPath: string; transcriptPath?: 
 	if (result.transcriptPath !== undefined) await rm(result.transcriptPath, { force: true });
 }
 
-test("warns when an artifact is empty or only points to its own output path", async () => {
-	for (const text of ["", "   "]) {
-		const result = await runOutputCase(text);
-		try {
-			assert.match(result.receipt, /artifact is empty/);
-			assert.equal(await readFile(result.outputPath, "utf8"), text);
-		} finally {
-			await cleanupOutputCase(result);
-		}
-	}
-	const pointers: readonly (string | ((outputPath: string) => string))[] = [
-		"report.md",
-		(outputPath) => outputPath,
-		(outputPath) => `See ${outputPath}`,
-		"See the report at report.md",
-		"Research complete, saved to report.md",
-		(outputPath) => `Report saved to ${outputPath}`,
-		"Done. report.md",
-		"The report is at report.md",
-		"Output written to report.md",
-		"Wrote report.md",
-		"Saved: report.md",
-		"I have written the research report to report.md.",
-		"The full research report is now available at report.md - please read it.",
-	];
-	for (const text of pointers) {
-		const result = await runOutputCase(text);
-		try {
-			assert.match(result.receipt, /only points to its own output path/, result.fullOutput);
-			assert.equal(await readFile(result.outputPath, "utf8"), result.fullOutput);
-		} finally {
-			await cleanupOutputCase(result);
-		}
-	}
-});
-
-test("does not warn when genuine output mentions its own filename", async () => {
-	for (const text of [
-		"Report summary: report.md contains the approved findings and validation evidence.",
-		"report.md: approved findings, tests passed, no blockers.",
-		"Finding: report.md records the retry-race fix; all 12 focused tests pass.",
-		"# Findings\n\nThe report path is report.md for downstream readers.\n\nThe retry race is fixed and validated.",
-	]) {
-		const result = await runOutputCase(text);
-		try {
-			assert.doesNotMatch(result.receipt, /WARNING:/);
-			assert.equal(await readFile(result.outputPath, "utf8"), text);
-		} finally {
-			await cleanupOutputCase(result);
-		}
-	}
-});
-
-test("does not warn when the only passed-over post-admission content is a terse acknowledgement", async () => {
-	const stageOwn = "OWN".padEnd(100, ".");
-	const acknowledgement = "ACK".padEnd(25, ".");
-	const messages = [
-		{ role: "assistant", content: [{ type: "text", text: stageOwn }] },
-		{ role: "custom", stageAdmissionKey: "subagent:1", content: "external result" },
-		{ role: "assistant", content: [{ type: "text", text: acknowledgement }] },
-	] as AgentSession["messages"];
-	const result = await runOutputCase(stageOwn, messages);
+test("an empty artifact is reported as empty", async () => {
+	const result = await runOutputCase("   \n  ");
 	try {
-		assert.doesNotMatch(result.receipt, /post-admission assistant content was discarded/);
-		assert.equal(await readFile(result.outputPath, "utf8"), stageOwn);
+		assert.match(result.receipt, /WARNING: the stage artifact is empty/);
+		assert.match(result.receipt, /Transcript saved to: /);
 	} finally {
 		await cleanupOutputCase(result);
 	}
 });
 
-test("warns whenever plausibly substantive post-admission content is passed over", async () => {
-	for (const postAdmissionBytes of [26, 99, 100, 101, 149]) {
-		const stageOwn = "OWN".padEnd(100, ".");
-		const postAdmission = "POST".padEnd(postAdmissionBytes, ".");
-		const messages = [
-			{ role: "assistant", content: [{ type: "text", text: stageOwn }] },
-			{ role: "custom", stageAdmissionKey: "subagent:1", content: "external result" },
-			{ role: "assistant", content: [{ type: "text", text: postAdmission }] },
-		] as AgentSession["messages"];
-		const result = await runOutputCase(stageOwn, messages);
-		try {
-			assert.match(
-				result.receipt,
-				/WARNING: the stage's own pre-admission turn was persisted; post-admission assistant content was discarded\./,
-			);
-			assert.ok(result.transcriptPath);
-			assert.match(result.receipt, new RegExp(`Search the companion transcript at ${result.transcriptPath}`));
-			assert.match(await readFile(result.transcriptPath, "utf8"), new RegExp(postAdmission));
-		} finally {
-			await cleanupOutputCase(result);
-		}
-	}
-});
-
-test("uses recency above the floor and warns when the fallback passes over substantive text", async () => {
-	const verboseAcknowledgement = "ACK".padEnd(30_000, ".");
-	const shortDeliverable = "short but real deliverable";
-	const messages = [
-		{ role: "custom", stageAdmissionKey: "subagent:1", content: "external result" },
-		{ role: "assistant", content: [{ type: "text", text: verboseAcknowledgement }] },
-		{ role: "assistant", content: [{ type: "text", text: shortDeliverable }] },
-	] as AgentSession["messages"];
-	const result = await runOutputCase(shortDeliverable, messages, 0);
+test("a non-empty artifact is never classified, however short", async () => {
+	const result = await runOutputCase("ok");
 	try {
-		assert.match(
-			result.receipt,
-			/WARNING: no stage-own assistant text existed before the admission; a post-admission assistant turn was selected and other post-admission assistant content was discarded\./,
-		);
-		assert.doesNotMatch(result.receipt, /stage's own .* was persisted/);
-		assert.ok(result.transcriptPath);
-		const transcript = await readFile(result.transcriptPath, "utf8");
-		assert.match(transcript, /ACK/);
-		assert.match(transcript, /short but real deliverable/);
-		assert.equal(await readFile(result.outputPath, "utf8"), shortDeliverable);
+		assert.doesNotMatch(result.receipt, /WARNING/);
+		assert.equal(await readFile(result.outputPath, "utf8"), "ok");
 	} finally {
 		await cleanupOutputCase(result);
 	}
 });
 
-test("scopes override warnings to the current prompt window", async () => {
-	const firstAnswer = "P1 answer";
-	const firstAcknowledgement = "P1 ack";
-	const secondIntroduction = "P2 intro".padEnd(120, ".");
-	const report = "REAL REPORT".padEnd(21_000, ".");
-	const messages = [
-		{ role: "assistant", content: [{ type: "text", text: firstAnswer }] },
-		{ role: "custom", stageAdmissionKey: "subagent:1", content: "first external result" },
-		{ role: "assistant", content: [{ type: "text", text: firstAcknowledgement }] },
-		{ role: "assistant", content: [{ type: "text", text: secondIntroduction }] },
-		{ role: "custom", stageAdmissionKey: "subagent:2", content: "second external result" },
-		{ role: "assistant", content: [{ type: "text", text: report }] },
-	] as AgentSession["messages"];
-	const result = await runOutputCase(report, messages, 3);
+test("an artifact that only names its own output path is not treated as degenerate", async () => {
+	// Previously a regex bank flagged this shape. Judging it requires knowing what
+	// the author meant, so the receipt stays silent and points at the transcript.
+	const result = await runOutputCase((outputPath) => `Research complete, saved to ${outputPath}`);
 	try {
-		assert.match(
-			result.receipt,
-			/WARNING: a substantially larger post-admission assistant turn was persisted; the pre-admission assistant turn was discarded\./,
-		);
-		assert.ok(result.transcriptPath);
-		assert.match(result.receipt, new RegExp(`Search the companion transcript at ${result.transcriptPath}`));
-		assert.match(await readFile(result.transcriptPath, "utf8"), /REAL REPORT/);
-		assert.equal(await readFile(result.outputPath, "utf8"), report);
+		assert.doesNotMatch(result.receipt, /WARNING/);
+		assert.match(result.receipt, /Transcript saved to: /);
+	} finally {
+		await cleanupOutputCase(result);
+	}
+});
+
+test("every receipt names the artifact and the transcript with its access pattern", async () => {
+	const result = await runOutputCase("# Report\n\nfindings\n");
+	try {
+		assert.match(result.receipt, /Output saved to: /);
+		assert.match(result.receipt, /Transcript saved to: /);
+		assert.match(result.receipt, /Search it with rg, read narrow line ranges, and do not read it whole\./);
 	} finally {
 		await cleanupOutputCase(result);
 	}

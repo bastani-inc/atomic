@@ -4,7 +4,6 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentSession, PromptOptions } from "@bastani/atomic";
 import type { StageOutputOptions, StagePromptOptions, WorkflowMaxOutput } from "../../shared/types.js";
 import { ensureWorkflowArtifactRunDirectory, workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
-import { nominatedAssistantOutput } from "./stage-runner-messages.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
 const DEFAULT_MAX_OUTPUT_LINES = 5000;
@@ -125,29 +124,6 @@ function renderTranscript(messages: AgentSession["messages"] | undefined, fallba
 	return lines.join("\n");
 }
 
-function discardedPostAdmissionWarning(
-	fullOutput: string,
-	messages: AgentSession["messages"] | undefined,
-	transcriptFile: string,
-	promptStartIndex?: number,
-): string | undefined {
-	if (messages === undefined) return undefined;
-	const nomination = nominatedAssistantOutput(messages, promptStartIndex);
-	if (
-		nomination === undefined ||
-		nomination.text !== fullOutput.trim() ||
-		!nomination.discardedPlausiblySubstantiveText
-	)
-		return undefined;
-	const selection =
-		nomination.source === "pre-admission"
-			? "the stage's own pre-admission turn was persisted; post-admission assistant content was discarded"
-			: nomination.source === "post-admission-fallback"
-				? "no stage-own assistant text existed before the admission; a post-admission assistant turn was selected and other post-admission assistant content was discarded"
-				: "a substantially larger post-admission assistant turn was persisted; the pre-admission assistant turn was discarded";
-	return `WARNING: ${selection}. Search the companion transcript at ${transcriptFile}.`;
-}
-
 function savedOutputReference(
 	outputPath: string,
 	fullOutput: string,
@@ -186,44 +162,17 @@ function resolveOutputPath(
 	return resolve(baseCwd, output);
 }
 
-function degenerateWarning(fullOutput: string, outputPath: string): string | undefined {
-	const trimmed = fullOutput.trim();
-	if (trimmed.length === 0)
-		return "WARNING: the nominated stage artifact is empty; inspect the companion transcript for the failed turn.";
-	const normalized = trimmed.replaceAll("\\", "/").replace(/\s+/g, " ");
-	const normalizedPath = outputPath.replaceAll("\\", "/");
-	const mentionsOutputPath = normalized.includes(normalizedPath) || normalized.includes(basename(normalizedPath));
-	if (!mentionsOutputPath || trimmed.includes("\n")) return undefined;
-	const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const pathReference = `(?:${escapeRegex(normalizedPath)}|${escapeRegex(basename(normalizedPath))})`;
-	const pointerOnly =
-		new RegExp(`^${pathReference}$`, "i").test(normalized) ||
-		new RegExp(`^(?:wrote|saved)[.!,:;]?\\s+${pathReference}$`, "i").test(normalized) ||
-		new RegExp(
-			`^i have (?:written|saved) (?:the\\s+)?(?:research\\s+)?(?:report|output|artifact|results?) (?:to|at|in) ${pathReference}[.]?$`,
-			"i",
-		).test(normalized) ||
-		new RegExp(
-			`^(?:the\\s+)?(?:full\\s+)?(?:research\\s+)?(?:report|output|artifact|results?) is now available at ${pathReference}(?:\\s+-\\s+please read it)?[.]?$`,
-			"i",
-		).test(normalized) ||
-		/^(?:see|refer to|read|find|review)\s+(?:the\s+)?(?:output|artifact|report|results?)?(?:\s+(?:at|in|from))?\s*[^ ]+$/i.test(
-			normalized,
-		) ||
-		/^(?:research|report|output|artifact)\s+complete,\s+saved\s+to\s+[^ ]+$/i.test(normalized) ||
-		/^(?:output|artifact|report|research)?\s*(?:complete|saved|written|available)(?:\s+(?:to|at|in))?\s*[^ ]+$/i.test(
-			normalized,
-		) ||
-		new RegExp(
-			`^(?:done|complete|finished|ok|okay)[.!,:;]?\\s+(?:(?:the\\s+)?(?:output|artifact|report|results?)\\s+)?${pathReference}$`,
-			"i",
-		).test(normalized) ||
-		new RegExp(
-			`^(?:the\\s+)?(?:report|output|artifact|results?)\\s+(?:is|are)\\s+(?:at|in|from)\\s+${pathReference}$`,
-			"i",
-		).test(normalized);
-	return pointerOnly
-		? "WARNING: the nominated stage artifact only points to its own output path; inspect the companion transcript for the real work."
+/**
+ * Report only what can be observed, never what the text appears to mean.
+ *
+ * An empty artifact is a fact. Whether a non-empty artifact is "really" a
+ * pointer, an acknowledgement, or a deliverable is an inference this code
+ * cannot make, so it does not try: the companion transcript named in every
+ * receipt is the recovery path for anything that looks wrong to a reader.
+ */
+function degenerateWarning(fullOutput: string): string | undefined {
+	return fullOutput.trim().length === 0
+		? "WARNING: the stage artifact is empty; search the companion transcript for this stage's work."
 		: undefined;
 }
 export function splitPromptOptions(options: StagePromptOptions | undefined): {
@@ -271,7 +220,6 @@ export async function finalizePromptOutput(
 	runtimeCwd: string,
 	runId: string,
 	messages?: AgentSession["messages"],
-	promptStartIndex?: number,
 ): Promise<string> {
 	const outputPath = resolveOutputPath(outputOptions.output, runtimeCwd, outputOptions.cwd);
 	validatePromptOutputOptions(outputOptions);
@@ -302,8 +250,7 @@ export async function finalizePromptOutput(
 			transcriptError === undefined
 				? undefined
 				: `WARNING: companion transcript unavailable at ${transcriptFile}: ${transcriptError}`,
-			degenerateWarning(fullOutput, outputPath),
-			discardedPostAdmissionWarning(fullOutput, messages, transcriptFile, promptStartIndex),
+			degenerateWarning(fullOutput),
 		]
 			.filter((line): line is string => line !== undefined)
 			.join("\n") || undefined;

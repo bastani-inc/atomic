@@ -98,7 +98,6 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 					runtimeCwd(),
 					runId,
 					controller.currentSession?.messages,
-					controller.currentPromptStartIndex,
 				);
 				lastFinalizedOutput = lastAssistantText;
 				lastFinalizedMessageCount = controller.currentSession?.messages.length;
@@ -112,7 +111,6 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				runtimeCwd(),
 				runId,
 				controller.currentSession?.messages,
-				controller.currentPromptStartIndex,
 			);
 			lastFinalizedOutput = lastAssistantText;
 			lastFinalizedMessageCount = controller.currentSession?.messages.length;

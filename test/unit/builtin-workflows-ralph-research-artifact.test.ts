@@ -100,13 +100,18 @@ describe("ralph research artifact ownership", () => {
 			);
 			assert.match(
 				prompt,
-				/defaults to the last pre-admission assistant text[\s\S]*at least 26 UTF-8 bytes and 3:2 larger/,
-				`${stage} must describe the size-qualified post-admission override`,
+				/latest post-admission assistant turn at or above 26 UTF-8 bytes[\s\S]*latest qualifying turn is at least 3:2 larger/,
+				`${stage} must describe the recency-first, size-qualified post-admission override`,
 			);
 			assert.match(
 				prompt,
-				/without pre-admission text it uses the most recent post-admission candidate at that floor/,
+				/without pre-admission text, the latest qualifying turn is used, falling back to the latest non-empty post-admission turn/,
 				`${stage} must describe the no-pre-admission recency fallback`,
+			);
+			assert.match(
+				prompt,
+				/Receipts warn when a pre-admission selection discards any non-empty post-admission turn[\s\S]*no-pre-admission fallback discards another qualifying turn/,
+				`${stage} must describe every nomination warning condition`,
 			);
 			assert.match(
 				prompt,
