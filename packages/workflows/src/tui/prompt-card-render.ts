@@ -24,6 +24,8 @@ export interface PromptCardRenderOpts {
 	readonly identity?: PromptCardIdentity;
 	/** Maximum complete rows to emit. Below the six-row minimum, emits nothing. */
 	readonly maxRows?: number;
+	/** Wrapped question-row offset used by scrollable attached prompt surfaces. */
+	readonly messageOffset?: number;
 }
 
 export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: GraphTheme, width: number): string[] {
@@ -63,9 +65,10 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 	const borderColor = theme.border;
 	const bg = "";
 	const maxRows = opts.maxRows === undefined ? undefined : Math.max(0, Math.floor(opts.maxRows));
+	const messageOffset = Math.max(0, Math.floor(opts.messageOffset ?? 0));
 	if (maxRows !== undefined && maxRows < MIN_COMPLETE_PROMPT_ROWS) return [];
 	if (opts.identity === undefined) {
-		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows);
+		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows, messageOffset);
 	}
 
 	const banner = renderPromptIdentityBanner(opts.identity, theme, width);
@@ -74,10 +77,19 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 	// still hold the normally spaced prompt; otherwise devote every row to the
 	// complete interactive surface.
 	if (maxRows !== undefined && maxRows < banner.length + LEGACY_PROMPT_ROWS) {
-		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows);
+		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows, messageOffset);
 	}
 	const promptBudget = maxRows === undefined ? undefined : maxRows - banner.length;
-	const promptLines = renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, promptBudget);
+	const promptLines = renderPromptBodyBlock(
+		state,
+		theme,
+		innerWidth,
+		opts.cursorOn,
+		borderColor,
+		bg,
+		promptBudget,
+		messageOffset,
+	);
 	return [
 		...banner,
 		...promptLines.map((line, index) => (index === 0 ? makeBorderTop(borderColor, "", theme, innerWidth, bg) : line)),
@@ -91,7 +103,8 @@ function renderPromptBodyBlock(
 	cursorOn: boolean,
 	borderColor: string,
 	bg: string,
-	maxRows?: number,
+	maxRows: number | undefined,
+	messageOffset: number,
 ): string[] {
 	if (maxRows !== undefined && maxRows < MIN_COMPLETE_PROMPT_ROWS) return [];
 	const messageRows = wrapText(state.prompt.message, innerWidth - 4);
@@ -120,7 +133,7 @@ function renderPromptBodyBlock(
 	const lines: string[] = [];
 	lines.push(makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg));
 	if (normallySpaced) lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
-	for (const messageLine of messageRows.slice(0, messageCount)) {
+	for (const messageLine of messageRows.slice(messageOffset, messageOffset + messageCount)) {
 		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${paint(messageLine, theme.text)}`));
 	}
 	if (normallySpaced) lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));

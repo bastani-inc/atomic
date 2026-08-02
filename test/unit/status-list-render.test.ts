@@ -163,8 +163,8 @@ describe("renderStatusList — populated", () => {
 		);
 		assert.match(out, /↑ 1 blocked/);
 
-		assert.match(out, /↑\s+blk123uuid/);
-		assert.match(out, /auth-blocked\s+↑ blocked/);
+		assert.match(out, new RegExp(`${statusIcon("blocked")}\\s+blk123uuid`));
+		assert.match(out, new RegExp(`auth-blocked\\s+${statusIcon("blocked")} blocked`));
 		assert.doesNotMatch(out, /✓ 1/);
 		assert.doesNotMatch(out, /✓ completed/);
 	});
@@ -189,8 +189,8 @@ describe("renderStatusList — populated", () => {
 		);
 		assert.match(out, /↑ 1 blocked/);
 
-		assert.match(out, /↑\s+old123uuid/);
-		assert.match(out, /adversarial-verification\s+↑ blocked/);
+		assert.match(out, new RegExp(`${statusIcon("blocked")}\\s+old123uuid`));
+		assert.match(out, new RegExp(`adversarial-verification\\s+${statusIcon("blocked")} blocked`));
 		assert.doesNotMatch(out, /✓ 1/);
 		assert.doesNotMatch(out, /✓ completed/);
 	});
@@ -225,8 +225,8 @@ describe("renderStatusList — populated", () => {
 		);
 		assert.match(out, /↑ 1 blocked/);
 
-		assert.match(out, /↑\s+auth00uuid/);
-		assert.match(out, /adversarial-verification\s+↑ blocked/);
+		assert.match(out, new RegExp(`${statusIcon("blocked")}\\s+auth00uuid`));
+		assert.match(out, new RegExp(`adversarial-verification\\s+${statusIcon("blocked")} blocked`));
 		assert.doesNotMatch(out, /✓ 1/);
 		assert.doesNotMatch(out, /✓ completed/);
 	});

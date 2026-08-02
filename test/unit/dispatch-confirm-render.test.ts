@@ -4,7 +4,7 @@
  *
  * Visual contract — ui/dispatch-mockup.html §1 (full-id identity rows):
  *  - One rounded dispatched panel with the full UUID on its own identity row.
- *  - Workflow name and `● running` status follow on the next row.
+ *  - Workflow name and running status follow on the next row.
  *  - Inputs render in the body and the connect hint keeps the complete UUID.
  *  - Inputs wrap to a second body row only when row 1's interior cannot
  *    hold them; the body row uses the same overflow rules.
@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { renderDispatchConfirm } from "../../packages/workflows/src/tui/dispatch-confirm.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -57,7 +58,10 @@ describe("renderDispatchConfirm — themed", () => {
 
 		assert.match(plain, /^╭ DISPATCHED /);
 		assert.doesNotMatch(plain, /\brun id\b/);
-		assert.match(plain, /● {2}fan-out-and-synthesize {2}● running/);
+		assert.match(
+			plain,
+			new RegExp(`${statusIcon("running")} {2}fan-out-and-synthesize {2}${statusIcon("running")} running`),
+		);
 
 		// Themed mode emits ANSI escapes.
 		assert.match(out, /\x1b\[/);
@@ -198,7 +202,7 @@ describe("renderDispatchConfirm — plain", () => {
 
 		// Plain identity rows carry the full run id, workflow name, and status.
 		assert.match(out, /abc12345-aaaa-bbbb-cccc-dddddddddddd/);
-		assert.match(out, /● {2}tournament {2}● running/);
+		assert.match(out, new RegExp(`${statusIcon("running")} {2}tournament {2}${statusIcon("running")} running`));
 		assert.match(out, /● running/);
 
 		// Inputs present (inline on wide terminal).
@@ -226,7 +230,7 @@ describe("renderDispatchConfirm — plain", () => {
 			width: 100,
 		});
 		assert.match(out, /5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
-		assert.match(out, /● {2}primer {2}● running/);
+		assert.match(out, new RegExp(`${statusIcon("running")} {2}primer {2}${statusIcon("running")} running`));
 		assert.match(out, /▸ \/workflow connect 5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 	});
 });

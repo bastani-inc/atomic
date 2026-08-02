@@ -119,7 +119,7 @@ describe("renderNodeCard — queued-message badge", () => {
 		assert.equal(lines.length, NODE_H);
 		for (const line of plainLines) assert.equal(line.length, NODE_W);
 		assert.match(rendered, /publish-child/);
-		assert.match(rendered, /● running/);
+		assert.match(rendered, new RegExp(`${statusIcon("running")} running`));
 		assert.match(rendered, /✉ 2 queued/);
 		assert.equal(renderedRunId, runId);
 		assert.doesNotMatch(rendered, /…/);
@@ -536,7 +536,13 @@ describe("renderNodeCard — metadata line", () => {
 			assert.ok(interior.includes(runId), `${label}: ${interior}`);
 			assert.ok(interior.endsWith(suffix), `${label}: ${interior}`);
 			assert.match(rendered, /publish-child/, label);
-			assert.match(rendered, stage.status === "running" ? /● running/ : /✓ complete/, label);
+			assert.match(
+				rendered,
+				new RegExp(
+					stage.status === "running" ? `${statusIcon("running")} running` : `${statusIcon("completed")} complete`,
+				),
+				label,
+			);
 			assert.doesNotMatch(rendered, /…/, label);
 		}
 	});

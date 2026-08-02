@@ -212,16 +212,28 @@ export function renderPromptBody(ctx: StageChatViewContext, width: number, budge
 	}
 
 	const state = ctx.promptState;
-	const lines = state
-		? renderPromptCard({
-				state,
-				theme: ctx.theme,
-				width,
-				cursorOn: ctx.focused,
-				identity: { runId: ctx.runId, name: ctx.workflowName },
-			})
-		: [];
-	return fitPromptBodyLines(ctx, embedOrchestratorReturnHintInWidget(ctx, lines, width), width, budget);
+	if (!state) return fitPromptBodyLines(ctx, [], width, budget);
+	const cardOpts = {
+		state,
+		theme: ctx.theme,
+		width,
+		cursorOn: ctx.focused,
+		identity: { runId: ctx.runId, name: ctx.workflowName },
+	};
+	const scrollRows = renderPromptCard(cardOpts).length;
+	const lines = renderPromptCard({
+		...cardOpts,
+		maxRows: budget,
+		messageOffset: ctx.promptScrollOffset,
+	});
+	return fitPromptBodyLines(
+		ctx,
+		embedOrchestratorReturnHintInWidget(ctx, lines, width),
+		width,
+		budget,
+		lines.length === 0 ? 0 : scrollRows,
+		true,
+	);
 }
 
 function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, budget: number): string[] | null {
@@ -300,10 +312,13 @@ export function fitPromptBodyLines(
 	lines: readonly string[],
 	width: number,
 	budget: number,
+	scrollRows = lines.length,
+	scrollApplied = false,
 ): string[] {
-	ctx.promptMaxScroll = Math.max(0, lines.length - budget);
+	ctx.promptMaxScroll = Math.max(0, scrollRows - budget);
 	ctx.promptScrollOffset = Math.max(0, Math.min(ctx.promptScrollOffset, ctx.promptMaxScroll));
-	const framed = lines.slice(ctx.promptScrollOffset, ctx.promptScrollOffset + budget);
+	const start = scrollApplied ? 0 : ctx.promptScrollOffset;
+	const framed = lines.slice(start, start + budget);
 	while (framed.length < budget) framed.push(blankLine(width));
 	return framed;
 }

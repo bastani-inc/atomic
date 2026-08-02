@@ -21,6 +21,7 @@ import type { WorkflowToolResult } from "../../packages/workflows/src/extension/
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import type { StageAdapters, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { createStore } from "../../packages/workflows/src/shared/store.js";
+import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 
 // ---------------------------------------------------------------------------
@@ -121,7 +122,7 @@ describe("renderResult — run variant", () => {
 		const plain = out.replace(/\u001b\[[0-9;]*m/g, "");
 		assert.ok(plain.includes(runId));
 		assert.ok(plain.includes("hello-world"));
-		assert.ok(plain.includes("● running"));
+		assert.ok(plain.includes(`${statusIcon("running")} running`));
 		assert.ok(plain.includes(`/workflow connect ${runId}`));
 	});
 
