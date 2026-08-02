@@ -27,6 +27,7 @@ import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunct
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 import {
+	createSessionPickerResumeCandidateCache,
 	createSessionPickerState,
 	handleSessionPickerInput,
 	renderSessionPicker,
@@ -79,6 +80,8 @@ export function openSessionPicker(
 		const state = createSessionPickerState();
 		let settled = false;
 		let unsubscribe: (() => void) | null = null;
+		let currentSnapshot = store.snapshot();
+		const resumeCandidateCache = createSessionPickerResumeCandidateCache();
 
 		const factory = (
 			tui: PiCustomOverlayFactoryTui,
@@ -96,14 +99,28 @@ export function openSessionPicker(
 			};
 			// Re-render on store changes so newly-started runs appear and
 			// status icons refresh without the user having to press a key.
-			unsubscribe = store.subscribe(() => tui.requestRender?.());
+			const selectRows = (): ReturnType<typeof selectRunsForPicker> => {
+				const resumeCandidateLookup = intent === "resume" ? resumeCandidateCache(currentSnapshot) : undefined;
+				return selectRunsForPicker(
+					currentSnapshot.runs,
+					state.query,
+					state.includeAll,
+					Date.now(),
+					intent,
+					resumeCandidateLookup,
+				);
+			};
+			unsubscribe = store.subscribe((snapshot) => {
+				currentSnapshot = snapshot;
+				tui.requestRender?.();
+			});
 			return {
 				render: (width: number) => {
-					const rows = selectRunsForPicker(store.runs(), state.query, state.includeAll, Date.now(), intent);
+					const rows = selectRows();
 					return renderSessionPicker({ width, theme, rows, state });
 				},
 				handleInput: (data: string) => {
-					const rows = selectRunsForPicker(store.runs(), state.query, state.includeAll, Date.now(), intent);
+					const rows = selectRows();
 					const action = handleSessionPickerInput(data, state, rows);
 					if (action.kind === "noop") {
 						tui.requestRender?.();

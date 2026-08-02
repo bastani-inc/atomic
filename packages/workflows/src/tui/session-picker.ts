@@ -19,9 +19,9 @@
  */
 
 import { keyText } from "@bastani/atomic";
-import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
@@ -57,6 +57,33 @@ export interface PickerRow {
 	readonly bucket: "active" | "terminal";
 }
 
+export type ResumeCandidateProbe = (run: RunSnapshot) => WorkflowRunResumeCandidate;
+export type ResumeCandidateLookup = (run: RunSnapshot) => WorkflowRunResumeCandidate;
+
+/** Cache resume probes for one store revision so render and input share the same filesystem/backend work. */
+export function createSessionPickerResumeCandidateCache(
+	probe: ResumeCandidateProbe = workflowRunResumeCandidate,
+): (snapshot: StoreSnapshot) => ResumeCandidateLookup {
+	let cachedVersion: number | undefined;
+	let cachedRuns: readonly RunSnapshot[] | undefined;
+	let candidates = new Map<string, WorkflowRunResumeCandidate>();
+
+	return (snapshot: StoreSnapshot): ResumeCandidateLookup => {
+		if (cachedVersion !== snapshot.version || cachedRuns !== snapshot.runs) {
+			cachedVersion = snapshot.version;
+			cachedRuns = snapshot.runs;
+			candidates = new Map();
+		}
+		return (run: RunSnapshot): WorkflowRunResumeCandidate => {
+			const cached = candidates.get(run.id);
+			if (cached !== undefined) return cached;
+			const candidate = probe(run);
+			candidates.set(run.id, candidate);
+			return candidate;
+		};
+	};
+}
+
 const RECENT_WINDOW_MS = 60 * 60 * 1000;
 /**
  * Slice runs into picker rows. Active = `endedAt === undefined`. Terminal =
@@ -70,6 +97,7 @@ export function selectRunsForPicker(
 	includeAll: boolean,
 	now: number = Date.now(),
 	intent: "connect" | "resume" | "pause" = "connect",
+	resumeCandidateLookup?: ResumeCandidateLookup,
 ): PickerRow[] {
 	const q = query.trim().toLowerCase();
 	const matches = (r: RunSnapshot): boolean => {
@@ -82,7 +110,10 @@ export function selectRunsForPicker(
 	for (const r of runs) {
 		if (!isTopLevelWorkflowRun(r)) continue;
 		if (!matches(r)) continue;
-		if (intent === "resume" && !isWorkflowRunResumable(workflowRunResumeCandidate(r))) continue;
+		if (intent === "resume") {
+			const candidate = resumeCandidateLookup?.(r) ?? workflowRunResumeCandidate(r);
+			if (!isWorkflowRunResumable(candidate)) continue;
+		}
 		const endedAt = r.endedAt;
 		if (endedAt === undefined) {
 			active.push({ run: r, bucket: "active" });

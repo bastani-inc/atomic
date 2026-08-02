@@ -8,11 +8,15 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
-import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.ts";
-import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
+import {
+	isWorkflowRunResumable,
+	type WorkflowRunResumeCandidate,
+} from "../../packages/workflows/src/durable/resume-eligibility.ts";
+import type { RunSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
+	createSessionPickerResumeCandidateCache,
 	createSessionPickerState,
 	handleSessionPickerInput,
 	renderSessionPicker,
@@ -134,6 +138,39 @@ test("resume picker production filtering hides a run whose referenced artifact d
 		else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("resume candidate probes are memoized across selections within one store revision", () => {
+	const runs = [
+		makeRun({ id: "cache-a", status: "paused", resumable: true }),
+		makeRun({ id: "cache-b", status: "paused", resumable: true }),
+	];
+	const snapshot: StoreSnapshot = { runs, notices: [], version: 7 };
+	let probeCount = 0;
+	const probe = (run: RunSnapshot): WorkflowRunResumeCandidate => {
+		probeCount += 1;
+		return {
+			status: run.status,
+			endedAt: run.endedAt,
+			resumable: run.resumable,
+			failureRecoverability: run.failureRecoverability,
+			exitReason: run.exitReason,
+			hasPausedState: true,
+			hasDurableCheckpoint: true,
+		};
+	};
+	const cache = createSessionPickerResumeCandidateCache(probe);
+	const now = 10_000;
+	const baseline = selectRunsForPicker(runs, "", true, now, "resume");
+	const first = selectRunsForPicker(runs, "", true, now, "resume", cache(snapshot));
+	const second = selectRunsForPicker(runs, "", true, now, "resume", cache(snapshot));
+
+	assert.equal(JSON.stringify(first), JSON.stringify(baseline));
+	assert.equal(JSON.stringify(second), JSON.stringify(baseline));
+	assert.equal(probeCount, runs.length, "render and input selections share one probe per run");
+
+	selectRunsForPicker(runs, "", true, now, "resume", cache({ ...snapshot, version: 8 }));
+	assert.equal(probeCount, runs.length * 2, "a store revision invalidates the cached probes");
 });
 
 test("connect picker remains broad while resume hides a completed run", () => {
