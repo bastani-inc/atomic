@@ -2,10 +2,10 @@
 #
 # Terminal evidence for workflow stage-output nomination and durable transcripts.
 #
-# Optional third argument selects the ordering; the original two-argument invocation remains trailing.
+# Optional arguments select model ordering and admission timing. Existing two- and three-argument invocations retain
+# their original timing: trailing defaults to settled; the other orderings default to streaming.
 # Usage: bash scripts/e2e/stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir>
-#   [trailing|mid-prompt|deliverable-after-admission]
-#
+#   [trailing|mid-prompt|deliverable-after-admission] [streaming|settled]
 # The caller creates a real tmux session; this script drives the REAL interactive
 # Atomic CLI in that pane and saves the final pane plus filesystem evidence under
 # <artifact-dir>. It never substitutes the workflow executor or the output helper.
@@ -28,8 +28,8 @@
 #   2. stage-output.md never contains ACK-<nonce> or INTRO-<nonce>
 #   3. the rendered transcript exists under the configured durable run root,
 #      outside both the repository and $TMPDIR
-#   4. the transcript retains admitted and intermediate turns, and records the
-#      runtime admission provenance used by nomination
+#   4. the transcript retains admitted and intermediate turns and records runtime admission provenance. Trailing and
+#      deliverable-after-admission can each be paired with both timings, proving ordering and timing are independent.
 #
 # ATOMIC_WORKFLOW_ARTIFACT_DIR is deliberately pointed at a per-run scratch
 # directory in the user's home (not the real ~/.atomic and not $TMPDIR). This
@@ -39,12 +39,20 @@
 
 set -euo pipefail
 
-SESSION="${1:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [trailing|mid-prompt|deliverable-after-admission]}"
-ARTIFACTS="${2:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [trailing|mid-prompt|deliverable-after-admission]}"
+SESSION="${1:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [ordering] [streaming|settled]}"
+ARTIFACTS="${2:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [ordering] [streaming|settled]}"
 ORDERING="${3:-${STAGE_OUTPUT_TRANSCRIPT_ORDERING:-trailing}}"
 case "$ORDERING" in
 	trailing|mid-prompt|deliverable-after-admission) ;;
 	*) echo "stage-output-transcript evidence: unsupported ordering: $ORDERING" >&2; exit 1 ;;
+esac
+ADMISSION="${4:-${STAGE_OUTPUT_TRANSCRIPT_ADMISSION:-}}"
+if [[ -z "$ADMISSION" ]]; then
+	if [[ "$ORDERING" == "trailing" ]]; then ADMISSION="settled"; else ADMISSION="streaming"; fi
+fi
+case "$ADMISSION" in
+	streaming|settled) ;;
+	*) echo "stage-output-transcript evidence: unsupported admission timing: $ADMISSION" >&2; exit 1 ;;
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -210,7 +218,7 @@ JSON
 #    is the isolated durable scratch root described in the header, while the
 #    project itself remains a disposable $TMPDIR scratch checkout.
 tmux send-keys -t "$SESSION" -l \
-	"cd '$PROJECT' && NODE_ENV=production ATOMIC_CODING_AGENT_DIR='$AGENT' ATOMIC_WORKFLOW_ARTIFACT_DIR='$DURABLE_ROOT' STAGE_OUTPUT_TRANSCRIPT_ORDERING='$ORDERING' STAGE_OUTPUT_TRANSCRIPT_NONCE='$NONCE' STAGE_OUTPUT_TRANSCRIPT_STATE='$STATE/notify-state' STAGE_OUTPUT_TRANSCRIPT_RECEIPT_STATE='$STATE/receipt.txt' ATOMIC_SKIP_VERSION_CHECK=1 '$BUN' '$REPO_ROOT/packages/coding-agent/src/cli.ts' --approve --offline --no-session"
+	"cd '$PROJECT' && NODE_ENV=production ATOMIC_CODING_AGENT_DIR='$AGENT' ATOMIC_WORKFLOW_ARTIFACT_DIR='$DURABLE_ROOT' STAGE_OUTPUT_TRANSCRIPT_ORDERING='$ORDERING' STAGE_OUTPUT_TRANSCRIPT_ADMISSION='$ADMISSION' STAGE_OUTPUT_TRANSCRIPT_NONCE='$NONCE' STAGE_OUTPUT_TRANSCRIPT_STATE='$STATE/notify-state' STAGE_OUTPUT_TRANSCRIPT_RECEIPT_STATE='$STATE/receipt.txt' ATOMIC_SKIP_VERSION_CHECK=1 '$BUN' '$REPO_ROOT/packages/coding-agent/src/cli.ts' --approve --offline --no-session"
 tmux send-keys -t "$SESSION" Enter
 await_text "stage-output-transcript-model •" "the CLI to finish starting" 240
 save "cli-started"
@@ -245,7 +253,7 @@ save "workflow-completed"
 await_file "$STATE/receipt.txt" "the workflow's exact file-only receipt" 120
 tmux clear-history -t "$SESSION"
 type_command "/workflow status $RUN_ID"
-await_text "RUN" "the workflow run detail" 120
+await_text "ARTIFACTS" "the workflow run detail" 120
 tmux clear-history -t "$SESSION"
 PANE="$ARTIFACTS/pane-final.txt"
 capture >"$PANE"
@@ -269,6 +277,7 @@ cp "$OUTPUT_FILE" "$ARTIFACTS/output-artifact.txt"
 DELIVERABLE="REAL-DELIVERABLE-$NONCE"
 INTRO="INTRO-$NONCE"
 ACK="ACK-$NONCE"
+ASYNC_COMPLETION="ASYNC-COMPLETION-$NONCE"
 if ! grep -qF -- "$DELIVERABLE" "$OUTPUT_FILE"; then
 	echo "stage-output-transcript evidence: output does not contain $DELIVERABLE" >&2
 	exit 1
@@ -281,11 +290,8 @@ if grep -qF -- "$INTRO" "$OUTPUT_FILE"; then
 	echo "stage-output-transcript evidence: output retained intermediate $INTRO" >&2
 	exit 1
 fi
-if [[ "$ORDERING" == "trailing" ]]; then
-	printf 'output_contains_deliverable=true\noutput_contains_ack=false\noutput_path=%s\n' "$OUTPUT_FILE" >"$ARTIFACTS/assertion-output.txt"
-else
-	printf 'ordering=%s\noutput_contains_deliverable=true\noutput_contains_ack=false\noutput_contains_intro=false\noutput_path=%s\n' "$ORDERING" "$OUTPUT_FILE" >"$ARTIFACTS/assertion-output.txt"
-fi
+printf 'ordering=%s\nadmission=%s\noutput_contains_deliverable=true\noutput_contains_ack=false\noutput_contains_intro=false\noutput_path=%s\n' \
+	"$ORDERING" "$ADMISSION" "$OUTPUT_FILE" >"$ARTIFACTS/assertion-output.txt"
 
 # Extract the durable transcript path from the verbatim receipt captured by the
 # evidence command. The pane capture remains the terminal proof, but its narrow
@@ -306,48 +312,41 @@ case "$TRANSCRIPT_PATH" in
 	"${TMPDIR:-/tmp}"/*) echo "stage-output-transcript evidence: transcript is under TMPDIR: $TRANSCRIPT_PATH" >&2; exit 1 ;;
 esac
 cp "$TRANSCRIPT_PATH" "$ARTIFACTS/transcript.txt"
+if ! rg -nF -- "$DELIVERABLE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-deliverable-hit.txt"; then
+	echo "stage-output-transcript evidence: transcript does not contain $DELIVERABLE" >&2
+	exit 1
+fi
+if ! rg -nF -- "$ASYNC_COMPLETION" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-completion-hit.txt"; then
+	echo "stage-output-transcript evidence: transcript does not contain $ASYNC_COMPLETION" >&2
+	exit 1
+fi
+ACK_MATCH=false
 if [[ "$ORDERING" != "deliverable-after-admission" ]]; then
 	if ! rg -nF -- "$ACK" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-ack-hit.txt"; then
 		echo "stage-output-transcript evidence: transcript does not contain $ACK" >&2
 		exit 1
 	fi
+	ACK_MATCH=true
 fi
-EXPECTED_PROVENANCE="active-stage"
-if [[ "$ORDERING" == "trailing" ]]; then EXPECTED_PROVENANCE="assistant-settled"; fi
-if ! rg -nF -- "stageAdmissionProvenance: $EXPECTED_PROVENANCE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-provenance-hit.txt"; then
-	echo "stage-output-transcript evidence: transcript omitted provenance $EXPECTED_PROVENANCE" >&2
-	exit 1
-fi
-if [[ "$ORDERING" == "mid-prompt" ]]; then
-	INTRO_MATCH=false
-	if rg -nF -- "$INTRO" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-intro-hit.txt"; then INTRO_MATCH=true; fi
-	if [[ "$INTRO_MATCH" != true ]]; then
-		echo "stage-output-transcript evidence: mid-prompt transcript does not contain $INTRO" >&2
-		exit 1
-	fi
-	printf 'ordering=%s\ntranscript_exists=true\ntranscript_path=%s\nunder_durable_root=true\noutside_repo=true\noutside_tmpdir=true\nack_match=true\nintro_match=true\n' "$ORDERING" "$TRANSCRIPT_PATH" >"$ARTIFACTS/assertion-transcript.txt"
-elif [[ "$ORDERING" == "deliverable-after-admission" ]]; then
+INTRO_MATCH=false
+if [[ "$ORDERING" != "trailing" ]]; then
 	if ! rg -nF -- "$INTRO" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-intro-hit.txt"; then
 		echo "stage-output-transcript evidence: transcript does not contain $INTRO" >&2
 		exit 1
 	fi
-	if ! rg -nF -- "$DELIVERABLE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-deliverable-hit.txt"; then
-		echo "stage-output-transcript evidence: transcript does not contain $DELIVERABLE" >&2
-		exit 1
-	fi
-	printf 'ordering=%s\ntranscript_exists=true\ntranscript_path=%s\nunder_durable_root=true\noutside_repo=true\noutside_tmpdir=true\nintro_match=true\ndeliverable_match=true\n' "$ORDERING" "$TRANSCRIPT_PATH" >"$ARTIFACTS/assertion-transcript.txt"
-else
-	printf 'transcript_exists=true\ntranscript_path=%s\nunder_durable_root=true\noutside_repo=true\noutside_tmpdir=true\nack_match=true\n' "$TRANSCRIPT_PATH" >"$ARTIFACTS/assertion-transcript.txt"
+	INTRO_MATCH=true
 fi
+EXPECTED_PROVENANCE="active-stage"
+if [[ "$ADMISSION" == "settled" ]]; then EXPECTED_PROVENANCE="assistant-settled"; fi
+if ! rg -nF -- "stageAdmissionProvenance: $EXPECTED_PROVENANCE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-provenance-hit.txt"; then
+	echo "stage-output-transcript evidence: transcript omitted provenance $EXPECTED_PROVENANCE" >&2
+	exit 1
+fi
+printf 'ordering=%s\nadmission=%s\ntranscript_exists=true\ntranscript_path=%s\nunder_durable_root=true\noutside_repo=true\noutside_tmpdir=true\ndeliverable_match=true\ncompletion_match=true\nack_match=%s\nintro_match=%s\n' \
+	"$ORDERING" "$ADMISSION" "$TRANSCRIPT_PATH" "$ACK_MATCH" "$INTRO_MATCH" >"$ARTIFACTS/assertion-transcript.txt"
 
 # Preserve the receipt screen verbatim and print the path metadata needed by the
 # caller. The screen is the authoritative terminal capture; no receipt is rebuilt.
-if [[ "$ORDERING" == "trailing" ]]; then
-	printf 'run_id=%s\nnonce=%s\ndurable_root=%s\noutput_path=%s\ntranscript_path=%s\n' \
-		"$RUN_ID" "$NONCE" "$DURABLE_ROOT" "$OUTPUT_FILE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/metadata.txt"
-	echo "stage-output-transcript evidence: scenario complete; artifacts in $ARTIFACTS"
-else
-	printf 'ordering=%s\nrun_id=%s\nnonce=%s\ndurable_root=%s\noutput_path=%s\ntranscript_path=%s\n' \
-		"$ORDERING" "$RUN_ID" "$NONCE" "$DURABLE_ROOT" "$OUTPUT_FILE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/metadata.txt"
-	echo "stage-output-transcript evidence: scenario complete; ordering=$ORDERING; artifacts in $ARTIFACTS"
-fi
+printf 'ordering=%s\nadmission=%s\nrun_id=%s\nnonce=%s\ndurable_root=%s\noutput_path=%s\ntranscript_path=%s\n' \
+	"$ORDERING" "$ADMISSION" "$RUN_ID" "$NONCE" "$DURABLE_ROOT" "$OUTPUT_FILE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/metadata.txt"
+echo "stage-output-transcript evidence: scenario complete; ordering=$ORDERING; admission=$ADMISSION; artifacts in $ARTIFACTS"

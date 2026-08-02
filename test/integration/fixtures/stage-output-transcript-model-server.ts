@@ -114,7 +114,9 @@ function main(): void {
 
 	let requestCount = 0;
 	const heldResponses = new Set<ServerResponse>();
-	const deliverable = `REAL-DELIVERABLE-${nonce}`;
+	const deliverable =
+		`REAL-DELIVERABLE-${nonce}\n\n` +
+		"Substantive stage report with complete findings, supporting evidence, limitations, conclusions, and concrete next steps.";
 	const introduction = `INTRO-${nonce}`;
 	const acknowledgement = `ACK-${nonce}`;
 	const server = createServer((request, response) => {

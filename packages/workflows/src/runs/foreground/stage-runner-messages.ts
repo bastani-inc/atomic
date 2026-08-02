@@ -31,31 +31,65 @@ function admissionProvenance(message: AgentSession["messages"][number]): Admissi
 	return provenance === "active-stage" || provenance === "assistant-settled" ? provenance : undefined;
 }
 
-/**
- * Return the latest assistant work before the first admission that is known to have started an external response.
- * Restored sessions without provenance are ambiguous: the runtime produces stopReason "stop" for both a mid-turn
- * preamble and a completed deliverable. Preserve origin/main's latest-assistant behavior rather than risk replacing a
- * post-admission deliverable with an earlier preamble.
- */
-function nominatedAssistantText(messages: AgentSession["messages"], startIndex = 0): string | undefined {
-	const firstIndex = Math.max(0, startIndex);
-	let responseBoundary = messages.length;
-	for (let index = firstIndex; index < messages.length; index += 1) {
-		const message = messages[index];
-		if (message && isAdmittedExternalMessage(message) && admissionProvenance(message) === "assistant-settled") {
-			responseBoundary = index;
-			break;
-		}
-	}
-	if (responseBoundary === messages.length) return undefined;
+type AssistantTextCandidate = {
+	readonly index: number;
+	readonly text: string;
+	readonly utf8Bytes: number;
+};
 
-	for (let index = responseBoundary - 1; index >= firstIndex; index -= 1) {
+function assistantTextCandidates(
+	messages: AgentSession["messages"],
+	firstIndex: number,
+): readonly AssistantTextCandidate[] {
+	const candidates: AssistantTextCandidate[] = [];
+	for (let index = firstIndex; index < messages.length; index += 1) {
 		const message = messages[index];
 		if (message?.role !== "assistant") continue;
 		const text = extractMessageText(message).trim();
-		if (text) return text;
+		if (text) candidates.push({ index, text, utf8Bytes: new TextEncoder().encode(text).byteLength });
 	}
-	return undefined;
+	return candidates;
+}
+
+/**
+ * Provenance supplies a deterministic default: work before the first settled-stage admission, or otherwise the
+ * latest assistant. It cannot distinguish a deliverable followed by an acknowledgement from a preamble followed by
+ * a deliverable, because both persist as assistant/custom/assistant and admission timing can assign either provenance.
+ * In that ambiguous shape, a candidate at least 3:2 larger in UTF-8 bytes is treated as substantive and overrides the
+ * provenance default. Near-equal candidates keep that default. This is deliberately heuristic: a genuinely short
+ * deliverable paired with a long acknowledgement will be nominated incorrectly.
+ *
+ * Pre-upgrade admissions without provenance preserve origin/main's latest-assistant behavior.
+ */
+function nominatedAssistantText(messages: AgentSession["messages"], startIndex = 0): string | undefined {
+	const firstIndex = Math.max(0, startIndex);
+	let firstSettledAdmissionIndex: number | undefined;
+	let hasProvenancedAdmission = false;
+	for (let index = firstIndex; index < messages.length; index += 1) {
+		const message = messages[index];
+		if (!message || !isAdmittedExternalMessage(message)) continue;
+		const provenance = admissionProvenance(message);
+		if (provenance === undefined) return undefined;
+		hasProvenancedAdmission = true;
+		if (provenance === "assistant-settled" && firstSettledAdmissionIndex === undefined) {
+			firstSettledAdmissionIndex = index;
+		}
+	}
+	if (!hasProvenancedAdmission) return undefined;
+
+	const candidates = assistantTextCandidates(messages, firstIndex);
+	const latest = candidates.at(-1);
+	if (!latest) return undefined;
+	const provenanceDefault =
+		firstSettledAdmissionIndex === undefined
+			? latest
+			: (candidates.findLast((candidate) => candidate.index < firstSettledAdmissionIndex) ?? latest);
+	const mostSubstantive = candidates.reduce((best, candidate) =>
+		candidate.utf8Bytes > best.utf8Bytes ? candidate : best,
+	);
+	return mostSubstantive.utf8Bytes * 2 >= provenanceDefault.utf8Bytes * 3
+		? mostSubstantive.text
+		: provenanceDefault.text;
 }
 
 export function extractMessageText(message: AgentSession["messages"][number]): string {
