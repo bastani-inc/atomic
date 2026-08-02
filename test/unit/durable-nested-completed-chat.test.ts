@@ -263,7 +263,7 @@ test("fresh DBOS hides malformed completed child output and registers no chat at
 			ok: false,
 			reason: "stale",
 			message:
-				"Completed workflow malforme is stale or missing durable checkpoint/session data and cannot be opened.",
+				"Completed workflow malformed-chat-root is stale or missing durable checkpoint/session data and cannot be opened.",
 		});
 		assert.deepEqual(freshStore.runs(), []);
 		assert.equal(registry.get(fixture.childId, "retained-child-stage"), undefined);

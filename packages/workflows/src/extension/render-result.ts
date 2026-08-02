@@ -442,9 +442,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 			const r = result as StageListResult;
 			if (r.error) return renderNotice("WORKFLOW STAGES", `${r.runId || "(none)"}: ${r.error}`, opts, themed);
 			const counts = r.stages
-				.map(
-					(s) => `${s.name} (${s.id.slice(0, 12)}): ${s.status}${s.skippedReason ? ` — ${s.skippedReason}` : ""}`,
-				)
+				.map((s) => `${s.name} (${s.id}): ${s.status}${s.skippedReason ? ` — ${s.skippedReason}` : ""}`)
 				.join("; ");
 			return renderNotice("WORKFLOW STAGES", `${r.runId}: ${r.filter} — ${counts || "no stages"}`, opts, themed);
 		}
@@ -456,7 +454,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 			const extra = r.stage.error ? ` — ${r.stage.error}` : r.stage.result ? ` — ${r.stage.result}` : "";
 			return renderNotice(
 				"WORKFLOW STAGE",
-				`${r.runId}: ${r.stage.name} (${r.stage.id.slice(0, 12)}) ${r.stage.status}${extra}`,
+				`${r.runId}: ${r.stage.name} (${r.stage.id}) ${r.stage.status}${extra}`,
 				opts,
 				themed,
 			);
@@ -468,7 +466,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 			const suffix = r.truncated ? " (truncated)" : "";
 			return renderNotice(
 				"WORKFLOW TRANSCRIPT",
-				`${r.runId}/${r.stageId.slice(0, 12)} ${r.source}: ${text}${suffix}`,
+				`${r.runId}/${r.stageId} ${r.source}: ${text}${suffix}`,
 				opts,
 				themed,
 			);
@@ -476,12 +474,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 
 		case "send": {
 			const r = result as SendResult;
-			return renderNotice(
-				"WORKFLOW SEND",
-				`${r.runId}/${r.stageId.slice(0, 12)} ${r.delivery}: ${r.message}`,
-				opts,
-				themed,
-			);
+			return renderNotice("WORKFLOW SEND", `${r.runId}/${r.stageId} ${r.delivery}: ${r.message}`, opts, themed);
 		}
 
 		case "pause": {

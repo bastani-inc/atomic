@@ -994,7 +994,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 		const store = createStore();
 		const registry = createStageControlRegistry();
 		const toolControls = createToolControlRegistry();
-		const runId = "quit-tool-post-close";
+		const runId = "c3d4e5f6-a1b2-4c3d-9e0f-1a2b3c4d5e6f";
 		const entered = Promise.withResolvers<void>();
 		let secondCallStarted = false;
 		let secondCallRejection: unknown;
@@ -1044,6 +1044,7 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 		assert.equal(secondCallStarted, false, "a post-close ctx.tool callback must never run");
 		assert.equal(secondCallRejection instanceof Error, true);
 		assert.match(String(secondCallRejection), /suspended by workflow quit/);
+		assert.ok(String(secondCallRejection).includes(runId));
 		assert.deepEqual(
 			store
 				.runs()

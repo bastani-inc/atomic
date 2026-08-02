@@ -131,10 +131,6 @@ function metaText(stage: StageSnapshot): string {
 	return stage.fastMode === true ? `${dependencyText} · fast` : dependencyText;
 }
 
-function shortRunId(runId: string): string {
-	return runId.length <= 8 ? runId : runId.slice(0, 8);
-}
-
 function workflowChildSummaryText(stage: StageSnapshot): string {
 	const child = stage.workflowChild ?? stage.workflowChildRun;
 	if (child === undefined) return durationText(stage);
@@ -146,13 +142,38 @@ function workflowChildMetaText(stage: StageSnapshot): string {
 	if (completed !== undefined) {
 		const outputCount = Object.keys(completed.outputs).length;
 		const outputs = outputCount === 1 ? "1 out" : `${outputCount} outs`;
-		return `run ${shortRunId(completed.runId)} · ${outputs}`;
+		return `run ${completed.runId} · ${outputs}`;
 	}
 
 	const live = stage.workflowChildRun;
-	if (live !== undefined) return `run ${shortRunId(live.runId)} · live`;
+	if (live !== undefined) return `run ${live.runId} · live`;
 
 	return metaText(stage);
+}
+
+/**
+ * Hard-wrap the child-run meta into card-width chunks. A full 36-character run
+ * id cannot fit the fixed node geometry on one row, and ellipsizing it would
+ * contradict the "never shorten a run id" rule, so it wraps instead.
+ */
+function workflowChildMetaRows(stage: StageSnapshot, width: number): string[] {
+	const text = workflowChildMetaText(stage);
+	const budget = Math.max(1, width);
+	if (visibleWidth(text) <= budget) return [text];
+
+	const rows: string[] = [];
+	let remaining = text;
+	while (remaining.length > 0) {
+		let chunk = "";
+		for (const character of remaining) {
+			if (chunk.length > 0 && visibleWidth(`${chunk}${character}`) > budget) break;
+			chunk += character;
+		}
+		if (chunk.length === 0) chunk = remaining[0] ?? "";
+		rows.push(chunk);
+		remaining = remaining.slice(chunk.length);
+	}
+	return rows;
 }
 
 function statusLabel(status: StageStatus): string {
@@ -267,11 +288,6 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 	const top = `${bg}${bc}╭${topMiddle}╮${RESET}`;
 	const bottom = `${bg}${bc}╰${"─".repeat(innerWidth)}╯${RESET}`;
 
-	// Interior — compact status + duration. Child workflow boundary
-	// stages otherwise look like empty completed nodes, so use the first
-	// body row for the child workflow identity and the final row for a
-	// terse child-run summary. This keeps the graph dense while making
-	// the boundary explain what actually ran.
 	const bodyText =
 		stage.nodeKind === "tool"
 			? (stage.error ?? stage.result ?? "durable tool")
@@ -292,10 +308,17 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 			bold: stage.status === "blocked",
 		}) +
 		`${bg}${bc}│${RESET}`;
-	const metaLine =
-		`${bg}${bc}│${RESET}` +
-		centreColored(workflowChildMetaText(stage), innerWidth, theme.dim, bg) +
-		`${bg}${bc}│${RESET}`;
+
+	// Interior — compact status + duration. Child workflow boundary stages
+	// otherwise look like empty completed nodes, so use the first body row for
+	// the child workflow identity and the remaining rows for a terse child-run
+	// summary. A full child run id needs more than one row at node width, so it
+	// claims the status row rather than being shortened.
+	const childMetaRows = workflowChildMetaRows(stage, innerWidth);
+	const childMetaLines = childMetaRows.map(
+		(row) => `${bg}${bc}│${RESET}${centreColored(row, innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`,
+	);
+	const contentRows = Math.max(0, height - 2);
 
 	const interior: string[] =
 		stage.status === "awaiting_input"
@@ -308,7 +331,9 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 						centreColored("↵ enter to respond", innerWidth, theme.dim, bg) +
 						`${bg}${bc}│${RESET}`,
 				]
-			: [durLine, statusLine, metaLine];
+			: childMetaLines.length > 1
+				? [durLine, ...childMetaLines]
+				: [durLine, statusLine, ...childMetaLines];
 
 	// A queued steer/follow-up is invisible once the user leaves the stage chat,
 	// so it claims one existing body row rather than competing for space inside a
@@ -320,13 +345,10 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 	const preferredBadgeRow = stage.status === "awaiting_input" ? 1 : interior.length - 1;
 
 	// Pad / clip to exactly `height` lines.
-	const contentRows = Math.max(0, height - 2);
 	while (interior.length < contentRows) {
 		interior.push(`${bg}${bc}│${RESET}${bg}${" ".repeat(innerWidth)}${bg}${bc}│${RESET}`);
 	}
-	if (interior.length > contentRows) {
-		interior.length = contentRows;
-	}
+	if (interior.length > contentRows) interior.length = contentRows;
 
 	if (queuedCount > 0 && interior.length > 0) {
 		const badgeRow =

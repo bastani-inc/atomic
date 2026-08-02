@@ -4,13 +4,8 @@
  * Visual contract (DESIGN.md §5):
  *  - One rounded `BACKGROUND` panel with subtitle and count badges.
  *  - One rounded card per run (replaces the indented per-stage rows):
- *      title: runId · workflow · state badge
- *      row 1: mode · progress strip · meta
- *  - Status colour is carried by the card border and state badge semantics,
- *    never by decorative body text.
- *  - One trailing hint row pointing at `/workflow status <id>` for the
- *    most-recently-active run; full per-stage detail moves into
- *    `/workflow status <id>` ({@link renderRunDetail}).
+ *      title: full runId · workflow · state badge
+ *      rows: status glyph + full runId, then workflow identity and meta
  *
  * Plain mode (theme omitted) preserves the rounded panel/card shape without
  * ANSI escapes, with ASCII bracket cells `[✓][●][○][✗]`.
@@ -30,14 +25,13 @@ import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
-import { chatWidth, ELLIPSIS, progressStrip, renderHintRows, renderRoundedBox } from "./chat-surface.js";
+import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
-const SHORT_ID_LEN = 6;
-const MIN_TITLE_BUDGET = 12;
+export const MIN_TITLE_BUDGET = 12;
 const STAGE_LABEL_BUDGET = 24;
 
 export interface RenderStatusListOpts {
@@ -83,17 +77,10 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 			body.push(...renderRunEntry(sorted[i]!, now, cardWidth, opts.theme));
 		}
 	}
-
 	if (opts.showDetailHint !== false && sorted.length > 0) {
-		const sid = shortId(sorted[0]!.id);
 		body.push("");
-		body.push(
-			...renderHintRows([{ command: `/workflow status ${sid}`, hint: "drill into a run" }], opts.theme)
-				.split("\n")
-				.map((line) => ` ${line} `),
-		);
+		body.push(...renderStatusHintRows(sorted[0]!.id, opts.theme, width).map((line) => ` ${line} `));
 	}
-
 	const badgeText = badges && badges.length > 0 ? `  ${badges.map((b) => b.text).join("  ")}` : "";
 	return renderRoundedBox({
 		title: `BACKGROUND  ${subtitle}${badgeText}`,
@@ -108,22 +95,8 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 // ---------------------------------------------------------------------------
 
 function renderRunEntry(run: RunSnapshot, now: number, width: number, theme?: GraphTheme): string[] {
-	const sid = shortId(run.id);
-	const trailing = runTrailing(run, theme);
-	const mode = run.stages.length > 1 ? "chain " : "single";
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
-	const rawMeta = runCardMeta(run, now);
-	const modeW = mode.length + 4;
-	const maxMetaW = Math.max(0, interior - modeW - 3);
-	const meta = truncateToWidth(rawMeta, maxMetaW, ELLIPSIS);
-	const metaW = visibleWidth(meta);
-	const stripBudget = Math.max(0, interior - modeW - metaW - 2);
-
-	const strip = progressStrip(stageCells(run), stripBudget, theme);
-	const usedLeftW = modeW + visibleWidth(strip);
-	const gap = Math.max(metaW > 0 ? 1 : 0, interior - usedLeftW - metaW);
-
 	const glyph = statusIconForRun(run);
 	const glyphFg = theme ? hexToAnsi(runAccent(run, theme)) : "";
 	const accent = theme ? hexToAnsi(theme.accent) : "";
@@ -132,19 +105,40 @@ function renderRunEntry(run: RunSnapshot, now: number, width: number, theme?: Gr
 	const dim = theme ? hexToAnsi(theme.dim) : "";
 	const reset = theme ? RESET : "";
 
-	const name = truncateToWidth(
-		run.name,
-		Math.max(MIN_TITLE_BUDGET, interior - visibleWidth(sid) - visibleWidth(trailing?.text ?? "") - 8),
-		ELLIPSIS,
-	);
-	const line1 = theme
-		? ` ${glyphFg}${glyph}${RESET}  ${accent}${sid}${RESET}  ${text}${BOLD}${name}${RESET}  ${glyphFg}${trailing?.text ?? ""}${RESET} `
-		: ` ${glyph}  ${sid}  ${name}  ${trailing?.text ?? ""} `;
+	// The identifier owns its row and is never sent through truncateToWidth.
+	// At narrow widths, continuation rows preserve every identifier character
+	// while keeping each row inside the rounded panel's interior.
+	const idRows = wrapIdentifierLines(run.id, interior, ` ${glyph}  `, "   ");
+	const identityRows = idRows.map(({ prefix, chunk }, index) => {
+		if (!theme) return `${prefix}${chunk}`;
+		if (index === 0) return ` ${glyphFg}${glyph}${RESET}  ${accent}${chunk}${RESET}`;
+		return `   ${accent}${chunk}${RESET}`;
+	});
+
+	const trailing = runTrailing(run, theme);
+	const trailingText = truncateToWidth(trailing?.text ?? "", Math.max(0, interior - 1), ELLIPSIS);
+	const nameBudget = Math.max(1, interior - 3 - visibleWidth(trailingText) - (trailingText ? 2 : 0));
+	const name = truncateToWidth(run.name, nameBudget, ELLIPSIS);
+	const nameSeg = theme ? `${text}${BOLD}${name}${RESET}` : name;
+	const trailingSeg =
+		theme && trailingText ? `${hexToAnsi(trailing?.fg ?? theme.dim)}${trailingText}${RESET}` : trailingText;
+	const identity = `   ${nameSeg}${trailingSeg ? `  ${trailingSeg}` : ""}`;
+
+	const mode = run.stages.length > 1 ? "chain " : "single";
+	const rawMeta = runCardMeta(run, now);
+	const modeW = mode.length + 4;
+	const maxMetaW = Math.max(0, interior - modeW - 3);
+	const meta = truncateToWidth(rawMeta, maxMetaW, ELLIPSIS);
+	const metaW = visibleWidth(meta);
+	const stripBudget = Math.max(0, interior - modeW - metaW - 2);
+	const strip = progressStrip(stageCells(run), stripBudget, theme);
+	const usedLeftW = modeW + visibleWidth(strip);
+	const gap = Math.max(metaW > 0 ? 1 : 0, interior - usedLeftW - metaW);
 	const modeSeg = theme ? `${muted}${mode}${reset}` : mode;
 	const metaSeg = theme ? `${dim}${meta}${reset}` : meta;
-	const line2 = `   ${modeSeg}    ${strip}${" ".repeat(gap)}${metaSeg} `;
+	const metaLine = `   ${modeSeg}    ${strip}${" ".repeat(gap)}${metaSeg} `;
 
-	return [line1, line2];
+	return [...identityRows, identity, metaLine];
 }
 
 function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
@@ -403,8 +397,67 @@ function sortRuns(runs: readonly RunSnapshot[]): RunSnapshot[] {
 	return [...[...active].sort(byStart), ...[...ended].sort(byStart)];
 }
 
-function shortId(id: string): string {
-	return id.length > SHORT_ID_LEN ? id.slice(0, SHORT_ID_LEN) : id;
+interface IdentifierLine {
+	prefix: string;
+	chunk: string;
+}
+
+function takeIdentifierChunk(value: string, width: number): { chunk: string; rest: string } {
+	const budget = Math.max(1, width);
+	let chunk = "";
+	for (const character of value) {
+		if (chunk.length > 0 && visibleWidth(`${chunk}${character}`) > budget) break;
+		chunk += character;
+	}
+	if (chunk.length === 0) chunk = value[0] ?? "";
+	return { chunk, rest: value.slice(chunk.length) };
+}
+
+function wrapIdentifierLines(
+	id: string,
+	width: number,
+	firstPrefix: string,
+	continuationPrefix: string,
+): IdentifierLine[] {
+	const rows: IdentifierLine[] = [];
+	let remaining = id;
+	let first = true;
+	while (remaining.length > 0 || rows.length === 0) {
+		const prefix = first ? firstPrefix : continuationPrefix;
+		const chunk = takeIdentifierChunk(remaining, width - visibleWidth(prefix));
+		rows.push({ prefix, chunk: chunk.chunk });
+		remaining = chunk.rest;
+		first = false;
+	}
+	return rows;
+}
+
+function renderStatusHintRows(id: string, theme: GraphTheme | undefined, width: number): string[] {
+	const budget = Math.max(1, width - 4);
+	const prefix = "▸ /workflow status ";
+	const continuation = "  ";
+	const rows = wrapIdentifierLines(id, budget, prefix, continuation);
+	const suffix = "  drill into a run";
+	const last = rows[rows.length - 1]!;
+	if (visibleWidth(`${last.prefix}${last.chunk}${suffix}`) <= budget) {
+		last.chunk += suffix;
+	} else {
+		rows.push({
+			prefix: continuation,
+			chunk: truncateToWidth(suffix.trimStart(), Math.max(1, budget - visibleWidth(continuation)), ELLIPSIS),
+		});
+	}
+	if (!theme) return rows.map((row) => `${row.prefix}${row.chunk}`);
+	const dim = hexToAnsi(theme.dim);
+	const accent = hexToAnsi(theme.accent);
+	return rows.map((row, index) => {
+		if (index === 0) {
+			const idChunk = row.chunk.endsWith(suffix) ? row.chunk.slice(0, -suffix.length) : row.chunk;
+			const suffixText = row.chunk.endsWith(suffix) ? suffix : "";
+			return `${dim}▸${RESET} ${accent}/workflow status ${idChunk}${RESET}${suffixText ? `${dim}${suffixText}${RESET}` : ""}`;
+		}
+		return `${row.prefix}${row.chunk}`;
+	});
 }
 
 function emptyStateLine(theme?: GraphTheme): string {
@@ -418,7 +471,6 @@ function statusIconForRun(run: RunSnapshot): string {
 		case "completed":
 			return "✓";
 		case "skipped":
-			return "⊘";
 		case "cancelled":
 			return "⊘";
 		case "blocked":
@@ -437,4 +489,3 @@ function statusIconForRun(run: RunSnapshot): string {
 }
 
 // Re-export for callers that need to inspect width budgeting.
-export { MIN_TITLE_BUDGET };

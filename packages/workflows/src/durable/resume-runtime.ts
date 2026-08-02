@@ -116,7 +116,7 @@ export async function resumeDurableWorkflow(
 			return {
 				ok: false,
 				reason: "not_registered",
-				message: `Workflow ${workflowIdOrPrefix.slice(0, 8)} has no valid current DBOS state.`,
+				message: `Workflow ${workflowIdOrPrefix} has no valid current DBOS state.`,
 			};
 		}
 		return {
@@ -129,14 +129,14 @@ export async function resumeDurableWorkflow(
 		return {
 			ok: false,
 			reason: "not_registered",
-			message: `Ambiguous workflow prefix "${workflowIdOrPrefix}" matches: ${resolved.matches.map((m) => `${m.name} (${m.workflowId.slice(0, 8)})`).join(", ")}`,
+			message: `Ambiguous workflow prefix "${workflowIdOrPrefix}" matches: ${resolved.matches.map((m) => `${m.name} (${m.workflowId})`).join(", ")}`,
 		};
 	}
 	if (!backend.isWorkflowLoadable(resolved.workflowId)) {
 		return {
 			ok: false,
 			reason: "not_registered",
-			message: `Workflow ${resolved.workflowId.slice(0, 8)} has no valid current DBOS state.`,
+			message: `Workflow ${resolved.workflowId} has no valid current DBOS state.`,
 		};
 	}
 	// Revalidate the authoritative DBOS handle before resume. A running handle
@@ -147,7 +147,7 @@ export async function resumeDurableWorkflow(
 		return {
 			ok: false,
 			reason: "stale",
-			message: `Workflow ${resolved.workflowId.slice(0, 8)} has no current DBOS checkpoint state; re-run the workflow to start fresh.`,
+			message: `Workflow ${resolved.workflowId} has no current DBOS checkpoint state; re-run the workflow to start fresh.`,
 		};
 	}
 
@@ -163,7 +163,7 @@ export async function resumeDurableWorkflow(
 		return {
 			ok: false,
 			reason: "not_resumable",
-			message: `Workflow ${resolved.workflowId.slice(0, 8)} is ${handle.status}, not resumable.`,
+			message: `Workflow ${resolved.workflowId} is ${handle.status}, not resumable.`,
 		};
 	}
 
@@ -200,7 +200,7 @@ export async function resumeDurableWorkflow(
 		return {
 			ok: false,
 			reason: "stale",
-			message: `Workflow ${resolved.workflowId.slice(0, 8)} changed while resume was pending; refresh the workflow list and try again.`,
+			message: `Workflow ${resolved.workflowId} changed while resume was pending; refresh the workflow list and try again.`,
 		};
 	}
 
@@ -223,7 +223,7 @@ export async function resumeDurableWorkflow(
 		return {
 			ok: false,
 			reason: "startup_failed",
-			message: `Failed to resume durable workflow ${resolved.workflowId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`,
+			message: `Failed to resume durable workflow ${resolved.workflowId}: ${error instanceof Error ? error.message : String(error)}`,
 		};
 	}
 	const { accepted } = launch;
@@ -233,7 +233,7 @@ export async function resumeDurableWorkflow(
 		const error = workflowStartupFailureMessage(
 			admission,
 			snapshot?.error,
-			`Workflow ${resolved.workflowId.slice(0, 8)} ended before startup admission`,
+			`Workflow ${resolved.workflowId} ended before startup admission`,
 		);
 		deps.baseRunOpts.store?.removeRun(accepted.runId);
 		backend.setWorkflowStatus(resolved.workflowId, handle.status, handle.pendingPrompts, handle.resumable);
@@ -241,7 +241,7 @@ export async function resumeDurableWorkflow(
 		return {
 			ok: false,
 			reason: "startup_failed",
-			message: `Failed to resume durable workflow ${resolved.workflowId.slice(0, 8)}: ${error}`,
+			message: `Failed to resume durable workflow ${resolved.workflowId}: ${error}`,
 		};
 	}
 
@@ -250,7 +250,7 @@ export async function resumeDurableWorkflow(
 		runId: accepted.runId,
 		workflowId: resolved.workflowId,
 		name: handle.name,
-		message: `Resuming durable workflow "${handle.name}" (${resolved.workflowId.slice(0, 8)}) — completed checkpoints will be replayed.`,
+		message: `Resuming durable workflow "${handle.name}" (${resolved.workflowId}) — completed checkpoints will be replayed.`,
 	};
 }
 
@@ -271,7 +271,7 @@ function foreignRunningResult(name: string, workflowId: string): ResumeDurableRe
 		ok: false,
 		reason: "not_resumable",
 		message:
-			`Workflow "${name}" (${workflowId.slice(0, 8)}) is actively running in another Atomic session. ` +
+			`Workflow "${name}" (${workflowId}) is actively running in another Atomic session. ` +
 			"Control it from that session; it becomes resumable here only after that session pauses, quits, or crashes.",
 	};
 }
@@ -281,9 +281,9 @@ function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["
 	return {
 		ok: false,
 		reason: "not_resumable",
-		message: `Workflow "${name}" (${workflowId.slice(0, 8)}) is already running${
+		message: `Workflow "${name}" (${workflowId}) is already running${
 			here ? " in this session" : " in another session"
-		}. See agents working and chat with or steer each stage using \`/workflow connect ${workflowId.slice(0, 8)}\`; use \`/workflow quit ${workflowId.slice(0, 8)}\` to pause the run for later resume.`,
+		}. See agents working and chat with or steer each stage using \`/workflow connect ${workflowId}\`; use \`/workflow quit ${workflowId}\` to pause the run for later resume.`,
 	};
 }
 

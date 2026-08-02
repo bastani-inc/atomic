@@ -554,7 +554,7 @@ describe("/workflow resume completed target", () => {
 
 		assert.equal(result.errors.length, 0);
 		assert.equal(store.runs().find((run) => run.id === "exact-live")?.status, "running");
-		assert.match(result.messages.join("\n"), /Resumed run exact-li/);
+		assert.match(result.messages.join(String.fromCharCode(10)), /Resumed run exact-live/);
 		assert.equal(completedCatalogReads, 0, "an exact live run must bypass durable completed-catalog enumeration");
 	});
 

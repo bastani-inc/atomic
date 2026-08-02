@@ -10,7 +10,7 @@ export function formatResumableWorkflowList(entries: readonly ResumableWorkflowE
 	if (entries.length === 0) return "No resumable or completed workflows found.";
 	const hasCompleted = entries.some((entry) => entry.status === "completed");
 	const lines = entries.map((entry, index) => {
-		const id = entry.workflowId.slice(0, 8);
+		const id = entry.workflowId;
 		const status = entry.status === "completed" ? "✓ completed" : entry.status.padEnd(8);
 		const checkpoints = `${entry.completedCheckpoints} checkpoint${entry.completedCheckpoints === 1 ? "" : "s"}`;
 		const label = entry.label ? ` "${entry.label}"` : "";

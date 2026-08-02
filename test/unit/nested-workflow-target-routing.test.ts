@@ -146,7 +146,7 @@ describe("nested workflow stage target routing", () => {
 		if (result.ok) return;
 		assert.equal(
 			result.message,
-			'Ambiguous stage identifier "shared" matches: worker:duplicate name (child-le/shared), worker:duplicate name (child-ri/shared)',
+			'Ambiguous stage identifier "shared" matches: worker:duplicate name (child-left/shared), worker:duplicate name (child-right/shared)',
 		);
 	});
 
@@ -167,17 +167,19 @@ describe("nested workflow stage target routing", () => {
 		const byName = resolveStageTarget("root-run", "repeated name");
 		assert.equal(byName.ok, false);
 		if (!byName.ok) {
-			assert.match(byName.message, /^Ambiguous stage identifier "repeated name" matches: /);
-			assert.match(byName.message, /child-le\/left-on/);
-			assert.match(byName.message, /child-ri\/right-on/);
+			assert.equal(
+				byName.message,
+				'Ambiguous stage identifier "repeated name" matches: worker:repeated name (child-left/left-only), worker:repeated name (child-right/right-only)',
+			);
 		}
 
 		const byPrefix = resolveStageTarget("root-run", "child-r");
 		assert.equal(byPrefix.ok, false);
 		if (!byPrefix.ok) {
-			assert.match(byPrefix.message, /^Ambiguous stage identifier "child-r" matches: /);
-			assert.match(byPrefix.message, /child-ri\/shared/);
-			assert.match(byPrefix.message, /child-ri\/right-on/);
+			assert.equal(
+				byPrefix.message,
+				'Ambiguous stage identifier "child-r" matches: worker:duplicate name (child-right/shared), worker:repeated name (child-right/right-only)',
+			);
 		}
 	});
 
@@ -509,7 +511,7 @@ describe("nested workflow stage target routing", () => {
 	test("every public control surface reports ambiguity instead of routing duplicate local IDs", async () => {
 		const target = { runId: "root-run", stageId: "shared" };
 		const expected =
-			'Ambiguous stage identifier "shared" matches: worker:duplicate name (child-le/shared), worker:duplicate name (child-ri/shared)';
+			'Ambiguous stage identifier "shared" matches: worker:duplicate name (child-left/shared), worker:duplicate name (child-right/shared)';
 		const pause = await workflowPauseAction({ action: "pause", ...target });
 		const interrupt = await workflowInterruptAction({ action: "interrupt", ...target });
 		const resume = await workflowResumeAction(

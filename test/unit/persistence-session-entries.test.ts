@@ -78,12 +78,17 @@ describe("appendRunStart", () => {
 		assert.equal((p.inputs as Record<string, unknown>).x, 1);
 	});
 
-	test("calls setLabel with wf:<name>:<short-id> format", () => {
+	test("calls setLabel with wf:<name>:<full-id> format", () => {
 		const api = makeMockApi();
-		appendRunStart(api, { runId: "abcdefgh-1234", name: "my-workflow", inputs: {}, ts: 1 });
+		appendRunStart(api, {
+			runId: "339e05a4-2289-408e-9076-d1a348f582ae",
+			name: "my-workflow",
+			inputs: {},
+			ts: 1,
+		});
 		assert.equal(api._labels.size, 1);
 		const label = [...api._labels.values()][0];
-		assert.equal(label, "wf:my-workflow:abcdefgh");
+		assert.equal(label, "wf:my-workflow:339e05a4-2289-408e-9076-d1a348f582ae");
 	});
 
 	test("includes continuation metadata when provided", () => {

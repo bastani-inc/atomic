@@ -2,17 +2,12 @@
  * Unit tests for the `/workflow <name> …` dispatch confirmation
  * (`src/tui/dispatch-confirm.ts`).
  *
- * Visual contract — ui/dispatch-mockup.html §1 (compact two-row shape):
- *  - One rounded dispatched panel: rounded run card with 8-char runId + workflow name +
- *    inline inputs (`k=v · k=v · +N more`) + right-aligned `● running`
- *    badge.
+ * Visual contract — ui/dispatch-mockup.html §1 (full-id identity rows):
+ *  - One rounded dispatched panel with the full UUID on its own identity row.
+ *  - Workflow name and `● running` status follow on the next row.
+ *  - Inputs render in the body and the connect hint keeps the complete UUID.
  *  - Inputs wrap to a second body row only when row 1's interior cannot
  *    hold them; the body row uses the same overflow rules.
- *  - Runs keep one hint row: `▸ /workflow connect <short-id>   see agents working · chat with and steer each stage`.
- *
- * Explicitly removed (was in the legacy 7-row layout): the `✓ submitted`
- * echo, the `[ DISPATCHED ]` band, the `run id` muted caption beside the
- * tag, and the `status starting…` body row.
  *
  * cross-ref: src/tui/dispatch-confirm.ts · src/tui/chat-surface.ts
  *            · ui/dispatch-mockup.html
@@ -37,8 +32,8 @@ describe("renderDispatchConfirm — themed", () => {
 		});
 		const plain = stripAnsi(out);
 
-		// Identity: short runId in the tag + workflow name on the same row.
-		assert.match(plain, /0391c9c1/);
+		// Identity keeps the complete run id and workflow name.
+		assert.match(plain, /0391c9c1-aaaa-bbbb-cccc-dddddddddddd/);
 		assert.match(plain, /fan-out-and-synthesize/);
 
 		// Status badge in the trailing slot.
@@ -48,20 +43,20 @@ describe("renderDispatchConfirm — themed", () => {
 		assert.match(plain, /prompt="map the codebase"/);
 		assert.match(plain, /max_branches=4/);
 
-		// Guidance preserves the actionable short id and explains the graph in
+		// Guidance preserves the complete actionable id and explains the graph in
 		// plain language without attach/detach jargon.
-		assert.match(plain, /▸ \/workflow connect 0391c9c1\s+see agents working/);
+		assert.match(plain, /▸ \/workflow connect 0391c9c1-aaaa-bbbb-cccc-dddddddddddd\s+see agents working/);
 		assert.match(plain, /chat with and steer each stage/);
 		assert.doesNotMatch(plain, /attach|detach/i);
 		// Legacy chrome MUST be gone.
 		assert.doesNotMatch(plain, /✓ submitted/);
 		assert.doesNotMatch(plain, /\[ DISPATCHED \]/);
-		assert.doesNotMatch(plain, /\brun id\b/);
 		assert.doesNotMatch(plain, /\bstarting…/);
 		assert.doesNotMatch(plain, /▸ \/workflow status/);
 
 		assert.match(plain, /^╭ DISPATCHED /);
-		assert.match(plain, /● {2}0391c9c1 {2}fan-out-and-synthesize {2}● running/);
+		assert.match(plain, /run id\s+0391c9c1-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.match(plain, /● {2}fan-out-and-synthesize {2}● running/);
 
 		// Themed mode emits ANSI escapes.
 		assert.match(out, /\x1b\[/);
@@ -77,12 +72,12 @@ describe("renderDispatchConfirm — themed", () => {
 		});
 		const lines = stripAnsi(out).split("\n");
 		assert.match(lines[0]!, /DISPATCHED/);
-		assert.match(lines[1]!, /be3181c1/);
-		assert.match(lines[1]!, /fan-out-and-synthesize/);
-		assert.match(lines[2]!, /prompt="explore the codebase"/);
-		assert.match(lines[2]!, /max_branches=4/);
+		assert.match(lines[1]!, /be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.match(lines[2]!, /fan-out-and-synthesize/);
+		assert.match(lines[3]!, /prompt="explore the codebase"/);
+		assert.match(lines[3]!, /max_branches=4/);
 		assert.match(lines.join("\n"), /● running/);
-		assert.match(lines.join("\n"), /▸ \/workflow connect be3181c1/);
+		assert.match(lines.join("\n"), /▸ \/workflow connect be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
 	});
 
 	test("narrow terminal → rounded card remains width-safe", () => {
@@ -94,10 +89,10 @@ describe("renderDispatchConfirm — themed", () => {
 			width: 60,
 		});
 		const lines = stripAnsi(out).split("\n");
-		assert.match(lines.join("\n"), /be3181c1/);
+		assert.match(lines.join("\n"), /be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
 		assert.match(lines.join("\n"), /● running/);
 		assert.match(lines.join("\n"), /prompt=/);
-		assert.match(lines.join("\n"), /▸ \/workflow connect be3181c1/);
+		assert.match(lines.join("\n"), /▸ \/workflow connect be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
 	});
 
 	test("zero inputs renders a single identity row + hint, with no body row", () => {
@@ -109,10 +104,10 @@ describe("renderDispatchConfirm — themed", () => {
 			width: 100,
 		});
 		const plain = stripAnsi(out);
-		assert.match(plain, /5b91ee54/);
+		assert.match(plain, /5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 		assert.match(plain, /primer/);
 		assert.match(plain, /● running/);
-		assert.match(plain, /▸ \/workflow connect 5b91ee54/);
+		assert.match(plain, /▸ \/workflow connect 5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 		// No legacy `(none)` placeholder.
 		assert.doesNotMatch(stripAnsi(out), /\(none\)/);
 	});
@@ -162,24 +157,24 @@ describe("renderDispatchConfirm — plain", () => {
 		});
 		assert.doesNotMatch(out, /\x1b\[/);
 
-		// Plain identity row carries run id, workflow name, and status.
-		assert.match(out, /● {2}abc12345 {2}tournament {2}● running/);
+		// Plain identity rows carry the full run id, workflow name, and status.
+		assert.match(out, /abc12345-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.match(out, /● {2}tournament {2}● running/);
 		assert.match(out, /● running/);
 
 		// Inputs present (inline on wide terminal).
 		assert.match(out, /prompt="hello"/);
 
 		// All workflows explain how to see agents and chat with/steer stages.
-		assert.match(out, /▸ \/workflow connect abc12345\s+see agents working/);
+		assert.match(out, /▸ \/workflow connect abc12345-aaaa-bbbb-cccc-dddddddddddd\s+see agents working/);
 		assert.match(out, /chat with and steer each stage/);
 		assert.doesNotMatch(out, /attach|detach/i);
-		assert.doesNotMatch(out, /▸ \/workflow status abc12345/);
+		assert.doesNotMatch(out, /▸ \/workflow status/);
 		assert.doesNotMatch(out, /Ask here anytime for status or to steer this run\./);
 
 		// Legacy chrome MUST be gone in plain mode too.
 		assert.doesNotMatch(out, /✓ submitted/);
 		assert.doesNotMatch(out, /\[ DISPATCHED \]/);
-		assert.doesNotMatch(out, /\brun id\b/);
 		assert.doesNotMatch(out, /\bstarting…/);
 	});
 
@@ -190,8 +185,8 @@ describe("renderDispatchConfirm — plain", () => {
 			inputs: {},
 			width: 100,
 		});
-		assert.match(out, /● {2}5b91ee54 {2}primer {2}● running/);
-		assert.match(out, /● running/);
-		assert.match(out, /▸ \/workflow connect 5b91ee54/);
+		assert.match(out, /5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.match(out, /● {2}primer {2}● running/);
+		assert.match(out, /▸ \/workflow connect 5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 	});
 });

@@ -13,7 +13,7 @@ import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { PiUISurface } from "./wiring.js";
 
 export function formatAlreadyEndedRetainedMessage(runId: string): string {
-	return `Run ${runId.slice(0, 8)} already ended; retained for inspection.`;
+	return `Run ${runId} already ended; retained for inspection.`;
 }
 
 export function stageFailureMessage(runId: string, resultReason: string, action: "pause" | "interrupt"): string {
@@ -126,7 +126,7 @@ export function resolveStageTarget(runId: string, stageTarget?: string): ToolSta
 	if (exactNames.length === 1) return resolvedStageTarget(exactNames[0]!);
 	if (exactNames.length > 1) return ambiguousStageTarget(target, exactNames);
 	const matches = graph.stages.filter((stage) => stageMatchesExpandedIdentifier(stage, target));
-	if (matches.length === 0) return { ok: false, message: `Stage not found in run ${runId.slice(0, 8)}: ${target}` };
+	if (matches.length === 0) return { ok: false, message: `Stage not found in run ${runId}: ${target}` };
 	if (matches.length > 1) return ambiguousStageTarget(target, matches);
 	return resolvedStageTarget(matches[0]!);
 }
@@ -182,7 +182,7 @@ export function resolveControlNodeTarget(runId: string, stageTarget?: string): C
 				message: `Ambiguous stage identifier "${target}" matches: ${matches.map(expandedStageLabel).join(", ")}`,
 			};
 	}
-	return { ok: false, message: `Stage not found in run ${runId.slice(0, 8)}: ${target}` };
+	return { ok: false, message: `Stage not found in run ${runId}: ${target}` };
 }
 
 function resolvedControlNodeTarget(node: ExpandedWorkflowStage): ControlNodeTarget {
@@ -197,7 +197,7 @@ export function toolNodePauseRejectionMessage(name: string, nodeId: string): str
 }
 
 export function ambiguousRunMessage(target: string, matches: readonly string[]): string {
-	return `Ambiguous run prefix "${target}" matches: ${matches.map((id) => id.slice(0, 12)).join(", ")}`;
+	return `Ambiguous run prefix "${target}" matches: ${matches.join(", ")}`;
 }
 
 export function overlaySurfaceFromContext(ctx?: { ui?: PiUISurface }): OverlayPiSurface | undefined {

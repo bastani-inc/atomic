@@ -132,8 +132,10 @@ describe("renderRunDetail — themed", () => {
 		const out = renderRunDetail(detail, { theme: deriveGraphTheme({}), now });
 		const plain = stripAnsi(out);
 
-		// Rounded panel header carries short id, workflow name, and status.
-		assert.match(plain, /RUN abc123/);
+		// The full run id is in the identity row, while the title keeps the
+		// workflow name and state badge.
+		assert.match(plain, /RUN refactor-auth/);
+		assert.match(plain, /abc123uuid/);
 		assert.match(plain, /refactor-auth/);
 		assert.match(plain, /● running/);
 
@@ -144,11 +146,9 @@ describe("renderRunDetail — themed", () => {
 		assert.match(plain, /● planner/);
 		assert.match(plain, /○ worker/);
 
-		// Active run gets the interrupt action hint (shortId crops to 6 chars).
-		assert.match(plain, /workflow interrupt\s+id=abc123/);
+		// Active run keeps the complete id in the interrupt action hint.
+		assert.match(plain, /workflow interrupt\s+id=abc123uuid/);
 		assert.doesNotMatch(plain, /workflow resume/);
-		// Pill label uses the short id too.
-		assert.match(plain, /RUN abc123/);
 	});
 
 	test("paused run renders paused badges, summary state, and resume hint", () => {
@@ -167,11 +167,12 @@ describe("renderRunDetail — themed", () => {
 		const out = renderRunDetail(detail, { theme: deriveGraphTheme({}), now, width: 100 });
 		const plain = stripAnsi(out);
 
-		assert.match(plain, /RUN pause1/);
+		assert.match(plain, /RUN tournament/);
+		assert.match(plain, /pause123uuid/);
 		assert.match(plain, /tournament/);
 		assert.match(plain, /❚❚ paused/);
 		assert.match(plain, /state\s+❚❚ paused/);
-		assert.match(plain, /workflow resume\s+id=pause1/);
+		assert.match(plain, /workflow resume\s+id=pause123uuid/);
 		assert.match(plain, /continue workflow/);
 		assert.doesNotMatch(plain, /workflow interrupt/);
 		assert.doesNotMatch(plain, /○ pending/);
@@ -179,9 +180,10 @@ describe("renderRunDetail — themed", () => {
 
 	test("ended run swaps the action hint to resume and reports duration", () => {
 		const now = 1_000_000;
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const detail = detailFromRun(
 			makeRun({
-				id: "donerunid",
+				id: runId,
 				name: "scan-deps",
 				status: "completed",
 				startedAt: now - 60_000,
@@ -193,8 +195,7 @@ describe("renderRunDetail — themed", () => {
 		const out = renderRunDetail(detail, { theme: deriveGraphTheme({}), now });
 		const plain = stripAnsi(out);
 		assert.match(plain, /✓ completed/);
-		// shortId() crops the pill label and the action hint to 6 chars.
-		assert.match(plain, /workflow resume\s+id=doneru/);
+		assert.ok(plain.includes(`id=${runId}`));
 		assert.match(plain, /started\s+00:15:40/);
 		assert.match(plain, /ended\s+00:16:32/);
 		assert.doesNotMatch(plain, /\([^)]*ago\)/);
@@ -280,12 +281,12 @@ describe("renderRunDetail — themed", () => {
 
 describe("renderRunDetail — plain", () => {
 	test("plain mode (no theme) is ANSI-free and includes rounded panel chrome", () => {
-		// shortId() truncates run ids to 6 chars for the pill label.
+		// The full id is rendered in the body rather than shortened in the title.
 		const detail = detailFromRun(makeRun({ id: "scratch01" }));
 		const out = renderRunDetail(detail);
 		assert.doesNotMatch(out, /\x1b\[/);
-		assert.match(out, /╭ RUN scratc/);
-		assert.match(out, /refactor-auth/);
+		assert.match(out, /╭ RUN refactor-auth/);
+		assert.match(out, /run id\s+scratch01/);
 		assert.match(out, /╰─+╯/);
 	});
 });

@@ -6,24 +6,68 @@ import type { GraphTheme } from "./graph-theme.js";
 import { createPromptSelectList } from "./prompt-card-select.js";
 import type { PromptCardState } from "./prompt-card-state.js";
 import { graphemeParts } from "./prompt-card-text.js";
+import { renderRunIdentityRows } from "./run-identity-rows.js";
+import { statusColor, statusIcon } from "./status-helpers.js";
+
+export interface PromptCardIdentity {
+	readonly runId: string;
+	readonly name: string;
+	readonly meta?: string;
+}
 
 export interface PromptCardRenderOpts {
 	readonly state: PromptCardState;
 	readonly theme: GraphTheme;
 	readonly width: number;
 	readonly cursorOn: boolean;
+	/** Optional run attribution; absent preserves the legacy prompt card. */
+	readonly identity?: PromptCardIdentity;
 }
 
 /**
- * Render the prompt card as a list of width-safe ANSI lines, suitable to
- * paint over the graph body inside the overlay.
+ * Render the prompt surface as an optional attribution banner followed by
+ * the existing prompt UI. The banner contains identity only; the prompt
+ * question, response field, and hints remain in their existing box.
  */
 export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 	const { state, theme, width } = opts;
 	const innerWidth = Math.max(20, width - 2);
 	const borderColor = theme.border;
 	const bg = "";
+	const promptLines = renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg);
+	if (opts.identity === undefined) return promptLines;
 
+	const identityRows = renderRunIdentityRows({
+		runId: opts.identity.runId,
+		name: opts.identity.name,
+		meta: opts.identity.meta,
+		glyph: statusIcon("awaiting_input"),
+		glyphColor: statusColor("awaiting_input", theme),
+		theme,
+		width: innerWidth,
+		idIndent: 1,
+		idGap: 1,
+		nameIndent: 4,
+	});
+	const banner = [
+		makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg),
+		...identityRows.map((row) => makePaddedRow(bg, borderColor, innerWidth, row)),
+		makeBorderBottom(borderColor, innerWidth, bg),
+	];
+	return [
+		...banner,
+		...promptLines.map((line, index) => (index === 0 ? makeBorderTop(borderColor, "", theme, innerWidth, bg) : line)),
+	];
+}
+
+function renderPromptBodyBlock(
+	state: PromptCardState,
+	theme: GraphTheme,
+	innerWidth: number,
+	cursorOn: boolean,
+	borderColor: string,
+	bg: string,
+): string[] {
 	const lines: string[] = [];
 	lines.push(makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg));
 	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
@@ -32,7 +76,7 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 	}
 	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
 
-	const fieldLines = renderResponseFieldBox(state, theme, innerWidth - 4, opts.cursorOn);
+	const fieldLines = renderResponseFieldBox(state, theme, innerWidth - 4, cursorOn);
 	for (const fl of fieldLines) {
 		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${fl}`));
 	}

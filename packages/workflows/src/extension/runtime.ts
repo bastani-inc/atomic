@@ -176,7 +176,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	}
 
 	function stageLabel(stage: RunSnapshot["stages"][number]): string {
-		return `${stage.name} (${stage.id.slice(0, 12)})`;
+		return `${stage.name} (${stage.id})`;
 	}
 
 	function resolveUniqueResumeStage(
@@ -261,7 +261,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			};
 		}
 		const stageMessage = (verb: string, runId: string): string =>
-			`${verb} workflow "${def.name}" from run ${source.id.slice(0, 8)} at stage ${resolvedStage.stageId.slice(0, 8)} (run ${runId.slice(0, 8)}).`;
+			`${verb} workflow "${def.name}" from run ${source.id} at stage ${resolvedStage.stageId} (run ${runId}).`;
 		const launchContinuation = () =>
 			launchDetachedUntilStartup(def, sourceInputs, {
 				...runOptions(options?.policy),

@@ -5,10 +5,8 @@
  * Visual contract:
  *  - One rounded `DISPATCHED` panel.
  *  - One status-coloured rounded run card:
- *      title: runId8 · workflowName · ● running
+ *      title: full runId · workflowName · ● running
  *      body: compact `k=v · k=v · +N more` input summary when present
- *  - One compact next-step hint:
- *      ▸ /workflow connect <id>  see agents working · chat with and steer each stage
  *
  * What we deliberately do NOT emit (was in the legacy 7-row layout):
  *  - the `✓ submitted · /workflow <name>` echo line — pi already shows
@@ -34,13 +32,12 @@
  */
 
 import type { WorkflowInputValues } from "../shared/types.js";
-import { chatWidth, ELLIPSIS, renderHintRows, renderRoundedBox } from "./chat-surface.js";
+import { chatWidth, ELLIPSIS, renderRoundedBox } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 const INLINE_INPUT_LIMIT = 3;
-const SHORT_ID_LEN = 8;
 
 /**
  * Below this many cells, inline inputs on row 1 are unreadable. We wrap
@@ -52,8 +49,9 @@ const MIN_INLINE_INPUT_BUDGET = 16;
 
 export interface RenderDispatchConfirmOpts {
 	/** Registered workflow name (rendered bold beside the run-id tag on row 1). */
+	/** Registered workflow name rendered beside the full run-id body row. */
 	workflowName: string;
-	/** Real run UUID; the renderer surfaces the first 8 chars in the tag. */
+	/** Real run UUID; every rendered occurrence keeps the complete value. */
 	runId: string;
 	/** Inputs merged from CLI tokens + picker output. */
 	inputs: Readonly<WorkflowInputValues>;
@@ -72,8 +70,7 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
 	const width = effectiveWidth(opts.width);
 	const theme = opts.theme;
 	const accent = theme?.warning ?? "#000000";
-	const tag = shortRunId(opts.runId);
-
+	const tag = opts.runId;
 	// Status badge — anchored to the right of row 1, in the running hue.
 	// Mirrors the `● running` glyph used by every other live-run surface.
 	const trailing = theme ? { text: "● running", fg: theme.warning } : { text: "● running" };
@@ -117,34 +114,92 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
 	// the full body interior (width - body chrome) as the wider canvas.
 	if (hasInputs && titleSuffix === undefined) {
 		const BODY_PREFIX_W = 4; // "    " — see renderTaggedCard body prefix
-		const bodyBudget = Math.max(0, width - BODY_PREFIX_W - 1);
+		const bodyBudget = Math.max(0, width - 2 - BODY_PREFIX_W);
 		const overflowSeg = renderInputsSegment(opts.inputs, bodyBudget, theme);
 		if (overflowSeg) bodyRows.push(overflowSeg.rendered);
 	}
 
 	const inputRows =
 		bodyRows.length > 0 ? bodyRows.map((row) => `   ${row} `) : [`   ${titleSuffix ?? "started in background"} `];
-	const titleLine = ` ●  ${tag}  ${opts.workflowName}  ${trailing.text} `;
+	const identifierRows = renderIdentifierRows(opts.runId, width - 2, theme).map((line) => `${line}`);
+	const titleLine = ` ●  ${opts.workflowName}  ${trailing.text} `;
 
-	const hints = renderHintRows(
-		[{ command: `/workflow connect ${tag}`, hint: "see agents working · chat with and steer each stage" }],
-		theme,
-	)
-		.split("\n")
-		.map((line) => ` ${line} `);
+	const hints = renderDispatchHintRows(opts.runId, width - 2, theme).map((line) => ` ${line} `);
 
 	return renderRoundedBox({
 		title: "DISPATCHED",
-		bodyLines: [titleLine, ...inputRows, "", ...hints],
+		bodyLines: [...identifierRows, titleLine, ...inputRows, "", ...hints],
 		accent,
 		theme,
 		width,
 	});
 }
 
-/** First 8 chars of the run UUID — the canonical short form. */
-function shortRunId(runId: string): string {
-	return runId.length > SHORT_ID_LEN ? runId.slice(0, SHORT_ID_LEN) : runId;
+interface IdentifierLine {
+	prefix: string;
+	chunk: string;
+}
+
+function takeIdentifierChunk(value: string, width: number): { chunk: string; rest: string } {
+	const budget = Math.max(1, width);
+	let chunk = "";
+	for (const character of value) {
+		if (chunk.length > 0 && visibleWidth(`${chunk}${character}`) > budget) break;
+		chunk += character;
+	}
+	if (chunk.length === 0) chunk = value[0] ?? "";
+	return { chunk, rest: value.slice(chunk.length) };
+}
+
+function wrapIdentifierLines(
+	id: string,
+	width: number,
+	firstPrefix: string,
+	continuationPrefix: string,
+): IdentifierLine[] {
+	const rows: IdentifierLine[] = [];
+	let remaining = id;
+	let first = true;
+	while (remaining.length > 0 || rows.length === 0) {
+		const prefix = first ? firstPrefix : continuationPrefix;
+		const chunk = takeIdentifierChunk(remaining, width - visibleWidth(prefix));
+		rows.push({ prefix, chunk: chunk.chunk });
+		remaining = chunk.rest;
+		first = false;
+	}
+	return rows;
+}
+
+function renderIdentifierRows(id: string, width: number, theme?: GraphTheme): string[] {
+	const rows = wrapIdentifierLines(id, width, "   run id  ", "          ");
+	if (!theme) return rows.map((row) => `${row.prefix}${row.chunk}`);
+	const muted = hexToAnsi(theme.textMuted);
+	const accent = hexToAnsi(theme.accent);
+	return rows.map((row, index) => {
+		const prefix = index === 0 ? `${muted}${row.prefix}${RESET}` : row.prefix;
+		return `${prefix}${accent}${row.chunk}${RESET}`;
+	});
+}
+
+function renderDispatchHintRows(id: string, width: number, theme?: GraphTheme): string[] {
+	const budget = Math.max(1, width);
+	const prefix = "▸ /workflow connect ";
+	const continuation = "  ";
+	const rows = wrapIdentifierLines(id, budget, prefix, continuation);
+	const suffix = "  see agents working · chat with and steer each stage";
+	const last = rows[rows.length - 1]!;
+	if (visibleWidth(`${last.prefix}${last.chunk}${suffix}`) <= budget) {
+		last.chunk += suffix;
+	} else {
+		rows.push({
+			prefix: continuation,
+			chunk: truncateToWidth(suffix.trimStart(), Math.max(1, budget - visibleWidth(continuation)), ELLIPSIS),
+		});
+	}
+	if (!theme) return rows.map((row) => `${row.prefix}${row.chunk}`);
+	const dim = hexToAnsi(theme.dim);
+	const accent = hexToAnsi(theme.accent);
+	return rows.map((row) => `${dim}${row.prefix}${RESET}${accent}${row.chunk}${RESET}`);
 }
 
 interface InputsSegment {

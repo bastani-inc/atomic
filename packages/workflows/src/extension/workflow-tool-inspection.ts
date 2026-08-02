@@ -78,7 +78,7 @@ export function workflowStageResult(args: WorkflowToolArgs): WorkflowToolResult 
 		: {
 				action: "stage",
 				runId: stageRunId,
-				error: `Stage not found in run ${stageRunId.slice(0, 8)}: ${stage.stageId}`,
+				error: `Stage not found in run ${stageRunId}: ${stage.stageId}`,
 			};
 }
 

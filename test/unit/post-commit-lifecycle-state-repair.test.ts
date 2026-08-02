@@ -609,7 +609,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		};
 		await workflowCmd.options.handler(`resume ${runId}`, ctx);
 		assert.deepEqual(infos, []);
-		assert.deepEqual(errors, [`No paused stages on run ${runId.slice(0, 8)}.`]);
+		assert.deepEqual(errors, [`No paused stages on run ${runId}.`]);
 	});
 
 	test.sequential("slash quit, held synthetic prompt answer, and resume reports one truthful acknowledgment", async () => {

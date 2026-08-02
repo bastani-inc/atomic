@@ -35,12 +35,8 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 function headerMeta(ctx: StageChatViewContext, stage: StageSnapshot | undefined): string {
 	const parts: string[] = [];
 	const sid = ctx.handle?.sessionId ?? stage?.sessionId;
-	if (sid) parts.push(`session ${shortenId(sid)}`);
+	if (sid) parts.push(`session ${sid}`);
 	return parts.join(" · ");
-}
-
-function shortenId(id: string): string {
-	return id.length > 10 ? id.slice(0, 8) : id;
 }
 
 export function sepRule(ctx: StageChatViewContext, width: number): string {

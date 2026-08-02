@@ -342,8 +342,10 @@ describe("renderNodeCard — metadata line", () => {
 
 		const rendered = stripAnsi(lines.join("\n"));
 		assert.match(rendered, /↳ pr1135-import-child/);
-		assert.match(rendered, /✓ complete/);
-		assert.match(rendered, /run run_1234 · 1 out/);
+		// The child run id is never shortened: at node width it wraps across rows,
+		// so reassemble the interior before asserting the complete value.
+		const interior = lines.slice(1, -1).map((line) => stripAnsi(line).replaceAll("│", "").trim());
+		assert.ok(interior.join("").includes("run run_1234567890abcdef · 1 out"));
 		assert.doesNotMatch(stripAnsi(lines[1]!), /0ms|—/);
 	});
 

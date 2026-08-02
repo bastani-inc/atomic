@@ -6,7 +6,7 @@
  */
 
 export { handlePromptCardInput, isPromptEscapeInput } from "./prompt-card-input.js";
-export type { PromptCardRenderOpts } from "./prompt-card-render.js";
+export type { PromptCardIdentity, PromptCardRenderOpts } from "./prompt-card-render.js";
 export { renderPromptCard } from "./prompt-card-render.js";
 export type { PromptCardAction, PromptCardState } from "./prompt-card-state.js";
 export { createPromptCardState, defaultResponseFor } from "./prompt-card-state.js";

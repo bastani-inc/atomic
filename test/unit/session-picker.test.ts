@@ -308,7 +308,7 @@ test("renderSessionPicker emits header, sections, and footer hints", () => {
 	assert.match(joined, /Connect to workflow run/);
 	assert.match(joined, /ACTIVE/);
 	assert.match(joined, /TERMINAL/);
-	assert.match(joined, /aaaa1111/);
+	assert.match(joined, /aaaa1111-0000-0000-0000-000000000000/);
 	assert.match(joined, /tournament/);
 	assert.match(joined, /Navigate/);
 	assert.match(joined, /Connect/);
@@ -343,6 +343,32 @@ test("renderSessionPicker clamps long and wide workflow names to the panel width
 	assert.match(lines.join("\n"), /…/);
 });
 
+test("keeps full ids and intact borders at narrow widths", () => {
+	const theme = deriveGraphTheme({});
+	const state = createSessionPickerState();
+	const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+	const row = { run: makeRun({ id: runId, name: "build-check" }), bucket: "active" as const };
+	for (const width of [80, 79, 60, 40, 30, 20]) {
+		const plain = renderSessionPicker({ width, theme, rows: [row], state }).map((line) =>
+			line.replace(/\u001b\[[0-9;]*m/g, ""),
+		);
+		const bordered = plain.filter((line) => line.startsWith("╭") || line.startsWith("│") || line.startsWith("╰"));
+		assert.ok(bordered.length > 0);
+		const borderWidth = visibleWidth(bordered[0]!);
+		for (const line of bordered) assert.equal(visibleWidth(line), borderWidth);
+		const idStart = plain.findIndex((line) => line.includes(runId.slice(0, 8)));
+		let consumed = 0;
+		for (const line of plain.slice(idStart)) {
+			const fragment = line.replace(/[^0-9a-f-]/gi, "");
+			if (fragment.length === 0) continue;
+			if (!runId.startsWith(fragment, consumed)) break;
+			consumed += fragment.length;
+			if (consumed === runId.length) break;
+		}
+		assert.equal(consumed, runId.length, `full id is retained at width ${width}`);
+		assert.doesNotMatch(plain.join("\n"), /d4e5f6a1-.*…/);
+	}
+});
 test("renderSessionPicker emits a clean ╰────╯ bottom border with hints on a separate row below", () => {
 	// Regression gate: previously the hints text was embedded inside the
 	// bottom-corner row (`╰── ↑↓ Navigate · …  ╯`), producing the broken

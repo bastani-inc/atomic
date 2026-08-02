@@ -278,8 +278,6 @@ export function stageMatchesExpandedIdentifier(stage: ExpandedWorkflowStage, tar
 export function expandedStageLabel(stage: ExpandedWorkflowStage): string {
 	const target = stage.workflowGraphTarget;
 	if (stage.nodeKind === "tool") return `${stage.name} (tool)`;
-	const runPrefix = target.runId.slice(0, 8);
-	const stagePrefix = target.stageId.slice(0, 8);
 	const depthPrefix = target.depth > 0 ? `${childAliasFor(stage) ?? target.runName}:` : "";
-	return `${depthPrefix}${stage.name} (${runPrefix}/${stagePrefix})`;
+	return `${depthPrefix}${stage.name} (${target.runId}/${target.stageId})`;
 }

@@ -217,6 +217,7 @@ export function renderPromptBody(ctx: StageChatViewContext, width: number, budge
 				theme: ctx.theme,
 				width,
 				cursorOn: ctx.focused,
+				identity: { runId: ctx.runId, name: ctx.workflowName },
 			})
 		: [];
 	return fitPromptBodyLines(ctx, embedOrchestratorReturnHintInWidget(ctx, lines, width), width, budget);

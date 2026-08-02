@@ -153,9 +153,7 @@ async function workflowSlashHandler(
 			const resolved = resolveRunIdPrefix(target);
 			if (resolved.kind === "not_found") return fail(`Run not found: ${target}`);
 			if (resolved.kind === "ambiguous") {
-				return fail(
-					`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
-				);
+				return fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.join(", ")}`);
 			}
 			const inspected = inspectRun(resolved.runId);
 			if (!inspected.ok) return fail(`Run not found: ${target}`);

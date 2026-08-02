@@ -269,5 +269,5 @@ function openCompleted(
 }
 
 function formatMatches(entries: readonly WorkflowResumeTarget[]): string {
-	return entries.map((entry) => `${entry.name} (${entry.workflowId.slice(0, 8)})`).join(", ");
+	return entries.map((entry) => `${entry.name} (${entry.workflowId})`).join(", ");
 }

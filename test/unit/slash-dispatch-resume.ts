@@ -447,7 +447,7 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 
 		assert.equal(overlayOpens, 1);
 		assert.equal(attachedOwner, childRunId);
-		assert.match(notifications.join("\n"), /Attached to .* stage hydrated\./);
+		assert.match(notifications.join(String.fromCharCode(10)), /Attached to .* stage hydrated-review\./);
 	});
 });
 

@@ -189,6 +189,33 @@ describe("completed workflow inspection", () => {
 		assert.deepEqual(lifecycle.sent, []);
 		lifecycle.unsubscribe();
 	});
+	test("includes the full workflow id in a completed inspection message", () => {
+		const workflowId = "aa11bb22-33cc-44dd-55ee-66ff77889900";
+		const backend = new InMemoryDurableBackend();
+		const store = createStore();
+		backend.registerWorkflow({
+			workflowId,
+			name: "completed-flow",
+			inputs: {},
+			createdAt: 1,
+			updatedAt: 3,
+			status: "completed",
+		});
+		backend.recordCheckpoint({
+			kind: "stage",
+			workflowId,
+			checkpointId: "stage:1",
+			name: "final",
+			replayKey: "stage:final:1",
+			output: "done",
+			completedAt: 2,
+			topology: completedTopology("final-source"),
+		});
+
+		const opened = openCompletedDurableWorkflow("aa11bb22", { durableBackend: backend, store });
+		assert.equal(opened.ok, true);
+		if (opened.ok) assert.ok(opened.message.includes(workflowId));
+	});
 
 	test("refuses to replace an active run with the same id", () => {
 		const backend = new InMemoryDurableBackend();

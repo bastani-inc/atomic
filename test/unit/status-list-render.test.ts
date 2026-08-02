@@ -4,8 +4,8 @@
  * Visual contract from ui/mockups.html §2:
  *   - one rounded `BACKGROUND` panel
  *   - one two-row card per run (replaces the indented per-stage rows)
- *   - per-card row 1: tag (short id) + bold workflow name + state badge
- *   - per-card row 2: mode + progress strip + meta
+ *   - per-card row 1: status glyph + full run id
+ *   - per-card row 2: workflow name + state badge, followed by meta rows
  *   - trailing hint pointing at `/workflow status <id>`
  *
  * Plain mode preserves rounded panel/card shape without ANSI escapes.
@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { chatWidth } from "../../packages/workflows/src/tui/chat-surface.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
@@ -121,25 +122,26 @@ describe("renderStatusList — populated", () => {
 		assert.match(plain, /● 2/, "two active runs");
 		assert.match(plain, /✓ 1/, "one completed run");
 
-		// One card per run — tag + bold workflow + state badge.
-		assert.match(plain, /abc123\s+refactor-auth/);
-		assert.match(plain, /def456\s+doc-update/);
-		assert.match(plain, /ghi789\s+scan-deps/);
-		assert.match(plain, /● running/);
-		assert.match(plain, /✓ completed/);
+		// Each identity row carries the complete run id; the workflow identity is
+		// deliberately on the following row so the UUID is never shortened.
+		assert.ok(plain.includes("abc123uuid"));
+		assert.ok(plain.includes("def456uuid"));
+		assert.ok(plain.includes("ghi789uuid"));
+		assert.match(plain, /refactor-auth\s+● running/);
+		assert.match(plain, /doc-update\s+● running/);
+		assert.match(plain, /scan-deps\s+✓ completed/);
 
-		// Row 2 — mode + progress strip + meta.
+		// Row 3 — mode + progress strip + meta.
 		assert.match(plain, /chain\s+\[✓\]\[●\]\[○\]/);
 		assert.match(plain, /1\/3/, "chain progress fraction renders in meta");
 		assert.match(plain, /single\s+\[●\]/);
 		assert.match(plain, /single\s+\[✓\]/);
 
-		// Run entries are compact rows, not per-stage expansion in list view.
-		const runRows = plain.split("\n").filter((l) => /[●✓✗⊘○]\s+[a-z0-9]{6}\s+/.test(l));
-		assert.equal(runRows.length, 3, "3 runs × 1 identity row");
+		const idRows = ["abc123uuid", "def456uuid", "ghi789uuid"].filter((id) => plain.includes(id));
+		assert.equal(idRows.length, 3, "3 runs × 1 complete identity row");
 
 		// Trailing hint references the most-recently-active run (def456, 42s ago).
-		assert.match(plain, /▸ \/workflow status def456/);
+		assert.match(plain, /▸ \/workflow status def456uuid/);
 		assert.match(plain, /drill into a run/);
 	});
 
@@ -158,8 +160,8 @@ describe("renderStatusList — populated", () => {
 			{ now, width: 100 },
 		);
 
-		assert.match(out, /↑ 1 blocked/);
-		assert.match(out, /↑\s+blk123\s+auth-blocked\s+↑ blocked/);
+		assert.match(out, /↑\s+blk123uuid/);
+		assert.match(out, /auth-blocked\s+↑ blocked/);
 		assert.doesNotMatch(out, /✓ 1/);
 		assert.doesNotMatch(out, /✓ completed/);
 	});
@@ -183,8 +185,8 @@ describe("renderStatusList — populated", () => {
 			{ now, width: 100 },
 		);
 
-		assert.match(out, /↑ 1 blocked/);
-		assert.match(out, /↑\s+old123\s+adversarial-verification\s+↑ blocked/);
+		assert.match(out, /↑\s+old123uuid/);
+		assert.match(out, /adversarial-verification\s+↑ blocked/);
 		assert.doesNotMatch(out, /✓ 1/);
 		assert.doesNotMatch(out, /✓ completed/);
 	});
@@ -218,8 +220,8 @@ describe("renderStatusList — populated", () => {
 			{ now, width: 100 },
 		);
 
-		assert.match(out, /↑ 1 blocked/);
-		assert.match(out, /↑\s+auth00\s+adversarial-verification\s+↑ blocked/);
+		assert.match(out, /↑\s+auth00uuid/);
+		assert.match(out, /adversarial-verification\s+↑ blocked/);
 		assert.doesNotMatch(out, /✓ 1/);
 		assert.doesNotMatch(out, /✓ completed/);
 	});
@@ -252,7 +254,8 @@ describe("renderStatusList — populated", () => {
 		);
 
 		assert.match(out, /✓ 1/);
-		assert.match(out, /✓\s+okauth\s+tournament\s+✓ completed/);
+		assert.match(out, /okauthuuid/);
+		assert.match(out, /tournament\s+✓ completed/);
 		assert.doesNotMatch(out, /↑ 1 blocked/);
 		assert.doesNotMatch(out, /↑ blocked/);
 	});
@@ -307,11 +310,12 @@ describe("renderStatusList — populated", () => {
 
 		const runningRow = plain.split("\n").find((line) => line.includes("active-wf"));
 		assert.ok(runningRow, "running run row is present");
-		assert.match(runningRow, /● running/);
+		assert.match(runningRow, /active-wf\s+● running/);
 
 		const pausedRow = plain.split("\n").find((line) => line.includes("paused-wf"));
 		assert.ok(pausedRow, "paused run row is present");
-		assert.match(pausedRow, /❚❚\s+pause2\s+paused-wf\s+❚❚ paused/);
+		assert.match(plain, /pause222uuid/);
+		assert.match(pausedRow, /paused-wf\s+❚❚ paused/);
 		assert.doesNotMatch(pausedRow, /○ pending/);
 		assert.doesNotMatch(pausedRow, /● running/);
 	});
@@ -332,7 +336,8 @@ describe("renderStatusList — populated", () => {
 		assert.doesNotMatch(out, /\x1b\[/);
 		assert.match(out, /^╭ BACKGROUND {2}1 run /);
 		assert.match(out, /❚❚ 1 paused/);
-		assert.match(out, /❚❚\s+pause3\s+paused-plain\s+❚❚ paused/);
+		assert.match(out, /pause333uuid/);
+		assert.match(out, /paused-plain\s+❚❚ paused/);
 		assert.match(out, /single\s+\[❚❚\]/, "paused progress cell uses the paused glyph, not the pending cell");
 		assert.doesNotMatch(out, /○ pending/);
 		assert.doesNotMatch(out, /● 1(?:\s+running)?/);
@@ -467,5 +472,25 @@ describe("renderStatusList — populated", () => {
 			assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${visibleWidth(line)} ${JSON.stringify(line)}`);
 		}
 		assert.match(stripAnsi(out), /…/);
+	});
+	test("wraps complete ids and preserves borders at every narrow width", () => {
+		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		const run = makeRun({ id: runId, name: "narrow-status", status: "running" });
+		for (const width of [80, 79, 60, 40, 30, 20]) {
+			const plain = stripAnsi(renderStatusList([run], { theme: deriveGraphTheme({}), width }));
+			const lines = plain.split("\n");
+			const expectedWidth = chatWidth(width);
+			for (const line of lines) assert.equal(visibleWidth(line), expectedWidth);
+			const idStart = lines.findIndex((line) => line.includes(runId.slice(0, 8)));
+			const nameRow = lines.findIndex((line, index) => index > idStart && line.includes("narrow-status"));
+			const renderedId = lines
+				.slice(idStart, nameRow)
+				.join("")
+				.replace(/[^0-9a-f-]/gi, "");
+			assert.equal(renderedId, runId, `full id is retained at width ${width}`);
+			assert.doesNotMatch(plain, /d4e5f6a1-.*…/);
+			assert.ok(lines[0]?.startsWith("╭"));
+			assert.ok(lines.at(-1)?.startsWith("╰"));
+		}
 	});
 });

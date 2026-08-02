@@ -109,18 +109,20 @@ function _fakeStageSession(): StageSessionRuntime {
 
 describe("renderResult — run variant", () => {
 	test("running run renders a dispatch confirmation card", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
 		const out = renderResult({
 			action: "run",
 			name: "hello-world",
-			runId: "abc-123",
+			runId,
 			status: "running",
-			message: 'Workflow "hello-world" started in background (runId: abc-123).',
+			message: `Workflow "hello-world" started in background (runId: ${runId}).`,
 			stages: [],
 		});
-		assert.ok(out.includes("abc-123"));
-		assert.ok(out.includes("hello-world"));
-		assert.ok(out.includes("● running"));
-		assert.ok(out.includes("/workflow connect abc-123"));
+		const plain = out.replace(/\u001b\[[0-9;]*m/g, "");
+		assert.ok(plain.includes(runId));
+		assert.ok(plain.includes("hello-world"));
+		assert.ok(plain.includes("● running"));
+		assert.ok(plain.includes(`/workflow connect ${runId}`));
 	});
 
 	test("failed run shows error", () => {

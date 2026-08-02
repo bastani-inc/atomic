@@ -43,7 +43,7 @@ function workflowNameItems(runtime: ExtensionRuntime): PiArgumentCompletion[] {
 function runIdItems(): PiArgumentCompletion[] {
 	return topLevelWorkflowRuns(store.runs()).map((run) => ({
 		value: `${run.id} `,
-		label: run.id.slice(0, 8),
+		label: run.id,
 		description: `${run.name} — ${run.status}`,
 	}));
 }

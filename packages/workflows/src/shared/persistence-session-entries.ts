@@ -139,7 +139,7 @@ export interface RunBlockedPayload {
 
 /**
  * Appends a `workflow.run.start` entry and labels it for /tree filtering.
- * Label format: `wf:<name>:<short-id>` (first 8 chars of runId).
+ * Label format: `wf:<name>:<full-run-id>`.
  */
 export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): void {
 	if (typeof api.appendEntry !== "function") return;
@@ -156,8 +156,7 @@ export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): v
 		ts: payload.ts,
 	});
 	if (entryId && typeof api.setLabel === "function") {
-		const shortId = payload.runId.slice(0, 8);
-		api.setLabel(entryId, `wf:${payload.name}:${shortId}`);
+		api.setLabel(entryId, `wf:${payload.name}:${payload.runId}`);
 	}
 }
 

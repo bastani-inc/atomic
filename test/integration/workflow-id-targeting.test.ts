@@ -21,7 +21,7 @@ const config: WorkflowRuntimeConfig = {
 beforeEach(() => store.clear());
 afterEach(() => store.clear());
 
-test("displayed Workflow run and stage ID prefixes are actionable through the public tool", async () => {
+test("displayed Workflow run and stage IDs remain full while typed prefixes stay actionable through the public tool", async () => {
 	const fixture = workflow({
 		name: "actionable-id-proof",
 		description: "Deterministic workflow identifier proof.",
@@ -49,9 +49,8 @@ test("displayed Workflow run and stage ID prefixes are actionable through the pu
 	const execute = makeExecuteWorkflowTool(runtime, () => undefined);
 	const listed = await execute({ action: "status" }, {} as never);
 	const rendered = renderResult(listed, { plain: true });
-	const runMatch = rendered.match(new RegExp(`\\b(${completed.runId.slice(0, 6)})\\b`));
-	assert.ok(runMatch, "status should render the actionable run ID prefix");
-	const displayedRunId = runMatch[1]!;
+	assert.ok(rendered.includes(completed.runId), `status should render the full run ID; output:\n${rendered}`);
+	const displayedRunId = completed.runId.slice(0, 6);
 
 	const status = await execute({ action: "status", runId: displayedRunId }, {} as never);
 	assert.equal(status.action, "statusDetail");
@@ -67,15 +66,15 @@ test("displayed Workflow run and stage ID prefixes are actionable through the pu
 	);
 	assert.equal(stages.action, "stages");
 	const renderedStages = renderResult(stages, { plain: true, width: 200 });
-	const stageMatch = renderedStages.match(/deterministic-stage \(([^)]+)\)/);
-	assert.ok(stageMatch, "stages should render the actionable stage ID prefix");
+	const stageMatch = renderedStages.match(/deterministic-stage [(]([^)]+)[)]/);
+	assert.ok(stageMatch, "stages should render the full stage ID");
 	const displayedStageId = stageMatch[1]!;
-	assert.equal(displayedStageId, stageId.slice(0, 12));
+	assert.equal(displayedStageId, stageId);
 	const stage = await execute(
 		{
 			action: "stage",
 			runId: displayedRunId,
-			stageId: displayedStageId,
+			stageId: stageId.slice(0, 12),
 		},
 		{} as never,
 	);

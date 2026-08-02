@@ -5,9 +5,8 @@
  *  - One transparent rounded `BACKGROUND` panel with `N runs` and status
  *    badges (`✓ n  ● n  ○ n  ✗ n`) in the title.
  *  - One compact rounded card per run:
- *      title: `<status glyph>  <short id>  <name>`
- *      row 1: `<dim mode · progress · duration>`
- *  - Blank line between cards; trailing blank trimmed.
+ *      title: `<status glyph>  <full id>`
+ *      row 1: `<name> · <dim mode · progress · duration>`
  *  - Collapsed single-line form below 80 cells:
  *      `▾  N background · X ●` in dim+warning.
  *
@@ -28,9 +27,10 @@ import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
-import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { deriveGraphTheme } from "./graph-theme.js";
+import { renderRunIdentityRows } from "./run-identity-rows.js";
 import { statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
 
@@ -38,7 +38,6 @@ import type { PiTheme } from "./store-widget-installer.js";
 // Tunables
 // ---------------------------------------------------------------------------
 
-const SHORT_ID_LEN = 6;
 export const RECENT_ENDED_WINDOW_MS = 30_000;
 const COLLAPSED_BREAKPOINT_COLS = 80;
 
@@ -176,10 +175,6 @@ function selectDisplayRuns(snap: StoreSnapshot, now: number): RunSnapshot[] {
 // Per-run derived strings
 // ---------------------------------------------------------------------------
 
-function shortId(run: RunSnapshot): string {
-	return run.id.length > SHORT_ID_LEN ? run.id.slice(0, SHORT_ID_LEN) : run.id;
-}
-
 function statusGlyph(run: RunSnapshot): string {
 	if (isQuitRun(run)) return "○";
 	switch (effectiveRunStatus(run)) {
@@ -313,29 +308,28 @@ function formatTitleBadges(badges: readonly FlatBandBadge[], theme: GraphTheme, 
 // ---------------------------------------------------------------------------
 
 function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme): string[] {
-	const dim = hexToAnsi(theme.dim);
-	const text = hexToAnsi(theme.text);
-	const accent = hexToAnsi(theme.accent);
-	const muted = hexToAnsi(theme.textMuted);
-	const glyphFg = hexToAnsi(statusFg(run, theme));
-
-	const glyph = statusGlyph(run);
-	const sid = shortId(run);
-	const name = run.name;
-
-	const line1 = `   ${glyphFg}${glyph}${RESET}  ${accent}${sid}${RESET}  ${text}${BOLD}${name}${RESET}`;
 	const meta = metaLine(run, now);
 	// Render the meta line in muted while running so the elapsed-time
 	// gradient stays readable; dim it once the run has terminated.
-	const metaFg = effectiveRunStatus(run) === "running" ? muted : dim;
-	const line2 = `     ${metaFg}${meta}${RESET}`;
-	return [line1, line2];
+	const metaColor = effectiveRunStatus(run) === "running" ? theme.textMuted : theme.dim;
+	return renderRunIdentityRows({
+		runId: run.id,
+		name: run.name,
+		meta,
+		glyph: statusGlyph(run),
+		glyphColor: statusFg(run, theme),
+		metaColor,
+		theme,
+	});
 }
 
 function plainRunLines(run: RunSnapshot, now: number): string[] {
-	const line1 = `   ${statusGlyph(run)}  ${shortId(run)}  ${run.name}`;
-	const line2 = `     ${metaLine(run, now)}`;
-	return [line1, line2];
+	return renderRunIdentityRows({
+		runId: run.id,
+		name: run.name,
+		meta: metaLine(run, now),
+		glyph: statusGlyph(run),
+	});
 }
 
 // ---------------------------------------------------------------------------

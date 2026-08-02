@@ -20,13 +20,15 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
 		error: over.error,
 	};
 }
-test("session list renders the band-header chrome with both runs and a detail hint", () => {
+test("session list renders full run ids with the band-header chrome and a detail hint", () => {
 	const theme = deriveGraphTheme({});
 	const now = 100_000;
+	const activeRunId = "11111111-2222-4333-8444-555555555555";
+	const completedRunId = "22222222-3333-4444-8555-666666666666";
 	const runs = [
-		makeRun({ id: "11111111-...", name: "tournament", status: "running", startedAt: now - 30_000 }),
+		makeRun({ id: activeRunId, name: "tournament", status: "running", startedAt: now - 30_000 }),
 		makeRun({
-			id: "22222222-...",
+			id: completedRunId,
 			name: "research",
 			status: "completed",
 			startedAt: now - 60_000,
@@ -39,17 +41,16 @@ test("session list renders the band-header chrome with both runs and a detail hi
 	// Outline-pill band header (DESIGN.md §5).
 	assert.match(out, /BACKGROUND/);
 	assert.match(out, /2 runs/);
-	// Both runs are listed with bolded names.
+	// Both runs are listed with bolded names and complete identifiers.
 	assert.match(out, /tournament/);
 	assert.match(out, /research/);
-	// Short-id (6 chars) leads each entry.
-	assert.match(out, /111111/);
-	assert.match(out, /222222/);
+	assert.ok(out.includes(activeRunId));
+	assert.ok(out.includes(completedRunId));
 	// Status count badges per band-header contract.
 	assert.match(out, /● 1/);
 	assert.match(out, /✓ 1/);
-	// Trailing hint nudges drill-down via the rich detail surface.
-	assert.match(out, /\/workflow status \w+/);
+	// Trailing hint nudges drill-down via the rich detail surface using the complete identifier.
+	assert.ok(out.includes(`/workflow status ${activeRunId}`));
 });
 
 test("session list includeAll:true includes old retained terminal runs", () => {

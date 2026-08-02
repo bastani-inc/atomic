@@ -413,7 +413,7 @@ describe("issue #2078 — quitting an in-flight ctx.tool through the real CLI", 
 		);
 		assert.equal(
 			evidence.quitNotifications.some((message) =>
-				message.includes(`Run ${evidence.runId.slice(0, 8)} quit and can be resumed with /workflow resume.`),
+				message.includes(`Run ${evidence.runId} quit and can be resumed with /workflow resume.`),
 			),
 			true,
 			`quit notifications were: ${JSON.stringify(evidence.quitNotifications)}`,

@@ -11,7 +11,10 @@ import {
 	listOpenableCompletedWorkflows,
 	resolveCompletedWorkflow,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
-import { listResumableFromBackend } from "../../packages/workflows/src/durable/resume-catalog.js";
+import {
+	formatResumableWorkflowList,
+	listResumableFromBackend,
+} from "../../packages/workflows/src/durable/resume-catalog.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 
 let tempDir = "";
@@ -80,6 +83,21 @@ describe("completed durable catalog", () => {
 			listCompletedFromBackend(backend).map((entry) => entry.workflowId),
 			["completed"],
 		);
+	});
+	test("formats full workflow ids in resume target lists", () => {
+		const workflowId = "bb22cc33-44dd-55ee-66ff-778899001122";
+		const rendered = formatResumableWorkflowList([
+			{
+				workflowId,
+				name: "resumable-flow",
+				status: "paused",
+				completedCheckpoints: 1,
+				pendingPrompts: 0,
+				createdAt: 1,
+				updatedAt: 2,
+			},
+		]);
+		assert.ok(rendered.includes(workflowId));
 	});
 
 	test("keeps completed graphs inspectable while stripping stale retained chat", () => {

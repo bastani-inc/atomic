@@ -144,9 +144,11 @@ describe("resumeDurableWorkflow", () => {
 		if (result.ok) assert.equal(result.workflowId, "wf-prefix-current");
 	});
 
-	test("returns ambiguous when prefix matches multiple", async () => {
+	test("returns ambiguous with full workflow ids when prefix matches multiple", async () => {
+		const firstId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const secondId = "339e05a4-2289-408e-9076-d1a348f582af";
 		backend.registerWorkflow({
-			workflowId: "wf-x-1",
+			workflowId: firstId,
 			name: "resumable-pipeline",
 			inputs: { topic: "a" },
 			createdAt: 1,
@@ -154,17 +156,19 @@ describe("resumeDurableWorkflow", () => {
 			completedCheckpoints: 1,
 		});
 		backend.registerWorkflow({
-			workflowId: "wf-x-2",
+			workflowId: secondId,
 			name: "resumable-pipeline",
 			inputs: { topic: "b" },
 			createdAt: 1,
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		const result = await resumeDurableWorkflow("wf-x", deps());
+		const result = await resumeDurableWorkflow("339e05a4", deps());
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "not_registered");
 		assert.match(result.message, /Ambiguous/);
+		assert.ok(result.message.includes(firstId));
+		assert.ok(result.message.includes(secondId));
 	});
 
 	test("returns not_resumable when status is completed", async () => {
@@ -277,6 +281,20 @@ describe("resumeDurableWorkflow", () => {
 		}
 		// Backend status flipped back to running.
 		assert.equal(backend.getWorkflow("wf-resume-target")!.status, "running");
+	});
+	test("includes the full workflow id in a successful resume message", async () => {
+		const workflowId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		backend.registerWorkflow({
+			workflowId,
+			name: "resumable-pipeline",
+			inputs: { topic: "data" },
+			createdAt: 1,
+			status: "failed",
+		});
+		const result = await resumeDurableWorkflow(workflowId, deps());
+		assert.equal(result.ok, true);
+		if (result.ok) assert.ok(result.message.includes(workflowId));
+		await jobs.get(workflowId)?.promise;
 	});
 
 	test("resume succeeds when the backend has durable checkpoint state for the workflow", async () => {

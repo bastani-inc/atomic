@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { PendingPrompt } from "../../packages/workflows/src/shared/store-types.ts";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
 	createPromptCardState,
@@ -18,6 +19,7 @@ import {
 	handlePromptCardInput,
 	renderPromptCard,
 } from "../../packages/workflows/src/tui/prompt-card.ts";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.ts";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.ts";
 
@@ -249,6 +251,59 @@ describe("renderPromptCard", () => {
 		const lines = renderPromptCard({ state, theme, width: 60, cursorOn: false });
 		const joined = lines.join("\n");
 		assert.ok(joined.includes("UNIQUE-MARKER-XYZ"), "message text must appear in output");
+	});
+
+	test("renders an identity-only awaiting-input attribution banner", () => {
+		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		const question = "Ship this change?";
+		const state = createPromptCardState(makePrompt({ message: question }));
+		const lines = renderPromptCard({
+			state,
+			theme,
+			width: 80,
+			cursorOn: false,
+			identity: { runId, name: "build-check" },
+		});
+		const plain = lines.map(stripAnsi);
+		const bannerEnd = plain.findIndex((line) => line.startsWith("╰"));
+		assert.ok(bannerEnd >= 0, "attribution banner has a bottom border");
+		const banner = plain.slice(0, bannerEnd + 1).join("\n");
+
+		assert.match(banner, /^╭ AWAITING INPUT /);
+		assert.ok(banner.includes(runId), "banner keeps the complete run id");
+		assert.ok(banner.includes("build-check"), "banner keeps the workflow name");
+		assert.doesNotMatch(banner, /Ship this change\?/);
+		assert.equal(plain.filter((line) => line.startsWith("╭ AWAITING INPUT ")).length, 1);
+		assert.ok(
+			lines[1]?.includes(`${hexToAnsi(statusColor("awaiting_input", theme))}${statusIcon("awaiting_input")}`),
+		);
+		assert.ok(plain.join("\n").includes(question), "the existing prompt UI still renders the question below");
+	});
+
+	test("wraps the attribution id without breaking borders at narrow widths", () => {
+		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
+		const state = createPromptCardState(makePrompt({ message: "UNIQUE-PROMPT" }));
+		for (const width of [80, 40, 30, 20]) {
+			const lines = renderPromptCard({
+				state,
+				theme,
+				width,
+				cursorOn: false,
+				identity: { runId, name: "build-check" },
+			});
+			const plain = lines.map(stripAnsi);
+			const expectedWidth = Math.max(22, width);
+			for (const line of plain) assert.equal(visibleWidth(line), expectedWidth);
+			const banner = plain.slice(0, plain.findIndex((line) => line.startsWith("╰")) + 1);
+			const idStart = banner.findIndex((line) => line.includes(runId.slice(0, 8)));
+			const nameRow = banner.findIndex((line, index) => index > idStart && line.includes("build-check"));
+			const renderedId = banner
+				.slice(idStart, nameRow)
+				.join("")
+				.replace(/[^0-9a-f-]/gi, "");
+			assert.equal(renderedId, runId, `full id is retained at width ${width}`);
+			assert.ok(plain.every((line) => line.startsWith("╭") || line.startsWith("╰") || line.startsWith("│")));
+		}
 	});
 
 	test("response field uses rounded border chrome", () => {

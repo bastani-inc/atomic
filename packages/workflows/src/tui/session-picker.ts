@@ -155,7 +155,8 @@ function renderHeader(width: number, theme: GraphTheme): string {
 	const inner = Math.max(4, width - 2);
 	const border = hexToAnsi(theme.border);
 	const accent = hexToAnsi(theme.accent);
-	const padded = ` ${TITLE} `;
+	const title = truncateToWidth(TITLE, Math.max(1, inner - 2), "…");
+	const padded = ` ${title} `;
 	const padLen = Math.max(0, inner - visibleWidth(padded));
 	const left = Math.min(2, padLen);
 	const right = padLen - left;
@@ -250,45 +251,95 @@ function stageProgress(run: RunSnapshot): string {
 	return `${done}/${total} stages`;
 }
 
-function renderRunRow(row: PickerRow, isSelected: boolean, inner: number, theme: GraphTheme, now: number): string {
+interface IdentifierLine {
+	prefix: string;
+	chunk: string;
+}
+
+function takeIdentifierChunk(value: string, width: number): { chunk: string; rest: string } {
+	const budget = Math.max(1, width);
+	let chunk = "";
+	for (const character of value) {
+		if (chunk.length > 0 && visibleWidth(`${chunk}${character}`) > budget) break;
+		chunk += character;
+	}
+	if (chunk.length === 0) chunk = value[0] ?? "";
+	return { chunk, rest: value.slice(chunk.length) };
+}
+
+function wrapIdentifierLines(
+	id: string,
+	width: number,
+	firstPrefix: string,
+	continuationPrefix: string,
+): IdentifierLine[] {
+	const rows: IdentifierLine[] = [];
+	let remaining = id;
+	let first = true;
+	while (remaining.length > 0 || rows.length === 0) {
+		const prefix = first ? firstPrefix : continuationPrefix;
+		const chunk = takeIdentifierChunk(remaining, width - visibleWidth(prefix));
+		rows.push({ prefix, chunk: chunk.chunk });
+		remaining = chunk.rest;
+		first = false;
+	}
+	return rows;
+}
+
+function renderRunRow(row: PickerRow, isSelected: boolean, inner: number, theme: GraphTheme, now: number): string[] {
 	const border = hexToAnsi(theme.border);
+	const panelBg = hexBg(theme.bg);
 	const run = row.run;
 	const icon = statusIcon(run.status);
-	const idShort = run.id.slice(0, 8);
-	const elapsed = fmtElapsed(run, now);
-	const progress = stageProgress(run);
-
-	// Layout columns: glyph(1) idShort(8) name(flex) elapsed(R) progress(R).
-	// Name budgeting is done by visible cell width so wide workflow names
-	// cannot push the elapsed/progress columns through the right border.
-	const elapsedCol = elapsed.padStart(8, " ");
-	const progressCol = progress.padStart(10, " ");
-	const rightPlain = `${elapsedCol}   ${progressCol} `;
-	const namePrefixW = visibleWidth(` ${icon} ${idShort}  `);
-	const nameBudget = Math.max(1, inner - namePrefixW - visibleWidth(rightPlain) - 1);
-	const name = truncateToWidth(run.name, nameBudget, "…");
-
-	if (isSelected) {
-		const pillBg = hexBg(theme.accent);
-		const pillFg = hexToAnsi(theme.backgroundElement);
-		const left = ` ${icon} ${idShort}  ${name}`;
-		const right = rightPlain;
-		const gap = Math.max(1, inner - visibleWidth(left) - visibleWidth(right));
-		const content = `${left}${" ".repeat(gap)}${right}`;
-		return `${border}│${RESET}${pillBg}${pillFg}${BOLD}${padTo(content, inner)}${RESET}${border}│${RESET}`;
-	}
-
-	const panelBg = hexBg(theme.bg);
 	const iconColor = hexToAnsi(statusColor(run.status, theme));
 	const dim = hexToAnsi(theme.dim);
 	const text = hexToAnsi(theme.text);
 	const muted = hexToAnsi(theme.textMuted);
 
-	const left = ` ${iconColor}${icon}${RESET}${panelBg} ${dim}${idShort}${RESET}${panelBg}  ${text}${name}${RESET}${panelBg}`;
-	const right = `${muted}${elapsedCol}${RESET}${panelBg}   ${dim}${progressCol}${RESET}${panelBg} `;
-	const gap = Math.max(1, inner - visibleWidth(left) - visibleWidth(right));
-	const content = `${left}${" ".repeat(gap)}${right}`;
-	return `${border}│${RESET}${panelBg}${padTo(content, inner)}${RESET}${border}│${RESET}`;
+	// The full identifier owns its own row. It is never ellipsized; narrow
+	// overlays wrap it into continuation rows so the box remains intact.
+	const idRows = wrapIdentifierLines(run.id, inner, ` ${icon} `, "   ");
+	const renderIdRow = ({ prefix, chunk }: IdentifierLine, index: number): string => {
+		if (isSelected) {
+			return `${border}│${RESET}${hexBg(theme.accent)}${hexToAnsi(theme.backgroundElement)}${BOLD}${padTo(
+				`${prefix}${chunk}`,
+				inner,
+			)}${RESET}${border}│${RESET}`;
+		}
+		const content =
+			index === 0
+				? ` ${iconColor}${icon}${RESET}${panelBg} ${dim}${chunk}${RESET}${panelBg}`
+				: `   ${dim}${chunk}${RESET}${panelBg}`;
+		return `${border}│${RESET}${panelBg}${padTo(content, inner)}${border}│${RESET}`;
+	};
+
+	const elapsed = fmtElapsed(run, now);
+	const progress = stageProgress(run);
+	const elapsedCol = elapsed.padStart(8, " ");
+	const progressCol = progress.padStart(10, " ");
+	const rightPlain = `${elapsedCol}   ${progressCol} `;
+	const rightBudget = Math.max(1, inner - 5);
+	const rightVisible = truncateToWidth(rightPlain, rightBudget, "…");
+	const right =
+		visibleWidth(rightVisible) < visibleWidth(rightPlain)
+			? `${dim}${rightVisible}${RESET}${panelBg}`
+			: `${muted}${elapsedCol}${RESET}${panelBg}   ${dim}${progressCol}${RESET}${panelBg} `;
+	const nameBudget = Math.max(1, inner - 3 - visibleWidth(rightVisible) - 1);
+	const name = truncateToWidth(run.name, nameBudget, "…");
+
+	const nameRow = isSelected
+		? `${border}│${RESET}${hexBg(theme.accent)}${hexToAnsi(theme.backgroundElement)}${BOLD}${padTo(
+				`   ${name}${" ".repeat(Math.max(1, inner - 3 - visibleWidth(name) - visibleWidth(rightVisible)))}${rightVisible}`,
+				inner,
+			)}${RESET}${border}│${RESET}`
+		: `${border}│${RESET}${panelBg}${padTo(
+				`   ${text}${name}${RESET}${panelBg}${" ".repeat(
+					Math.max(1, inner - 3 - visibleWidth(name) - visibleWidth(right)),
+				)}${right}`,
+				inner,
+			)}${border}│${RESET}`;
+
+	return [...idRows.map(renderIdRow), nameRow];
 }
 
 function renderEmptyState(inner: number, theme: GraphTheme): string {
@@ -305,7 +356,7 @@ const VIEWPORT = 10;
 export function renderSessionPicker(opts: SessionPickerRenderOpts): string[] {
 	const { width, theme, rows, state } = opts;
 	const now = opts.now ?? Date.now();
-	const inner = Math.max(40, width - 2);
+	const inner = Math.max(4, width - 2);
 
 	const lines: string[] = [];
 	lines.push(renderHeader(width, theme));
@@ -334,7 +385,7 @@ export function renderSessionPicker(opts: SessionPickerRenderOpts): string[] {
 			prevBucket = row.bucket;
 		}
 		const absIndex = Math.max(0, start) + i;
-		lines.push(renderRunRow(row, absIndex === sel, inner, theme, now));
+		lines.push(...renderRunRow(row, absIndex === sel, inner, theme, now));
 	}
 	lines.push(renderBlankRow(inner, theme));
 	lines.push(renderBottomBorder(width, theme));

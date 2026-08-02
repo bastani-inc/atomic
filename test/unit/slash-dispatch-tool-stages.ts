@@ -176,24 +176,25 @@ describe("tool run-control actions", () => {
 		assert.match(renderResult(ambiguous, { plain: true }), /Ambiguous run prefix/);
 	});
 
-	test.sequential("workflow status rejects an ambiguous run ID exactly as abbreviated in its list", async () => {
-		const firstId = "abc123-first-full-run-id";
-		const secondId = "abc123-second-full-run-id";
+	test.sequential("workflow status rejects an ambiguous run ID while listing every full id", async () => {
+		const firstId = "a1b2c3d4-1111-4111-8111-111111111111";
+		const secondId = "a1b2c3d4-2222-4222-8222-222222222222";
 		store.recordRunStart(makeInflightRun(firstId));
 		store.recordRunStart(makeInflightRun(secondId));
 		const handler = makeToolHandler();
 
 		const listed = await handler({ action: "status" }, {} as never);
 		const rendered = renderResult(listed, { plain: true });
-		assert.match(rendered, /abc123/);
+		assert.ok(rendered.includes(firstId));
+		assert.ok(rendered.includes(secondId));
 
-		const detail = await handler({ action: "status", runId: "abc123" }, {} as never);
+		const detail = await handler({ action: "status", runId: "a1b2c3d4" }, {} as never);
 		assert.equal(detail.action, "statusDetail");
 		const statusDetail = detail as { action: string; runId: string; error?: string };
-		assert.equal(statusDetail.runId, "abc123");
+		assert.equal(statusDetail.runId, "a1b2c3d4");
 		assert.match(statusDetail.error ?? "", /Ambiguous run prefix/);
-		assert.match(statusDetail.error ?? "", new RegExp(firstId.slice(0, 12)));
-		assert.match(statusDetail.error ?? "", new RegExp(secondId.slice(0, 12)));
+		assert.ok((statusDetail.error ?? "").includes(firstId));
+		assert.ok((statusDetail.error ?? "").includes(secondId));
 	});
 
 	test.sequential("makeExecuteWorkflowTool returns chronologically final snapshot result after tools", async () => {

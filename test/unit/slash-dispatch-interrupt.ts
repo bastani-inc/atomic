@@ -26,7 +26,12 @@ describe("/workflow run-control chat commands", () => {
 	test.sequential.each([["completed"], ["failed"], ["killed"]] as const)(
 		"top-level /workflow quit <id> leaves %s terminal runs unchanged",
 		async (status) => {
-			const runId = `slash-quit-${status}-${Date.now()}`;
+			const runId =
+				status === "completed"
+					? "a1b2c3d4-3333-4333-8333-333333333333"
+					: status === "failed"
+						? "a1b2c3d4-4444-4444-8444-444444444444"
+						: "a1b2c3d4-5555-4555-8555-555555555555";
 			recordTerminalRun(runId, status);
 
 			const { workflowCmd } = await registerWorkflowCommand();
@@ -42,7 +47,7 @@ describe("/workflow run-control chat commands", () => {
 			await workflowCmd.options.handler(`quit ${runId}`, ctx);
 
 			const joined = msgs.join("\n");
-			assert.match(joined, /already ended/i);
+			assert.ok(joined.includes(`Run ${runId} already ended.`));
 			assert.doesNotMatch(joined, /Run not found/);
 			assert.equal(store.runs().find((r) => r.id === runId)?.status, status);
 		},

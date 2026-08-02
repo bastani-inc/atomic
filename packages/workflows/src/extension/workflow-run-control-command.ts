@@ -58,10 +58,10 @@ export async function handleRunControlCommand(
 	const theme = deriveGraphTheme({});
 	const failHeadlessAttachCommand = (targetAction: "connect" | "attach", runId: string, stageId?: string): boolean => {
 		if (policy.allowInputPicker) return false;
-		const displayTarget = stageId ? `${runId.slice(0, 8)} stage ${stageId.slice(0, 8)}` : runId.slice(0, 8);
+		const displayTarget = stageId ? `${runId} stage ${stageId}` : runId;
 		fail(
 			`/workflow ${targetAction} requires an interactive UI surface and cannot attach in non-interactive mode. ` +
-				`Target: ${displayTarget}. Use /workflow status ${runId.slice(0, 8)} or the workflow tool's status/stages/transcript actions for non-interactive inspection.`,
+				`Target: ${displayTarget}. Use /workflow status ${runId} or the workflow tool's status/stages/transcript actions for non-interactive inspection.`,
 		);
 		return true;
 	};
@@ -90,14 +90,12 @@ export async function handleRunControlCommand(
 			return true;
 		}
 		if (resolved.kind === "ambiguous") {
-			fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`);
+			fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.join(", ")}`);
 			return true;
 		}
 		if (failHeadlessAttachCommand("connect", resolved.runId)) return true;
 		if (policy.allowInputPicker) deps.overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
-		print(
-			`Connected to ${resolved.runId.slice(0, 8)}. h hide · ctrl+x leave graph · return to main chat · esc close.`,
-		);
+		print(`Connected to ${resolved.runId}. h hide · ctrl+x leave graph · return to main chat · esc close.`);
 		return true;
 	}
 
@@ -125,7 +123,7 @@ export async function handleRunControlCommand(
 			}
 			if (action === "interrupt" && !yes && confirmationPrompt) {
 				const title = `Interrupt all ${inFlight.length} in-flight workflow runs?`;
-				const body = `Pauses: ${inFlight.map((run) => `${run.name} (${run.id.slice(0, 8)})`).join(", ")}`;
+				const body = `Pauses: ${inFlight.map((run) => `${run.name} (${run.id})`).join(", ")}`;
 				if (!(await confirmationPrompt(title, body))) {
 					print("Cancelled.");
 					return true;
@@ -163,23 +161,21 @@ export async function handleRunControlCommand(
 			return true;
 		}
 		if (resolved.kind === "ambiguous") {
-			fail(
-				`Ambiguous run prefix "${target}" matches multiple runs: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
-			);
+			fail(`Ambiguous run prefix "${target}" matches multiple runs: ${resolved.matches.join(", ")}`);
 			return true;
 		}
 		const run = store.runs().find((candidate) => candidate.id === resolved.runId);
 		if (action === "quit") {
 			if (run?.endedAt !== undefined) {
-				print(`Run ${resolved.runId.slice(0, 8)} already ended.`);
+				print(`Run ${resolved.runId} already ended.`);
 				return true;
 			}
 			try {
 				const result = await quitRun(resolved.runId);
-				if (result.ok) print(`Run ${result.runId.slice(0, 8)} quit and can be resumed with /workflow resume.`);
-				else if (result.reason === "already_ended") print(`Run ${result.runId.slice(0, 8)} already ended.`);
+				if (result.ok) print(`Run ${result.runId} quit and can be resumed with /workflow resume.`);
+				else if (result.reason === "already_ended") print(`Run ${result.runId} already ended.`);
 				else if (result.reason === "no_active_stages") {
-					fail(`No controllable stages on run ${result.runId.slice(0, 8)}; the run remains active.`);
+					fail(`No controllable stages on run ${result.runId}; the run remains active.`);
 				} else fail(`Run not found: ${target}`);
 			} catch (error) {
 				fail(`Failed to quit run ${resolved.runId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -188,17 +184,17 @@ export async function handleRunControlCommand(
 		}
 		if (!yes && run && run.endedAt === undefined && confirmationPrompt) {
 			const confirmed = await confirmationPrompt(
-				`Interrupt workflow run ${run.name} (${run.id.slice(0, 8)})?`,
+				`Interrupt workflow run ${run.name} (${run.id})?`,
 				"Pauses live work so it can be resumed later.",
 			);
 			if (!confirmed) {
-				print(`Cancelled. Run ${resolved.runId.slice(0, 8)} is still active.`);
+				print(`Cancelled. Run ${resolved.runId} is still active.`);
 				return true;
 			}
 		}
 		try {
 			const result = await interruptRun(resolved.runId);
-			if (result.ok) print(`Run ${result.runId.slice(0, 8)} interrupted and can be resumed.`);
+			if (result.ok) print(`Run ${result.runId} interrupted and can be resumed.`);
 			else
 				fail(
 					result.reason === "not_found"
@@ -206,8 +202,8 @@ export async function handleRunControlCommand(
 						: result.reason === "already_ended"
 							? `Run already ended: ${target}`
 							: result.reason === "stage_not_found"
-								? `Stage not found for run ${resolved.runId.slice(0, 8)}.`
-								: `No active stages to interrupt on run ${resolved.runId.slice(0, 8)}.`,
+								? `Stage not found for run ${resolved.runId}.`
+								: `No active stages to interrupt on run ${resolved.runId}.`,
 				);
 		} catch (error) {
 			fail(`Failed to interrupt run ${resolved.runId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -227,7 +223,7 @@ export async function handleRunControlCommand(
 					fail(
 						active.length === 0
 							? "No active runs to pause."
-							: `Picker requires an interactive UI surface. Active runs:\n${active.map((r) => `  ${r.id.slice(0, 8)}  ${r.name}`).join("\n")}\n\nUsage: /workflow pause <runId> [stageId]`,
+							: `Picker requires an interactive UI surface. Active runs:\n${active.map((r) => `  ${r.id}  ${r.name}`).join("\n")}\n\nUsage: /workflow pause <runId> [stageId]`,
 					);
 				} else if (action === "attach") {
 					fail(
@@ -302,7 +298,7 @@ export async function handleRunControlCommand(
 								if (result.ok && policy.allowInputPicker)
 									deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
 								result.ok
-									? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`)
+									? print(result.message ?? `Resumed ${result.runId}`)
 									: fail(`Run not found: ${picked.result.runId}`);
 							}
 						} catch (error) {
@@ -352,7 +348,7 @@ export async function handleRunControlCommand(
 				!hasPendingDurableResumeTransition(exactBeforePreparation.id);
 			if (exactIsActivelyRunning) {
 				fail(
-					`Workflow ${exactBeforePreparation.id.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${exactBeforePreparation.id.slice(0, 8)}\` instead of resuming.`,
+					`Workflow ${exactBeforePreparation.id} is already running in this session. Attach with \`/workflow connect ${exactBeforePreparation.id}\` instead of resuming.`,
 				);
 				return true;
 			}
@@ -395,7 +391,7 @@ export async function handleRunControlCommand(
 				);
 				if (combined.kind === "ambiguous") {
 					fail(
-						`Ambiguous workflow prefix "${target}" matches: ${combined.matches.map((match) => `${match.name} (${match.workflowId.slice(0, 8)})`).join(", ")}`,
+						`Ambiguous workflow prefix "${target}" matches: ${combined.matches.map((match) => `${match.name} (${match.workflowId})`).join(", ")}`,
 					);
 					return true;
 				}
@@ -418,9 +414,7 @@ export async function handleRunControlCommand(
 				return true;
 			}
 			if (resolved.kind === "ambiguous") {
-				fail(
-					`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`,
-				);
+				fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.join(", ")}`);
 				return true;
 			}
 			runId = resolved.runId;
@@ -437,8 +431,8 @@ export async function handleRunControlCommand(
 			if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
 			print(
 				stageId
-					? `Attached to ${runId.slice(0, 8)} stage ${stageId.slice(0, 8)}. ctrl+x return to graph · esc close.`
-					: `Attached to ${runId.slice(0, 8)}. ↵ chat · ctrl+x leave graph · return to main chat.`,
+					? `Attached to ${runId} stage ${stageId}. ctrl+x return to graph · esc close.`
+					: `Attached to ${runId}. ↵ chat · ctrl+x leave graph · return to main chat.`,
 			);
 			return true;
 		}
@@ -455,11 +449,11 @@ export async function handleRunControlCommand(
 				if (!result.ok) {
 					fail(
 						result.reason === "not_found"
-							? `Run not found: ${stageRunId.slice(0, 8)}`
+							? `Run not found: ${stageRunId}`
 							: result.reason === "already_ended"
-								? `Run ${stageRunId.slice(0, 8)} already ended.`
+								? `Run ${stageRunId} already ended.`
 								: result.reason === "no_active_stages"
-									? `No pausable stages on run ${stageRunId.slice(0, 8)}.`
+									? `No pausable stages on run ${stageRunId}.`
 									: `Stage not found: ${stageTarget ?? "(unknown)"}`,
 					);
 					return true;
@@ -467,8 +461,8 @@ export async function handleRunControlCommand(
 				if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
 				print(
 					result.paused.length === 0
-						? `No stages were paused on run ${stageRunId.slice(0, 8)}.`
-						: `Paused ${result.paused.length} stage(s) on run ${stageRunId.slice(0, 8)}: ${result.paused.map((stage) => stage.name).join(", ")}`,
+						? `No stages were paused on run ${stageRunId}.`
+						: `Paused ${result.paused.length} stage(s) on run ${stageRunId}: ${result.paused.map((stage) => stage.name).join(", ")}`,
 				);
 			} catch (error) {
 				fail(`Failed to pause run ${stageRunId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -497,7 +491,7 @@ export async function handleRunControlCommand(
 			!hasPendingDurableResumeTransition(stageRunId)
 		) {
 			fail(
-				`Workflow ${stageRunId.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${stageRunId.slice(0, 8)}\` instead of resuming.`,
+				`Workflow ${stageRunId} is already running in this session. Attach with \`/workflow connect ${stageRunId}\` instead of resuming.`,
 			);
 			return true;
 		}
@@ -521,7 +515,7 @@ export async function handleRunControlCommand(
 			return true;
 		}
 		if (!result.ok) {
-			fail(`Run not found: ${stageRunId.slice(0, 8)}`);
+			fail(`Run not found: ${stageRunId}`);
 			return true;
 		}
 		if (result.mode === "partial") {
@@ -546,11 +540,11 @@ export async function handleRunControlCommand(
 			const runLevelResumed =
 				hadPausedRunState && !hadPausedStageState && stageId === undefined && result.snapshot.status === "running";
 			if (result.message !== undefined) print(result.message);
-			else if (runLevelResumed) print(`Resumed run ${stageRunId.slice(0, 8)}.`);
-			else fail(`No paused stages on run ${stageRunId.slice(0, 8)}.`);
+			else if (runLevelResumed) print(`Resumed run ${stageRunId}.`);
+			else fail(`No paused stages on run ${stageRunId}.`);
 		} else {
 			print(
-				`Resumed ${result.resumed.length} stage(s) on run ${stageRunId.slice(0, 8)}${message ? ` with message: "${message}"` : ""}.`,
+				`Resumed ${result.resumed.length} stage(s) on run ${stageRunId}${message ? ` with message: "${message}"` : ""}.`,
 			);
 		}
 		return true;

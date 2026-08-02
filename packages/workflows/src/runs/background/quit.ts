@@ -247,7 +247,7 @@ function controllableAdmissionBoundaries(
  */
 async function closeToolAdmission(boundaries: readonly ToolAdmissionBoundary[], runId: string): Promise<void> {
 	if (boundaries.length === 0) return;
-	const reason = new WorkflowGracefulQuitError(runId, `run ${runId.slice(0, 8)}`);
+	const reason = new WorkflowGracefulQuitError(runId, `run ${runId}`);
 	await Promise.all(boundaries.map((boundary) => boundary.closeForQuit(reason)));
 }
 

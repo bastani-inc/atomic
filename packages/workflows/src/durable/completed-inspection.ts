@@ -58,13 +58,13 @@ export function openCompletedDurableWorkflow(
 		return failure("not_found", `No completed durable workflow found for id/prefix: ${workflowIdOrPrefix}`);
 	}
 	if (resolved.kind === "ambiguous") {
-		const matches = resolved.matches.map((entry) => `${entry.name} (${entry.workflowId.slice(0, 8)})`).join(", ");
+		const matches = resolved.matches.map((entry) => `${entry.name} (${entry.workflowId})`).join(", ");
 		return failure("ambiguous", `Ambiguous completed workflow prefix "${workflowIdOrPrefix}" matches: ${matches}`);
 	}
 	if (resolved.kind === "stale") {
 		return failure(
 			"stale",
-			`Completed workflow ${resolved.entry.workflowId.slice(0, 8)} is stale or missing durable checkpoint/session data and cannot be opened.`,
+			`Completed workflow ${resolved.entry.workflowId} is stale or missing durable checkpoint/session data and cannot be opened.`,
 		);
 	}
 
@@ -72,7 +72,7 @@ export function openCompletedDurableWorkflow(
 	if (existing !== undefined && existing.status !== "completed") {
 		return failure(
 			"active",
-			`Workflow ${resolved.snapshot.id.slice(0, 8)} is already active in this session; attach with /workflow connect ${resolved.snapshot.id.slice(0, 8)} instead.`,
+			`Workflow ${resolved.snapshot.id} is already active in this session; attach with /workflow connect ${resolved.snapshot.id} instead.`,
 		);
 	}
 	const snapshots = completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry);
@@ -90,7 +90,7 @@ export function openCompletedDurableWorkflow(
 		runId: snapshot.id,
 		workflowId: snapshot.id,
 		name: snapshot.name,
-		message: `Opened completed durable workflow "${snapshot.name}" (${snapshot.id.slice(0, 8)}) for read-only inspection${hasReopenableStage ? " and follow-up chat" : ""}.`,
+		message: `Opened completed durable workflow "${snapshot.name}" (${snapshot.id}) for read-only inspection${hasReopenableStage ? " and follow-up chat" : ""}.`,
 	};
 }
 

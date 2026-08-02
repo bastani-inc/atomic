@@ -87,7 +87,7 @@ describe("workflow tool status run listing", () => {
 		// In-flight run sorts before the ended run despite starting later.
 		const active = result.runs[0]!;
 		assert.equal(active.runId, activeId);
-		assert.equal(active.runIdPrefix, activeId.slice(0, 8));
+		assert.equal(active.runIdPrefix, activeId);
 		assert.equal(active.name, "release-docs");
 		assert.equal(active.status, "running");
 		assert.equal(active.endedAt, undefined);
@@ -174,10 +174,10 @@ describe("workflow tool status run listing", () => {
 		assert.match(text, /action: status/);
 		assert.match(text, /filter: all/);
 		assert.match(text, /runs: 1 \(1 in flight\)/);
-		// Concise summary line: [n]  <prefix>  <name>  <status>  <elapsed>  <hint>.
+		// Concise summary line includes the full run id so it remains actionable without truncation.
 		const summaryLine = text.split("\n").find((line) => line.startsWith("[1]"));
 		assert.notEqual(summaryLine, undefined);
-		assert.match(summaryLine!, new RegExp(activeId.slice(0, 8)));
+		assert.ok(summaryLine!.includes(activeId));
 		assert.match(summaryLine!, /release-docs/);
 		assert.match(summaryLine!, /running/);
 		assert.match(summaryLine!, /awaiting input \(1\): approve/);

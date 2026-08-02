@@ -166,7 +166,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		["resume", "resume", /Resumed 1 stage\(s\)/],
 	])("/workflow %s emits displayable success output in headless mode", async (_label, action, expected) => {
 		const { handler, sent } = await registerWorkflowCommand();
-		const runId = `headless-success-${action}-${Date.now()}`;
+		const runId = `339e05a4-2289-408e-9076-d1a348f582${action === "interrupt" ? "01" : action === "quit" ? "02" : action === "pause" ? "03" : "04"}`;
 		const stageId = `stage-${action}`;
 
 		if (action !== "reload") {
@@ -193,6 +193,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		assert.ok(outputs.length > 0, `expected /workflow ${action} to emit command output`);
 		const content = outputs.map((message) => message.content ?? "").join("\n");
 		assert.match(content, expected);
+		if (action !== "reload") assert.ok(content.includes(runId), `expected full run id ${runId} in ${action} output`);
 	});
 
 	test.sequential("/workflow interrupt --all emits displayable success output in headless mode", async () => {
