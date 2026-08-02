@@ -91,17 +91,22 @@ describe("ralph research artifact ownership", () => {
 			assertStringOutput(options?.output);
 			const researchPath = options.output;
 
-			// The runner owns the artifact, so the prompt must route the report
-			// through the stage's own turn before an admitted async completion.
+			// The runner owns the artifact, so the prompt must route the complete report
+			// through the stage's final assistant message and describe the nomination heuristic.
 			assert.match(
 				prompt,
-				/Return the (complete|rewritten) research report[\s\S]*as your final message[\s\S]*before any admitted async completion/,
-				`${stage} must ask for the report before admitted async completions`,
+				/Return the (complete|rewritten) research report[\s\S]*as your final message/,
+				`${stage} must ask for the complete report as its final message`,
 			);
 			assert.match(
 				prompt,
-				/largest non-empty post-admission assistant turn/,
-				`${stage} must describe the no-pre-admission fallback`,
+				/defaults to the last pre-admission assistant text[\s\S]*at least 26 UTF-8 bytes and 3:2 larger/,
+				`${stage} must describe the size-qualified post-admission override`,
+			);
+			assert.match(
+				prompt,
+				/without pre-admission text it uses the most recent post-admission candidate at that floor/,
+				`${stage} must describe the no-pre-admission recency fallback`,
 			);
 			assert.match(
 				prompt,

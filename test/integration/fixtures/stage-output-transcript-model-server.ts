@@ -5,8 +5,8 @@
  * deliverable. The mid-prompt variant answers an admission with ACK plus a real
  * bash tool call, then makes a third request for post-admission content. The
  * deliverable-after-admission variant returns INTRO, admits the custom turn, then
- * returns REAL-DELIVERABLE. A size control can make ACK larger than the initial
- * deliverable without changing the nomination contract.
+ * returns REAL-DELIVERABLE. A size control makes ACK larger than the initial
+ * deliverable but keeps it below the 3:2 nomination override threshold.
  *
  * Usage: bun stage-output-transcript-model-server.ts <state-dir> <nonce>
  *   [trailing|mid-prompt|deliverable-after-admission] [default|acknowledgement-larger]
@@ -123,7 +123,7 @@ function main(): void {
 	const introduction = `INTRO-${nonce}`;
 	const acknowledgement =
 		size === "acknowledgement-larger"
-			? `ACK-${nonce}\n\n${"Larger admission-triggered acknowledgement content. ".repeat(12)}`
+			? `ACK-${nonce}\n\n${"Larger admission-triggered acknowledgement content. ".repeat(4)}`
 			: `ACK-${nonce}`;
 	const server = createServer((request, response) => {
 		request.resume();

@@ -113,10 +113,24 @@ function exactSizedText(label: string, bytes: number): string {
 	return label.padEnd(bytes, ".");
 }
 
+function expectedWithPreAdmission(texts: NominationTexts): string {
+	const preAdmissionBytes = Buffer.byteLength(texts.stageOwn, "utf8");
+	const postAdmissionBytes = Buffer.byteLength(texts.postAdmission, "utf8");
+	return postAdmissionBytes >= 26 && postAdmissionBytes * 2 >= preAdmissionBytes * 3
+		? texts.postAdmission
+		: texts.stageOwn;
+}
+
+function expectedWithoutPreAdmission(texts: NominationTexts): string {
+	if (Buffer.byteLength(texts.postAdmission, "utf8") >= 26) return texts.postAdmission;
+	if (Buffer.byteLength(texts.stageOwn, "utf8") >= 26) return texts.stageOwn;
+	return texts.postAdmission;
+}
+
 const candidateSizeRelationships: readonly CandidateSizeRelationship[] = [
-	{ id: "deliverable much larger than acknowledgement", stageOwnBytes: 96, postAdmissionBytes: 8 },
+	{ id: "pre-admission candidate much larger", stageOwnBytes: 96, postAdmissionBytes: 8 },
 	{ id: "near parity", stageOwnBytes: 64, postAdmissionBytes: 63 },
-	{ id: "acknowledgement much larger than deliverable", stageOwnBytes: 18, postAdmissionBytes: 155 },
+	{ id: "post-admission candidate much larger", stageOwnBytes: 18, postAdmissionBytes: 155 },
 ];
 
 const nominationMatrix: readonly NominationMatrixRow[] = [
@@ -136,10 +150,7 @@ const nominationMatrix: readonly NominationMatrixRow[] = [
 			assistantTurn(texts.stageOwn),
 			assistantTurn(texts.postAdmission),
 		],
-		expected: (texts) =>
-			Buffer.byteLength(texts.postAdmission, "utf8") >= Buffer.byteLength(texts.stageOwn, "utf8")
-				? texts.postAdmission
-				: texts.stageOwn,
+		expected: expectedWithoutPreAdmission,
 	},
 	{
 		id: "A3 [REAL, C, ACK+toolCall, toolResult, ACK2]",
@@ -201,6 +212,7 @@ const nominationMatrix: readonly NominationMatrixRow[] = [
 		id: "B5 [C, REAL]",
 		preAdmissionBoundary: false,
 		scenario: (provenance, texts) => [admittedTurn("subagent:1", provenance), assistantTurn(texts.stageOwn)],
+		expected: (texts) => texts.stageOwn,
 	},
 	{
 		id: "B6 [INTRO, C1, REPORT, C2, ACK]",
@@ -272,25 +284,11 @@ async function assertNominationScenario(
 					.join("")
 					.trim();
 			};
-			const hasPreAdmissionText = scenario
-				.slice(0, firstAdmissionIndex)
-				.some((message) => assistantText(message).length > 0);
 			const postAdmissionTexts = scenario
 				.slice(firstAdmissionIndex + 1)
 				.map(assistantText)
 				.filter((text) => text.length > 0);
-			const discardedPostAdmissionText = hasPreAdmissionText
-				? postAdmissionTexts.length > 0
-				: postAdmissionTexts.length > 1;
-			if (discardedPostAdmissionText) {
-				assert.match(
-					receipt,
-					hasPreAdmissionText
-						? /WARNING: the stage's own pre-admission turn was persisted; post-admission assistant content was discarded\./
-						: /WARNING: no stage-own assistant text existed before the admission; a post-admission assistant turn was selected and other post-admission assistant content was discarded\./,
-				);
-				for (const text of postAdmissionTexts) assert.ok(transcript.includes(text));
-			}
+			for (const text of postAdmissionTexts) assert.ok(transcript.includes(text));
 		}
 		return { receipt, transcript };
 	} finally {
@@ -593,14 +591,16 @@ describe("createStageContext — prompt metadata propagation", () => {
 	for (const row of nominationMatrix) {
 		for (const relationship of candidateSizeRelationships) {
 			for (const provenance of ["active-stage", "assistant-settled"] as const) {
-				const decision =
-					row.preAdmissionBoundary === false ? "no-pre-admission fallback" : "deliberate clause-1 boundary";
+				const decision = row.preAdmissionBoundary === false ? "recency fallback" : "size-qualified preference";
 				test(`${decision}: ${row.id} with ${relationship.id} and ${provenance} provenance`, async () => {
 					const texts = {
 						stageOwn: exactSizedText("OWN", relationship.stageOwnBytes),
 						postAdmission: exactSizedText("POST", relationship.postAdmissionBytes),
 					};
-					await assertNominationScenario(row.scenario(provenance, texts), row.expected?.(texts) ?? texts.stageOwn);
+					await assertNominationScenario(
+						row.scenario(provenance, texts),
+						row.expected?.(texts) ?? expectedWithPreAdmission(texts),
+					);
 				});
 			}
 		}
@@ -608,10 +608,11 @@ describe("createStageContext — prompt metadata propagation", () => {
 
 	for (const row of reviewerRegressionCases) {
 		for (const provenance of ["active-stage", "assistant-settled"] as const) {
-			test(`deliberate clause-1 boundary: ${row.id} always nominates bytes before ${provenance} admission`, async () => {
+			test(`3:2 threshold: ${row.id} with ${provenance} admission`, async () => {
+				const texts = { stageOwn: row.before, postAdmission: row.after };
 				await assertNominationScenario(
 					[assistantTurn(row.before), admittedTurn("subagent:reviewer", provenance), assistantTurn(row.after)],
-					row.before,
+					expectedWithPreAdmission(texts),
 				);
 			});
 		}
@@ -624,7 +625,7 @@ describe("createStageContext — prompt metadata propagation", () => {
 		);
 	});
 
-	test("deliberate clause-1 boundary: Z2 admission without provenance still uses the absolute boundary", async () => {
+	test("Z2 admission without provenance uses the same nomination heuristic", async () => {
 		await assertNominationScenario(
 			[
 				assistantTurn(SUBSTANTIVE_DELIVERABLE),
@@ -634,28 +635,28 @@ describe("createStageContext — prompt metadata propagation", () => {
 			SUBSTANTIVE_DELIVERABLE,
 		);
 	});
-	test("deliberate clause-1 boundary: candidate size never overrides the pre-admission stage-own turn", async () => {
+	test("a post-admission candidate below the floor cannot override pre-admission text", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "active-stage"), assistantTurn("1234")],
 			"123456",
 		);
 	});
 
-	test("deliberate clause-1 boundary: near-equal candidates nominate the pre-admission stage-own turn", async () => {
+	test("near-equal candidates nominate the pre-admission stage-own turn", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "active-stage"), assistantTurn("12345")],
 			"123456",
 		);
 	});
 
-	test("deliberate clause-1 boundary: near-equal candidates ignore assistant-settled provenance", async () => {
+	test("near-equal candidates ignore assistant-settled provenance", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "assistant-settled"), assistantTurn("12345")],
 			"123456",
 		);
 	});
 
-	test("deliberate clause-1 boundary: nominates a deliverable before an active-stage acknowledgement", async () => {
+	test("nominates a deliverable before a terse active-stage acknowledgement", async () => {
 		await assertNominationScenario(
 			[
 				assistantTurn("REAL DELIVERABLE WITH SUBSTANTIVE DETAIL"),
@@ -666,14 +667,42 @@ describe("createStageContext — prompt metadata propagation", () => {
 		);
 	});
 
-	test("deliberate clause-1 boundary: persists the introduction and discloses the discarded deliverable", async () => {
-		const deliverable = "REAL DELIVERABLE WITH SUBSTANTIVE DETAIL";
-		const evidence = await assertNominationScenario(
-			[assistantTurn("INTRO"), admittedTurn("subagent:job-1", "assistant-settled"), assistantTurn(deliverable)],
-			"INTRO",
+	test("requires the full 3:2 ratio before post-admission text overrides the default", async () => {
+		const preAdmission = exactSizedText("PRE", 100);
+		const belowThreshold = exactSizedText("POST", 149);
+		const atThreshold = exactSizedText("POST", 150);
+		await assertNominationScenario(
+			[assistantTurn(preAdmission), admittedTurn("subagent:1", "active-stage"), assistantTurn(belowThreshold)],
+			preAdmission,
 		);
-		assert.match(evidence.receipt, /stage's own pre-admission turn was persisted/);
-		assert.match(evidence.transcript, new RegExp(deliverable));
+		await assertNominationScenario(
+			[assistantTurn(preAdmission), admittedTurn("subagent:1", "active-stage"), assistantTurn(atThreshold)],
+			atThreshold,
+		);
+	});
+
+	test("requires the 26-byte floor before post-admission text can override the default", async () => {
+		const preAdmission = "INTRO";
+		const belowFloor = exactSizedText("POST", 25);
+		const atFloor = exactSizedText("POST", 26);
+		await assertNominationScenario(
+			[assistantTurn(preAdmission), admittedTurn("subagent:1", "active-stage"), assistantTurn(belowFloor)],
+			preAdmission,
+		);
+		await assertNominationScenario(
+			[assistantTurn(preAdmission), admittedTurn("subagent:1", "active-stage"), assistantTurn(atFloor)],
+			atFloor,
+		);
+	});
+
+	test("preserves a report-scale deliverable produced after admission instead of the preamble", async () => {
+		const introduction = exactSizedText("INTRO", 42);
+		const deliverable = exactSizedText("REAL DELIVERABLE", 20_999);
+		const evidence = await assertNominationScenario(
+			[assistantTurn(introduction), admittedTurn("subagent:job-1", "assistant-settled"), assistantTurn(deliverable)],
+			deliverable,
+		);
+		assert.match(evidence.transcript, /REAL DELIVERABLE/);
 	});
 
 	for (const provenance of ["active-stage", "assistant-settled"] as const) {
@@ -693,6 +722,44 @@ describe("createStageContext — prompt metadata propagation", () => {
 					toolResultTurn(),
 					admittedTurn("subagent:job-1", provenance),
 					assistantTurn("Noted the async subagent result. Continuing."),
+					assistantTurn(report),
+				],
+				report,
+			);
+		});
+
+		test(`recency above the floor beats a 30 KB earlier acknowledgement with ${provenance} provenance`, async () => {
+			const acknowledgement = exactSizedText("ACK", 30_000);
+			const deliverable = "short but real deliverable";
+			await assertNominationScenario(
+				[admittedTurn("subagent:job-1", provenance), assistantTurn(acknowledgement), assistantTurn(deliverable)],
+				deliverable,
+			);
+		});
+
+		test(`preserves [INTRO, C, ACK, REPORT] with ${provenance} provenance`, async () => {
+			const introduction = exactSizedText("INTRO", 42);
+			const report = exactSizedText("REAL REPORT", 20_999);
+			await assertNominationScenario(
+				[
+					assistantTurn(introduction),
+					admittedTurn("subagent:job-1", provenance),
+					assistantTurn("ACK"),
+					assistantTurn(report),
+				],
+				report,
+			);
+		});
+
+		test(`preserves [INTRO, assistant(toolCall), toolResult, C, REPORT] with ${provenance} provenance`, async () => {
+			const introduction = exactSizedText("INTRO", 42);
+			const report = exactSizedText("REAL REPORT", 20_999);
+			await assertNominationScenario(
+				[
+					assistantTurn(introduction),
+					assistantToolCallTurn(),
+					toolResultTurn(),
+					admittedTurn("subagent:job-1", provenance),
 					assistantTurn(report),
 				],
 				report,

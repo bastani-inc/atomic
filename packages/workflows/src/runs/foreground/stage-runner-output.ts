@@ -133,12 +133,18 @@ function discardedPostAdmissionWarning(
 ): string | undefined {
 	if (messages === undefined) return undefined;
 	const nomination = nominatedAssistantOutput(messages, promptStartIndex);
-	if (nomination === undefined || nomination.text !== fullOutput.trim() || !nomination.discardedPostAdmissionText)
+	if (
+		nomination === undefined ||
+		nomination.text !== fullOutput.trim() ||
+		!nomination.discardedPlausiblySubstantiveText
+	)
 		return undefined;
 	const selection =
 		nomination.source === "pre-admission"
 			? "the stage's own pre-admission turn was persisted; post-admission assistant content was discarded"
-			: "no stage-own assistant text existed before the admission; a post-admission assistant turn was selected and other post-admission assistant content was discarded";
+			: nomination.source === "post-admission-fallback"
+				? "no stage-own assistant text existed before the admission; a post-admission assistant turn was selected and other post-admission assistant content was discarded"
+				: "a substantially larger post-admission assistant turn was persisted; the pre-admission assistant turn was discarded";
 	return `WARNING: ${selection}. Search the companion transcript at ${transcriptFile}.`;
 }
 
@@ -192,6 +198,15 @@ function degenerateWarning(fullOutput: string, outputPath: string): string | und
 	const pathReference = `(?:${escapeRegex(normalizedPath)}|${escapeRegex(basename(normalizedPath))})`;
 	const pointerOnly =
 		new RegExp(`^${pathReference}$`, "i").test(normalized) ||
+		new RegExp(`^(?:wrote|saved)[.!,:;]?\\s+${pathReference}$`, "i").test(normalized) ||
+		new RegExp(
+			`^i have (?:written|saved) (?:the\\s+)?(?:research\\s+)?(?:report|output|artifact|results?) (?:to|at|in) ${pathReference}[.]?$`,
+			"i",
+		).test(normalized) ||
+		new RegExp(
+			`^(?:the\\s+)?(?:full\\s+)?(?:research\\s+)?(?:report|output|artifact|results?) is now available at ${pathReference}(?:\\s+-\\s+please read it)?[.]?$`,
+			"i",
+		).test(normalized) ||
 		/^(?:see|refer to|read|find|review)\s+(?:the\s+)?(?:output|artifact|report|results?)?(?:\s+(?:at|in|from))?\s*[^ ]+$/i.test(
 			normalized,
 		) ||

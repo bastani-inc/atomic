@@ -3,8 +3,8 @@
 # Terminal evidence for workflow stage-output nomination and durable transcripts.
 #
 # Optional arguments select model ordering, admission timing, and candidate size. Existing two-, three-, and
-# four-argument invocations retain their original defaults. The acknowledgement-larger size is supported for the
-# trailing/streaming ordering, where it directly proves that size cannot override the stage-own turn.
+# four-argument invocations retain their original defaults. The acknowledgement-larger control is marginally larger
+# than the deliverable but remains below the 3:2 override threshold.
 # Usage: bash scripts/e2e/stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir>
 #   [trailing|mid-prompt|deliverable-after-admission] [streaming|settled] [default|acknowledgement-larger]
 # The caller creates a real tmux session; this script drives the REAL interactive
@@ -25,13 +25,11 @@
 #
 # The filesystem assertions are the load-bearing evidence:
 #
-#   1. stage-output.md contains the last assistant turn before the first admission: REAL-DELIVERABLE for trailing,
-#      INTRO for the other orderings
-#   2. stage-output.md never contains admission-triggered assistant content, even when ACK is the larger candidate
+#   1. stage-output.md contains REAL-DELIVERABLE for every ordering, including reports completed after admission
+#   2. stage-output.md never contains ACK or INTRO; marginal size alone does not replace the trailing deliverable
 #   3. the rendered transcript exists under the configured durable run root, outside both the repository and $TMPDIR
 #   4. the transcript retains admitted and intermediate turns and records runtime admission provenance
-#   5. whenever any non-empty post-admission assistant content is discarded, the receipt warns and names the transcript
-#
+#   5. warnings are absent for a terse trailing ACK and present when plausible assistant content is passed over
 # ATOMIC_WORKFLOW_ARTIFACT_DIR is deliberately pointed at a per-run scratch
 # directory in the user's home (not the real ~/.atomic and not $TMPDIR). This
 # keeps the evidence isolated while exercising the durable-root path semantics.
@@ -291,30 +289,15 @@ ACK="ACK-$NONCE"
 ASYNC_COMPLETION="ASYNC-COMPLETION-$NONCE"
 EXPECTED_OUTPUT="$DELIVERABLE"
 EXPECTED_KIND="deliverable"
-# Deliberate clause-1 boundary: for non-trailing orderings the pre-admission introduction remains the artifact, while
-# the exact file-only receipt must disclose that the post-admission deliverable was discarded into the transcript.
-if [[ "$ORDERING" != "trailing" ]]; then
-	EXPECTED_OUTPUT="$INTRO"
-	EXPECTED_KIND="introduction"
-fi
 if ! grep -qF -- "$EXPECTED_OUTPUT" "$OUTPUT_FILE"; then
-	echo "stage-output-transcript evidence: output does not contain stage-own $EXPECTED_OUTPUT" >&2
+	echo "stage-output-transcript evidence: output does not contain stage deliverable $EXPECTED_OUTPUT" >&2
 	exit 1
 fi
-OUTPUT_CONTAINS_DELIVERABLE=false
+OUTPUT_CONTAINS_DELIVERABLE=true
 OUTPUT_CONTAINS_INTRO=false
-if [[ "$ORDERING" == "trailing" ]]; then
-	OUTPUT_CONTAINS_DELIVERABLE=true
-	if grep -qF -- "$INTRO" "$OUTPUT_FILE"; then
-		echo "stage-output-transcript evidence: trailing output unexpectedly contains $INTRO" >&2
-		exit 1
-	fi
-else
-	OUTPUT_CONTAINS_INTRO=true
-	if grep -qF -- "$DELIVERABLE" "$OUTPUT_FILE"; then
-		echo "stage-output-transcript evidence: post-admission $DELIVERABLE replaced the stage-own turn" >&2
-		exit 1
-	fi
+if grep -qF -- "$INTRO" "$OUTPUT_FILE"; then
+	echo "stage-output-transcript evidence: output retained intermediate $INTRO" >&2
+	exit 1
 fi
 if grep -qF -- "$ACK" "$OUTPUT_FILE"; then
 	echo "stage-output-transcript evidence: admission-triggered $ACK replaced the stage-own turn" >&2
@@ -380,24 +363,34 @@ printf 'ordering=%s\nadmission=%s\nsize=%s\ntranscript_exists=true\ntranscript_p
 	"$ORDERING" "$ADMISSION" "$SIZE" "$TRANSCRIPT_PATH" "$DELIVERABLE_MATCH" "$ACK_MATCH" "$INTRO_MATCH" >"$ARTIFACTS/assertion-transcript.txt"
 
 WARNING_EXPECTED=false
-if [[ "$ACK_MATCH" == true || ( "$ORDERING" != "trailing" && "$DELIVERABLE_MATCH" == true ) ]]; then
+WARNING_BRANCH="none"
+if [[ "$SIZE" == "acknowledgement-larger" ]]; then
 	WARNING_EXPECTED=true
+	WARNING_BRANCH="pre-admission"
+elif [[ "$ORDERING" != "trailing" ]]; then
+	WARNING_EXPECTED=true
+	WARNING_BRANCH="post-admission-override"
 fi
-if [[ "$WARNING_EXPECTED" == true ]]; then
+if [[ "$WARNING_BRANCH" == "pre-admission" ]]; then
 	if ! rg -nF -- "WARNING: the stage's own pre-admission turn was persisted; post-admission assistant content was discarded." "$ARTIFACTS/receipt.txt" >"$ARTIFACTS/receipt-warning-hit.txt"; then
-		echo "stage-output-transcript evidence: exact file-only receipt omitted the discarded-post-admission-content warning" >&2
+		echo "stage-output-transcript evidence: exact file-only receipt omitted the pre-admission selection warning" >&2
 		exit 1
 	fi
-	if ! grep -qF -- "Search the companion transcript at $TRANSCRIPT_PATH." "$ARTIFACTS/receipt.txt"; then
-		echo "stage-output-transcript evidence: warning omitted the companion transcript path" >&2
+elif [[ "$WARNING_BRANCH" == "post-admission-override" ]]; then
+	if ! rg -nF -- "WARNING: a substantially larger post-admission assistant turn was persisted; the pre-admission assistant turn was discarded." "$ARTIFACTS/receipt.txt" >"$ARTIFACTS/receipt-warning-hit.txt"; then
+		echo "stage-output-transcript evidence: exact file-only receipt omitted the post-admission override warning" >&2
 		exit 1
 	fi
-elif grep -qF -- "post-admission assistant content was discarded" "$ARTIFACTS/receipt.txt"; then
-	echo "stage-output-transcript evidence: receipt warned without discarded post-admission assistant text" >&2
+elif grep -qF -- "WARNING:" "$ARTIFACTS/receipt.txt"; then
+	echo "stage-output-transcript evidence: healthy trailing receipt contained an unexpected warning" >&2
 	exit 1
 fi
-printf 'warning_expected=%s\nwarning_present=%s\nwarning_names_transcript=%s\n' \
-	"$WARNING_EXPECTED" "$WARNING_EXPECTED" "$WARNING_EXPECTED" >"$ARTIFACTS/assertion-receipt.txt"
+if [[ "$WARNING_EXPECTED" == true ]] && ! grep -qF -- "Search the companion transcript at $TRANSCRIPT_PATH." "$ARTIFACTS/receipt.txt"; then
+	echo "stage-output-transcript evidence: warning omitted the companion transcript path" >&2
+	exit 1
+fi
+printf 'warning_expected=%s\nwarning_branch=%s\nwarning_present=%s\nwarning_names_transcript=%s\n' \
+	"$WARNING_EXPECTED" "$WARNING_BRANCH" "$WARNING_EXPECTED" "$WARNING_EXPECTED" >"$ARTIFACTS/assertion-receipt.txt"
 
 # Preserve the receipt screen verbatim and print the path metadata needed by the
 # caller. The screen is the authoritative terminal capture; no receipt is rebuilt.
