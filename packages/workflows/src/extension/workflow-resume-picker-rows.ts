@@ -22,7 +22,8 @@ import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
 
 export interface ResumePickerLiveSource {
 	readonly liveRuns: readonly RunSnapshot[];
-	readonly activeLiveIds: ReadonlySet<string>;
+	/** Live ids whose durable/completed duplicates must be suppressed. */
+	readonly suppressedLiveIds: ReadonlySet<string>;
 }
 
 /** A live run is resumable when the shared predicate accepts it and the durable
@@ -40,24 +41,30 @@ export function collectResumePickerLiveRuns(runStore: Store): ResumePickerLiveSo
 	// `eligible` rows are re-listed from the durable catalog, and `ineligible`
 	// rows have no durable checkpoint or pending prompt progress, so the resume
 	// path would refuse them. Only `not_shadow` runs can actually be resumed here.
-	const shadowClassification = new Map(
-		topLevelWorkflowRuns(runStore.runs()).map((run) => [run.id, classifyDurableResumeShadow(run, runStore)]),
-	);
+	const runs = topLevelWorkflowRuns(runStore.runs());
+	const shadowClassification = new Map(runs.map((run) => [run.id, classifyDurableResumeShadow(run, runStore)]));
 	const isOfferable = (run: RunSnapshot): boolean => shadowClassification.get(run.id) === "not_shadow";
-	const liveRuns = topLevelWorkflowRuns(runStore.runs()).filter((run) => isOfferable(run) && isResumableLiveRun(run));
+	const resumableById = new Map(runs.map((run) => [run.id, isResumableLiveRun(run)]));
+	const liveRuns = runs.filter((run) => isOfferable(run) && resumableById.get(run.id) === true);
+	const isCurrentlyRunning = (run: RunSnapshot): boolean =>
+		run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit";
 	const activeLiveIds = new Set(
-		topLevelWorkflowRuns(runStore.runs())
+		runs
 			.filter(
 				(run) =>
 					shadowClassification.get(run.id) !== "eligible" &&
-					run.endedAt === undefined &&
-					run.status === "running" &&
-					!isWorkflowRunResumable(workflowRunResumeCandidate(run)) &&
-					run.exitReason !== "quit",
+					isCurrentlyRunning(run) &&
+					resumableById.get(run.id) !== true,
 			)
 			.map((run) => run.id),
 	);
-	return { liveRuns, activeLiveIds };
+	// A non-running snapshot rejected by the shared predicate must not reappear as
+	// a durable row. Active running snapshots retain the existing durable fallback.
+	const rejectedLiveIds = new Set(
+		runs.filter((run) => !isCurrentlyRunning(run) && resumableById.get(run.id) !== true).map((run) => run.id),
+	);
+	const suppressedLiveIds = new Set([...activeLiveIds, ...rejectedLiveIds]);
+	return { liveRuns, suppressedLiveIds };
 }
 
 export interface ResumePickerLiveUpdateOptions {
@@ -73,7 +80,7 @@ export function resumePickerLiveUpdateOptions(
 		watch: (onChange) => runStore.subscribe(() => onChange()),
 		refresh: async () => {
 			const current = collectResumePickerLiveRuns(runStore);
-			const catalog = await prepareWorkflowResumeCatalog(runtime, current.activeLiveIds);
+			const catalog = await prepareWorkflowResumeCatalog(runtime, current.suppressedLiveIds);
 			return {
 				liveRuns: current.liveRuns,
 				catalog: { durable: catalog.resumable, completed: catalog.completed },

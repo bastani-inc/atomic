@@ -19,6 +19,7 @@
 - Fixed workflow stage output nomination confusing post-admission deliverables with admission-triggered acknowledgements when both had the same message-role ordering. Stage admissions now persist whether they arrived during active stage work or after the assistant settled, and nomination uses that provenance instead of message position.
 - Fixed a failed companion-transcript write reporting a bogus `Output file error` for an output artifact that was written correctly, and returning the full stage text under `outputMode: "file-only"` instead of the compact reference. A transcript failure now degrades to a warning naming the transcript path while the saved-output reference is unchanged, and artifact-retention pruning failures no longer propagate into the stage receipt.
 - Fixed `createWorkflowArtifactDirectory()` attributing artifacts to the ambient most-recently-started run rather than the workflow that created them, and returning one shared directory whose fixed artifact filenames could overwrite each other. Every builtin call site now passes its owning run id, and each call receives a unique directory beneath that run.
+- Fixed the workflow resume picker re-offering a live run as a durable row after the shared resumability predicate rejected it for missing artifacts or checkpoints. Rejected non-running snapshots are now suppressed from live, durable, and completed rows, while active-running snapshots retain their existing durable fallback.
 
 ### Added
 

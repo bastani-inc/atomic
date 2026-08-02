@@ -248,7 +248,7 @@ export async function handleRunControlCommand(
 				const runtime = deps.runtimeForContext(ctx);
 				const hydrate = async (): Promise<ResumePickerCatalogRows> => {
 					await ensureWorkflowResourcesVisible();
-					const catalog = await prepareWorkflowResumeCatalog(runtime, initial.activeLiveIds);
+					const catalog = await prepareWorkflowResumeCatalog(runtime, initial.suppressedLiveIds);
 					return { durable: catalog.resumable, completed: catalog.completed };
 				};
 				let picked: Awaited<ReturnType<typeof openWorkflowResumeSelector>>;

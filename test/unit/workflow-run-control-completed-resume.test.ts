@@ -19,6 +19,7 @@ import {
 import { collectResumePickerLiveRuns } from "../../packages/workflows/src/extension/workflow-resume-picker-rows.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 
 let tempDir = "";
 
@@ -587,7 +588,7 @@ describe("/workflow resume completed target", () => {
 			source.liveRuns.map((run) => run.id),
 			["picker-active-block"],
 		);
-		assert.equal(source.activeLiveIds.has("picker-active-block"), false);
+		assert.equal(source.suppressedLiveIds.has("picker-active-block"), false);
 	});
 
 	test("resume picker omits a paused snapshot with no durable checkpoint", () => {
@@ -617,6 +618,64 @@ describe("/workflow resume completed target", () => {
 			source.liveRuns.some((run) => run.id === "picker-no-checkpoint"),
 			false,
 		);
+	});
+
+	test("suppresses a durable duplicate for a paused snapshot whose artifact is missing", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const runId = "picker-missing-artifact";
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: "picker-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			resumable: true,
+		});
+		backend.recordCheckpoint({
+			kind: "stage",
+			workflowId: runId,
+			checkpointId: "stage:1",
+			name: "stage",
+			replayKey: "stage:1",
+			output: "ok",
+			completedAt: 2,
+		});
+		const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+		process.env[ENV_WORKFLOW_ARTIFACT_DIR] = tempDir;
+		try {
+			store.recordRunStart({
+				id: runId,
+				name: "picker-flow",
+				inputs: {},
+				status: "paused",
+				stages: [],
+				startedAt: 1,
+				resumable: true,
+				result: { transcript_path: join(tempDir, "runs", runId, "transcripts", "stage.md") },
+			});
+			const source = collectResumePickerLiveRuns(store);
+			assert.equal(
+				source.liveRuns.some((run) => run.id === runId),
+				false,
+			);
+			assert.equal(source.suppressedLiveIds.has(runId), true);
+			const catalog = await prepareWorkflowResumeCatalog(
+				createExtensionRuntime({ store }),
+				source.suppressedLiveIds,
+			);
+			assert.equal(
+				catalog.resumable.some((entry) => entry.workflowId === runId),
+				false,
+			);
+			assert.equal(
+				catalog.completed.some((entry) => entry.workflowId === runId),
+				false,
+			);
+		} finally {
+			if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+			else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
+		}
 	});
 
 	test("keeps recoverable failed and active-running explicit behavior unchanged", async () => {

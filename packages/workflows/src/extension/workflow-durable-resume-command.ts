@@ -44,7 +44,7 @@ export type WorkflowResumeTargetResolution =
 
 export async function prepareWorkflowResumeCatalog(
 	runtime: ExtensionRuntime,
-	activeLiveIds: ReadonlySet<string>,
+	suppressedLiveIds: ReadonlySet<string>,
 	target?: string,
 ): Promise<WorkflowResumeCatalog> {
 	const shared = await runtime.prepareDurableCatalog?.();
@@ -56,7 +56,7 @@ export async function prepareWorkflowResumeCatalog(
 	// applies `isDurableWorkflowResumable`; re-filtering here would only drop rows
 	// a hydrating backend has not yet materialized.
 	const resumable = filterSelectorDurableEntries(runtime, prepared).filter(
-		(entry) => !activeLiveIds.has(entry.workflowId) && isDisplayLoadable(entry),
+		(entry) => !suppressedLiveIds.has(entry.workflowId) && isDisplayLoadable(entry),
 	);
 	const completed =
 		shared?.completed ??
@@ -65,7 +65,7 @@ export async function prepareWorkflowResumeCatalog(
 			: listOpenableCompletedWorkflows(backend));
 	return {
 		resumable,
-		completed: completed.filter((entry) => !activeLiveIds.has(entry.workflowId) && isDisplayLoadable(entry)),
+		completed: completed.filter((entry) => !suppressedLiveIds.has(entry.workflowId) && isDisplayLoadable(entry)),
 	};
 }
 
