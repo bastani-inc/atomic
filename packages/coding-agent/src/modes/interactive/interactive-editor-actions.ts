@@ -77,7 +77,8 @@ InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveMode
 			child.setExpanded(expanded);
 		}
 	}
-	this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
+	// The rendered chat is the feedback; a status line restating it only adds noise.
+	this.ui.requestRender();
 };
 
 InteractiveModeBase.prototype.toggleThinkingBlockVisibility = function (this: InteractiveModeBase): void {

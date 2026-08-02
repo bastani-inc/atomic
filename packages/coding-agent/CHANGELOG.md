@@ -5,6 +5,7 @@
 
 - Removed the four-workflow display cap from the BACKGROUND widget so every qualifying top-level run is rendered.
 - Moved durable workflow run artifacts—including goal ledgers, Ralph implementation notes, QA evidence video paths, and worktree task outputs—from per-invocation OS temp directories to the run-scoped durable root under the Atomic config directory (`~/.atomic/workflows/runs/<runId>/`, overridable with `ATOMIC_WORKFLOW_ARTIFACT_DIR`), so they survive OS temp purges and follow state-aware retention.
+- Toggling tool-output expansion (`ctrl+o`) no longer prints a `Tool output: expanded` / `Tool output: collapsed` status line. The chat re-renders in the new state, which is the same information without the extra line.
 
 ### Fixed
 

@@ -79,8 +79,9 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		expect(context.selectedIndex).toBe(2);
 	});
 
-	it("0d008b74: reports the new tool-output expansion state on the status line", () => {
+	it("0d008b74: applies tool-output expansion without emitting a status line", () => {
 		const statuses: string[] = [];
+		let renders = 0;
 		const setToolsExpanded = Reflect.get(InteractiveModeBase.prototype, "setToolsExpanded") as (
 			this: object,
 			expanded: boolean,
@@ -90,13 +91,23 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 			customHeader: undefined,
 			builtInHeader: undefined,
 			chatContainer: { children: [] as unknown[] },
+			ui: {
+				requestRender: () => {
+					renders += 1;
+				},
+			},
 			showStatus: (message: string) => statuses.push(message),
 		};
 
 		setToolsExpanded.call(context, true);
+		expect(context.toolOutputExpanded).toBe(true);
 		setToolsExpanded.call(context, false);
+		expect(context.toolOutputExpanded).toBe(false);
 
-		expect(statuses).toEqual(["Tool output: expanded", "Tool output: collapsed"]);
+		// Atomic drops upstream's `Tool output: expanded/collapsed` status: the toggle is
+		// already visible in the chat, so the line was pure noise. The re-render is not.
+		expect(statuses).toEqual([]);
+		expect(renders).toBe(2);
 	});
 
 	it("c2275d67: does not subscribe from a startup rebind the session switch superseded", async () => {

@@ -60,7 +60,7 @@ describe("InteractiveMode.showStatus", () => {
 });
 
 describe("InteractiveMode.setToolsExpanded", () => {
-	test("applies expansion state to the active header and chat entries", () => {
+	test("applies expansion state to the active header and chat entries without a status line", () => {
 		const header = { setExpanded: vi.fn() };
 		const chatChild = { setExpanded: vi.fn() };
 		const fakeThis: any = {
@@ -77,7 +77,8 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(fakeThis.toolOutputExpanded).toBe(true);
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
-		expect(fakeThis.showStatus).toHaveBeenCalledWith("Tool output: expanded");
+		expect(fakeThis.showStatus).not.toHaveBeenCalled();
+		expect(fakeThis.ui.requestRender).toHaveBeenCalled();
 	});
 });
 
