@@ -60,25 +60,19 @@ describe("AgentSession workflow-stage admission", () => {
 			undefined,
 			undefined,
 			"subagent:job-1",
-			"assistant-settled",
 		);
 		const message = manager.buildSessionContext().messages[0] as StageAdmittedCustomMessage | undefined;
 		assert.equal(message?.stageAdmissionKey, "subagent:job-1");
-		assert.equal(message?.stageAdmissionProvenance, "assistant-settled");
 	});
 
 	test("single and batched admitted messages retain their admission identity", async () => {
 		const captured: Array<{
 			readonly stageAdmissionKey?: string;
-			readonly stageAdmissionProvenance?: string;
 		}> = [];
 		const surface = {
 			_workflowStageAdmission: undefined,
 			isStreaming: false,
-			_appendCustomMessage(message: {
-				readonly stageAdmissionKey?: string;
-				readonly stageAdmissionProvenance?: string;
-			}) {
+			_appendCustomMessage(message: { readonly stageAdmissionKey?: string }) {
 				captured.push(message);
 			},
 		};
@@ -99,56 +93,8 @@ describe("AgentSession workflow-stage admission", () => {
 			captured.map((message) => message.stageAdmissionKey),
 			["subagent:one", "subagent:batch", "subagent:batch"],
 		);
-		assert.deepEqual(
-			captured.map((message) => message.stageAdmissionProvenance),
-			[undefined, undefined, undefined],
-		);
 	});
 
-	test("records whether a model-facing admission joined active work or followed a settled assistant", async () => {
-		let active: StageAdmittedCustomMessage | undefined;
-		const activeSurface = {
-			_workflowStageAdmission: undefined,
-			isStreaming: true,
-			agent: {
-				state: {
-					streamingMessage: { role: "assistant" },
-					messages: [],
-				},
-			},
-			_queueAgentMessage(message: StageAdmittedCustomMessage) {
-				active = message;
-			},
-		};
-		await sendCustomMessage.call(
-			activeSurface as never,
-			{ customType: "subagent-notify", content: "active", display: true },
-			{ triggerTurn: true, stageAdmissionKey: "subagent:active" },
-		);
-
-		let settled: StageAdmittedCustomMessage | undefined;
-		const settledSurface = {
-			_workflowStageAdmission: undefined,
-			isStreaming: true,
-			agent: {
-				state: {
-					streamingMessage: undefined,
-					messages: [{ role: "assistant", stopReason: "stop" }],
-				},
-			},
-			_queueAgentMessage(message: StageAdmittedCustomMessage) {
-				settled = message;
-			},
-		};
-		await sendCustomMessage.call(
-			settledSurface as never,
-			{ customType: "subagent-notify", content: "settled", display: true },
-			{ triggerTurn: true, stageAdmissionKey: "subagent:settled" },
-		);
-
-		assert.equal(active?.stageAdmissionProvenance, "active-stage");
-		assert.equal(settled?.stageAdmissionProvenance, "assistant-settled");
-	});
 	test("an Intercom message admitted during streaming uses the native stage queue", async () => {
 		const current = harness();
 		await current.send("received during structured_output", "intercom:message-1");

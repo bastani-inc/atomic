@@ -196,7 +196,6 @@ export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessa
 		customMessageExcludesContext(message),
 		undefined,
 		stageAdmissionMessage.stageAdmissionKey,
-		stageAdmissionMessage.stageAdmissionProvenance,
 	);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });

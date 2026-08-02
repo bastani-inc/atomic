@@ -1,6 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent, Usage } from "@earendil-works/pi-ai/compat";
-import type { StageAdmissionProvenance } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
@@ -162,7 +161,6 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	/** Stable producer identity used by workflow stages to de-nominate admitted external turns. */
 	stageAdmissionKey?: string;
 	/** Runtime provenance used to distinguish stage continuation from an externally triggered response. */
-	stageAdmissionProvenance?: StageAdmissionProvenance;
 	/** Internal crash-recovery marker for a model-facing protected turn. */
 	protectedReconciliation?: ProtectedReconciliationMarker;
 }

@@ -7,36 +7,7 @@ import {
 	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
-import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
-
-function stageAdmissionProvenance(session: AgentSession): "active-stage" | "assistant-settled" {
-	if (!session.isStreaming) return "assistant-settled";
-	const state = session.agent?.state;
-	if (state === undefined || state.streamingMessage?.role === "assistant") return "active-stage";
-	const lastMessage = state.messages.at(-1);
-	if (lastMessage?.role !== "assistant") return "active-stage";
-	const stopReason = (lastMessage as { stopReason?: unknown }).stopReason;
-	const normalized = typeof stopReason === "string" ? stopReason.toLowerCase().replace(/[_-]+/g, "") : undefined;
-	// At an indeterminate in-flight boundary, fail open to stage-owned work so nomination cannot hide a deliverable.
-	return normalized === "stop" || normalized === "endturn" ? "assistant-settled" : "active-stage";
-}
-
-function markStageAdmissionProvenance(
-	session: AgentSession,
-	message: CustomMessage,
-	options: SendMessageOptions | undefined,
-): void {
-	const admitted = message as StageAdmittedCustomMessage;
-	if (
-		typeof admitted.stageAdmissionKey !== "string" ||
-		admitted.stageAdmissionKey.length === 0 ||
-		admitted.stageAdmissionProvenance !== undefined ||
-		(!session.isStreaming && options?.triggerTurn !== true)
-	) {
-		return;
-	}
-	admitted.stageAdmissionProvenance = stageAdmissionProvenance(session);
-}
+import type { CustomMessage } from "./messages.ts";
 
 /** Commit one delivery whose source generation already granted admission. */
 export async function commitAdmittedCustomMessage<T>(
@@ -47,7 +18,6 @@ export async function commitAdmittedCustomMessage<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessage(owner, appMessage, options);
 	const self = session;
-	markStageAdmissionProvenance(self, appMessage, options);
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	if (options?.deliverAs === "nextTurn") {
@@ -133,7 +103,6 @@ export async function commitAdmittedCustomMessages<T>(
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessages(owner, appMessages, options);
 	const self = session;
-	for (const appMessage of appMessages) markStageAdmissionProvenance(self, appMessage, options);
 	const useProtectedReconciliation =
 		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";

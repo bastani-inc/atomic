@@ -179,7 +179,6 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 					customMessageExcludesContext(event.message),
 					undefined,
 					admitted.stageAdmissionKey,
-					admitted.stageAdmissionProvenance,
 				);
 			}
 		} else if (
