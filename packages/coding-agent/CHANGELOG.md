@@ -10,20 +10,14 @@
 - Quit workflow cards now expire from the BACKGROUND widget after the same recent-run window as finished cards while remaining resumable and discoverable through workflow status; the header count now matches the rendered cards after expiry.
 - Fixed detached foreground subagent completion notifications rendering as an unstyled dump of the full child output. They now use the same structured, collapsed notification UI as background completions while preserving the distinct detached-task wording, and persisted notifications with custom labels remain parseable.
 - Fixed workflow-stage re-attach status falling back to `Working...` while context compaction is still active; the active compaction reason now survives host remounts so manual compaction, threshold auto-compaction, and overflow recovery retain their factual status labels.
+- Fixed workflow stage file output selecting an assistant acknowledgement from an admitted async completion instead of the stage prompt's own deliverable. Admission identity now survives custom-message session persistence, so the external turn remains visible in model context and the companion transcript without clobbering the nominated artifact.
+- Fixed the workflow resume picker offering stale or non-resumable runs. Picker and command paths now share one resumability predicate and revalidate durable state before displaying a target, while explicit ids retain their explanatory rejection.
+- Fixed workflow `reads:` references to fail loudly when an artifact path no longer exists instead of handing the model an empty, silently missing context file.
 
 ### Added
 
 - Added first-class Alpine/musl Linux support for x64 and arm64, including native search and PTY bindings and the `atomic-linux-x64-musl.tar.gz` and `atomic-linux-arm64-musl.tar.gz` release archives. The musl archives omit the clipboard native binding and glibc-linked `@embedded-postgres/*` binaries: Atomic falls back to Linux clipboard commands/OSC52, while durable Alpine workflows require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker; otherwise the existing loud non-durable in-memory fallback applies.
-
-### Added
-
 - Added state-aware retention for durable workflow artifact directories: only terminal or unowned runs older than `WORKFLOW_ARTIFACT_RETENTION_MS` are pruned, while running, paused, quit, blocked, and awaiting-input runs keep live resume dependencies. Durable DBOS history remains explicit-delete-only in this release.
-
-### Fixed
-
-- Fixed workflow stage file output selecting an assistant acknowledgement from an admitted async completion instead of the stage prompt's own deliverable. Admission identity now survives custom-message session persistence, so the external turn remains visible in model context and the companion transcript without clobbering the nominated artifact.
-- Fixed the workflow resume picker offering stale or non-resumable runs. Picker and command paths now share one resumability predicate and revalidate durable state before displaying a target, while explicit ids retain their explanatory rejection.
-- Fixed workflow `reads:` references to fail loudly when an artifact path no longer exists instead of handing the model an empty, silently missing context file.
 
 ## [0.9.11-alpha.10] - 2026-08-01
 
