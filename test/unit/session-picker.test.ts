@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
 	createSessionPickerState,
@@ -13,7 +14,13 @@ import {
 	renderSessionPicker,
 	selectRunsForPicker,
 } from "../../packages/workflows/src/tui/session-picker.ts";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.ts";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
+
+const PICKER_ANSI_RE = /\x1b\[[0-9;]*m/g;
+function stripPickerAnsi(value: string): string {
+	return value.replace(PICKER_ANSI_RE, "");
+}
 
 function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
 	return {
@@ -233,4 +240,106 @@ test("renderSessionPicker emits a clean ╰────╯ bottom border with hi
 	// Interior of the border is just `─` (plus the corner glyphs).
 	const interior = borderStripped.slice(1, -1);
 	assert.ok(/^─+$/.test(interior), `bottom border interior should be only ─; got ${JSON.stringify(interior)}`);
+});
+
+test("selectRunsForPicker resolves an awaiting-input indicator status for the asking run", () => {
+	const now = 10_000_000;
+	const runs: RunSnapshot[] = [
+		makeRun({ id: "busy0000-0000-0000-0000-000000000000", name: "wf-busy", startedAt: now - 5000 }),
+		makeRun({
+			id: "asks0000-0000-0000-0000-000000000000",
+			name: "wf-asking",
+			startedAt: now - 1000,
+			stages: [{ id: "s1", name: "ask", status: "awaiting_input", parentIds: [], toolEvents: [] }],
+		}),
+	];
+
+	const rows = selectRunsForPicker(runs, "", true, now);
+	assert.equal(rows.find((r) => r.run.name === "wf-asking")?.indicatorStatus, "awaiting_input");
+	assert.equal(rows.find((r) => r.run.name === "wf-busy")?.indicatorStatus, "running");
+});
+
+test("renderSessionPicker paints the awaiting run with the awaiting glyph and colour", () => {
+	const theme = deriveGraphTheme({});
+	const now = 10_000_000;
+	const runs: RunSnapshot[] = [
+		makeRun({ id: "busy0000-0000-0000-0000-000000000000", name: "wf-busy", startedAt: now - 5000 }),
+		makeRun({
+			id: "asks0000-0000-0000-0000-000000000000",
+			name: "wf-asking",
+			startedAt: now - 1000,
+			stages: [{ id: "s1", name: "ask", status: "awaiting_input", parentIds: [], toolEvents: [] }],
+		}),
+	];
+	const rows = selectRunsForPicker(runs, "", true, now);
+	const lines = renderSessionPicker({ width: 90, theme, rows, state: createSessionPickerState(), now });
+
+	const askingRow = lines.find((line) => line.includes("wf-asking"));
+	assert.ok(askingRow, "asking run has a picker row");
+	assert.ok(
+		askingRow.includes(`${hexToAnsi(statusColor("awaiting_input", theme))}${statusIcon("awaiting_input")}`),
+		"asking row uses the awaiting-input glyph and colour",
+	);
+
+	const busyRow = lines.find((line) => line.includes("wf-busy"));
+	assert.ok(busyRow, "running run has a picker row");
+	assert.ok(
+		!stripPickerAnsi(busyRow).includes(statusIcon("awaiting_input")),
+		"the other active run keeps its ordinary running indicator",
+	);
+});
+
+test("a nested child's prompt marks its top-level ancestor in the picker", () => {
+	const theme = deriveGraphTheme({});
+	const now = 10_000_000;
+	const runs: RunSnapshot[] = [
+		makeRun({ id: "unrel000-0000-0000-0000-000000000000", name: "wf-unrelated", startedAt: now - 6000 }),
+		makeRun({ id: "root0000-0000-0000-0000-000000000000", name: "wf-root", startedAt: now - 5000 }),
+		{
+			...makeRun({
+				id: "child000-0000-0000-0000-000000000000",
+				name: "wf-child",
+				startedAt: now - 1000,
+				stages: [{ id: "s1", name: "ask", status: "awaiting_input", parentIds: [], toolEvents: [] }],
+			}),
+			parentRunId: "root0000-0000-0000-0000-000000000000",
+			rootRunId: "root0000-0000-0000-0000-000000000000",
+		},
+	];
+
+	const rows = selectRunsForPicker(runs, "", true, now);
+	assert.equal(rows.find((r) => r.run.name === "wf-root")?.indicatorStatus, "awaiting_input");
+	assert.equal(rows.find((r) => r.run.name === "wf-unrelated")?.indicatorStatus, "running");
+	assert.equal(
+		rows.some((r) => r.run.name === "wf-child"),
+		false,
+		"nested runs stay out of the picker",
+	);
+
+	const lines = renderSessionPicker({ width: 90, theme, rows, state: createSessionPickerState(), now });
+	const rootRow = lines.find((line) => line.includes("wf-root"));
+	assert.ok(rootRow, "ancestor row is rendered");
+	assert.ok(
+		rootRow.includes(`${hexToAnsi(statusColor("awaiting_input", theme))}${statusIcon("awaiting_input")}`),
+		"ancestor row carries the nested prompt's awaiting indicator",
+	);
+});
+
+test("a terminal run with residual prompt state keeps its terminal picker indicator", () => {
+	const now = 10_000_000;
+	const runs: RunSnapshot[] = [
+		{
+			...makeRun({
+				id: "done0000-0000-0000-0000-000000000000",
+				name: "wf-done",
+				status: "completed",
+				startedAt: now - 9000,
+				endedAt: now - 1000,
+				stages: [{ id: "s1", name: "ask", status: "awaiting_input", parentIds: [], toolEvents: [] }],
+			}),
+			pendingPrompt: { id: "stale", kind: "input", message: "stale", createdAt: now - 5000 },
+		},
+	];
+	const rows = selectRunsForPicker(runs, "", true, now);
+	assert.equal(rows[0]?.indicatorStatus, "completed");
 });

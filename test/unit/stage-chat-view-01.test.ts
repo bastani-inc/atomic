@@ -403,4 +403,49 @@ describe("StageChatView", () => {
 		assert.equal(detached, 1);
 		view.dispose();
 	});
+	test("names the originating run in the awaiting-input header while several runs are active", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		setupRun(store, "run-2", "stage-b");
+		const prompt = makePendingPrompt();
+		assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+
+		const visible = stripAnsi(view.render(80).join("\n"));
+		assert.match(visible, /AWAITING INPUT · run-1 test-wf/);
+		view.dispose();
+	});
+
+	test("keeps the awaiting-input header unattributed when only one run is active", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const prompt = makePendingPrompt();
+		assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+
+		const visible = stripAnsi(view.render(80).join("\n"));
+		assert.match(visible, /AWAITING INPUT/);
+		assert.doesNotMatch(visible, /AWAITING INPUT ·/);
+		view.dispose();
+	});
 });

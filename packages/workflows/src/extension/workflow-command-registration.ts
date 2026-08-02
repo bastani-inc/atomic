@@ -163,7 +163,7 @@ async function workflowSlashHandler(
 			return;
 		}
 		const rows = selectRunsForPicker(store.runs(), "", true, Date.now());
-		emitChatSurface(pi, { kind: "status", runs: rows.map((r) => r.run) });
+		emitChatSurface(pi, { kind: "status", runs: rows.map((r) => r.run), allRuns: store.runs() });
 		return;
 	}
 	if (subcommand === "reload") {

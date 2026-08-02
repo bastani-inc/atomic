@@ -18,6 +18,7 @@ import { describe, test } from "vitest";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import {
 	buildThemedWidgetLines,
@@ -437,6 +438,167 @@ describe("buildThemedWidgetLines — themed path", () => {
 		assert.ok(
 			stripAnsi(joined).includes("？ ↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
 			"awaiting-input badge should keep the status/question mark and attach copy",
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Per-run awaiting-input indicator
+// ---------------------------------------------------------------------------
+
+describe("widget per-run awaiting-input indicator", () => {
+	const theme = deriveGraphTheme({});
+	const awaitingGlyph = statusIcon("awaiting_input");
+	const awaitingAnsi = hexToAnsi(statusColor("awaiting_input", theme));
+	const runningGlyph = statusIcon("running");
+
+	function rowFor(lines: readonly string[], name: string): string {
+		const row = lines.find((line) => line.includes(name));
+		assert.ok(row !== undefined, `expected a widget row for ${name}`);
+		return row;
+	}
+
+	/** Strip the rounded-panel border and indent so the row starts at its glyph. */
+	function glyphOf(lines: readonly string[], name: string): string {
+		return stripAnsi(rowFor(lines, name)).replace(/^[│\s]+/u, "");
+	}
+
+	test("run awaiting input renders the awaiting glyph and colour while a sibling keeps the running dot", () => {
+		const t = Date.now();
+		const asking = makeRun("aaa111", "wf-asking", "running", [makeStage("s1", "ask", "awaiting_input")], t - 1000);
+		const sibling = makeRun("bbb222", "wf-busy", "running", [makeStage("s1", "work", "running")], t - 2000);
+		const snap = makeSnap([asking, sibling]);
+
+		const plain = renderWidgetLines(snap, 120).map(stripAnsi);
+		assert.ok(
+			glyphOf(plain, "wf-asking").startsWith(awaitingGlyph),
+			`asking run should lead with the awaiting glyph: ${rowFor(plain, "wf-asking")}`,
+		);
+		assert.ok(
+			glyphOf(plain, "wf-busy").startsWith(runningGlyph),
+			`sibling run must keep the running glyph: ${rowFor(plain, "wf-busy")}`,
+		);
+
+		const themed = buildThemedWidgetLines(snap, NULL_PI_THEME, 120);
+		assert.ok(
+			rowFor(themed, "wf-asking").includes(`${awaitingAnsi}${awaitingGlyph}`),
+			"asking run glyph should carry the awaiting-input colour",
+		);
+		assert.ok(
+			!rowFor(themed, "wf-busy").includes(`${awaitingAnsi}${awaitingGlyph}`),
+			"sibling run must not carry the awaiting-input colour",
+		);
+	});
+
+	test("indicator reverts to the running dot once the prompt is answered", () => {
+		const t = Date.now();
+		const stage = makeStage("s1", "ask", "awaiting_input");
+		const run = makeRun("ccc333", "wf-round-trip", "running", [stage], t - 1000);
+
+		const whileAwaiting = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+		assert.ok(glyphOf(whileAwaiting, "wf-round-trip").startsWith(awaitingGlyph));
+
+		stage.status = "running";
+		const afterAnswer = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+		assert.ok(
+			glyphOf(afterAnswer, "wf-round-trip").startsWith(runningGlyph),
+			`answered run should return to the running glyph: ${rowFor(afterAnswer, "wf-round-trip")}`,
+		);
+		assert.ok(!glyphOf(afterAnswer, "wf-round-trip").includes(awaitingGlyph));
+	});
+
+	test("run-level pending prompt reverts to the running dot once cleared", () => {
+		const t = Date.now();
+		const run: RunSnapshot = {
+			...makeRun("ddd444", "wf-run-prompt", "running", [makeStage("s1", "work", "running")], t - 1000),
+			pendingPrompt: { id: "p1", kind: "input", message: "keep going?", createdAt: t },
+		};
+
+		const whileAwaiting = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+		assert.ok(glyphOf(whileAwaiting, "wf-run-prompt").startsWith(awaitingGlyph));
+
+		run.pendingPrompt = undefined;
+		const afterAnswer = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+		assert.ok(glyphOf(afterAnswer, "wf-run-prompt").startsWith(runningGlyph));
+	});
+
+	test("nested child prompt marks the visible ancestor and leaves unrelated runs alone", () => {
+		const t = Date.now();
+		const root = makeRun("root11", "wf-root", "running", [makeStage("s1", "compose", "running")], t - 3000);
+		const child: RunSnapshot = {
+			...makeRun("child1", "wf-child", "running", [makeStage("s1", "ask", "awaiting_input")], t - 1000),
+			parentRunId: "root11",
+			rootRunId: "root11",
+		};
+		const unrelated = makeRun("other1", "wf-other", "running", [makeStage("s1", "work", "running")], t - 2000);
+
+		const plain = renderWidgetLines(makeSnap([child, root, unrelated]), 120).map(stripAnsi);
+		assert.ok(
+			glyphOf(plain, "wf-root").startsWith(awaitingGlyph),
+			`nested prompt should mark the visible ancestor: ${rowFor(plain, "wf-root")}`,
+		);
+		assert.ok(
+			glyphOf(plain, "wf-other").startsWith(runningGlyph),
+			`unrelated run must be untouched: ${rowFor(plain, "wf-other")}`,
+		);
+		assert.ok(!plain.join("\n").includes("wf-child"), "nested child stays hidden");
+	});
+
+	test("terminal runs with residual pending-prompt state keep their terminal glyph and colour", () => {
+		const t = Date.now();
+		const terminals: Array<{ status: RunSnapshot["status"]; name: string }> = [
+			{ status: "completed", name: "wf-completed" },
+			{ status: "failed", name: "wf-failed" },
+			{ status: "killed", name: "wf-killed" },
+			{ status: "cancelled", name: "wf-cancelled" },
+			{ status: "skipped", name: "wf-skipped" },
+		];
+
+		for (const [index, terminal] of terminals.entries()) {
+			const run: RunSnapshot = {
+				...makeRun(
+					`term${index}`,
+					terminal.name,
+					terminal.status,
+					[makeStage("s1", "ask", "awaiting_input")],
+					t - 20_000,
+					t - 1_000,
+				),
+				pendingPrompt: { id: `p${index}`, kind: "input", message: "stale", createdAt: t - 5_000 },
+			};
+			const snap = makeSnap([run]);
+
+			const plain = renderWidgetLines(snap, 120).map(stripAnsi);
+			const row = glyphOf(plain, terminal.name);
+			assert.ok(
+				row.startsWith(statusIcon(terminal.status)),
+				`${terminal.status} run must keep its terminal glyph, got: ${row}`,
+			);
+			assert.ok(!row.startsWith(awaitingGlyph), `${terminal.status} must not be shown as awaiting input`);
+
+			const themed = buildThemedWidgetLines(snap, NULL_PI_THEME, 120);
+			assert.ok(
+				!rowFor(themed, terminal.name).includes(`${awaitingAnsi}${awaitingGlyph}`),
+				`${terminal.status} run must not take the awaiting-input colour`,
+			);
+		}
+	});
+
+	test("quit run keeps its pending glyph even while a prompt is outstanding", () => {
+		const t = Date.now();
+		const run: RunSnapshot = {
+			...makeRun("quit01", "wf-quit", "paused", [makeStage("s1", "ask", "awaiting_input")], t - 5_000),
+			exitReason: "quit",
+			resumable: true,
+		};
+		const plain = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+		const row = glyphOf(plain, "wf-quit");
+		assert.ok(row.startsWith(statusIcon("pending")), `quit run should keep the pending glyph, got: ${row}`);
+
+		const themed = buildThemedWidgetLines(makeSnap([run]), NULL_PI_THEME, 120);
+		assert.ok(
+			rowFor(themed, "wf-quit").includes(`${hexToAnsi(statusColor("paused", theme))}${statusIcon("pending")}`),
+			"quit run keeps the paused colour treatment",
 		);
 	});
 });

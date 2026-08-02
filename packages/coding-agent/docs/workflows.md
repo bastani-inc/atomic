@@ -2874,7 +2874,7 @@ At the supported 40-column terminal minimum, attached stage chats use the compac
 
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
-Human-in-the-loop prompts appear as awaiting-input nodes in the workflow graph, not as ordinary chat modals — see [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input) for how to find and answer them.
+Human-in-the-loop prompts appear as awaiting-input nodes in the workflow graph, not as ordinary chat modals — see [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input) for how to find and answer them. A run that is waiting on human input also swaps its run-level `●` indicator for the blue awaiting-input `？` in the BACKGROUND widget, the `/workflow connect` picker, and the `/workflow status` list, and reverts once the prompt is resolved.
 
 ## Monitor and Control Runs
 
@@ -3033,6 +3033,10 @@ Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.sele
 Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals. Workflow definitions do not declare HIL; runtime `ctx.ui.*` calls create prompt nodes. If the prompt lives inside an imported child workflow, it still appears in the same expanded parent graph so the user can focus and answer it without switching to a separate child status entry.
 
 Use `/workflow connect <run-id>` (or F2), then press Enter on the focused node or click a graph node to focus and open or attach it for local answers. Custom widget prompts mount inside the attached stage chat and must be completed interactively with the widget's `done(value)` callback.
+
+While a run is waiting on human input, its run-level indicator switches from the running dot `●` to the awaiting-input `？` in the same blue used by the awaiting-input status elsewhere. This applies to the BACKGROUND widget above the editor, the `/workflow connect` picker rows, and the `/workflow status` list, so the run to attach to is identifiable when several runs are active. A prompt raised inside a hidden nested `ctx.workflow(...)` child marks its visible top-level ancestor; unrelated runs are unaffected. The indicator reverts to the running dot — or whatever state then applies — as soon as the prompt is answered, cancelled, or the stage moves on. Awaiting input never overrides a terminal, blocked, or quit indicator, so a completed, failed, killed, cancelled, or skipped run that still carries stale pending-prompt state keeps its own glyph and colour.
+
+When more than one top-level run is active, the prompt surface itself also names the run that asked: the graph-viewer prompt card and the attached stage chat (including brokered `ask_user_question` widgets) show `AWAITING INPUT · <short run id> <workflow name>`, using the same short run id the widget displays. With a single active run the prompt renders exactly as before. This label is applied at render time only — stored prompt text is unchanged, so `workflow status` and `workflow send` still see the verbatim message.
 
 When a workflow needs human input, answer in the graph viewer or attached stage chat when possible:
 

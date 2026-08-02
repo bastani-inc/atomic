@@ -1,4 +1,5 @@
 import { Box, Text } from "@earendil-works/pi-tui";
+import { formatPromptAttribution } from "../shared/prompt-attribution.js";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
@@ -205,7 +206,8 @@ export function renderBlockedBody(
 }
 
 export function renderPromptBody(ctx: StageChatViewContext, width: number, budget: number): string[] {
-	const primitiveLines = renderPrimitivePromptBody(ctx, width);
+	const attribution = formatPromptAttribution(ctx.runId, ctx.store.snapshot().runs);
+	const primitiveLines = renderPrimitivePromptBody(ctx, width, attribution);
 	if (primitiveLines) {
 		return fitPromptBodyLines(ctx, embedOrchestratorReturnHintInWidget(ctx, primitiveLines, width), width, budget);
 	}
@@ -217,12 +219,17 @@ export function renderPromptBody(ctx: StageChatViewContext, width: number, budge
 				theme: ctx.theme,
 				width,
 				cursorOn: ctx.focused,
+				...(attribution !== undefined ? { attribution } : {}),
 			})
 		: [];
 	return fitPromptBodyLines(ctx, embedOrchestratorReturnHintInWidget(ctx, lines, width), width, budget);
 }
 
-function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number): string[] | null {
+function renderPrimitivePromptBody(
+	ctx: StageChatViewContext,
+	width: number,
+	attribution: string | undefined,
+): string[] | null {
 	const state = ctx.promptState;
 	const editor = ctx.promptEditor;
 	if (!state || !editor) return null;
@@ -242,7 +249,7 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number): st
 	bodyLines.push(...new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth));
 
 	return renderRoundedBoxLines({
-		title: "AWAITING INPUT",
+		title: attribution === undefined ? "AWAITING INPUT" : `AWAITING INPUT · ${attribution}`,
 		bodyLines,
 		width,
 		theme: ctx.theme,

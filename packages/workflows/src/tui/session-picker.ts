@@ -19,6 +19,7 @@
  */
 
 import { keyText } from "@bastani/atomic";
+import { type RunIndicatorStatus, runIndicatorStatus } from "../shared/awaiting-input.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -49,10 +50,12 @@ export function createSessionPickerState(): SessionPickerState {
 	return { query: "", selectedIndex: 0, includeAll: true, filterFocused: false };
 }
 
-/** A run plus a derived bucket — keeps the renderer monomorphic. */
+/** A run plus derived bucket and indicator status — keeps the renderer pure. */
 export interface PickerRow {
 	readonly run: RunSnapshot;
 	readonly bucket: "active" | "terminal";
+	/** Status resolved against the complete store snapshot, including nested runs. */
+	readonly indicatorStatus?: RunIndicatorStatus;
 }
 
 const RECENT_WINDOW_MS = 60 * 60 * 1000;
@@ -85,12 +88,12 @@ export function selectRunsForPicker(
 
 		const endedAt = r.endedAt;
 		if (endedAt === undefined) {
-			active.push({ run: r, bucket: "active" });
+			active.push({ run: r, bucket: "active", indicatorStatus: runIndicatorStatus(r, runs) });
 			continue;
 		}
 
 		if (includeAll || now - endedAt <= RECENT_WINDOW_MS) {
-			terminal.push({ run: r, bucket: "terminal" });
+			terminal.push({ run: r, bucket: "terminal", indicatorStatus: runIndicatorStatus(r, runs) });
 		}
 	}
 	active.sort((a, b) => a.run.startedAt - b.run.startedAt);
@@ -222,7 +225,8 @@ function stageProgress(run: RunSnapshot): string {
 function renderRunRow(row: PickerRow, isSelected: boolean, inner: number, theme: GraphTheme, now: number): string {
 	const border = hexToAnsi(theme.border);
 	const run = row.run;
-	const icon = statusIcon(run.status);
+	const indicatorStatus = row.indicatorStatus ?? run.status;
+	const icon = statusIcon(indicatorStatus);
 	const idShort = run.id.slice(0, 8);
 	const elapsed = fmtElapsed(run, now);
 	const progress = stageProgress(run);
@@ -246,9 +250,8 @@ function renderRunRow(row: PickerRow, isSelected: boolean, inner: number, theme:
 		const content = `${left}${" ".repeat(gap)}${right}`;
 		return `${border}│${RESET}${pillBg}${pillFg}${BOLD}${padTo(content, inner)}${RESET}${border}│${RESET}`;
 	}
-
 	const panelBg = hexBg(theme.bg);
-	const iconColor = hexToAnsi(statusColor(run.status, theme));
+	const iconColor = hexToAnsi(statusColor(indicatorStatus, theme));
 	const dim = hexToAnsi(theme.dim);
 	const text = hexToAnsi(theme.text);
 	const muted = hexToAnsi(theme.textMuted);

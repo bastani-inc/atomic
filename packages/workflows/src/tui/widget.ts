@@ -22,6 +22,7 @@
  *  - src/tui/chat-surface.ts renderRoundedBoxLines
  */
 
+import { isQuitRun, runIndicatorStatus, subtreeAwaitsInput } from "../shared/awaiting-input.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
@@ -31,7 +32,7 @@ import { renderRoundedBoxLines } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { deriveGraphTheme } from "./graph-theme.js";
-import { statusIcon } from "./status-helpers.js";
+import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
 
 // ---------------------------------------------------------------------------
@@ -69,11 +70,6 @@ function isActive(run: RunSnapshot): boolean {
 function recentlyEnded(run: RunSnapshot, now: number): boolean {
 	return run.endedAt !== undefined && now - run.endedAt <= RECENT_ENDED_WINDOW_MS;
 }
-
-function isQuitRun(run: RunSnapshot): boolean {
-	return run.endedAt === undefined && run.status === "paused" && run.exitReason === "quit";
-}
-
 interface RunCounts {
 	active: number;
 	paused: number;
@@ -84,25 +80,6 @@ interface RunCounts {
 	/** Runs with a pending HIL prompt — surfaced as a separate badge so the
 	 *  user knows to attach via F2 before more progress is possible. */
 	awaiting: number;
-}
-
-function runAwaitsInput(run: RunSnapshot): boolean {
-	return (
-		run.endedAt === undefined &&
-		(run.pendingPrompt !== undefined || run.stages.some((s) => s.status === "awaiting_input"))
-	);
-}
-
-/**
- * A top-level run "needs attention" when it OR any of its nested
- * `ctx.workflow()` descendants is awaiting human input. Nested child runs are
- * hidden from the widget, but each carries `rootRunId` pointing at the ultimate
- * top-level run, so a hidden child's awaiting (HiL) state surfaces on the
- * visible ancestor instead of vanishing with it.
- */
-function subtreeAwaitsInput(root: RunSnapshot, allRuns: readonly RunSnapshot[]): boolean {
-	if (runAwaitsInput(root)) return true;
-	return allRuns.some((run) => run.rootRunId === root.id && runAwaitsInput(run));
 }
 
 function countRuns(runs: readonly RunSnapshot[], allRuns: readonly RunSnapshot[] = runs): RunCounts {
@@ -165,48 +142,14 @@ function shortId(run: RunSnapshot): string {
 	return run.id.length > SHORT_ID_LEN ? run.id.slice(0, SHORT_ID_LEN) : run.id;
 }
 
-function statusGlyph(run: RunSnapshot): string {
-	if (isQuitRun(run)) return "○";
-	switch (effectiveRunStatus(run)) {
-		case "running":
-			return "●";
-		case "paused":
-			return "❚❚";
-		case "completed":
-			return "✓";
-		case "skipped":
-		case "cancelled":
-			return "⊘";
-		case "blocked":
-			return "↑";
-		case "failed":
-			return "✗";
-		case "killed":
-			return "⊘";
-		default:
-			return "○";
-	}
+function statusGlyph(run: RunSnapshot, allRuns: readonly RunSnapshot[]): string {
+	if (isQuitRun(run)) return statusIcon("pending");
+	return statusIcon(runIndicatorStatus(run, allRuns));
 }
 
-function statusFg(run: RunSnapshot, theme: GraphTheme): string {
-	if (isQuitRun(run)) return theme.warning;
-	switch (effectiveRunStatus(run)) {
-		case "running":
-		case "paused":
-			return theme.warning;
-		case "completed":
-			return theme.success;
-		case "skipped":
-		case "cancelled":
-		case "blocked":
-			return theme.dim;
-		case "failed":
-			return theme.error;
-		case "killed":
-			return theme.warning;
-		default:
-			return theme.dim;
-	}
+function statusFg(run: RunSnapshot, theme: GraphTheme, allRuns: readonly RunSnapshot[]): string {
+	if (isQuitRun(run)) return statusColor("paused", theme);
+	return statusColor(runIndicatorStatus(run, allRuns), theme);
 }
 
 function modeLabel(run: RunSnapshot): string {
@@ -297,14 +240,14 @@ function formatTitleBadges(badges: readonly FlatBandBadge[], theme: GraphTheme, 
 // Themed rendering (ANSI + Catppuccin)
 // ---------------------------------------------------------------------------
 
-function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme): string[] {
+function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme, allRuns: readonly RunSnapshot[]): string[] {
 	const dim = hexToAnsi(theme.dim);
 	const text = hexToAnsi(theme.text);
 	const accent = hexToAnsi(theme.accent);
 	const muted = hexToAnsi(theme.textMuted);
-	const glyphFg = hexToAnsi(statusFg(run, theme));
+	const glyphFg = hexToAnsi(statusFg(run, theme, allRuns));
 
-	const glyph = statusGlyph(run);
+	const glyph = statusGlyph(run, allRuns);
 	const sid = shortId(run);
 	const name = run.name;
 
@@ -317,8 +260,8 @@ function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme): strin
 	return [line1, line2];
 }
 
-function plainRunLines(run: RunSnapshot, now: number): string[] {
-	const line1 = `   ${statusGlyph(run)}  ${shortId(run)}  ${run.name}`;
+function plainRunLines(run: RunSnapshot, now: number, allRuns: readonly RunSnapshot[]): string[] {
+	const line1 = `   ${statusGlyph(run, allRuns)}  ${shortId(run)}  ${run.name}`;
 	const line2 = `     ${metaLine(run, now)}`;
 	return [line1, line2];
 }
@@ -406,7 +349,7 @@ export function buildThemedWidgetLines(
 
 	for (let i = 0; i < display.length; i++) {
 		const run = display[i]!;
-		const runLines = themed ? themedRunLines(run, now, graphTheme) : plainRunLines(run, now);
+		const runLines = themed ? themedRunLines(run, now, graphTheme, snap.runs) : plainRunLines(run, now, snap.runs);
 		body.push(...runLines);
 		if (i < display.length - 1) body.push("");
 	}

@@ -16,7 +16,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
@@ -467,5 +469,125 @@ describe("renderStatusList — populated", () => {
 			assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${visibleWidth(line)} ${JSON.stringify(line)}`);
 		}
 		assert.match(stripAnsi(out), /…/);
+	});
+});
+
+describe("renderStatusList — awaiting input", () => {
+	const theme = deriveGraphTheme({});
+
+	test("a run awaiting human input renders the awaiting glyph and badge while siblings stay running", () => {
+		const now = 1_000_000;
+		const runs: RunSnapshot[] = [
+			makeRun({
+				id: "askrunuuid",
+				name: "wf-asking",
+				status: "running",
+				startedAt: now - 5_000,
+				stages: [makeStage("s1", "ask", "awaiting_input")],
+			}),
+			makeRun({
+				id: "busyrunuid",
+				name: "wf-busy",
+				status: "running",
+				startedAt: now - 8_000,
+				stages: [makeStage("s1", "work", "running")],
+			}),
+		];
+
+		const plain = stripAnsi(renderStatusList(runs, { now, width: 120, showDetailHint: false }));
+		const askingRow = plain.split("\n").find((line) => line.includes("wf-asking"));
+		assert.ok(askingRow, "asking run has a card row");
+		assert.ok(askingRow.includes(statusIcon("awaiting_input")), "asking row uses the awaiting glyph");
+		assert.ok(askingRow.includes(`${statusIcon("awaiting_input")} awaiting input`), "asking row labels the state");
+
+		const busyRow = plain.split("\n").find((line) => line.includes("wf-busy"));
+		assert.ok(busyRow, "running run has a card row");
+		assert.ok(!busyRow.includes(statusIcon("awaiting_input")), "sibling keeps its running indicator");
+		assert.ok(busyRow.includes(`${statusIcon("running")} running`), "sibling keeps the running badge");
+
+		const themed = renderStatusList(runs, { theme, now, width: 120, showDetailHint: false });
+		const themedAskingRow = themed.split("\n").find((line) => stripAnsi(line).includes("wf-asking"));
+		assert.ok(themedAskingRow, "themed asking row exists");
+		assert.ok(
+			themedAskingRow.includes(`${hexToAnsi(statusColor("awaiting_input", theme))}${statusIcon("awaiting_input")}`),
+			"themed asking row carries the awaiting-input colour",
+		);
+	});
+
+	test("a nested child's prompt marks the visible ancestor when the full snapshot is supplied", () => {
+		const now = 1_000_000;
+		const root = makeRun({
+			id: "rootrunuid",
+			name: "wf-root",
+			status: "running",
+			startedAt: now - 9_000,
+			stages: [makeStage("s1", "compose", "running")],
+		});
+		const child: RunSnapshot = {
+			...makeRun({
+				id: "childrunid",
+				name: "wf-child",
+				status: "running",
+				startedAt: now - 3_000,
+				stages: [makeStage("s1", "ask", "awaiting_input")],
+			}),
+			parentRunId: "rootrunuid",
+			rootRunId: "rootrunuid",
+		};
+
+		const withoutSnapshot = stripAnsi(renderStatusList([root], { now, width: 120, showDetailHint: false }));
+		assert.ok(
+			!withoutSnapshot.includes(statusIcon("awaiting_input")),
+			"without the nested snapshot the ancestor keeps today's indicator",
+		);
+
+		const withSnapshot = stripAnsi(
+			renderStatusList([root], { now, width: 120, showDetailHint: false, allRuns: [root, child] }),
+		);
+		const rootRow = withSnapshot.split("\n").find((line) => line.includes("wf-root"));
+		assert.ok(rootRow, "ancestor card row exists");
+		assert.ok(rootRow.includes(statusIcon("awaiting_input")), "ancestor row surfaces the nested prompt");
+	});
+
+	test("terminal runs with residual prompt state keep their terminal glyph", () => {
+		const now = 1_000_000;
+		const run: RunSnapshot = {
+			...makeRun({
+				id: "doneuuid00",
+				name: "wf-done",
+				status: "completed",
+				startedAt: now - 20_000,
+				endedAt: now - 1_000,
+				stages: [makeStage("s1", "ask", "awaiting_input")],
+			}),
+			pendingPrompt: { id: "stale", kind: "input", message: "stale", createdAt: now - 5_000 },
+		};
+
+		const plain = stripAnsi(renderStatusList([run], { now, width: 120, showDetailHint: false }));
+		const row = plain.split("\n").find((line) => line.includes("wf-done"));
+		assert.ok(row, "terminal card row exists");
+		assert.ok(row.includes(`${statusIcon("completed")} completed`), "terminal badge is preserved");
+		assert.ok(!row.includes(statusIcon("awaiting_input")), "terminal run is never shown as awaiting input");
+	});
+
+	test("a quit run keeps its resumable quit indicator while a prompt is outstanding", () => {
+		const now = 1_000_000;
+		const run: RunSnapshot = {
+			...makeRun({
+				id: "quituuid00",
+				name: "wf-quit",
+				status: "paused",
+				exitReason: "quit",
+				resumable: true,
+				startedAt: now - 20_000,
+				stages: [makeStage("s1", "ask", "awaiting_input")],
+			}),
+		};
+
+		const plain = stripAnsi(renderStatusList([run], { now, width: 120, showDetailHint: false }));
+		const row = plain.split("\n").find((line) => line.includes("wf-quit"));
+		assert.ok(row, "quit card row exists");
+		assert.ok(row.includes(`${statusIcon("pending")} quit`), "quit badge is preserved");
+		assert.ok(!row.includes(statusIcon("awaiting_input")), "quit run is not relabelled as awaiting input");
 	});
 });

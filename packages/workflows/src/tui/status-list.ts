@@ -26,6 +26,7 @@
  *  - src/tui/run-detail.ts per-run drill-down surface (unchanged)
  */
 
+import { isQuitRun, runIndicatorStatus } from "../shared/awaiting-input.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
@@ -33,13 +34,12 @@ import type { FlatBandBadge } from "./chat-surface.js";
 import { chatWidth, ELLIPSIS, progressStrip, renderHintRows, renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
-import { fmtDuration } from "./status-helpers.js";
+import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 const SHORT_ID_LEN = 6;
 const MIN_TITLE_BUDGET = 12;
 const STAGE_LABEL_BUDGET = 24;
-
 export interface RenderStatusListOpts {
 	/** Provide for ANSI Catppuccin; omit for plain text. */
 	theme?: GraphTheme;
@@ -49,10 +49,8 @@ export interface RenderStatusListOpts {
 	showDetailHint?: boolean;
 	/** Render width (cells). Defaults to `process.stdout.columns`. */
 	width?: number;
-}
-
-function isQuitRun(run: RunSnapshot): boolean {
-	return run.endedAt === undefined && run.status === "paused" && run.exitReason === "quit";
+	/** Full store snapshot used to attribute nested awaiting-input descendants. */
+	allRuns?: readonly RunSnapshot[];
 }
 
 /**
@@ -63,6 +61,7 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	const now = opts.now ?? Date.now();
 	const width = effectiveWidth(opts.width);
 	const cardWidth = Math.max(20, width - 4);
+	const allRuns = opts.allRuns ?? runs;
 
 	// The list shows active + recently-ended runs together. Sorting:
 	// active first, then ended, each bucket by startedAt desc.
@@ -80,7 +79,7 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	} else {
 		for (let i = 0; i < sorted.length; i++) {
 			if (i > 0) body.push("");
-			body.push(...renderRunEntry(sorted[i]!, now, cardWidth, opts.theme));
+			body.push(...renderRunEntry(sorted[i]!, now, cardWidth, opts.theme, allRuns));
 		}
 	}
 
@@ -107,9 +106,15 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 // Run card
 // ---------------------------------------------------------------------------
 
-function renderRunEntry(run: RunSnapshot, now: number, width: number, theme?: GraphTheme): string[] {
+function renderRunEntry(
+	run: RunSnapshot,
+	now: number,
+	width: number,
+	theme: GraphTheme | undefined,
+	allRuns: readonly RunSnapshot[],
+): string[] {
 	const sid = shortId(run.id);
-	const trailing = runTrailing(run, theme);
+	const trailing = runTrailing(run, theme, allRuns);
 	const mode = run.stages.length > 1 ? "chain " : "single";
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
@@ -124,8 +129,8 @@ function renderRunEntry(run: RunSnapshot, now: number, width: number, theme?: Gr
 	const usedLeftW = modeW + visibleWidth(strip);
 	const gap = Math.max(metaW > 0 ? 1 : 0, interior - usedLeftW - metaW);
 
-	const glyph = statusIconForRun(run);
-	const glyphFg = theme ? hexToAnsi(runAccent(run, theme)) : "";
+	const glyph = statusIconForRun(run, allRuns);
+	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, allRuns)) : "";
 	const accent = theme ? hexToAnsi(theme.accent) : "";
 	const text = theme ? hexToAnsi(theme.text) : "";
 	const muted = theme ? hexToAnsi(theme.textMuted) : "";
@@ -147,52 +152,42 @@ function renderRunEntry(run: RunSnapshot, now: number, width: number, theme?: Gr
 	return [line1, line2];
 }
 
-function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
-	if (!theme) return "#000000";
-	if (isQuitRun(run)) return theme.warning;
-	switch (effectiveRunStatus(run)) {
-		case "completed":
-			return theme.success;
-		case "running":
-			return theme.warning;
-		case "paused":
-			return theme.warning;
-		case "skipped":
-			return theme.dim;
-		case "cancelled":
-			return theme.dim;
-		case "blocked":
-			return theme.dim;
-		case "failed":
-			return theme.error;
-		case "killed":
-			return theme.error;
-		default:
-			return theme.dim;
-	}
+function runAccent(run: RunSnapshot, theme: GraphTheme, allRuns: readonly RunSnapshot[]): string {
+	if (isQuitRun(run)) return statusColor("paused", theme);
+	return statusColor(runIndicatorStatus(run, allRuns), theme);
 }
 
-function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?: string } | undefined {
-	if (isQuitRun(run)) return { text: "○ quit", fg: theme?.warning };
-	switch (effectiveRunStatus(run)) {
+function runTrailing(
+	run: RunSnapshot,
+	theme: GraphTheme | undefined,
+	allRuns: readonly RunSnapshot[],
+): { text: string; fg?: string } | undefined {
+	if (isQuitRun(run))
+		return { text: `${statusIcon("pending")} quit`, fg: theme ? statusColor("paused", theme) : undefined };
+	const status = runIndicatorStatus(run, allRuns);
+	const icon = statusIcon(status);
+	const fg = theme ? statusColor(status, theme) : undefined;
+	switch (status) {
 		case "completed":
-			return { text: "✓ completed", fg: theme?.success };
+			return { text: `${icon} completed`, fg };
 		case "running":
-			return { text: "● running", fg: theme?.warning };
+			return { text: `${icon} running`, fg };
 		case "paused":
-			return { text: "❚❚ paused", fg: theme?.warning };
+			return { text: `${icon} paused`, fg };
+		case "awaiting_input":
+			return { text: `${icon} awaiting input`, fg };
 		case "skipped":
-			return { text: "⊘ skipped", fg: theme?.dim };
+			return { text: `${icon} skipped`, fg };
 		case "cancelled":
-			return { text: "⊘ cancelled", fg: theme?.dim };
+			return { text: `${icon} cancelled`, fg };
 		case "blocked":
-			return { text: "↑ blocked", fg: theme?.dim };
+			return { text: `${icon} blocked`, fg };
 		case "failed":
-			return { text: "✗ failed", fg: theme?.error };
+			return { text: `${icon} failed`, fg };
 		case "killed":
-			return { text: "⊘ killed", fg: theme?.error };
+			return { text: `${icon} killed`, fg };
 		default:
-			return { text: "○ pending", fg: theme?.dim };
+			return { text: `${icon} pending`, fg };
 	}
 }
 
@@ -412,28 +407,9 @@ function emptyStateLine(theme?: GraphTheme): string {
 	return `  ${hexToAnsi(theme.dim)}no workflow runs in current session${RESET}`;
 }
 
-function statusIconForRun(run: RunSnapshot): string {
-	if (isQuitRun(run)) return "○";
-	switch (effectiveRunStatus(run)) {
-		case "completed":
-			return "✓";
-		case "skipped":
-			return "⊘";
-		case "cancelled":
-			return "⊘";
-		case "blocked":
-			return "↑";
-		case "running":
-			return "●";
-		case "paused":
-			return "❚❚";
-		case "failed":
-			return "✗";
-		case "killed":
-			return "⊘";
-		default:
-			return "○";
-	}
+function statusIconForRun(run: RunSnapshot, allRuns: readonly RunSnapshot[]): string {
+	if (isQuitRun(run)) return statusIcon("pending");
+	return statusIcon(runIndicatorStatus(run, allRuns));
 }
 
 // Re-export for callers that need to inspect width budgeting.

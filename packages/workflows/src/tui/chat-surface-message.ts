@@ -67,6 +67,8 @@ export interface DispatchPayload {
 export interface StatusPayload {
 	kind: "status";
 	runs: readonly RunSnapshot[];
+	/** Full store snapshot, when the emitting command has it available. */
+	allRuns?: readonly RunSnapshot[];
 }
 
 /** Workflow catalogue after `/workflow list`. */
@@ -164,7 +166,7 @@ export function renderChatSurfacePlainText(
 			return [rendered, `run id: ${payload.runId}`, `inputs: ${formatPlainRecord(payload.inputs)}`].join("\n");
 		}
 		case "status": {
-			const rendered = renderStatusList(payload.runs, { width, now, ...themed });
+			const rendered = renderStatusList(payload.runs, { width, now, allRuns: payload.allRuns, ...themed });
 			if (payload.runs.length === 0) return rendered;
 			return [
 				rendered,
@@ -288,7 +290,7 @@ function renderPayload(payload: ChatSurfacePayload, theme: GraphTheme, width: nu
 				width,
 			});
 		case "status":
-			return renderStatusList(payload.runs, { theme, width, now });
+			return renderStatusList(payload.runs, { theme, width, now, allRuns: payload.allRuns });
 		case "list":
 			return renderWorkflowList(payload.entries, { theme, width });
 		case "detail":

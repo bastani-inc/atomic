@@ -1,7 +1,11 @@
+import { formatPromptAttribution } from "../shared/prompt-attribution.js";
 import { mountStageCustomUi, type StageCustomUiRequest } from "../shared/stage-ui-broker.js";
+import { hexToAnsi, RESET } from "./color-utils.js";
 import { embedOrchestratorReturnHintInWidget } from "./stage-chat-view-footer-status.js";
 import { setComponentFocused } from "./stage-chat-view-render-helpers.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
+import { statusColor, statusIcon } from "./status-helpers.js";
+import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 export async function showCustomUi(ctx: StageChatViewContext, request: StageCustomUiRequest): Promise<void> {
 	ctx.mountedCustomUi?.component.dispose?.();
@@ -73,7 +77,23 @@ export function renderCustomUi(ctx: StageChatViewContext, width: number): string
 	const component = ctx.mountedCustomUi?.component;
 	if (!component) return [];
 	setComponentFocused(component, ctx.focused);
-	return embedOrchestratorReturnHintInWidget(ctx, component.render(width), width);
+	const lines = component.render(width);
+	const attribution = formatPromptAttribution(ctx.runId, ctx.store.snapshot().runs);
+	if (attribution === undefined) return embedOrchestratorReturnHintInWidget(ctx, lines, width);
+	const header = renderPromptAttributionHeader(attribution, ctx.theme, width);
+	return embedOrchestratorReturnHintInWidget(ctx, [header, ...lines], width);
+}
+
+function renderPromptAttributionHeader(
+	attribution: string,
+	theme: StageChatViewContext["theme"],
+	width: number,
+): string {
+	const status = "awaiting_input";
+	const plain = ` ${statusIcon(status)} AWAITING INPUT · ${attribution}`;
+	const styled = `${hexToAnsi(statusColor(status, theme))}${plain}${RESET}`;
+	const clipped = truncateToWidth(styled, width, "…", true);
+	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
 export function hideMountedCustomUi(ctx: StageChatViewContext, request: StageCustomUiRequest): void {

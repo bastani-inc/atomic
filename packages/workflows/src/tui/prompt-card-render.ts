@@ -12,6 +12,8 @@ export interface PromptCardRenderOpts {
 	readonly theme: GraphTheme;
 	readonly width: number;
 	readonly cursorOn: boolean;
+	/** Compact `<short run id> <workflow name>` shown only for multi-run HIL. */
+	readonly attribution?: string;
 }
 
 /**
@@ -25,7 +27,8 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 	const bg = "";
 
 	const lines: string[] = [];
-	lines.push(makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg));
+	const promptLabel = opts.attribution === undefined ? " AWAITING INPUT " : ` AWAITING INPUT · ${opts.attribution} `;
+	lines.push(makeBorderTop(borderColor, promptLabel, theme, innerWidth, bg));
 	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
 	for (const messageLine of wrapText(state.prompt.message, innerWidth - 4)) {
 		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${paint(messageLine, theme.text)}`));
@@ -42,9 +45,8 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 	lines.push(makeBorderBottom(borderColor, innerWidth, bg));
 	return lines;
 }
-
 function makeBorderTop(color: string, label: string, theme: GraphTheme, innerWidth: number, bg: string): string {
-	const labelText = paint(label, theme.textMuted, { bold: true });
+	const labelText = paint(truncateToWidth(label, Math.max(1, innerWidth), "…"), theme.textMuted, { bold: true });
 	const labelW = visibleWidth(labelText);
 	const fillLen = Math.max(0, innerWidth - labelW);
 	return bg + paint("╭", color) + labelText + paint(`${"─".repeat(fillLen)}╮`, color) + RESET;

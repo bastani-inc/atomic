@@ -10,7 +10,8 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import type { PendingPrompt } from "../../packages/workflows/src/shared/store-types.ts";
+import { formatPromptAttribution } from "../../packages/workflows/src/shared/prompt-attribution.ts";
+import type { PendingPrompt, RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
 	createPromptCardState,
@@ -267,5 +268,103 @@ describe("renderPromptCard", () => {
 
 		assert.ok(!lines[0]!.startsWith("\x1b[48;"));
 		assert.ok(!lines.at(-1)!.startsWith("\x1b[48;"));
+	});
+});
+
+describe("formatPromptAttribution", () => {
+	function makeRunSnapshot(over: Partial<RunSnapshot>): RunSnapshot {
+		return {
+			id: over.id ?? "run-0",
+			name: over.name ?? "wf",
+			inputs: {},
+			status: over.status ?? "running",
+			stages: over.stages ?? [],
+			startedAt: over.startedAt ?? 1000,
+			endedAt: over.endedAt,
+			parentRunId: over.parentRunId,
+			rootRunId: over.rootRunId,
+		};
+	}
+
+	test("returns undefined while only one top-level run is active", () => {
+		const runs = [
+			makeRunSnapshot({ id: "aaaaaa11-2222", name: "solo-wf" }),
+			makeRunSnapshot({ id: "bbbbbb11-2222", name: "old-wf", status: "completed", endedAt: 2000 }),
+		];
+		assert.equal(formatPromptAttribution("aaaaaa11-2222", runs), undefined);
+	});
+
+	test("names the originating run with its short id and workflow name when several runs are active", () => {
+		const runs = [
+			makeRunSnapshot({ id: "aaaaaa11-2222", name: "first-wf" }),
+			makeRunSnapshot({ id: "bbbbbb11-2222", name: "second-wf" }),
+		];
+		assert.equal(formatPromptAttribution("bbbbbb11-2222", runs), "bbbbbb second-wf");
+	});
+
+	test("attributes a nested child's prompt to its visible top-level ancestor", () => {
+		const runs = [
+			makeRunSnapshot({ id: "aaaaaa11-2222", name: "first-wf" }),
+			makeRunSnapshot({ id: "rootaa11-2222", name: "root-wf" }),
+			makeRunSnapshot({
+				id: "childa11-2222",
+				name: "child-wf",
+				parentRunId: "rootaa11-2222",
+				rootRunId: "rootaa11-2222",
+			}),
+		];
+		assert.equal(formatPromptAttribution("childa11-2222", runs), "rootaa root-wf");
+	});
+
+	test("returns undefined for an unknown originating run id", () => {
+		const runs = [
+			makeRunSnapshot({ id: "aaaaaa11-2222", name: "first-wf" }),
+			makeRunSnapshot({ id: "bbbbbb11-2222", name: "second-wf" }),
+		];
+		assert.equal(formatPromptAttribution("missing", runs), undefined);
+	});
+});
+
+describe("renderPromptCard — run attribution", () => {
+	test("names the originating run in the card header when attribution is supplied", () => {
+		const state = createPromptCardState(makePrompt({ message: "Pick a branch" }));
+		const lines = renderPromptCard({ state, theme, width: 70, cursorOn: false, attribution: "bbbbbb second-wf" });
+		const header = stripAnsi(lines[0] ?? "");
+
+		assert.match(header, /AWAITING INPUT · bbbbbb second-wf/);
+	});
+
+	test("single-run output is unchanged when no attribution is supplied", () => {
+		const baseline = renderPromptCard({
+			state: createPromptCardState(makePrompt({ message: "Pick a branch" })),
+			theme,
+			width: 70,
+			cursorOn: false,
+		});
+		const withoutAttribution = renderPromptCard({
+			state: createPromptCardState(makePrompt({ message: "Pick a branch" })),
+			theme,
+			width: 70,
+			cursorOn: false,
+			attribution: undefined,
+		});
+
+		assert.deepEqual(withoutAttribution, baseline);
+		assert.match(stripAnsi(baseline[0] ?? ""), /AWAITING INPUT/);
+		assert.doesNotMatch(stripAnsi(baseline[0] ?? ""), /AWAITING INPUT ·/);
+	});
+
+	test("attributed header still fits the requested width", () => {
+		const state = createPromptCardState(makePrompt({ message: "Pick a branch" }));
+		const lines = renderPromptCard({
+			state,
+			theme,
+			width: 46,
+			cursorOn: false,
+			attribution: "bbbbbb a-very-long-workflow-name-for-clipping",
+		});
+		for (const line of lines) {
+			assert.equal(visibleWidth(line), 46, `line width mismatch: ${visibleWidth(line)}`);
+		}
 	});
 });

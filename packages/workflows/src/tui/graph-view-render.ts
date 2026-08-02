@@ -1,3 +1,4 @@
+import { formatPromptAttribution } from "../shared/prompt-attribution.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
@@ -147,12 +148,14 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		// open it owns the body/input, so hide the prompt card until it closes.
 		if (!this.promptState || this.switcherOpen) return;
 
+		const attribution = formatPromptAttribution(this.runId ?? undefined, this.currentSnapshot?.runs ?? []);
 		const cardWidth = Math.min(72, Math.max(40, frameWidth - 6));
 		const cardLines = renderPromptCard({
 			state: this.promptState,
 			theme: this.graphTheme,
 			width: cardWidth,
 			cursorOn: ((Date.now() / 530) | 0) % 2 === 0,
+			...(attribution !== undefined ? { attribution } : {}),
 		});
 		const bodyStart = 3;
 		const bodyEnd = 3 + bodyTarget;

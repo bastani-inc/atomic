@@ -411,4 +411,82 @@ describe("StageChatView", () => {
 	// while scroll keys stay with the transcript. ESC is NOT intercepted by the
 	// stage view — it reaches the questionnaire, which treats cancel as decline
 	// ("effectively No").
+	test("labels a brokered ask_user_question with its originating run while several runs are active", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		setupRun(store, "run-2", "stage-b");
+		const broker = new StageUiBroker(store);
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: {
+				requestRender: () => {},
+				terminal: { rows: 32, columns: 80 },
+			} as unknown as TUI,
+			piTheme: {},
+			piKeybindings: makeFakeKeybindings(),
+			stageUiBroker: broker,
+		});
+
+		const pending = broker.requestCustomUi("run-1", "stage-a", (_tui, _theme, _kb, done) => ({
+			render: () => ["What is your favorite colour?"],
+			handleInput: () => done("blue"),
+			invalidate: () => {},
+		}));
+		await flush();
+
+		const visible = stripAnsi(view.render(80).join("\n"));
+		assert.match(visible, /What is your favorite colour\?/);
+		assert.match(visible, /AWAITING INPUT · run-1 test-wf/);
+
+		view.handleInput("x");
+		assert.equal(await pending, "blue");
+		view.dispose();
+	});
+
+	test("leaves a single-run ask_user_question surface unlabelled", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const broker = new StageUiBroker(store);
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: {
+				requestRender: () => {},
+				terminal: { rows: 32, columns: 80 },
+			} as unknown as TUI,
+			piTheme: {},
+			piKeybindings: makeFakeKeybindings(),
+			stageUiBroker: broker,
+		});
+
+		const pending = broker.requestCustomUi("run-1", "stage-a", (_tui, _theme, _kb, done) => ({
+			render: () => ["What is your favorite colour?"],
+			handleInput: () => done("blue"),
+			invalidate: () => {},
+		}));
+		await flush();
+
+		const visible = stripAnsi(view.render(80).join("\n"));
+		assert.match(visible, /What is your favorite colour\?/);
+		assert.doesNotMatch(visible, /AWAITING INPUT ·/);
+
+		view.handleInput("x");
+		assert.equal(await pending, "blue");
+		view.dispose();
+	});
 });
