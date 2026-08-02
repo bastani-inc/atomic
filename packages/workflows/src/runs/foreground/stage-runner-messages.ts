@@ -23,13 +23,29 @@ function isAdmittedExternalMessage(message: AgentSession["messages"][number]): b
 	);
 }
 
+export type AssistantTextNomination = {
+	readonly text: string;
+	readonly source: "pre-admission" | "post-admission-fallback";
+	readonly discardedPostAdmissionText: boolean;
+};
+
+type AssistantTextCandidate = {
+	readonly text: string;
+	readonly utf8Bytes: number;
+};
+
 /**
  * An admitted external message is an absolute boundary for stage-owned output. Nominate the last non-empty assistant
- * turn before the first admission in this prompt window, regardless of admission provenance or candidate size. If the
- * admission precedes every assistant turn, use the first non-empty assistant turn after it as the only available
- * fallback. With no admission, return undefined so the caller preserves the existing latest-assistant behavior.
+ * turn before the first admission in this prompt window, regardless of admission provenance or candidate size. If no
+ * assistant text precedes the admission, the prohibition on post-admission output is unsatisfiable. That fallback
+ * selects the largest non-empty post-admission turn by UTF-8 bytes (and the later turn on a tie), optimizing for not
+ * losing the substantive report rather than preserving an admission-triggered acknowledgement. With no admission,
+ * return undefined so the caller preserves the existing latest-assistant behavior.
  */
-function nominatedAssistantText(messages: AgentSession["messages"], startIndex = 0): string | undefined {
+export function nominatedAssistantOutput(
+	messages: AgentSession["messages"],
+	startIndex = 0,
+): AssistantTextNomination | undefined {
 	const firstIndex = Math.max(0, startIndex);
 	let firstAdmissionIndex: number | undefined;
 	for (let index = firstIndex; index < messages.length; index += 1) {
@@ -41,19 +57,35 @@ function nominatedAssistantText(messages: AgentSession["messages"], startIndex =
 	}
 	if (firstAdmissionIndex === undefined) return undefined;
 
-	for (let index = firstAdmissionIndex - 1; index >= firstIndex; index -= 1) {
-		const message = messages[index];
-		if (message?.role !== "assistant") continue;
-		const text = extractMessageText(message).trim();
-		if (text) return text;
-	}
+	const postAdmissionCandidates: AssistantTextCandidate[] = [];
 	for (let index = firstAdmissionIndex + 1; index < messages.length; index += 1) {
 		const message = messages[index];
 		if (message?.role !== "assistant") continue;
 		const text = extractMessageText(message).trim();
-		if (text) return text;
+		if (text) postAdmissionCandidates.push({ text, utf8Bytes: new TextEncoder().encode(text).byteLength });
 	}
-	return undefined;
+	for (let index = firstAdmissionIndex - 1; index >= firstIndex; index -= 1) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		const text = extractMessageText(message).trim();
+		if (!text) continue;
+		return {
+			text,
+			source: "pre-admission",
+			discardedPostAdmissionText: postAdmissionCandidates.length > 0,
+		};
+	}
+	const fallback = postAdmissionCandidates.reduce<AssistantTextCandidate | undefined>(
+		(largest, candidate) => (largest === undefined || candidate.utf8Bytes >= largest.utf8Bytes ? candidate : largest),
+		undefined,
+	);
+	return fallback === undefined
+		? undefined
+		: {
+				text: fallback.text,
+				source: "post-admission-fallback",
+				discardedPostAdmissionText: postAdmissionCandidates.length > 1,
+			};
 }
 
 export function extractMessageText(message: AgentSession["messages"][number]): string {
@@ -160,8 +192,8 @@ export function lastAssistantTextFromSession(
 	if (!activeSession) return fallback;
 	const terminatingText = terminatingToolResultText(activeSession.messages, terminatingToolCallIds);
 	if (terminatingText !== undefined) return terminatingText;
-	const nominated = nominatedAssistantText(activeSession.messages, promptStartIndex);
-	if (nominated !== undefined) return nominated;
+	const nominated = nominatedAssistantOutput(activeSession.messages, promptStartIndex);
+	if (nominated !== undefined) return nominated.text;
 	const direct = activeSession.getLastAssistantText?.();
 	if (direct?.trim()) return direct;
 	return lastAssistantTextFromMessages(activeSession.messages) ?? direct ?? fallback;

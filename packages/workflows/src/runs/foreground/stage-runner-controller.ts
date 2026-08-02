@@ -117,6 +117,10 @@ export class StageSessionController {
 		return this.session;
 	}
 
+	get currentPromptStartIndex(): number | undefined {
+		return this.lastPromptStartIndex;
+	}
+
 	get latestStructuredOutputToolError(): string | undefined {
 		return this.latestStructuredOutputToolErrorValue;
 	}

@@ -9,6 +9,7 @@ import { finalizePromptOutput } from "../../packages/workflows/src/runs/foregrou
 async function runOutputCase(
 	text: string,
 	messages?: AgentSession["messages"],
+	promptStartIndex?: number,
 ): Promise<{ receipt: string; outputPath: string; transcriptPath?: string }> {
 	const directory = await mkdtemp(join(tmpdir(), "stage-runner-output-degenerate-"));
 	const outputPath = join(directory, "report.md");
@@ -18,6 +19,7 @@ async function runOutputCase(
 		process.cwd(),
 		`degenerate-test-${Date.now()}-${Math.random()}`,
 		messages,
+		promptStartIndex,
 	);
 	const transcriptMatch = receipt.match(/Transcript saved to: ([^ ]+) \(/);
 	return { receipt, outputPath, ...(transcriptMatch?.[1] ? { transcriptPath: transcriptMatch[1] } : {}) };
@@ -55,9 +57,9 @@ test("does not warn when short substantive output mentions its own filename", as
 	}
 });
 
-test("warns when substantially larger post-admission assistant content was discarded", async () => {
-	const stageOwn = "OWN".padEnd(18, ".");
-	const postAdmission = "POST".padEnd(155, ".");
+test("warns whenever non-empty post-admission assistant content was discarded", async () => {
+	const stageOwn = "OWN".padEnd(100, ".");
+	const postAdmission = "POST".padEnd(101, ".");
 	const messages = [
 		{ role: "assistant", content: [{ type: "text", text: stageOwn }] },
 		{ role: "custom", stageAdmissionKey: "subagent:1", content: "external result" },
@@ -67,18 +69,19 @@ test("warns when substantially larger post-admission assistant content was disca
 	try {
 		assert.match(
 			result.receipt,
-			/WARNING: the stage's own turn was persisted; larger post-admission assistant content exists\./,
+			/WARNING: the stage's own pre-admission turn was persisted; post-admission assistant content was discarded\./,
 		);
 		assert.ok(result.transcriptPath);
 		assert.match(result.receipt, new RegExp(`Search the companion transcript at ${result.transcriptPath}`));
 		assert.equal(await readFile(result.outputPath, "utf8"), stageOwn);
+		assert.match(await readFile(result.transcriptPath, "utf8"), new RegExp(postAdmission));
 	} finally {
 		await cleanupOutputCase(result);
 	}
 });
 
-test("uses a 3:2 UTF-8 byte threshold only for the post-admission warning", async () => {
-	for (const postAdmissionBytes of [149, 150]) {
+test("has no silent size band for discarded post-admission assistant content", async () => {
+	for (const postAdmissionBytes of [4, 99, 100, 101, 150]) {
 		const stageOwn = "OWN".padEnd(100, ".");
 		const postAdmission = "POST".padEnd(postAdmissionBytes, ".");
 		const messages = [
@@ -88,26 +91,57 @@ test("uses a 3:2 UTF-8 byte threshold only for the post-admission warning", asyn
 		] as AgentSession["messages"];
 		const result = await runOutputCase(stageOwn, messages);
 		try {
-			if (postAdmissionBytes === 150) assert.match(result.receipt, /larger post-admission assistant content/);
-			else assert.doesNotMatch(result.receipt, /larger post-admission assistant content/);
+			assert.match(result.receipt, /post-admission assistant content was discarded/);
 		} finally {
 			await cleanupOutputCase(result);
 		}
 	}
 });
 
-test("warns when the no-pre-admission fallback discards a later, substantially larger turn", async () => {
-	const fallback = "FALLBACK".padEnd(18, ".");
-	const later = "LATER".padEnd(155, ".");
+test("warns from the no-pre-admission fallback without claiming stage-own text was persisted", async () => {
+	const acknowledgement = "ACK";
+	const report = "REPORT".padEnd(155, ".");
 	const messages = [
 		{ role: "custom", stageAdmissionKey: "subagent:1", content: "external result" },
-		{ role: "assistant", content: [{ type: "text", text: fallback }] },
-		{ role: "assistant", content: [{ type: "text", text: later }] },
+		{ role: "assistant", content: [{ type: "text", text: acknowledgement }] },
+		{ role: "assistant", content: [{ type: "text", text: report }] },
 	] as AgentSession["messages"];
-	const result = await runOutputCase(fallback, messages);
+	const result = await runOutputCase(report, messages, 0);
 	try {
-		assert.match(result.receipt, /larger post-admission assistant content/);
-		assert.equal(await readFile(result.outputPath, "utf8"), fallback);
+		assert.match(
+			result.receipt,
+			/WARNING: no stage-own assistant text existed before the admission; a post-admission assistant turn was selected and other post-admission assistant content was discarded\./,
+		);
+		assert.doesNotMatch(result.receipt, /stage's own .* was persisted/);
+		assert.ok(result.transcriptPath);
+		const transcript = await readFile(result.transcriptPath, "utf8");
+		assert.match(transcript, /ACK/);
+		assert.match(transcript, /REPORT/);
+		assert.equal(await readFile(result.outputPath, "utf8"), report);
+	} finally {
+		await cleanupOutputCase(result);
+	}
+});
+
+test("scopes discarded-content warnings to the current prompt window", async () => {
+	const firstAnswer = "P1 answer";
+	const firstAcknowledgement = "P1 ack";
+	const secondIntroduction = "P2 intro".padEnd(120, ".");
+	const report = "REAL REPORT".padEnd(21_000, ".");
+	const messages = [
+		{ role: "assistant", content: [{ type: "text", text: firstAnswer }] },
+		{ role: "custom", stageAdmissionKey: "subagent:1", content: "first external result" },
+		{ role: "assistant", content: [{ type: "text", text: firstAcknowledgement }] },
+		{ role: "assistant", content: [{ type: "text", text: secondIntroduction }] },
+		{ role: "custom", stageAdmissionKey: "subagent:2", content: "second external result" },
+		{ role: "assistant", content: [{ type: "text", text: report }] },
+	] as AgentSession["messages"];
+	const result = await runOutputCase(secondIntroduction, messages, 3);
+	try {
+		assert.match(result.receipt, /stage's own pre-admission turn was persisted/);
+		assert.ok(result.transcriptPath);
+		assert.match(await readFile(result.transcriptPath, "utf8"), /REAL REPORT/);
+		assert.equal(await readFile(result.outputPath, "utf8"), secondIntroduction);
 	} finally {
 		await cleanupOutputCase(result);
 	}

@@ -45,6 +45,15 @@ function assistantTextAndToolCallTurn(text: string, toolCallId = "t"): SessionMe
 	} as SessionMessage;
 }
 
+function assistantToolCallTurn(toolCallId = "t"): SessionMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id: toolCallId, name: "t", arguments: {} }],
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	} as SessionMessage;
+}
+
 type AdmissionProvenance = "active-stage" | "assistant-settled";
 
 function latestAssistantText(messages: AgentSession["messages"]): string | undefined {
@@ -95,6 +104,8 @@ type NominationTexts = {
 type NominationMatrixRow = {
 	readonly id: string;
 	readonly scenario: (provenance: AdmissionProvenance, texts: NominationTexts) => readonly SessionMessage[];
+	readonly expected?: (texts: NominationTexts) => string;
+	readonly preAdmissionBoundary?: false;
 };
 
 function exactSizedText(label: string, bytes: number): string {
@@ -119,11 +130,16 @@ const nominationMatrix: readonly NominationMatrixRow[] = [
 	},
 	{
 		id: "A2 [C, REAL, ACK]",
+		preAdmissionBoundary: false,
 		scenario: (provenance, texts) => [
 			admittedTurn("subagent:1", provenance),
 			assistantTurn(texts.stageOwn),
 			assistantTurn(texts.postAdmission),
 		],
+		expected: (texts) =>
+			Buffer.byteLength(texts.postAdmission, "utf8") >= Buffer.byteLength(texts.stageOwn, "utf8")
+				? texts.postAdmission
+				: texts.stageOwn,
 	},
 	{
 		id: "A3 [REAL, C, ACK+toolCall, toolResult, ACK2]",
@@ -183,6 +199,7 @@ const nominationMatrix: readonly NominationMatrixRow[] = [
 	},
 	{
 		id: "B5 [C, REAL]",
+		preAdmissionBoundary: false,
 		scenario: (provenance, texts) => [admittedTurn("subagent:1", provenance), assistantTurn(texts.stageOwn)],
 	},
 	{
@@ -213,7 +230,10 @@ const reviewerRegressionCases = [
 	},
 ] as const;
 
-async function assertNominationScenario(scenario: readonly SessionMessage[], expected: string): Promise<string> {
+async function assertNominationScenario(
+	scenario: readonly SessionMessage[],
+	expected: string,
+): Promise<{ readonly receipt: string; readonly transcript: string }> {
 	const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-nomination-"));
 	let transcriptPath: string | undefined;
 	try {
@@ -227,7 +247,7 @@ async function assertNominationScenario(scenario: readonly SessionMessage[], exp
 			},
 		});
 		const ctx = createStageContext(makeOpts({ adapters: { agentSession: { create: async () => session } } }));
-		const result = await ctx.prompt("go", { output, outputMode: "file-only" });
+		const receipt = await ctx.prompt("go", { output, outputMode: "file-only" });
 		assert.equal(await readFile(output, "utf8"), expected);
 		const directMessages = [assistantTurn("PREVIOUS PROMPT"), ...scenario] as AgentSession["messages"];
 		const { session: directSession } = makeMockSession({
@@ -235,10 +255,44 @@ async function assertNominationScenario(scenario: readonly SessionMessage[], exp
 			getLastAssistantText: () => latestAssistantText(directMessages),
 		});
 		assert.equal(lastAssistantTextFromSession(directSession, "fallback", new Set<string>(), 1), expected);
-		const transcriptMatch = result.match(/Transcript saved to: ([^ ]+) \(/);
+		const transcriptMatch = receipt.match(/Transcript saved to: ([^ ]+) \(/);
 		assert.ok(transcriptMatch?.[1]);
 		transcriptPath = transcriptMatch[1];
-		return await readFile(transcriptPath, "utf8");
+		const transcript = await readFile(transcriptPath, "utf8");
+		const firstAdmissionIndex = scenario.findIndex(
+			(message) =>
+				message.role === "custom" &&
+				typeof (message as { readonly stageAdmissionKey?: string }).stageAdmissionKey === "string",
+		);
+		if (firstAdmissionIndex >= 0) {
+			const assistantText = (message: SessionMessage): string => {
+				if (message.role !== "assistant" || !Array.isArray(message.content)) return "";
+				return message.content
+					.map((block) => (block.type === "text" ? block.text : ""))
+					.join("")
+					.trim();
+			};
+			const hasPreAdmissionText = scenario
+				.slice(0, firstAdmissionIndex)
+				.some((message) => assistantText(message).length > 0);
+			const postAdmissionTexts = scenario
+				.slice(firstAdmissionIndex + 1)
+				.map(assistantText)
+				.filter((text) => text.length > 0);
+			const discardedPostAdmissionText = hasPreAdmissionText
+				? postAdmissionTexts.length > 0
+				: postAdmissionTexts.length > 1;
+			if (discardedPostAdmissionText) {
+				assert.match(
+					receipt,
+					hasPreAdmissionText
+						? /WARNING: the stage's own pre-admission turn was persisted; post-admission assistant content was discarded\./
+						: /WARNING: no stage-own assistant text existed before the admission; a post-admission assistant turn was selected and other post-admission assistant content was discarded\./,
+				);
+				for (const text of postAdmissionTexts) assert.ok(transcript.includes(text));
+			}
+		}
+		return { receipt, transcript };
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 		if (transcriptPath) await rm(transcriptPath, { force: true });
@@ -539,12 +593,14 @@ describe("createStageContext — prompt metadata propagation", () => {
 	for (const row of nominationMatrix) {
 		for (const relationship of candidateSizeRelationships) {
 			for (const provenance of ["active-stage", "assistant-settled"] as const) {
-				test(`${row.id} with ${relationship.id} and ${provenance} provenance`, async () => {
+				const decision =
+					row.preAdmissionBoundary === false ? "no-pre-admission fallback" : "deliberate clause-1 boundary";
+				test(`${decision}: ${row.id} with ${relationship.id} and ${provenance} provenance`, async () => {
 					const texts = {
 						stageOwn: exactSizedText("OWN", relationship.stageOwnBytes),
 						postAdmission: exactSizedText("POST", relationship.postAdmissionBytes),
 					};
-					await assertNominationScenario(row.scenario(provenance, texts), texts.stageOwn);
+					await assertNominationScenario(row.scenario(provenance, texts), row.expected?.(texts) ?? texts.stageOwn);
 				});
 			}
 		}
@@ -552,7 +608,7 @@ describe("createStageContext — prompt metadata propagation", () => {
 
 	for (const row of reviewerRegressionCases) {
 		for (const provenance of ["active-stage", "assistant-settled"] as const) {
-			test(`${row.id} always nominates bytes before ${provenance} admission`, async () => {
+			test(`deliberate clause-1 boundary: ${row.id} always nominates bytes before ${provenance} admission`, async () => {
 				await assertNominationScenario(
 					[assistantTurn(row.before), admittedTurn("subagent:reviewer", provenance), assistantTurn(row.after)],
 					row.before,
@@ -568,7 +624,7 @@ describe("createStageContext — prompt metadata propagation", () => {
 		);
 	});
 
-	test("Z2 admission without provenance still uses the absolute admission boundary", async () => {
+	test("deliberate clause-1 boundary: Z2 admission without provenance still uses the absolute boundary", async () => {
 		await assertNominationScenario(
 			[
 				assistantTurn(SUBSTANTIVE_DELIVERABLE),
@@ -578,28 +634,28 @@ describe("createStageContext — prompt metadata propagation", () => {
 			SUBSTANTIVE_DELIVERABLE,
 		);
 	});
-	test("candidate size never overrides the pre-admission stage-own turn", async () => {
+	test("deliberate clause-1 boundary: candidate size never overrides the pre-admission stage-own turn", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "active-stage"), assistantTurn("1234")],
 			"123456",
 		);
 	});
 
-	test("near-equal candidates always nominate the pre-admission stage-own turn", async () => {
+	test("deliberate clause-1 boundary: near-equal candidates nominate the pre-admission stage-own turn", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "active-stage"), assistantTurn("12345")],
 			"123456",
 		);
 	});
 
-	test("near-equal candidates ignore assistant-settled provenance", async () => {
+	test("deliberate clause-1 boundary: near-equal candidates ignore assistant-settled provenance", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "assistant-settled"), assistantTurn("12345")],
 			"123456",
 		);
 	});
 
-	test("nominates a substantive deliverable before an active-stage admission acknowledgement", async () => {
+	test("deliberate clause-1 boundary: nominates a deliverable before an active-stage acknowledgement", async () => {
 		await assertNominationScenario(
 			[
 				assistantTurn("REAL DELIVERABLE WITH SUBSTANTIVE DETAIL"),
@@ -610,16 +666,39 @@ describe("createStageContext — prompt metadata propagation", () => {
 		);
 	});
 
-	test("persists the pre-admission introduction instead of a post-admission deliverable", async () => {
-		await assertNominationScenario(
-			[
-				assistantTurn("INTRO"),
-				admittedTurn("subagent:job-1", "assistant-settled"),
-				assistantTurn("REAL DELIVERABLE WITH SUBSTANTIVE DETAIL"),
-			],
+	test("deliberate clause-1 boundary: persists the introduction and discloses the discarded deliverable", async () => {
+		const deliverable = "REAL DELIVERABLE WITH SUBSTANTIVE DETAIL";
+		const evidence = await assertNominationScenario(
+			[assistantTurn("INTRO"), admittedTurn("subagent:job-1", "assistant-settled"), assistantTurn(deliverable)],
 			"INTRO",
 		);
+		assert.match(evidence.receipt, /stage's own pre-admission turn was persisted/);
+		assert.match(evidence.transcript, new RegExp(deliverable));
 	});
+
+	for (const provenance of ["active-stage", "assistant-settled"] as const) {
+		test(`A5 [C, ACK, REAL] keeps the substantive no-pre-admission fallback with ${provenance} provenance`, async () => {
+			const report = exactSizedText("REAL REPORT", 21_000);
+			await assertNominationScenario(
+				[admittedTurn("subagent:job-1", provenance), assistantTurn("ACK"), assistantTurn(report)],
+				report,
+			);
+		});
+
+		test(`A6 [assistant(toolCall), toolResult, C, ACK, REPORT] keeps the report with ${provenance} provenance`, async () => {
+			const report = exactSizedText("REAL REPORT", 21_000);
+			await assertNominationScenario(
+				[
+					assistantToolCallTurn(),
+					toolResultTurn(),
+					admittedTurn("subagent:job-1", provenance),
+					assistantTurn("Noted the async subagent result. Continuing."),
+					assistantTurn(report),
+				],
+				report,
+			);
+		});
+	}
 
 	test("N5 legacy external turns keep the previous end-to-end last-message behavior", async () => {
 		await assertNominationScenario(

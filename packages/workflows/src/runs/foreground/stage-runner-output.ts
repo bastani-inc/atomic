@@ -4,13 +4,10 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentSession, PromptOptions } from "@bastani/atomic";
 import type { StageOutputOptions, StagePromptOptions, WorkflowMaxOutput } from "../../shared/types.js";
 import { ensureWorkflowArtifactRunDirectory, workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
+import { nominatedAssistantOutput } from "./stage-runner-messages.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
 const DEFAULT_MAX_OUTPUT_LINES = 5000;
-// A 50% byte gap avoids noise from minor formatting differences while surfacing report-scale discarded content.
-// This threshold controls only receipt visibility; it never changes which assistant bytes are persisted.
-const POST_ADMISSION_WARNING_RATIO_NUMERATOR = 3;
-const POST_ADMISSION_WARNING_RATIO_DENOMINATOR = 2;
 
 type TranscriptContentBlock = {
 	readonly type?: string;
@@ -128,53 +125,21 @@ function renderTranscript(messages: AgentSession["messages"] | undefined, fallba
 	return lines.join("\n");
 }
 
-function messageText(message: TranscriptMessage): string {
-	if (typeof message.content === "string") return message.content;
-	if (!Array.isArray(message.content)) return "";
-	return message.content
-		.map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
-		.filter(Boolean)
-		.join("");
-}
-
-function isAdmittedExternalMessage(message: TranscriptMessage): boolean {
-	return (
-		message.role === "custom" && typeof message.stageAdmissionKey === "string" && message.stageAdmissionKey.length > 0
-	);
-}
-
 function discardedPostAdmissionWarning(
 	fullOutput: string,
 	messages: AgentSession["messages"] | undefined,
 	transcriptFile: string,
+	promptStartIndex?: number,
 ): string | undefined {
 	if (messages === undefined) return undefined;
-	const firstAdmissionIndex = messages.findIndex((message) => isAdmittedExternalMessage(message as TranscriptMessage));
-	if (firstAdmissionIndex < 0) return undefined;
-
-	const candidates = messages.flatMap((message, index) => {
-		const record = message as TranscriptMessage;
-		if (record.role !== "assistant") return [];
-		const text = messageText(record).trim();
-		return text.length === 0 ? [] : [{ index, text, bytes: Buffer.byteLength(text, "utf8") }];
-	});
-	const nominated =
-		candidates.findLast((candidate) => candidate.index < firstAdmissionIndex) ??
-		candidates.find((candidate) => candidate.index > firstAdmissionIndex);
-	if (nominated === undefined || nominated.text !== fullOutput.trim()) return undefined;
-	const largestDiscarded = candidates
-		.filter((candidate) => candidate.index > firstAdmissionIndex && candidate.index !== nominated.index)
-		.reduce<(typeof candidates)[number] | undefined>(
-			(largest, candidate) => (largest === undefined || candidate.bytes > largest.bytes ? candidate : largest),
-			undefined,
-		);
-	if (
-		largestDiscarded === undefined ||
-		largestDiscarded.bytes * POST_ADMISSION_WARNING_RATIO_DENOMINATOR <
-			nominated.bytes * POST_ADMISSION_WARNING_RATIO_NUMERATOR
-	)
+	const nomination = nominatedAssistantOutput(messages, promptStartIndex);
+	if (nomination === undefined || nomination.text !== fullOutput.trim() || !nomination.discardedPostAdmissionText)
 		return undefined;
-	return `WARNING: the stage's own turn was persisted; larger post-admission assistant content exists. Search the companion transcript at ${transcriptFile}.`;
+	const selection =
+		nomination.source === "pre-admission"
+			? "the stage's own pre-admission turn was persisted; post-admission assistant content was discarded"
+			: "no stage-own assistant text existed before the admission; a post-admission assistant turn was selected and other post-admission assistant content was discarded";
+	return `WARNING: ${selection}. Search the companion transcript at ${transcriptFile}.`;
 }
 
 function savedOutputReference(
@@ -291,6 +256,7 @@ export async function finalizePromptOutput(
 	runtimeCwd: string,
 	runId: string,
 	messages?: AgentSession["messages"],
+	promptStartIndex?: number,
 ): Promise<string> {
 	const outputPath = resolveOutputPath(outputOptions.output, runtimeCwd, outputOptions.cwd);
 	validatePromptOutputOptions(outputOptions);
@@ -322,7 +288,7 @@ export async function finalizePromptOutput(
 				? undefined
 				: `WARNING: companion transcript unavailable at ${transcriptFile}: ${transcriptError}`,
 			degenerateWarning(fullOutput, outputPath),
-			discardedPostAdmissionWarning(fullOutput, messages, transcriptFile),
+			discardedPostAdmissionWarning(fullOutput, messages, transcriptFile, promptStartIndex),
 		]
 			.filter((line): line is string => line !== undefined)
 			.join("\n") || undefined;

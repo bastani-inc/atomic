@@ -30,7 +30,7 @@
 #   2. stage-output.md never contains admission-triggered assistant content, even when ACK is the larger candidate
 #   3. the rendered transcript exists under the configured durable run root, outside both the repository and $TMPDIR
 #   4. the transcript retains admitted and intermediate turns and records runtime admission provenance
-#   5. whenever substantially larger post-admission content is discarded, the receipt warns and names the transcript
+#   5. whenever any non-empty post-admission assistant content is discarded, the receipt warns and names the transcript
 #
 # ATOMIC_WORKFLOW_ARTIFACT_DIR is deliberately pointed at a per-run scratch
 # directory in the user's home (not the real ~/.atomic and not $TMPDIR). This
@@ -291,6 +291,8 @@ ACK="ACK-$NONCE"
 ASYNC_COMPLETION="ASYNC-COMPLETION-$NONCE"
 EXPECTED_OUTPUT="$DELIVERABLE"
 EXPECTED_KIND="deliverable"
+# Deliberate clause-1 boundary: for non-trailing orderings the pre-admission introduction remains the artifact, while
+# the exact file-only receipt must disclose that the post-admission deliverable was discarded into the transcript.
 if [[ "$ORDERING" != "trailing" ]]; then
 	EXPECTED_OUTPUT="$INTRO"
 	EXPECTED_KIND="introduction"
@@ -378,20 +380,20 @@ printf 'ordering=%s\nadmission=%s\nsize=%s\ntranscript_exists=true\ntranscript_p
 	"$ORDERING" "$ADMISSION" "$SIZE" "$TRANSCRIPT_PATH" "$DELIVERABLE_MATCH" "$ACK_MATCH" "$INTRO_MATCH" >"$ARTIFACTS/assertion-transcript.txt"
 
 WARNING_EXPECTED=false
-if [[ "$SIZE" == "acknowledgement-larger" || ( "$ORDERING" != "trailing" && "$DELIVERABLE_MATCH" == true ) ]]; then
+if [[ "$ACK_MATCH" == true || ( "$ORDERING" != "trailing" && "$DELIVERABLE_MATCH" == true ) ]]; then
 	WARNING_EXPECTED=true
 fi
 if [[ "$WARNING_EXPECTED" == true ]]; then
-	if ! rg -nF -- "WARNING: the stage's own turn was persisted; larger post-admission assistant content exists." "$ARTIFACTS/receipt.txt" >"$ARTIFACTS/receipt-warning-hit.txt"; then
-		echo "stage-output-transcript evidence: receipt omitted the larger-post-admission-content warning" >&2
+	if ! rg -nF -- "WARNING: the stage's own pre-admission turn was persisted; post-admission assistant content was discarded." "$ARTIFACTS/receipt.txt" >"$ARTIFACTS/receipt-warning-hit.txt"; then
+		echo "stage-output-transcript evidence: exact file-only receipt omitted the discarded-post-admission-content warning" >&2
 		exit 1
 	fi
 	if ! grep -qF -- "Search the companion transcript at $TRANSCRIPT_PATH." "$ARTIFACTS/receipt.txt"; then
 		echo "stage-output-transcript evidence: warning omitted the companion transcript path" >&2
 		exit 1
 	fi
-elif grep -qF -- "larger post-admission assistant content exists" "$ARTIFACTS/receipt.txt"; then
-	echo "stage-output-transcript evidence: receipt emitted a noisy size warning" >&2
+elif grep -qF -- "post-admission assistant content was discarded" "$ARTIFACTS/receipt.txt"; then
+	echo "stage-output-transcript evidence: receipt warned without discarded post-admission assistant text" >&2
 	exit 1
 fi
 printf 'warning_expected=%s\nwarning_present=%s\nwarning_names_transcript=%s\n' \
