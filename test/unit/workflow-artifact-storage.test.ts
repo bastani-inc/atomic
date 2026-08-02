@@ -3,10 +3,14 @@ import { mkdir, mkdtemp, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { store } from "../../packages/workflows/src/shared/store.js";
 import {
 	createWorkflowArtifactDirectory,
 	ENV_WORKFLOW_ARTIFACT_DIR,
 	pruneWorkflowArtifactRuns,
+	resolveWorkflowArtifactRunState,
 	WORKFLOW_ARTIFACT_RETENTION_MS,
 	workflowArtifactRunsRoot,
 } from "../../packages/workflows/src/shared/workflow-artifacts.js";
@@ -57,7 +61,7 @@ test("the workflow-artifact directory override redirects the durable root", asyn
 	}
 });
 
-test("retention pruning removes stale runs and preserves recent runs", async () => {
+test("retention pruning removes stale orphan runs and preserves recent runs", async () => {
 	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-retention-"));
 	const stale = join(root, "stale-run");
 	const fresh = join(root, "fresh-run");
@@ -67,10 +71,130 @@ test("retention pruning removes stale runs and preserves recent runs", async () 
 		await mkdir(fresh, { recursive: true });
 		const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
 		await utimes(stale, staleTime, staleTime);
-		await pruneWorkflowArtifactRuns(root, now);
+		await pruneWorkflowArtifactRuns(root, now, () => "orphan");
 		await assert.rejects(stat(stale), /ENOENT/);
 		await stat(fresh);
 	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("retention pruning preserves stale runs when authoritative state is unavailable", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-retention-safe-"));
+	const stale = join(root, "stale-run");
+	const now = Date.now();
+	try {
+		await mkdir(stale, { recursive: true });
+		const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
+		await utimes(stale, staleTime, staleTime);
+		await pruneWorkflowArtifactRuns(root, now);
+		await stat(stale);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+test("state-aware retention prunes terminal history but keeps old resumable, quit, and blocked runs", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-state-retention-"));
+	const now = Date.now();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const terminalId = "terminal-old";
+	const pausedId = "paused-old";
+	const quitId = "quit-old";
+	const blockedId = "blocked-old";
+	try {
+		backend.registerWorkflow({
+			workflowId: terminalId,
+			name: terminalId,
+			inputs: {},
+			createdAt: 1,
+			status: "completed",
+		});
+		backend.registerWorkflow({
+			workflowId: pausedId,
+			name: pausedId,
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 1,
+			resumable: true,
+		});
+		backend.registerWorkflow({
+			workflowId: quitId,
+			name: quitId,
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 1,
+			resumable: true,
+		});
+		store.recordRunStart({
+			id: quitId,
+			name: quitId,
+			inputs: {},
+			status: "paused",
+			stages: [],
+			startedAt: 1,
+			resumable: true,
+			exitReason: "quit",
+		});
+		backend.registerWorkflow({
+			workflowId: blockedId,
+			name: blockedId,
+			inputs: {},
+			createdAt: 1,
+			status: "blocked",
+			resumable: true,
+		});
+		for (const id of [terminalId, pausedId, quitId, blockedId]) {
+			const directory = join(root, id);
+			await mkdir(directory, { recursive: true });
+			const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
+			await utimes(directory, staleTime, staleTime);
+		}
+
+		await pruneWorkflowArtifactRuns(root, now, resolveWorkflowArtifactRunState);
+
+		await assert.rejects(stat(join(root, terminalId)), /ENOENT/);
+		assert.notEqual(backend.getLoadableWorkflow(terminalId), undefined);
+		for (const id of [pausedId, quitId, blockedId]) await stat(join(root, id));
+		assert.notEqual(backend.getLoadableWorkflow(pausedId), undefined);
+		assert.notEqual(backend.getLoadableWorkflow(quitId), undefined);
+		assert.notEqual(backend.getLoadableWorkflow(blockedId), undefined);
+	} finally {
+		store.removeRun(quitId);
+		setDurableBackend(undefined);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("state-aware pruning never leaves a resumable durable entry without its artifact directory", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-ordering-"));
+	const now = Date.now();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const runId = "resumable-ordering";
+	try {
+		backend.registerWorkflow({
+			workflowId: runId,
+			name: runId,
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 1,
+			resumable: true,
+		});
+		const directory = join(root, runId);
+		await mkdir(directory, { recursive: true });
+		const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
+		await utimes(directory, staleTime, staleTime);
+
+		await pruneWorkflowArtifactRuns(root, now, resolveWorkflowArtifactRunState);
+
+		await stat(directory);
+		assert.notEqual(backend.getLoadableWorkflow(runId), undefined);
+	} finally {
+		setDurableBackend(undefined);
 		await rm(root, { recursive: true, force: true });
 	}
 });

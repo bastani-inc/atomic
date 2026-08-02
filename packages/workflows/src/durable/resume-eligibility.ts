@@ -1,3 +1,4 @@
+import type { RunStatus, WorkflowFailureRecoverability } from "../shared/store-types.js";
 import type { DurableWorkflowStatus } from "./types.js";
 
 /** Metadata required to classify a current DBOS workflow as resumable. */
@@ -8,6 +9,38 @@ export interface DurableResumeCandidate {
 	readonly pendingPrompts: number;
 	readonly rootWorkflowId?: string;
 	readonly resumable?: boolean;
+}
+
+/** Live snapshot fields used by every workflow resume surface. */
+export interface WorkflowRunResumeCandidate {
+	readonly status: RunStatus;
+	readonly endedAt?: number;
+	readonly resumable?: boolean;
+	readonly failureRecoverability?: WorkflowFailureRecoverability;
+	readonly exitReason?: string;
+	/** True when a descendant stage is paused/blocked even if the root is still running. */
+	readonly hasPausedState?: boolean;
+	/** Explicitly false when durable state or referenced artifacts are missing. */
+	readonly hasDurableCheckpoint?: boolean;
+	readonly artifactsIntact?: boolean;
+}
+
+/**
+ * Authoritative live-run resume rule shared by every workflow resume surface.
+ * Missing durable state or artifacts is never a resume target even when stale
+ * snapshot metadata still says resumable.
+ */
+export function isWorkflowRunResumable(candidate: WorkflowRunResumeCandidate): boolean {
+	if (candidate.hasDurableCheckpoint === false || candidate.artifactsIntact === false) return false;
+	if (candidate.hasPausedState === true || candidate.status === "paused" || candidate.exitReason === "quit") {
+		return candidate.resumable !== false;
+	}
+	return (
+		(candidate.status === "failed" && candidate.endedAt !== undefined && candidate.resumable !== false) ||
+		(candidate.endedAt === undefined &&
+			candidate.resumable === true &&
+			candidate.failureRecoverability === "recoverable")
+	);
 }
 
 /** Authoritative status/progress rules for durable workflow resume discovery. */

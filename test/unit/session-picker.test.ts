@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.ts";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
@@ -27,6 +28,9 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
 		durationMs: over.durationMs,
 		result: over.result,
 		error: over.error,
+		resumable: over.resumable,
+		failureRecoverability: over.failureRecoverability,
+		exitReason: over.exitReason,
 	};
 }
 
@@ -58,6 +62,66 @@ test("selectRunsForPicker buckets active vs retained terminal by default", () =>
 	assert.deepEqual(
 		legacyRecentOnly.map((r) => r.run.id),
 		["a-active", "b-recent"],
+	);
+});
+
+test("resume picker inclusion agrees with the shared resumability predicate across run states", () => {
+	const statuses: RunSnapshot["status"][] = ["failed", "running", "paused", "completed", "killed"];
+	const endedValues: Array<number | undefined> = [undefined, 2_000];
+	const resumableValues: Array<boolean | undefined> = [undefined, false, true];
+	const recoverabilityValues: Array<RunSnapshot["failureRecoverability"]> = [undefined, "recoverable"];
+	const exitReasons: Array<string | undefined> = [undefined, "quit"];
+	let index = 0;
+	for (const status of statuses) {
+		for (const endedAt of endedValues) {
+			for (const resumable of resumableValues) {
+				for (const failureRecoverability of recoverabilityValues) {
+					for (const exitReason of exitReasons) {
+						const run = makeRun({
+							id: `resume-${index++}`,
+							status,
+							endedAt,
+							resumable,
+							failureRecoverability,
+							exitReason,
+						});
+						// The picker derives `hasPausedState` from the snapshot exactly as the
+						// resume command does, so both sides consult one predicate.
+						const hasPausedState = status === "paused" || exitReason === "quit";
+						const expected = isWorkflowRunResumable({ ...run, hasPausedState });
+						const rows = selectRunsForPicker([run], "", true, Date.now(), "resume");
+						assert.equal(
+							rows.length === 1,
+							expected,
+							`${status}/${endedAt}/${resumable}/${failureRecoverability}/${exitReason}`,
+						);
+					}
+				}
+			}
+		}
+	}
+});
+
+test("a paused run whose artifacts were pruned is not resumable", () => {
+	const paused = makeRun({ id: "pruned-artifacts", status: "paused", resumable: true });
+	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true }), true);
+	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true, artifactsIntact: false }), false);
+	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true, hasDurableCheckpoint: false }), false);
+});
+
+test("connect picker remains broad while resume hides a completed run", () => {
+	const completed = makeRun({ id: "completed", status: "completed", endedAt: 2_000 });
+	assert.equal(selectRunsForPicker([completed], "", true, Date.now(), "connect").length, 1);
+	assert.equal(selectRunsForPicker([completed], "", true, Date.now(), "resume").length, 0);
+});
+
+test("resume picker lists a resumable paused run and hides a non-resumable one", () => {
+	const resumablePaused = makeRun({ id: "resumable-paused", status: "paused", resumable: true });
+	const refusedPaused = makeRun({ id: "refused-paused", status: "paused", resumable: false });
+	const rows = selectRunsForPicker([resumablePaused, refusedPaused], "", true, Date.now(), "resume");
+	assert.deepEqual(
+		rows.map((row) => row.run.id),
+		["resumable-paused"],
 	);
 });
 

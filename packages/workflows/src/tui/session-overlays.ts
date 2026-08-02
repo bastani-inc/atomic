@@ -99,11 +99,11 @@ export function openSessionPicker(
 			unsubscribe = store.subscribe(() => tui.requestRender?.());
 			return {
 				render: (width: number) => {
-					const rows = selectRunsForPicker(store.runs(), state.query, state.includeAll);
+					const rows = selectRunsForPicker(store.runs(), state.query, state.includeAll, Date.now(), intent);
 					return renderSessionPicker({ width, theme, rows, state });
 				},
 				handleInput: (data: string) => {
-					const rows = selectRunsForPicker(store.runs(), state.query, state.includeAll);
+					const rows = selectRunsForPicker(store.runs(), state.query, state.includeAll, Date.now(), intent);
 					const action = handleSessionPickerInput(data, state, rows);
 					if (action.kind === "noop") {
 						tui.requestRender?.();

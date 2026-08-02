@@ -1,4 +1,5 @@
 import { getDurableBackend } from "../durable/factory.js";
+import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
@@ -278,12 +279,7 @@ export async function handleRunControlCommand(
 					const run = store.runs().find((r) => r.id === resolved.runId);
 					const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
 					const isResumableContinuation =
-						run !== undefined &&
-						!isPaused &&
-						((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) ||
-							(run.endedAt === undefined &&
-								run.resumable === true &&
-								run.failureRecoverability === "recoverable"));
+						run !== undefined && !isPaused && run.exitReason !== "quit" && isWorkflowRunResumable(run);
 					if (isResumableContinuation) {
 						await ensureWorkflowResourcesVisible();
 						const continuation = await deps
@@ -480,10 +476,7 @@ export async function handleRunControlCommand(
 		const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 		const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
 		const isResumableContinuation =
-			run !== undefined &&
-			!isPaused &&
-			((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) ||
-				(run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+			run !== undefined && !isPaused && run.exitReason !== "quit" && isWorkflowRunResumable(run);
 		const isActivelyRunning =
 			run !== undefined &&
 			run.endedAt === undefined &&

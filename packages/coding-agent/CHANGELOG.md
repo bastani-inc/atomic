@@ -17,11 +17,12 @@
 
 ### Added
 
-- Added an automatic searchable companion transcript for every workflow stage that declares `output:`. The rendered line-oriented transcript is stored once under the durable Atomic config root at `workflows/runs/<runId>/transcripts/`, outside both the repository tree and OS temporary storage, and the exported `WORKFLOW_ARTIFACT_RETENTION_MS` policy prunes expired runs. `inline` and `file-only` receipts name both the curated artifact and transcript with `rg`-plus-narrow-range guidance.
+- Added state-aware retention for durable workflow artifact directories: only terminal or unowned runs older than `WORKFLOW_ARTIFACT_RETENTION_MS` are pruned, while running, paused, quit, blocked, and awaiting-input runs keep live resume dependencies. Durable DBOS history remains explicit-delete-only in this release.
 
 ### Fixed
 
 - Fixed workflow stage file output selecting an assistant acknowledgement from an admitted async completion instead of the stage prompt's own deliverable. Admission identity now survives custom-message session persistence, so the external turn remains visible in model context and the companion transcript without clobbering the nominated artifact.
+- Fixed the workflow resume picker offering stale or non-resumable runs. Picker and command paths now share one resumability predicate and revalidate durable state before displaying a target, while explicit ids retain their explanatory rejection.
 - Fixed workflow `reads:` references to fail loudly when an artifact path no longer exists instead of handing the model an empty, silently missing context file.
 
 ## [0.9.11-alpha.10] - 2026-08-01

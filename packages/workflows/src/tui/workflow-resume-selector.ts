@@ -1,4 +1,5 @@
 import type { SessionInfo } from "@bastani/atomic";
+import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { PiHostSessionPickerFunction, PiHostSessionPickerRow } from "../extension/wiring.js";
@@ -55,6 +56,13 @@ function completedStageCount(run: RunSnapshot): number {
 	return run.stages.filter((stage) => stage.status === "completed" || stage.status === "failed").length;
 }
 
+function isResumePickerLiveRun(run: RunSnapshot): boolean {
+	const hasPausedState =
+		run.status === "paused" ||
+		run.exitReason === "quit" ||
+		run.stages.some((stage) => stage.status === "paused" || stage.status === "blocked");
+	return isWorkflowRunResumable({ ...run, hasPausedState });
+}
 interface WorkflowStatusPresentation {
 	readonly label: string;
 	readonly color?: "success" | "warning" | "error";
@@ -132,10 +140,11 @@ export function workflowResumeSelectorItems(
 	durableEntries: readonly ResumableWorkflowEntry[],
 	completedEntries: readonly ResumableWorkflowEntry[] = [],
 ): WorkflowResumeSelectorItem[] {
-	const liveIds = new Set(liveRuns.map((run) => run.id));
+	const eligibleLiveRuns = liveRuns.filter(isResumePickerLiveRun);
+	const liveIds = new Set(eligibleLiveRuns.map((run) => run.id));
 	const durableIds = new Set(durableEntries.map((entry) => entry.workflowId));
 	return [
-		...liveRuns.map(liveRunSession),
+		...eligibleLiveRuns.map(liveRunSession),
 		...durableEntries
 			.filter((entry) => !liveIds.has(entry.workflowId))
 			.map((entry) => durableWorkflowSession(entry, "durable")),

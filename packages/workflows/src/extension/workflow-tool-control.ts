@@ -1,4 +1,5 @@
 import { getDurableBackend } from "../durable/factory.js";
+import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
@@ -510,10 +511,7 @@ export async function workflowResumeAction(
 	const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 	const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
 	const isResumableContinuation =
-		run !== undefined &&
-		!isPaused &&
-		((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) ||
-			(run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+		run !== undefined && !isPaused && run.exitReason !== "quit" && isWorkflowRunResumable(run);
 	if (isResumableContinuation) {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();

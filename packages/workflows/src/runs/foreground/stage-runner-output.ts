@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentSession, PromptOptions } from "@bastani/atomic";
 import type { StageOutputOptions, StagePromptOptions, WorkflowMaxOutput } from "../../shared/types.js";
-import { pruneWorkflowArtifactRuns, workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
+import { ensureWorkflowArtifactRunDirectory, workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
 const DEFAULT_MAX_OUTPUT_LINES = 5000;
@@ -228,7 +228,6 @@ export async function finalizePromptOutput(
 
 	const transcriptFile = transcriptPath(runId, outputPath);
 	const transcript = renderTranscript(messages, fullOutput);
-	await pruneWorkflowArtifactRuns();
 	try {
 		await mkdir(dirname(outputPath), { recursive: true });
 		await writeFile(outputPath, fullOutput, "utf8");
@@ -236,6 +235,7 @@ export async function finalizePromptOutput(
 		return `${displayOutput}\n\nOutput file error: ${outputPath}\n${err instanceof Error ? err.message : String(err)}`;
 	}
 	try {
+		await ensureWorkflowArtifactRunDirectory(runId);
 		await mkdir(dirname(transcriptFile), { recursive: true });
 		await writeFile(transcriptFile, transcript, "utf8");
 	} catch (err) {

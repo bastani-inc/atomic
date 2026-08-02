@@ -223,6 +223,35 @@ describe("/workflow resume completed target", () => {
 		assert.match(result.errors.join("\n"), /No resumable workflow found for id\/prefix: missing-workflow/);
 	});
 
+	test("explicit resume of a non-resumable run keeps the explanatory error", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: "zero-progress-explicit",
+			name: "zero-progress-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			resumable: true,
+		});
+		store.recordRunStart({
+			id: "zero-progress-explicit",
+			name: "zero-progress-flow",
+			inputs: {},
+			status: "paused",
+			stages: [],
+			startedAt: 1,
+			resumable: true,
+		});
+
+		const result = await resume("zero-progress-explicit", createExtensionRuntime({ store }));
+
+		assert.match(
+			result.errors.join("\n"),
+			/has no durable checkpoint or pending prompt progress and is not resumable/,
+		);
+	});
+
 	test("reports a stale completed target instead of dispatching it", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
@@ -559,6 +588,35 @@ describe("/workflow resume completed target", () => {
 			["picker-active-block"],
 		);
 		assert.equal(source.activeLiveIds.has("picker-active-block"), false);
+	});
+
+	test("resume picker omits a paused snapshot with no durable checkpoint", () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId: "picker-no-checkpoint",
+			name: "picker-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			resumable: true,
+		});
+		store.recordRunStart({
+			id: "picker-no-checkpoint",
+			name: "picker-flow",
+			inputs: {},
+			status: "paused",
+			stages: [],
+			startedAt: 1,
+			resumable: true,
+		});
+
+		const source = collectResumePickerLiveRuns(store);
+
+		assert.equal(
+			source.liveRuns.some((run) => run.id === "picker-no-checkpoint"),
+			false,
+		);
 	});
 
 	test("keeps recoverable failed and active-running explicit behavior unchanged", async () => {

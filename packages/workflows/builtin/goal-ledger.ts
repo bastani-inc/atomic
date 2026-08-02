@@ -57,7 +57,7 @@ export async function createGoalLedger(
   acceptanceCriteria = objective,
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
   const goalId = randomUUID();
-  const artifactDir = await createWorkflowArtifactDirectory(goalId);
+  const artifactDir = await createWorkflowArtifactDirectory();
   const now = new Date().toISOString();
   const ledger: GoalLedger = {
     goal_id: goalId,
