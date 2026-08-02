@@ -185,6 +185,56 @@ test("state-aware retention prunes terminal history but keeps old resumable, qui
 	}
 });
 
+// Regression (greptile P2 on PR #2139): `resumable === true` was treated as
+// protection on its own, and `isDurableWorkflowResumable` deliberately accepts
+// `failed`. Every failed run was therefore pinned forever, so repeated
+// recoverable failures accumulated artifacts the advertised window never
+// reclaimed. A failed run is retryable, but the retention window is the grace
+// period it gets.
+test("a stale failed run is pruned even though it remains resumable", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-failed-retention-"));
+	const now = Date.now();
+	const backend = new InMemoryDurableBackend();
+	setDurableBackend(backend);
+	const failedId = "failed-old";
+	const runningId = "running-old";
+	try {
+		backend.registerWorkflow({
+			workflowId: failedId,
+			name: failedId,
+			inputs: {},
+			createdAt: 1,
+			status: "failed",
+			completedCheckpoints: 1,
+			resumable: true,
+		});
+		backend.registerWorkflow({
+			workflowId: runningId,
+			name: runningId,
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+			completedCheckpoints: 1,
+			resumable: true,
+		});
+		for (const id of [failedId, runningId]) {
+			const directory = join(root, id);
+			await mkdir(directory, { recursive: true });
+			const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
+			await utimes(directory, staleTime, staleTime);
+		}
+
+		await pruneWorkflowArtifactRuns(root, now, resolveWorkflowArtifactRunState);
+
+		await assert.rejects(stat(join(root, failedId)), /ENOENT/);
+		// Live work stays protected regardless of age.
+		await stat(join(root, runningId));
+	} finally {
+		setDurableBackend(undefined);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("terminal artifact pruning preserves the directory when durable deletion is refused", async () => {
 	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-retention-refused-"));
 	const now = Date.now();

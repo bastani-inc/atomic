@@ -5,11 +5,7 @@ import { dirname, join } from "node:path";
 import { getAgentDir, getEnvValue } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { getDurableBackend } from "../durable/factory.js";
-import {
-	isDurableWorkflowResumable,
-	type WorkflowRunResumeCandidate,
-	workflowRunHasPausedState,
-} from "../durable/resume-eligibility.js";
+import { type WorkflowRunResumeCandidate, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
 import { store } from "./store.js";
 import type { RunSnapshot } from "./store-types.js";
 
@@ -75,6 +71,16 @@ export function workflowRunResumeCandidate(run: RunSnapshot): WorkflowRunResumeC
 	};
 }
 
+/**
+ * Protection means live work, not "could theoretically be resumed".
+ *
+ * A run still in flight, holding a pending prompt, or explicitly quit keeps its
+ * artifacts indefinitely, because a resume is expected and those files are its
+ * inputs. A run that has FAILED is terminal: it is retryable, but the retention
+ * window is precisely the grace period it gets. Treating `resumable === true` as
+ * protection made every failed run permanent, so repeated recoverable failures
+ * accumulated run-scoped artifacts that the advertised window never reclaimed.
+ */
 function storeRunState(run: RunSnapshot): WorkflowArtifactRunState {
 	const hasPendingInput =
 		run.pendingPrompt !== undefined ||
@@ -87,8 +93,7 @@ function storeRunState(run: RunSnapshot): WorkflowArtifactRunState {
 		run.status === "running" ||
 		run.status === "paused" ||
 		run.status === "blocked" ||
-		run.exitReason === "quit" ||
-		run.resumable === true
+		run.exitReason === "quit"
 	) {
 		return "protected";
 	}
@@ -98,13 +103,13 @@ function storeRunState(run: RunSnapshot): WorkflowArtifactRunState {
 function durableRunState(backend: DurableWorkflowBackend, runId: string): WorkflowArtifactRunState | undefined {
 	const handle = backend.getLoadableWorkflow(runId);
 	if (handle === undefined) return undefined;
+	// `isDurableWorkflowResumable` deliberately accepts `failed`, so it cannot be
+	// used here: it would pin a failed run's artifacts forever.
 	if (
 		handle.status === "running" ||
 		handle.status === "paused" ||
 		handle.status === "blocked" ||
-		handle.pendingPrompts > 0 ||
-		handle.resumable === true ||
-		isDurableWorkflowResumable(handle)
+		handle.pendingPrompts > 0
 	) {
 		return "protected";
 	}
