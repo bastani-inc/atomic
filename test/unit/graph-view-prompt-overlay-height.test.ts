@@ -26,6 +26,15 @@ function stripAnsi(line: string): string {
 	return line.replace(ANSI_RE, "");
 }
 
+function promptIdentityBanner(plain: readonly string[]): string[] {
+	const bannerStart = plain.findIndex((line) => line.includes("╭ AWAITING INPUT "));
+	if (bannerStart < 0) return [];
+	const left = plain[bannerStart]!.indexOf("╭ AWAITING INPUT ");
+	const card = plain.slice(bannerStart).map((line) => line.slice(left, left + 72));
+	const bannerEnd = card.findIndex((line, index) => index > 0 && line.startsWith("╰"));
+	return bannerEnd < 0 ? [] : card.slice(0, bannerEnd + 1);
+}
+
 function assertRoundedBoxesClosed(plain: string[], context: string): void {
 	const openBoxes: Array<{ left: number; width: number }> = [];
 	for (const line of plain) {
@@ -142,7 +151,7 @@ describe("GraphView prompt overlay height budget", () => {
 	});
 
 	test("omits supplementary attribution before sacrificing the complete prompt UI", () => {
-		const rows21 = renderPromptOverlay(18).map(stripAnsi).join("\n");
+		const rows21 = renderPromptOverlay(17).map(stripAnsi).join("\n");
 		const rows22 = renderPromptOverlay(19).map(stripAnsi).join("\n");
 
 		assert.doesNotMatch(rows21, new RegExp(RUN_ID));
@@ -160,5 +169,21 @@ describe("GraphView prompt overlay height budget", () => {
 			assert.match(overlay, /OVERLAY-SELECT-QUESTION/, `viewportRows=${viewportRows}`);
 			assert.match(overlay, new RegExp(RUN_ID), `viewportRows=${viewportRows}`);
 		}
+	});
+
+	test("uses the full-id-only banner between full attribution and banner yield", () => {
+		const yielded = renderPromptOverlay(17).map(stripAnsi);
+		const oneRow = renderPromptOverlay(18).map(stripAnsi);
+		const twoRows = renderPromptOverlay(19).map(stripAnsi);
+		const oneRowBanner = promptIdentityBanner(oneRow);
+		const twoRowBanner = promptIdentityBanner(twoRows);
+
+		assert.doesNotMatch(yielded.join("\n"), new RegExp(RUN_ID));
+		assert.ok(oneRowBanner.join("\n").includes(RUN_ID), "one-row banner must carry the complete run id");
+		assert.doesNotMatch(oneRowBanner.join("\n"), /build-check/);
+		assert.equal(oneRowBanner.length, 3, "one-row banner has only top, full-id, and bottom rows");
+		assert.ok(twoRowBanner.join("\n").includes(RUN_ID));
+		assert.match(twoRowBanner.join("\n"), /build-check/);
+		assert.equal(twoRowBanner.length, 4, "two-row banner shape must remain unchanged");
 	});
 });

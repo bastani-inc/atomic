@@ -19,6 +19,7 @@ import {
 	handlePromptCardInput,
 	renderPromptCard,
 } from "../../packages/workflows/src/tui/prompt-card.ts";
+import { renderPromptCardLayout } from "../../packages/workflows/src/tui/prompt-card-render.ts";
 import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.ts";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.ts";
@@ -332,6 +333,45 @@ describe("renderPromptCard", () => {
 			}
 			previousVisibleMarkers = visibleMarkers;
 		}
+	});
+
+	test("keeps attributed select and confirm question content visible and monotonic from 8 through 24 rows", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const workflowName = "middle-rung-workflow";
+		const questionMarkers = Array.from({ length: 4 }, (_, index) => `LADDER-QUESTION-${index + 1}`);
+		const middleRungKinds = new Set<PendingPrompt["kind"]>();
+		for (const kind of ["confirm", "select"] as const) {
+			const state = createPromptCardState(
+				makePrompt({
+					kind,
+					message: questionMarkers.join("\n"),
+					choices: kind === "select" ? ["stable", "beta", "nightly"] : undefined,
+				}),
+			);
+			let previousVisibleMarkers = new Set<string>();
+			for (let maxRows = 8; maxRows <= 24; maxRows += 1) {
+				const layout = renderPromptCardLayout({
+					state,
+					theme,
+					width: 72,
+					cursorOn: false,
+					identity: { runId, name: workflowName },
+					maxRows,
+				});
+				const rendered = layout.lines.map(stripAnsi).join("\n");
+				const visibleMarkers = new Set(questionMarkers.filter((marker) => rendered.includes(marker)));
+				const bannerIsVisible = rendered.includes(runId);
+				if (bannerIsVisible) {
+					assert.ok(layout.visibleQuestionRows >= 1, `${kind} maxRows=${maxRows} renders a zero-row question`);
+					if (!rendered.includes(workflowName)) middleRungKinds.add(kind);
+				}
+				for (const marker of previousVisibleMarkers) {
+					assert.ok(visibleMarkers.has(marker), `${kind} increasing maxRows to ${maxRows} removes ${marker}`);
+				}
+				previousVisibleMarkers = visibleMarkers;
+			}
+		}
+		assert.deepEqual([...middleRungKinds], ["confirm", "select"], "both prompt kinds must use the one-row rung");
 	});
 
 	test("wraps the attribution id without breaking borders at narrow widths", () => {

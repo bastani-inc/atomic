@@ -108,6 +108,13 @@ function makePromptView(
 	});
 }
 
+function promptIdentityBanner(plain: readonly string[]): string[] {
+	const bannerStart = plain.findIndex((line) => /^╭ AWAITING INPUT ─*╮$/.test(line));
+	if (bannerStart < 0) return [];
+	const bannerEnd = plain.findIndex((line, index) => index > bannerStart && /^╰─+╯$/.test(line));
+	return bannerEnd < 0 ? [] : plain.slice(bannerStart, bannerEnd + 1);
+}
+
 test("makes every long prompt question row reachable without blank windows", () => {
 	for (const kind of ["input", "confirm", "select", "editor", "custom"] as const) {
 		for (const terminalColumns of REACHABILITY_COLUMNS) {
@@ -139,6 +146,29 @@ test("makes every long prompt question row reachable without blank windows", () 
 				assert.deepEqual([...seen].sort(), QUESTION_MARKERS, `${context} leaves question rows unreachable`);
 			}
 		}
+	}
+});
+
+test("reaches the last long confirm question row at several heights including the one-row banner floor", () => {
+	for (const viewportRows of [12, 16, 20, 22, 23]) {
+		const prompt = makePendingPrompt({ kind: "confirm", message: LONG_QUESTION });
+		const view = makePromptView(prompt, 80, viewportRows, false);
+		const initial = view.render(80).map(stripAnsi);
+		const banner = promptIdentityBanner(initial);
+		const context = `confirm columns=80 viewportRows=${viewportRows}`;
+
+		if (viewportRows === 23) {
+			assert.ok(banner.join("\n").includes(RUN_ID), `${context} must retain the complete run id`);
+			assert.doesNotMatch(banner.join("\n"), new RegExp(WORKFLOW_NAME));
+			assert.equal(banner.length, 3, `${context} must use the one-row identity rung`);
+		}
+		if (viewportRows === 22) assert.doesNotMatch(initial.join("\n"), new RegExp(RUN_ID));
+
+		assert.equal(view.handleInput("end"), true);
+		const bottom = view.render(80).map(stripAnsi);
+		view.dispose();
+		assertRoundedBoxesClosed(bottom, context);
+		assert.ok(bottom.join("\n").includes(QUESTION_MARKERS.at(-1)!), `${context} cannot reach the last question row`);
 	}
 });
 

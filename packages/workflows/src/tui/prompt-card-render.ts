@@ -57,6 +57,13 @@ export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: 
 	];
 }
 
+function renderPromptRunIdBanner(identity: PromptCardIdentity, theme: GraphTheme, width: number): string[] {
+	const banner = renderPromptIdentityBanner(identity, theme, width);
+	// The canonical identity renderer appends the workflow-name row last, after
+	// every wrapped run-id row. Remove only that row for the middle ladder rung.
+	return [...banner.slice(0, -2), banner.at(-1)!];
+}
+
 const STANDARD_PROMPT_FIXED_ROWS = 5;
 const NORMAL_SPACING_ROWS = 3;
 
@@ -89,36 +96,42 @@ export function renderPromptCardLayout(opts: PromptCardRenderOpts): PromptCardLa
 	);
 	if (opts.identity === undefined) return unattributed;
 
-	const banner = renderPromptIdentityBanner(opts.identity, theme, width);
-	const promptBudget = maxRows === undefined ? undefined : Math.max(0, maxRows - banner.length);
-	const attributedPrompt = renderPromptBodyBlock(
-		state,
-		theme,
-		innerWidth,
-		opts.cursorOn,
-		borderColor,
-		bg,
-		promptBudget,
-		messageOffset,
-	);
-	const minimumQuestionRows = attributedPrompt.totalQuestionRows > 0 ? 1 : 0;
-	const bannerFits =
-		maxRows === undefined ||
-		(banner.length + minimumCompletePromptRows(state) <= maxRows &&
-			attributedPrompt.visibleQuestionRows >= minimumQuestionRows &&
-			attributedPrompt.visibleQuestionRows >= unattributed.visibleQuestionRows);
-	if (!bannerFits) return unattributed;
+	const banners = [
+		renderPromptIdentityBanner(opts.identity, theme, width),
+		renderPromptRunIdBanner(opts.identity, theme, width),
+	];
+	for (const banner of banners) {
+		const promptBudget = maxRows === undefined ? undefined : Math.max(0, maxRows - banner.length);
+		const attributedPrompt = renderPromptBodyBlock(
+			state,
+			theme,
+			innerWidth,
+			opts.cursorOn,
+			borderColor,
+			bg,
+			promptBudget,
+			messageOffset,
+		);
+		const minimumQuestionRows = attributedPrompt.totalQuestionRows > 0 ? 1 : 0;
+		const bannerFits =
+			maxRows === undefined ||
+			(banner.length + minimumCompletePromptRows(state) <= maxRows &&
+				attributedPrompt.visibleQuestionRows >= minimumQuestionRows &&
+				attributedPrompt.visibleQuestionRows >= unattributed.visibleQuestionRows);
+		if (!bannerFits) continue;
 
-	return {
-		lines: [
-			...banner,
-			...attributedPrompt.lines.map((line, index) =>
-				index === 0 ? makeBorderTop(borderColor, "", theme, innerWidth, bg) : line,
-			),
-		],
-		totalQuestionRows: attributedPrompt.totalQuestionRows,
-		visibleQuestionRows: attributedPrompt.visibleQuestionRows,
-	};
+		return {
+			lines: [
+				...banner,
+				...attributedPrompt.lines.map((line, index) =>
+					index === 0 ? makeBorderTop(borderColor, "", theme, innerWidth, bg) : line,
+				),
+			],
+			totalQuestionRows: attributedPrompt.totalQuestionRows,
+			visibleQuestionRows: attributedPrompt.visibleQuestionRows,
+		};
+	}
+	return unattributed;
 }
 
 function renderPromptBodyBlock(
