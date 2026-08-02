@@ -173,6 +173,23 @@ test("resume candidate probes are memoized across selections within one store re
 	assert.equal(probeCount, runs.length * 2, "a store revision invalidates the cached probes");
 });
 
+test("cached resume selection keeps the offered rows byte-identical", () => {
+	const runs = [makeRun({ id: "byte-identical", status: "paused", resumable: true })];
+	const snapshot: StoreSnapshot = { runs, notices: [], version: 12 };
+	const cache = createSessionPickerResumeCandidateCache((run) => ({
+		status: run.status,
+		endedAt: run.endedAt,
+		resumable: run.resumable,
+		failureRecoverability: run.failureRecoverability,
+		exitReason: run.exitReason,
+		hasPausedState: true,
+		hasDurableCheckpoint: true,
+	}));
+	const baseline = selectRunsForPicker(runs, "", true, 10_000, "resume");
+	const cached = selectRunsForPicker(runs, "", true, 10_000, "resume", cache(snapshot));
+	assert.equal(JSON.stringify(cached), JSON.stringify(baseline));
+});
+
 test("connect picker remains broad while resume hides a completed run", () => {
 	const completed = makeRun({ id: "completed", status: "completed", endedAt: 2_000 });
 	assert.equal(selectRunsForPicker([completed], "", true, Date.now(), "connect").length, 1);
