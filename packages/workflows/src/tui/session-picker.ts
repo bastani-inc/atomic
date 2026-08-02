@@ -26,6 +26,7 @@ import { elapsedRunMs } from "../shared/timing.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { type IdentifierLine, wrapIdentifierLines } from "./run-identity-rows.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -249,41 +250,6 @@ function stageProgress(run: RunSnapshot): string {
 	const total = run.stages.length;
 	const done = run.stages.filter((s) => s.status === "completed" || s.status === "failed").length;
 	return `${done}/${total} stages`;
-}
-
-interface IdentifierLine {
-	prefix: string;
-	chunk: string;
-}
-
-function takeIdentifierChunk(value: string, width: number): { chunk: string; rest: string } {
-	const budget = Math.max(1, width);
-	let chunk = "";
-	for (const character of value) {
-		if (chunk.length > 0 && visibleWidth(`${chunk}${character}`) > budget) break;
-		chunk += character;
-	}
-	if (chunk.length === 0) chunk = value[0] ?? "";
-	return { chunk, rest: value.slice(chunk.length) };
-}
-
-function wrapIdentifierLines(
-	id: string,
-	width: number,
-	firstPrefix: string,
-	continuationPrefix: string,
-): IdentifierLine[] {
-	const rows: IdentifierLine[] = [];
-	let remaining = id;
-	let first = true;
-	while (remaining.length > 0 || rows.length === 0) {
-		const prefix = first ? firstPrefix : continuationPrefix;
-		const chunk = takeIdentifierChunk(remaining, width - visibleWidth(prefix));
-		rows.push({ prefix, chunk: chunk.chunk });
-		remaining = chunk.rest;
-		first = false;
-	}
-	return rows;
 }
 
 function renderRunRow(row: PickerRow, isSelected: boolean, inner: number, theme: GraphTheme, now: number): string[] {

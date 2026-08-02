@@ -2,6 +2,7 @@ import type { AgentSession } from "@bastani/atomic";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
+import { wrapIdentifierLines } from "./run-identity-rows.js";
 import {
 	bgFn,
 	blendBg,
@@ -17,26 +18,62 @@ import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 export function renderHeader(ctx: StageChatViewContext, width: number, stage: StageSnapshot | undefined): string[] {
 	const t = ctx.theme;
 	const stageName = stage?.name ?? "stage";
-	const left =
+	const sid = ctx.handle?.sessionId ?? stage?.sessionId;
+	const prefixWidth = visibleWidth("   STAGE  ");
+	const separatorWidth = visibleWidth(" / ");
+	const meta = sid ? `session ${sid}` : "";
+	const rightWidth = meta ? visibleWidth(meta) + 1 : 0;
+	const singleRowNameBudget = width - prefixWidth - separatorWidth - rightWidth - (meta ? 1 : 0);
+
+	if (!sid || singleRowNameBudget >= 2) {
+		const names = fitHeaderNames(ctx.workflowName, stageName, Math.max(2, singleRowNameBudget));
+		const left = renderHeaderLeft(ctx, names.workflow, names.stage);
+		const right = meta ? `${paint(meta, t.dim)} ` : "";
+		const gap = Math.max(0, width - visibleWidth(left) - visibleWidth(right));
+		return [left + " ".repeat(gap) + right];
+	}
+
+	const names = fitHeaderNames(ctx.workflowName, stageName, Math.max(2, width - prefixWidth - separatorWidth));
+	const left = renderHeaderLeft(ctx, names.workflow, names.stage);
+	const lines = [left + " ".repeat(Math.max(0, width - visibleWidth(left)))];
+	if (visibleWidth(meta) + 1 <= width) {
+		lines.push(`${" ".repeat(Math.max(0, width - visibleWidth(meta) - 1))}${paint(meta, t.dim)} `);
+		return lines;
+	}
+	for (const row of wrapIdentifierLines(sid, width, "   ", "   ")) {
+		const value = `${row.prefix}${paint(row.chunk, t.dim)}`;
+		lines.push(value + " ".repeat(Math.max(0, width - visibleWidth(value))));
+	}
+	return lines;
+}
+
+function renderHeaderLeft(ctx: StageChatViewContext, workflowName: string, stageName: string): string {
+	const t = ctx.theme;
+	return (
 		paint("   ", t.mauve, { bold: true }) +
 		paint("STAGE", t.textMuted, { bold: true }) +
 		"  " +
-		paint(ctx.workflowName, t.textMuted) +
+		paint(workflowName, t.textMuted) +
 		paint(" / ", t.dim) +
-		paint(stageName, t.text, { bold: true });
-	const meta = headerMeta(ctx, stage);
-	const right = meta ? `${paint(meta, t.dim)} ` : "";
-	const leftW = visibleWidth(ctx.workflowName) + visibleWidth(stageName) + visibleWidth("  STAGE   /  ") + 1;
-	const rightW = visibleWidth(meta) + (meta ? 1 : 0);
-	const gap = Math.max(1, width - leftW - rightW);
-	return [left + " ".repeat(gap) + right];
+		paint(stageName, t.text, { bold: true })
+	);
 }
 
-function headerMeta(ctx: StageChatViewContext, stage: StageSnapshot | undefined): string {
-	const parts: string[] = [];
-	const sid = ctx.handle?.sessionId ?? stage?.sessionId;
-	if (sid) parts.push(`session ${sid}`);
-	return parts.join(" · ");
+function fitHeaderNames(workflowName: string, stageName: string, budget: number): { workflow: string; stage: string } {
+	const available = Math.max(2, budget);
+	const workflowWidth = visibleWidth(workflowName);
+	const stageWidth = visibleWidth(stageName);
+	let workflowBudget = Math.min(workflowWidth, Math.max(1, Math.ceil(available / 2)));
+	let stageBudget = Math.min(stageWidth, Math.max(1, available - workflowBudget));
+	let remaining = available - workflowBudget - stageBudget;
+	const workflowExtra = Math.min(remaining, Math.max(0, workflowWidth - workflowBudget));
+	workflowBudget += workflowExtra;
+	remaining -= workflowExtra;
+	stageBudget += Math.min(remaining, Math.max(0, stageWidth - stageBudget));
+	return {
+		workflow: truncateToWidth(workflowName, workflowBudget, "…"),
+		stage: truncateToWidth(stageName, stageBudget, "…"),
+	};
 }
 
 export function sepRule(ctx: StageChatViewContext, width: number): string {

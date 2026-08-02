@@ -145,15 +145,15 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		// chat editor remains free regardless: the overlay is the only
 		// surface that interacts with the prompt. When the stage switcher is
 		// open it owns the body/input, so hide the prompt card until it closes.
+		if (!this.promptState || this.switcherOpen) return;
 		const run = this._getCurrentRun();
-		if (!this.promptState || this.switcherOpen || !run) return;
 		const cardWidth = Math.min(72, Math.max(40, frameWidth - 6));
 		const cardLines = renderPromptCard({
 			state: this.promptState,
 			theme: this.graphTheme,
 			width: cardWidth,
 			cursorOn: ((Date.now() / 530) | 0) % 2 === 0,
-			identity: { runId: run.id, name: run.name },
+			identity: run ? { runId: run.id, name: run.name } : undefined,
 		});
 		const bodyStart = 3;
 		const bodyEnd = 3 + bodyTarget;

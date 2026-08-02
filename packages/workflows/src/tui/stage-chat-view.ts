@@ -53,7 +53,6 @@ import {
 } from "./stage-chat-view-state.js";
 import { transcriptDebugEntries } from "./stage-chat-view-transcript.js";
 import {
-	HEADER_ROWS,
 	SEP_ROWS,
 	type StageChatViewContext,
 	type StageChatViewOpts,
@@ -141,7 +140,7 @@ export class StageChatView implements Component, Focusable {
 		const totalRows = viewLineCount(ctx);
 		const plan = planStageChatFrame({
 			viewportRows: totalRows,
-			headerRows: HEADER_ROWS,
+			headerRows: headerLines.length,
 			separatorRows: SEP_ROWS,
 			pendingRows: pendingLines.length,
 			workingRows: workingLines.length,

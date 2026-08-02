@@ -29,30 +29,38 @@ export interface RunIdentityRowsOpts {
 	readonly nameIndent?: number;
 }
 
-interface IdentifierChunk {
-	readonly text: string;
-	readonly first: boolean;
+export interface IdentifierLine {
+	prefix: string;
+	chunk: string;
 }
 
-function splitIdentifier(id: string, width: number, prefixWidth: number): IdentifierChunk[] {
-	if (width === Number.POSITIVE_INFINITY) return [{ text: id, first: true }];
-
-	const chunks: IdentifierChunk[] = [];
+/**
+ * Hard-wrap an identifier without changing any of its characters. Prefixes
+ * count against each row's visible-cell budget, but are not part of the id.
+ */
+export function wrapIdentifierLines(
+	id: string,
+	width: number,
+	firstPrefix: string,
+	continuationPrefix: string,
+): IdentifierLine[] {
+	const rows: IdentifierLine[] = [];
 	let remaining = id;
 	let first = true;
-	while (remaining.length > 0 || chunks.length === 0) {
-		const budget = Math.max(1, width - (first ? prefixWidth : Math.max(0, prefixWidth - 1)));
-		let end = 0;
+	while (remaining.length > 0 || rows.length === 0) {
+		const prefix = first ? firstPrefix : continuationPrefix;
+		const budget = Math.max(1, width - visibleWidth(prefix));
+		let chunk = "";
 		for (const character of remaining) {
-			if (end > 0 && visibleWidth(remaining.slice(0, end) + character) > budget) break;
-			end += character.length;
+			if (chunk.length > 0 && visibleWidth(`${chunk}${character}`) > budget) break;
+			chunk += character;
 		}
-		if (end === 0) end = remaining[0]?.length ?? 1;
-		chunks.push({ text: remaining.slice(0, end), first });
-		remaining = remaining.slice(end);
+		if (chunk.length === 0) chunk = remaining[0] ?? "";
+		rows.push({ prefix, chunk });
+		remaining = remaining.slice(chunk.length);
 		first = false;
 	}
-	return chunks;
+	return rows;
 }
 
 /**
@@ -67,7 +75,7 @@ export function renderRunIdentityRows(opts: RunIdentityRowsOpts): string[] {
 	const idPrefix = `${" ".repeat(idIndent)}${opts.glyph}${" ".repeat(idGap)}`;
 	const continuationPrefix = " ".repeat(Math.max(0, idIndent + idGap - 1));
 	const availableWidth = opts.width === undefined ? Number.POSITIVE_INFINITY : Math.max(1, opts.width);
-	const chunks = splitIdentifier(opts.runId, availableWidth, visibleWidth(idPrefix));
+	const chunks = wrapIdentifierLines(opts.runId, availableWidth, idPrefix, continuationPrefix);
 	const themed = opts.theme !== undefined;
 	const glyph = themed ? `${hexToAnsi(opts.glyphColor ?? opts.theme.text)}${opts.glyph}${RESET}` : opts.glyph;
 	const id = themed ? (text: string) => `${hexToAnsi(opts.theme!.accent)}${text}${RESET}` : (text: string) => text;
@@ -80,9 +88,9 @@ export function renderRunIdentityRows(opts: RunIdentityRowsOpts): string[] {
 				? ` · ${opts.meta}`
 				: "";
 
-	const rows = chunks.map((chunk) => {
-		if (!chunk.first) return `${continuationPrefix}${id(chunk.text)}`;
-		return `${" ".repeat(idIndent)}${glyph}${" ".repeat(idGap)}${id(chunk.text)}`;
+	const rows = chunks.map((chunk, index) => {
+		if (index > 0) return `${chunk.prefix}${id(chunk.chunk)}`;
+		return `${" ".repeat(idIndent)}${glyph}${" ".repeat(idGap)}${id(chunk.chunk)}`;
 	});
 	rows.push(`${" ".repeat(nameIndent)}${name}${meta}`);
 	return rows;

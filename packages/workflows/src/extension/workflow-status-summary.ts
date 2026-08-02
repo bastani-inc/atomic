@@ -79,8 +79,6 @@ export interface WorkflowStatusToolNode {
  */
 export interface WorkflowRunStatusSummary {
 	readonly runId: string;
-	/** Full run id printed by status surfaces; a valid prefix input remains accepted by commands. */
-	readonly runIdPrefix: string;
 	/** Workflow/run name. */
 	readonly name: string;
 	readonly status: RunStatus;
@@ -150,7 +148,6 @@ export function summarizeRunSnapshot(run: RunSnapshot, now = Date.now()): Workfl
 	const awaitingInput = awaitingInputEntries(run);
 	return {
 		runId: run.id,
-		runIdPrefix: run.id,
 		name: run.name,
 		status: effectiveRunStatus(run),
 		startedAt: run.startedAt,

@@ -81,7 +81,7 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 		const hint = statusRunHint(run);
 		const summaryLine = [
 			`[${index + 1}]`,
-			run.runIdPrefix,
+			run.runId,
 			run.name,
 			run.status,
 			fmtDuration(run.elapsedMs),

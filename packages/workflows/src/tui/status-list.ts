@@ -28,6 +28,7 @@ import type { FlatBandBadge } from "./chat-surface.js";
 import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { wrapIdentifierLines } from "./run-identity-rows.js";
 import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -395,41 +396,6 @@ function sortRuns(runs: readonly RunSnapshot[]): RunSnapshot[] {
 	const ended = runs.filter((r) => r.endedAt !== undefined);
 	const byStart = (a: RunSnapshot, b: RunSnapshot) => (b.startedAt ?? 0) - (a.startedAt ?? 0);
 	return [...[...active].sort(byStart), ...[...ended].sort(byStart)];
-}
-
-interface IdentifierLine {
-	prefix: string;
-	chunk: string;
-}
-
-function takeIdentifierChunk(value: string, width: number): { chunk: string; rest: string } {
-	const budget = Math.max(1, width);
-	let chunk = "";
-	for (const character of value) {
-		if (chunk.length > 0 && visibleWidth(`${chunk}${character}`) > budget) break;
-		chunk += character;
-	}
-	if (chunk.length === 0) chunk = value[0] ?? "";
-	return { chunk, rest: value.slice(chunk.length) };
-}
-
-function wrapIdentifierLines(
-	id: string,
-	width: number,
-	firstPrefix: string,
-	continuationPrefix: string,
-): IdentifierLine[] {
-	const rows: IdentifierLine[] = [];
-	let remaining = id;
-	let first = true;
-	while (remaining.length > 0 || rows.length === 0) {
-		const prefix = first ? firstPrefix : continuationPrefix;
-		const chunk = takeIdentifierChunk(remaining, width - visibleWidth(prefix));
-		rows.push({ prefix, chunk: chunk.chunk });
-		remaining = chunk.rest;
-		first = false;
-	}
-	return rows;
 }
 
 function renderStatusHintRows(id: string, theme: GraphTheme | undefined, width: number): string[] {

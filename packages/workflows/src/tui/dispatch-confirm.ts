@@ -14,8 +14,8 @@
  *  - the `[ DISPATCHED ]` band — a single-card surface doesn't need a
  *    band wrapper (bands frame multi-card surfaces like BACKGROUND /
  *    WORKFLOWS);
- *  - the `run id` muted caption beside the tag — the bg-pill chip with
- *    an 8-char hex string visually communicates "identifier";
+ *  - the `run id` muted caption — the bare identifier row already
+ *    communicates identity without restoring legacy chrome;
  *  - the `status starting…` body row — the `● running` badge on row 1
  *    occupies the same semantic slot;
  *  - the second hint row `▸ /workflow status` — that is a separate intent
@@ -35,6 +35,7 @@ import type { WorkflowInputValues } from "../shared/types.js";
 import { chatWidth, ELLIPSIS, renderRoundedBox } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { wrapIdentifierLines } from "./run-identity-rows.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 const INLINE_INPUT_LIMIT = 3;
@@ -48,7 +49,6 @@ const INLINE_INPUT_LIMIT = 3;
 const MIN_INLINE_INPUT_BUDGET = 16;
 
 export interface RenderDispatchConfirmOpts {
-	/** Registered workflow name (rendered bold beside the run-id tag on row 1). */
 	/** Registered workflow name rendered beside the full run-id body row. */
 	workflowName: string;
 	/** Real run UUID; every rendered occurrence keeps the complete value. */
@@ -121,10 +121,10 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
 
 	const inputRows =
 		bodyRows.length > 0 ? bodyRows.map((row) => `   ${row} `) : [`   ${titleSuffix ?? "started in background"} `];
-	const identifierRows = renderIdentifierRows(opts.runId, width - 2, theme).map((line) => `${line}`);
+	const identifierRows = renderIdentifierRows(opts.runId, width - 2, theme);
 	const titleLine = ` ●  ${opts.workflowName}  ${trailing.text} `;
 
-	const hints = renderDispatchHintRows(opts.runId, width - 2, theme).map((line) => ` ${line} `);
+	const hints = renderDispatchHintRows(opts.runId, width - 4, theme).map((line) => ` ${line} `);
 
 	return renderRoundedBox({
 		title: "DISPATCHED",
@@ -135,50 +135,11 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
 	});
 }
 
-interface IdentifierLine {
-	prefix: string;
-	chunk: string;
-}
-
-function takeIdentifierChunk(value: string, width: number): { chunk: string; rest: string } {
-	const budget = Math.max(1, width);
-	let chunk = "";
-	for (const character of value) {
-		if (chunk.length > 0 && visibleWidth(`${chunk}${character}`) > budget) break;
-		chunk += character;
-	}
-	if (chunk.length === 0) chunk = value[0] ?? "";
-	return { chunk, rest: value.slice(chunk.length) };
-}
-
-function wrapIdentifierLines(
-	id: string,
-	width: number,
-	firstPrefix: string,
-	continuationPrefix: string,
-): IdentifierLine[] {
-	const rows: IdentifierLine[] = [];
-	let remaining = id;
-	let first = true;
-	while (remaining.length > 0 || rows.length === 0) {
-		const prefix = first ? firstPrefix : continuationPrefix;
-		const chunk = takeIdentifierChunk(remaining, width - visibleWidth(prefix));
-		rows.push({ prefix, chunk: chunk.chunk });
-		remaining = chunk.rest;
-		first = false;
-	}
-	return rows;
-}
-
 function renderIdentifierRows(id: string, width: number, theme?: GraphTheme): string[] {
-	const rows = wrapIdentifierLines(id, width, "   run id  ", "          ");
+	const rows = wrapIdentifierLines(id, width, "   ", "   ");
 	if (!theme) return rows.map((row) => `${row.prefix}${row.chunk}`);
-	const muted = hexToAnsi(theme.textMuted);
 	const accent = hexToAnsi(theme.accent);
-	return rows.map((row, index) => {
-		const prefix = index === 0 ? `${muted}${row.prefix}${RESET}` : row.prefix;
-		return `${prefix}${accent}${row.chunk}${RESET}`;
-	});
+	return rows.map((row) => `${row.prefix}${accent}${row.chunk}${RESET}`);
 }
 
 function renderDispatchHintRows(id: string, width: number, theme?: GraphTheme): string[] {

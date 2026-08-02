@@ -45,6 +45,7 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
 		blockedByStageId: opts.blockedByStageId,
 		model: opts.model,
 		workflowChild: opts.workflowChild,
+		workflowChildRun: opts.workflowChildRun,
 		fastMode: opts.fastMode,
 	};
 }
@@ -347,6 +348,59 @@ describe("renderNodeCard — metadata line", () => {
 		const interior = lines.slice(1, -1).map((line) => stripAnsi(line).replaceAll("│", "").trim());
 		assert.ok(interior.join("").includes("run run_1234567890abcdef · 1 out"));
 		assert.doesNotMatch(stripAnsi(lines[1]!), /0ms|—/);
+	});
+
+	test("keeps full child-run UUIDs and intact suffix tokens within fixed geometry", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const cases: Array<{ label: string; stage: StageSnapshot; suffix: string }> = [
+			{
+				label: "live",
+				stage: makeStage({
+					status: "running",
+					workflowChildRun: { alias: "child", workflow: "publish-child", runId },
+				}),
+				suffix: "· live",
+			},
+			{
+				label: "one output",
+				stage: makeStage({
+					status: "completed",
+					workflowChild: {
+						alias: "child",
+						workflow: "publish-child",
+						runId,
+						status: "completed",
+						outputs: { artifact: "ready" },
+					},
+				}),
+				suffix: "· 1 out",
+			},
+			{
+				label: "three outputs",
+				stage: makeStage({
+					status: "completed",
+					workflowChild: {
+						alias: "child",
+						workflow: "publish-child",
+						runId,
+						status: "completed",
+						outputs: { artifact: "ready", checksum: "ok", notes: "done" },
+					},
+				}),
+				suffix: "· 3 outs",
+			},
+		];
+
+		for (const { label, stage, suffix } of cases) {
+			const lines = renderNodeCard(stage, { theme });
+			const interior = lines
+				.slice(1, -1)
+				.map((line) => stripAnsi(line).replaceAll("│", "").trim())
+				.join("");
+			assert.equal(lines.length, NODE_H, label);
+			assert.ok(interior.includes(runId), `${label}: ${interior}`);
+			assert.ok(interior.endsWith(suffix), `${label}: ${interior}`);
+		}
 	});
 
 	test("stages show a visible fast marker without mutating model metadata", () => {

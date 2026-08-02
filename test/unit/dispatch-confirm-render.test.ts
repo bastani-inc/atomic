@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { renderDispatchConfirm } from "../../packages/workflows/src/tui/dispatch-confirm.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -55,7 +56,7 @@ describe("renderDispatchConfirm — themed", () => {
 		assert.doesNotMatch(plain, /▸ \/workflow status/);
 
 		assert.match(plain, /^╭ DISPATCHED /);
-		assert.match(plain, /run id\s+0391c9c1-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.doesNotMatch(plain, /\brun id\b/);
 		assert.match(plain, /● {2}fan-out-and-synthesize {2}● running/);
 
 		// Themed mode emits ANSI escapes.
@@ -93,6 +94,44 @@ describe("renderDispatchConfirm — themed", () => {
 		assert.match(lines.join("\n"), /● running/);
 		assert.match(lines.join("\n"), /prompt=/);
 		assert.match(lines.join("\n"), /▸ \/workflow connect be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
+	});
+
+	test("every terminal width preserves the complete connect id and rounded-box edges", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		for (let width = 20; width <= 120; width += 1) {
+			const lines = stripAnsi(
+				renderDispatchConfirm({
+					workflowName: "publish-release",
+					runId,
+					inputs: {},
+					theme: deriveGraphTheme({}),
+					width,
+				}),
+			).split("\n");
+			const expectedWidth = Math.max(32, width);
+			for (const [index, line] of lines.entries()) {
+				assert.equal(visibleWidth(line), expectedWidth, `width ${width}, row ${index}: ${line}`);
+				if (index === 0) assert.match(line, /^╭.*╮$/, `width ${width}: top edge`);
+				else if (index === lines.length - 1) assert.match(line, /^╰.*╯$/, `width ${width}: bottom edge`);
+				else assert.match(line, /^│.*│$/, `width ${width}, row ${index}: side edges`);
+			}
+
+			const hintStart = lines.findIndex((line) => line.includes("/workflow connect"));
+			assert.notEqual(hintStart, -1, `width ${width}: connect hint missing`);
+			let reassembledId = "";
+			for (const boxedLine of lines.slice(hintStart, -1)) {
+				let content = boxedLine.slice(1, -1).trim();
+				if (content.startsWith("▸ /workflow connect ")) content = content.slice("▸ /workflow connect ".length);
+				else if (content.startsWith("see agents")) break;
+				const suffixAt = content.indexOf("  see agents");
+				if (suffixAt >= 0) content = content.slice(0, suffixAt);
+				content = content.trim();
+				assert.doesNotMatch(content, /…/, `width ${width}: identifier chunk was ellipsized`);
+				reassembledId += content;
+				if (suffixAt >= 0) break;
+			}
+			assert.equal(reassembledId, runId, `width ${width}: connect id changed across wrapped rows`);
+		}
 	});
 
 	test("zero inputs renders a single identity row + hint, with no body row", () => {
@@ -176,6 +215,7 @@ describe("renderDispatchConfirm — plain", () => {
 		assert.doesNotMatch(out, /✓ submitted/);
 		assert.doesNotMatch(out, /\[ DISPATCHED \]/);
 		assert.doesNotMatch(out, /\bstarting…/);
+		assert.doesNotMatch(out, /\brun id\b/);
 	});
 
 	test("zero inputs in plain mode renders just identity row + hint", () => {

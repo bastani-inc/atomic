@@ -87,7 +87,7 @@ describe("workflow tool status run listing", () => {
 		// In-flight run sorts before the ended run despite starting later.
 		const active = result.runs[0]!;
 		assert.equal(active.runId, activeId);
-		assert.equal(active.runIdPrefix, activeId);
+		assert.equal("runIdPrefix" in active, false);
 		assert.equal(active.name, "release-docs");
 		assert.equal(active.status, "running");
 		assert.equal(active.endedAt, undefined);
