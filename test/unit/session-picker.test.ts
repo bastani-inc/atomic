@@ -369,6 +369,21 @@ test("keeps full ids and intact borders at narrow widths", () => {
 		assert.doesNotMatch(plain.join("\n"), /d4e5f6a1-.*…/);
 	}
 });
+
+test("limits the run viewport so full-id rows keep the overlay height compact", () => {
+	const theme = deriveGraphTheme({});
+	const state = createSessionPickerState();
+	const rows = Array.from({ length: 12 }, (_, index) => ({
+		run: makeRun({
+			id: `${String(index).padStart(8, "0")}-0000-0000-0000-${String(index).padStart(12, "0")}`,
+			name: `workflow-${index}`,
+		}),
+		bucket: "active" as const,
+	}));
+
+	assert.equal(renderSessionPicker({ width: 80, theme, rows, state }).length, 18);
+	assert.equal(renderSessionPicker({ width: 40, theme, rows, state }).length, 23);
+});
 test("renderSessionPicker emits a clean ╰────╯ bottom border with hints on a separate row below", () => {
 	// Regression gate: previously the hints text was embedded inside the
 	// bottom-corner row (`╰── ↑↓ Navigate · …  ╯`), producing the broken

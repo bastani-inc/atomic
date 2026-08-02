@@ -317,7 +317,7 @@ function renderEmptyState(inner: number, theme: GraphTheme): string {
 	return `${border}│${RESET}${panelBg}${padTo(content, inner)}${RESET}${border}│${RESET}`;
 }
 
-const VIEWPORT = 10;
+const VIEWPORT = 5;
 
 export function renderSessionPicker(opts: SessionPickerRenderOpts): string[] {
 	const { width, theme, rows, state } = opts;

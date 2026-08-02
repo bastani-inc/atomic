@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { chatWidth } from "../../packages/workflows/src/tui/chat-surface.js";
+import { hexToAnsi, RESET } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
@@ -159,6 +160,7 @@ describe("renderStatusList — populated", () => {
 			],
 			{ now, width: 100 },
 		);
+		assert.match(out, /↑ 1 blocked/);
 
 		assert.match(out, /↑\s+blk123uuid/);
 		assert.match(out, /auth-blocked\s+↑ blocked/);
@@ -184,6 +186,7 @@ describe("renderStatusList — populated", () => {
 			],
 			{ now, width: 100 },
 		);
+		assert.match(out, /↑ 1 blocked/);
 
 		assert.match(out, /↑\s+old123uuid/);
 		assert.match(out, /adversarial-verification\s+↑ blocked/);
@@ -219,6 +222,7 @@ describe("renderStatusList — populated", () => {
 			],
 			{ now, width: 100 },
 		);
+		assert.match(out, /↑ 1 blocked/);
 
 		assert.match(out, /↑\s+auth00uuid/);
 		assert.match(out, /adversarial-verification\s+↑ blocked/);
@@ -491,6 +495,26 @@ describe("renderStatusList — populated", () => {
 			assert.doesNotMatch(plain, /d4e5f6a1-.*…/);
 			assert.ok(lines[0]?.startsWith("╭"));
 			assert.ok(lines.at(-1)?.startsWith("╰"));
+		}
+	});
+
+	test("themes every wrapped run-id row in the workflow status hint", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const run = makeRun({ id: runId, name: "narrow-hint", status: "running" });
+		const theme = deriveGraphTheme({});
+		const lines = renderStatusList([run], { width: 44, theme }).split("\n");
+		const hintLines = lines.filter((line) => {
+			const plain = stripAnsi(line);
+			return plain.includes("/workflow status") || plain.includes("76-d1a348f582ae");
+		});
+
+		assert.equal(hintLines.length, 2, "the full hint id wraps across two rows");
+		for (const line of hintLines) {
+			assert.ok(
+				line.includes(hexToAnsi(theme.accent)),
+				`wrapped id row is not accent-coloured: ${JSON.stringify(line)}`,
+			);
+			assert.ok(line.includes(RESET), `wrapped id row has no colour reset: ${JSON.stringify(line)}`);
 		}
 	});
 });

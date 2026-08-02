@@ -25,7 +25,8 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 	const rightWidth = meta ? visibleWidth(meta) + 1 : 0;
 	const singleRowNameBudget = width - prefixWidth - separatorWidth - rightWidth - (meta ? 1 : 0);
 
-	if (!sid || singleRowNameBudget >= 2) {
+	const fullNameWidth = visibleWidth(ctx.workflowName) + visibleWidth(stageName);
+	if (!sid || singleRowNameBudget >= fullNameWidth) {
 		const names = fitHeaderNames(ctx.workflowName, stageName, Math.max(2, singleRowNameBudget));
 		const left = renderHeaderLeft(ctx, names.workflow, names.stage);
 		const right = meta ? `${paint(meta, t.dim)} ` : "";

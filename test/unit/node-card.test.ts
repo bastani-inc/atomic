@@ -94,6 +94,33 @@ describe("renderNodeCard — queued-message badge", () => {
 		assert.doesNotMatch(badged, /1 dep/);
 	});
 
+	test("keeps child identity, status, full UUID, and queued badge at the real card geometry", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const lines = renderNodeCard(
+			makeStage({
+				status: "running",
+				workflowChildRun: { alias: "child", workflow: "publish-child", runId },
+			}),
+			{ theme, queuedMessageCount: 2 },
+		);
+		const plainLines = lines.map(stripAnsi);
+		const rendered = plainLines.join("\n");
+		const renderedRunId = plainLines
+			.slice(1, -1)
+			.map((line) => line.slice(1, -1).trim())
+			.filter((line) => /^(?:run )?[0-9a-f-]+$/.test(line))
+			.join("")
+			.replace(/^run /, "");
+
+		assert.equal(lines.length, NODE_H);
+		for (const line of plainLines) assert.equal(line.length, NODE_W);
+		assert.match(rendered, /publish-child/);
+		assert.match(rendered, /● running/);
+		assert.match(rendered, /✉ 2 queued/);
+		assert.equal(renderedRunId, runId);
+		assert.doesNotMatch(rendered, /…/);
+	});
+
 	test("renders a single queued message count verbatim", () => {
 		const lines = renderNodeCard(makeStage({ status: "running", startedAt: 1 }), {
 			theme,
@@ -343,10 +370,12 @@ describe("renderNodeCard — metadata line", () => {
 
 		const rendered = stripAnsi(lines.join("\n"));
 		assert.match(rendered, /↳ pr1135-import-child/);
+		assert.match(rendered, /✓ complete/);
 		// The child run id is never shortened: at node width it wraps across rows,
-		// so reassemble the interior before asserting the complete value.
+		// so reassemble the identity rows before asserting the complete value.
 		const interior = lines.slice(1, -1).map((line) => stripAnsi(line).replaceAll("│", "").trim());
-		assert.ok(interior.join("").includes("run run_1234567890abcdef · 1 out"));
+		assert.ok(interior.slice(0, 2).join("").includes("run run_1234567890abcdef"));
+		assert.match(rendered, /· 1 out/);
 		assert.doesNotMatch(stripAnsi(lines[1]!), /0ms|—/);
 	});
 
@@ -397,9 +426,13 @@ describe("renderNodeCard — metadata line", () => {
 				.slice(1, -1)
 				.map((line) => stripAnsi(line).replaceAll("│", "").trim())
 				.join("");
+			const rendered = stripAnsi(lines.join("\n"));
 			assert.equal(lines.length, NODE_H, label);
 			assert.ok(interior.includes(runId), `${label}: ${interior}`);
 			assert.ok(interior.endsWith(suffix), `${label}: ${interior}`);
+			assert.match(rendered, /publish-child/, label);
+			assert.match(rendered, stage.status === "running" ? /● running/ : /✓ complete/, label);
+			assert.doesNotMatch(rendered, /…/, label);
 		}
 	});
 

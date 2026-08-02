@@ -403,6 +403,7 @@ function renderStatusHintRows(id: string, theme: GraphTheme | undefined, width: 
 	const prefix = "▸ /workflow status ";
 	const continuation = "  ";
 	const rows = wrapIdentifierLines(id, budget, prefix, continuation);
+	const identifierRowCount = rows.length;
 	const suffix = "  drill into a run";
 	const last = rows[rows.length - 1]!;
 	if (visibleWidth(`${last.prefix}${last.chunk}${suffix}`) <= budget) {
@@ -417,12 +418,17 @@ function renderStatusHintRows(id: string, theme: GraphTheme | undefined, width: 
 	const dim = hexToAnsi(theme.dim);
 	const accent = hexToAnsi(theme.accent);
 	return rows.map((row, index) => {
+		const carriesIdentifier = index < identifierRowCount;
+		const carriesSuffix = carriesIdentifier && index === identifierRowCount - 1 && row.chunk.endsWith(suffix);
+		const idChunk = carriesSuffix ? row.chunk.slice(0, -suffix.length) : row.chunk;
+		const suffixText = carriesSuffix ? suffix : "";
 		if (index === 0) {
-			const idChunk = row.chunk.endsWith(suffix) ? row.chunk.slice(0, -suffix.length) : row.chunk;
-			const suffixText = row.chunk.endsWith(suffix) ? suffix : "";
 			return `${dim}▸${RESET} ${accent}/workflow status ${idChunk}${RESET}${suffixText ? `${dim}${suffixText}${RESET}` : ""}`;
 		}
-		return `${row.prefix}${row.chunk}`;
+		if (carriesIdentifier) {
+			return `${row.prefix}${accent}${idChunk}${RESET}${suffixText ? `${dim}${suffixText}${RESET}` : ""}`;
+		}
+		return `${row.prefix}${dim}${row.chunk}${RESET}`;
 	});
 }
 

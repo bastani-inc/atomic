@@ -22,7 +22,12 @@ export interface PromptCardRenderOpts {
 	readonly cursorOn: boolean;
 	/** Optional run attribution; absent preserves the legacy prompt card. */
 	readonly identity?: PromptCardIdentity;
+	/** Maximum complete rows to emit. Below the six-row minimum, emits nothing. */
+	readonly maxRows?: number;
 }
+
+const MIN_COMPLETE_PROMPT_ROWS = 6;
+const LEGACY_PROMPT_ROWS = 10;
 
 /**
  * Render the prompt surface as an optional attribution banner followed by
@@ -34,8 +39,11 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 	const innerWidth = Math.max(20, width - 2);
 	const borderColor = theme.border;
 	const bg = "";
-	const promptLines = renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg);
-	if (opts.identity === undefined) return promptLines;
+	const maxRows = opts.maxRows === undefined ? undefined : Math.max(0, Math.floor(opts.maxRows));
+	if (maxRows !== undefined && maxRows < MIN_COMPLETE_PROMPT_ROWS) return [];
+	if (opts.identity === undefined) {
+		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows);
+	}
 
 	const identityRows = renderRunIdentityRows({
 		runId: opts.identity.runId,
@@ -54,6 +62,15 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 		...identityRows.map((row) => makePaddedRow(bg, borderColor, innerWidth, row)),
 		makeBorderBottom(borderColor, innerWidth, bg),
 	];
+
+	// Attribution is supplementary. Keep it only when the remaining budget can
+	// still hold the normally spaced prompt; otherwise devote every row to the
+	// complete interactive surface.
+	if (maxRows !== undefined && maxRows < banner.length + LEGACY_PROMPT_ROWS) {
+		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows);
+	}
+	const promptBudget = maxRows === undefined ? undefined : maxRows - banner.length;
+	const promptLines = renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, promptBudget);
 	return [
 		...banner,
 		...promptLines.map((line, index) => (index === 0 ? makeBorderTop(borderColor, "", theme, innerWidth, bg) : line)),
@@ -67,21 +84,42 @@ function renderPromptBodyBlock(
 	cursorOn: boolean,
 	borderColor: string,
 	bg: string,
+	maxRows?: number,
 ): string[] {
+	if (maxRows !== undefined && maxRows < MIN_COMPLETE_PROMPT_ROWS) return [];
+	const messageRows = wrapText(state.prompt.message, innerWidth - 4);
+	const desiredResponseRows = responseRowCount(state);
+	const normallySpaced = maxRows === undefined || maxRows >= LEGACY_PROMPT_ROWS;
+	let messageCount = messageRows.length;
+	let responseCount = desiredResponseRows;
+	if (maxRows !== undefined) {
+		// Five non-variable rows keep both boxes closed: outer top/bottom +
+		// response top/bottom + hints. Normally spaced cards add three blanks.
+		const fixedRows = 5 + (normallySpaced ? 3 : 0);
+		const variableBudget = Math.max(1, maxRows - fixedRows);
+		messageCount = variableBudget >= 2 ? 1 : 0;
+		responseCount = 1;
+		let remaining = variableBudget - messageCount - responseCount;
+		const responseExtra = Math.min(remaining, Math.max(0, desiredResponseRows - responseCount));
+		responseCount += responseExtra;
+		remaining -= responseExtra;
+		messageCount += Math.min(remaining, Math.max(0, messageRows.length - messageCount));
+	}
+
 	const lines: string[] = [];
 	lines.push(makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg));
-	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
-	for (const messageLine of wrapText(state.prompt.message, innerWidth - 4)) {
+	if (normallySpaced) lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
+	for (const messageLine of messageRows.slice(0, messageCount)) {
 		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${paint(messageLine, theme.text)}`));
 	}
-	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
+	if (normallySpaced) lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
 
-	const fieldLines = renderResponseFieldBox(state, theme, innerWidth - 4, cursorOn);
+	const fieldLines = renderResponseFieldBox(state, theme, innerWidth - 4, cursorOn, responseCount);
 	for (const fl of fieldLines) {
 		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${fl}`));
 	}
 
-	lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
+	if (normallySpaced) lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
 	lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${renderHints(state.prompt.kind, theme)}`));
 	lines.push(makeBorderBottom(borderColor, innerWidth, bg));
 	return lines;
@@ -111,11 +149,23 @@ function wrapText(text: string, width: number): string[] {
 	return wrapTextWithAnsi(text, width);
 }
 
+function responseRowCount(state: PromptCardState): number {
+	switch (state.prompt.kind) {
+		case "select":
+			return Math.max(1, Math.min(5, state.prompt.choices?.length ?? 0));
+		case "editor":
+			return 6;
+		default:
+			return 1;
+	}
+}
+
 function renderResponseFieldBox(
 	state: PromptCardState,
 	theme: GraphTheme,
 	usable: number,
 	cursorOn: boolean,
+	maxContentRows: number,
 ): string[] {
 	const boxWidth = Math.max(4, usable);
 	const contentWidth = Math.max(1, boxWidth - 2);
@@ -124,7 +174,7 @@ function renderResponseFieldBox(
 	const labelText = paint(label, theme.textMuted, { bold: true });
 	const labelW = visibleWidth(labelText);
 	const topFill = Math.max(0, boxWidth - labelW - 2);
-	const rows = renderResponseField(state, theme, contentWidth, cursorOn);
+	const rows = renderResponseField(state, theme, contentWidth, cursorOn, maxContentRows);
 	return [
 		paint("╭", borderColor) + labelText + paint(`${"─".repeat(topFill)}╮`, borderColor),
 		...rows.map((row) => makeFieldRow(row, contentWidth, borderColor)),
@@ -138,16 +188,22 @@ function makeFieldRow(content: string, width: number, borderColor: string): stri
 	return paint("│", borderColor) + padded + paint("│", borderColor);
 }
 
-function renderResponseField(state: PromptCardState, theme: GraphTheme, usable: number, cursorOn: boolean): string[] {
+function renderResponseField(
+	state: PromptCardState,
+	theme: GraphTheme,
+	usable: number,
+	cursorOn: boolean,
+	maxRows: number,
+): string[] {
 	switch (state.prompt.kind) {
 		case "confirm":
 			return [renderConfirmRow(state, theme, usable)];
 		case "select":
-			return renderSelectRows(state, theme, usable);
+			return renderSelectRows(state, theme, usable, maxRows);
 		case "input":
 			return [renderInputRow(state, theme, usable, cursorOn)];
 		case "editor":
-			return renderEditorRows(state, theme, usable, cursorOn);
+			return renderEditorRows(state, theme, usable, cursorOn, maxRows);
 		case "custom":
 			return [padToUsable("", usable)];
 	}
@@ -167,12 +223,12 @@ function renderConfirmRow(state: PromptCardState, theme: GraphTheme, usable: num
 	return padToUsable(row, usable);
 }
 
-function renderSelectRows(state: PromptCardState, theme: GraphTheme, usable: number): string[] {
+function renderSelectRows(state: PromptCardState, theme: GraphTheme, usable: number, maxRows: number): string[] {
 	const choices = state.prompt.choices ?? [];
 	if (choices.length === 0) {
 		return [padToUsable(paint("(no choices)", theme.dim), usable)];
 	}
-	const maxVisible = Math.min(5, choices.length);
+	const maxVisible = Math.max(1, Math.min(5, choices.length, Math.floor(maxRows)));
 	const list = createPromptSelectList(state, theme, maxVisible);
 	return list.render(usable).map((line) => padToUsable(line, usable));
 }
@@ -185,8 +241,19 @@ function renderInputRow(state: PromptCardState, theme: GraphTheme, usable: numbe
 	return padToUsable(paint("❯ ", theme.accent) + withCursor, usable);
 }
 
-function renderEditorRows(state: PromptCardState, theme: GraphTheme, usable: number, cursorOn: boolean): string[] {
-	const ROWS = 5;
+function renderEditorRows(
+	state: PromptCardState,
+	theme: GraphTheme,
+	usable: number,
+	cursorOn: boolean,
+	maxRows: number,
+): string[] {
+	const rowBudget = Math.max(1, Math.floor(maxRows));
+	if (rowBudget === 1 && state.editorSubmitFocused) {
+		return [padToUsable(renderEditorSubmitAction(true, theme), usable)];
+	}
+	const editorRows = rowBudget === 1 ? 1 : rowBudget - 1;
+	const includeSubmit = rowBudget > 1;
 	const allLines = state.rawText.split("\n");
 	// Find the line + column the caret currently sits on.
 	let acc = 0;
@@ -203,10 +270,10 @@ function renderEditorRows(state: PromptCardState, theme: GraphTheme, usable: num
 		caretLine = i + 1;
 		caretCol = 0;
 	}
-	const start = Math.max(0, Math.min(caretLine - Math.floor(ROWS / 2), allLines.length - ROWS));
+	const start = Math.max(0, Math.min(caretLine - Math.floor(editorRows / 2), allLines.length - editorRows));
 	const safeStart = Math.max(0, start);
 	const rows: string[] = [];
-	for (let i = 0; i < ROWS; i++) {
+	for (let i = 0; i < editorRows; i++) {
 		const lineIdx = safeStart + i;
 		const lineText = allLines[lineIdx] ?? "";
 		const isCaretLine = !state.editorSubmitFocused && lineIdx === caretLine;
@@ -218,7 +285,7 @@ function renderEditorRows(state: PromptCardState, theme: GraphTheme, usable: num
 		const prefix = paint(isCaretLine ? "❯ " : "  ", isCaretLine ? theme.accent : theme.dim);
 		rows.push(padToUsable(prefix + withCursor, usable));
 	}
-	rows.push(padToUsable(renderEditorSubmitAction(state.editorSubmitFocused, theme), usable));
+	if (includeSubmit) rows.push(padToUsable(renderEditorSubmitAction(state.editorSubmitFocused, theme), usable));
 	return rows;
 }
 

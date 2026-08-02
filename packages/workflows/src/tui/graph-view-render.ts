@@ -154,14 +154,13 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			width: cardWidth,
 			cursorOn: ((Date.now() / 530) | 0) % 2 === 0,
 			identity: run ? { runId: run.id, name: run.name } : undefined,
+			maxRows: bodyTarget,
 		});
 		const bodyStart = 3;
-		const bodyEnd = 3 + bodyTarget;
 		const slot = Math.max(bodyStart, bodyStart + Math.floor((bodyTarget - cardLines.length) / 2));
 		const leftPad = Math.max(0, Math.floor((frameWidth - cardWidth) / 2));
 		for (let i = 0; i < cardLines.length; i++) {
 			const lineIdx = slot + i;
-			if (lineIdx >= bodyEnd) break;
 			const base = lines[lineIdx] ?? this._blankRow(frameWidth);
 			lines[lineIdx] = this._overlayCard(base, cardLines[i]!, leftPad, frameWidth);
 		}

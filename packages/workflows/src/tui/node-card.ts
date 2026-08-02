@@ -132,34 +132,25 @@ function metaText(stage: StageSnapshot): string {
 	return stage.fastMode === true ? `${dependencyText} · fast` : dependencyText;
 }
 
-function workflowChildSummaryText(stage: StageSnapshot): string {
+function workflowChildRunRows(stage: StageSnapshot, width: number): string[] {
 	const child = stage.workflowChild ?? stage.workflowChildRun;
-	if (child === undefined) return durationText(stage);
-	return `↳ ${child.workflow}`;
+	if (child === undefined) return [];
+	return wrapIdentifierLines(child.runId, Math.max(1, width), "run ", "").map((row) => `${row.prefix}${row.chunk}`);
 }
 
-/**
- * Hard-wrap child-run metadata without splitting its final status/output token.
- * A full UUID claims three rows at node width; the suffix therefore gets its
- * own final row instead of being clipped after its first character.
- */
-function workflowChildMetaRows(stage: StageSnapshot, width: number): string[] {
+function workflowChildMetaText(stage: StageSnapshot): string | undefined {
 	const completed = stage.workflowChild;
-	const live = stage.workflowChildRun;
-	if (completed === undefined && live === undefined) return [metaText(stage)];
-	const runId = completed?.runId ?? live!.runId;
-	const suffix =
-		completed === undefined
-			? "· live"
-			: Object.keys(completed.outputs).length === 1
-				? "· 1 out"
-				: `· ${Object.keys(completed.outputs).length} outs`;
-	const budget = Math.max(1, width);
-	const rows = wrapIdentifierLines(runId, budget, "run ", "");
-	const last = rows[rows.length - 1]!;
-	if (visibleWidth(`${last.prefix}${last.chunk} ${suffix}`) <= budget) last.chunk += ` ${suffix}`;
-	else rows.push({ prefix: "", chunk: suffix });
-	return rows.map((row) => `${row.prefix}${row.chunk}`);
+	if (completed !== undefined) {
+		const outputCount = Object.keys(completed.outputs).length;
+		return outputCount === 1 ? "1 out" : `${outputCount} outs`;
+	}
+	if (stage.workflowChildRun !== undefined) return "live";
+	return undefined;
+}
+
+function joinCompactStatusMeta(status: string, meta: string, width: number): string {
+	const candidates = [`${status} · ${meta}`, `${status} ·${meta}`, `${status}· ${meta}`, `${status}·${meta}`];
+	return candidates.find((candidate) => visibleWidth(candidate) <= width) ?? candidates[candidates.length - 1]!;
 }
 
 function statusLabel(status: StageStatus): string {
@@ -217,22 +208,23 @@ function buildTitleSlot(
 	focused: boolean,
 	theme: GraphTheme,
 	cardBg: string,
+	compact = false,
 ): { slot: string; visibleWidth: number } {
-	const maxName = Math.max(2, innerWidth - 4);
+	const maxName = Math.max(2, compact ? innerWidth - 1 : innerWidth - 4);
 	const safeName = truncate(name, maxName);
 	if (focused) {
 		// Flanking spaces sit on the accent tab so the pill reads as a
 		// single coloured run. Use `paint` to combine bg + fg + bold +
 		// RESET in one ANSI sequence, then re-prime the card stratum so
 		// the dashes outside the slot stay on the body bg.
-		const tabText = ` ${safeName} `;
+		const tabText = compact ? safeName : ` ${safeName} `;
 		const styled = `${paint(tabText, theme.surface, {
 			bg: theme.accent,
 			bold: true,
 		})}${cardBg}`;
 		return { slot: styled, visibleWidth: visibleWidth(tabText) };
 	}
-	const titleRaw = ` ${safeName} `;
+	const titleRaw = compact ? safeName : ` ${safeName} `;
 	const styled = `${BOLD}${titleRaw}${RESET}${cardBg}`;
 	return { slot: styled, visibleWidth: visibleWidth(titleRaw) };
 }
@@ -258,14 +250,16 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 	const bg = hexBg(theme.bg);
 	const innerWidth = Math.max(2, width - 2);
 
-	// Title sits inside the top border. Focus adds an accent-coloured
-	// pill to the name slot without adding an extra glyph.
+	// Child workflow boundaries use the compact title path so their workflow
+	// identity remains visible without changing the fixed card geometry.
+	const child = stage.workflowChild ?? stage.workflowChildRun;
 	const { slot: titleSlot, visibleWidth: titleVisibleWidth } = buildTitleSlot(
-		stage.name,
+		child === undefined ? stage.name : `↳ ${child.workflow}`,
 		innerWidth,
 		focused,
 		theme,
 		bg,
+		child !== undefined,
 	);
 	const titleStart = Math.max(1, Math.floor((innerWidth - titleVisibleWidth) / 2));
 	const titleEnd = titleStart + titleVisibleWidth;
@@ -279,7 +273,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 			? (stage.error ?? stage.result ?? "durable tool")
 			: stage.status === "blocked"
 				? blockedBadgeText(stage, opts.stages, innerWidth)
-				: workflowChildSummaryText(stage);
+				: durationText(stage);
 	const bodyHex = durationColor(stage.status, theme);
 	const statusText = `${statusIcon(stage.status)} ${stage.toolStatus ?? statusLabel(stage.status)}`;
 	const statusLine =
@@ -295,17 +289,25 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 		}) +
 		`${bg}${bc}│${RESET}`;
 
-	// Interior — compact status + duration. Child workflow boundary stages
-	// otherwise look like empty completed nodes, so use the first body row for
-	// the child workflow identity and the remaining rows for a terse child-run
-	// summary. When a real UUID needs all three interior rows, metadata takes
-	// priority over duration/status so no final row is silently clipped.
-	const childMetaRows = workflowChildMetaRows(stage, innerWidth);
-	const childMetaLines = childMetaRows.map(
+	const contentRows = Math.max(0, height - 2);
+	const metaLine = `${bg}${bc}│${RESET}${centreColored(metaText(stage), innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`;
+	const childRunLines = workflowChildRunRows(stage, innerWidth).map(
 		(row) => `${bg}${bc}│${RESET}${centreColored(row, innerWidth, theme.dim, bg)}${bg}${bc}│${RESET}`,
 	);
-	const contentRows = Math.max(0, height - 2);
-	const childMetaClaimsCard = childMetaLines.length >= contentRows;
+	const queuedCount = queuedBadgeCount(opts.queuedMessageCount);
+	const childMeta = workflowChildMetaText(stage);
+	const childSummary =
+		childMeta === undefined
+			? undefined
+			: joinCompactStatusMeta(statusText, queuedCount > 0 ? queuedBadgeText(queuedCount) : childMeta, innerWidth);
+	const childSummaryLine =
+		childSummary === undefined
+			? undefined
+			: `${bg}${bc}│${RESET}` +
+				centreColored(childSummary, innerWidth, bodyHex, bg, {
+					bold: stage.status === "running" || stage.status === "awaiting_input",
+				}) +
+				`${bg}${bc}│${RESET}`;
 
 	const interior: string[] =
 		stage.status === "awaiting_input"
@@ -318,20 +320,15 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 						centreColored("↵ enter to respond", innerWidth, theme.dim, bg) +
 						`${bg}${bc}│${RESET}`,
 				]
-			: childMetaClaimsCard
-				? childMetaLines
-				: childMetaLines.length > 1
-					? [durLine, ...childMetaLines]
-					: [durLine, statusLine, ...childMetaLines];
+			: childSummaryLine === undefined
+				? [durLine, statusLine, metaLine]
+				: [...childRunLines, childSummaryLine];
 
 	// A queued steer/follow-up is invisible once the user leaves the stage chat,
 	// so it claims one existing body row rather than competing for space inside a
-	// line that would truncate. Card geometry is unchanged: the row is replaced,
-	// not added. Pick the least useful row: the dim metadata row on an ordinary
-	// card, and the redundant "waiting for response" row on an awaiting-input
-	// card, which keeps its status row and its `↵ enter to respond` action hint.
-	const queuedCount = queuedBadgeCount(opts.queuedMessageCount);
-	const preferredBadgeRow = childMetaClaimsCard ? -1 : stage.status === "awaiting_input" ? 1 : interior.length - 1;
+	// line that would truncate. Child boundaries pack it beside status instead.
+	const preferredBadgeRow =
+		childSummaryLine === undefined ? (stage.status === "awaiting_input" ? 1 : interior.length - 1) : -1;
 
 	// Pad / clip to exactly `height` lines.
 	while (interior.length < contentRows) {

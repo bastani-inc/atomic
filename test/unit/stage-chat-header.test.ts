@@ -46,18 +46,28 @@ function renderStageHeader(workflowName: string, stageName: string, width: numbe
 	return rendered.slice(0, separatorIndex);
 }
 
-test("stage chat header fits realistic and minimal names without shortening the session id", () => {
+test("stage chat header preserves full names and session id monotonically from 40 through 120 columns", () => {
 	for (const [workflowName, stageName] of [
 		["publish-release", "implement"],
 		["wf", "s"],
 	] as const) {
-		for (const width of [40, 60, 80]) {
+		let previousRowCount = Number.POSITIVE_INFINITY;
+		for (let width = 40; width <= 120; width++) {
 			const header = renderStageHeader(workflowName, stageName, width);
 			const plain = header.map(stripAnsi);
+			const joined = plain.join("\n");
 			for (const [row, line] of plain.entries()) {
 				assert.ok(line.length <= width, `${workflowName}/${stageName}, width ${width}, row ${row}: ${line}`);
 			}
-			assert.ok(plain.join("\n").includes(SESSION_ID), `${workflowName}/${stageName}, width ${width}`);
+			assert.match(joined, new RegExp(workflowName), `${workflowName}/${stageName}, width ${width}: workflow`);
+			assert.match(joined, new RegExp(stageName), `${workflowName}/${stageName}, width ${width}: stage`);
+			assert.ok(joined.includes(SESSION_ID), `${workflowName}/${stageName}, width ${width}: session`);
+			assert.doesNotMatch(joined, /…/, `${workflowName}/${stageName}, width ${width}: ellipsis`);
+			assert.ok(
+				header.length <= previousRowCount,
+				`${workflowName}/${stageName}, width ${width}: row count ${previousRowCount} -> ${header.length}`,
+			);
+			previousRowCount = header.length;
 		}
 	}
 });
