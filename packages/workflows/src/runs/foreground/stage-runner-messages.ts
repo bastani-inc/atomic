@@ -11,12 +11,9 @@ type MessageWithTextContent = {
 	readonly content?: string | readonly TextLikeContent[];
 };
 
-type AdmissionProvenance = "active-stage" | "assistant-settled";
-
 type MessageWithAdmissionKey = {
 	readonly role?: string;
 	readonly stageAdmissionKey?: string;
-	readonly stageAdmissionProvenance?: AdmissionProvenance;
 };
 
 function isAdmittedExternalMessage(message: AgentSession["messages"][number]): boolean {
@@ -26,70 +23,37 @@ function isAdmittedExternalMessage(message: AgentSession["messages"][number]): b
 	);
 }
 
-function admissionProvenance(message: AgentSession["messages"][number]): AdmissionProvenance | undefined {
-	const provenance = (message as MessageWithAdmissionKey).stageAdmissionProvenance;
-	return provenance === "active-stage" || provenance === "assistant-settled" ? provenance : undefined;
-}
-
-type AssistantTextCandidate = {
-	readonly index: number;
-	readonly text: string;
-	readonly utf8Bytes: number;
-};
-
-function assistantTextCandidates(
-	messages: AgentSession["messages"],
-	firstIndex: number,
-): readonly AssistantTextCandidate[] {
-	const candidates: AssistantTextCandidate[] = [];
-	for (let index = firstIndex; index < messages.length; index += 1) {
-		const message = messages[index];
-		if (message?.role !== "assistant") continue;
-		const text = extractMessageText(message).trim();
-		if (text) candidates.push({ index, text, utf8Bytes: new TextEncoder().encode(text).byteLength });
-	}
-	return candidates;
-}
-
 /**
- * Provenance supplies a deterministic default: work before the first settled-stage admission, or otherwise the
- * latest assistant. It cannot distinguish a deliverable followed by an acknowledgement from a preamble followed by
- * a deliverable, because both persist as assistant/custom/assistant and admission timing can assign either provenance.
- * In that ambiguous shape, a candidate at least 3:2 larger in UTF-8 bytes is treated as substantive and overrides the
- * provenance default. Near-equal candidates keep that default. This is deliberately heuristic: a genuinely short
- * deliverable paired with a long acknowledgement will be nominated incorrectly.
- *
- * Pre-upgrade admissions without provenance preserve origin/main's latest-assistant behavior.
+ * An admitted external message is an absolute boundary for stage-owned output. Nominate the last non-empty assistant
+ * turn before the first admission in this prompt window, regardless of admission provenance or candidate size. If the
+ * admission precedes every assistant turn, use the first non-empty assistant turn after it as the only available
+ * fallback. With no admission, return undefined so the caller preserves the existing latest-assistant behavior.
  */
 function nominatedAssistantText(messages: AgentSession["messages"], startIndex = 0): string | undefined {
 	const firstIndex = Math.max(0, startIndex);
-	let firstSettledAdmissionIndex: number | undefined;
-	let hasProvenancedAdmission = false;
+	let firstAdmissionIndex: number | undefined;
 	for (let index = firstIndex; index < messages.length; index += 1) {
 		const message = messages[index];
-		if (!message || !isAdmittedExternalMessage(message)) continue;
-		const provenance = admissionProvenance(message);
-		if (provenance === undefined) return undefined;
-		hasProvenancedAdmission = true;
-		if (provenance === "assistant-settled" && firstSettledAdmissionIndex === undefined) {
-			firstSettledAdmissionIndex = index;
+		if (message && isAdmittedExternalMessage(message)) {
+			firstAdmissionIndex = index;
+			break;
 		}
 	}
-	if (!hasProvenancedAdmission) return undefined;
+	if (firstAdmissionIndex === undefined) return undefined;
 
-	const candidates = assistantTextCandidates(messages, firstIndex);
-	const latest = candidates.at(-1);
-	if (!latest) return undefined;
-	const provenanceDefault =
-		firstSettledAdmissionIndex === undefined
-			? latest
-			: (candidates.findLast((candidate) => candidate.index < firstSettledAdmissionIndex) ?? latest);
-	const mostSubstantive = candidates.reduce((best, candidate) =>
-		candidate.utf8Bytes > best.utf8Bytes ? candidate : best,
-	);
-	return mostSubstantive.utf8Bytes * 2 >= provenanceDefault.utf8Bytes * 3
-		? mostSubstantive.text
-		: provenanceDefault.text;
+	for (let index = firstAdmissionIndex - 1; index >= firstIndex; index -= 1) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		const text = extractMessageText(message).trim();
+		if (text) return text;
+	}
+	for (let index = firstAdmissionIndex + 1; index < messages.length; index += 1) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		const text = extractMessageText(message).trim();
+		if (text) return text;
+	}
+	return undefined;
 }
 
 export function extractMessageText(message: AgentSession["messages"][number]): string {

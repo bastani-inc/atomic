@@ -80,113 +80,138 @@ function toolResultTurn(toolCallId = "t"): SessionMessage {
 }
 const SUBSTANTIVE_DELIVERABLE =
 	"REAL DELIVERABLE: complete findings, supporting evidence, conclusions, and concrete next steps.";
-const SUBSTANTIVE_REPORT =
-	"REPORT: detailed analysis with supporting evidence, conclusions, limitations, and concrete next steps.";
+
+type CandidateSizeRelationship = {
+	readonly id: string;
+	readonly stageOwnBytes: number;
+	readonly postAdmissionBytes: number;
+};
+
+type NominationTexts = {
+	readonly stageOwn: string;
+	readonly postAdmission: string;
+};
 
 type NominationMatrixRow = {
 	readonly id: string;
-	readonly scenario: (provenance: AdmissionProvenance) => readonly SessionMessage[];
-	readonly expected: string;
+	readonly scenario: (provenance: AdmissionProvenance, texts: NominationTexts) => readonly SessionMessage[];
 };
+
+function exactSizedText(label: string, bytes: number): string {
+	assert.ok(label.length <= bytes);
+	return label.padEnd(bytes, ".");
+}
+
+const candidateSizeRelationships: readonly CandidateSizeRelationship[] = [
+	{ id: "deliverable much larger than acknowledgement", stageOwnBytes: 96, postAdmissionBytes: 8 },
+	{ id: "near parity", stageOwnBytes: 64, postAdmissionBytes: 63 },
+	{ id: "acknowledgement much larger than deliverable", stageOwnBytes: 18, postAdmissionBytes: 155 },
+];
 
 const nominationMatrix: readonly NominationMatrixRow[] = [
 	{
 		id: "A1 [REAL, C, ACK]",
-		scenario: (provenance) => [
-			assistantTurn(SUBSTANTIVE_DELIVERABLE),
+		scenario: (provenance, texts) => [
+			assistantTurn(texts.stageOwn),
 			admittedTurn("subagent:1", provenance),
-			assistantTurn("ACK"),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_DELIVERABLE,
 	},
 	{
 		id: "A2 [C, REAL, ACK]",
-		scenario: (provenance) => [
+		scenario: (provenance, texts) => [
 			admittedTurn("subagent:1", provenance),
-			assistantTurn(SUBSTANTIVE_DELIVERABLE),
-			assistantTurn("ACK"),
+			assistantTurn(texts.stageOwn),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_DELIVERABLE,
 	},
 	{
 		id: "A3 [REAL, C, ACK+toolCall, toolResult, ACK2]",
-		scenario: (provenance) => [
-			assistantTurn(SUBSTANTIVE_DELIVERABLE),
+		scenario: (provenance, texts) => [
+			assistantTurn(texts.stageOwn),
 			admittedTurn("subagent:1", provenance),
-			assistantTextAndToolCallTurn("ACK"),
+			assistantTextAndToolCallTurn(texts.postAdmission),
 			toolResultTurn(),
-			assistantTurn("ACK2"),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_DELIVERABLE,
 	},
 	{
 		id: "A4 [REAL, C1, ACK1, C2, ACK2]",
-		scenario: (provenance) => [
-			assistantTurn(SUBSTANTIVE_DELIVERABLE),
+		scenario: (provenance, texts) => [
+			assistantTurn(texts.stageOwn),
 			admittedTurn("subagent:1", provenance),
-			assistantTurn("ACK1"),
+			assistantTurn(texts.postAdmission),
 			admittedTurn("subagent:2", provenance),
-			assistantTurn("ACK2"),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_DELIVERABLE,
 	},
 	{
 		id: "B1 [INTRO, C, REAL]",
-		scenario: (provenance) => [
-			assistantTurn("INTRO"),
+		scenario: (provenance, texts) => [
+			assistantTurn(texts.stageOwn),
 			admittedTurn("subagent:1", provenance),
-			assistantTurn(SUBSTANTIVE_DELIVERABLE),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_DELIVERABLE,
 	},
 	{
 		id: "B2 [INTRO, toolResult, C, REAL]",
-		scenario: (provenance) => [
-			assistantTurn("INTRO", "toolUse"),
+		scenario: (provenance, texts) => [
+			assistantTurn(texts.stageOwn, "toolUse"),
 			toolResultTurn(),
 			admittedTurn("subagent:1", provenance),
-			assistantTurn(SUBSTANTIVE_DELIVERABLE),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_DELIVERABLE,
 	},
 	{
 		id: "B3 [INTRO, C1, mid, C2, REAL]",
-		scenario: (provenance) => [
-			assistantTurn("INTRO"),
+		scenario: (provenance, texts) => [
+			assistantTurn(texts.stageOwn),
 			admittedTurn("subagent:1", provenance),
-			assistantTurn("mid"),
+			assistantTurn(texts.postAdmission),
 			admittedTurn("subagent:2", provenance),
-			assistantTurn(SUBSTANTIVE_DELIVERABLE),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_DELIVERABLE,
 	},
 	{
 		id: "B4 [INTRO, C, ACK, REAL]",
-		scenario: (provenance) => [
-			assistantTurn("INTRO"),
+		scenario: (provenance, texts) => [
+			assistantTurn(texts.stageOwn),
 			admittedTurn("subagent:1", provenance),
-			assistantTurn("ACK"),
-			assistantTurn(SUBSTANTIVE_DELIVERABLE),
+			assistantTurn(texts.postAdmission),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_DELIVERABLE,
 	},
 	{
 		id: "B5 [C, REAL]",
-		scenario: (provenance) => [admittedTurn("subagent:1", provenance), assistantTurn(SUBSTANTIVE_DELIVERABLE)],
-		expected: SUBSTANTIVE_DELIVERABLE,
+		scenario: (provenance, texts) => [admittedTurn("subagent:1", provenance), assistantTurn(texts.stageOwn)],
 	},
 	{
 		id: "B6 [INTRO, C1, REPORT, C2, ACK]",
-		scenario: (provenance) => [
-			assistantTurn("INTRO"),
+		scenario: (provenance, texts) => [
+			assistantTurn(texts.stageOwn),
 			admittedTurn("subagent:1", provenance),
-			assistantTurn(SUBSTANTIVE_REPORT),
+			assistantTurn(texts.postAdmission),
 			admittedTurn("subagent:2", provenance),
-			assistantTurn("ACK"),
+			assistantTurn(texts.postAdmission),
 		],
-		expected: SUBSTANTIVE_REPORT,
 	},
 ];
+
+const reviewerRegressionCases = [
+	{ id: "reviewer 518 B vs 430 B", before: exactSizedText("REAL", 518), after: exactSizedText("ACK", 430) },
+	{ id: "reviewer 64 B vs 168 B", before: exactSizedText("REAL", 64), after: exactSizedText("ACK", 168) },
+	{ id: "reviewer 18 B vs 155 B", before: exactSizedText("REAL", 18), after: exactSizedText("ACK", 155) },
+	{
+		id: "reviewer exact parity [REAL, C, ACK]",
+		before: exactSizedText("REAL", 64),
+		after: exactSizedText("ACK", 64),
+	},
+	{
+		id: "reviewer exact parity [ACK, C, REAL]",
+		before: exactSizedText("ACK", 64),
+		after: exactSizedText("REAL", 64),
+	},
+] as const;
 
 async function assertNominationScenario(scenario: readonly SessionMessage[], expected: string): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-nomination-"));
@@ -512,9 +537,26 @@ describe("createStageContext — prompt metadata propagation", () => {
 	});
 
 	for (const row of nominationMatrix) {
+		for (const relationship of candidateSizeRelationships) {
+			for (const provenance of ["active-stage", "assistant-settled"] as const) {
+				test(`${row.id} with ${relationship.id} and ${provenance} provenance`, async () => {
+					const texts = {
+						stageOwn: exactSizedText("OWN", relationship.stageOwnBytes),
+						postAdmission: exactSizedText("POST", relationship.postAdmissionBytes),
+					};
+					await assertNominationScenario(row.scenario(provenance, texts), texts.stageOwn);
+				});
+			}
+		}
+	}
+
+	for (const row of reviewerRegressionCases) {
 		for (const provenance of ["active-stage", "assistant-settled"] as const) {
-			test(`${row.id} nominates substantive output with ${provenance} provenance`, async () => {
-				await assertNominationScenario(row.scenario(provenance), row.expected);
+			test(`${row.id} always nominates bytes before ${provenance} admission`, async () => {
+				await assertNominationScenario(
+					[assistantTurn(row.before), admittedTurn("subagent:reviewer", provenance), assistantTurn(row.after)],
+					row.before,
+				);
 			});
 		}
 	}
@@ -526,31 +568,31 @@ describe("createStageContext — prompt metadata propagation", () => {
 		);
 	});
 
-	test("Z2 pre-upgrade admission without provenance keeps origin/main's last-assistant behavior", async () => {
+	test("Z2 admission without provenance still uses the absolute admission boundary", async () => {
 		await assertNominationScenario(
 			[
 				assistantTurn(SUBSTANTIVE_DELIVERABLE),
 				admittedTurn("subagent:legacy"),
 				assistantTurn("legacy acknowledgement"),
 			],
-			"legacy acknowledgement",
+			SUBSTANTIVE_DELIVERABLE,
 		);
 	});
-	test("a candidate exactly 3:2 larger overrides the active-stage latest-assistant default", async () => {
+	test("candidate size never overrides the pre-admission stage-own turn", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "active-stage"), assistantTurn("1234")],
 			"123456",
 		);
 	});
 
-	test("near-equal candidates keep the active-stage latest-assistant default", async () => {
+	test("near-equal candidates always nominate the pre-admission stage-own turn", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "active-stage"), assistantTurn("12345")],
-			"12345",
+			"123456",
 		);
 	});
 
-	test("near-equal candidates keep the assistant-settled pre-admission default", async () => {
+	test("near-equal candidates ignore assistant-settled provenance", async () => {
 		await assertNominationScenario(
 			[assistantTurn("123456"), admittedTurn("subagent:1", "assistant-settled"), assistantTurn("12345")],
 			"123456",
@@ -568,14 +610,14 @@ describe("createStageContext — prompt metadata propagation", () => {
 		);
 	});
 
-	test("nominates a substantive deliverable after an assistant-settled admission", async () => {
+	test("persists the pre-admission introduction instead of a post-admission deliverable", async () => {
 		await assertNominationScenario(
 			[
 				assistantTurn("INTRO"),
 				admittedTurn("subagent:job-1", "assistant-settled"),
 				assistantTurn("REAL DELIVERABLE WITH SUBSTANTIVE DETAIL"),
 			],
-			"REAL DELIVERABLE WITH SUBSTANTIVE DETAIL",
+			"INTRO",
 		);
 	});
 

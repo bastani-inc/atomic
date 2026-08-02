@@ -1,14 +1,15 @@
 /**
  * Stand-in OpenAI Responses endpoint for stage-output-transcript terminal evidence.
  *
- * The trailing variant answers a settled-stage admission with ACK-<nonce> after
- * the first assistant turn. The mid-prompt variant answers an active-stage
- * admission with ACK plus a real bash tool call; the agent executes that call and
- * makes a third request for REAL-DELIVERABLE-<nonce>. The deliverable-after-admission
- * variant returns INTRO, then the admitted custom turn, then REAL-DELIVERABLE.
+ * The trailing variant answers an admission with ACK-<nonce> after the stage-own
+ * deliverable. The mid-prompt variant answers an admission with ACK plus a real
+ * bash tool call, then makes a third request for post-admission content. The
+ * deliverable-after-admission variant returns INTRO, admits the custom turn, then
+ * returns REAL-DELIVERABLE. A size control can make ACK larger than the initial
+ * deliverable without changing the nomination contract.
  *
  * Usage: bun stage-output-transcript-model-server.ts <state-dir> <nonce>
- *   [trailing|mid-prompt|deliverable-after-admission]
+ *   [trailing|mid-prompt|deliverable-after-admission] [default|acknowledgement-larger]
  * Writes <state-dir>/model-port when ready and <state-dir>/request-count as calls arrive.
  */
 
@@ -98,16 +99,18 @@ function main(): void {
 	const stateDir = process.argv[2];
 	const nonce = process.argv[3];
 	const ordering = process.argv[4] ?? "trailing";
+	const size = process.argv[5] ?? "default";
 	if (
 		stateDir === undefined ||
 		stateDir.trim() === "" ||
 		nonce === undefined ||
 		nonce.trim() === "" ||
-		(ordering !== "trailing" && ordering !== "mid-prompt" && ordering !== "deliverable-after-admission")
+		(ordering !== "trailing" && ordering !== "mid-prompt" && ordering !== "deliverable-after-admission") ||
+		(size !== "default" && size !== "acknowledgement-larger")
 	) {
 		console.error(
 			"stage-output-transcript model server: pass <state-dir> <nonce> " +
-				"[trailing|mid-prompt|deliverable-after-admission]",
+				"[trailing|mid-prompt|deliverable-after-admission] [default|acknowledgement-larger]",
 		);
 		process.exit(1);
 	}
@@ -118,7 +121,10 @@ function main(): void {
 		`REAL-DELIVERABLE-${nonce}\n\n` +
 		"Substantive stage report with complete findings, supporting evidence, limitations, conclusions, and concrete next steps.";
 	const introduction = `INTRO-${nonce}`;
-	const acknowledgement = `ACK-${nonce}`;
+	const acknowledgement =
+		size === "acknowledgement-larger"
+			? `ACK-${nonce}\n\n${"Larger admission-triggered acknowledgement content. ".repeat(12)}`
+			: `ACK-${nonce}`;
 	const server = createServer((request, response) => {
 		request.resume();
 		requestCount += 1;
