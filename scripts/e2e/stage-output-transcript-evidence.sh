@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+#
+# Terminal evidence for workflow stage-output nomination and durable transcripts.
+#
+# Usage: bash scripts/e2e/stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir>
+#
+# The caller creates a real tmux session; this script drives the REAL interactive
+# Atomic CLI in that pane and saves the final pane plus filesystem evidence under
+# <artifact-dir>. It never substitutes the workflow executor or the output helper.
+#
+# Scenario:
+#
+#   /workflow stage-output-transcript-e2e
+#       one stage declares output: "stage-output.md" and outputMode: "file-only"
+#   the stand-in Responses endpoint streams REAL-DELIVERABLE-<nonce> but holds
+#       its response open
+#   an extension loaded by the real stage session sends customType
+#       "subagent-notify" with triggerTurn:true and stageAdmissionKey while the
+#       first response is still open
+#   the endpoint answers the admitted trailing turn with ACK-<nonce>
+#
+# The four filesystem assertions are the load-bearing evidence:
+#
+#   1. stage-output.md contains REAL-DELIVERABLE-<nonce>
+#   2. stage-output.md does not contain ACK-<nonce>
+#   3. the rendered transcript exists under the configured durable run root,
+#      outside both the repository and $TMPDIR
+#   4. rg ACK-<nonce> transcript matches, proving the admitted turn remained
+#      visible in the transcript even though it was de-nominated from the file
+#      output.
+#
+# ATOMIC_WORKFLOW_ARTIFACT_DIR is deliberately pointed at a per-run scratch
+# directory in the user's home (not the real ~/.atomic and not $TMPDIR). This
+# keeps the evidence isolated while exercising the durable-root path semantics.
+# The scratch durable root is intentionally left in place for post-run inspection;
+# remove it after collecting evidence if desired.
+
+set -euo pipefail
+
+SESSION="${1:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir>}"
+ARTIFACTS="${2:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir>}"
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+FIXTURES="$REPO_ROOT/test/integration/fixtures"
+WORKFLOW_FIXTURE="stage-output-transcript-workflow.ts"
+MODEL_FIXTURE="stage-output-transcript-model-server.ts"
+NOTIFY_FIXTURE="stage-output-transcript-notify-extension.ts"
+WORKFLOW_NAME="stage-output-transcript-e2e"
+OUTPUT_NAME="stage-output.md"
+
+BUN="${ATOMIC_BUN_EXECUTABLE:-bun}"
+if ! command -v "$BUN" >/dev/null 2>&1; then
+	echo "stage-output-transcript evidence: bun was not found on PATH; set ATOMIC_BUN_EXECUTABLE" >&2
+	exit 1
+fi
+
+mkdir -p "$ARTIFACTS"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/stage-output-transcript-evidence-XXXXXX")"
+PROJECT="$WORKDIR/project"
+STATE="$WORKDIR/state"
+AGENT="$WORKDIR/agent"
+# Keep this outside both the repository and macOS/Linux's purgeable temp tree.
+DURABLE_ROOT="${HOME}/.atomic-stage-output-transcript-e2e-${$}"
+NONCE="tmux-$(date +%s)-$$"
+mkdir -p "$PROJECT/.atomic/workflows" "$STATE" "$AGENT/extensions" "$DURABLE_ROOT"
+cp "$FIXTURES/$WORKFLOW_FIXTURE" "$PROJECT/.atomic/workflows/"
+cp "$FIXTURES/$NOTIFY_FIXTURE" "$AGENT/extensions/"
+
+step=0
+MODEL_PID=""
+
+capture() { tmux capture-pane -p -t "$SESSION"; }
+
+save() {
+	step=$((step + 1))
+	capture >"$ARTIFACTS/$(printf '%02d' "$step")-$1.txt"
+}
+
+on_exit() {
+	local status=$?
+	if [[ -n "$MODEL_PID" ]]; then
+		kill "$MODEL_PID" 2>/dev/null || true
+		wait "$MODEL_PID" 2>/dev/null || true
+	fi
+	if ((status != 0)); then
+		capture >"$ARTIFACTS/failure-pane.txt" 2>/dev/null || true
+		echo "stage-output-transcript evidence: failed; artifacts in $ARTIFACTS" >&2
+	fi
+}
+trap on_exit EXIT
+
+await_text() {
+	local needle="$1" label="$2" timeout="${3:-120}"
+	local deadline=$((SECONDS + timeout))
+	while ((SECONDS < deadline)); do
+		if capture | grep -qF -- "$needle"; then return 0; fi
+		sleep 1
+	done
+	echo "stage-output-transcript evidence: timed out after ${timeout}s waiting for ${label}" >&2
+	return 1
+}
+
+await_file() {
+	local path="$1" label="$2" timeout="${3:-120}"
+	local deadline=$((SECONDS + timeout))
+	while ((SECONDS < deadline)); do
+		if [[ -s "$path" ]]; then return 0; fi
+		sleep 1
+	done
+	echo "stage-output-transcript evidence: timed out after ${timeout}s waiting for ${label}: $path" >&2
+	return 1
+}
+
+# Poll the model-server state file without guessing a request timing.
+await_request_count() {
+	local expected="$1" timeout="${2:-120}"
+	local deadline=$((SECONDS + timeout))
+	while ((SECONDS < deadline)); do
+		if [[ -s "$STATE/request-count" ]] && (( $(<"$STATE/request-count") >= expected )); then return 0; fi
+		sleep 1
+	done
+	echo "stage-output-transcript evidence: model server did not receive ${expected} requests" >&2
+	return 1
+}
+
+type_command() {
+	tmux send-keys -t "$SESSION" -l "$1"
+	sleep 0.5
+	tmux send-keys -t "$SESSION" Enter
+	sleep 0.5
+	if capture | grep -qF -- "❯ $1"; then
+		tmux send-keys -t "$SESSION" Enter
+		sleep 0.5
+	fi
+}
+
+# 1. Start the stand-in model endpoint. Its first response streams the stage's
+#    deliverable and stays open; its second response is the ACK turn.
+"$BUN" "$FIXTURES/$MODEL_FIXTURE" "$STATE" "$NONCE" >"$ARTIFACTS/model-server.log" 2>&1 &
+MODEL_PID=$!
+for _ in $(seq 1 120); do
+	if [[ -s "$STATE/model-port" ]]; then break; fi
+	sleep 0.5
+done
+if [[ ! -s "$STATE/model-port" ]]; then
+	echo "stage-output-transcript evidence: model server never published a port" >&2
+	exit 1
+fi
+MODEL_PORT="$(<"$STATE/model-port")"
+
+cat >"$AGENT/models.json" <<JSON
+{
+  "providers": {
+    "stage-output-transcript": {
+      "baseUrl": "http://127.0.0.1:$MODEL_PORT/v1",
+      "apiKey": "stage-output-transcript-test-key",
+      "api": "openai-responses",
+      "models": [
+        {
+          "id": "stage-output-transcript-model",
+          "name": "stage-output-transcript-model",
+          "reasoning": false,
+          "input": ["text"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 16000,
+          "maxTokens": 1024
+        }
+      ]
+    }
+  }
+}
+JSON
+cat >"$AGENT/settings.json" <<'JSON'
+{
+  "defaultProvider": "stage-output-transcript",
+  "defaultModel": "stage-output-transcript-model",
+  "lastChangelogVersion": "0.0.0",
+  "firstRunOnboardingStartedVersion": "0.0.0",
+  "onboardedVersion": "0.0.0"
+}
+JSON
+
+# 2. Start the real source CLI in the real tmux pane. ATOMIC_WORKFLOW_ARTIFACT_DIR
+#    is the isolated durable scratch root described in the header, while the
+#    project itself remains a disposable $TMPDIR scratch checkout.
+tmux send-keys -t "$SESSION" -l \
+	"cd '$PROJECT' && NODE_ENV=production ATOMIC_CODING_AGENT_DIR='$AGENT' ATOMIC_WORKFLOW_ARTIFACT_DIR='$DURABLE_ROOT' STAGE_OUTPUT_TRANSCRIPT_NONCE='$NONCE' STAGE_OUTPUT_TRANSCRIPT_STATE='$STATE/notify-state' STAGE_OUTPUT_TRANSCRIPT_RECEIPT_STATE='$STATE/receipt.txt' ATOMIC_SKIP_VERSION_CHECK=1 '$BUN' '$REPO_ROOT/packages/coding-agent/src/cli.ts' --approve --offline --no-session"
+tmux send-keys -t "$SESSION" Enter
+await_text "stage-output-transcript-model •" "the CLI to finish starting" 240
+save "cli-started"
+
+# 3. Dispatch the named workflow and recover its full run id from the rendered
+#    connect hint, just as the existing terminal evidence scripts do.
+type_command "/workflow $WORKFLOW_NAME"
+await_text "started in background" "the workflow to be dispatched" 120
+RUN_ID="$(capture | grep -oE '/workflow connect [0-9a-f-]+' | tail -1 | awk '{print $3}')"
+if [[ -z "$RUN_ID" ]]; then
+	echo "stage-output-transcript evidence: the CLI rendered no dispatched run id" >&2
+	exit 1
+fi
+save "run-dispatched"
+
+# 4. Wait for both the admitted custom-message delivery and the second model
+#    request. The output file is only written after the stage closes, so this
+#    ordering proves the notification was admitted before finalization.
+await_file "$STATE/notify-state" "the extension to dispatch the async notification" 120
+if [[ "$(<"$STATE/notify-state")" != "notify-admitted" ]]; then
+	echo "stage-output-transcript evidence: notification state was $(<"$STATE/notify-state"), not notify-admitted" >&2
+	exit 1
+fi
+await_request_count 2 180
+await_file "$PROJECT/$OUTPUT_NAME" "the stage artifact" 180
+await_text "Workflow \"$WORKFLOW_NAME\" completed" "the workflow to complete" 120
+save "workflow-completed"
+
+# 5. Clear old screens, ask the real workflow command surface for the run
+#    detail, then invoke the evidence-only command registered by the fixture
+#    extension. That command renders the exact receipt returned by ctx.prompt;
+#    the ordinary run-detail panel intentionally truncates long result values.
+await_file "$STATE/receipt.txt" "the workflow's exact file-only receipt" 120
+tmux clear-history -t "$SESSION"
+type_command "/workflow status $RUN_ID"
+await_text "RUN" "the workflow run detail" 120
+tmux clear-history -t "$SESSION"
+PANE="$ARTIFACTS/pane-final.txt"
+capture >"$PANE"
+cp "$STATE/receipt.txt" "$ARTIFACTS/receipt.txt"
+if ! grep -qF -- "Output saved to:" "$ARTIFACTS/receipt.txt" || ! grep -qF -- "Transcript saved to:" "$ARTIFACTS/receipt.txt"; then
+	echo "stage-output-transcript evidence: exact receipt omitted one of the two paths" >&2
+	exit 1
+fi
+type_command "/stage-output-receipt"
+await_text "Transcript saved to:" "the file-only receipt" 120
+save "receipt-screen"
+
+PANE="$ARTIFACTS/pane-final.txt"
+capture >"$PANE"
+OUTPUT_FILE="$PROJECT/$OUTPUT_NAME"
+if [[ ! -f "$OUTPUT_FILE" ]]; then
+	echo "stage-output-transcript evidence: output artifact is missing: $OUTPUT_FILE" >&2
+	exit 1
+fi
+cp "$OUTPUT_FILE" "$ARTIFACTS/output-artifact.txt"
+DELIVERABLE="REAL-DELIVERABLE-$NONCE"
+ACK="ACK-$NONCE"
+if ! grep -qF -- "$DELIVERABLE" "$OUTPUT_FILE"; then
+	echo "stage-output-transcript evidence: output does not contain $DELIVERABLE" >&2
+	exit 1
+fi
+if grep -qF -- "$ACK" "$OUTPUT_FILE"; then
+	echo "stage-output-transcript evidence: output was clobbered by $ACK" >&2
+	exit 1
+fi
+printf 'output_contains_deliverable=true\noutput_contains_ack=false\noutput_path=%s\n' "$OUTPUT_FILE" >"$ARTIFACTS/assertion-output.txt"
+
+# Extract the durable transcript path from the verbatim receipt captured by the
+# evidence command. The pane capture remains the terminal proof, but its narrow
+# renderer may wrap a long absolute path across two display rows.
+TRANSCRIPT_PATH="$(grep -oE 'Transcript saved to: [^ ]+' "$ARTIFACTS/receipt.txt" | sed 's/^Transcript saved to: //')"
+if [[ -z "$TRANSCRIPT_PATH" || ! -f "$TRANSCRIPT_PATH" ]]; then
+	echo "stage-output-transcript evidence: receipt did not name an existing transcript" >&2
+	exit 1
+fi
+case "$TRANSCRIPT_PATH" in
+	"$DURABLE_ROOT"/*) ;;
+	*) echo "stage-output-transcript evidence: transcript escaped durable root: $TRANSCRIPT_PATH" >&2; exit 1 ;;
+esac
+case "$TRANSCRIPT_PATH" in
+	"$REPO_ROOT"/*) echo "stage-output-transcript evidence: transcript is inside repo: $TRANSCRIPT_PATH" >&2; exit 1 ;;
+esac
+case "$TRANSCRIPT_PATH" in
+	"${TMPDIR:-/tmp}"/*) echo "stage-output-transcript evidence: transcript is under TMPDIR: $TRANSCRIPT_PATH" >&2; exit 1 ;;
+esac
+cp "$TRANSCRIPT_PATH" "$ARTIFACTS/transcript.txt"
+if ! rg -nF -- "$ACK" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-ack-hit.txt"; then
+	echo "stage-output-transcript evidence: transcript does not contain $ACK" >&2
+	exit 1
+fi
+printf 'transcript_exists=true\ntranscript_path=%s\nunder_durable_root=true\noutside_repo=true\noutside_tmpdir=true\nack_match=true\n' "$TRANSCRIPT_PATH" >"$ARTIFACTS/assertion-transcript.txt"
+
+# Preserve the receipt screen verbatim and print the path metadata needed by the
+# caller. The screen is the authoritative terminal capture; no receipt is rebuilt.
+printf 'run_id=%s\nnonce=%s\ndurable_root=%s\noutput_path=%s\ntranscript_path=%s\n' \
+	"$RUN_ID" "$NONCE" "$DURABLE_ROOT" "$OUTPUT_FILE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/metadata.txt"
+echo "stage-output-transcript evidence: scenario complete; artifacts in $ARTIFACTS"
