@@ -32,7 +32,6 @@ import { wrapIdentifierLines } from "./run-identity-rows.js";
 import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
-export const MIN_TITLE_BUDGET = 12;
 const STAGE_LABEL_BUDGET = 24;
 
 export interface RenderStatusListOpts {

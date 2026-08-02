@@ -98,6 +98,7 @@ export class StageChatView implements Component, Focusable {
 	private promptEditorSubmitFromEnter!: StageChatViewContext["promptEditorSubmitFromEnter"];
 	private promptScrollOffset!: StageChatViewContext["promptScrollOffset"];
 	private promptMaxScroll!: StageChatViewContext["promptMaxScroll"];
+	private promptVisibleRows!: StageChatViewContext["promptVisibleRows"];
 	private localPaused!: StageChatViewContext["localPaused"];
 	private mouseScrollCaptureEnabled!: StageChatViewContext["mouseScrollCaptureEnabled"];
 	private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
@@ -233,6 +234,7 @@ export class StageChatView implements Component, Focusable {
 		void this.promptEditorSubmitFromEnter;
 		void this.promptScrollOffset;
 		void this.promptMaxScroll;
+		void this.promptVisibleRows;
 		void this.mouseScrollCaptureEnabled;
 		void this.seenNoticeIds;
 		void this._unsubscribeStore;

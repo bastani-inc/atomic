@@ -5,6 +5,8 @@ import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import {
 	createStore,
 	deriveGraphTheme,
+	FakePromptEditor,
+	makeFakeKeybindings,
 	makeHandle,
 	makePendingPrompt,
 	StageChatView,
@@ -15,7 +17,19 @@ import {
 const RUN_ID = "339e05a4-2289-408e-9076-d1a348f582ae";
 const WORKFLOW_NAME = "budgeted-prompt";
 const TERMINAL_COLUMNS = [30, 40, 60, 80, 100, 120] as const;
+const REACHABILITY_COLUMNS = [40, 72, 100] as const;
+const ORIGIN_MAIN_PROMPT_SURFACE_VIEWPORT_FLOOR = 3;
+const QUESTION_MARKERS = Array.from(
+	{ length: 12 },
+	(_, index) => `QUESTION-MARKER-${String(index + 1).padStart(2, "0")}`,
+);
+const LONG_QUESTION = QUESTION_MARKERS.map((marker) => `${marker} review detail`).join("\n");
 const PROMPTS: ReadonlyArray<{ label: string; prompt: PendingPrompt; hintText: string }> = [
+	{
+		label: "input",
+		prompt: makePendingPrompt({ kind: "input", message: "Enter a release label" }),
+		hintText: "Submit",
+	},
 	{
 		label: "confirm",
 		prompt: makePendingPrompt({ kind: "confirm", message: "Continue the workflow?" }),
@@ -29,6 +43,11 @@ const PROMPTS: ReadonlyArray<{ label: string; prompt: PendingPrompt; hintText: s
 			choices: ["stable", "beta", "nightly", "canary", "manual"],
 		}),
 		hintText: "Choos",
+	},
+	{
+		label: "editor",
+		prompt: makePendingPrompt({ kind: "editor", message: "Explain the release decision", initial: "draft" }),
+		hintText: "Submit",
 	},
 	{
 		label: "custom",
@@ -58,30 +77,95 @@ function assertRoundedBoxesClosed(lines: readonly string[], context: string): vo
 	assert.equal(openBoxes.length, 0, `${context} leaves a prompt box unclosed\n${lines.join("\n")}`);
 }
 
-test("attached-stage prompts keep complete boxes and answer hints across viewport sizes", () => {
-	for (const { label, prompt, hintText } of PROMPTS) {
+function makePromptView(
+	prompt: PendingPrompt,
+	terminalColumns: number,
+	viewportRows: number,
+	usePrimitiveEditor: boolean,
+): StageChatView {
+	const store = createStore();
+	setupRun(store, RUN_ID, "stage-a");
+	assert.equal(store.recordStagePendingPrompt(RUN_ID, "stage-a", prompt), true);
+	const { handle } = makeHandle();
+	return new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: RUN_ID,
+		stageId: "stage-a",
+		workflowName: WORKFLOW_NAME,
+		handle,
+		onDetach: () => {},
+		onClose: () => {},
+		piTui: {
+			requestRender: () => {},
+			terminal: { rows: viewportRows, columns: terminalColumns },
+		} as never,
+		piTheme: {},
+		...(usePrimitiveEditor
+			? { piKeybindings: makeFakeKeybindings(), piEditorFactory: () => new FakePromptEditor() }
+			: {}),
+		getViewportRows: () => viewportRows,
+	});
+}
+
+test("makes every long prompt question row reachable without blank windows", () => {
+	for (const kind of ["input", "confirm", "select", "editor", "custom"] as const) {
+		for (const terminalColumns of REACHABILITY_COLUMNS) {
+			for (let viewportRows = 8; viewportRows <= 40; viewportRows += 1) {
+				const prompt = makePendingPrompt({
+					kind,
+					message: LONG_QUESTION,
+					choices: kind === "select" ? ["stable", "beta", "nightly"] : undefined,
+					initial: kind === "editor" ? "draft" : undefined,
+				});
+				const view = makePromptView(prompt, terminalColumns, viewportRows, kind === "input" || kind === "editor");
+				const seen = new Set<string>();
+				let previousRender: string | undefined;
+				const context = `${kind} columns=${terminalColumns} viewportRows=${viewportRows}`;
+
+				for (let scroll = 0; scroll <= QUESTION_MARKERS.length + 4; scroll += 1) {
+					const plain = view.render(Math.max(40, terminalColumns)).map(stripAnsi);
+					const rendered = plain.join("\n");
+					assertRoundedBoxesClosed(plain, `${context} scroll=${scroll}`);
+					const visibleMarkers = QUESTION_MARKERS.filter((marker) => rendered.includes(marker));
+					assert.ok(visibleMarkers.length > 0, `${context} scroll=${scroll} renders a blank question window`);
+					for (const marker of visibleMarkers) seen.add(marker);
+					if (rendered === previousRender) break;
+					previousRender = rendered;
+					assert.equal(view.handleInput("\x1b[<65;1;1M"), true);
+				}
+
+				view.dispose();
+				assert.deepEqual([...seen].sort(), QUESTION_MARKERS, `${context} leaves question rows unreachable`);
+			}
+		}
+	}
+});
+
+test("matches origin/main's prompt surface floor across kinds, widths, and viewport heights", () => {
+	for (const { label, prompt } of PROMPTS) {
 		for (const terminalColumns of TERMINAL_COLUMNS) {
 			for (let viewportRows = 1; viewportRows <= 40; viewportRows += 1) {
-				const store = createStore();
-				setupRun(store, RUN_ID, "stage-a");
-				assert.equal(store.recordStagePendingPrompt(RUN_ID, "stage-a", prompt), true);
-				const { handle } = makeHandle();
-				const view = new StageChatView({
-					store,
-					graphTheme: deriveGraphTheme({}),
-					runId: RUN_ID,
-					stageId: "stage-a",
-					workflowName: WORKFLOW_NAME,
-					handle,
-					onDetach: () => {},
-					onClose: () => {},
-					piTui: {
-						requestRender: () => {},
-						terminal: { rows: viewportRows, columns: terminalColumns },
-					} as never,
-					piTheme: {},
-					getViewportRows: () => viewportRows,
-				});
+				const view = makePromptView(prompt, terminalColumns, viewportRows, false);
+				const rendered = view.render(Math.max(40, terminalColumns)).map(stripAnsi).join("\n");
+				view.dispose();
+				if (viewportRows >= ORIGIN_MAIN_PROMPT_SURFACE_VIEWPORT_FLOOR) {
+					assert.match(
+						rendered,
+						/AWAITING INPUT/,
+						`${label} columns=${terminalColumns} viewportRows=${viewportRows} drops the prompt surface`,
+					);
+				}
+			}
+		}
+	}
+});
+
+test("attached-stage prompts keep complete boxes and answer hints across viewport sizes", () => {
+	for (const { label, prompt, hintText } of PROMPTS.filter(({ label }) => !["input", "editor"].includes(label))) {
+		for (const terminalColumns of TERMINAL_COLUMNS) {
+			for (let viewportRows = 1; viewportRows <= 40; viewportRows += 1) {
+				const view = makePromptView(prompt, terminalColumns, viewportRows, false);
 				const renderWidth = Math.max(40, terminalColumns);
 				const rendered = view.render(renderWidth);
 				view.dispose();

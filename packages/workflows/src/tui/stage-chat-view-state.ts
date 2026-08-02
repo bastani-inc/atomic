@@ -66,6 +66,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.promptEditorSubmitFromEnter = false;
 	ctx.promptScrollOffset = 0;
 	ctx.promptMaxScroll = 0;
+	ctx.promptVisibleRows = 0;
 	ctx.localPaused = false;
 	ctx.mouseScrollCaptureEnabled = true;
 	ctx.lastObservedStageStatus = undefined;
@@ -374,6 +375,7 @@ export function syncPromptState(ctx: StageChatViewContext, prompt: PendingPrompt
 function resetPromptScroll(ctx: StageChatViewContext): void {
 	ctx.promptScrollOffset = 0;
 	ctx.promptMaxScroll = 0;
+	ctx.promptVisibleRows = 0;
 }
 
 function promptSeedText(ctx: StageChatViewContext, prompt: PendingPrompt): string {

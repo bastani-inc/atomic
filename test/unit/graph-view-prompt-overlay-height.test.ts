@@ -130,23 +130,35 @@ describe("GraphView prompt overlay height budget", () => {
 		}
 	});
 
-	test("does not emit a partial prompt below the minimum complete height", () => {
+	test("renders a reduced complete prompt below the full-control height", () => {
 		const rows13 = renderPromptOverlay(13).map(stripAnsi).join("\n");
 		const rows14 = renderPromptOverlay(14).map(stripAnsi).join("\n");
 
-		assert.doesNotMatch(rows13, /AWAITING INPUT/);
+		assert.match(rows13, /AWAITING INPUT/);
+		assert.match(rows13, /Continue\?/);
+		assert.match(rows13, /enter Submit · ctrl\+c Skip/);
 		assert.match(rows14, /AWAITING INPUT/);
 		assert.match(rows14, /enter Submit · ctrl\+c Skip/);
 	});
 
 	test("omits supplementary attribution before sacrificing the complete prompt UI", () => {
-		const rows21 = renderPromptOverlay(21).map(stripAnsi).join("\n");
-		const rows22 = renderPromptOverlay(22).map(stripAnsi).join("\n");
+		const rows21 = renderPromptOverlay(18).map(stripAnsi).join("\n");
+		const rows22 = renderPromptOverlay(19).map(stripAnsi).join("\n");
 
 		assert.doesNotMatch(rows21, new RegExp(RUN_ID));
 		assert.match(rows21, /Continue\?/);
 		assert.match(rows21, /enter Submit · ctrl\+c Skip/);
 		assert.match(rows21, /╰─+╯/);
 		assert.match(rows22, new RegExp(RUN_ID));
+		const selectPrompt = makePendingPrompt({
+			kind: "select",
+			message: "OVERLAY-SELECT-QUESTION",
+			choices: ["stable", "beta", "nightly"],
+		});
+		for (const viewportRows of [21, 22]) {
+			const overlay = renderPromptOverlay(viewportRows, selectPrompt).map(stripAnsi).join("\n");
+			assert.match(overlay, /OVERLAY-SELECT-QUESTION/, `viewportRows=${viewportRows}`);
+			assert.match(overlay, new RegExp(RUN_ID), `viewportRows=${viewportRows}`);
+		}
 	});
 });

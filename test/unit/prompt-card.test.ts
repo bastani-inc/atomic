@@ -305,6 +305,35 @@ describe("renderPromptCard", () => {
 		assert.ok(plain.join("\n").includes(question), "the existing prompt UI still renders the question below");
 	});
 
+	test("keeps select questions visible as budgets grow and attribution appears", () => {
+		const questionMarkers = Array.from({ length: 4 }, (_, index) => `MONOTONIC-QUESTION-${index + 1}`);
+		const state = createPromptCardState(
+			makePrompt({ kind: "select", message: questionMarkers.join("\n"), choices: ["stable", "beta", "nightly"] }),
+		);
+		let previousVisibleMarkers = new Set<string>();
+		for (let maxRows = 8; maxRows <= 24; maxRows += 1) {
+			const rendered = renderPromptCard({
+				state,
+				theme,
+				width: 72,
+				cursorOn: false,
+				identity: { runId: "339e05a4-2289-408e-9076-d1a348f582ae", name: "build-check" },
+				maxRows,
+			})
+				.map(stripAnsi)
+				.join("\n");
+			const visibleMarkers = new Set(questionMarkers.filter((marker) => rendered.includes(marker)));
+			const bannerIsVisible = rendered.includes("339e05a4-2289-408e-9076-d1a348f582ae");
+			if (bannerIsVisible) {
+				assert.ok(visibleMarkers.size > 0, `maxRows=${maxRows} lets attribution starve the question`);
+			}
+			for (const marker of previousVisibleMarkers) {
+				assert.ok(visibleMarkers.has(marker), `increasing maxRows to ${maxRows} removes ${marker}`);
+			}
+			previousVisibleMarkers = visibleMarkers;
+		}
+	});
+
 	test("wraps the attribution id without breaking borders at narrow widths", () => {
 		const runId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
 		const state = createPromptCardState(makePrompt({ message: "UNIQUE-PROMPT" }));

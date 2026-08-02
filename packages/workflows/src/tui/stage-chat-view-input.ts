@@ -160,8 +160,8 @@ function handlePromptInput(ctx: StageChatViewContext, data: string): void {
 function handlePromptScrollInput(ctx: StageChatViewContext, data: string, includeKeyboard = true): boolean {
 	const mouse = parseTerminalMouseInput(data);
 	const wheelDirection = mouse ? terminalMouseWheelDirection(mouse) : null;
-	const wheelDeltaRows =
-		wheelDirection === "up" ? -PROMPT_SCROLL_STEP_ROWS : wheelDirection === "down" ? PROMPT_SCROLL_STEP_ROWS : 0;
+	const wheelStep = promptScrollStep(ctx, PROMPT_SCROLL_STEP_ROWS);
+	const wheelDeltaRows = wheelDirection === "up" ? -wheelStep : wheelDirection === "down" ? wheelStep : 0;
 	if (wheelDeltaRows !== 0) {
 		scrollPromptBy(ctx, wheelDeltaRows);
 		return true;
@@ -169,11 +169,11 @@ function handlePromptScrollInput(ctx: StageChatViewContext, data: string, includ
 	if (mouse) return true;
 	if (!includeKeyboard) return false;
 	if (matchesKey(data, "pageUp")) {
-		scrollPromptBy(ctx, -promptPageSize(ctx));
+		scrollPromptBy(ctx, -promptScrollStep(ctx, promptPageSize(ctx)));
 		return true;
 	}
 	if (matchesKey(data, "pageDown")) {
-		scrollPromptBy(ctx, promptPageSize(ctx));
+		scrollPromptBy(ctx, promptScrollStep(ctx, promptPageSize(ctx)));
 		return true;
 	}
 	if (!ctx.promptEditor && matchesKey(data, "home")) {
@@ -187,6 +187,10 @@ function handlePromptScrollInput(ctx: StageChatViewContext, data: string, includ
 		return true;
 	}
 	return false;
+}
+
+function promptScrollStep(ctx: StageChatViewContext, requestedRows: number): number {
+	return Math.max(1, Math.min(requestedRows, Math.max(1, ctx.promptVisibleRows)));
 }
 
 function scrollPromptBy(ctx: StageChatViewContext, deltaRows: number): void {

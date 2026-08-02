@@ -149,6 +149,7 @@ export interface StageChatViewContext {
 	promptEditorSubmitFromEnter: boolean;
 	promptScrollOffset: number;
 	promptMaxScroll: number;
+	promptVisibleRows: number;
 	localPaused: boolean;
 	mouseScrollCaptureEnabled: boolean;
 	lastObservedStageStatus: StageStatus | undefined;

@@ -2,8 +2,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
-import { renderPromptCard } from "./prompt-card.js";
-import { renderPromptIdentityBanner } from "./prompt-card-render.js";
+import { type PromptCardLayout, renderPromptCardLayout, renderPromptIdentityBanner } from "./prompt-card-render.js";
 import { bannerLines, embedOrchestratorReturnHintInWidget } from "./stage-chat-view-footer-status.js";
 import {
 	blankLine,
@@ -206,37 +205,46 @@ export function renderBlockedBody(
 }
 
 export function renderPromptBody(ctx: StageChatViewContext, width: number, budget: number): string[] {
-	const primitiveLines = renderPrimitivePromptBody(ctx, width, budget);
-	if (primitiveLines) {
-		return fitPromptBodyLines(ctx, embedOrchestratorReturnHintInWidget(ctx, primitiveLines, width), width, budget);
+	const primitiveLayout = renderPrimitivePromptBody(ctx, width, budget);
+	if (primitiveLayout) {
+		return fitPromptBodyLines(
+			ctx,
+			embedPromptReturnHint(ctx, primitiveLayout.lines, width),
+			width,
+			budget,
+			Math.max(0, primitiveLayout.totalQuestionRows - primitiveLayout.visibleQuestionRows),
+			true,
+			primitiveLayout.visibleQuestionRows,
+		);
 	}
 
 	const state = ctx.promptState;
 	if (!state) return fitPromptBodyLines(ctx, [], width, budget);
-	const cardOpts = {
+	const layout = renderPromptCardLayout({
 		state,
 		theme: ctx.theme,
 		width,
 		cursorOn: ctx.focused,
 		identity: { runId: ctx.runId, name: ctx.workflowName },
-	};
-	const scrollRows = renderPromptCard(cardOpts).length;
-	const lines = renderPromptCard({
-		...cardOpts,
 		maxRows: budget,
 		messageOffset: ctx.promptScrollOffset,
 	});
 	return fitPromptBodyLines(
 		ctx,
-		embedOrchestratorReturnHintInWidget(ctx, lines, width),
+		embedPromptReturnHint(ctx, layout.lines, width),
 		width,
 		budget,
-		lines.length === 0 ? 0 : scrollRows,
+		Math.max(0, layout.totalQuestionRows - layout.visibleQuestionRows),
 		true,
+		layout.visibleQuestionRows,
 	);
 }
 
-function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, budget: number): string[] | null {
+function embedPromptReturnHint(ctx: StageChatViewContext, lines: readonly string[], width: number): string[] {
+	return lines.length < 3 ? [...lines] : embedOrchestratorReturnHintInWidget(ctx, lines, width);
+}
+
+function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, budget: number): PromptCardLayout | null {
 	const state = ctx.promptState;
 	const editor = ctx.promptEditor;
 	if (!state || !editor) return null;
@@ -244,54 +252,134 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, bud
 	setEditorBorderColor(editor, (text) => hexToAnsi(ctx.theme.accent) + text + RESET);
 
 	const innerWidth = Math.max(2, width - 2);
-	const messageBox = new Box(2, 1);
-	messageBox.addChild(new Text(paint(state.prompt.message, ctx.theme.text), 0, 0));
-	const messageLines = messageBox.render(innerWidth);
-	const compactMessageLines = new Text(paint(state.prompt.message, ctx.theme.text), 2, 0).render(innerWidth);
+	const messageLines = new Text(paint(state.prompt.message, ctx.theme.text), 2, 0).render(innerWidth);
 	const responseLines = new Text(paint("response", ctx.theme.textMuted, { bold: true }), 2, 0).render(innerWidth);
 	const editorLines = editor.render(Math.max(20, innerWidth - 4)).map((line) => `  ${line}`);
 	const hintLines = new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth);
-	const fullBodyLines = [...messageLines, ...responseLines, ...editorLines, "", ...hintLines];
 	const identity = { runId: ctx.runId, name: ctx.workflowName };
-	const bannerLines = renderPromptIdentityBanner(identity, ctx.theme, width);
-	const fullPromptLines = renderPrimitivePromptBlock(ctx, width, "AWAITING INPUT", fullBodyLines);
-
-	const renderCompactPrompt = (maxRows: number, title: string, requireMessage: boolean): string[] => {
-		const bodyBudget = Math.max(0, maxRows - 2);
-		const minimumMessageRows = requireMessage ? Math.min(1, compactMessageLines.length) : 0;
-		const requiredRows = minimumMessageRows + editorLines.length + hintLines.length;
-		if (bodyBudget < requiredRows) return [];
-
-		let remaining = bodyBudget - requiredRows;
-		let messageCount = minimumMessageRows;
-		if (messageCount === 0 && remaining > 0 && compactMessageLines.length > 0) {
-			messageCount = 1;
-			remaining -= 1;
-		}
-		const includeResponse = remaining >= responseLines.length;
-		if (includeResponse) remaining -= responseLines.length;
-		const extraMessageRows = Math.min(remaining, compactMessageLines.length - messageCount);
-		messageCount += extraMessageRows;
-		remaining -= extraMessageRows;
-		const includeBlank = remaining > 0;
-		return renderPrimitivePromptBlock(ctx, width, title, [
-			...compactMessageLines.slice(0, messageCount),
-			...(includeResponse ? responseLines : []),
-			...editorLines,
-			...(includeBlank ? [""] : []),
-			...hintLines,
-		]);
-	};
-
-	if (bannerLines.length + fullPromptLines.length <= budget) {
-		return [...bannerLines, ...renderPrimitivePromptBlock(ctx, width, "", fullBodyLines)];
+	const banner = renderPromptIdentityBanner(identity, ctx.theme, width);
+	const unattributed = renderPrimitivePromptBlockLayout(
+		ctx,
+		width,
+		budget,
+		"AWAITING INPUT",
+		messageLines,
+		responseLines,
+		editorLines,
+		hintLines,
+	);
+	const promptBudget = Math.max(0, budget - banner.length);
+	const attributed = renderPrimitivePromptBlockLayout(
+		ctx,
+		width,
+		promptBudget,
+		"",
+		messageLines,
+		responseLines,
+		editorLines,
+		hintLines,
+	);
+	const minimumPromptRows = 2 + editorLines.length + hintLines.length + (messageLines.length > 0 ? 1 : 0);
+	if (
+		banner.length + minimumPromptRows > budget ||
+		attributed.visibleQuestionRows === 0 ||
+		attributed.visibleQuestionRows < unattributed.visibleQuestionRows
+	) {
+		return unattributed;
 	}
-	const compactAttributedPrompt = renderCompactPrompt(budget - bannerLines.length, "", true);
-	if (compactAttributedPrompt.length > 0) return [...bannerLines, ...compactAttributedPrompt];
-	if (fullPromptLines.length <= budget) return fullPromptLines;
-	return renderCompactPrompt(budget, "AWAITING INPUT", false);
+	return {
+		lines: [...banner, ...attributed.lines],
+		totalQuestionRows: attributed.totalQuestionRows,
+		visibleQuestionRows: attributed.visibleQuestionRows,
+	};
 }
 
+function renderPrimitivePromptBlockLayout(
+	ctx: StageChatViewContext,
+	width: number,
+	maxRows: number,
+	title: string,
+	messageLines: readonly string[],
+	responseLines: readonly string[],
+	editorLines: readonly string[],
+	hintLines: readonly string[],
+): PromptCardLayout {
+	const totalQuestionRows = messageLines.length;
+	if (maxRows === 0) return { lines: [], totalQuestionRows, visibleQuestionRows: 0 };
+	const fixedRows = 2 + editorLines.length + hintLines.length;
+	if (maxRows < fixedRows + (totalQuestionRows > 0 ? 1 : 0)) {
+		return renderReducedPrimitivePrompt(ctx, width, maxRows, messageLines, title);
+	}
+
+	let remaining = maxRows - fixedRows;
+	let messageCount = totalQuestionRows > 0 ? 1 : 0;
+	remaining -= messageCount;
+	const includeResponse = remaining >= responseLines.length;
+	if (includeResponse) remaining -= responseLines.length;
+	const extraMessageRows = Math.min(remaining, Math.max(0, totalQuestionRows - messageCount));
+	messageCount += extraMessageRows;
+	remaining -= extraMessageRows;
+	const includeBlank = remaining > 0;
+	const safeOffset = Math.min(ctx.promptScrollOffset, Math.max(0, totalQuestionRows - messageCount));
+	const bodyLines = [
+		...messageLines.slice(safeOffset, safeOffset + messageCount),
+		...(includeResponse ? responseLines : []),
+		...editorLines,
+		...(includeBlank ? [""] : []),
+		...hintLines,
+	];
+	return {
+		lines: renderPrimitivePromptBlock(ctx, width, title, bodyLines),
+		totalQuestionRows,
+		visibleQuestionRows: messageCount,
+	};
+}
+
+function renderReducedPrimitivePrompt(
+	ctx: StageChatViewContext,
+	width: number,
+	maxRows: number,
+	messageLines: readonly string[],
+	title: string,
+): PromptCardLayout {
+	const totalQuestionRows = messageLines.length;
+	const compactTitle = "AWAITING INPUT";
+	if (maxRows === 1) {
+		return {
+			lines: [paint(`${compactTitle} · enter Submit`, ctx.theme.textMuted, { bold: true })],
+			totalQuestionRows,
+			visibleQuestionRows: 0,
+		};
+	}
+	if (maxRows === 2) {
+		const closed = renderPrimitivePromptBlock(ctx, width, compactTitle, []);
+		return {
+			lines: [closed[0]!, closed.at(-1)!],
+			totalQuestionRows,
+			visibleQuestionRows: 0,
+		};
+	}
+
+	const availableBodyRows = maxRows - 2;
+	const supportingRows = availableBodyRows >= 3 ? 2 : Math.max(0, availableBodyRows - 1);
+	const messageCount = Math.min(totalQuestionRows, Math.max(1, availableBodyRows - supportingRows));
+	const safeOffset = Math.min(ctx.promptScrollOffset, Math.max(0, totalQuestionRows - messageCount));
+	const responseLine = paint(
+		availableBodyRows >= 3 ? "  response" : "  response · enter Submit",
+		ctx.theme.textMuted,
+		{ bold: true },
+	);
+	const hintLine = renderHintsForPrompt(ctx.promptState?.prompt.kind ?? "input", ctx.theme);
+	return {
+		lines: renderPrimitivePromptBlock(ctx, width, maxRows < 5 ? compactTitle : title || "AWAITING INPUT", [
+			...messageLines.slice(safeOffset, safeOffset + messageCount),
+			...(availableBodyRows >= 2 ? [responseLine] : []),
+			...(availableBodyRows >= 3 ? [hintLine] : []),
+		]),
+		totalQuestionRows,
+		visibleQuestionRows: messageCount,
+	};
+}
 function renderPrimitivePromptBlock(
 	ctx: StageChatViewContext,
 	width: number,
@@ -312,10 +400,12 @@ export function fitPromptBodyLines(
 	lines: readonly string[],
 	width: number,
 	budget: number,
-	scrollRows = lines.length,
+	maxScroll = Math.max(0, lines.length - budget),
 	scrollApplied = false,
+	visibleRows = Math.min(lines.length, budget),
 ): string[] {
-	ctx.promptMaxScroll = Math.max(0, scrollRows - budget);
+	ctx.promptMaxScroll = Math.max(0, maxScroll);
+	ctx.promptVisibleRows = Math.max(0, visibleRows);
 	ctx.promptScrollOffset = Math.max(0, Math.min(ctx.promptScrollOffset, ctx.promptMaxScroll));
 	const start = scrollApplied ? 0 : ctx.promptScrollOffset;
 	const framed = lines.slice(start, start + budget);

@@ -22,10 +22,16 @@ export interface PromptCardRenderOpts {
 	readonly cursorOn: boolean;
 	/** Optional run attribution; absent preserves the legacy prompt card. */
 	readonly identity?: PromptCardIdentity;
-	/** Maximum complete rows to emit. Below the six-row minimum, emits nothing. */
+	/** Maximum rows to emit. Small budgets use a reduced, closed prompt surface. */
 	readonly maxRows?: number;
 	/** Wrapped question-row offset used by scrollable attached prompt surfaces. */
 	readonly messageOffset?: number;
+}
+
+export interface PromptCardLayout {
+	readonly lines: string[];
+	readonly totalQuestionRows: number;
+	readonly visibleQuestionRows: number;
 }
 
 export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: GraphTheme, width: number): string[] {
@@ -51,8 +57,8 @@ export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: 
 	];
 }
 
-const MIN_COMPLETE_PROMPT_ROWS = 6;
-const LEGACY_PROMPT_ROWS = 10;
+const STANDARD_PROMPT_FIXED_ROWS = 5;
+const NORMAL_SPACING_ROWS = 3;
 
 /**
  * Render the prompt surface as an optional attribution banner followed by
@@ -60,27 +66,32 @@ const LEGACY_PROMPT_ROWS = 10;
  * question, response field, and hints remain in their existing box.
  */
 export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
+	return renderPromptCardLayout(opts).lines;
+}
+
+/** Render a card and report its scrollable question window in question-row units. */
+export function renderPromptCardLayout(opts: PromptCardRenderOpts): PromptCardLayout {
 	const { state, theme, width } = opts;
 	const innerWidth = Math.max(20, width - 2);
 	const borderColor = theme.border;
 	const bg = "";
 	const maxRows = opts.maxRows === undefined ? undefined : Math.max(0, Math.floor(opts.maxRows));
 	const messageOffset = Math.max(0, Math.floor(opts.messageOffset ?? 0));
-	if (maxRows !== undefined && maxRows < MIN_COMPLETE_PROMPT_ROWS) return [];
-	if (opts.identity === undefined) {
-		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows, messageOffset);
-	}
+	const unattributed = renderPromptBodyBlock(
+		state,
+		theme,
+		innerWidth,
+		opts.cursorOn,
+		borderColor,
+		bg,
+		maxRows,
+		messageOffset,
+	);
+	if (opts.identity === undefined) return unattributed;
 
 	const banner = renderPromptIdentityBanner(opts.identity, theme, width);
-
-	// Attribution is supplementary. Keep it only when the remaining budget can
-	// still hold the normally spaced prompt; otherwise devote every row to the
-	// complete interactive surface.
-	if (maxRows !== undefined && maxRows < banner.length + LEGACY_PROMPT_ROWS) {
-		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows, messageOffset);
-	}
-	const promptBudget = maxRows === undefined ? undefined : maxRows - banner.length;
-	const promptLines = renderPromptBodyBlock(
+	const promptBudget = maxRows === undefined ? undefined : Math.max(0, maxRows - banner.length);
+	const attributedPrompt = renderPromptBodyBlock(
 		state,
 		theme,
 		innerWidth,
@@ -90,10 +101,24 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 		promptBudget,
 		messageOffset,
 	);
-	return [
-		...banner,
-		...promptLines.map((line, index) => (index === 0 ? makeBorderTop(borderColor, "", theme, innerWidth, bg) : line)),
-	];
+	const minimumQuestionRows = attributedPrompt.totalQuestionRows > 0 ? 1 : 0;
+	const bannerFits =
+		maxRows === undefined ||
+		(banner.length + minimumCompletePromptRows(state) <= maxRows &&
+			attributedPrompt.visibleQuestionRows >= minimumQuestionRows &&
+			attributedPrompt.visibleQuestionRows >= unattributed.visibleQuestionRows);
+	if (!bannerFits) return unattributed;
+
+	return {
+		lines: [
+			...banner,
+			...attributedPrompt.lines.map((line, index) =>
+				index === 0 ? makeBorderTop(borderColor, "", theme, innerWidth, bg) : line,
+			),
+		],
+		totalQuestionRows: attributedPrompt.totalQuestionRows,
+		visibleQuestionRows: attributedPrompt.visibleQuestionRows,
+	};
 }
 
 function renderPromptBodyBlock(
@@ -105,48 +130,136 @@ function renderPromptBodyBlock(
 	bg: string,
 	maxRows: number | undefined,
 	messageOffset: number,
-): string[] {
-	if (maxRows !== undefined && maxRows < MIN_COMPLETE_PROMPT_ROWS) return [];
+): PromptCardLayout {
 	const messageRows = wrapText(state.prompt.message, innerWidth - 4);
+	const totalQuestionRows = messageRows.length;
+	if (maxRows !== undefined && maxRows === 0) {
+		return { lines: [], totalQuestionRows, visibleQuestionRows: 0 };
+	}
+	if (maxRows !== undefined && maxRows < minimumCompletePromptRows(state)) {
+		return renderReducedPromptBlock(state, theme, innerWidth, borderColor, bg, maxRows, messageRows, messageOffset);
+	}
+
 	const desiredResponseRows = responseRowCount(state);
 	const minimumResponseRows = minimumResponseRowCount(state);
-	const normallySpaced = maxRows === undefined || maxRows >= LEGACY_PROMPT_ROWS;
-	let messageCount = messageRows.length;
+	const normallySpaced =
+		maxRows === undefined ||
+		maxRows >= STANDARD_PROMPT_FIXED_ROWS + NORMAL_SPACING_ROWS + desiredResponseRows + totalQuestionRows;
+	let messageCount = totalQuestionRows;
 	let responseCount = desiredResponseRows;
 	if (maxRows !== undefined) {
-		// Five non-variable rows keep both boxes closed: outer top/bottom +
-		// response top/bottom + hints. Normally spaced cards add three blanks.
-		const fixedRows = 5 + (normallySpaced ? 3 : 0);
-		const variableBudget = Math.max(1, maxRows - fixedRows);
-		// A scrolling select needs one choice plus SelectList's scroll-info row.
-		// If both cannot fit, emit no card rather than a box with missing content.
-		if (variableBudget < minimumResponseRows) return [];
-		messageCount = variableBudget >= minimumResponseRows + 1 ? 1 : 0;
+		const fixedRows = STANDARD_PROMPT_FIXED_ROWS + (normallySpaced ? NORMAL_SPACING_ROWS : 0);
+		const variableBudget = maxRows - fixedRows;
+		messageCount = totalQuestionRows > 0 ? 1 : 0;
 		responseCount = minimumResponseRows;
 		let remaining = variableBudget - messageCount - responseCount;
 		const responseExtra = Math.min(remaining, Math.max(0, desiredResponseRows - responseCount));
 		responseCount += responseExtra;
 		remaining -= responseExtra;
-		messageCount += Math.min(remaining, Math.max(0, messageRows.length - messageCount));
+		messageCount += Math.min(remaining, Math.max(0, totalQuestionRows - messageCount));
 	}
 
+	const safeMessageOffset = Math.min(messageOffset, Math.max(0, totalQuestionRows - messageCount));
 	const lines: string[] = [];
 	lines.push(makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg));
 	if (normallySpaced) lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
-	for (const messageLine of messageRows.slice(messageOffset, messageOffset + messageCount)) {
+	for (const messageLine of messageRows.slice(safeMessageOffset, safeMessageOffset + messageCount)) {
 		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${paint(messageLine, theme.text)}`));
 	}
 	if (normallySpaced) lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
 
 	const fieldLines = renderResponseFieldBox(state, theme, innerWidth - 4, cursorOn, responseCount);
-	for (const fl of fieldLines) {
-		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${fl}`));
+	for (const fieldLine of fieldLines) {
+		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${fieldLine}`));
 	}
 
 	if (normallySpaced) lines.push(makePaddedRow(bg, borderColor, innerWidth, ""));
 	lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${renderHints(state.prompt.kind, theme)}`));
 	lines.push(makeBorderBottom(borderColor, innerWidth, bg));
-	return lines;
+	return { lines, totalQuestionRows, visibleQuestionRows: messageCount };
+}
+
+function minimumCompletePromptRows(state: PromptCardState): number {
+	return STANDARD_PROMPT_FIXED_ROWS + minimumResponseRowCount(state) + 1;
+}
+
+function renderReducedPromptBlock(
+	state: PromptCardState,
+	theme: GraphTheme,
+	innerWidth: number,
+	borderColor: string,
+	bg: string,
+	maxRows: number,
+	messageRows: readonly string[],
+	messageOffset: number,
+): PromptCardLayout {
+	const totalQuestionRows = messageRows.length;
+	const compactHint = compactSurfaceHint(state.prompt.kind);
+	if (maxRows === 1) {
+		return {
+			lines: [paint(`AWAITING INPUT · ${compactHint}`, theme.textMuted, { bold: true })],
+			totalQuestionRows,
+			visibleQuestionRows: 0,
+		};
+	}
+	if (maxRows === 2) {
+		return {
+			lines: [
+				makeBorderTop(borderColor, ` AWAITING INPUT · ${compactHint} `, theme, innerWidth, bg),
+				makeBorderBottom(borderColor, innerWidth, bg),
+			],
+			totalQuestionRows,
+			visibleQuestionRows: 0,
+		};
+	}
+
+	const availableBodyRows = maxRows - 2;
+	const supportingRows = availableBodyRows >= 3 ? 2 : Math.max(0, availableBodyRows - 1);
+	const messageCount = Math.min(totalQuestionRows, Math.max(1, availableBodyRows - supportingRows));
+	const safeMessageOffset = Math.min(messageOffset, Math.max(0, totalQuestionRows - messageCount));
+	const title = maxRows < 5 ? ` AWAITING INPUT · ${compactHint} ` : " AWAITING INPUT ";
+	const lines = [makeBorderTop(borderColor, title, theme, innerWidth, bg)];
+	for (const messageLine of messageRows.slice(safeMessageOffset, safeMessageOffset + messageCount)) {
+		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${paint(messageLine, theme.text)}`));
+	}
+	if (availableBodyRows >= 2) {
+		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${renderReducedResponse(state, theme)}`));
+	}
+	if (availableBodyRows >= 3) {
+		lines.push(makePaddedRow(bg, borderColor, innerWidth, `  ${renderHints(state.prompt.kind, theme)}`));
+	}
+	lines.push(makeBorderBottom(borderColor, innerWidth, bg));
+	return { lines, totalQuestionRows, visibleQuestionRows: messageCount };
+}
+
+function compactSurfaceHint(kind: PendingPrompt["kind"]): string {
+	switch (kind) {
+		case "confirm":
+			return "y Yes";
+		case "select":
+			return "↑↓ Choose";
+		case "custom":
+			return "enter";
+		default:
+			return "enter Submit";
+	}
+}
+
+function renderReducedResponse(state: PromptCardState, theme: GraphTheme): string {
+	switch (state.prompt.kind) {
+		case "confirm":
+			return paint("response  yes / no", theme.textMuted, { bold: true });
+		case "select":
+			return paint(`response  ${state.prompt.choices?.[state.selectedIndex] ?? "(no choices)"}`, theme.textMuted, {
+				bold: true,
+			});
+		case "input":
+			return paint(`response  ❯ ${state.rawText}`, theme.textMuted, { bold: true });
+		case "editor":
+			return paint("response  editor", theme.textMuted, { bold: true });
+		case "custom":
+			return paint("response", theme.textMuted, { bold: true });
+	}
 }
 
 function makeBorderTop(color: string, label: string, theme: GraphTheme, innerWidth: number, bg: string): string {
