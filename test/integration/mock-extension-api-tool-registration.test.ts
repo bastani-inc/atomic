@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { beforeEach, describe, test } from "vitest";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
+import { testRunId } from "../helpers/run-id.js";
 import type { WorkflowToolArgs } from "./mock-extension-api-helpers.js";
 import {
 	EXPECTED_WORKFLOW_DESCRIPTION_TOKENS,
@@ -264,35 +265,38 @@ describe("MockExtensionAPI — tool registration", () => {
 
 	test("tool execute rejects unknown actions", async () => {
 		const execute = mock.tools[0]!.opts.execute;
+		const unknownRunId = testRunId("run-123");
 		await assert.rejects(
-			() => runTool(execute, { runId: "run-123", action: "archive" } as unknown as WorkflowToolArgs),
+			() => runTool(execute, { runId: unknownRunId, action: "archive" } as unknown as WorkflowToolArgs),
 			/unknown action "archive"/,
 		);
 	});
 
 	test("tool execute returns interrupt result for canonical action='interrupt'", async () => {
 		const execute = mock.tools[0]!.opts.execute;
-		const result = await runTool(execute, { runId: "run-123", action: "interrupt" });
+		const unknownRunId = testRunId("run-123");
+		const result = await runTool(execute, { runId: unknownRunId, action: "interrupt" });
 		assert.equal(result.action, "interrupt");
 		const r = result as { action: "interrupt"; runId: string; status: string; message: string };
-		assert.equal(r.runId, "run-123");
+		assert.equal(r.runId, unknownRunId);
 		assert.equal(r.status, "noop");
 		assert.ok(r.message.includes("Run not found"));
 	});
 
 	test("tool execute returns quit result for canonical action='quit'", async () => {
 		const execute = mock.tools[0]!.opts.execute;
-		const result = await runTool(execute, { runId: "run-123", action: "quit" });
+		const unknownRunId = testRunId("run-123");
+		const result = await runTool(execute, { runId: unknownRunId, action: "quit" });
 		assert.equal(result.action, "quit");
 		const r = result as { action: "quit"; runId: string; status: string; message: string };
-		assert.equal(r.runId, "run-123");
+		assert.equal(r.runId, unknownRunId);
 		assert.equal(r.status, "noop");
 		assert.ok(r.message.includes("Run not found"));
 	});
 
 	test("tool execute returns resume stub for action='resume'", async () => {
 		const execute = mock.tools[0]!.opts.execute;
-		const result = await runTool(execute, { runId: "run-456", inputs: {}, action: "resume" });
+		const result = await runTool(execute, { runId: testRunId("run-456"), inputs: {}, action: "resume" });
 		assert.equal(result.action, "resume");
 	});
 

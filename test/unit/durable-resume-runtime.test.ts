@@ -26,6 +26,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { testRunId } from "../helpers/run-id.js";
 
 function makeEntry(workflowId: string, name: string, status: ResumableWorkflowEntry["status"]): ResumableWorkflowEntry {
 	return {
@@ -41,30 +42,43 @@ function makeEntry(workflowId: string, name: string, status: ResumableWorkflowEn
 
 describe("resolveDurableEntry", () => {
 	const catalog: readonly ResumableWorkflowEntry[] = [
-		makeEntry("wf-aaa-001", "alpha", "running"),
-		makeEntry("wf-bbb-002", "beta", "paused"),
+		makeEntry(testRunId("wf-aaa-001"), "alpha", "running"),
+		makeEntry(testRunId("wf-bbb-002"), "beta", "paused"),
 	];
 
-	test("exact id match", async () => {
-		const r = resolveDurableEntry("wf-aaa-001", catalog);
+	test("exact full id match", async () => {
+		const fullId = testRunId("wf-aaa-001");
+		const r = resolveDurableEntry(fullId, catalog);
 		assert.ok(r && !("kind" in r));
-		assert.equal(r!.workflowId, "wf-aaa-001");
+		assert.equal(r!.workflowId, fullId);
 	});
 
-	test("unique prefix match", async () => {
-		const r = resolveDurableEntry("wf-aaa", catalog);
-		assert.ok(r && !("kind" in r));
-		assert.equal(r!.workflowId, "wf-aaa-001");
+	test("rejects a unique prefix and accepts the full id", async () => {
+		const fullId = testRunId("wf-aaa-001");
+		const malformed = resolveDurableEntry(fullId.slice(0, 8), catalog);
+		assert.ok(malformed && "kind" in malformed && malformed.kind === "malformed");
+		assert.match(malformed.message, /full 36-character UUID/);
+		const exact = resolveDurableEntry(fullId, catalog);
+		assert.ok(exact && !("kind" in exact));
+		assert.equal(exact.workflowId, fullId);
 	});
 
-	test("ambiguous prefix", async () => {
-		const r = resolveDurableEntry("wf-", catalog);
-		assert.ok(r && "kind" in r && r.kind === "ambiguous");
-		assert.equal(r.matches.length, 2);
+	test("rejects a shared prefix while full ids remain independently addressable", async () => {
+		const firstId = testRunId("ambiguous-first");
+		const secondId = `${firstId.slice(0, 8)}-${testRunId("ambiguous-second").slice(9)}`;
+		const sharedCatalog = [makeEntry(firstId, "alpha", "running"), makeEntry(secondId, "beta", "paused")];
+		const malformed = resolveDurableEntry(firstId.slice(0, 8), sharedCatalog);
+		assert.ok(malformed && "kind" in malformed && malformed.kind === "malformed");
+		const first = resolveDurableEntry(firstId, sharedCatalog);
+		const second = resolveDurableEntry(secondId, sharedCatalog);
+		assert.ok(first && !("kind" in first));
+		assert.ok(second && !("kind" in second));
+		assert.equal(first.workflowId, firstId);
+		assert.equal(second.workflowId, secondId);
 	});
 
 	test("no match returns undefined", async () => {
-		assert.equal(resolveDurableEntry("wf-zzz", catalog), undefined);
+		assert.equal(resolveDurableEntry(testRunId("wf-zzz"), catalog), undefined);
 	});
 });
 
@@ -117,20 +131,22 @@ describe("resumeDurableWorkflow", () => {
 	}
 
 	test("returns not_registered when id is unknown", async () => {
-		const result = await resumeDurableWorkflow("wf-does-not-exist", deps());
+		const unknownId = testRunId("wf-does-not-exist");
+		const result = await resumeDurableWorkflow(unknownId, deps());
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "not_registered");
 	});
 
-	test("resolves a unique prefix before exact-id loadability checks", async () => {
+	test("rejects a unique prefix before exact-id loadability checks", async () => {
 		class ExactOnlyLoadableBackend extends InMemoryDurableBackend {
 			override isWorkflowLoadable(workflowId: string): boolean {
 				return this.getWorkflow(workflowId) !== undefined;
 			}
 		}
 		const exactBackend = new ExactOnlyLoadableBackend();
+		const fullId = testRunId("wf-prefix-current");
 		exactBackend.registerWorkflow({
-			workflowId: "wf-prefix-current",
+			workflowId: fullId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
 			createdAt: 1,
@@ -138,15 +154,16 @@ describe("resumeDurableWorkflow", () => {
 			completedCheckpoints: 1,
 		});
 
-		const result = await resumeDurableWorkflow("wf-prefix", { ...deps(), durableBackend: exactBackend });
+		const result = await resumeDurableWorkflow(fullId.slice(0, 8), { ...deps(), durableBackend: exactBackend });
 
-		assert.equal(result.ok, true);
-		if (result.ok) assert.equal(result.workflowId, "wf-prefix-current");
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "not_registered");
+		assert.match(result.message, /full 36-character UUID/);
 	});
 
-	test("returns ambiguous with full workflow ids when prefix matches multiple", async () => {
-		const firstId = "339e05a4-2289-408e-9076-d1a348f582ae";
-		const secondId = "339e05a4-2289-408e-9076-d1a348f582af";
+	test("rejects a shared prefix while full workflow ids remain independently addressable", async () => {
+		const firstId = testRunId("ambiguous-first");
+		const secondId = `${firstId.slice(0, 8)}-${testRunId("ambiguous-second").slice(9)}`;
 		backend.registerWorkflow({
 			workflowId: firstId,
 			name: "resumable-pipeline",
@@ -163,17 +180,22 @@ describe("resumeDurableWorkflow", () => {
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		const result = await resumeDurableWorkflow("339e05a4", deps());
+		const result = await resumeDurableWorkflow(firstId.slice(0, 8), deps());
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "not_registered");
-		assert.match(result.message, /Ambiguous/);
-		assert.ok(result.message.includes(firstId));
-		assert.ok(result.message.includes(secondId));
+		assert.match(result.message, /full 36-character UUID/);
+		const first = resolveDurableEntry(firstId, backend.listResumableWorkflows());
+		const second = resolveDurableEntry(secondId, backend.listResumableWorkflows());
+		assert.ok(first && !("kind" in first));
+		assert.ok(second && !("kind" in second));
+		assert.equal(first.workflowId, firstId);
+		assert.equal(second.workflowId, secondId);
 	});
 
 	test("returns not_resumable when status is completed", async () => {
+		const workflowId = testRunId("wf-done-1");
 		backend.registerWorkflow({
-			workflowId: "wf-done-1",
+			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "a" },
 			createdAt: 1,
@@ -181,44 +203,47 @@ describe("resumeDurableWorkflow", () => {
 		});
 		// Pass an explicit catalog containing the completed entry (the backend's
 		// resumable list would filter it out) to exercise the not_resumable branch.
-		const catalog = [makeEntry("wf-done-1", "resumable-pipeline", "completed")];
-		const result = await resumeDurableWorkflow("wf-done-1", deps(), catalog);
+		const catalog = [makeEntry(workflowId, "resumable-pipeline", "completed")];
+		const result = await resumeDurableWorkflow(workflowId, deps(), catalog);
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "not_resumable");
 	});
 
 	test("rejects when authoritative backend state is ineligible despite stale catalog progress", async () => {
+		const workflowId = testRunId("wf-zero-progress");
 		backend.registerWorkflow({
-			workflowId: "wf-zero-progress",
+			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
 			createdAt: 1,
 			status: "paused",
 		});
-		const staleCatalog = [makeEntry("wf-zero-progress", "resumable-pipeline", "paused")];
+		const staleCatalog = [makeEntry(workflowId, "resumable-pipeline", "paused")];
 
-		const result = await resumeDurableWorkflow("wf-zero-progress", deps(), staleCatalog);
+		const result = await resumeDurableWorkflow(workflowId, deps(), staleCatalog);
 
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "not_resumable");
-		assert.equal(backend.getWorkflow("wf-zero-progress")?.status, "paused");
+		assert.equal(backend.getWorkflow(workflowId)?.status, "paused");
 	});
 
 	test("returns workflow_not_found when definition is missing", async () => {
+		const workflowId = testRunId("wf-ghost-1");
 		backend.registerWorkflow({
-			workflowId: "wf-ghost-1",
+			workflowId,
 			name: "missing-workflow",
 			inputs: {},
 			createdAt: 1,
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		const result = await resumeDurableWorkflow("wf-ghost-1", deps());
+		const result = await resumeDurableWorkflow(workflowId, deps());
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "workflow_not_found");
 	});
 
 	test("rediscovers an on-the-fly project workflow from its persisted invocation cwd", async () => {
+		const workflowId = testRunId("wf-reloaded-project");
 		const definition = makeDef();
 		const conflicting = workflow({
 			name: definition.name,
@@ -228,7 +253,7 @@ describe("resumeDurableWorkflow", () => {
 			run: async () => ({ wrong: true }),
 		}) as unknown as WorkflowDefinition;
 		backend.registerWorkflow({
-			workflowId: "wf-reloaded-project",
+			workflowId,
 			name: definition.name,
 			inputs: { topic: "fresh" },
 			createdAt: 1,
@@ -237,7 +262,7 @@ describe("resumeDurableWorkflow", () => {
 			invocationCwd: "/persisted/project",
 		});
 		let resolvedCwd: string | undefined;
-		const result = await resumeDurableWorkflow("wf-reloaded-project", {
+		const result = await resumeDurableWorkflow(workflowId, {
 			...deps(),
 			registry: makeRegistryWith(conflicting),
 			resolveDefinition: async (name, cwd) => {
@@ -247,40 +272,42 @@ describe("resumeDurableWorkflow", () => {
 		});
 		assert.equal(result.ok, true);
 		assert.equal(resolvedCwd, "/persisted/project");
-		await jobs.get("wf-reloaded-project")?.promise;
+		await jobs.get(workflowId)?.promise;
 	});
 
 	test("returns invalid_inputs when cached inputs fail schema validation", async () => {
+		const workflowId = testRunId("wf-bad-in-1");
 		backend.registerWorkflow({
-			workflowId: "wf-bad-in-1",
+			workflowId,
 			name: "resumable-pipeline",
 			inputs: {},
 			createdAt: 1,
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		const result = await resumeDurableWorkflow("wf-bad-in-1", deps());
+		const result = await resumeDurableWorkflow(workflowId, deps());
 		assert.equal(result.ok, false);
 		assert.equal(result.reason, "invalid_inputs");
 	});
 
 	test("successfully re-dispatches with the ORIGINAL workflow id", async () => {
+		const workflowId = testRunId("wf-resume-target");
 		backend.registerWorkflow({
-			workflowId: "wf-resume-target",
+			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
 			createdAt: 1,
 			status: "failed",
 		});
-		const result = await resumeDurableWorkflow("wf-resume-target", deps());
+		const result = await resumeDurableWorkflow(workflowId, deps());
 		assert.equal(result.ok, true);
 		if (result.ok) {
-			assert.equal(result.workflowId, "wf-resume-target");
-			assert.equal(result.runId, "wf-resume-target"); // runId == original workflowId for replay
+			assert.equal(result.workflowId, workflowId);
+			assert.equal(result.runId, workflowId); // runId == original workflowId for replay
 			assert.match(result.message, /Resuming durable workflow/);
 		}
 		// Backend status flipped back to running.
-		assert.equal(backend.getWorkflow("wf-resume-target")!.status, "running");
+		assert.equal(backend.getWorkflow(workflowId)!.status, "running");
 	});
 	test("includes the full workflow id in a successful resume message", async () => {
 		const workflowId = "d4e5f6a1-77b2-4c31-9e0a-2f1c8b4d6e5f";
@@ -298,23 +325,25 @@ describe("resumeDurableWorkflow", () => {
 	});
 
 	test("resume succeeds when the backend has durable checkpoint state for the workflow", async () => {
+		const workflowId = testRunId("wf-has-state");
 		backend.registerWorkflow({
-			workflowId: "wf-has-state",
+			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
 			createdAt: 1,
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		const result = await resumeDurableWorkflow("wf-has-state", deps());
+		const result = await resumeDurableWorkflow(workflowId, deps());
 		assert.equal(result.ok, true);
-		if (result.ok) assert.equal(result.runId, "wf-has-state");
-		assert.equal(backend.getWorkflow("wf-has-state")?.status, "running");
+		if (result.ok) assert.equal(result.runId, workflowId);
+		assert.equal(backend.getWorkflow(workflowId)?.status, "running");
 	});
 
 	test("resume refuses only when a running handle has an active live run in this session", async () => {
+		const workflowId = testRunId("wf-active");
 		backend.registerWorkflow({
-			workflowId: "wf-active",
+			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
 			createdAt: 1,
@@ -323,20 +352,20 @@ describe("resumeDurableWorkflow", () => {
 		});
 		// No live run → crash recovery: resume is allowed even though the durable
 		// handle says `running`.
-		let result = await resumeDurableWorkflow("wf-active", deps());
+		let result = await resumeDurableWorkflow(workflowId, deps());
 		assert.equal(result.ok, true);
 
 		// With an active live run in this session, resume is refused.
-		backend.setWorkflowStatus("wf-active", "running");
+		backend.setWorkflowStatus(workflowId, "running");
 		store.recordRunStart({
-			id: "wf-active",
+			id: workflowId,
 			name: "resumable-pipeline",
 			inputs: {},
 			status: "running",
 			stages: [],
 			startedAt: 1,
 		});
-		result = await resumeDurableWorkflow("wf-active", deps());
+		result = await resumeDurableWorkflow(workflowId, deps());
 		assert.equal(result.ok, false);
 		if (!result.ok) {
 			assert.equal(result.reason, "not_resumable");
@@ -345,12 +374,14 @@ describe("resumeDurableWorkflow", () => {
 			assert.match(result.message, /\/workflow quit/);
 			assert.doesNotMatch(result.message, /\/workflow kill/);
 		}
-		store.removeRun("wf-active");
+		store.removeRun(workflowId);
 	});
 
 	test("running and paused workflows are both resumable at the catalog level", async () => {
+		const runningId = testRunId("wf-running");
+		const pausedId = testRunId("wf-paused");
 		backend.registerWorkflow({
-			workflowId: "wf-running",
+			workflowId: runningId,
 			name: "resumable-pipeline",
 			inputs: {},
 			createdAt: 1,
@@ -358,7 +389,7 @@ describe("resumeDurableWorkflow", () => {
 			completedCheckpoints: 1,
 		});
 		backend.registerWorkflow({
-			workflowId: "wf-paused",
+			workflowId: pausedId,
 			name: "resumable-pipeline",
 			inputs: {},
 			createdAt: 1,
@@ -366,13 +397,14 @@ describe("resumeDurableWorkflow", () => {
 			completedCheckpoints: 1,
 		});
 		const ids = backend.listResumableWorkflows().map((e) => e.workflowId);
-		assert.ok(ids.includes("wf-running"), "running is resumable (crash recovery)");
-		assert.ok(ids.includes("wf-paused"));
+		assert.ok(ids.includes(runningId), "running is resumable (crash recovery)");
+		assert.ok(ids.includes(pausedId));
 	});
 
 	test("resume removes stale quit store shadow before reusing workflow id", async () => {
+		const workflowId = testRunId("wf-shadow");
 		backend.registerWorkflow({
-			workflowId: "wf-shadow",
+			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "data" },
 			createdAt: 1,
@@ -380,7 +412,7 @@ describe("resumeDurableWorkflow", () => {
 			completedCheckpoints: 1,
 		});
 		store.recordRunStart({
-			id: "wf-shadow",
+			id: workflowId,
 			name: "stale-shadow",
 			inputs: {},
 			status: "paused",
@@ -390,28 +422,29 @@ describe("resumeDurableWorkflow", () => {
 			resumable: true,
 		});
 
-		const result = await resumeDurableWorkflow("wf-shadow", deps());
+		const result = await resumeDurableWorkflow(workflowId, deps());
 		assert.equal(result.ok, true);
-		const matching = store.runs().filter((run) => run.id === "wf-shadow");
+		const matching = store.runs().filter((run) => run.id === workflowId);
 		assert.equal(matching.length, 1);
 		assert.equal(matching[0]?.name, "resumable-pipeline");
 	});
 
 	test("successful resume result includes runId for overlay connection (issue #1498)", async () => {
+		const workflowId = testRunId("wf-overlay-connect");
 		backend.registerWorkflow({
-			workflowId: "wf-overlay-connect",
+			workflowId,
 			name: "resumable-pipeline",
 			inputs: { topic: "overlay" },
 			createdAt: 1,
 			status: "failed",
 		});
-		const result = await resumeDurableWorkflow("wf-overlay-connect", deps());
+		const result = await resumeDurableWorkflow(workflowId, deps());
 		assert.equal(result.ok, true);
 		if (result.ok) {
 			// runId is the original workflow id so the overlay connects to the
 			// re-dispatched run.
-			assert.equal(result.runId, "wf-overlay-connect");
-			assert.equal(result.workflowId, "wf-overlay-connect");
+			assert.equal(result.runId, workflowId);
+			assert.equal(result.workflowId, workflowId);
 		}
 	});
 
@@ -422,7 +455,7 @@ describe("resumeDurableWorkflow", () => {
 			async hydrateResumableWorkflows(): Promise<void> {
 				this.hydrated = true;
 				this.registerWorkflow({
-					workflowId: "wf-hydrated",
+					workflowId: testRunId("wf-hydrated"),
 					name: "resumable-pipeline",
 					inputs: { topic: "data" },
 					createdAt: 1,
@@ -435,7 +468,8 @@ describe("resumeDurableWorkflow", () => {
 		const catalog = await prepareRuntimeDurableResumable(() => hydrating);
 		assert.equal(hydrating.hydrated, true);
 		assert.equal(catalog.length, 1);
-		const result = await resumeDurableWorkflow("wf-hydrated", { ...deps(), durableBackend: hydrating });
+		const workflowId = testRunId("wf-hydrated");
+		const result = await resumeDurableWorkflow(workflowId, { ...deps(), durableBackend: hydrating });
 		assert.equal(result.ok, true);
 	});
 });
@@ -447,7 +481,7 @@ describe("durable resume eligibility", () => {
 		// relies on ordinary durable progress from its completed calls.
 		assert.equal(
 			isDurableWorkflowResumable({
-				workflowId: "zero-progress",
+				workflowId: testRunId("zero-progress"),
 				status: "paused",
 				completedCheckpoints: 0,
 				pendingPrompts: 0,
@@ -460,7 +494,7 @@ describe("durable resume eligibility", () => {
 	test("a paused workflow with checkpoint progress is resumable unless refused", () => {
 		assert.equal(
 			isDurableWorkflowResumable({
-				workflowId: "quit-with-progress",
+				workflowId: testRunId("quit-with-progress"),
 				status: "paused",
 				completedCheckpoints: 1,
 				pendingPrompts: 0,
@@ -470,7 +504,7 @@ describe("durable resume eligibility", () => {
 		);
 		assert.equal(
 			isDurableWorkflowResumable({
-				workflowId: "refused",
+				workflowId: testRunId("refused"),
 				status: "paused",
 				completedCheckpoints: 1,
 				pendingPrompts: 0,
@@ -483,7 +517,7 @@ describe("durable resume eligibility", () => {
 	test("a nested child workflow is never a resume target", () => {
 		assert.equal(
 			isDurableWorkflowResumable({
-				workflowId: "child",
+				workflowId: testRunId("child"),
 				rootWorkflowId: "root",
 				status: "paused",
 				completedCheckpoints: 1,

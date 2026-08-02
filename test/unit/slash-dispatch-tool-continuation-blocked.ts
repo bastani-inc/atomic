@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
 import { getDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime, SessionEntry, WorkflowPersistencePort } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -61,7 +62,7 @@ describe("tool run-control actions", () => {
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
 	test("makeExecuteWorkflowTool resume starts linked continuation for active blocked recoverable workflow", async () => {
-		const sourceRunId = `resume-tool-blocked-${Date.now()}`;
+		const sourceRunId = testRunId(`resume-tool-blocked-${Date.now()}`);
 		const def = workflow({
 			name: "tool-resume-blocked-wf",
 			description: "",
@@ -197,7 +198,7 @@ describe("tool run-control actions", () => {
 		assert.equal(durableBackend.getWorkflow(sourceRunId)?.status, "blocked");
 	});
 	test("active blocked continuation atomically claims its durable source", async () => {
-		const sourceRunId = `resume-claim-${Date.now()}`;
+		const sourceRunId = testRunId(`resume-claim-${Date.now()}`);
 		const def = workflow({
 			name: "claim-blocked-wf",
 			description: "",
@@ -268,7 +269,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test("makeExecuteWorkflowTool resume finalizes restored blocked source run", async () => {
-		const sourceRunId = `resume-tool-restored-blocked-${Date.now()}`;
+		const sourceRunId = testRunId(`resume-tool-restored-blocked-${Date.now()}`);
 		const def = workflow({
 			name: "tool-resume-restored-blocked-wf",
 			description: "",

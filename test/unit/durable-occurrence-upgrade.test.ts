@@ -21,10 +21,11 @@ import { createStore, store as workflowStore } from "../../packages/workflows/sr
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
 
-const ROOT_ID = "prompt-occurrence-upgrade-root";
+const ROOT_ID = testRunId("prompt-occurrence-upgrade-root");
 const SELECT_MESSAGE = "  Preserve this prompt exactly?\nSecond line.  ";
 const SELECT_OPTIONS = [" first ", "second\nvalue", "third  "] as const;
 const SELECT_RESPONSE = SELECT_OPTIONS[1];
@@ -272,7 +273,7 @@ test.sequential("fresh DBOS replay coalesces an omitted occurrenceKey prompt wit
 });
 
 test("fresh DBOS active root rejects an occurrence bound to different replay keys before prompt replay", async () => {
-	const rootId = "prompt-occurrence-active-poison";
+	const rootId = testRunId("prompt-occurrence-active-poison");
 	const sdk = createMockSdk();
 	seedMockWorkflow(sdk, { workflowId: rootId, name: rootId, status: "PENDING", createdAt: 1 });
 	for (const [index, replayKey] of ["prompt:input:first", "prompt:input:SECOND-DIFFERENT"].entries()) {

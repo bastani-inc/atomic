@@ -262,16 +262,16 @@ export function expandedStageTarget(
 	return graph.targets.get(virtualStageIdValue);
 }
 
+/**
+ * Exact-match only. A stage id is never truncated to address a stage: at the
+ * root that id is a bare UUID, nested it is the `runId:nodeId` composite built
+ * by `virtualNodeId`, and a tool node carries `tool:<argsHash>`. Names match
+ * whole, so `build` never selects `build-check`.
+ */
 export function stageMatchesExpandedIdentifier(stage: ExpandedWorkflowStage, target: string): boolean {
 	const graphTarget = stage.workflowGraphTarget;
 	return (
-		stage.id === target ||
-		stage.name === target ||
-		stage.id.startsWith(target) ||
-		graphTarget.stageId === target ||
-		graphTarget.stageId.startsWith(target) ||
-		graphTarget.runId === target ||
-		graphTarget.runId.startsWith(target)
+		stage.id === target || stage.name === target || graphTarget.stageId === target || graphTarget.runId === target
 	);
 }
 

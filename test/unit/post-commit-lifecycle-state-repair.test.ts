@@ -19,8 +19,11 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore, store as singletonStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
 import { buildCtx, installSlashDispatchTestHooks, registerWorkflowCommand } from "./slash-dispatch-utils.js";
+
+const fixtureRunId = (seed: string): string => testRunId(seed);
 
 function handle(input: {
 	readonly runId: string;
@@ -159,7 +162,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		setDurableBackend(backend);
 		const targetStore = createStore();
 		const registry = createStageControlRegistry();
-		const runId = "quit-store-coherence";
+		const runId = fixtureRunId("quit-store-coherence");
 		let controlStatus: StageControlStatus = "running";
 		targetStore.recordRunStart({ id: runId, name: runId, inputs: {}, status: "running", stages: [], startedAt: 1 });
 		targetStore.recordStageStart(runId, {
@@ -200,13 +203,15 @@ describe("post-commit quit and nested resume coherence", () => {
 		setDurableBackend(backend);
 		const targetStore = createStore();
 		const registry = createStageControlRegistry();
-		seedNested(targetStore, backend, "root-primitive", "child-primitive", ["child-stage"]);
+		const rootId = fixtureRunId("root-primitive");
+		const childId = fixtureRunId("child-primitive");
+		seedNested(targetStore, backend, rootId, childId, ["child-stage"]);
 		let calls = 0;
 		registry.register(
 			handle({
-				runId: "child-primitive",
+				runId: childId,
 				stageId: "child-stage",
-				status: () => targetStore.runs().find((run) => run.id === "child-primitive")?.stages[0]?.status ?? "paused",
+				status: () => targetStore.runs().find((run) => run.id === childId)?.stages[0]?.status ?? "paused",
 				resume: async () => {
 					calls += 1;
 					return undefined;
@@ -214,7 +219,7 @@ describe("post-commit quit and nested resume coherence", () => {
 			}),
 		);
 
-		const result = await resumeRun("child-primitive", {
+		const result = await resumeRun(childId, {
 			store: targetStore,
 			stageControlRegistry: registry,
 			stageId: "child-stage",
@@ -222,23 +227,23 @@ describe("post-commit quit and nested resume coherence", () => {
 
 		assert.equal(result.ok, true);
 		if (!result.ok) return;
-		assert.equal(result.runId, "child-primitive");
+		assert.equal(result.runId, childId);
 		assert.deepEqual(
 			result.resumed.map((stage) => stage.id),
 			["child-stage"],
 		);
 		assert.equal(calls, 1);
-		assert.equal(targetStore.runs().find((run) => run.id === "child-primitive")?.status, "running");
-		assert.equal(targetStore.runs().find((run) => run.id === "child-primitive")?.stages[0]?.status, "running");
-		assert.equal(targetStore.runs().find((run) => run.id === "root-primitive")?.status, "running");
-		assert.equal(backend.getWorkflow("root-primitive")?.status, "running");
+		assert.equal(targetStore.runs().find((run) => run.id === childId)?.status, "running");
+		assert.equal(targetStore.runs().find((run) => run.id === childId)?.stages[0]?.status, "running");
+		assert.equal(targetStore.runs().find((run) => run.id === rootId)?.status, "running");
+		assert.equal(backend.getWorkflow(rootId)?.status, "running");
 	});
 
 	test.sequential("slash-targeted nested progress then tool root retry does not duplicate resumed descendants", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const rootId = "root-reverse-surface-retry";
-		const childId = "child-reverse-surface-retry";
+		const rootId = fixtureRunId("root-reverse-surface-retry");
+		const childId = fixtureRunId("child-reverse-surface-retry");
 		seedNested(singletonStore, backend, rootId, childId, ["first", "second"]);
 		const calls = new Map<string, number>();
 		for (const stageId of ["first", "second"]) {
@@ -290,8 +295,8 @@ describe("post-commit quit and nested resume coherence", () => {
 	test.sequential("tool-targeted nested progress then slash root retry resumes only the remaining descendant", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const rootId = "root-surface-retry";
-		const childId = "child-surface-retry";
+		const rootId = fixtureRunId("root-surface-retry");
+		const childId = fixtureRunId("child-surface-retry");
 		seedNested(singletonStore, backend, rootId, childId, ["first-child-stage", "second-child-stage"]);
 		const calls = new Map<string, number>();
 		for (const stageId of ["first-child-stage", "second-child-stage"]) {
@@ -347,7 +352,7 @@ describe("post-commit quit and nested resume coherence", () => {
 		assert.match(messages.join("\n"), /Resumed 1 stage/);
 	});
 	test.sequential("slash resume reports synthetic prompt acknowledgement as info while the root completes", async () => {
-		const runId = "resume-terminal-synthetic-slash";
+		const runId = fixtureRunId("resume-terminal-synthetic-slash");
 		const backend = await startAnsweredQuitSyntheticPrompt(runId);
 		const { workflowCmd } = await registerWorkflowCommand();
 		const infos: string[] = [];
@@ -371,7 +376,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	});
 
 	test.sequential("tool resume reports synthetic prompt acknowledgement as ok while the root completes", async () => {
-		const runId = "resume-terminal-synthetic-tool";
+		const runId = fixtureRunId("resume-terminal-synthetic-tool");
 		const backend = await startAnsweredQuitSyntheticPrompt(runId);
 
 		const result = await toolHandler()({ action: "resume", runId }, {} as never);
@@ -391,7 +396,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	test.sequential("slash resume reports terminal completion acknowledged by a paused control", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const runId = "resume-terminal-slash";
+		const runId = fixtureRunId("resume-terminal-slash");
 		const stageId = "awaiting-answer";
 		let controlStatus: StageControlStatus = "paused";
 		singletonStore.recordRunStart({
@@ -475,7 +480,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	test.sequential("tool resume reports async terminal completion as successful progress", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const runId = "resume-terminal-tool";
+		const runId = fixtureRunId("resume-terminal-tool");
 		const stageId = "awaiting-answer";
 		let controlStatus: StageControlStatus = "paused";
 		singletonStore.recordRunStart({
@@ -550,7 +555,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	test.sequential("tool resume retains noop for a pre-existing paused snapshot with no paused control", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const runId = "resume-no-paused-control";
+		const runId = fixtureRunId("resume-no-paused-control");
 		const stageId = "stale-paused-stage";
 		singletonStore.recordRunStart({
 			id: runId,
@@ -615,7 +620,7 @@ describe("post-commit quit and nested resume coherence", () => {
 	test.sequential("slash quit, held synthetic prompt answer, and resume reports one truthful acknowledgment", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const runId = "resume-synthetic-prompt-command";
+		const runId = fixtureRunId("resume-synthetic-prompt-command");
 		const definition = workflow({
 			name: "resume-synthetic-prompt-command",
 			description: "",

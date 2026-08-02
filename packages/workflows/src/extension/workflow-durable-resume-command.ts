@@ -5,6 +5,7 @@ import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import { isFullRunId, malformedRunIdMessage } from "../shared/run-id.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
@@ -39,7 +40,7 @@ export interface WorkflowResumeTarget {
 
 export type WorkflowResumeTargetResolution =
 	| WorkflowResumeTarget
-	| { readonly kind: "ambiguous"; readonly matches: readonly WorkflowResumeTarget[] }
+	| { readonly kind: "malformed"; readonly message: string }
 	| { readonly kind: "not_found" };
 
 export async function prepareWorkflowResumeCatalog(
@@ -104,8 +105,8 @@ export async function handleDurableResume(
 			// directory a second time for the same command invocation.
 			catalog.completed,
 		);
-		if (resolved.kind === "ambiguous") {
-			fail(`Ambiguous workflow prefix "${target}" matches: ${formatMatches(resolved.matches)}`);
+		if (resolved.kind === "malformed") {
+			fail(resolved.message);
 			return true;
 		}
 		if (resolved.kind === "completed") {
@@ -196,12 +197,9 @@ export function resolveWorkflowResumeTarget(
 			name: run.name,
 		});
 	}
+	if (!isFullRunId(target)) return { kind: "malformed", message: malformedRunIdMessage(target) };
 	const exact = targets.get(target);
-	if (exact !== undefined) return exact;
-	const matches = [...targets.values()].filter((candidate) => candidate.workflowId.startsWith(target));
-	if (matches.length === 0) return { kind: "not_found" };
-	if (matches.length === 1) return matches[0]!;
-	return { kind: "ambiguous", matches };
+	return exact ?? { kind: "not_found" };
 }
 
 function isExplicitResumeCandidate(run: RunSnapshot): boolean {
@@ -250,14 +248,14 @@ function openCompletedTarget(
 
 function openCompleted(
 	runtime: ExtensionRuntime,
-	workflowIdOrPrefix: string,
+	workflowId: string,
 	catalog: readonly ResumableWorkflowEntry[],
 	beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void,
 ) {
 	return (
-		runtime.openCompletedDurableWorkflow?.(workflowIdOrPrefix, catalog) ??
+		runtime.openCompletedDurableWorkflow?.(workflowId, catalog) ??
 		openCompletedDurableWorkflow(
-			workflowIdOrPrefix,
+			workflowId,
 			{
 				durableBackend: getDurableBackend(),
 				store,
@@ -266,8 +264,4 @@ function openCompleted(
 			catalog,
 		)
 	);
-}
-
-function formatMatches(entries: readonly WorkflowResumeTarget[]): string {
-	return entries.map((entry) => `${entry.name} (${entry.workflowId})`).join(", ");
 }

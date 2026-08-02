@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -59,7 +60,7 @@ describe("tool run-control actions", () => {
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
 	test("makeExecuteWorkflowTool resume starts linked continuation for failed resumable workflow", async () => {
-		const sourceRunId = `resume-tool-source-${Date.now()}`;
+		const sourceRunId = testRunId(`resume-tool-source-${Date.now()}`);
 		const def = workflow({
 			name: "tool-resume-wf",
 			description: "",

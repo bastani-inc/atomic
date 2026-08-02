@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -57,7 +58,7 @@ describe("tool run-control actions", () => {
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
 	test.sequential("makeExecuteWorkflowTool resume surfaces workflow_not_found for failed resumable run without registry definition", async () => {
-		const runId = `resume-tool-failed-${Date.now()}`;
+		const runId = testRunId(`resume-tool-failed-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-a",

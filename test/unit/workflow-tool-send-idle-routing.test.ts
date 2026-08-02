@@ -6,6 +6,7 @@ import {
 	stageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 const runIds = new Set<string>();
 
@@ -83,7 +84,7 @@ function liveHandle(input: {
 describe("workflow send — idle-aware live-stage routing", () => {
 	for (const delivery of ["auto", "followUp"] as const) {
 		test(`idle ${delivery} starts a prompt and reports the actual action`, async () => {
-			const runId = `idle-${delivery}`;
+			const runId = testRunId(`idle-${delivery}`);
 			const calls: string[] = [];
 			liveHandle({ runId, streaming: false, calls });
 
@@ -107,7 +108,7 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	}
 
 	test("explicit idle prompt preserves its established response string", async () => {
-		const runId = "explicit-idle-prompt";
+		const runId = testRunId("explicit-idle-prompt");
 		const calls: string[] = [];
 		liveHandle({ runId, streaming: false, calls });
 
@@ -125,7 +126,7 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	});
 
 	test("paused root resume preserves its established response string", async () => {
-		const runId = "ordinary-resume";
+		const runId = testRunId("ordinary-resume");
 		const calls: string[] = [];
 		liveHandle({ runId, streaming: false, calls, status: "paused", runStatus: "paused" });
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, "paused");
@@ -144,7 +145,7 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	});
 
 	test("resume against a running stage is a truthful noop", async () => {
-		const runId = "running-resume-noop";
+		const runId = testRunId("running-resume-noop");
 		const calls: string[] = [];
 		liveHandle({ runId, streaming: false, calls });
 
@@ -162,7 +163,7 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	});
 
 	test("explicit sends cannot bypass a paused stage", async () => {
-		const runId = "paused-follow-up-noop";
+		const runId = testRunId("paused-follow-up-noop");
 		const calls: string[] = [];
 		liveHandle({ runId, streaming: false, calls, status: "paused" });
 
@@ -180,7 +181,7 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	});
 
 	test("streaming followUp queues without starting a concurrent prompt", async () => {
-		const runId = "streaming-follow-up";
+		const runId = testRunId("streaming-follow-up");
 		const calls: string[] = [];
 		liveHandle({ runId, streaming: true, calls });
 
@@ -197,7 +198,7 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	});
 
 	test("streaming steer steers without starting a concurrent prompt", async () => {
-		const runId = "streaming-steer";
+		const runId = testRunId("streaming-steer");
 		const calls: string[] = [];
 		liveHandle({ runId, streaming: true, calls });
 
@@ -214,7 +215,7 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	});
 
 	test("streaming auto selects steering, matching a manually typed message", async () => {
-		const runId = "streaming-auto";
+		const runId = testRunId("streaming-auto");
 		const calls: string[] = [];
 		liveHandle({ runId, streaming: true, calls });
 
@@ -230,7 +231,7 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	});
 
 	test("sequential sends preserve submission order within each queue", async () => {
-		const runId = "streaming-order";
+		const runId = testRunId("streaming-order");
 		const calls: string[] = [];
 		liveHandle({ runId, streaming: true, calls });
 
@@ -255,8 +256,8 @@ describe("workflow send — idle-aware live-stage routing", () => {
 	});
 
 	test("expanded root target sends to the hydrated child owner", async () => {
-		const rootId = "hydrated-routing-root";
-		const childId = "hydrated-routing-child";
+		const rootId = testRunId("hydrated-routing-root");
+		const childId = testRunId("hydrated-routing-child");
 		const calls: string[] = [];
 		runIds.add(rootId);
 		runIds.add(childId);

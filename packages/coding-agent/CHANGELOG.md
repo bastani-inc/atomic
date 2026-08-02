@@ -1,13 +1,18 @@
 # Changelog
 
 ## [Unreleased]
+### Breaking Changes
+
+- Workflow run targets now require the full 36-character run UUID. Typed prefixes are no longer resolved by any command or workflow-tool action that accepts `runId`, including `status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, and `quit`, and by `/workflow connect`, `/workflow attach`, and `/workflow resume`. A target that is not a well-formed 8-4-4-4-12 hex UUID — a prefix, a 32-character dashless id, or a same-length non-hex string — is rejected with `Run id must be a full 36-character UUID; got "339e05a4" (8 chars).`, which is deliberately distinct from `Run not found:` so a truncated paste is diagnosable as truncated rather than looking like a stale run. Since every user-facing surface already prints the full id, copy it back verbatim. Because ids are unique and now matched exactly, run-target ambiguity is unreachable and the "Ambiguous run prefix" diagnostic is gone.
+- Stage targets are now matched exactly. A `stageId` resolves by exact stage id — a bare UUID at the root, the full `runId:stageId` composite for a stage inside a nested `ctx.workflow(...)` import, or `tool:<argsHash>` for a `ctx.tool` node — or by exact stage or tool name. Prefixes and partial names no longer resolve, so `build` will not select `build-check`. Stage ids are deliberately **not** held to the 36-character rule, because nested and tool identifiers are legitimately longer or differently shaped; nested-stage and tool-node targeting are unchanged. Two stages sharing an exact name still return the existing ambiguity diagnostic.
+
 ### Changed
 
 - Removed the four-workflow display cap from the BACKGROUND widget so every qualifying top-level run is rendered.
 - Moved durable workflow run artifacts—including goal ledgers, Ralph implementation notes, QA evidence video paths, and worktree task outputs—from per-invocation OS temp directories to the run-scoped durable root under the Atomic config directory (`~/.atomic/workflows/runs/<runId>/`, overridable with `ATOMIC_WORKFLOW_ARTIFACT_DIR`), so they survive OS temp purges and follow state-aware retention.
 - Toggling tool-output expansion (`ctrl+o`) no longer prints a `Tool output: expanded` / `Tool output: collapsed` status line. The chat re-renders in the new state, which is the same information without the extra line.
 
-- Workflow run identifiers are now shown as full UUIDs across the BACKGROUND widget, status and detail views, run pickers, control messages, and awaiting-input attribution banners. BACKGROUND cards use a two-line identity layout at 80 columns and wider, while narrow chat surfaces wrap full ids without cutting them or breaking their borders; commands continue to accept unique short prefixes and report ambiguous prefixes clearly. The public `workflow({ action: "status", format: "json" })` payload no longer includes `runIdPrefix`; read `runId` instead, which now carries the full id. The `/workflow connect` run picker now shows five runs at a time and scrolls to additional retained runs with the arrow keys or mouse wheel.
+- Workflow run identifiers are now shown as full UUIDs across the BACKGROUND widget, status and detail views, run pickers, control messages, and awaiting-input attribution banners. BACKGROUND cards use a two-line identity layout at 80 columns and wider, while narrow chat surfaces wrap full ids without cutting them or breaking their borders. The public `workflow({ action: "status", format: "json" })` payload no longer includes `runIdPrefix`; read `runId` instead, which now carries the full id. The `/workflow connect` run picker now shows five runs at a time and scrolls to additional retained runs with the arrow keys or mouse wheel. The picker's type-to-filter box still narrows by name substring or id prefix, since that selects a row from a list rather than resolving a typed id.
 
 ### Fixed
 

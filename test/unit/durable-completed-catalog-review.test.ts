@@ -13,6 +13,7 @@ import { RUN_TIMING_CHECKPOINT_NAME } from "../../packages/workflows/src/durable
 import type { DurableCheckpoint, DurableStageRunTopology } from "../../packages/workflows/src/durable/types.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
 
 function registerCompleted(backend: InMemoryDurableBackend, workflowId: string): void {
@@ -88,7 +89,7 @@ function reconstructed(
 describe("completed catalog reviewer regressions", () => {
 	test("keeps a public workflow-run-timing tool visible while excluding the internal timing checkpoint", () => {
 		const backend = new InMemoryDurableBackend();
-		const workflowId = "public-run-timing-name";
+		const workflowId = testRunId("public-run-timing-name");
 		registerCompleted(backend, workflowId);
 		const argsHash = durableHash({ name: RUN_TIMING_CHECKPOINT_NAME, args: {}, ordinal: 1 });
 		backend.recordCheckpoint(tool(workflowId, `tool:${argsHash}`, RUN_TIMING_CHECKPOINT_NAME, argsHash, 20));
@@ -126,8 +127,8 @@ describe("completed catalog reviewer regressions", () => {
 
 	test("retains a scoped child tool whose public name matches the run-timing sentinel", () => {
 		const backend = new InMemoryDurableBackend();
-		const workflowId = "scoped-name-root";
-		const childRunId = "scoped-name-child";
+		const workflowId = testRunId("scoped-name-root");
+		const childRunId = testRunId("scoped-name-child");
 		registerCompleted(backend, workflowId);
 		const rootRun = { runId: workflowId, runName: workflowId } as const;
 		const childRun: DurableStageRunTopology = {
@@ -177,7 +178,7 @@ describe("completed catalog reviewer regressions", () => {
 
 	test("reconstructs legacy stage-tool-stage nodes in checkpoint sequence", () => {
 		const backend = new InMemoryDurableBackend();
-		const workflowId = "legacy-mixed-sequence";
+		const workflowId = testRunId("legacy-mixed-sequence");
 		registerCompleted(backend, workflowId);
 		backend.recordCheckpoint(stage(workflowId, "before", "before", 10));
 		backend.recordCheckpoint(tool(workflowId, "middle", "middle", "middle-hash", 20));
@@ -190,7 +191,7 @@ describe("completed catalog reviewer regressions", () => {
 
 	test("uses first logical checkpoint position across equal timestamps and repeated records", () => {
 		const backend = new InMemoryDurableBackend();
-		const workflowId = "legacy-equal-time";
+		const workflowId = testRunId("legacy-equal-time");
 		registerCompleted(backend, workflowId);
 		backend.recordCheckpoint(
 			stage(workflowId, "before-session", "before", 10, {
@@ -218,7 +219,7 @@ describe("completed catalog reviewer regressions", () => {
 
 	test("preserves legacy mixed checkpoint sequence after DBOS hydration", async () => {
 		const sdk = createMockSdk();
-		const workflowId = "legacy-dbos-order";
+		const workflowId = testRunId("legacy-dbos-order");
 		const checkpoints = [
 			stage(workflowId, "before", "before", 10),
 			tool(workflowId, "middle", "middle", "middle-hash", 10),
@@ -246,7 +247,7 @@ describe("completed catalog reviewer regressions", () => {
 
 	test("persisted topology order overrides contradictory checkpoint sequence", () => {
 		const backend = new InMemoryDurableBackend();
-		const workflowId = "topology-over-sequence";
+		const workflowId = testRunId("topology-over-sequence");
 		registerCompleted(backend, workflowId);
 		const run = { runId: workflowId, runName: workflowId } as const;
 		backend.recordCheckpoint(
@@ -274,8 +275,8 @@ describe("completed catalog reviewer regressions", () => {
 
 	test("preserves nested topology-aware order and boundary fan-in", () => {
 		const backend = new InMemoryDurableBackend();
-		const workflowId = "nested-topology-order";
-		const childRunId = "nested-topology-child";
+		const workflowId = testRunId("nested-topology-order");
+		const childRunId = testRunId("nested-topology-child");
 		registerCompleted(backend, workflowId);
 		const rootRun = { runId: workflowId, runName: workflowId } as const;
 		const childRun: DurableStageRunTopology = {

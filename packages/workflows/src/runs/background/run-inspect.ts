@@ -62,18 +62,18 @@ export type InspectRunResult =
 	| { ok: false; runId: string; reason: "not_found" };
 
 /**
- * Look up a single run by id (full UUID or unique prefix) and return a
- * normalised {@link RunDetail} for the per-run text/TUI surfaces.
+ * Look up a single run by its exact id and return a normalised
+ * {@link RunDetail} for the per-run text/TUI surfaces.
  *
- * Returns ok:false "not_found" when no run matches, "ambiguous" when a
- * prefix matches multiple. Read-only: does not mutate the store.
+ * Exact match only. Callers reach this with an id already resolved at the input
+ * boundary, where shape is validated; a second, looser prefix match here would
+ * only reintroduce the truncated targeting the resolvers now reject.
+ *
+ * Read-only: does not mutate the store.
  */
 export function inspectRun(runId: string, opts?: { store?: Store }): InspectRunResult {
 	const activeStore = opts?.store ?? defaultStore;
-	const runs = activeStore.runs();
-
-	const exact = runs.find((r) => r.id === runId);
-	const candidate = exact ?? (runs.length > 0 ? runs.find((r) => r.id.startsWith(runId)) : undefined);
+	const candidate = activeStore.runs().find((r) => r.id === runId);
 
 	if (!candidate) {
 		return { ok: false, runId, reason: "not_found" };

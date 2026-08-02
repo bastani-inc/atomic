@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { testRunId } from "../helpers/run-id.js";
 import {
 	attachHostCustomUiState,
 	buildGraphOverlayAdapter,
@@ -106,8 +107,9 @@ describe("/workflow resume — overlay integration", () => {
 
 		const wfCmd = commands.workflow!;
 		const { ctx } = buildPrintCtx();
+		const unknownRunId = testRunId("no-such-run");
 
-		void wfCmd.options.handler("resume no-such-run", ctx);
+		void wfCmd.options.handler(`resume ${unknownRunId}`, ctx);
 
 		assert.equal(customCalls.length, 0);
 	});
@@ -271,7 +273,7 @@ describe("/workflow resume — overlay integration", () => {
 
 	test("resume with known authoritative completed runId calls overlay.open", async () => {
 		singletonStore.clear();
-		const runId = `test-resume-run-${Date.now()}`;
+		const runId = testRunId(`test-resume-run-${Date.now()}`);
 		const backend = new InMemoryDurableBackend();
 		const cleanup = registerInspectableCompleted(backend, runId, "test-wf");
 		setDurableBackend(backend);
@@ -302,7 +304,7 @@ describe("/workflow resume — overlay integration", () => {
 	});
 
 	test("resume of an actively-running run is refused (use /workflow connect)", async () => {
-		const runId = `test-active-run-${Date.now()}`;
+		const runId = testRunId(`test-active-run-${Date.now()}`);
 
 		singletonStore.recordRunStart({
 			id: runId,
@@ -386,7 +388,8 @@ describe("/workflow pause — top-level command", () => {
 		factory(pi);
 		const wfCmd = commands.workflow!;
 		const { ctx, messages } = buildPrintCtx();
-		await wfCmd.options.handler("pause no-such-run", ctx);
+		const unknownRunId = testRunId("no-such-run");
+		await wfCmd.options.handler(`pause ${unknownRunId}`, ctx);
 		const joined = messages.join("\n");
 		assert.match(joined, /Run not found/);
 	});
@@ -397,7 +400,7 @@ describe("/workflow resume — paused vs non-paused branching", () => {
 	afterEach(() => setDurableBackend(undefined));
 	test("resume <runId> refuses a completed local snapshot without authoritative data", async () => {
 		singletonStore.clear();
-		const runId = `test-non-paused-${Date.now()}`;
+		const runId = testRunId(`test-non-paused-${Date.now()}`);
 		singletonStore.recordRunStart({
 			id: runId,
 			name: "snap-only-wf",
@@ -430,7 +433,7 @@ describe("/workflow attach — top-level command", () => {
 	afterEach(() => setDurableBackend(undefined));
 	test("attach <runId> opens the overlay", async () => {
 		singletonStore.clear();
-		const runId = `test-attach-${Date.now()}`;
+		const runId = testRunId(`test-attach-${Date.now()}`);
 		singletonStore.recordRunStart({
 			id: runId,
 			name: "attach-wf",
@@ -454,7 +457,8 @@ describe("/workflow attach — top-level command", () => {
 		factory(pi);
 		const wfCmd = commands.workflow!;
 		const { ctx, messages } = buildPrintCtx();
-		await wfCmd.options.handler("attach not-a-run", ctx);
+		const unknownRunId = testRunId("not-a-run");
+		await wfCmd.options.handler(`attach ${unknownRunId}`, ctx);
 		assert.match(messages.join("\n"), /Run not found/);
 		assert.equal(customCalls.length, 0);
 	});
@@ -466,7 +470,7 @@ describe("/workflow attach — top-level command", () => {
 		const wfCmd = commands.workflow!;
 		const { ctx } = buildPrintCtx();
 		// Unknown id — hermetic durable backend has no matching record.
-		await wfCmd.options.handler("resume not-a-durable-wf", ctx);
+		await wfCmd.options.handler(`resume ${testRunId("not-a-durable-wf")}`, ctx);
 		assert.equal(customCalls.length, 0);
 	});
 

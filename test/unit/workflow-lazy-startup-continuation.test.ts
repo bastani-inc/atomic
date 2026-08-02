@@ -19,6 +19,7 @@ import type { SessionEntry } from "../../packages/workflows/src/shared/persisten
 import { store } from "../../packages/workflows/src/shared/store.js";
 import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { testRunId } from "../helpers/run-id.js";
 
 interface SentMessage {
 	customType?: string;
@@ -152,7 +153,10 @@ describe("workflow lazy-startup continuation fixes", () => {
 			});
 			const sessionStart = handlers.get("session_start");
 			assert.ok(sessionStart);
-			await sessionStart({}, { sessionManager: { getEntries: () => [inFlightEntry("persist-off-run")] } });
+			await sessionStart(
+				{},
+				{ sessionManager: { getEntries: () => [inFlightEntry(testRunId("persist-off-run"))] } },
+			);
 			assert.equal(store.runs().length, 0);
 			assert.equal(resourceCalls, 0);
 		} finally {
@@ -174,10 +178,10 @@ describe("workflow lazy-startup continuation fixes", () => {
 			const { handlers } = registerFactory({ disableAsyncDiscovery: true });
 			await handlers.get("session_start")?.(
 				{},
-				{ sessionManager: { getEntries: () => [inFlightEntry("auto-run")] } },
+				{ sessionManager: { getEntries: () => [inFlightEntry(testRunId("auto-run"))] } },
 			);
 			assert.equal(
-				store.runs().some((run) => run.id === "auto-run"),
+				store.runs().some((run) => run.id === testRunId("auto-run")),
 				false,
 			);
 		} finally {
@@ -277,7 +281,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 				throw new Error("discovery failed");
 			},
 		});
-		const runId = "paused-slash-resume-source";
+		const runId = testRunId("paused-slash-resume-source");
 		store.recordRunStart({
 			id: runId,
 			name: "paused workflow",
@@ -298,7 +302,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 
 	test("workflow tool paused resume bypasses workflow discovery", async () => {
 		let ensureCalls = 0;
-		const runId = "paused-tool-resume-source";
+		const runId = testRunId("paused-tool-resume-source");
 		store.recordRunStart({
 			id: runId,
 			name: "paused tool workflow",
@@ -349,7 +353,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 					return [{ path: workflowPath, enabled: true }];
 				},
 			});
-			const sourceRunId = "lazy-slash-resume-source";
+			const sourceRunId = testRunId("lazy-slash-resume-source");
 			store.recordRunStart({
 				id: sourceRunId,
 				name: "slash-resume-lazy",
@@ -408,7 +412,7 @@ describe("workflow lazy-startup continuation fixes", () => {
 			outputs: { value: Type.Optional(Type.String()) },
 			run: async (ctx) => ({ value: await ctx.stage("retry").prompt("retry") }),
 		});
-		const sourceRunId = "lazy-tool-resume-source";
+		const sourceRunId = testRunId("lazy-tool-resume-source");
 		store.recordRunStart({
 			id: sourceRunId,
 			name: def.name,

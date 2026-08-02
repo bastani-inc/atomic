@@ -88,12 +88,12 @@ describe("inspectRun", () => {
 		}
 	});
 
-	test("resolves a short prefix to a single matching run", () => {
+	test("does not resolve a short prefix to a longer matching run", () => {
 		const store = createStore();
 		store.recordRunStart(makeRun({ id: "abc123full-uuid", name: "wf" }));
 		const result = inspectRun("abc123", { store });
-		assert.equal(result.ok, true);
-		if (result.ok) assert.equal(result.detail.runId, "abc123full-uuid");
+		assert.equal(result.ok, false);
+		if (!result.ok) assert.equal(result.reason, "not_found");
 	});
 
 	test("derives mode=chain when stage count > 1", () => {

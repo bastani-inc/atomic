@@ -41,7 +41,7 @@ export const WorkflowParametersSchema = Type.Object(
 		runId: Type.Optional(
 			Type.String({
 				description:
-					"Run identifier or unique prefix for status/stages/stage/transcript/send/pause/resume/interrupt/quit. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
+					"Full 36-character run UUID for status/stages/stage/transcript/send/pause/resume/interrupt/quit. Prefixes are not accepted; pass the id exactly as displayed. Omit runId with action 'status' to list all session runs and their statuses. Use '--all' or all:true for supported bulk run-control actions.",
 			}),
 		),
 		all: Type.Optional(
@@ -53,7 +53,7 @@ export const WorkflowParametersSchema = Type.Object(
 		stageId: Type.Optional(
 			Type.String({
 				description:
-					"Stage id, unique prefix, or stage name for stage-scoped inspection, transcript, send, pause, or resume. For interrupt and quit it may also name an in-flight ctx.tool node by its tool:<argsHash> id or tool name, which aborts that single call.",
+					"Exact stage id or exact stage name for stage-scoped inspection, transcript, send, pause, or resume. Prefixes and partial names are not accepted. A nested stage id is the full 'runId:stageId' composite. For interrupt and quit it may also name an in-flight ctx.tool node by its exact tool:<argsHash> id or tool name, which aborts that single call.",
 			}),
 		),
 		message: Type.Optional(

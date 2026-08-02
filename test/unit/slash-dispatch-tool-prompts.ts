@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -60,7 +61,7 @@ describe("tool run-control actions", () => {
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
 	test.sequential("makeExecuteWorkflowTool answers stage pending prompts", async () => {
-		const runId = `stage-tool-send-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-1",
@@ -98,7 +99,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool refuses workflow send answers for custom prompt nodes", async () => {
-		const runId = `stage-tool-send-custom-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-custom-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-custom-prompt",
@@ -144,7 +145,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool tags brokered prompt answers as workflow-tool sourced", async () => {
-		const runId = `stage-tool-send-broker-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-broker-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-broker-prompt",
@@ -200,7 +201,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool leaves pending prompts untouched when payload is omitted", async () => {
-		const runId = `stage-tool-send-omitted-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-omitted-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-omitted",
@@ -237,7 +238,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool delivery answer without a pending prompt does not fall through to live followUp", async () => {
-		const runId = `stage-tool-send-answer-no-prompt-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-answer-no-prompt-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-no-prompt",
@@ -278,7 +279,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool auto delivery without a targeted prompt starts an idle live prompt", async () => {
-		const runId = `stage-tool-send-auto-live-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-auto-live-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-auto-live",

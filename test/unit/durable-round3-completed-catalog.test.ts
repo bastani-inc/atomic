@@ -10,6 +10,7 @@ import { DbosDurableBackend } from "../../packages/workflows/src/durable/dbos-ba
 import type { DurableStageRunTopology, DurableStageTopology } from "../../packages/workflows/src/durable/types.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
 
 function rootRun(rootId: string): DurableStageRunTopology {
@@ -152,10 +153,10 @@ async function assertHidden(name: string, rootId: string, sdk: ReturnType<typeof
 }
 
 test("fresh DBOS completed catalog rejects same-key output poisoning before merge", async () => {
-	const rootId = "round3-catalog-poison";
+	const rootId = testRunId("round3-catalog-poison");
 	const sdk = completedSdk(rootId);
 	const key = "workflow:catalog-child:1";
-	seedBoundary({ sdk, rootId, key, boundaryId: "boundary", childId: "owned-child", order: 0 });
+	seedBoundary({ sdk, rootId, key, boundaryId: "boundary", childId: testRunId("owned-child"), order: 0 });
 	seedMockCheckpoint(sdk, rootId, {
 		kind: "stage",
 		workflowId: rootId,
@@ -165,7 +166,7 @@ test("fresh DBOS completed catalog rejects same-key output poisoning before merg
 		completedAt: 9,
 		output: {
 			workflow: "catalog-child",
-			runId: "poison-child",
+			runId: testRunId("poison-child"),
 			status: "completed",
 			exited: false,
 			outputs: { value: "poison" },
@@ -183,7 +184,7 @@ test("fresh DBOS completed catalog rejects same-key output poisoning before merg
 });
 
 test("fresh DBOS completed catalog hides legacy child output without a reciprocal child group", async () => {
-	const rootId = "round3-catalog-missing-legacy-child";
+	const rootId = testRunId("round3-catalog-missing-legacy-child");
 	const sdk = completedSdk(rootId);
 	seedMockCheckpoint(sdk, rootId, {
 		kind: "stage",
@@ -194,7 +195,7 @@ test("fresh DBOS completed catalog hides legacy child output without a reciproca
 		completedAt: 2,
 		output: {
 			workflow: "catalog-child",
-			runId: "missing-child",
+			runId: testRunId("missing-child"),
 			status: "completed",
 			exited: false,
 			outputs: { value: "verbatim" },
@@ -212,7 +213,7 @@ test("fresh DBOS completed catalog hides legacy child output without a reciproca
 });
 
 test("fresh DBOS completed catalog rejects one prompt occurrence bound to different replay keys", async () => {
-	const rootId = "round3-catalog-prompt-occurrence-poison";
+	const rootId = testRunId("round3-catalog-prompt-occurrence-poison");
 	const sdk = completedSdk(rootId);
 	for (const [index, replayKey] of ["prompt:input:first", "prompt:input:SECOND-DIFFERENT"].entries()) {
 		seedMockCheckpoint(sdk, rootId, {
@@ -239,7 +240,7 @@ test("fresh DBOS completed catalog rejects one prompt occurrence bound to differ
 });
 
 test("fresh DBOS completed catalog rejects replay-key stage identity drift", async () => {
-	const rootId = "round3-catalog-stage-alias";
+	const rootId = testRunId("round3-catalog-stage-alias");
 	const sdk = completedSdk(rootId);
 	const replayKey = "stage:work:1";
 	seedMockCheckpoint(sdk, rootId, {
@@ -283,26 +284,26 @@ test("fresh DBOS completed catalog rejects replay-key stage identity drift", asy
 });
 
 test("fresh DBOS completed catalog rejects empty and aliased owning-run boundary ids", async () => {
-	const emptyRoot = "round3-catalog-empty-boundary";
+	const emptyRoot = testRunId("round3-catalog-empty-boundary");
 	const emptySdk = completedSdk(emptyRoot);
 	seedBoundary({
 		sdk: emptySdk,
 		rootId: emptyRoot,
 		key: "workflow:catalog-child:1",
 		boundaryId: "",
-		childId: "empty-child",
+		childId: testRunId("empty-child"),
 		order: 0,
 	});
 	await assertHidden("empty-boundary", emptyRoot, emptySdk);
 
-	const duplicateRoot = "round3-catalog-duplicate-boundary";
+	const duplicateRoot = testRunId("round3-catalog-duplicate-boundary");
 	const duplicateSdk = completedSdk(duplicateRoot);
 	seedBoundary({
 		sdk: duplicateSdk,
 		rootId: duplicateRoot,
 		key: "workflow:catalog-child:1",
 		boundaryId: "aliased-boundary",
-		childId: "child-one",
+		childId: testRunId("child-one"),
 		order: 0,
 	});
 	seedBoundary({
@@ -310,7 +311,7 @@ test("fresh DBOS completed catalog rejects empty and aliased owning-run boundary
 		rootId: duplicateRoot,
 		key: "workflow:catalog-child:2",
 		boundaryId: "aliased-boundary",
-		childId: "child-two",
+		childId: testRunId("child-two"),
 		order: 1,
 	});
 	await assertHidden("duplicate-boundary", duplicateRoot, duplicateSdk);

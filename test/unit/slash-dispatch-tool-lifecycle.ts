@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -120,7 +121,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("registered workflow tool content defaults to path-only transcripts and supports explicit previews", async () => {
-		const runId = `tool-content-transcript-${Date.now()}`;
+		const runId = testRunId(`tool-content-transcript-${Date.now()}`);
 		const longText = `start-${"x".repeat(180)}-sentinel-end`;
 		const toolOutput = `tool-output-${"y".repeat(120)}-sentinel-end`;
 		const sessionFile = "C:\\Users\\atomic runner\\tool-content.jsonl";

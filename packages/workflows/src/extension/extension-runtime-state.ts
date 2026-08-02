@@ -152,14 +152,14 @@ export function createWorkflowExtensionRuntimeState(
 		resumeFailedRun(sourceRunId, stageId, options) {
 			return runtimeRef.current.resumeFailedRun(sourceRunId, stageId, options);
 		},
-		resumeDurableWorkflow(workflowIdOrPrefix, options) {
-			return runtimeRef.current.resumeDurableWorkflow(workflowIdOrPrefix, options);
+		resumeDurableWorkflow(workflowId, options) {
+			return runtimeRef.current.resumeDurableWorkflow(workflowId, options);
 		},
 		listDurableResumable() {
 			return runtimeRef.current.listDurableResumable();
 		},
-		prepareDurableResumable(workflowIdOrPrefix) {
-			return runtimeRef.current.prepareDurableResumable(workflowIdOrPrefix);
+		prepareDurableResumable(workflowId) {
+			return runtimeRef.current.prepareDurableResumable(workflowId);
 		},
 		prepareDurableResumableForIds(workflowIds) {
 			const targeted = runtimeRef.current.prepareDurableResumableForIds;
@@ -169,16 +169,16 @@ export function createWorkflowExtensionRuntimeState(
 		prepareCompletedDurable() {
 			return runtimeRef.current.prepareCompletedDurable?.() ?? Promise.resolve([]);
 		},
-		openCompletedDurableWorkflow(workflowIdOrPrefix, catalog) {
+		openCompletedDurableWorkflow(workflowId, catalog) {
 			const open = runtimeRef.current.openCompletedDurableWorkflow;
 			if (open === undefined) {
 				return {
 					ok: false,
 					reason: "not_found",
-					message: `No completed durable workflow found for id/prefix: ${workflowIdOrPrefix}`,
+					message: `No completed durable workflow found for id: ${workflowId}`,
 				};
 			}
-			return open(workflowIdOrPrefix, catalog);
+			return open(workflowId, catalog);
 		},
 	};
 

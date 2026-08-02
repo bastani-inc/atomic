@@ -9,9 +9,10 @@ import type { PostMortemStageChatDeps } from "../../packages/workflows/src/runs/
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
-const RUN_ID = "terminal-send-race";
+const RUN_ID = testRunId("terminal-send-race");
 let tempDir = "";
 
 beforeEach(() => {

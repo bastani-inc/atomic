@@ -23,7 +23,7 @@ export type OpenCompletedDurableResult =
 			readonly name: string;
 			readonly message: string;
 	  }
-	| { readonly ok: false; readonly reason: "not_found" | "ambiguous" | "stale" | "active"; readonly message: string };
+	| { readonly ok: false; readonly reason: "not_found" | "malformed" | "stale" | "active"; readonly message: string };
 
 export interface OpenCompletedDurableDeps {
 	readonly durableBackend: DurableWorkflowBackend;
@@ -49,17 +49,16 @@ const completedChatRegistrations = new WeakMap<StageControlRegistry, Map<string,
  * conversation to its retained Atomic session without dispatching the workflow.
  */
 export function openCompletedDurableWorkflow(
-	workflowIdOrPrefix: string,
+	workflowId: string,
 	deps: OpenCompletedDurableDeps,
 	catalog: readonly ResumableWorkflowEntry[] = listOpenableCompletedWorkflows(deps.durableBackend),
 ): OpenCompletedDurableResult {
-	const resolved = resolveCompletedWorkflow(workflowIdOrPrefix, deps.durableBackend, catalog);
+	const resolved = resolveCompletedWorkflow(workflowId, deps.durableBackend, catalog);
 	if (resolved.kind === "not_found") {
-		return failure("not_found", `No completed durable workflow found for id/prefix: ${workflowIdOrPrefix}`);
+		return failure("not_found", `No completed durable workflow found for id: ${workflowId}`);
 	}
-	if (resolved.kind === "ambiguous") {
-		const matches = resolved.matches.map((entry) => `${entry.name} (${entry.workflowId})`).join(", ");
-		return failure("ambiguous", `Ambiguous completed workflow prefix "${workflowIdOrPrefix}" matches: ${matches}`);
+	if (resolved.kind === "malformed") {
+		return failure("malformed", resolved.message);
 	}
 	if (resolved.kind === "stale") {
 		return failure(
@@ -94,7 +93,7 @@ export function openCompletedDurableWorkflow(
 	};
 }
 
-function failure(reason: "not_found" | "ambiguous" | "stale" | "active", message: string): OpenCompletedDurableResult {
+function failure(reason: "not_found" | "malformed" | "stale" | "active", message: string): OpenCompletedDurableResult {
 	return { ok: false, reason, message };
 }
 

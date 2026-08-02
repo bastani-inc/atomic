@@ -101,6 +101,9 @@ export function selectRunsForPicker(
 	resumeCandidateLookup?: ResumeCandidateLookup,
 ): PickerRow[] {
 	const q = query.trim().toLowerCase();
+	// Incremental search, not id resolution. The user narrows a list and then
+	// selects a row, and the selected run's full id is what gets acted on, so
+	// prefix matching here never targets a run by a truncated id.
 	const matches = (r: RunSnapshot): boolean => {
 		if (!q) return true;
 		return r.name.toLowerCase().includes(q) || r.id.startsWith(q);

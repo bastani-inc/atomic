@@ -11,11 +11,12 @@ import { workflowPauseAction } from "../../packages/workflows/src/extension/work
 import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
-const ROOT_ID = "round2-routing-root";
-const CHILD_IDS = ["round2-routing-child-a", "round2-routing-child-b"] as const;
+const ROOT_ID = testRunId("round2-routing-root");
+const CHILD_IDS = [testRunId("round2-routing-child-a"), testRunId("round2-routing-child-b")] as const;
 const LOCAL_STAGE_ID = "shared-local-id";
 const LOCAL_STAGE_NAME = "shared-name";
 

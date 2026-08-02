@@ -18,7 +18,6 @@ import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./work
 import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
 import {
 	allStageConflictMessage,
-	ambiguousRunMessage,
 	reloadFailureMessage,
 	resolveControlNodeTarget,
 	resolveToolRunTarget,
@@ -83,14 +82,8 @@ export async function workflowPauseAction(args: WorkflowToolArgs): Promise<Workf
 			return controlFailure(action, "--all", error);
 		}
 	}
-	if (target.kind === "ambiguous")
-		return {
-			action,
-			runId: target.target,
-			status: "noop",
-			message: ambiguousRunMessage(target.target, target.matches),
-		};
-	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
+	if (target.kind === "malformed" || target.kind === "not_found")
+		return { action, runId: target.target, status: "noop", message: target.message };
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
 	// Tool nodes have no turn boundary to stop at, so pause rejects them loudly
 	// instead of silently resolving to nothing.
@@ -264,15 +257,9 @@ export async function workflowQuitAction(args: WorkflowToolArgs): Promise<Workfl
 						: "No in-flight runs to quit.",
 		};
 	}
-	if (target.kind === "ambiguous") {
-		return {
-			action,
-			runId: target.target,
-			status: "noop",
-			message: ambiguousRunMessage(target.target, target.matches),
-		};
+	if (target.kind === "malformed" || target.kind === "not_found") {
+		return { action, runId: target.target, status: "noop", message: target.message };
 	}
-	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
 	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
 	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action);
@@ -322,14 +309,8 @@ export async function workflowInterruptAction(args: WorkflowToolArgs): Promise<W
 			return controlFailure(action, "--all", error);
 		}
 	}
-	if (target.kind === "ambiguous")
-		return {
-			action,
-			runId: target.target,
-			status: "noop",
-			message: ambiguousRunMessage(target.target, target.matches),
-		};
-	if (target.kind === "not_found") return { action, runId: target.target, status: "noop", message: target.message };
+	if (target.kind === "malformed" || target.kind === "not_found")
+		return { action, runId: target.target, status: "noop", message: target.message };
 	const controlNode = resolveControlNodeTarget(target.runId, args.stageId);
 	if (!controlNode.ok) return { action, runId: target.runId, status: "noop", message: controlNode.message };
 	if (controlNode.kind === "tool") return quitToolNodeAction(controlNode.runId, controlNode.nodeId, action);
@@ -414,14 +395,8 @@ async function resolveExplicitDurableTarget(
 		return controlFailure("resume", target, error);
 	}
 	const resolved = resolveWorkflowResumeTarget(target, liveRuns, durable, []);
-	if (resolved.kind === "ambiguous") {
-		const matches = resolved.matches.map((match) => match.workflowId);
-		return {
-			action: "resume",
-			runId: target,
-			status: "noop",
-			message: `Ambiguous run prefix "${target}" matches: ${matches.join(", ")}`,
-		};
+	if (resolved.kind === "malformed") {
+		return { action: "resume", runId: target, status: "noop", message: resolved.message };
 	}
 	if (resolved.kind === "durable") return resumePreparedDurableTarget(resolved.workflowId, deps);
 	if (resolved.kind === "live") {
@@ -460,9 +435,8 @@ export async function workflowResumeAction(
 	const target = resolveToolRunTarget(args, "No active run to resume.");
 	if (target.kind === "all")
 		return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
-	if (target.kind === "ambiguous") {
-		const liveMatches = store.runs().filter((run) => target.matches.includes(run.id));
-		return resolveExplicitDurableTarget(target.target, args, deps, liveMatches);
+	if (target.kind === "malformed") {
+		return { action: "resume", runId: target.target, status: "noop", message: target.message };
 	}
 	if (target.kind === "not_found") {
 		const explicitTarget = args.runId?.trim();
@@ -471,11 +445,8 @@ export async function workflowResumeAction(
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message };
 	}
-	const explicitTarget = args.runId?.trim();
-	if (explicitTarget !== undefined && explicitTarget.length > 0 && explicitTarget !== target.runId) {
-		const liveMatches = store.runs().filter((run) => run.id.startsWith(explicitTarget));
-		return resolveExplicitDurableTarget(explicitTarget, args, deps, liveMatches);
-	}
+	// An explicit target now resolves only by exact id, so it can never disagree
+	// with the resolved run; the old re-resolution branch here is unreachable.
 	const backend = getDurableBackend();
 	const exact = store.runs().find((run) => run.id === target.runId);
 	const shadow = exact === undefined ? "not_shadow" : classifyDurableResumeShadow(exact, store, { backend });

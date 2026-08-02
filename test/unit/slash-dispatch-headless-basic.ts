@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ChatSurfacePayload, ExtensionAPI, PiCommandContext, PiCommandOptions } from "./slash-dispatch-utils.js";
 import {
 	addFactoryStubs,
@@ -20,6 +21,7 @@ import {
 } from "./slash-dispatch-utils.js";
 
 installSlashDispatchTestHooks();
+const MISSING_RUN_ID = testRunId("definitely-missing");
 
 describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", () => {
 	async function registerWorkflowCommand(): Promise<{
@@ -200,7 +202,7 @@ export default workflow({
 
 	test.sequential("/workflow status emits printable list and detail content when no UI is available", async () => {
 		const { handler, sent } = await registerWorkflowCommand();
-		const runId = `headless-printable-status-${Date.now()}`;
+		const runId = testRunId(`headless-printable-status-${Date.now()}`);
 		recordTerminalRun(runId, "completed", {
 			name: "headless-printable-workflow",
 		});
@@ -296,8 +298,8 @@ export default workflow({
 		const { handler } = await registerWorkflowCommand();
 
 		await assertRejectsHeadlessCommand(
-			() => handler("status definitely-missing", headlessNoOpCtx()),
-			/Run not found: definitely-missing/,
+			() => handler(`status ${MISSING_RUN_ID}`, headlessNoOpCtx()),
+			new RegExp(`Run not found: ${MISSING_RUN_ID}`),
 		);
 	});
 
@@ -305,8 +307,8 @@ export default workflow({
 		const { handler } = await registerWorkflowCommand();
 
 		await assertRejectsHeadlessCommand(
-			() => handler("connect definitely-missing", headlessNoOpCtx()),
-			/Run not found: definitely-missing/,
+			() => handler(`connect ${MISSING_RUN_ID}`, headlessNoOpCtx()),
+			new RegExp(`Run not found: ${MISSING_RUN_ID}`),
 		);
 	});
 
@@ -321,7 +323,7 @@ export default workflow({
 
 	test.sequential("/workflow connect <valid> rejects visibly in headless mode", async () => {
 		const { handler } = await registerWorkflowCommand();
-		const runId = `headless-connect-valid-${Date.now()}`;
+		const runId = testRunId(`headless-connect-valid-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		await assertRejectsHeadlessCommand(
@@ -332,7 +334,7 @@ export default workflow({
 
 	test.sequential("/workflow attach <valid> rejects visibly in headless mode", async () => {
 		const { handler } = await registerWorkflowCommand();
-		const runId = `headless-attach-valid-${Date.now()}`;
+		const runId = testRunId(`headless-attach-valid-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		await assertRejectsHeadlessCommand(
@@ -343,7 +345,7 @@ export default workflow({
 
 	test.sequential("/workflow attach <valid> <stage> rejects visibly in headless mode", async () => {
 		const { handler } = await registerWorkflowCommand();
-		const runId = `headless-attach-stage-${Date.now()}`;
+		const runId = testRunId(`headless-attach-stage-${Date.now()}`);
 		const stageId = "stage-headless-attach";
 		store.recordRunStart({
 			...makeInflightRun(runId),

@@ -18,6 +18,7 @@ import { cancellationRegistry } from "../../packages/workflows/src/runs/backgrou
 import { killAllRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 const originalCwd = process.cwd();
 const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -436,7 +437,7 @@ describe("workflow reload rediscovery matrix", () => {
 		});
 		const durableBackend = new InMemoryDurableBackend();
 		durableBackend.registerWorkflow({
-			workflowId: "durable-reload-retained",
+			workflowId: testRunId("durable-reload-retained"),
 			name: "reload-inflight",
 			inputs: { message: "resume" },
 			createdAt: 1,
@@ -448,7 +449,7 @@ describe("workflow reload rediscovery matrix", () => {
 		await harness.execute({ action: "reload" });
 		assert.deepEqual(durableBackend.listResumableWorkflows(), durableBefore);
 		const resumeMessageStart = harness.messages.length;
-		await harness.commands.get("workflow")?.handler?.("resume durable-reload-retained", {
+		await harness.commands.get("workflow")?.handler?.(`resume ${testRunId("durable-reload-retained")}`, {
 			hasUI: false,
 			ui: { notify: () => undefined },
 		});
@@ -461,7 +462,7 @@ describe("workflow reload rediscovery matrix", () => {
 		await writeWorkflow(workflowPath, { name: "reload-inflight", description: "new metadata", prompt: "new prompt" });
 		const reloaded = reloadResult(await harness.execute({ action: "reload" }));
 		assert.equal(reloaded.status, "ok");
-		assert.equal(durableBackend.isWorkflowLoadable("durable-reload-retained"), true);
+		assert.equal(durableBackend.isWorkflowLoadable(testRunId("durable-reload-retained")), true);
 		const current = await harness.execute({ action: "get", workflow: "reload-inflight" });
 		assert.equal(current.action, "get");
 		assert.equal(current.details?.output?.description, "new metadata");

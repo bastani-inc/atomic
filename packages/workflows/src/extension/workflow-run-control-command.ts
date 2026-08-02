@@ -30,7 +30,7 @@ import {
 	resumePickerLiveUpdateOptions,
 } from "./workflow-resume-picker-rows.js";
 import { classifyDurableResumeShadow, reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
-import { overlaySurfaceFromContext, resolveRunIdPrefix, resolveStageTarget } from "./workflow-targets.js";
+import { overlaySurfaceFromContext, resolveRunId, resolveStageTarget } from "./workflow-targets.js";
 
 export type { WorkflowRunControlDeps } from "./workflow-durable-resume-command.js";
 
@@ -84,13 +84,13 @@ export async function handleRunControlCommand(
 			}
 			return true;
 		}
-		const resolved = resolveRunIdPrefix(target);
-		if (resolved.kind === "not_found") {
-			fail(`Run not found: ${target}\n\n${renderSessionList(store.runs(), { theme, includeAll: true })}`);
+		const resolved = resolveRunId(target);
+		if (resolved.kind === "malformed") {
+			fail(resolved.message);
 			return true;
 		}
-		if (resolved.kind === "ambiguous") {
-			fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.join(", ")}`);
+		if (resolved.kind === "not_found") {
+			fail(`Run not found: ${target}\n\n${renderSessionList(store.runs(), { theme, includeAll: true })}`);
 			return true;
 		}
 		if (failHeadlessAttachCommand("connect", resolved.runId)) return true;
@@ -155,13 +155,13 @@ export async function handleRunControlCommand(
 			}
 			return true;
 		}
-		const resolved = resolveRunIdPrefix(target!);
-		if (resolved.kind === "not_found") {
-			fail(`Run not found: ${target}`);
+		const resolved = resolveRunId(target!);
+		if (resolved.kind === "malformed") {
+			fail(resolved.message);
 			return true;
 		}
-		if (resolved.kind === "ambiguous") {
-			fail(`Ambiguous run prefix "${target}" matches multiple runs: ${resolved.matches.join(", ")}`);
+		if (resolved.kind === "not_found") {
+			fail(`Run not found: ${target}`);
 			return true;
 		}
 		const run = store.runs().find((candidate) => candidate.id === resolved.runId);
@@ -268,7 +268,7 @@ export async function handleRunControlCommand(
 					});
 				}
 				if (picked.result.kind === "live") {
-					const resolved = resolveRunIdPrefix(picked.result.runId);
+					const resolved = resolveRunId(picked.result.runId);
 					if (resolved.kind !== "exact") {
 						fail(`Run not found: ${picked.result.runId}`);
 						return true;
@@ -315,7 +315,7 @@ export async function handleRunControlCommand(
 			runId = picked.runId;
 		} else if (action === "resume") {
 			const backend = getDurableBackend();
-			const localResolution = resolveRunIdPrefix(target);
+			const localResolution = resolveRunId(target);
 			const localBeforePreparation =
 				localResolution.kind === "exact" ? store.runs().find((run) => run.id === localResolution.runId) : undefined;
 			const exactBeforePreparation = localBeforePreparation?.id === target ? localBeforePreparation : undefined;
@@ -389,10 +389,8 @@ export async function handleRunControlCommand(
 					durable,
 					backend.listCompletedWorkflows(),
 				);
-				if (combined.kind === "ambiguous") {
-					fail(
-						`Ambiguous workflow prefix "${target}" matches: ${combined.matches.map((match) => `${match.name} (${match.workflowId})`).join(", ")}`,
-					);
+				if (combined.kind === "malformed") {
+					fail(combined.message);
 					return true;
 				}
 				if (combined.kind === "completed" || combined.kind === "durable") {
@@ -408,13 +406,13 @@ export async function handleRunControlCommand(
 				}
 			}
 		} else {
-			const resolved = resolveRunIdPrefix(target);
-			if (resolved.kind === "not_found") {
-				fail(`Run not found: ${target}`);
+			const resolved = resolveRunId(target);
+			if (resolved.kind === "malformed") {
+				fail(resolved.message);
 				return true;
 			}
-			if (resolved.kind === "ambiguous") {
-				fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.join(", ")}`);
+			if (resolved.kind === "not_found") {
+				fail(`Run not found: ${target}`);
 				return true;
 			}
 			runId = resolved.runId;

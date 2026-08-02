@@ -7,13 +7,14 @@ import {
 	resolveCompletedWorkflow,
 } from "../../packages/workflows/src/durable/completed-catalog.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import { testRunId } from "../helpers/run-id.js";
 
 function seedCompletedBoundary(
 	backend: InMemoryDurableBackend,
 	runId: string,
 	output: WorkflowSerializableValue,
+	childRunId = testRunId(`${runId}-child`),
 ): void {
-	const childRunId = `${runId}-child`;
 	const replayKey = "workflow:child:1";
 	const rootRun = { runId, runName: "completed-parent" } as const;
 	const child = {
@@ -105,25 +106,31 @@ function seedCompletedBoundary(
 
 test("completed catalog uses the shared strict WorkflowChildResult parser", () => {
 	const valid = new InMemoryDurableBackend();
-	seedCompletedBoundary(valid, "valid-completed", {
-		workflow: "child",
-		runId: "valid-completed-child",
-		status: "completed",
-		exited: false,
-		outputs: {},
-	});
+	const validRootId = testRunId("valid-completed");
+	seedCompletedBoundary(
+		valid,
+		validRootId,
+		{
+			workflow: "child",
+			runId: testRunId("valid-completed-child"),
+			status: "completed",
+			exited: false,
+			outputs: {},
+		},
+		testRunId("valid-completed-child"),
+	);
 	assert.equal(listOpenableCompletedWorkflows(valid).length, 1);
 	assert.equal(completedWorkflowRunSnapshots(valid, valid.listCompletedWorkflows()[0]!).length, 2);
 
 	for (const [index, output] of (
 		[
-			{ workflow: "child", runId: "malformed-0-child", status: "completed", outputs: {} },
-			{ workflow: "child", runId: "malformed-1-child", status: "failed", exited: false, outputs: {} },
-			{ workflow: "child", runId: "malformed-2-child", status: "completed", exited: false, outputs: [] },
+			{ workflow: "child", runId: testRunId("malformed-0-child"), status: "completed", outputs: {} },
+			{ workflow: "child", runId: testRunId("malformed-1-child"), status: "failed", exited: false, outputs: {} },
+			{ workflow: "child", runId: testRunId("malformed-2-child"), status: "completed", exited: false, outputs: [] },
 		] satisfies readonly WorkflowSerializableValue[]
 	).entries()) {
 		const backend = new InMemoryDurableBackend();
-		const runId = `malformed-${index}`;
+		const runId = testRunId(`malformed-${index}`);
 		seedCompletedBoundary(backend, runId, output);
 		assert.deepEqual(listOpenableCompletedWorkflows(backend), [], runId);
 		assert.equal(resolveCompletedWorkflow(runId, backend).kind, "stale", runId);

@@ -35,7 +35,7 @@ import {
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "./workflow-run-control-command.js";
-import { overlaySurfaceFromContext, reloadFailureMessage, resolveRunIdPrefix } from "./workflow-targets.js";
+import { overlaySurfaceFromContext, reloadFailureMessage, resolveRunId } from "./workflow-targets.js";
 
 export interface WorkflowSlashCommandDeps {
 	runtimeProxy: ExtensionRuntime;
@@ -150,11 +150,9 @@ async function workflowSlashHandler(
 	if (subcommand === "status") {
 		const target = parts[1];
 		if (target && !target.startsWith("--")) {
-			const resolved = resolveRunIdPrefix(target);
+			const resolved = resolveRunId(target);
+			if (resolved.kind === "malformed") return fail(resolved.message);
 			if (resolved.kind === "not_found") return fail(`Run not found: ${target}`);
-			if (resolved.kind === "ambiguous") {
-				return fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.join(", ")}`);
-			}
 			const inspected = inspectRun(resolved.runId);
 			if (!inspected.ok) return fail(`Run not found: ${target}`);
 			emitChatSurface(pi, { kind: "detail", detail: inspected.detail });

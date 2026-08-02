@@ -5,6 +5,7 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import type { WorkflowExecutionPolicy } from "../../packages/workflows/src/shared/types.js";
+import { testRunId } from "../helpers/run-id.js";
 import {
 	buildMockPi,
 	buildPrintCtxWithRealCustom,
@@ -26,10 +27,11 @@ describe("/workflow resume — durable regression coverage", () => {
 
 	test("durable resume forwards non-interactive command policy", async () => {
 		let capturedPolicy: WorkflowExecutionPolicy | undefined;
+		const workflowId = testRunId("durable-policy-run");
 		const runtime = {
 			prepareDurableResumable: async () => [
 				{
-					workflowId: "durable-policy-run",
+					workflowId,
 					name: "policy-wf",
 					status: "paused" as const,
 					completedCheckpoints: 0,
@@ -47,7 +49,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 		await handleRunControlCommand(
 			"resume",
-			["durable-policy-run"],
+			[workflowId],
 			{ hasUI: false, ui: { notify: () => undefined } },
 			{
 				info: (message) => messages.push(message),
@@ -119,11 +121,12 @@ describe("/workflow resume — durable regression coverage", () => {
 	});
 
 	test("targeted stale running durable resume does not print stale catalog", async () => {
+		const workflowId = testRunId("stale-running-id");
 		const runtime = {
 			registry: { has: () => false },
 			prepareDurableResumable: async () => [
 				{
-					workflowId: "stale-running-id",
+					workflowId,
 					name: "stale-running-wf",
 					status: "running" as const,
 					completedCheckpoints: 0,
@@ -142,7 +145,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 		await handleRunControlCommand(
 			"resume",
-			["stale-running-id"],
+			[workflowId],
 			{ hasUI: false, ui: { notify: () => undefined } },
 			{
 				info: (message) => messages.push(message),
@@ -251,8 +254,9 @@ describe("/workflow resume — durable regression coverage", () => {
 	});
 	test("no-arg durable picker resolves selection before dispose", async () => {
 		const backend = new InMemoryDurableBackend();
+		const workflowId = testRunId("durable-select-race");
 		backend.registerWorkflow({
-			workflowId: "durable-select-race",
+			workflowId,
 			name: "missing-selection-def",
 			inputs: {},
 			createdAt: Date.now(),
@@ -277,7 +281,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 	test("combined picker resolves live selection before dispose", async () => {
 		const now = Date.now();
-		const liveRunId = `live-select-${now}`;
+		const liveRunId = testRunId(`live-select-${now}`);
 		singletonStore.recordRunStart({
 			id: liveRunId,
 			name: "live-select-wf",
@@ -289,7 +293,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		singletonStore.recordRunPaused(liveRunId, now + 2);
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({
-			workflowId: "durable-select-alongside",
+			workflowId: testRunId("durable-select-alongside"),
 			name: "durable-select",
 			inputs: {},
 			createdAt: now,
@@ -313,7 +317,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 	test("combined picker resumes failed live runs through continuation path", async () => {
 		const now = Date.now();
-		const failedRunId = `failed-live-${now}`;
+		const failedRunId = testRunId(`failed-live-${now}`);
 		singletonStore.recordRunStart({
 			id: failedRunId,
 			name: "missing-continuation-wf",
@@ -330,7 +334,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		});
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({
-			workflowId: "durable-with-failed-live",
+			workflowId: testRunId("durable-with-failed-live"),
 			name: "durable-select",
 			inputs: {},
 			createdAt: now - 2,

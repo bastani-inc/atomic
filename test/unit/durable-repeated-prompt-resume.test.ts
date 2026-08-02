@@ -20,6 +20,7 @@ import { createStore, store as workflowStore } from "../../packages/workflows/sr
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
@@ -210,7 +211,7 @@ async function answerFresh(rootId: string, childRunId: string, stage: StageSnaps
 }
 
 test.sequential("fresh nested resume keeps sequential identical same-callsite prompt occurrences distinct", async () => {
-	const rootId = "repeated-sequential-root";
+	const rootId = testRunId("repeated-sequential-root");
 	const sdk = createMockSdk();
 	const writer = new DbosDurableBackend(sdk, { executorId: "repeated-sequential-writer" });
 	const writerStore = createStore();
@@ -352,7 +353,7 @@ test.sequential("fresh nested resume keeps sequential identical same-callsite pr
 });
 
 test.sequential("fresh nested resume restores and independently answers two concurrent identical prompts", async () => {
-	const rootId = "repeated-concurrent-root";
+	const rootId = testRunId("repeated-concurrent-root");
 	const sdk = createMockSdk();
 	const writer = new DbosDurableBackend(sdk, { executorId: "repeated-concurrent-writer" });
 	const writerStore = createStore();

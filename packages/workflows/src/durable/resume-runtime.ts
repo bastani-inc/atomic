@@ -26,6 +26,7 @@ import {
 } from "../runs/foreground/executor-child-helpers.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
+import { isFullRunId, malformedRunIdMessage } from "../shared/run-id.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
@@ -63,7 +64,7 @@ export interface ResumeDurableDeps {
 
 /** Hydrate current DBOS metadata and checkpoints before synchronous replay reads. */
 export async function prepareDurableResume(
-	workflowIdOrPrefix: string | undefined,
+	workflowId: string | undefined,
 	deps: ResumeDurableDeps,
 ): Promise<readonly ResumableWorkflowEntry[]> {
 	const backend = deps.durableBackend ?? getDurableBackend();
@@ -71,8 +72,8 @@ export async function prepareDurableResume(
 	const catalog = backend.listResumableWorkflows();
 	// If a specific target was requested, hydrate that workflow too (it might
 	// be resumable but not yet in the resumable filter — e.g. recently failed).
-	if (workflowIdOrPrefix !== undefined) {
-		const resolved = resolveDurableEntry(workflowIdOrPrefix, catalog);
+	if (workflowId !== undefined) {
+		const resolved = resolveDurableEntry(workflowId, catalog);
 		if (resolved !== undefined && !("kind" in resolved)) {
 			await backend.hydrateWorkflow(resolved.workflowId);
 		}
@@ -80,30 +81,32 @@ export async function prepareDurableResume(
 	return backend.listResumableWorkflows();
 }
 
-/** Resolve a current DBOS catalog entry by full id or unique prefix. */
+/**
+ * Resolve a current DBOS catalog entry by its full run id.
+ *
+ * The durable `workflowId` is the live run id, so it takes the same strict
+ * contract: a full UUID or nothing. A malformed target is reported separately
+ * from an absent one.
+ */
 export function resolveDurableEntry(
-	workflowIdOrPrefix: string,
+	workflowId: string,
 	catalog: readonly ResumableWorkflowEntry[],
-): ResumableWorkflowEntry | { kind: "ambiguous"; matches: readonly ResumableWorkflowEntry[] } | undefined {
-	const exact = catalog.find((entry) => entry.workflowId === workflowIdOrPrefix);
-	if (exact !== undefined) return exact;
-	const prefixMatches = catalog.filter((entry) => entry.workflowId.startsWith(workflowIdOrPrefix));
-	if (prefixMatches.length === 0) return undefined;
-	if (prefixMatches.length === 1) return prefixMatches[0];
-	return { kind: "ambiguous", matches: prefixMatches };
+): ResumableWorkflowEntry | { kind: "malformed"; message: string } | undefined {
+	if (!isFullRunId(workflowId)) return { kind: "malformed", message: malformedRunIdMessage(workflowId) };
+	return catalog.find((entry) => entry.workflowId === workflowId);
 }
 
 /** Resume by DBOS workflow id and replay current persisted checkpoints. */
 export async function resumeDurableWorkflow(
-	workflowIdOrPrefix: string,
+	workflowId: string,
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
 	const backend = deps.durableBackend ?? getDurableBackend();
 	const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
-	const resolved = resolveDurableEntry(workflowIdOrPrefix, resolvedCatalog);
+	const resolved = resolveDurableEntry(workflowId, resolvedCatalog);
 	if (resolved === undefined) {
-		const direct = backend.getWorkflow(workflowIdOrPrefix);
+		const direct = backend.getWorkflow(workflowId);
 		if (direct !== undefined && direct.status === "running") {
 			if (hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
 				return alreadyRunningResult(direct.name, direct.workflowId, deps.baseRunOpts.store);
@@ -112,25 +115,21 @@ export async function resumeDurableWorkflow(
 				return foreignRunningResult(direct.name, direct.workflowId);
 			}
 		}
-		if (!backend.isWorkflowLoadable(workflowIdOrPrefix)) {
+		if (!backend.isWorkflowLoadable(workflowId)) {
 			return {
 				ok: false,
 				reason: "not_registered",
-				message: `Workflow ${workflowIdOrPrefix} has no valid current DBOS state.`,
+				message: `Workflow ${workflowId} has no valid current DBOS state.`,
 			};
 		}
 		return {
 			ok: false,
 			reason: "not_registered",
-			message: `No resumable workflow found for id/prefix: ${workflowIdOrPrefix}`,
+			message: `No resumable workflow found for id: ${workflowId}`,
 		};
 	}
 	if ("kind" in resolved) {
-		return {
-			ok: false,
-			reason: "not_registered",
-			message: `Ambiguous workflow prefix "${workflowIdOrPrefix}" matches: ${resolved.matches.map((m) => `${m.name} (${m.workflowId})`).join(", ")}`,
-		};
+		return { ok: false, reason: "not_registered", message: resolved.message };
 	}
 	if (!backend.isWorkflowLoadable(resolved.workflowId)) {
 		return {
@@ -332,12 +331,12 @@ export async function prepareTargetedDurableResumable(
 
 export async function prepareRuntimeDurableResumable(
 	getBackend: () => DurableWorkflowBackend,
-	workflowIdOrPrefix?: string,
+	workflowId?: string,
 ): Promise<readonly ResumableWorkflowEntry[]> {
 	const backend = getBackend();
 	await backend.hydrateResumableWorkflows();
-	if (workflowIdOrPrefix !== undefined) {
-		const resolved = resolveDurableEntry(workflowIdOrPrefix, backend.listResumableWorkflows());
+	if (workflowId !== undefined) {
+		const resolved = resolveDurableEntry(workflowId, backend.listResumableWorkflows());
 		if (resolved !== undefined && !("kind" in resolved)) await backend.hydrateWorkflow(resolved.workflowId);
 	}
 	return backend.listResumableWorkflows();

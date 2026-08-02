@@ -23,6 +23,7 @@ import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expande
 import { createStore, store as singletonStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
+import { testRunId } from "../helpers/run-id.js";
 
 describe("ctx.tool workflow graph execution", () => {
 	test("tool-only workflow completes with its declared output and one durable side effect", async () => {
@@ -186,11 +187,11 @@ describe("ctx.tool workflow graph execution", () => {
 	});
 
 	test("replays a legacy tool checkpoint without rerunning and reconstructs cached topology", async () => {
-		const workflowId = "legacy-tool-only";
+		const workflowId = testRunId("legacy-tool-only");
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({
 			workflowId,
-			name: "legacy-tool-only",
+			name: testRunId("legacy-tool-only"),
 			inputs: {},
 			createdAt: 1,
 			status: "paused",
@@ -209,7 +210,7 @@ describe("ctx.tool workflow graph execution", () => {
 		});
 		let calls = 0;
 		const definition = workflow({
-			name: "legacy-tool-only",
+			name: testRunId("legacy-tool-only"),
 			description: "",
 			inputs: {},
 			outputs: { raw: Type.Boolean() },
@@ -360,14 +361,14 @@ describe("ctx.tool node cancellation controls", () => {
 	test("quit with a tool node id aborts only that node and leaves siblings running", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const runId = "tool-node-targeted-quit";
+		const runId = testRunId("tool-node-targeted-quit");
 		const enteredTarget = Promise.withResolvers<void>();
 		const enteredSibling = Promise.withResolvers<void>();
 		const releaseSibling = Promise.withResolvers<void>();
 		let siblingSignal: AbortSignal | undefined;
 		let siblingCompleted = false;
 		const definition = workflow({
-			name: "tool-node-targeted-quit",
+			name: testRunId("tool-node-targeted-quit"),
 			description: "",
 			inputs: {},
 			outputs: {},
@@ -439,10 +440,10 @@ describe("ctx.tool node cancellation controls", () => {
 	test("an uncaught awaited cancellation reports the node cancelled and the run's real status", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const runId = "tool-node-uncaught-abort";
+		const runId = testRunId("tool-node-uncaught-abort");
 		const entered = Promise.withResolvers<void>();
 		const definition = workflow({
-			name: "tool-node-uncaught-abort",
+			name: testRunId("tool-node-uncaught-abort"),
 			description: "",
 			inputs: {},
 			outputs: {},
@@ -497,7 +498,7 @@ describe("ctx.tool node cancellation controls", () => {
 	test("interrupt resolves a unique tool name, rejects an ambiguous one, and refuses pause", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const runId = "tool-node-name-routing";
+		const runId = testRunId("tool-node-name-routing");
 		const entered: Array<Promise<void>> = [];
 		const enteredResolvers = [
 			Promise.withResolvers<void>(),
@@ -507,7 +508,7 @@ describe("ctx.tool node cancellation controls", () => {
 		for (const resolver of enteredResolvers) entered.push(resolver.promise);
 		const releaseDuplicates = Promise.withResolvers<void>();
 		const definition = workflow({
-			name: "tool-node-name-routing",
+			name: testRunId("tool-node-name-routing"),
 			description: "",
 			inputs: {},
 			outputs: {},
@@ -576,7 +577,7 @@ describe("ctx.tool node cancellation controls", () => {
 		const toolControls = createToolControlRegistry();
 		const entered = Promise.withResolvers<void>();
 		const definition = workflow({
-			name: "tool-cancelled-rendering",
+			name: testRunId("tool-cancelled-rendering"),
 			description: "",
 			inputs: {},
 			outputs: {},
@@ -598,12 +599,20 @@ describe("ctx.tool node cancellation controls", () => {
 		const pending = run(
 			definition,
 			{},
-			{ runId: "tool-cancelled-rendering", store, durableBackend: backend, toolControlRegistry: toolControls },
+			{
+				runId: testRunId("tool-cancelled-rendering"),
+				store,
+				durableBackend: backend,
+				toolControlRegistry: toolControls,
+			},
 		);
 		await entered.promise;
 		const liveNode = store.runs()[0]?.toolNodes?.find((node) => node.name === "aborted-call");
 		assert.ok(liveNode);
-		await abortToolNode("tool-cancelled-rendering", liveNode.id, { store, toolControlRegistry: toolControls });
+		await abortToolNode(testRunId("tool-cancelled-rendering"), liveNode.id, {
+			store,
+			toolControlRegistry: toolControls,
+		});
 		const result = await pending;
 
 		const snapshot = store.runs().find((candidate) => candidate.id === result.runId)!;

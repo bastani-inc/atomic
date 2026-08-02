@@ -20,6 +20,7 @@ import { collectResumePickerLiveRuns } from "../../packages/workflows/src/extens
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import { testRunId } from "../helpers/run-id.js";
 
 let tempDir = "";
 
@@ -119,10 +120,10 @@ async function resume(
 }
 
 describe("/workflow resume completed target", () => {
-	test("opens a unique completed id prefix without invoking durable resume dispatch", async () => {
+	test("opens an exact completed id without invoking durable resume dispatch", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		registerCompleted(backend, "completed-command-target");
+		registerCompleted(backend, testRunId("completed-command-target"));
 		const baseRuntime = createExtensionRuntime({ store });
 		let resumeCalls = 0;
 		const runtime: ExtensionRuntime = {
@@ -134,19 +135,19 @@ describe("/workflow resume completed target", () => {
 		};
 		const opened: string[] = [];
 
-		const result = await resume("completed-command", runtime, opened);
+		const result = await resume(testRunId("completed-command-target"), runtime, opened);
 
 		assert.equal(resumeCalls, 0);
-		assert.deepEqual(opened, ["completed-command-target"]);
+		assert.deepEqual(opened, [testRunId("completed-command-target")]);
 		assert.match(result.messages.join("\n"), /read-only inspection and follow-up chat/);
-		assert.equal(store.runs().find((run) => run.id === "completed-command-target")?.status, "completed");
-		assert.equal(backend.getWorkflow("completed-command-target")?.status, "completed");
+		assert.equal(store.runs().find((run) => run.id === testRunId("completed-command-target"))?.status, "completed");
+		assert.equal(backend.getWorkflow(testRunId("completed-command-target"))?.status, "completed");
 	});
 
 	test("keeps the direct completed fallback lifecycle-silent when the runtime omits the open adapter", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		registerCompletedTool(backend, "completed-direct-fallback");
+		registerCompletedTool(backend, testRunId("completed-direct-fallback"));
 		const lifecycleState = createWorkflowLifecycleNotificationState();
 		const sends: Array<{ options: object | undefined }> = [];
 		const unsubscribe = installWorkflowLifecycleNotifications({
@@ -165,7 +166,7 @@ describe("/workflow resume completed target", () => {
 		const deps = commandDeps(runtime, opened);
 		deps.beforeRestoreCompleted = (snapshots) => {
 			assert.equal(
-				store.runs().some((run) => run.id === "completed-direct-fallback"),
+				store.runs().some((run) => run.id === testRunId("completed-direct-fallback")),
 				false,
 				"lifecycle state must be seeded before the historical snapshot is inserted",
 			);
@@ -178,57 +179,60 @@ describe("/workflow resume completed target", () => {
 			const errors: string[] = [];
 			await handleRunControlCommand(
 				"resume",
-				["completed-direct-fallback"],
+				[testRunId("completed-direct-fallback")],
 				{ hasUI: true, ui: { notify: () => undefined } },
 				{ info: (message) => messages.push(message), error: (message) => errors.push(message) },
 				deps,
 			);
 
 			assert.deepEqual(errors, []);
-			assert.deepEqual(opened, ["completed-direct-fallback"]);
-			assert.deepEqual(restored, [["completed-direct-fallback"]]);
+			assert.deepEqual(opened, [testRunId("completed-direct-fallback")]);
+			assert.deepEqual(restored, [[testRunId("completed-direct-fallback")]]);
 			assert.match(messages.join("\n"), /read-only inspection/);
-			assert.equal(store.runs().find((run) => run.id === "completed-direct-fallback")?.toolNodes?.[0]?.name, "done");
+			assert.equal(
+				store.runs().find((run) => run.id === testRunId("completed-direct-fallback"))?.toolNodes?.[0]?.name,
+				"done",
+			);
 			assert.deepEqual(sends, [], "historical command fallback must emit no lifecycle steer/card");
 		} finally {
 			unsubscribe();
 		}
 	});
 
-	test("opens an exact completed id and reports completed-prefix ambiguity", async () => {
+	test("opens an exact completed id and rejects a completed-id prefix", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		registerCompleted(backend, "completed-exact-alpha");
-		registerCompleted(backend, "completed-exact-beta");
+		registerCompleted(backend, testRunId("completed-exact-alpha"));
+		registerCompleted(backend, testRunId("completed-exact-beta"));
 		const runtime = createExtensionRuntime({ store });
 		const opened: string[] = [];
 
-		const exact = await resume("completed-exact-alpha", runtime, opened);
+		const exact = await resume(testRunId("completed-exact-alpha"), runtime, opened);
 		store.clear();
-		const ambiguous = await resume("completed-exact-", runtime);
+		const malformed = await resume("completed-exact-", runtime);
 
-		assert.deepEqual(opened, ["completed-exact-alpha"]);
+		assert.deepEqual(opened, [testRunId("completed-exact-alpha")]);
 		assert.match(exact.messages.join("\n"), /Opened completed durable workflow/);
-		assert.match(ambiguous.errors.join("\n"), /Ambiguous workflow prefix/);
-		assert.match(ambiguous.errors.join("\n"), /completed-exact-alpha-flow/);
-		assert.match(ambiguous.errors.join("\n"), /completed-exact-beta-flow/);
+		assert.match(malformed.errors.join("\n"), /Run id must be a full 36-character UUID/);
 	});
 
 	test("reports a clear missing target without dispatching completed inspection", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		registerCompleted(backend, "known-completed");
+		registerCompleted(backend, testRunId("known-completed"));
 
-		const result = await resume("missing-workflow", createExtensionRuntime({ store }));
+		const missingTarget = testRunId("missing-workflow");
+		const result = await resume(missingTarget, createExtensionRuntime({ store }));
 
-		assert.match(result.errors.join("\n"), /No resumable workflow found for id\/prefix: missing-workflow/);
+		assert.match(result.errors.join("\n"), new RegExp(`No resumable workflow found for id: ${missingTarget}`));
 	});
 
 	test("explicit resume of a non-resumable run keeps the explanatory error", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
+		const runId = testRunId("zero-progress-explicit");
 		backend.registerWorkflow({
-			workflowId: "zero-progress-explicit",
+			workflowId: runId,
 			name: "zero-progress-flow",
 			inputs: {},
 			createdAt: 1,
@@ -236,7 +240,7 @@ describe("/workflow resume completed target", () => {
 			resumable: true,
 		});
 		store.recordRunStart({
-			id: "zero-progress-explicit",
+			id: runId,
 			name: "zero-progress-flow",
 			inputs: {},
 			status: "paused",
@@ -245,7 +249,7 @@ describe("/workflow resume completed target", () => {
 			resumable: true,
 		});
 
-		const result = await resume("zero-progress-explicit", createExtensionRuntime({ store }));
+		const result = await resume(runId, createExtensionRuntime({ store }));
 
 		assert.match(
 			result.errors.join("\n"),
@@ -257,7 +261,7 @@ describe("/workflow resume completed target", () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		backend.registerWorkflow({
-			workflowId: "stale-completed-target",
+			workflowId: testRunId("stale-completed-target"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
@@ -274,7 +278,7 @@ describe("/workflow resume completed target", () => {
 			},
 		};
 
-		const result = await resume("stale-completed", runtime);
+		const result = await resume(testRunId("stale-completed-target"), runtime);
 
 		assert.equal(resumeCalls, 0);
 		assert.match(result.errors.join("\n"), /stale or missing durable checkpoint\/session data/);
@@ -284,7 +288,7 @@ describe("/workflow resume completed target", () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		backend.registerWorkflow({
-			workflowId: "retained-stale",
+			workflowId: testRunId("retained-stale"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
@@ -292,7 +296,7 @@ describe("/workflow resume completed target", () => {
 			completedCheckpoints: 1,
 		});
 		store.recordRunStart({
-			id: "retained-stale",
+			id: testRunId("retained-stale"),
 			name: "completed-flow",
 			inputs: {},
 			status: "completed",
@@ -312,19 +316,19 @@ describe("/workflow resume completed target", () => {
 		};
 		const opened: string[] = [];
 
-		const result = await resume("retained-stale", runtime, opened);
+		const result = await resume(testRunId("retained-stale"), runtime, opened);
 
 		assert.equal(resumeCalls, 0);
 		assert.deepEqual(opened, []);
 		assert.match(result.errors.join("\n"), /stale or missing durable checkpoint\/session data/);
 	});
 
-	test("reports ambiguity across live and completed workflow prefixes", async () => {
+	test("rejects a shared run-id prefix across live and completed workflows", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		registerCompleted(backend, "shared-completed");
+		registerCompleted(backend, testRunId("shared-completed"));
 		store.recordRunStart({
-			id: "shared-live",
+			id: testRunId("shared-live"),
 			name: "live-flow",
 			inputs: {},
 			status: "paused",
@@ -334,17 +338,15 @@ describe("/workflow resume completed target", () => {
 		});
 		const result = await resume("shared-", createExtensionRuntime({ store }));
 
-		assert.match(result.errors.join("\n"), /Ambiguous workflow prefix/);
-		assert.match(result.errors.join("\n"), /live-flow/);
-		assert.match(result.errors.join("\n"), /shared-completed-flow/);
+		assert.match(result.errors.join("\n"), /Run id must be a full 36-character UUID/);
 	});
 
-	test("excludes cancelled, killed, and non-resumable failed locals from prefix resolution", async () => {
+	test("excludes cancelled, killed, and non-resumable failed locals from exact-id resolution", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		registerCompleted(backend, "excluded-completed");
+		registerCompleted(backend, testRunId("excluded-completed"));
 		store.recordRunStart({
-			id: "excluded-cancelled",
+			id: testRunId("excluded-cancelled"),
 			name: "cancelled",
 			inputs: {},
 			status: "cancelled",
@@ -354,7 +356,7 @@ describe("/workflow resume completed target", () => {
 			resumable: false,
 		});
 		store.recordRunStart({
-			id: "excluded-killed",
+			id: testRunId("excluded-killed"),
 			name: "killed",
 			inputs: {},
 			status: "killed",
@@ -364,7 +366,7 @@ describe("/workflow resume completed target", () => {
 			resumable: false,
 		});
 		store.recordRunStart({
-			id: "excluded-failed",
+			id: testRunId("excluded-failed"),
 			name: "failed",
 			inputs: {},
 			status: "failed",
@@ -375,17 +377,17 @@ describe("/workflow resume completed target", () => {
 		});
 		const opened: string[] = [];
 
-		const result = await resume("excluded-", createExtensionRuntime({ store }), opened);
+		const result = await resume(testRunId("excluded-completed"), createExtensionRuntime({ store }), opened);
 
 		assert.equal(result.errors.length, 0);
-		assert.deepEqual(opened, ["excluded-completed"]);
+		assert.deepEqual(opened, [testRunId("excluded-completed")]);
 	});
 
 	test("keeps quit shadows on the durable resume path", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		backend.registerWorkflow({
-			workflowId: "quit-shadow",
+			workflowId: testRunId("quit-shadow"),
 			name: "quit-flow",
 			inputs: {},
 			createdAt: 1,
@@ -393,7 +395,7 @@ describe("/workflow resume completed target", () => {
 			completedCheckpoints: 1,
 		});
 		store.recordRunStart({
-			id: "quit-shadow",
+			id: testRunId("quit-shadow"),
 			name: "quit-flow",
 			inputs: {},
 			status: "running",
@@ -411,15 +413,15 @@ describe("/workflow resume completed target", () => {
 				durableResumeCalls += 1;
 				return Promise.resolve({
 					ok: true,
-					runId: "quit-shadow",
-					workflowId: "quit-shadow",
+					runId: testRunId("quit-shadow"),
+					workflowId: testRunId("quit-shadow"),
 					name: "quit-flow",
 					message: "resumed quit shadow",
 				});
 			},
 		};
 
-		const result = await resume("quit-shadow", runtime);
+		const result = await resume(testRunId("quit-shadow"), runtime);
 
 		assert.equal(durableResumeCalls, 1);
 		assert.match(result.messages.join("\n"), /resumed quit shadow/);
@@ -429,7 +431,7 @@ describe("/workflow resume completed target", () => {
 		test(`keeps durable ${status} targets on the durable resume path`, async () => {
 			const backend = new InMemoryDurableBackend();
 			setDurableBackend(backend);
-			const id = `durable-${status}`;
+			const id = testRunId(`durable-${status}`);
 			const entry = {
 				workflowId: id,
 				name: `${status}-flow`,
@@ -461,7 +463,7 @@ describe("/workflow resume completed target", () => {
 	test("routes checkpointed resumable failures through durable resume instead of completed inspection", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const id = "failed-resumable-command-target";
+		const id = testRunId("failed-resumable-command-target");
 		backend.registerWorkflow({
 			workflowId: id,
 			name: "failed-resumable-flow",
@@ -518,10 +520,10 @@ describe("/workflow resume completed target", () => {
 		assert.equal(resolveWorkflowResumeTarget(id, [], catalog.resumable, catalog.completed).kind, "durable");
 		assert.equal(
 			resolveWorkflowResumeTarget("failed-resumable-command", [], catalog.resumable, catalog.completed).kind,
-			"durable",
+			"malformed",
 		);
 
-		const result = await resume("failed-resumable-command", runtime);
+		const result = await resume(testRunId("failed-resumable-command-target"), runtime);
 
 		assert.equal(resumeCalls, 1);
 		assert.equal(completedOpenCalls, 0);
@@ -538,9 +540,9 @@ describe("/workflow resume completed target", () => {
 			return listCompletedWorkflows();
 		};
 		setDurableBackend(backend);
-		registerCompleted(backend, "exact-live-other-completed");
+		registerCompleted(backend, testRunId("exact-live-other-completed"));
 		store.recordRunStart({
-			id: "exact-live",
+			id: testRunId("exact-live"),
 			name: "live-flow",
 			inputs: {},
 			status: "paused",
@@ -550,11 +552,11 @@ describe("/workflow resume completed target", () => {
 		});
 		const opened: string[] = [];
 
-		const result = await resume("exact-live", createExtensionRuntime({ store }), opened);
+		const result = await resume(testRunId("exact-live"), createExtensionRuntime({ store }), opened);
 
 		assert.equal(result.errors.length, 0);
-		assert.equal(store.runs().find((run) => run.id === "exact-live")?.status, "running");
-		assert.match(result.messages.join("\n"), /Resumed run exact-live/);
+		assert.equal(store.runs().find((run) => run.id === testRunId("exact-live"))?.status, "running");
+		assert.match(result.messages.join("\n"), new RegExp(`Resumed run ${testRunId("exact-live")}`));
 		assert.equal(completedCatalogReads, 0, "an exact live run must bypass durable completed-catalog enumeration");
 	});
 
@@ -562,7 +564,7 @@ describe("/workflow resume completed target", () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		backend.registerWorkflow({
-			workflowId: "picker-active-block",
+			workflowId: testRunId("picker-active-block"),
 			name: "picker-flow",
 			inputs: {},
 			createdAt: 1,
@@ -570,7 +572,7 @@ describe("/workflow resume completed target", () => {
 			resumable: true,
 		});
 		store.recordRunStart({
-			id: "picker-active-block",
+			id: testRunId("picker-active-block"),
 			name: "picker-flow",
 			inputs: {},
 			status: "running",
@@ -586,16 +588,16 @@ describe("/workflow resume completed target", () => {
 
 		assert.deepEqual(
 			source.liveRuns.map((run) => run.id),
-			["picker-active-block"],
+			[testRunId("picker-active-block")],
 		);
-		assert.equal(source.suppressedLiveIds.has("picker-active-block"), false);
+		assert.equal(source.suppressedLiveIds.has(testRunId("picker-active-block")), false);
 	});
 
 	test("resume picker omits a paused snapshot with no durable checkpoint", () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		backend.registerWorkflow({
-			workflowId: "picker-no-checkpoint",
+			workflowId: testRunId("picker-no-checkpoint"),
 			name: "picker-flow",
 			inputs: {},
 			createdAt: 1,
@@ -603,7 +605,7 @@ describe("/workflow resume completed target", () => {
 			resumable: true,
 		});
 		store.recordRunStart({
-			id: "picker-no-checkpoint",
+			id: testRunId("picker-no-checkpoint"),
 			name: "picker-flow",
 			inputs: {},
 			status: "paused",
@@ -615,7 +617,7 @@ describe("/workflow resume completed target", () => {
 		const source = collectResumePickerLiveRuns(store);
 
 		assert.equal(
-			source.liveRuns.some((run) => run.id === "picker-no-checkpoint"),
+			source.liveRuns.some((run) => run.id === testRunId("picker-no-checkpoint")),
 			false,
 		);
 	});
@@ -623,7 +625,7 @@ describe("/workflow resume completed target", () => {
 	test("suppresses a durable duplicate for a paused snapshot whose artifact is missing", async () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
-		const runId = "picker-missing-artifact";
+		const runId = testRunId("picker-missing-artifact");
 		backend.registerWorkflow({
 			workflowId: runId,
 			name: "picker-flow",
@@ -682,7 +684,7 @@ describe("/workflow resume completed target", () => {
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({
-			id: "failed-live",
+			id: testRunId("failed-live"),
 			name: "failed-flow",
 			inputs: {},
 			status: "failed",
@@ -692,7 +694,7 @@ describe("/workflow resume completed target", () => {
 			resumable: true,
 		});
 		store.recordRunStart({
-			id: "running-live",
+			id: testRunId("running-live"),
 			name: "running-flow",
 			inputs: {},
 			status: "running",
@@ -700,7 +702,7 @@ describe("/workflow resume completed target", () => {
 			startedAt: 1,
 		});
 		store.recordRunStart({
-			id: "active-blocked-live",
+			id: testRunId("active-blocked-live"),
 			name: "blocked-flow",
 			inputs: {},
 			status: "running",
@@ -719,17 +721,17 @@ describe("/workflow resume completed target", () => {
 				failedResumeCalls += 1;
 				return {
 					ok: true,
-					runId: "continued-run",
-					sourceRunId: "failed-live",
+					runId: testRunId("continued-run"),
+					sourceRunId: testRunId("failed-live"),
 					resumeFromStageId: "failed-stage",
 					message: "continued failed workflow",
 				};
 			},
 		};
 
-		const failedResult = await resume("failed-live", runtime);
-		const blockedResult = await resume("active-blocked-live", runtime);
-		const runningResult = await resume("running-live", runtime);
+		const failedResult = await resume(testRunId("failed-live"), runtime);
+		const blockedResult = await resume(testRunId("active-blocked-live"), runtime);
+		const runningResult = await resume(testRunId("running-live"), runtime);
 
 		assert.equal(failedResumeCalls, 2);
 		assert.match(failedResult.messages.join("\n"), /continued failed workflow/);

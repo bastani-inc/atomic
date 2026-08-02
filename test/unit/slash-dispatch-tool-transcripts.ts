@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -60,7 +61,7 @@ describe("tool run-control actions", () => {
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
 	test.sequential("makeExecuteWorkflowTool applies limit and lets tail override limit", async () => {
-		const runId = `stage-tool-transcript-limit-${Date.now()}`;
+		const runId = testRunId(`stage-tool-transcript-limit-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-transcript-limit-1",
@@ -121,7 +122,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool falls back to bounded preview when transcript path is unavailable", async () => {
-		const runId = `stage-tool-transcript-no-path-${Date.now()}`;
+		const runId = testRunId(`stage-tool-transcript-no-path-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-transcript-no-path-1",
@@ -179,7 +180,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool labels empty live handles as live transcript source", async () => {
-		const runId = `stage-tool-live-empty-handle-${Date.now()}`;
+		const runId = testRunId(`stage-tool-live-empty-handle-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-live-empty-handle-1",
@@ -217,7 +218,10 @@ describe("tool run-control actions", () => {
 	test.sequential("makeExecuteWorkflowTool uses error transcript source for target errors", async () => {
 		const handler = makeToolHandler();
 
-		const result = await handler({ action: "transcript", runId: "missing-run", stageId: "stage" }, {} as never);
+		const result = await handler(
+			{ action: "transcript", runId: testRunId("missing-run"), stageId: "stage" },
+			{} as never,
+		);
 
 		assert.equal(result.action, "transcript");
 		const transcript = result as {
@@ -230,7 +234,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool preserves empty live transcript text blocks", async () => {
-		const runId = `stage-tool-live-empty-block-${Date.now()}`;
+		const runId = testRunId(`stage-tool-live-empty-block-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-live-empty-block-1",
@@ -270,7 +274,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool omits text for live non-text content blocks", async () => {
-		const runId = `stage-tool-live-non-text-${Date.now()}`;
+		const runId = testRunId(`stage-tool-live-non-text-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-live-non-text-1",

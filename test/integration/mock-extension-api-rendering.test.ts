@@ -420,19 +420,22 @@ describe("renderResult — all action branches", () => {
 
 	test("action='run' background dispatch reuses the slash-command dispatch card", () => {
 		const width = 64;
-		const out = renderResult(
-			{
-				action: "run",
-				name: "fan-out-and-synthesize",
-				runId: "abcdef123456",
-				status: "running",
-				message: "started",
-			},
-			{ width, runInputs: { prompt: "map the repo" } },
-		);
+		const result = {
+			action: "run",
+			name: "fan-out-and-synthesize",
+			runId: "abcdef123456",
+			status: "running",
+			message: "started",
+		} as const;
+		const out = renderResult(result, { width, runInputs: { prompt: "map the repo" } });
 		assert.match(out, /fan-out-and-synthesize/);
 		assert.match(out, /prompt/);
-		assert.match(out, /\/workflow connect abcdef12/);
+		// The connect hint styles its dim prefix and accent id as separate spans,
+		// so the styled string carries escape codes between "connect " and the id.
+		// Assert the hint against the plain render; the styled one is still what
+		// the width check below measures.
+		const plain = renderResult(result, { width, runInputs: { prompt: "map the repo" }, plain: true });
+		assert.match(plain, /\/workflow connect abcdef123456/);
 		for (const line of out.split("\n")) {
 			assert.ok(
 				visibleWidth(line) <= width,

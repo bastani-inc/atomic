@@ -5,6 +5,7 @@ import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durab
 // InMemoryDurableBackend is already bound at line 46. Bun tolerated the repeated
 // binding; every standards-conforming parser rejects it, and vitest's did.
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { testRunId } from "../helpers/run-id.js";
 import type {
 	PiCommandContext,
 	PiCustomOverlayFactoryTui,
@@ -28,7 +29,7 @@ installSlashDispatchTestHooks();
 
 describe("/workflow resume <runId> — active run is refused", () => {
 	test.sequential("resuming an already-running run refuses and points at /workflow connect", async () => {
-		const runId = `resume-slash-overlay-${Date.now()}`;
+		const runId = testRunId(`resume-slash-overlay-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		const openCalls: Array<{ overlay: boolean }> = [];
@@ -73,7 +74,7 @@ describe("/workflow resume <runId> — active run is refused", () => {
 	});
 
 	test.sequential("active run resume output does NOT include 'still active — no resume needed'", async () => {
-		const runId = `resume-nomsg-${Date.now()}`;
+		const runId = testRunId(`resume-nomsg-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		const { pi, commands } = buildMockPi();
@@ -143,7 +144,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
-		const runId = `headless-fast-resume-${Date.now()}`;
+		const runId = testRunId(`headless-fast-resume-${Date.now()}`);
 		const stageId = "stage-fast-resume";
 		backend.registerWorkflow({
 			workflowId: runId,
@@ -199,7 +200,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 		factoryModule.default(pi);
 		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
-		const runId = `nested-paused-resume-${Date.now()}`;
+		const runId = testRunId(`nested-paused-resume-${Date.now()}`);
 		const stageId = "stage-nested-paused";
 		store.recordRunStart({
 			...makeInflightRun(runId),
@@ -220,7 +221,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 
 		await assert.rejects(
 			handler(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } }),
-			/No resumable workflow found for id\/prefix/,
+			/No resumable workflow found for id:/,
 		);
 
 		assert.ok(backend.completedCatalogCalls > 0, "nested child must continue through the top-level resolver");
@@ -259,9 +260,9 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 		factoryModule.default(pi);
 		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
 
-		const rootRunId = `attach-root-${Date.now()}`;
-		const childOneRunId = `attach-child-one-${Date.now()}`;
-		const childTwoRunId = `attach-child-two-${Date.now()}`;
+		const rootRunId = testRunId(`attach-root-${Date.now()}`);
+		const childOneRunId = testRunId(`attach-child-one-${Date.now()}`);
+		const childTwoRunId = testRunId(`attach-child-two-${Date.now()}`);
 		const nestedStageId = "review";
 		const boundary = (id: string, childRunId: string) => ({
 			id,
@@ -317,8 +318,8 @@ describe("/workflow attach <rootRunId> <nestedStageId>", () => {
 	});
 
 	test.sequential("routes /workflow attach through an actually hydrated durable child owner", async () => {
-		const rootRunId = `attach-hydrated-root-${Date.now()}`;
-		const childRunId = `attach-hydrated-child-${Date.now()}`;
+		const rootRunId = testRunId(`attach-hydrated-root-${Date.now()}`);
+		const childRunId = testRunId(`attach-hydrated-child-${Date.now()}`);
 		const boundaryId = "hydrated-boundary";
 		const stageId = "hydrated-review";
 		const replayKey = "workflow:hydrated-child:1";

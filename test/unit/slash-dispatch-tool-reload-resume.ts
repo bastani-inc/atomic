@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime, PiToolOpts, WorkflowToolArgs } from "./slash-dispatch-utils.js";
 import {
 	addFactoryStubs,
@@ -163,7 +164,7 @@ describe("tool run-control actions", () => {
 		const handler = makeExecuteWorkflowTool(runtime, () => {
 			reloads += 1;
 		});
-		const runId = `reload-inflight-${Date.now()}`;
+		const runId = testRunId(`reload-inflight-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		const result = await handler({ action: "reload", reason: "test" }, {} as never);
@@ -199,29 +200,36 @@ describe("tool run-control actions", () => {
 		assert.match(reload.message, /Reload failed: bad workflow config/);
 	});
 
-	test.sequential("makeExecuteWorkflowTool returns ambiguous run-prefix messages", async () => {
-		store.recordRunStart(makeInflightRun("ambiguous-run-a"));
-		store.recordRunStart(makeInflightRun("ambiguous-run-b"));
+	test.sequential("makeExecuteWorkflowTool rejects run prefixes while full ids remain independently addressable", async () => {
+		const anchor = testRunId("ambiguous-run");
+		const firstId = `${anchor.slice(0, 24)}111111111111`;
+		const secondId = `${anchor.slice(0, 24)}222222222222`;
+		store.recordRunStart(makeInflightRun(firstId));
+		store.recordRunStart(makeInflightRun(secondId));
 		const handler = makeToolHandler();
 
-		const result = await handler({ action: "quit", runId: "ambiguous-run" }, {} as never);
+		const malformed = await handler({ action: "quit", runId: anchor.slice(0, 12) }, {} as never);
+		assert.equal(malformed.action, "quit");
+		const malformedResult = malformed as { action: string; status: string; message: string };
+		assert.equal(malformedResult.status, "noop");
+		assert.match(malformedResult.message, /Run id must be a full 36-character UUID/);
 
-		assert.equal(result.action, "quit");
-		const r = result as { action: string; status: string; message: string };
-		assert.equal(r.status, "noop");
-		assert.match(r.message, /Ambiguous run prefix/);
-		assert.equal(
-			store.runs().some((run) => run.id === "ambiguous-run-a"),
-			true,
-		);
-		assert.equal(
-			store.runs().some((run) => run.id === "ambiguous-run-b"),
-			true,
-		);
+		for (const fullId of [firstId, secondId]) {
+			const result = await handler({ action: "quit", runId: fullId }, {} as never);
+			assert.equal(result.action, "quit");
+			const r = result as { action: string; status: string; runId: string; message: string };
+			assert.equal(r.status, "noop");
+			assert.equal(r.runId, fullId);
+			assert.match(r.message, /no controllable stages.*remains active/i);
+			assert.equal(
+				store.runs().some((run) => run.id === fullId),
+				true,
+			);
+		}
 	});
 
-	test.sequential("makeExecuteWorkflowTool resume accepts run prefixes, stage names, and messages", async () => {
-		const runId = `resume-tool-stage-${Date.now()}`;
+	test.sequential("makeExecuteWorkflowTool resume accepts full run ids, exact stage names, and messages", async () => {
+		const runId = testRunId(`resume-tool-stage-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-abc123",
@@ -235,7 +243,7 @@ describe("tool run-control actions", () => {
 		const result = await handler(
 			{
 				action: "resume",
-				runId: runId.slice(0, 12),
+				runId,
 				stageId: "review-stage",
 				message: "continue please",
 			},
@@ -255,7 +263,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool resume against in-flight run returns status:'ok'", async () => {
-		const runId = `resume-tool-ok-${Date.now()}`;
+		const runId = testRunId(`resume-tool-ok-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
 		const handler = makeToolHandler();
@@ -268,20 +276,20 @@ describe("tool run-control actions", () => {
 		assert.equal(r.runId, runId);
 	});
 
-	test.sequential("makeExecuteWorkflowTool resume rejects ambiguous stage prefixes", async () => {
-		const runId = `resume-tool-ambiguous-stage-${Date.now()}`;
+	test.sequential("makeExecuteWorkflowTool rejects partial stage names but preserves exact-name ambiguity", async () => {
+		const runId = testRunId(`resume-tool-ambiguous-stage-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		for (const stageId of ["ambiguous-stage-aaa", "ambiguous-stage-bbb"]) {
 			store.recordStageStart(runId, {
 				id: stageId,
-				name: stageId,
+				name: "ambiguous-stage",
 				status: "failed",
 				parentIds: [],
 				toolEvents: [],
 			});
 			store.recordStageEnd(runId, {
 				id: stageId,
-				name: stageId,
+				name: "ambiguous-stage",
 				status: "failed",
 				parentIds: [],
 				toolEvents: [],
@@ -294,15 +302,16 @@ describe("tool run-control actions", () => {
 		});
 		const handler = makeToolHandler();
 
-		const result = await handler({ action: "resume", runId, stageId: "ambiguous-stage" }, {} as never);
+		const partial = await handler({ action: "resume", runId, stageId: "ambiguous-stag" }, {} as never);
+		assert.equal(partial.action, "resume");
+		const partialResult = partial as { action: string; status: string; runId: string; message: string };
+		assert.equal(partialResult.status, "noop");
+		assert.equal(partialResult.runId, runId);
+		assert.match(partialResult.message, /Stage not found/);
 
-		assert.equal(result.action, "resume");
-		const r = result as {
-			action: string;
-			status: string;
-			runId: string;
-			message: string;
-		};
+		const exactName = await handler({ action: "resume", runId, stageId: "ambiguous-stage" }, {} as never);
+		assert.equal(exactName.action, "resume");
+		const r = exactName as { action: string; status: string; runId: string; message: string };
 		assert.equal(r.status, "noop");
 		assert.equal(r.runId, runId);
 		assert.match(r.message, /Ambiguous stage identifier/);

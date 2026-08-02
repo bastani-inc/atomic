@@ -1,3 +1,4 @@
+import { testRunId } from "../helpers/run-id.js";
 /**
  * Regression coverage for issue #2009's terminal workflow-send boundary.
  *
@@ -24,8 +25,8 @@ import { store } from "../../packages/workflows/src/shared/store.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
 let tempDir = "";
-const RUN_ID = "postmortem-send-run";
-const CHILD_RUN_ID = "postmortem-send-child";
+const RUN_ID = testRunId("postmortem-send-run");
+const CHILD_RUN_ID = testRunId("postmortem-send-child");
 const TERMINAL_ROOT_STATUSES = ["completed", "failed", "skipped", "cancelled", "killed", "blocked"] as const;
 
 interface RevivalCounter {

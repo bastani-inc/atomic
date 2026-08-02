@@ -12,6 +12,7 @@ import {
 	stageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 function seedPartialRun(runId: string): InMemoryDurableBackend {
 	const backend = new InMemoryDurableBackend();
@@ -90,7 +91,7 @@ afterEach(() => {
 
 describe("partial resume command surfaces", () => {
 	test.sequential("workflow tool preserves result identity and reports partial failure", async () => {
-		const runId = "tool-partial-resume";
+		const runId = testRunId("tool-partial-resume");
 		const backend = seedPartialRun(runId);
 		const runtime = createExtensionRuntime({ definitions: [], store });
 		const execute = makeExecuteWorkflowTool(
@@ -123,7 +124,7 @@ describe("partial resume command surfaces", () => {
 				super.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
 			}
 		}
-		const runId = "tool-durable-resume-failure";
+		const runId = testRunId("tool-durable-resume-failure");
 		const backend = new ThrowRunningBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({ id: runId, name: "partial", inputs: {}, status: "running", stages: [], startedAt: 1 });
@@ -175,7 +176,7 @@ describe("partial resume command surfaces", () => {
 				super.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
 			}
 		}
-		const runId = "tool-durable-resume-retry";
+		const runId = testRunId("tool-durable-resume-retry");
 		const backend = new TransientRunningBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({ id: runId, name: "partial", inputs: {}, status: "running", stages: [], startedAt: 1 });
@@ -220,7 +221,7 @@ describe("partial resume command surfaces", () => {
 	});
 
 	test.sequential("no-target slash selector reports resume rejection through the reporter", async () => {
-		const runId = "slash-picker-resume-failure";
+		const runId = testRunId("slash-picker-resume-failure");
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({ id: runId, name: "picker", inputs: {}, status: "running", stages: [], startedAt: 1 });
@@ -272,7 +273,7 @@ describe("partial resume command surfaces", () => {
 	});
 
 	test.sequential("slash resume reports the same partial failure instead of success or noop", async () => {
-		const runId = "slash-partial-resume";
+		const runId = testRunId("slash-partial-resume");
 		const backend = seedPartialRun(runId);
 		const runtime = createExtensionRuntime({ definitions: [], store });
 		const info: string[] = [];

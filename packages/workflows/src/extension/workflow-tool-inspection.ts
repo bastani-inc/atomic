@@ -12,7 +12,7 @@ import {
 	summarizeStage,
 	transcriptEntryFromMessage,
 } from "./workflow-stage-results.js";
-import { ambiguousRunMessage, resolveToolRunTarget, resolveToolStageTarget } from "./workflow-targets.js";
+import { resolveToolRunTarget, resolveToolStageTarget } from "./workflow-targets.js";
 
 export function workflowStagesResult(args: WorkflowToolArgs): WorkflowToolResult {
 	const target = resolveToolRunTarget(args, "No active run to inspect.");
@@ -26,16 +26,7 @@ export function workflowStagesResult(args: WorkflowToolArgs): WorkflowToolResult
 			error: "Stage listing requires a single run.",
 		};
 	}
-	if (target.kind === "ambiguous") {
-		return {
-			action: "stages",
-			runId: target.target,
-			filter,
-			stages: [],
-			error: ambiguousRunMessage(target.target, target.matches),
-		};
-	}
-	if (target.kind === "not_found") {
+	if (target.kind === "malformed" || target.kind === "not_found") {
 		return {
 			action: "stages",
 			runId: target.target,
@@ -56,10 +47,7 @@ export function workflowStageResult(args: WorkflowToolArgs): WorkflowToolResult 
 	if (target.kind === "all") {
 		return { action: "stage", runId: "--all", error: "Stage inspection requires a single run." };
 	}
-	if (target.kind === "ambiguous") {
-		return { action: "stage", runId: target.target, error: ambiguousRunMessage(target.target, target.matches) };
-	}
-	if (target.kind === "not_found") {
+	if (target.kind === "malformed" || target.kind === "not_found") {
 		return { action: "stage", runId: target.target, error: target.message };
 	}
 	const stage = resolveToolStageTarget(target.runId, args.stageId);
@@ -67,7 +55,7 @@ export function workflowStageResult(args: WorkflowToolArgs): WorkflowToolResult 
 		return {
 			action: "stage",
 			runId: target.runId,
-			error: stage.ok ? "Stage id, prefix, or name is required." : stage.message,
+			error: stage.ok ? "Stage id or name is required." : stage.message,
 		};
 	}
 	const stageRunId = stage.runId ?? target.runId;
@@ -94,17 +82,7 @@ export function workflowTranscriptResult(args: WorkflowToolArgs): WorkflowToolRe
 			truncated: false,
 		};
 	}
-	if (target.kind === "ambiguous") {
-		return {
-			action: "transcript",
-			runId: target.target,
-			stageId: "",
-			source: "error",
-			entries: [{ role: "notice", text: ambiguousRunMessage(target.target, target.matches) }],
-			truncated: false,
-		};
-	}
-	if (target.kind === "not_found") {
+	if (target.kind === "malformed" || target.kind === "not_found") {
 		return {
 			action: "transcript",
 			runId: target.target,
@@ -121,7 +99,7 @@ export function workflowTranscriptResult(args: WorkflowToolArgs): WorkflowToolRe
 			runId: target.runId,
 			stageId: "",
 			source: "error",
-			entries: [{ role: "notice", text: stage.ok ? "Stage id, prefix, or name is required." : stage.message }],
+			entries: [{ role: "notice", text: stage.ok ? "Stage id or name is required." : stage.message }],
 			truncated: false,
 		};
 	}

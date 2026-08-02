@@ -31,7 +31,7 @@ import {
 
 export type CompletedWorkflowResolution =
 	| { readonly kind: "found"; readonly entry: ResumableWorkflowEntry; readonly snapshot: RunSnapshot }
-	| { readonly kind: "ambiguous"; readonly matches: readonly ResumableWorkflowEntry[] }
+	| { readonly kind: "malformed"; readonly message: string }
 	| { readonly kind: "not_found" }
 	| { readonly kind: "stale"; readonly entry: ResumableWorkflowEntry };
 
@@ -54,13 +54,13 @@ export function listOpenableCompletedWorkflows(backend: DurableWorkflowBackend):
 }
 
 export function resolveCompletedWorkflow(
-	workflowIdOrPrefix: string,
+	workflowId: string,
 	backend: DurableWorkflowBackend,
 	openableCatalog: readonly ResumableWorkflowEntry[] = listOpenableCompletedWorkflows(backend),
 ): CompletedWorkflowResolution {
-	const resolved = resolveDurableEntry(workflowIdOrPrefix, openableCatalog);
+	const resolved = resolveDurableEntry(workflowId, openableCatalog);
 	if (resolved !== undefined) {
-		if ("kind" in resolved) return { kind: "ambiguous", matches: resolved.matches };
+		if ("kind" in resolved) return { kind: "malformed", message: resolved.message };
 		const snapshot = completedWorkflowSnapshot(backend, resolved);
 		if (snapshot === undefined) {
 			return { kind: "stale", entry: resolved };
@@ -68,9 +68,9 @@ export function resolveCompletedWorkflow(
 		return { kind: "found", entry: resolved, snapshot };
 	}
 
-	const authoritative = resolveDurableEntry(workflowIdOrPrefix, listCompletedFromBackend(backend));
+	const authoritative = resolveDurableEntry(workflowId, listCompletedFromBackend(backend));
 	if (authoritative === undefined) return { kind: "not_found" };
-	if ("kind" in authoritative) return { kind: "ambiguous", matches: authoritative.matches };
+	if ("kind" in authoritative) return { kind: "malformed", message: authoritative.message };
 	return { kind: "stale", entry: authoritative };
 }
 

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -58,7 +59,7 @@ describe("tool run-control actions", () => {
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
 	test.sequential("makeExecuteWorkflowTool sends explicit prompt delivery to live handles", async () => {
-		const runId = `stage-tool-send-prompt-live-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-prompt-live-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-live",
@@ -99,7 +100,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool sends explicit steer delivery to live handles", async () => {
-		const runId = `stage-tool-send-steer-live-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-steer-live-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-steer-live",
@@ -142,7 +143,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool promptId mismatch does not fall through to live followUp", async () => {
-		const runId = `stage-tool-send-prompt-mismatch-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-prompt-mismatch-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-mismatch",
@@ -194,7 +195,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool treats explicit empty text prompt payload as an answer", async () => {
-		const runId = `stage-tool-send-empty-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-empty-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-empty",
@@ -231,7 +232,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool treats explicit empty response prompt payload as an answer", async () => {
-		const runId = `stage-tool-send-empty-response-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-empty-response-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-empty-response",
@@ -276,7 +277,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool ignores explicit undefined prompt payloads", async () => {
-		const runId = `stage-tool-send-undefined-${Date.now()}`;
+		const runId = testRunId(`stage-tool-send-undefined-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-undefined",

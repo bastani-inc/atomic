@@ -121,7 +121,9 @@ While a workflow is running, the visible below-editor `BACKGROUND` panel advance
 
 ### Workflow run identifiers and the BACKGROUND panel
 
-Workflow run identifiers are shown in full everywhere they are presented to users: the `BACKGROUND` panel, workflow status and detail views, run pickers, control messages, and awaiting-input attribution banners. You may still type a full run id or a unique short prefix in any command or workflow-tool action that accepts `runId`; prefix resolution is unchanged. If a prefix matches more than one run, Atomic reports the ambiguity and lists the full matching ids instead of choosing one.
+Workflow run identifiers are shown in full everywhere they are presented to users: the `BACKGROUND` panel, workflow status and detail views, run pickers, control messages, and awaiting-input attribution banners. Input matches that: every command and workflow-tool action that accepts `runId` requires the **full 36-character UUID**, exactly as displayed. Typed prefixes are not accepted, and neither is a 32-character dashless form. A target that is not a well-formed UUID is rejected with `Run id must be a full 36-character UUID; got "339e05a4" (8 chars).`, which is deliberately distinct from `Run not found:` so a truncated paste is diagnosable as truncated rather than looking like a stale run. Because ids are unique and matched exactly, a run target can no longer be ambiguous.
+
+Stage targeting is exact but not UUID-bound, because stage identifiers are not all bare UUIDs. A `stageId` resolves by exact stage id — a bare UUID at the root, the full `runId:stageId` composite for a stage inside a nested workflow, or `tool:<argsHash>` for a `ctx.tool` node — or by exact stage or tool name. Partial names no longer match, so `build` will not select `build-check`. Two stages that share an exact name are still reported as ambiguous, listing the full matching identifiers.
 
 At 80 columns and wider, each `BACKGROUND` card uses two rows so the id is not squeezed beside the workflow name: the first row contains the status glyph and full UUID, and the second contains the workflow name followed by its mode, progress, and elapsed/status metadata. The panel renders every qualifying top-level run, so each card is two rows high (plus the existing spacing between cards). Below 80 columns, the panel keeps its collapsed count-only form and does not render an id.
 
@@ -2863,7 +2865,7 @@ If you copy a HIL workflow example into a headless session, it can pass dispatch
 /workflow interrupt <run-id|--all>
 /workflow quit <run-id|--all>
 /workflow resume <run-id> [stage-id-or-name] [message]
-/workflows [workflow-id-or-prefix]
+/workflows [full-workflow-uuid]
 /workflow reload
 ```
 
@@ -2913,49 +2915,49 @@ workflow({ action: "status" })                                  // list every se
 workflow({ action: "status", statusFilter: "running" })         // filter the run listing by status
 workflow({ action: "status", statusFilter: "awaiting_input" })  // runs with a pending human prompt
 workflow({ action: "status", format: "json" })                  // structured listing for programmatic use
-workflow({ action: "status", runId: "<id-or-prefix>" })         // full detail for one run
+workflow({ action: "status", runId: "<full-run-uuid>" })         // full detail for one run
 
-workflow({ action: "stages", runId: "<id-or-prefix>", statusFilter: "all" })
-workflow({ action: "stage", runId: "<id-or-prefix>", stageId: "review" })
+workflow({ action: "stages", runId: "<full-run-uuid>", statusFilter: "all" })
+workflow({ action: "stage", runId: "<full-run-uuid>", stageId: "review" })
 // Prefer sessionFile/transcriptPath from stages/stage; quote the exact path, preserve Windows separators, then search/read small ranges.
-workflow({ action: "transcript", runId: "<id-or-prefix>", stageId: "review" })
+workflow({ action: "transcript", runId: "<full-run-uuid>", stageId: "review" })
 // Omit tail/limit for the default 5-entry preview; pass them for quick recent-context checks.
-workflow({ action: "transcript", runId: "<id-or-prefix>", stageId: "review", tail: 40 })
-workflow({ action: "transcript", runId: "<id-or-prefix>", stageId: "review", limit: 20, includeToolOutput: true })
+workflow({ action: "transcript", runId: "<full-run-uuid>", stageId: "review", tail: 40 })
+workflow({ action: "transcript", runId: "<full-run-uuid>", stageId: "review", limit: 20, includeToolOutput: true })
 
 // send is admitted only while the authoritative root workflow is nonterminal.
-workflow({ action: "send", runId: "<id-or-prefix>", stageId: "review", text: "please focus on tests" })
-workflow({ action: "send", runId: "<id-or-prefix>", stageId: "approval", promptId: "prompt-1", response: true, delivery: "answer" })
-workflow({ action: "send", runId: "<id-or-prefix>", stageId: "review", message: "continue with tests", delivery: "resume" })
+workflow({ action: "send", runId: "<full-run-uuid>", stageId: "review", text: "please focus on tests" })
+workflow({ action: "send", runId: "<full-run-uuid>", stageId: "approval", promptId: "prompt-1", response: true, delivery: "answer" })
+workflow({ action: "send", runId: "<full-run-uuid>", stageId: "review", message: "continue with tests", delivery: "resume" })
 
-workflow({ action: "pause", runId: "<id-or-prefix>" })
-workflow({ action: "pause", runId: "<id-or-prefix>", stageId: "review" })
+workflow({ action: "pause", runId: "<full-run-uuid>" })
+workflow({ action: "pause", runId: "<full-run-uuid>", stageId: "review" })
 
-workflow({ action: "interrupt", runId: "<id-or-prefix>" })
+workflow({ action: "interrupt", runId: "<full-run-uuid>" })
 workflow({ action: "interrupt", all: true })
 
-workflow({ action: "resume", runId: "<id-or-prefix>" })
-workflow({ action: "resume", runId: "<id-or-prefix>", stageId: "review", message: "continue" })
+workflow({ action: "resume", runId: "<full-run-uuid>" })
+workflow({ action: "resume", runId: "<full-run-uuid>", stageId: "review", message: "continue" })
 
-workflow({ action: "quit", runId: "<id-or-prefix>" })
+workflow({ action: "quit", runId: "<full-run-uuid>" })
 workflow({ action: "quit", all: true })
 
 // Abort one in-flight ctx.tool node without pausing the run.
-workflow({ action: "quit", runId: "<id-or-prefix>", stageId: "tool:<argsHash>" })
-workflow({ action: "interrupt", runId: "<id-or-prefix>", stageId: "publish-artifact" })
+workflow({ action: "quit", runId: "<full-run-uuid>", stageId: "tool:<argsHash>" })
+workflow({ action: "interrupt", runId: "<full-run-uuid>", stageId: "publish-artifact" })
 
 workflow({ action: "reload", reason: "added team workflow" })
 ```
 
 Control behavior:
 
-- `runId` accepts full run ids or unique prefixes for every lifecycle and inspection action, including `status`. User-facing status surfaces print the full IDs, while short prefixes remain valid command input. Exact IDs take precedence; a prefix shared by multiple runs returns an ambiguity diagnostic listing the full matching IDs instead of selecting the first run. Status lists and run pickers show top-level user-launched workflows; nested child runs are implementation details of the expanded parent graph.
+- `runId` requires the full 36-character run UUID for every lifecycle and inspection action, including `status`. User-facing status surfaces print that exact value, so pass it back verbatim; typed prefixes are rejected with a distinct `Run id must be a full 36-character UUID` diagnostic rather than resolved. Because ids are matched exactly and are unique, no run target is ambiguous. Status lists and run pickers show top-level user-launched workflows; nested child runs are implementation details of the expanded parent graph.
 - `status` without `runId` lists every top-level run in the session with a concise per-run summary: the full run id, workflow name, run status, started/ended timing with pause-adjusted elapsed time, currently active stages, and awaiting-input details (count plus the stage, prompt id, kind, and message for each pending human prompt). In-flight runs are listed first. The summaries carry the exact identifiers that `pause`/`resume`/`interrupt`/`quit`/`send` accept, so an orchestrating agent can list runs and act on them directly.
 - `statusFilter` narrows the `status` run listing: run statuses (`pending`, `running`, `paused`, `blocked`, `completed`, `failed`, `skipped`, `cancelled`, `killed`) match runs directly, `awaiting_input` selects runs with at least one stage awaiting input or pending human prompt, and `all` (the default) includes everything.
 - `format: "json"` on data-bearing inspection actions (`status`, `stages`, `stage`, `transcript`) returns the full structured result; the default text output for `status` is the concise per-run summary list.
 - `status` / `status <runId>` show terminal `ctx.exit(...)` statuses (`completed`, `skipped`, `cancelled`, or `blocked`) and the optional exit reason when one was supplied.
 - `stages` lists stage summaries, including flattened stages from nested `ctx.workflow(...)` imports and `sessionFile`/`transcriptPath` when a stage has a persisted session. Use `statusFilter: "all"` to include completed, failed, skipped, and pending stages.
-- `stage` returns details for one stage by stage id, unique prefix, or stage name, including nested child stages shown in the expanded graph and the persisted `sessionFile` when available. User-facing graph and control messages print full stage IDs; short stage prefixes remain accepted by the same unique-prefix resolver. Collisions return an ambiguity diagnostic rather than selecting a stage.
+- `stage` returns details for one stage by exact stage id or exact stage name, including nested child stages shown in the expanded graph and the persisted `sessionFile` when available. User-facing graph and control messages print full stage IDs; pass one back verbatim, or use the stage's exact name. Prefixes and partial names no longer resolve. Two stages sharing an exact name return an ambiguity diagnostic rather than selecting one.
 - `transcript` is reference-first with a small preview by default: it returns metadata, transcript paths, and up to 5 recent entries. For targeted lookup, quote the exact `sessionFile`/`transcriptPath` value without changing platform separators (preserve Windows backslashes), search it with `rg` or `grep`, then read only small surrounding ranges. Text results include JSON-escaped `sessionFileJson`/`transcriptPathJson` lines for copy-safe path literals. Pass explicit `tail` or `limit` to override the 5-entry preview; `tail` overrides `limit`; `includeToolOutput` includes captured snapshot tool output in snapshot transcript results.
 - `send` operates only while the authoritative root workflow is nonterminal; delivery modes are `auto`, `answer`, `prompt`, `steer`, `followUp`, and `resume`.
   - A terminal root (`completed`, `failed`, `skipped`, `cancelled`, `killed`, or terminal `blocked`) rejects every programmatic send with `status: "failed"`, `code: "WORKFLOW_TERMINAL"`, `delivery: "rejected"`, the requested root run id and terminal status, and guidance to start a new workflow. Proceed inline instead only when the remaining work is small, deterministic, and low risk.
@@ -2975,8 +2977,8 @@ Control behavior:
 - `pause` never accepts a tool node: `ctx.tool` has no turn boundary to stop at, so Atomic rejects it with `Tool nodes cannot be paused; ... Use interrupt or quit to abort it.` instead of a silent no-op.
 - `interrupt` is resumable: it pauses live work when pausable stages exist and keeps the run in live history/status.
 - `pause` is useful for pausing a live run or a single live stage without treating it as a destructive abort.
-- `resume` can target a stage with `stageId`; the target may be a stage id, unique prefix, or stage name. `message` is forwarded to paused work. For a live interrupted streaming prompt, Atomic preserves the existing prompt loop without duplicating the user message and injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` when required before normal readiness-gate completion. For a paused stage that was idle waiting for a new stage-chat turn, a non-empty message resumes the stage and starts exactly one fresh prompt containing that message; an empty resume releases the pause without creating a prompt.
-- An explicit workflow-tool `resume` target that is absent from the current session store triggers targeted DBOS discovery before Atomic returns `Run not found`. Eligible exact IDs and unique prefixes resume under the original workflow ID; durable prefix collisions return every matching ID. Resource-loading and durable-backend failures remain visible. Ordinary workflow-tool `status` listing stays session-local and does not eagerly hydrate durable history.
+- `resume` can target a stage with `stageId`; the target may be an exact stage id or an exact stage name. `message` is forwarded to paused work. For a live interrupted streaming prompt, Atomic preserves the existing prompt loop without duplicating the user message and injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` when required before normal readiness-gate completion. For a paused stage that was idle waiting for a new stage-chat turn, a non-empty message resumes the stage and starts exactly one fresh prompt containing that message; an empty resume releases the pause without creating a prompt.
+- An explicit workflow-tool `resume` target that is absent from the current session store triggers targeted DBOS discovery before Atomic returns `Run not found`. The target must be a full run UUID; an eligible exact ID resumes under the original workflow ID, and a malformed target is rejected before any durable lookup happens. Resource-loading and durable-backend failures remain visible. Ordinary workflow-tool `status` listing stays session-local and does not eagerly hydrate durable history.
 - Run-level `quit` gracefully pauses in-flight work, marks the run resumable, and leaves it available to `/workflow resume`. A run whose only in-flight work is a `ctx.tool` node is quit like any other: it pauses as resumable instead of reporting that there are no controllable stages.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
@@ -3120,7 +3122,7 @@ Durable `/workflow resume` preserves completed stage metadata, active-stage elap
 
 Each new Atomic process that reopens unfinished work starts from the latest saved baseline, so repeated process-boundary resumes keep stable boundary/child ids, status, graph, and lifecycle duration cumulative without double-counting pauses. A stage paused at ten seconds resumes at ten seconds, and the main-chat dashboard reports prior-session elapsed plus current-session elapsed. Completed inspection uses that same accumulated run timing rather than DBOS record wall-clock age.
 
-Repeated, sibling, sequential, parallel, and multi-level child calls keep independent composed scopes and stable boundary order. The expanded graph routes attach, send, pause, interrupt, and resume through each stage's ordinary owning `{ runId, stageId}`. Exact expanded ids resolve first; local ids, prefixes, and names resolve only when unique, so collisions never select the first match silently.
+Repeated, sibling, sequential, parallel, and multi-level child calls keep independent composed scopes and stable boundary order. The expanded graph routes attach, send, pause, interrupt, and resume through each stage's ordinary owning `{ runId, stageId}`. Resolution is exact: an expanded id, a local stage id, or a name must match whole, and colliding names return an ambiguity diagnostic rather than selecting the first match silently.
 
 ### `ctx.tool` — durable cached tool execution
 
@@ -3211,16 +3213,16 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 
 ```text
 /workflow resume                          # Mixed picker: resumable + completed
-/workflow resume <workflow-id-or-prefix> # Resume unfinished work or open completed detail/chat
+/workflow resume <full-workflow-uuid> # Resume unfinished work or open completed detail/chat
 /workflows                               # Alias for the same mixed picker
-/workflows <workflow-id-or-prefix>        # Alias for targeted resume/open
+/workflows <full-workflow-uuid>        # Alias for targeted resume/open
 ```
 
-Explicit full IDs take precedence, while prefixes resolve across top-level live, resumable durable, and completed targets as one namespace. An exact loadable paused top-level live target resumes directly from in-session state without enumerating the durable completed-history catalog; this keeps explicit live resume responsive even when retained durable history is large and preserves live-over-durable precedence for duplicate IDs. If a stale or concurrent catalog view presents the same failed root as both resumable and read-only history, the resumable durable target wins for exact and prefix routing. Nested child runs remain excluded from this top-level target namespace even when addressed by an exact ID.
+Targets resolve across top-level live, resumable durable, and completed entries as one namespace, matched by full UUID only. An exact loadable paused top-level live target resumes directly from in-session state without enumerating the durable completed-history catalog; this keeps explicit live resume responsive even when retained durable history is large and preserves live-over-durable precedence for duplicate IDs. If a stale or concurrent catalog view presents the same failed root as both resumable and read-only history, the resumable durable target wins. Nested child runs remain excluded from this top-level target namespace even when addressed by an exact ID.
 
-The non-interactive `workflow({ action: "resume", runId: "<id-or-prefix>" })` surface uses the same durable resumable-target lookup behavior for explicit targets. If the target is absent locally, Atomic loads workflow resources, queries the authoritative DBOS resumable catalog, and only then reports a missing run. This targeted hydration does not change `workflow({ action: "status" })`: an empty session-local status before explicit resume does not imply that DBOS deleted the workflow.
+The non-interactive `workflow({ action: "resume", runId: "<full-run-uuid>" })` surface uses the same durable resumable-target lookup behavior for explicit targets. If the target is absent locally, Atomic loads workflow resources, queries the authoritative DBOS resumable catalog, and only then reports a missing run. This targeted hydration does not change `workflow({ action: "status" })`: an empty session-local status before explicit resume does not imply that DBOS deleted the workflow.
 
-Prefixes and other targets continue through the combined catalog so ambiguity and read-only inspection behavior remain unchanged. Ambiguous prefixes use the existing-style diagnostic. A current completed or non-resumable failed backend row with valid graph checkpoints remains inspectable even if every retained stage conversation is unavailable. Missing, empty, directory, context-empty, or partially malformed transcript paths are stripped from chat attachment while the graph stays read-only and visible.
+A target that is not a full UUID is rejected before the combined catalog is consulted, so a truncated id never reaches durable lookup. Read-only inspection behavior is otherwise unchanged. A current completed or non-resumable failed backend row with valid graph checkpoints remains inspectable even if every retained stage conversation is unavailable. Missing, empty, directory, context-empty, or partially malformed transcript paths are stripped from chat attachment while the graph stays read-only and visible.
 
 Validation uses the final retained transcript for a repeated stage replay key, so an obsolete superseded checkpoint path does not hide an otherwise valid read-only graph. Reopening inspection refreshes a changed authoritative retained-chat handle. Session-cache-only rows are hidden because the backend is authoritative. Checkpointed non-resumable failed roots appear only in read-only history; cancelled, killed, blocked non-resumable, failed roots without saved progress, and other terminal non-success states are never added. Normal `/resume`, `atomic -r`, and `--continue` behavior for internal workflow stage sessions is unchanged.
 

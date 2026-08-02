@@ -12,6 +12,7 @@ import {
 } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 const previousWorkflowStageSubagentGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 
@@ -89,7 +90,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 				throw new Error("discovery failed");
 			},
 		});
-		const runId = "picker-live-resume-source";
+		const runId = testRunId("picker-live-resume-source");
 		store.recordRunStart({
 			id: runId,
 			name: "picker workflow",
@@ -169,7 +170,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 				throw new Error("discovery failed");
 			},
 		});
-		const runId = "quit-paused-resume-source";
+		const runId = testRunId("quit-paused-resume-source");
 		store.recordRunStart({
 			id: runId,
 			name: "quit paused workflow",
@@ -198,7 +199,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 				return [];
 			},
 		});
-		const runId = "dbos-like-current-live";
+		const runId = testRunId("dbos-like-current-live");
 		store.recordRunStart({
 			id: runId,
 			name: "current live",
@@ -228,7 +229,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 				return [];
 			},
 		});
-		const runId = "dbos-like-unclassified-restored";
+		const runId = testRunId("dbos-like-unclassified-restored");
 		store.recordRunStart({
 			id: runId,
 			name: "restored",
@@ -247,7 +248,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 	});
 
 	test("/workflow resume routes quit durable shadows through durable resume", async () => {
-		const runId = "quit-shadow-durable-resume";
+		const runId = testRunId("quit-shadow-durable-resume");
 		store.recordRunStart({
 			id: runId,
 			name: "quit shadow workflow",
@@ -323,7 +324,13 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			return {
 				dispatch: async (): Promise<WorkflowToolResult> =>
 					canSeeLazyWorkflow
-						? { action: "run", name: "lazy model run", runId: "model-run", status: "running", stages: [] }
+						? {
+								action: "run",
+								name: "lazy model run",
+								runId: testRunId("model-run"),
+								status: "running",
+								stages: [],
+							}
 						: {
 								action: "run",
 								name: "lazy model run",
@@ -350,13 +357,13 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 		assert.equal(ensureCalls, 1);
 		assert.equal(result.action, "run");
 		assert.equal(result.status, "running");
-		assert.equal(result.runId, "model-run");
+		assert.equal(result.runId, testRunId("model-run"));
 	});
 
 	test("workflow tool failed resume re-resolves runtime after lazy discovery", async () => {
 		const backend = new HydrationCapableBackend();
 		setDurableBackend(backend);
-		const sourceRunId = "lazy-tool-model-resume-source";
+		const sourceRunId = testRunId("lazy-tool-model-resume-source");
 		store.recordRunStart({
 			id: sourceRunId,
 			name: "lazy model resume",
@@ -389,7 +396,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 			return {
 				resumeFailedRun: () =>
 					canResume
-						? { ok: true, runId: "continued-run", message: "Resuming failed workflow" }
+						? { ok: true, runId: testRunId("continued-run"), message: "Resuming failed workflow" }
 						: { ok: false, reason: "workflow_not_found", message: "workflow_not_found: lazy model resume" },
 			} as unknown as ExtensionRuntime;
 		};
@@ -410,7 +417,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
 		assert.equal(backend.hydrateCalls, 0);
 		assert.equal(result.action, "resume");
 		assert.equal(result.status, "running");
-		assert.equal(result.runId, "continued-run");
+		assert.equal(result.runId, testRunId("continued-run"));
 		assert.match(result.message ?? "", /Resuming failed workflow/);
 	});
 });

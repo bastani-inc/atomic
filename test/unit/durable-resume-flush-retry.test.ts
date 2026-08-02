@@ -14,6 +14,7 @@ import {
 	stageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore, type Store, store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 class FlushTrackingBackend extends InMemoryDurableBackend {
 	flushCalls = 0;
@@ -26,7 +27,7 @@ class FlushTrackingBackend extends InMemoryDurableBackend {
 	async flush(): Promise<void> {
 		this.flushCalls += 1;
 		if (this.flushCalls <= this.failures) throw new Error("transient durable flush failure");
-		this.durableStatus = this.getWorkflow("flush-retry")?.status ?? "missing";
+		this.durableStatus = this.getWorkflow(testRunId("flush-retry"))?.status ?? "missing";
 	}
 }
 
@@ -86,7 +87,7 @@ afterEach(() => {
 describe("durable-running asynchronous flush retry", () => {
 	delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 	test("primitive retries a transient failed flush after local state is already running", async () => {
-		const runId = "flush-retry";
+		const runId = testRunId("flush-retry");
 		const backend = new FlushTrackingBackend(1);
 		const activeStore = createStore();
 		const registry = createStageControlRegistry();
@@ -105,7 +106,7 @@ describe("durable-running asynchronous flush retry", () => {
 	});
 
 	test("primitive keeps reporting partial while the durable flush continues failing", async () => {
-		const runId = "flush-retry";
+		const runId = testRunId("flush-retry");
 		const backend = new FlushTrackingBackend(Number.POSITIVE_INFINITY);
 		const activeStore = createStore();
 		const registry = createStageControlRegistry();
@@ -122,7 +123,7 @@ describe("durable-running asynchronous flush retry", () => {
 	});
 
 	test.sequential("workflow tool retries a pending durable transition instead of reporting snapshot success", async () => {
-		const runId = "flush-retry";
+		const runId = testRunId("flush-retry");
 		const backend = new FlushTrackingBackend(1);
 		setDurableBackend(backend);
 		seedPausedRun(runId, backend, store, stageControlRegistry);
@@ -143,7 +144,7 @@ describe("durable-running asynchronous flush retry", () => {
 	});
 
 	test.sequential("slash resume retries a pending durable transition instead of saying already running", async () => {
-		const runId = "flush-retry";
+		const runId = testRunId("flush-retry");
 		const backend = new FlushTrackingBackend(1);
 		setDurableBackend(backend);
 		seedPausedRun(runId, backend, store, stageControlRegistry);

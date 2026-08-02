@@ -172,7 +172,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	}
 
 	function matchesResumeStageIdentifier(stage: RunSnapshot["stages"][number], identifier: string): boolean {
-		return stage.id === identifier || stage.name === identifier || stage.id.startsWith(identifier);
+		return stage.id === identifier || stage.name === identifier;
 	}
 
 	function stageLabel(stage: RunSnapshot["stages"][number]): string {

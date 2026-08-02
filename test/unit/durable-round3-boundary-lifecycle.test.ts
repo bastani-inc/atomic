@@ -15,10 +15,11 @@ import type {
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk, seedMockCheckpoint, seedMockWorkflow } from "./durable-dbos-backend-helpers.js";
 
-const ROOT = "round3-lifecycle-root";
-const CHILD = "round3-lifecycle-child";
+const ROOT = testRunId("round3-lifecycle-root");
+const CHILD = testRunId("round3-lifecycle-child");
 const KEY = "workflow:child:1";
 const BOUNDARY_ID = "round3-lifecycle-boundary";
 

@@ -9,6 +9,7 @@ import {
 	type WorkflowLifecycleNoticeDetails,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 interface Admission {
 	readonly content?: string;
@@ -74,7 +75,7 @@ describe("completed inspection lifecycle delivery state", () => {
 		const state = createWorkflowLifecycleNotificationState();
 		const send = Promise.withResolvers<void>();
 		const admissions: Admission[] = [];
-		seedCompletedTool(backend, "pending-live", "historical replacement");
+		seedCompletedTool(backend, testRunId("pending-live"), "historical replacement");
 		const unsubscribe = installWorkflowLifecycleNotifications({
 			store,
 			state,
@@ -86,17 +87,17 @@ describe("completed inspection lifecycle delivery state", () => {
 			},
 		});
 		store.recordRunStart({
-			id: "pending-live",
+			id: testRunId("pending-live"),
 			name: "original live",
 			inputs: {},
 			status: "running",
 			stages: [],
 			startedAt: 1,
 		});
-		store.recordRunEnd("pending-live", "completed", {});
+		store.recordRunEnd(testRunId("pending-live"), "completed", {});
 		assert.equal(admissions.length, 1);
 
-		const opened = openCompletedDurableWorkflow("pending-live", {
+		const opened = openCompletedDurableWorkflow(testRunId("pending-live"), {
 			durableBackend: backend,
 			store,
 			beforeRestore(snapshots) {
@@ -122,7 +123,7 @@ describe("completed inspection lifecycle delivery state", () => {
 		const state = createWorkflowLifecycleNotificationState();
 		const admissions: Admission[] = [];
 		let attempt = 0;
-		seedCompletedTool(backend, "retry-live", "historical replacement");
+		seedCompletedTool(backend, testRunId("retry-live"), "historical replacement");
 		const unsubscribe = installWorkflowLifecycleNotifications({
 			store,
 			state,
@@ -136,14 +137,14 @@ describe("completed inspection lifecycle delivery state", () => {
 		});
 		try {
 			store.recordRunStart({
-				id: "retry-live",
+				id: testRunId("retry-live"),
 				name: "original live",
 				inputs: {},
 				status: "running",
 				stages: [],
 				startedAt: 1,
 			});
-			store.recordRunEnd("retry-live", "completed", {});
+			store.recordRunEnd(testRunId("retry-live"), "completed", {});
 			await flushMicrotasks();
 			assert.equal(admissions.length, 1);
 			assert.equal(timers.activeCount(), 1);
@@ -151,7 +152,7 @@ describe("completed inspection lifecycle delivery state", () => {
 			const originalContent = admissions[0]?.content;
 			assert.equal(originalDetails?.workflowName, "original live");
 
-			const opened = openCompletedDurableWorkflow("retry-live", {
+			const opened = openCompletedDurableWorkflow(testRunId("retry-live"), {
 				durableBackend: backend,
 				store,
 				beforeRestore(snapshots) {

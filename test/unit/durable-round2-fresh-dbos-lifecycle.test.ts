@@ -14,6 +14,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
 function copySdk(source: ReturnType<typeof createMockSdk>): ReturnType<typeof createMockSdk> {
@@ -35,8 +36,8 @@ function terminals(backend: DbosDurableBackend, runId: string): DurableStageChec
 test("failed, skipped, and exited child lifecycle survives fresh DBOS catalog hydration exactly once", async () => {
 	const sdk = createMockSdk();
 	const writer = new DbosDurableBackend(sdk, { executorId: "round2-lifecycle-writer" });
-	const completedRootId = "round2-lifecycle-completed";
-	const skippedRootId = "round2-lifecycle-skipped";
+	const completedRootId = testRunId("round2-lifecycle-completed");
+	const skippedRootId = testRunId("round2-lifecycle-skipped");
 	let stageStarts = 0;
 	let stageEnds = 0;
 

@@ -17,6 +17,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
+import { testRunId } from "../helpers/run-id.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 import { defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
@@ -99,7 +100,7 @@ describe("completed workflow inspection", () => {
 		const store = createStore();
 		const lifecycle = lifecycleRestoration(store);
 		const registry = createStageControlRegistry();
-		const sessionFile = retainedSession("completed-inspection");
+		const sessionFile = retainedSession(testRunId("completed-inspection"));
 		const promptCalls: string[] = [];
 		const session: StageSessionRuntime = {
 			...mockSession(),
@@ -109,7 +110,7 @@ describe("completed workflow inspection", () => {
 			},
 		};
 		backend.registerWorkflow({
-			workflowId: "completed-inspection",
+			workflowId: testRunId("completed-inspection"),
 			name: "completed-flow",
 			inputs: { topic: "done" },
 			createdAt: 1,
@@ -118,7 +119,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "completed-inspection",
+			workflowId: testRunId("completed-inspection"),
 			checkpointId: "stage:1",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -130,7 +131,7 @@ describe("completed workflow inspection", () => {
 
 		let sessionCreates = 0;
 		let restoredMessageCount = 0;
-		const opened = openCompletedDurableWorkflow("completed-ins", {
+		const opened = openCompletedDurableWorkflow(testRunId("completed-inspection"), {
 			durableBackend: backend,
 			store,
 			beforeRestore: lifecycle.beforeRestore,
@@ -150,16 +151,16 @@ describe("completed workflow inspection", () => {
 		assert.equal(opened.ok, true);
 		assert.equal(store.runs()[0]?.status, "completed");
 		assert.equal(store.runs()[0]?.stages[0]?.attachable, false);
-		assert.equal(backend.getWorkflow("completed-inspection")?.status, "completed");
-		const handle = registry.get("completed-inspection", "final-source");
+		assert.equal(backend.getWorkflow(testRunId("completed-inspection"))?.status, "completed");
+		const handle = registry.get(testRunId("completed-inspection"), "final-source");
 		assert.ok(handle);
-		assert.deepEqual(registry.run("completed-inspection").stages(), []);
+		assert.deepEqual(registry.run(testRunId("completed-inspection")).stages(), []);
 
 		const attached: string[] = [];
-		const graph = expandWorkflowGraph(store.snapshot(), "completed-inspection");
+		const graph = expandWorkflowGraph(store.snapshot(), testRunId("completed-inspection"));
 		const view = new GraphView({
 			mode: "overlay",
-			runId: "completed-inspection",
+			runId: testRunId("completed-inspection"),
 			store,
 			graphTheme: defaultTheme,
 			getViewportRows: () => 32,
@@ -175,9 +176,9 @@ describe("completed workflow inspection", () => {
 		for (const char of "final") view.handleInput(char);
 		view.handleInput("\r");
 		assert.deepEqual(attached, [
-			"completed-inspection/final-source",
-			"completed-inspection/final-source",
-			"completed-inspection/final-source",
+			`${testRunId("completed-inspection")}/final-source`,
+			`${testRunId("completed-inspection")}/final-source`,
+			`${testRunId("completed-inspection")}/final-source`,
 		]);
 		view.dispose();
 		await handle.prompt("What should I do next?");
@@ -185,12 +186,12 @@ describe("completed workflow inspection", () => {
 		assert.equal(restoredMessageCount, 1);
 		assert.deepEqual(promptCalls, ["What should I do next?"]);
 		assert.equal(store.runs()[0]?.status, "completed");
-		assert.equal(backend.getWorkflow("completed-inspection")?.status, "completed");
+		assert.equal(backend.getWorkflow(testRunId("completed-inspection"))?.status, "completed");
 		assert.deepEqual(lifecycle.sent, []);
 		lifecycle.unsubscribe();
 	});
 	test("includes the full workflow id in a completed inspection message", () => {
-		const workflowId = "aa11bb22-33cc-44dd-55ee-66ff77889900";
+		const workflowId = testRunId("full-workflow-id");
 		const backend = new InMemoryDurableBackend();
 		const store = createStore();
 		backend.registerWorkflow({
@@ -212,7 +213,7 @@ describe("completed workflow inspection", () => {
 			topology: completedTopology("final-source"),
 		});
 
-		const opened = openCompletedDurableWorkflow("aa11bb22", { durableBackend: backend, store });
+		const opened = openCompletedDurableWorkflow(workflowId, { durableBackend: backend, store });
 		assert.equal(opened.ok, true);
 		if (opened.ok) assert.ok(opened.message.includes(workflowId));
 	});
@@ -220,9 +221,9 @@ describe("completed workflow inspection", () => {
 	test("refuses to replace an active run with the same id", () => {
 		const backend = new InMemoryDurableBackend();
 		const store = createStore();
-		const sessionFile = retainedSession("same-id");
+		const sessionFile = retainedSession(testRunId("same-id"));
 		backend.registerWorkflow({
-			workflowId: "same-id",
+			workflowId: testRunId("same-id"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
@@ -230,7 +231,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "same-id",
+			workflowId: testRunId("same-id"),
 			checkpointId: "stage:1",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -238,9 +239,16 @@ describe("completed workflow inspection", () => {
 			completedAt: 2,
 			topology: completedTopology("final-source"),
 		});
-		store.recordRunStart({ id: "same-id", name: "active", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: testRunId("same-id"),
+			name: "active",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
 
-		const opened = openCompletedDurableWorkflow("same-id", { durableBackend: backend, store });
+		const opened = openCompletedDurableWorkflow(testRunId("same-id"), { durableBackend: backend, store });
 		assert.equal(opened.ok, false);
 		if (!opened.ok) assert.equal(opened.reason, "active");
 		assert.equal(store.runs()[0]?.status, "running");
@@ -249,9 +257,9 @@ describe("completed workflow inspection", () => {
 	test("replaces a retained completed snapshot with authoritative durable detail", () => {
 		const backend = new InMemoryDurableBackend();
 		const store = createStore();
-		const sessionFile = retainedSession("authoritative");
+		const sessionFile = retainedSession(testRunId("authoritative"));
 		backend.registerWorkflow({
-			workflowId: "authoritative",
+			workflowId: testRunId("authoritative"),
 			name: "durable-name",
 			inputs: {},
 			createdAt: 1,
@@ -259,7 +267,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "authoritative",
+			workflowId: testRunId("authoritative"),
 			checkpointId: "stage:1",
 			name: "durable-stage",
 			replayKey: "stage:durable:1",
@@ -269,7 +277,7 @@ describe("completed workflow inspection", () => {
 			topology: completedTopology("durable-source"),
 		});
 		store.recordRunStart({
-			id: "authoritative",
+			id: testRunId("authoritative"),
 			name: "stale-local-name",
 			inputs: {},
 			status: "completed",
@@ -279,7 +287,7 @@ describe("completed workflow inspection", () => {
 			resumable: false,
 		});
 
-		const opened = openCompletedDurableWorkflow("authoritative", { durableBackend: backend, store });
+		const opened = openCompletedDurableWorkflow(testRunId("authoritative"), { durableBackend: backend, store });
 
 		assert.equal(opened.ok, true);
 		assert.equal(store.runs()[0]?.name, "durable-name");
@@ -295,7 +303,7 @@ describe("completed workflow inspection", () => {
 		const firstSessionFile = retainedSession("first-authoritative");
 		const secondSessionFile = retainedSession("second-authoritative");
 		backend.registerWorkflow({
-			workflowId: "refresh-chat",
+			workflowId: testRunId("refresh-chat"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
@@ -303,7 +311,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "refresh-chat",
+			workflowId: testRunId("refresh-chat"),
 			checkpointId: "stage:1",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -325,12 +333,12 @@ describe("completed workflow inspection", () => {
 			},
 		};
 
-		assert.equal(openCompletedDurableWorkflow("refresh-chat", deps).ok, true);
-		const firstHandle = registry.get("refresh-chat", "final-source");
+		assert.equal(openCompletedDurableWorkflow(testRunId("refresh-chat"), deps).ok, true);
+		const firstHandle = registry.get(testRunId("refresh-chat"), "final-source");
 		assert.equal(firstHandle?.sessionFile, firstSessionFile);
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "refresh-chat",
+			workflowId: testRunId("refresh-chat"),
 			checkpointId: "stage:2",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -339,9 +347,9 @@ describe("completed workflow inspection", () => {
 			topology: completedTopology("final-source"),
 		});
 
-		assert.equal(openCompletedDurableWorkflow("refresh-chat", deps).ok, true);
+		assert.equal(openCompletedDurableWorkflow(testRunId("refresh-chat"), deps).ok, true);
 		assert.equal(firstHandle?.isDisposed, true);
-		assert.equal(registry.get("refresh-chat", "final-source")?.sessionFile, secondSessionFile);
+		assert.equal(registry.get(testRunId("refresh-chat"), "final-source")?.sessionFile, secondSessionFile);
 		assert.deepEqual(lifecycle.sent, []);
 		lifecycle.unsubscribe();
 	});
@@ -353,7 +361,7 @@ describe("completed workflow inspection", () => {
 		const invalidatedSessionFile = retainedSession("invalidated-stage");
 		const retainedSessionFile = retainedSession("still-retained-stage");
 		backend.registerWorkflow({
-			workflowId: "invalidate-chat",
+			workflowId: testRunId("invalidate-chat"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
@@ -361,7 +369,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "invalidate-chat",
+			workflowId: testRunId("invalidate-chat"),
 			checkpointId: "stage:1",
 			name: "first",
 			replayKey: "stage:first:1",
@@ -371,7 +379,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "invalidate-chat",
+			workflowId: testRunId("invalidate-chat"),
 			checkpointId: "stage:2",
 			name: "second",
 			replayKey: "stage:second:1",
@@ -392,24 +400,24 @@ describe("completed workflow inspection", () => {
 			},
 		};
 
-		assert.equal(openCompletedDurableWorkflow("invalidate-chat", deps).ok, true);
-		const invalidatedHandle = registry.get("invalidate-chat", "first-source");
+		assert.equal(openCompletedDurableWorkflow(testRunId("invalidate-chat"), deps).ok, true);
+		const invalidatedHandle = registry.get(testRunId("invalidate-chat"), "first-source");
 		assert.ok(invalidatedHandle);
 		rmSync(invalidatedSessionFile);
 
-		assert.equal(openCompletedDurableWorkflow("invalidate-chat", deps).ok, true);
+		assert.equal(openCompletedDurableWorkflow(testRunId("invalidate-chat"), deps).ok, true);
 		assert.equal(invalidatedHandle.isDisposed, true);
-		assert.equal(registry.get("invalidate-chat", "first-source"), undefined);
-		assert.equal(registry.get("invalidate-chat", "second-source")?.sessionFile, retainedSessionFile);
+		assert.equal(registry.get(testRunId("invalidate-chat"), "first-source"), undefined);
+		assert.equal(registry.get(testRunId("invalidate-chat"), "second-source")?.sessionFile, retainedSessionFile);
 	});
 
 	test("opens a retained internal stage transcript without exposing it in ordinary history", async () => {
 		const backend = new InMemoryDurableBackend();
 		const store = createStore();
-		const internalSessionFile = retainedSession("internal-completed", true);
+		const internalSessionFile = retainedSession(testRunId("internal-completed"), true);
 		retainedSession("regular-history");
 		backend.registerWorkflow({
-			workflowId: "internal-completed",
+			workflowId: testRunId("internal-completed"),
 			name: "completed-flow",
 			inputs: {},
 			createdAt: 1,
@@ -417,7 +425,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "internal-completed",
+			workflowId: testRunId("internal-completed"),
 			checkpointId: "stage:1",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -426,7 +434,10 @@ describe("completed workflow inspection", () => {
 			topology: completedTopology("final-source"),
 		});
 
-		assert.equal(openCompletedDurableWorkflow("internal-completed", { durableBackend: backend, store }).ok, true);
+		assert.equal(
+			openCompletedDurableWorkflow(testRunId("internal-completed"), { durableBackend: backend, store }).ok,
+			true,
+		);
 		assert.equal(store.runs()[0]?.stages[0]?.sessionFile, internalSessionFile);
 		assert.deepEqual(
 			(await SessionManager.list(tempDir, tempDir)).map((session) => session.id),
@@ -439,7 +450,7 @@ describe("completed workflow inspection", () => {
 		const store = createStore();
 		const registry = createStageControlRegistry();
 		backend.registerWorkflow({
-			workflowId: "completed-tool-only",
+			workflowId: testRunId("completed-tool-only"),
 			name: "tool-only",
 			inputs: {},
 			createdAt: 1,
@@ -447,7 +458,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "tool",
-			workflowId: "completed-tool-only",
+			workflowId: testRunId("completed-tool-only"),
 			checkpointId: "tool:publish",
 			name: "publish",
 			argsHash: "publish-hash",
@@ -455,7 +466,7 @@ describe("completed workflow inspection", () => {
 			completedAt: 2,
 		});
 
-		const opened = openCompletedDurableWorkflow("completed-tool", {
+		const opened = openCompletedDurableWorkflow(testRunId("completed-tool-only"), {
 			durableBackend: backend,
 			store,
 			stageControlRegistry: registry,
@@ -472,7 +483,7 @@ describe("completed workflow inspection", () => {
 		if (!opened.ok) return;
 		assert.match(opened.message, /read-only inspection/);
 		assert.doesNotMatch(opened.message, /follow-up chat/);
-		assert.deepEqual(registry.forRun("completed-tool-only"), []);
+		assert.deepEqual(registry.forRun(testRunId("completed-tool-only")), []);
 		assert.deepEqual(
 			store.runs()[0]?.toolNodes?.map((tool) => tool.name),
 			["publish"],
@@ -483,8 +494,8 @@ describe("completed workflow inspection", () => {
 		const backend = new InMemoryDurableBackend();
 		const store = createStore();
 		const lifecycle = lifecycleRestoration(store);
-		const runId = "silent-nested-root";
-		const childRunId = "silent-nested-child";
+		const runId = testRunId("silent-nested-root");
+		const childRunId = testRunId("silent-nested-child");
 		backend.registerWorkflow({
 			workflowId: runId,
 			name: "nested root",
@@ -533,7 +544,7 @@ describe("completed workflow inspection", () => {
 			},
 		});
 
-		const opened = openCompletedDurableWorkflow("silent-nested", {
+		const opened = openCompletedDurableWorkflow(testRunId("silent-nested-root"), {
 			durableBackend: backend,
 			store,
 			beforeRestore: lifecycle.beforeRestore,
@@ -565,7 +576,7 @@ describe("completed workflow inspection", () => {
 			},
 		});
 		backend.registerWorkflow({
-			workflowId: "silent-tool-only",
+			workflowId: testRunId("silent-tool-only"),
 			name: "silent tool",
 			inputs: {},
 			createdAt: 1,
@@ -574,7 +585,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "tool",
-			workflowId: "silent-tool-only",
+			workflowId: testRunId("silent-tool-only"),
 			checkpointId: "tool:publish",
 			name: "publish",
 			argsHash: "publish-hash",
@@ -582,7 +593,7 @@ describe("completed workflow inspection", () => {
 			completedAt: 2,
 		});
 
-		const opened = openCompletedDurableWorkflow("silent-tool", {
+		const opened = openCompletedDurableWorkflow(testRunId("silent-tool-only"), {
 			durableBackend: backend,
 			store,
 			beforeRestore(snapshots) {
@@ -614,17 +625,17 @@ describe("completed workflow inspection", () => {
 			},
 		});
 		store.recordRunStart({
-			id: "live-then-inspect",
+			id: testRunId("live-then-inspect"),
 			name: "live tool",
 			inputs: {},
 			status: "running",
 			stages: [],
 			startedAt: 1,
 		});
-		store.recordRunEnd("live-then-inspect", "completed", {});
+		store.recordRunEnd(testRunId("live-then-inspect"), "completed", {});
 		assert.equal(sent.length, 1);
 		backend.registerWorkflow({
-			workflowId: "live-then-inspect",
+			workflowId: testRunId("live-then-inspect"),
 			name: "live tool",
 			inputs: {},
 			createdAt: 1,
@@ -633,7 +644,7 @@ describe("completed workflow inspection", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "tool",
-			workflowId: "live-then-inspect",
+			workflowId: testRunId("live-then-inspect"),
 			checkpointId: "tool:done",
 			name: "done",
 			argsHash: "done-hash",
@@ -641,7 +652,7 @@ describe("completed workflow inspection", () => {
 			completedAt: 2,
 		});
 
-		const opened = openCompletedDurableWorkflow("live-then", {
+		const opened = openCompletedDurableWorkflow(testRunId("live-then-inspect"), {
 			durableBackend: backend,
 			store,
 			beforeRestore(snapshots) {

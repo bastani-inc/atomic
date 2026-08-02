@@ -15,11 +15,12 @@ import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expande
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
+import { testRunId } from "../helpers/run-id.js";
 import { defaultTheme } from "./overlay-graph-helpers.js";
 
 function recordToolOnly(target = createStore(), status: "running" | "completed" = "running") {
 	target.recordRunStart({
-		id: "tool-interaction-run",
+		id: testRunId("tool-interaction-run"),
 		name: "tool interaction",
 		inputs: {},
 		status,
@@ -70,11 +71,11 @@ afterEach(() => {
 describe("non-attachable tool interactions", () => {
 	test("keyboard, direct mouse, and switcher activation never attach a tool", () => {
 		const localStore = recordToolOnly();
-		const graph = expandWorkflowGraph(localStore.snapshot(), "tool-interaction-run");
+		const graph = expandWorkflowGraph(localStore.snapshot(), testRunId("tool-interaction-run"));
 		const attached: string[] = [];
 		const view = new GraphView({
 			mode: "overlay",
-			runId: "tool-interaction-run",
+			runId: testRunId("tool-interaction-run"),
 			store: localStore,
 			graphTheme: defaultTheme,
 			getViewportRows: () => 32,
@@ -94,7 +95,7 @@ describe("non-attachable tool interactions", () => {
 	test("keyboard, mouse, and switcher activation open a retained completed stage", () => {
 		const localStore = createStore();
 		localStore.recordRunStart({
-			id: "postmortem-run",
+			id: testRunId("postmortem-run"),
 			name: "postmortem",
 			inputs: {},
 			status: "completed",
@@ -112,11 +113,11 @@ describe("non-attachable tool interactions", () => {
 				},
 			],
 		});
-		const graph = expandWorkflowGraph(localStore.snapshot(), "postmortem-run");
+		const graph = expandWorkflowGraph(localStore.snapshot(), testRunId("postmortem-run"));
 		const attached: string[] = [];
 		const view = new GraphView({
 			mode: "overlay",
-			runId: "postmortem-run",
+			runId: testRunId("postmortem-run"),
 			store: localStore,
 			graphTheme: defaultTheme,
 			getViewportRows: () => 32,
@@ -130,9 +131,9 @@ describe("non-attachable tool interactions", () => {
 		for (const char of "retained-stage") view.handleInput(char);
 		view.handleInput("\r");
 		assert.deepEqual(attached, [
-			"postmortem-run/retained-stage",
-			"postmortem-run/retained-stage",
-			"postmortem-run/retained-stage",
+			`${testRunId("postmortem-run")}/retained-stage`,
+			`${testRunId("postmortem-run")}/retained-stage`,
+			`${testRunId("postmortem-run")}/retained-stage`,
 		]);
 		view.dispose();
 	});
@@ -140,13 +141,13 @@ describe("non-attachable tool interactions", () => {
 	test("terminal sends reject before textual tool targeting can create a handle", async () => {
 		recordToolOnly(store, "completed");
 		for (const target of ["tool:publish", "publish-api"]) {
-			const resolved = resolveStageTarget("tool-interaction-run", target);
+			const resolved = resolveStageTarget(testRunId("tool-interaction-run"), target);
 			assert.equal(resolved.ok, false, `${target} must not resolve as a stage`);
 		}
 
 		let postMortemCreates = 0;
 		const sent = await workflowSendAction(
-			{ action: "send", runId: "tool-interaction-run", stageId: "tool:publish", text: "chat" },
+			{ action: "send", runId: testRunId("tool-interaction-run"), stageId: "tool:publish", text: "chat" },
 			{
 				resolvePostMortemDeps: () => {
 					postMortemCreates += 1;
@@ -156,14 +157,14 @@ describe("non-attachable tool interactions", () => {
 		);
 		const paused = await workflowPauseAction({
 			action: "pause",
-			runId: "tool-interaction-run",
+			runId: testRunId("tool-interaction-run"),
 			stageId: "tool:publish",
 		});
 		let overlayOpens = 0;
 		const commandErrors: string[] = [];
 		await handleRunControlCommand(
 			"attach",
-			["tool-interaction-run", "tool:publish"],
+			[testRunId("tool-interaction-run"), "tool:publish"],
 			{},
 			{
 				info() {},
@@ -184,7 +185,7 @@ describe("non-attachable tool interactions", () => {
 		);
 		const interrupted = await workflowInterruptAction({
 			action: "interrupt",
-			runId: "tool-interaction-run",
+			runId: testRunId("tool-interaction-run"),
 			stageId: "tool:publish",
 		});
 
@@ -196,14 +197,17 @@ describe("non-attachable tool interactions", () => {
 		assert.equal(sent.delivery, "rejected");
 		assert.equal(paused.status, "noop");
 		assert.equal(interrupted.status, "noop");
-		assert.match(sent.message, /workflow tool-interaction-run has terminated with status completed/);
+		assert.match(
+			sent.message,
+			new RegExp(`workflow ${testRunId("tool-interaction-run")} has terminated with status completed`),
+		);
 		// Tool nodes are abort-only control targets: pause rejects them explicitly and
 		// interrupt reports that this settled node has nothing in flight to abort.
 		assert.match(paused.message, /Tool nodes cannot be paused/);
 		assert.match(interrupted.message, /Tool node tool:publish is not running/);
 		assert.equal(postMortemCreates, 0);
 		const resumed = await workflowResumeAction(
-			{ action: "resume", runId: "tool-interaction-run", stageId: "tool:publish" },
+			{ action: "resume", runId: testRunId("tool-interaction-run"), stageId: "tool:publish" },
 			{
 				getRuntime: () => ({ prepareDurableResumable: async () => [] }),
 				policy: {},
@@ -213,6 +217,6 @@ describe("non-attachable tool interactions", () => {
 		assert.equal(resumed.status, "noop");
 		assert.match(commandErrors.join("\n"), /Stage not found/);
 		assert.equal(overlayOpens, 0);
-		assert.deepEqual(stageControlRegistry.forRun("tool-interaction-run"), []);
+		assert.deepEqual(stageControlRegistry.forRun(testRunId("tool-interaction-run")), []);
 	});
 });

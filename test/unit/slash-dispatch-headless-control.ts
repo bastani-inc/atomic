@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { testRunId } from "../helpers/run-id.js";
 import type { ChatSurfacePayload, ExtensionAPI, PiCommandContext, PiCommandOptions } from "./slash-dispatch-utils.js";
 import {
 	addFactoryStubs,
@@ -22,6 +23,7 @@ import {
 } from "./slash-dispatch-utils.js";
 
 installSlashDispatchTestHooks();
+const MISSING_RUN_ID = testRunId("definitely-missing");
 
 beforeEach(() => setDurableBackend(new InMemoryDurableBackend()));
 afterEach(() => setDurableBackend(undefined));
@@ -153,8 +155,8 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		const { handler } = await registerWorkflowCommand();
 
 		await assertRejectsHeadlessCommand(
-			() => handler("quit definitely-missing", headlessNoOpCtx()),
-			/Run not found: definitely-missing/,
+			() => handler(`quit ${MISSING_RUN_ID}`, headlessNoOpCtx()),
+			new RegExp(`Run not found: ${MISSING_RUN_ID}`),
 		);
 	});
 
@@ -166,7 +168,9 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		["resume", "resume", /Resumed 1 stage\(s\)/],
 	])("/workflow %s emits displayable success output in headless mode", async (_label, action, expected) => {
 		const { handler, sent } = await registerWorkflowCommand();
-		const runId = `339e05a4-2289-408e-9076-d1a348f582${action === "interrupt" ? "01" : action === "quit" ? "02" : action === "pause" ? "03" : "04"}`;
+		const runId = testRunId(
+			`339e05a4-2289-408e-9076-d1a348f582${action === "interrupt" ? "01" : action === "quit" ? "02" : action === "pause" ? "03" : "04"}`,
+		);
 		const stageId = `stage-${action}`;
 
 		if (action !== "reload") {
@@ -198,7 +202,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 
 	test.sequential("/workflow interrupt --all emits displayable success output in headless mode", async () => {
 		const { handler, sent } = await registerWorkflowCommand();
-		const runId = `headless-interrupt-all-${Date.now()}`;
+		const runId = testRunId(`headless-interrupt-all-${Date.now()}`);
 		const stageId = "stage-interrupt-all";
 		store.recordRunStart({
 			...makeInflightRun(runId),
@@ -225,7 +229,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 
 	test.sequential("/workflow quit --all emits displayable resumable success output in headless mode", async () => {
 		const { handler, sent } = await registerWorkflowCommand();
-		const runId = `headless-quit-all-${Date.now()}`;
+		const runId = testRunId(`headless-quit-all-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		registerTestStageHandle(runId, "quit-stage");
 

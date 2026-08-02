@@ -50,11 +50,25 @@ test("displayed Workflow run and stage IDs remain full while typed prefixes stay
 	const listed = await execute({ action: "status" }, {} as never);
 	const rendered = renderResult(listed, { plain: true });
 	assert.ok(rendered.includes(completed.runId), `status should render the full run ID; output:\n${rendered}`);
-	const displayedRunId = completed.runId.slice(0, 6);
+	// The contract is a round trip: the id the UI prints is exactly the id the
+	// tool accepts back. Nothing shorter is a valid target any more.
+	const displayedRunId = completed.runId;
 
 	const status = await execute({ action: "status", runId: displayedRunId }, {} as never);
 	assert.equal(status.action, "statusDetail");
 	assert.equal(status.runId, completed.runId);
+
+	const truncatedRun = await execute({ action: "status", runId: completed.runId.slice(0, 6) }, {} as never);
+	assert.equal(truncatedRun.action, "statusDetail");
+	assert.ok(
+		"error" in truncatedRun,
+		"a truncated run id must fail rather than return run detail for the run it prefixes",
+	);
+	assert.match(
+		"error" in truncatedRun ? truncatedRun.error : "",
+		/must be a full 36-character UUID/,
+		"a truncated run id must be rejected as malformed rather than resolved by prefix",
+	);
 
 	const stages = await execute(
 		{
@@ -74,11 +88,26 @@ test("displayed Workflow run and stage IDs remain full while typed prefixes stay
 		{
 			action: "stage",
 			runId: displayedRunId,
-			stageId: stageId.slice(0, 12),
+			stageId: displayedStageId,
 		},
 		{} as never,
 	);
 	assert.equal(stage.action, "stage");
 	assert.equal(stage.runId, completed.runId);
 	assert.equal(stage.action === "stage" ? stage.stage?.id : undefined, stageId);
+
+	const truncatedStage = await execute(
+		{
+			action: "stage",
+			runId: displayedRunId,
+			stageId: stageId.slice(0, 12),
+		},
+		{} as never,
+	);
+	assert.equal(truncatedStage.action, "stage");
+	assert.equal(
+		truncatedStage.action === "stage" ? truncatedStage.stage : undefined,
+		undefined,
+		"a truncated stage id must not resolve to the stage it prefixes",
+	);
 });

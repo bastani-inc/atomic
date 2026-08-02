@@ -16,6 +16,7 @@ import { createStore, store as workflowStore } from "../../packages/workflows/sr
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
@@ -240,7 +241,7 @@ function markHandledStageSkipped(sdk: ReturnType<typeof createMockSdk>): void {
 }
 
 test.sequential("cached completed boundary republishes a child that handled a failed stage and completed downstream", async () => {
-	const rootId = "cached-descendant-valid-root";
+	const rootId = testRunId("cached-descendant-valid-root");
 	const fixture = await prepareFixture(rootId);
 	const fresh = new DbosDurableBackend(fixture.persisted, { executorId: "cached-descendant-valid-fresh" });
 	await fresh.hydrateWorkflow(rootId);
@@ -314,7 +315,7 @@ test.sequential("cached completed boundary republishes a child that handled a fa
 });
 
 test.sequential("cached completed boundary accepts a fully timed skipped child stage without rerunning", async () => {
-	const rootId = "cached-descendant-skipped-root";
+	const rootId = testRunId("cached-descendant-skipped-root");
 	const fixture = await prepareFixture(rootId);
 	markHandledStageSkipped(fixture.persisted);
 	const fresh = new DbosDurableBackend(fixture.persisted, { executorId: "cached-descendant-skipped-fresh" });
@@ -354,7 +355,7 @@ test.sequential("cached completed boundary accepts a fully timed skipped child s
 });
 
 test.sequential("cached completed boundary rejects an active descendant before publication or later dispatch", async () => {
-	const rootId = "cached-descendant-malformed-root";
+	const rootId = testRunId("cached-descendant-malformed-root");
 	const fixture = await prepareFixture(rootId);
 	const malformed = copySdk(fixture.persisted);
 	removeDeepTerminal(malformed);

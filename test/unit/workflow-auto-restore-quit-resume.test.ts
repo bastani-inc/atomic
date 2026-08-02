@@ -18,6 +18,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { restoreOnSessionStart } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 function seedRestoredShadow(
 	backend: InMemoryDurableBackend,
@@ -178,7 +179,7 @@ describe("gracefully quit durable workflow session restore", () => {
 	test.sequential.each(["paused", "running"] as const)(
 		"slash resume recovers authoritative durable %s shadow with the original workflow id",
 		async (durableStatus) => {
-			const workflowId = `slash-restored-${durableStatus}`;
+			const workflowId = testRunId(`slash-restored-${durableStatus}`);
 			const backend = new InMemoryDurableBackend();
 			setDurableBackend(backend);
 			seedRestoredShadow(backend, workflowId, durableStatus);
@@ -193,7 +194,7 @@ describe("gracefully quit durable workflow session restore", () => {
 
 			await handleRunControlCommand(
 				"resume",
-				[workflowId.slice(0, 12)],
+				[workflowId],
 				{ hasUI: false, ui: { notify: () => undefined } },
 				{ info: (message) => info.push(message), error: (message) => errors.push(message) },
 				{
@@ -220,7 +221,7 @@ describe("gracefully quit durable workflow session restore", () => {
 	test.sequential.each(["paused", "running"] as const)(
 		"workflow tool resume recovers authoritative durable %s shadow with the original workflow id",
 		async (durableStatus) => {
-			const workflowId = `tool-restored-${durableStatus}`;
+			const workflowId = testRunId(`tool-restored-${durableStatus}`);
 			const backend = new InMemoryDurableBackend();
 			setDurableBackend(backend);
 			seedRestoredShadow(backend, workflowId, durableStatus);
@@ -250,9 +251,9 @@ describe("gracefully quit durable workflow session restore", () => {
 
 	test.sequential.each([
 		["exact id", (workflowId: string) => workflowId],
-		["unique prefix", (workflowId: string) => workflowId.slice(0, 18)],
-	] as const)("workflow tool resume discovers a durable-only target by %s", async (_label, selectTarget) => {
-		const workflowId = `tool-durable-only-${Date.now()}`;
+		["short prefix rejected", (workflowId: string) => workflowId.slice(0, 18)],
+	] as const)("workflow tool resume requires an exact durable-only id", async (_label, selectTarget) => {
+		const workflowId = testRunId(`tool-durable-only-${Date.now()}`);
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		seedDurableOnly(backend, workflowId);
@@ -264,9 +265,16 @@ describe("gracefully quit durable workflow session restore", () => {
 			() => undefined,
 		);
 
-		const result = await execute({ action: "resume", runId: selectTarget(workflowId) }, {} as never);
+		const target = selectTarget(workflowId);
+		const result = await execute({ action: "resume", runId: target }, {} as never);
 
 		assert.equal(result.action, "resume");
+		if (target !== workflowId) {
+			assert.equal(result.status, "noop");
+			assert.match(result.message, /Run id must be a full 36-character UUID/);
+			assert.equal(jobTracker.has(workflowId), false);
+			return;
+		}
 		assert.equal(result.runId, workflowId);
 		assert.equal(result.status, "running");
 		assert.match(result.message, /Resuming durable workflow/);
@@ -277,9 +285,9 @@ describe("gracefully quit durable workflow session restore", () => {
 		await resumedJob.promise;
 	});
 
-	test.sequential("workflow tool reports every ambiguous durable-only prefix match", async () => {
+	test.sequential("workflow tool rejects a shared durable-only prefix", async () => {
 		const prefix = `tool-durable-ambiguous-${Date.now()}`;
-		const workflowIds = [`${prefix}-alpha`, `${prefix}-beta`];
+		const workflowIds = [testRunId(`${prefix}-alpha`), testRunId(`${prefix}-beta`)];
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		for (const workflowId of workflowIds) seedDurableOnly(backend, workflowId);
@@ -294,18 +302,17 @@ describe("gracefully quit durable workflow session restore", () => {
 
 		assert.equal(result.action, "resume");
 		assert.equal(result.status, "noop");
-		assert.match(result.message, /Ambiguous run prefix/);
+		assert.match(result.message, /Run id must be a full 36-character UUID/);
 		for (const workflowId of workflowIds) {
-			assert.ok(result.message.includes(workflowId));
 			assert.equal(backend.getWorkflow(workflowId)?.status, "paused");
 			assert.equal(jobTracker.has(workflowId), false);
 		}
 	});
 
-	test.sequential("workflow tool ambiguity includes local and durable-only prefix matches", async () => {
+	test.sequential("workflow tool rejects a prefix shared by local and durable-only runs", async () => {
 		const prefix = `tool-mixed-ambiguous-${Date.now()}`;
-		const localIds = [`${prefix}-local`];
-		const durableId = `${prefix}-durable`;
+		const localIds = [testRunId(`${prefix}-local`)];
+		const durableId = testRunId(`${prefix}-durable`);
 		for (const id of localIds) {
 			store.recordRunStart({
 				id,
@@ -331,15 +338,14 @@ describe("gracefully quit durable workflow session restore", () => {
 
 		assert.equal(result.action, "resume");
 		assert.equal(result.status, "noop");
-		assert.match(result.message, /Ambiguous run prefix/);
-		for (const id of [...localIds, durableId]) assert.ok(result.message.includes(id));
+		assert.match(result.message, /Run id must be a full 36-character UUID/);
 		assert.equal(jobTracker.has(durableId), false);
 	});
 
-	test.sequential("combined resolution keeps a sole eligible live prefix target", async () => {
+	test.sequential("combined resolution accepts an exact eligible live target", async () => {
 		const prefix = `tool-live-filter-${Date.now()}`;
-		const liveId = `${prefix}-paused`;
-		const terminalId = `${prefix}-terminal`;
+		const liveId = testRunId(`${prefix}-paused`);
+		const terminalId = testRunId(`${prefix}-terminal`);
 		store.recordRunStart({
 			id: liveId,
 			name: "restored-workflow",
@@ -377,7 +383,7 @@ describe("gracefully quit durable workflow session restore", () => {
 			() => undefined,
 		);
 
-		const result = await execute({ action: "resume", runId: prefix }, {} as never);
+		const result = await execute({ action: "resume", runId: liveId }, {} as never);
 
 		assert.equal(result.action, "resume");
 		assert.equal(result.runId, liveId);
@@ -387,7 +393,7 @@ describe("gracefully quit durable workflow session restore", () => {
 	});
 
 	test.sequential("workflow tool refuses a durable-only zero-progress target without local synthesis", async () => {
-		const workflowId = `tool-durable-ineligible-${Date.now()}`;
+		const workflowId = testRunId(`tool-durable-ineligible-${Date.now()}`);
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		seedDurableOnly(backend, workflowId, false);
@@ -408,7 +414,7 @@ describe("gracefully quit durable workflow session restore", () => {
 	});
 
 	test.sequential("workflow tool surfaces resource loading failure before durable-only lookup", async () => {
-		const workflowId = `tool-durable-loader-failure-${Date.now()}`;
+		const workflowId = testRunId(`tool-durable-loader-failure-${Date.now()}`);
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		seedDurableOnly(backend, workflowId);
@@ -436,7 +442,7 @@ describe("gracefully quit durable workflow session restore", () => {
 		["paused", "control"],
 		["running", "control"],
 	] as const)("durable %s snapshot is not a resume shadow while a live %s exists", (durableStatus, liveKind) => {
-		const workflowId = `live-${durableStatus}-${liveKind}`;
+		const workflowId = testRunId(`live-${durableStatus}-${liveKind}`);
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({
 			workflowId,
@@ -477,7 +483,7 @@ describe("gracefully quit durable workflow session restore", () => {
 	test.sequential.each(["paused", "running"] as const)(
 		"zero-progress durable %s orphan stays unmodified and tool resume is a noop",
 		async (durableStatus) => {
-			const workflowId = `zero-tool-${durableStatus}`;
+			const workflowId = testRunId(`zero-tool-${durableStatus}`);
 			const backend = new InMemoryDurableBackend();
 			setDurableBackend(backend);
 			seedZeroProgressRestoredOrphan(backend, workflowId, durableStatus);
@@ -491,7 +497,7 @@ describe("gracefully quit durable workflow session restore", () => {
 				() => undefined,
 				() => undefined,
 			);
-			const result = await execute({ action: "resume", runId: workflowId.slice(0, 12) }, {} as never);
+			const result = await execute({ action: "resume", runId: workflowId }, {} as never);
 
 			assert.equal(result.action, "resume");
 			assert.equal(result.runId, workflowId);
@@ -509,7 +515,7 @@ describe("gracefully quit durable workflow session restore", () => {
 	test.sequential.each(["paused", "running"] as const)(
 		"zero-progress durable %s orphan stays unmodified through slash resume",
 		async (durableStatus) => {
-			const workflowId = `zero-slash-${durableStatus}`;
+			const workflowId = testRunId(`zero-slash-${durableStatus}`);
 			const backend = new InMemoryDurableBackend();
 			setDurableBackend(backend);
 			seedZeroProgressRestoredOrphan(backend, workflowId, durableStatus);
@@ -521,7 +527,7 @@ describe("gracefully quit durable workflow session restore", () => {
 
 			await handleRunControlCommand(
 				"resume",
-				[workflowId.slice(0, 12)],
+				[workflowId],
 				{ hasUI: false, ui: { notify: () => undefined } },
 				{ info: (message) => info.push(message), error: (message) => errors.push(message) },
 				{

@@ -20,10 +20,11 @@ import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expande
 import { createStore, store as workflowStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { testRunId } from "../helpers/run-id.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 
-const ROOT_ID = "pending-nested-ui-root";
+const ROOT_ID = testRunId("pending-nested-ui-root");
 
 afterEach(() => {
 	setDurableBackend(undefined);

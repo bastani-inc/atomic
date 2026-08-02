@@ -8,12 +8,7 @@ import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.j
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { buildWorkflowStatusListing } from "./workflow-status-summary.js";
-import {
-	ambiguousRunMessage,
-	isWorkflowStageToolContext,
-	resolveRunIdPrefix,
-	topLevelExpandedSnapshots,
-} from "./workflow-targets.js";
+import { isWorkflowStageToolContext, resolveRunId, topLevelExpandedSnapshots } from "./workflow-targets.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
 	workflowInterruptAction,
@@ -84,13 +79,9 @@ export function makeExecuteWorkflowTool(
 			case "status": {
 				const target = args.runId;
 				if (target !== undefined) {
-					const resolved = resolveRunIdPrefix(target);
-					if (resolved.kind === "ambiguous") {
-						return {
-							action: "statusDetail",
-							runId: target,
-							error: ambiguousRunMessage(target, resolved.matches),
-						};
+					const resolved = resolveRunId(target);
+					if (resolved.kind === "malformed") {
+						return { action: "statusDetail", runId: target, error: resolved.message };
 					}
 					if (resolved.kind === "not_found") {
 						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };

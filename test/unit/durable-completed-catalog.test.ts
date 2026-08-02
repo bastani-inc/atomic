@@ -16,6 +16,7 @@ import {
 	listResumableFromBackend,
 } from "../../packages/workflows/src/durable/resume-catalog.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
+import { testRunId } from "../helpers/run-id.js";
 
 let tempDir = "";
 
@@ -57,17 +58,17 @@ describe("completed durable catalog", () => {
 	test("keeps completed listing distinct from resumability predicates", () => {
 		const backend = new InMemoryDurableBackend();
 		backend.registerWorkflow({
-			workflowId: "paused",
+			workflowId: testRunId("paused"),
 			name: "paused-flow",
 			inputs: {},
 			createdAt: 1,
 			status: "paused",
 			completedCheckpoints: 1,
 		});
-		registerCompleted(backend, "completed");
+		registerCompleted(backend, testRunId("completed"));
 		backend.recordCheckpoint({
 			kind: "tool",
-			workflowId: "completed",
+			workflowId: testRunId("completed"),
 			checkpointId: "tool:1",
 			name: "read",
 			argsHash: "hash",
@@ -77,11 +78,11 @@ describe("completed durable catalog", () => {
 
 		assert.deepEqual(
 			listResumableFromBackend(backend).map((entry) => entry.workflowId),
-			["paused"],
+			[testRunId("paused")],
 		);
 		assert.deepEqual(
 			listCompletedFromBackend(backend).map((entry) => entry.workflowId),
-			["completed"],
+			[testRunId("completed")],
 		);
 	});
 	test("formats full workflow ids in resume target lists", () => {
@@ -104,10 +105,10 @@ describe("completed durable catalog", () => {
 		const backend = new InMemoryDurableBackend();
 		const transcript = join(tempDir, "stage.jsonl");
 		writeSessionTranscript(transcript, "valid-session");
-		registerCompleted(backend, "valid-completed");
+		registerCompleted(backend, testRunId("valid-completed"));
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "valid-completed",
+			workflowId: testRunId("valid-completed"),
 			checkpointId: "stage:1",
 			name: "summarize",
 			replayKey: "stage:summarize:1",
@@ -116,10 +117,10 @@ describe("completed durable catalog", () => {
 			model: "provider/model",
 			completedAt: 20,
 		});
-		registerCompleted(backend, "stale-completed");
+		registerCompleted(backend, testRunId("stale-completed"));
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "stale-completed",
+			workflowId: testRunId("stale-completed"),
 			checkpointId: "stage:1",
 			name: "missing",
 			replayKey: "stage:missing:1",
@@ -129,41 +130,44 @@ describe("completed durable catalog", () => {
 
 		assert.deepEqual(
 			new Set(listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId)),
-			new Set(["valid-completed", "stale-completed"]),
+			new Set([testRunId("valid-completed"), testRunId("stale-completed")]),
 		);
 		const entries = listCompletedFromBackend(backend);
 		const snapshot = completedWorkflowSnapshot(
 			backend,
-			entries.find((entry) => entry.workflowId === "valid-completed")!,
+			entries.find((entry) => entry.workflowId === testRunId("valid-completed"))!,
 		);
 		assert.equal(snapshot?.status, "completed");
 		assert.equal(snapshot?.stages[0]?.result, "finished");
 		assert.equal(snapshot?.stages[0]?.model, "provider/model");
 		const stale = completedWorkflowSnapshot(
 			backend,
-			entries.find((entry) => entry.workflowId === "stale-completed")!,
+			entries.find((entry) => entry.workflowId === testRunId("stale-completed"))!,
 		);
 		assert.equal(stale?.stages[0]?.sessionFile, undefined);
-		assert.equal(resolveCompletedWorkflow("stale", backend).kind, "found");
+		assert.equal(resolveCompletedWorkflow(testRunId("stale-completed"), backend).kind, "found");
 	});
 
 	test("keeps completed graphs open without retained chat and opens tool-only runs read-only", () => {
 		const backend = new InMemoryDurableBackend();
 		const cases = [
-			{ id: "no-session", sessionFile: undefined },
-			{ id: "empty-session", sessionFile: join(tempDir, "empty.jsonl") },
-			{ id: "malformed-session", sessionFile: join(tempDir, "malformed.jsonl") },
-			{ id: "directory-session", sessionFile: join(tempDir, "directory.jsonl") },
-			{ id: "header-only", sessionFile: join(tempDir, "header-only.jsonl") },
-			{ id: "invalid-message", sessionFile: join(tempDir, "invalid-message.jsonl") },
+			{ id: testRunId("no-session"), sessionFile: undefined },
+			{ id: testRunId("empty-session"), sessionFile: join(tempDir, "empty.jsonl") },
+			{ id: testRunId("malformed-session"), sessionFile: join(tempDir, "malformed.jsonl") },
+			{ id: testRunId("directory-session"), sessionFile: join(tempDir, "directory.jsonl") },
+			{ id: testRunId("header-only"), sessionFile: join(tempDir, "header-only.jsonl") },
+			{ id: testRunId("invalid-message"), sessionFile: join(tempDir, "invalid-message.jsonl") },
 		] as const;
 		writeFileSync(cases[1].sessionFile, "");
 		writeFileSync(cases[2].sessionFile, "not-json\n");
 		mkdirSync(cases[3].sessionFile);
-		writeFileSync(cases[4].sessionFile, `${JSON.stringify({ type: "session", id: "header-only" })}\n`);
+		writeFileSync(cases[4].sessionFile, `${JSON.stringify({ type: "session", id: testRunId("header-only") })}\n`);
 		writeFileSync(
 			cases[5].sessionFile,
-			[JSON.stringify({ type: "session", id: "invalid-message" }), JSON.stringify({ type: "message" })].join("\n"),
+			[
+				JSON.stringify({ type: "session", id: testRunId("invalid-message") }),
+				JSON.stringify({ type: "message" }),
+			].join("\n"),
 		);
 		for (const item of cases) {
 			registerCompleted(backend, item.id);
@@ -177,10 +181,10 @@ describe("completed durable catalog", () => {
 				completedAt: 20,
 			});
 		}
-		registerCompleted(backend, "tool-only");
+		registerCompleted(backend, testRunId("tool-only"));
 		backend.recordCheckpoint({
 			kind: "tool",
-			workflowId: "tool-only",
+			workflowId: testRunId("tool-only"),
 			checkpointId: "tool:1",
 			name: "read",
 			argsHash: "hash",
@@ -189,9 +193,9 @@ describe("completed durable catalog", () => {
 		});
 
 		const ids = listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId);
-		assert.deepEqual(new Set(ids), new Set([...cases.map((item) => item.id), "tool-only"]));
+		assert.deepEqual(new Set(ids), new Set([...cases.map((item) => item.id), testRunId("tool-only")]));
 		for (const item of cases) assert.equal(resolveCompletedWorkflow(item.id, backend).kind, "found");
-		const toolOnly = resolveCompletedWorkflow("tool-only", backend);
+		const toolOnly = resolveCompletedWorkflow(testRunId("tool-only"), backend);
 		assert.equal(toolOnly.kind, "found");
 		if (toolOnly.kind === "found") {
 			assert.equal(toolOnly.snapshot.stages.length, 0);
@@ -210,10 +214,10 @@ describe("completed durable catalog", () => {
 		const backend = new InMemoryDurableBackend();
 		const validTranscript = join(tempDir, "retained.jsonl");
 		writeSessionTranscript(validTranscript, "retained-session");
-		registerCompleted(backend, "merged-stage");
+		registerCompleted(backend, testRunId("merged-stage"));
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "merged-stage",
+			workflowId: testRunId("merged-stage"),
 			checkpointId: "stage:1",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -223,7 +227,7 @@ describe("completed durable catalog", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "merged-stage",
+			workflowId: testRunId("merged-stage"),
 			checkpointId: "stage:2",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -235,7 +239,7 @@ describe("completed durable catalog", () => {
 
 		assert.deepEqual(
 			listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId),
-			["merged-stage"],
+			[testRunId("merged-stage")],
 		);
 		assert.equal(
 			completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!)?.stages[0]?.sessionFile,
@@ -247,10 +251,10 @@ describe("completed durable catalog", () => {
 		const backend = new InMemoryDurableBackend();
 		const validTranscript = join(tempDir, "usable.jsonl");
 		writeSessionTranscript(validTranscript, "usable-session");
-		registerCompleted(backend, "partially-retained");
+		registerCompleted(backend, testRunId("partially-retained"));
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "partially-retained",
+			workflowId: testRunId("partially-retained"),
 			checkpointId: "stage:1",
 			name: "retained",
 			replayKey: "stage:retained:1",
@@ -259,7 +263,7 @@ describe("completed durable catalog", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "partially-retained",
+			workflowId: testRunId("partially-retained"),
 			checkpointId: "stage:2",
 			name: "stale",
 			replayKey: "stage:stale:1",
@@ -270,7 +274,7 @@ describe("completed durable catalog", () => {
 		const snapshot = completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!);
 		assert.deepEqual(
 			listOpenableCompletedWorkflows(backend).map((item) => item.workflowId),
-			["partially-retained"],
+			[testRunId("partially-retained")],
 		);
 		assert.equal(snapshot?.stages[0]?.sessionFile, validTranscript);
 		assert.equal(snapshot?.stages[1]?.sessionFile, undefined);
@@ -282,7 +286,7 @@ describe("completed durable catalog", () => {
 		writeFileSync(
 			malformed,
 			[
-				JSON.stringify({ type: "session", id: "partially-malformed" }),
+				JSON.stringify({ type: "session", id: testRunId("partially-malformed") }),
 				JSON.stringify({
 					type: "message",
 					id: "valid",
@@ -293,16 +297,16 @@ describe("completed durable catalog", () => {
 			].join("\n"),
 		);
 		const emptyContent = [
-			{ id: "blank-string", content: "   " },
-			{ id: "empty-array", content: [] },
-			{ id: "empty-object", content: {} },
-			{ id: "empty-block", content: [{}] },
-			{ id: "blank-text-block", content: [{ type: "text", text: "" }] },
+			{ id: testRunId("blank-string"), content: "   " },
+			{ id: testRunId("empty-array"), content: [] },
+			{ id: testRunId("empty-object"), content: {} },
+			{ id: testRunId("empty-block"), content: [{}] },
+			{ id: testRunId("blank-text-block"), content: [{ type: "text", text: "" }] },
 		] as const;
-		registerCompleted(backend, "partially-malformed");
+		registerCompleted(backend, testRunId("partially-malformed"));
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "partially-malformed",
+			workflowId: testRunId("partially-malformed"),
 			checkpointId: "stage:1",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -338,7 +342,7 @@ describe("completed durable catalog", () => {
 		const entries = listOpenableCompletedWorkflows(backend);
 		assert.deepEqual(
 			new Set(entries.map((entry) => entry.workflowId)),
-			new Set(["partially-malformed", ...emptyContent.map((item) => item.id)]),
+			new Set([testRunId("partially-malformed"), ...emptyContent.map((item) => item.id)]),
 		);
 		for (const entry of entries)
 			assert.equal(completedWorkflowSnapshot(backend, entry)?.stages[0]?.sessionFile, undefined);
@@ -350,7 +354,7 @@ describe("completed durable catalog", () => {
 		writeFileSync(
 			path,
 			[
-				JSON.stringify({ type: "session", id: "structured-context" }),
+				JSON.stringify({ type: "session", id: testRunId("structured-context") }),
 				JSON.stringify({
 					type: "message",
 					id: "structured-context-message",
@@ -359,10 +363,10 @@ describe("completed durable catalog", () => {
 				}),
 			].join("\n"),
 		);
-		registerCompleted(backend, "structured-context");
+		registerCompleted(backend, testRunId("structured-context"));
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "structured-context",
+			workflowId: testRunId("structured-context"),
 			checkpointId: "stage:1",
 			name: "final",
 			replayKey: "stage:final:1",
@@ -372,7 +376,7 @@ describe("completed durable catalog", () => {
 
 		assert.deepEqual(
 			listOpenableCompletedWorkflows(backend).map((item) => item.workflowId),
-			["structured-context"],
+			[testRunId("structured-context")],
 		);
 	});
 
@@ -380,8 +384,8 @@ describe("completed durable catalog", () => {
 		const backend = new InMemoryDurableBackend();
 		const transcript = join(tempDir, "nested-child.jsonl");
 		writeSessionTranscript(transcript, "nested-child-session");
-		const runId = "completed-nested";
-		const childRunId = "completed-nested-child";
+		const runId = testRunId("completed-nested");
+		const childRunId = testRunId("completed-nested-child");
 		backend.registerWorkflow({
 			workflowId: runId,
 			name: "nested-root",
@@ -453,7 +457,7 @@ describe("completed durable catalog", () => {
 					version: 1 as const,
 					stageId: "orphan",
 					parentIds: [],
-					run: { ...childRun, runId: "old-child-run" },
+					run: { ...childRun, runId: testRunId("old-child-run") },
 				},
 			},
 			{
@@ -499,10 +503,10 @@ describe("completed durable catalog", () => {
 
 	test("hides duplicate boundary-start records instead of inventing a child link", () => {
 		const backend = new InMemoryDurableBackend();
-		registerCompleted(backend, "duplicate-boundary");
-		const rootRun = { runId: "duplicate-boundary", runName: "completed-flow" } as const;
+		registerCompleted(backend, testRunId("duplicate-boundary"));
+		const rootRun = { runId: testRunId("duplicate-boundary"), runName: "completed-flow" } as const;
 		const child = {
-			runId: "duplicate-child",
+			runId: testRunId("duplicate-child"),
 			runName: "child",
 			parentRunId: "duplicate-boundary",
 			parentStageId: "boundary",
@@ -518,7 +522,7 @@ describe("completed durable catalog", () => {
 		for (const checkpointId of ["boundary-start:a", "boundary-start:b"]) {
 			backend.recordCheckpoint({
 				kind: "stage",
-				workflowId: "duplicate-boundary",
+				workflowId: testRunId("duplicate-boundary"),
 				checkpointId,
 				name: "workflow:child",
 				replayKey: "workflow:child:1",
@@ -536,20 +540,20 @@ describe("completed durable catalog", () => {
 		}
 
 		assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
-		assert.equal(resolveCompletedWorkflow("duplicate-boundary", backend).kind, "stale");
+		assert.equal(resolveCompletedWorkflow(testRunId("duplicate-boundary"), backend).kind, "stale");
 		assert.equal(completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!), undefined);
 	});
 
 	test("hides cyclic and duplicated stage topology", () => {
 		const backend = new InMemoryDurableBackend();
-		registerCompleted(backend, "cyclic");
+		registerCompleted(backend, testRunId("cyclic"));
 		for (const [stageId, parentIds] of [
 			["a", ["b"]],
 			["b", ["a"]],
 		] as const) {
 			backend.recordCheckpoint({
 				kind: "stage",
-				workflowId: "cyclic",
+				workflowId: testRunId("cyclic"),
 				checkpointId: `stage:${stageId}`,
 				name: stageId,
 				replayKey: `stage:${stageId}:1`,
@@ -559,15 +563,15 @@ describe("completed durable catalog", () => {
 					version: 1,
 					stageId,
 					parentIds: [...parentIds],
-					run: { runId: "cyclic", runName: "completed-flow" },
+					run: { runId: testRunId("cyclic"), runName: "completed-flow" },
 				},
 			});
 		}
-		registerCompleted(backend, "duplicate-stage-id");
+		registerCompleted(backend, testRunId("duplicate-stage-id"));
 		for (const replayKey of ["stage:one:1", "stage:two:1"]) {
 			backend.recordCheckpoint({
 				kind: "stage",
-				workflowId: "duplicate-stage-id",
+				workflowId: testRunId("duplicate-stage-id"),
 				checkpointId: replayKey,
 				name: "shared",
 				replayKey,
@@ -577,22 +581,22 @@ describe("completed durable catalog", () => {
 					version: 1,
 					stageId: "shared-source-id",
 					parentIds: [],
-					run: { runId: "duplicate-stage-id", runName: "completed-flow" },
+					run: { runId: testRunId("duplicate-stage-id"), runName: "completed-flow" },
 				},
 			});
 		}
 
 		assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
-		assert.equal(resolveCompletedWorkflow("cyclic", backend).kind, "stale");
-		assert.equal(resolveCompletedWorkflow("duplicate-stage-id", backend).kind, "stale");
+		assert.equal(resolveCompletedWorkflow(testRunId("cyclic"), backend).kind, "stale");
+		assert.equal(resolveCompletedWorkflow(testRunId("duplicate-stage-id"), backend).kind, "stale");
 	});
 
 	test("hides a boundary terminal that disagrees with its start identity", () => {
 		const backend = new InMemoryDurableBackend();
-		registerCompleted(backend, "mismatched-terminal");
-		const rootRun = { runId: "mismatched-terminal", runName: "completed-flow" } as const;
+		registerCompleted(backend, testRunId("mismatched-terminal"));
+		const rootRun = { runId: testRunId("mismatched-terminal"), runName: "completed-flow" } as const;
 		const child = {
-			runId: "child-from-start",
+			runId: testRunId("child-from-start"),
 			runName: "child",
 			parentRunId: "mismatched-terminal",
 			parentStageId: "boundary",
@@ -600,7 +604,7 @@ describe("completed durable catalog", () => {
 		} as const;
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "mismatched-terminal",
+			workflowId: testRunId("mismatched-terminal"),
 			checkpointId: "boundary-start:workflow:child:1",
 			name: "workflow:child",
 			replayKey: "workflow:child:1",
@@ -625,13 +629,19 @@ describe("completed durable catalog", () => {
 		});
 		backend.recordCheckpoint({
 			kind: "stage",
-			workflowId: "mismatched-terminal",
+			workflowId: testRunId("mismatched-terminal"),
 			checkpointId: "boundary-terminal:workflow:child:1:completed",
 			name: "workflow:child",
 			replayKey: "workflow:child:1",
 			completedAt: 21,
 			endedAt: 21,
-			output: { workflow: "child", runId: "unrelated-child", status: "completed", exited: false, outputs: {} },
+			output: {
+				workflow: "child",
+				runId: testRunId("unrelated-child"),
+				status: "completed",
+				exited: false,
+				outputs: {},
+			},
 			topology: {
 				version: 1,
 				stageId: "boundary",
@@ -646,18 +656,18 @@ describe("completed durable catalog", () => {
 					alias: "child",
 					workflow: "child",
 					status: "completed",
-					child: { ...child, runId: "unrelated-child" },
+					child: { ...child, runId: testRunId("unrelated-child") },
 				},
 			},
 		});
 
 		assert.equal(listOpenableCompletedWorkflows(backend).length, 0);
-		assert.equal(resolveCompletedWorkflow("mismatched-terminal", backend).kind, "stale");
+		assert.equal(resolveCompletedWorkflow(testRunId("mismatched-terminal"), backend).kind, "stale");
 	});
 	test("marks a completed root stale when a current boundary start has no terminal", () => {
 		const backend = new InMemoryDurableBackend();
-		const runId = "unterminated-completed-root";
-		const childRunId = "unterminated-child";
+		const runId = testRunId("unterminated-completed-root");
+		const childRunId = testRunId("unterminated-child");
 		const replayKey = "workflow:child:1";
 		registerCompleted(backend, runId);
 		const rootRun = { runId, runName: "completed-flow" } as const;

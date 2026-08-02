@@ -11,6 +11,7 @@ import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 class FailingHydrationBackend extends InMemoryDurableBackend {
 	override async hydrateResumableWorkflows(): Promise<void> {
@@ -47,7 +48,7 @@ afterEach(async () => {
 
 describe("workflow tool durable-only checkpoint replay", () => {
 	test.sequential("resume keeps the original id and does not repeat a completed ctx.tool side effect", async () => {
-		const workflowId = "tool-durable-replay-original-id";
+		const workflowId = testRunId("tool-durable-replay-original-id");
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		backend.registerWorkflow({
@@ -131,7 +132,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 			() => undefined,
 			() => undefined,
 		);
-		const target = "durable-only-unknown-id";
+		const target = testRunId("durable-only-unknown-id");
 
 		const status = await execute({ action: "status" }, {} as never);
 		assert.equal(status.action, "status");
@@ -148,7 +149,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 		const backend = new FailingHydrationBackend();
 		setDurableBackend(backend);
 		const definition = workflow({
-			name: "tool-durable-failure",
+			name: testRunId("tool-durable-failure"),
 			description: "",
 			inputs: {},
 			outputs: {},
@@ -160,7 +161,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 			() => undefined,
 		);
 
-		const failed = await execute({ action: "resume", runId: "durable-failure" }, {} as never);
+		const failed = await execute({ action: "resume", runId: testRunId("durable-failure") }, {} as never);
 		assert.equal(failed.action, "resume");
 		assert.equal(failed.status, "noop");
 		assert.match(failed.message, /durable hydration exploded/);
@@ -176,7 +177,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 	});
 
 	test.sequential("quit with an in-flight tool re-runs only that call at the same node identity", async () => {
-		const workflowId = "tool-durable-replay-quit-in-flight";
+		const workflowId = testRunId("tool-durable-replay-quit-in-flight");
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		const args = { path: "artifact.txt" };
@@ -293,7 +294,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 	});
 
 	test.sequential("resume supersedes an abandoned detached job and isolates its late callback", async () => {
-		const workflowId = "tool-durable-replay-abandoned-relaunch";
+		const workflowId = testRunId("tool-durable-replay-abandoned-relaunch");
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		const doneArgs = { path: "already-done.txt" };
@@ -410,7 +411,7 @@ describe("workflow tool durable-only checkpoint replay", () => {
 	});
 
 	test.sequential("return-mode callback that fulfills after abort writes one inspection-only record", async () => {
-		const workflowId = "tool-durable-late-return-cancellation";
+		const workflowId = testRunId("tool-durable-late-return-cancellation");
 		const backend = new InMemoryDurableBackend();
 		setDurableBackend(backend);
 		const args = { path: "late-return.txt" };

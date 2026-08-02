@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { describe, test } from "vitest";
+import { testRunId } from "../helpers/run-id.js";
 import type { ExtensionRuntime } from "./slash-dispatch-utils.js";
 import {
 	assert,
@@ -58,7 +59,7 @@ describe("tool run-control actions", () => {
 		assert.match((result as { error?: string }).error ?? "", /workflows cannot invoke workflows/);
 	}
 	test.sequential("makeExecuteWorkflowTool stages clones pending prompts", async () => {
-		const runId = `stage-tool-prompt-clone-${Date.now()}`;
+		const runId = testRunId(`stage-tool-prompt-clone-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-prompt-clone",
@@ -109,7 +110,7 @@ describe("tool run-control actions", () => {
 	});
 
 	test.sequential("makeExecuteWorkflowTool stages supports all stage status filters", async () => {
-		const runId = `stage-tool-status-filters-${Date.now()}`;
+		const runId = testRunId(`stage-tool-status-filters-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		for (const status of [
 			"pending",
@@ -160,25 +161,32 @@ describe("tool run-control actions", () => {
 		assert.match(missingStages.error ?? "", /No active run to inspect/);
 		assert.match(renderResult(missing, { plain: true }), /No active run to inspect/);
 
-		store.recordRunStart(makeInflightRun("stages-ambiguous-run-a"));
-		store.recordRunStart(makeInflightRun("stages-ambiguous-run-b"));
-		const ambiguous = await handler({ action: "stages", runId: "stages-ambiguous-run" }, {} as never);
-		assert.equal(ambiguous.action, "stages");
-		const ambiguousStages = ambiguous as {
-			action: string;
-			runId: string;
-			error?: string;
-			stages: unknown[];
-		};
-		assert.equal(ambiguousStages.runId, "stages-ambiguous-run");
-		assert.deepEqual(ambiguousStages.stages, []);
-		assert.match(ambiguousStages.error ?? "", /Ambiguous run prefix/);
-		assert.match(renderResult(ambiguous, { plain: true }), /Ambiguous run prefix/);
+		const firstId = testRunId("stages-ambiguous-run-a");
+		const secondId = testRunId("stages-ambiguous-run-b");
+		store.recordRunStart(makeInflightRun(firstId));
+		store.recordRunStart(makeInflightRun(secondId));
+		const prefix = firstId.slice(0, 12);
+		const malformed = await handler({ action: "stages", runId: prefix }, {} as never);
+		assert.equal(malformed.action, "stages");
+		const malformedStages = malformed as { action: string; runId: string; error?: string; stages: unknown[] };
+		assert.equal(malformedStages.runId, prefix);
+		assert.deepEqual(malformedStages.stages, []);
+		assert.match(malformedStages.error ?? "", /Run id must be a full 36-character UUID/);
+		assert.match(renderResult(malformed, { plain: true }), /Run id must be a full 36-character UUID/);
+		assert.equal(
+			store.runs().some((run) => run.id === firstId),
+			true,
+		);
+		assert.equal(
+			store.runs().some((run) => run.id === secondId),
+			true,
+		);
 	});
 
-	test.sequential("workflow status rejects an ambiguous run ID while listing every full id", async () => {
-		const firstId = "a1b2c3d4-1111-4111-8111-111111111111";
-		const secondId = "a1b2c3d4-2222-4222-8222-222222222222";
+	test.sequential("workflow status rejects run prefixes while full ids remain independently addressable", async () => {
+		const anchor = testRunId("status-shared-prefix");
+		const firstId = `${anchor.slice(0, 24)}111111111111`;
+		const secondId = `${anchor.slice(0, 24)}222222222222`;
 		store.recordRunStart(makeInflightRun(firstId));
 		store.recordRunStart(makeInflightRun(secondId));
 		const handler = makeToolHandler();
@@ -188,17 +196,24 @@ describe("tool run-control actions", () => {
 		assert.ok(rendered.includes(firstId));
 		assert.ok(rendered.includes(secondId));
 
-		const detail = await handler({ action: "status", runId: "a1b2c3d4" }, {} as never);
-		assert.equal(detail.action, "statusDetail");
-		const statusDetail = detail as { action: string; runId: string; error?: string };
-		assert.equal(statusDetail.runId, "a1b2c3d4");
-		assert.match(statusDetail.error ?? "", /Ambiguous run prefix/);
-		assert.ok((statusDetail.error ?? "").includes(firstId));
-		assert.ok((statusDetail.error ?? "").includes(secondId));
+		const prefix = anchor.slice(0, 8);
+		const malformed = await handler({ action: "status", runId: prefix }, {} as never);
+		assert.equal(malformed.action, "statusDetail");
+		const malformedDetail = malformed as { action: string; runId: string; error?: string };
+		assert.equal(malformedDetail.runId, prefix);
+		assert.match(malformedDetail.error ?? "", /Run id must be a full 36-character UUID/);
+
+		for (const fullId of [firstId, secondId]) {
+			const detail = await handler({ action: "status", runId: fullId }, {} as never);
+			assert.equal(detail.action, "statusDetail");
+			const statusDetail = detail as { action: string; runId: string; error?: string };
+			assert.equal(statusDetail.runId, fullId);
+			assert.equal(statusDetail.error, undefined);
+		}
 	});
 
 	test.sequential("makeExecuteWorkflowTool returns chronologically final snapshot result after tools", async () => {
-		const runId = `stage-tool-transcript-${Date.now()}`;
+		const runId = testRunId(`stage-tool-transcript-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 		store.recordStageStart(runId, {
 			id: "stage-transcript-1",

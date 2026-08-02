@@ -10,6 +10,7 @@ import type { DurableBoundaryChildTopology, DurableStageTopology } from "../../p
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import { testRunId } from "../helpers/run-id.js";
 import { createMockSdk } from "./durable-dbos-backend-helpers.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
@@ -134,13 +135,13 @@ test("fresh DBOS root-only catalog opens nested post-mortem chat detached from e
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-nested-chat-"));
 	try {
 		const fixture: ChatFixture = {
-			rootId: "completed-chat-root",
-			childId: "completed-chat-child",
+			rootId: testRunId("completed-chat-root"),
+			childId: testRunId("completed-chat-child"),
 			boundaryId: "completed-chat-boundary",
 			sessionFile: createTranscript(tempDir, "nested-chat"),
 			output: {
 				workflow: "chat-child",
-				runId: "completed-chat-child",
+				runId: testRunId("completed-chat-child"),
 				status: "completed",
 				exited: false,
 				outputs: {},
@@ -217,13 +218,13 @@ test("fresh DBOS hides malformed completed child output and registers no chat at
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-malformed-chat-"));
 	try {
 		const fixture: ChatFixture = {
-			rootId: "malformed-chat-root",
-			childId: "malformed-chat-child",
+			rootId: testRunId("malformed-chat-root"),
+			childId: testRunId("malformed-chat-child"),
 			boundaryId: "malformed-chat-boundary",
 			sessionFile: createTranscript(tempDir, "malformed-chat"),
 			output: {
 				workflow: "chat-child",
-				runId: "malformed-chat-child",
+				runId: testRunId("malformed-chat-child"),
 				status: "completed",
 				outputs: {},
 			},
@@ -262,8 +263,7 @@ test("fresh DBOS hides malformed completed child output and registers no chat at
 		assert.deepEqual(opened, {
 			ok: false,
 			reason: "stale",
-			message:
-				"Completed workflow malformed-chat-root is stale or missing durable checkpoint/session data and cannot be opened.",
+			message: `Completed workflow ${fixture.rootId} is stale or missing durable checkpoint/session data and cannot be opened.`,
 		});
 		assert.deepEqual(freshStore.runs(), []);
 		assert.equal(registry.get(fixture.childId, "retained-child-stage"), undefined);
