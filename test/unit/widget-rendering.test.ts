@@ -440,6 +440,22 @@ describe("buildThemedWidgetLines — themed path", () => {
 			"awaiting-input badge should keep the status/question mark and attach copy",
 		);
 	});
+
+	test("killed run keeps the widget's pre-existing warning colour", () => {
+		const now = 1_000_000;
+		const run = makeRun("killeduuid", "wf-killed-colour", "killed", [], now - 10_000, now - 1_000);
+		const theme = deriveGraphTheme({});
+		const glyph = statusIcon("killed");
+		const warning = hexToAnsi(theme.warning);
+		const error = hexToAnsi(theme.error);
+		const row = buildThemedWidgetLines(makeSnap([run]), NULL_PI_THEME, 120, now).find((line) =>
+			line.includes(run.name),
+		);
+
+		assert.ok(row, "killed run row should be rendered while it is recently ended");
+		assert.ok(row.includes(`${warning}${glyph}`), "killed glyph keeps the widget's warning colour");
+		assert.ok(!row.includes(`${error}${glyph}`), "killed glyph must not take the error colour in the widget");
+	});
 });
 
 // ---------------------------------------------------------------------------

@@ -77,6 +77,8 @@ type StatusResult = {
 	runs: WorkflowRunStatusSummary[];
 	/** Live snapshots from the in-process store, filtered like `runs`. */
 	snapshots: RunSnapshot[];
+	/** Full in-process store snapshots for nested-run awaiting-input attribution. */
+	allRuns?: RunSnapshot[];
 };
 type StatusDetailResult =
 	| {
@@ -335,6 +337,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 				theme: themed ? deriveGraphTheme({}) : undefined,
 				width: opts?.width,
 				now: opts?.now,
+				allRuns: r.allRuns,
 			});
 		}
 

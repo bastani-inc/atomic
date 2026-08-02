@@ -149,6 +149,10 @@ function statusGlyph(run: RunSnapshot, allRuns: readonly RunSnapshot[]): string 
 
 function statusFg(run: RunSnapshot, theme: GraphTheme, allRuns: readonly RunSnapshot[]): string {
 	if (isQuitRun(run)) return statusColor("paused", theme);
+	if (runIndicatorStatus(run, allRuns) === "killed") {
+		// Keep the widget's pre-existing peach treatment so a terminal colour does not change.
+		return theme.warning;
+	}
 	return statusColor(runIndicatorStatus(run, allRuns), theme);
 }
 
