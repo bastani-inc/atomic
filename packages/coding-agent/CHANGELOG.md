@@ -4,6 +4,7 @@
 ### Changed
 
 - Removed the four-workflow display cap from the BACKGROUND widget so every qualifying top-level run is rendered.
+- Moved durable workflow run artifacts—including goal ledgers, Ralph implementation notes, QA evidence video paths, and worktree task outputs—from per-invocation OS temp directories to the run-scoped durable root under the Atomic config directory (`~/.atomic/workflows/runs/<runId>/`, overridable with `ATOMIC_WORKFLOW_ARTIFACT_DIR`), so they survive OS temp purges and follow state-aware retention.
 
 ### Fixed
 
@@ -13,11 +14,14 @@
 - Fixed workflow stage file output selecting an assistant acknowledgement from an admitted async completion instead of the stage prompt's own deliverable. Admission identity now survives custom-message session persistence, so the external turn remains visible in model context and the companion transcript without clobbering the nominated artifact.
 - Fixed the workflow resume picker offering stale or non-resumable runs. Picker and command paths now share one resumability predicate and revalidate durable state before displaying a target, while explicit ids retain their explanatory rejection.
 - Fixed workflow `reads:` references to fail loudly when an artifact path no longer exists instead of handing the model an empty, silently missing context file.
+- Fixed relayed terminal subagent results retaining their stable stage-admission identity when delivered through the intercom ordering barrier, preventing an acknowledgement turn from clobbering a running stage's nominated `output:` artifact.
 
 ### Added
 
 - Added first-class Alpine/musl Linux support for x64 and arm64, including native search and PTY bindings and the `atomic-linux-x64-musl.tar.gz` and `atomic-linux-arm64-musl.tar.gz` release archives. The musl archives omit the clipboard native binding and glibc-linked `@embedded-postgres/*` binaries: Atomic falls back to Linux clipboard commands/OSC52, while durable Alpine workflows require external Postgres via `DBOS_SYSTEM_DATABASE_URL` or Docker; otherwise the existing loud non-durable in-memory fallback applies.
 - Added state-aware retention for durable workflow artifact directories: only terminal or unowned runs older than `WORKFLOW_ARTIFACT_RETENTION_MS` are pruned, while running, paused, quit, blocked, and awaiting-input runs keep live resume dependencies. Durable DBOS history remains explicit-delete-only in this release.
+- Added durable, searchable companion transcripts for every workflow stage that declares `output:`. The caller's receipt names both the artifact and transcript paths and says to search with `rg`, read narrow line ranges, and never read the transcript whole; under `outputMode: "file-only"`, that receipt is the entire handoff.
+- Added explicit warnings for degenerate stage artifacts instead of silently persisting them: an empty write or a write that only points to its own output path directs the reader to the companion transcript.
 
 ## [0.9.11-alpha.10] - 2026-08-01
 

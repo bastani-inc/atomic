@@ -33,6 +33,7 @@ async function dispatchRelayFallback(
   pi: ExtensionAPI,
   prefix: Array<{ customType: string; content: string; display: boolean; details?: unknown }>,
   terminalMessage: { customType: string; content: string; display: boolean; details?: unknown },
+  stageAdmissionKey: string,
 ): Promise<void> {
   let delivered = 0;
   try {
@@ -40,7 +41,7 @@ async function dispatchRelayFallback(
       await pi.sendMessage(message, { deliverAs: "steer" });
       delivered += 1;
     }
-    await pi.sendMessage(terminalMessage, { triggerTurn: true });
+    await pi.sendMessage(terminalMessage, { triggerTurn: true, stageAdmissionKey });
   } catch (error) {
     const failure = new Error(error instanceof Error ? error.message : String(error), { cause: error });
     Object.assign(failure, { terminalPreludeDelivered: delivered });
@@ -57,6 +58,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
     status: string,
     messageText: string,
     terminalBarrier?: { runId: string; terminalId?: string; sourceSessionTargets: string[] },
+    requestId?: string,
   ): Promise<void> {
     const now = Date.now();
     const entry = {
@@ -82,10 +84,11 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
             display: true,
             details: entry,
           };
+          const stageAdmissionKey = `intercom:${requestId ?? entry.message.id}`;
           if (typeof pi.sendMessages === "function") {
-            return pi.sendMessages([...prefix, terminalMessage], { triggerTurn: true });
+            return pi.sendMessages([...prefix, terminalMessage], { triggerTurn: true, stageAdmissionKey });
           }
-          return dispatchRelayFallback(pi, prefix, terminalMessage);
+          return dispatchRelayFallback(pi, prefix, terminalMessage, stageAdmissionKey);
         },
       };
       Object.defineProperty(payload, "terminalOwner", { value: pi });
@@ -139,13 +142,13 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
           void delivery.catch(() => {});
           localDeliveriesInFlight.set(parsed.requestId, { signature, completion: delivery });
           try {
-            void deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier).then(deferred.resolve, deferred.reject);
+            void deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier, parsed.requestId).then(deferred.resolve, deferred.reject);
           } catch (error) {
             deferred.reject(error);
           }
           void delivery.finally(() => { localDeliveriesInFlight.delete(parsed.requestId!); }).catch(() => {});
         } else if (!delivery) {
-          delivery = deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier);
+          delivery = deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier, parsed.requestId);
         }
         await delivery;
         if (parsed.requestId) localDeliveries.record(parsed.requestId, signature);

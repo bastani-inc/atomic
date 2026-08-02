@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@bastani/atomic";
 import { describe, test } from "vitest";
+import { InboundIdleQueue } from "../../packages/intercom/inbound-idle-queue.js";
 import {
 	SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
 	SUBAGENT_RESULT_INTERCOM_EVENT,
 } from "../../packages/intercom/intercom-utils.js";
 import { rejectLazyResultRelay } from "../../packages/intercom/lazy-subagent-ack.js";
 import { registerSubagentRelay } from "../../packages/intercom/subagent-relay.js";
+import { registerTerminalOrderingBarrier } from "../../packages/intercom/terminal-ordering-barrier.js";
 
 interface RelayHarnessOptions {
 	liveChecks: boolean[];
@@ -97,6 +99,97 @@ function createRelayHarness(options: RelayHarnessOptions) {
 async function settleRelay(): Promise<void> {
 	await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
+
+function createTerminalRelayDispatchHarness(withBatchSend: boolean) {
+	const listeners = new Map<string, Array<(payload: unknown) => void>>();
+	const sentMessageOptions: Array<Record<string, unknown> | undefined> = [];
+	const sentMessagesOptions: Array<Record<string, unknown> | undefined> = [];
+	const context = { cwd: "/tmp" } as ExtensionContext;
+	const pi = {
+		events: {
+			on(event: string, handler: (payload: unknown) => void) {
+				const handlers = listeners.get(event) ?? [];
+				handlers.push(handler);
+				listeners.set(event, handlers);
+				return () => {
+					const index = handlers.indexOf(handler);
+					if (index >= 0) handlers.splice(index, 1);
+				};
+			},
+			emit(event: string, payload: unknown) {
+				for (const handler of listeners.get(event) ?? []) handler(payload);
+			},
+		},
+		sendMessage(_message: unknown, options?: Record<string, unknown>) {
+			sentMessageOptions.push(options);
+		},
+		...(withBatchSend
+			? {
+					sendMessages(_messages: unknown[], options?: Record<string, unknown>) {
+						sentMessagesOptions.push(options);
+					},
+				}
+			: {}),
+		appendEntry() {},
+	};
+	const unregister = registerTerminalOrderingBarrier(pi as never, {
+		queue: new InboundIdleQueue(),
+		toMessage: (entry) => ({
+			customType: "intercom_message",
+			content: entry.bodyText,
+			display: true,
+			details: entry,
+		}),
+		deliver: () => undefined,
+	});
+	registerSubagentRelay(pi as never, {
+		runtimeGeneration: () => 1,
+		runtimeStarted: () => true,
+		runtimeContext: () => context,
+		getLiveContext: () => context,
+		currentSessionTargetMatches: () => true,
+		sendIncomingMessage: () => {
+			throw new Error("terminal result should be dispatched through the ordering barrier");
+		},
+		ensureConnected: async () => {
+			throw new Error("terminal result should not connect to the broker");
+		},
+		resolveSessionTarget: async () => "target",
+	});
+	return { pi, sentMessageOptions, sentMessagesOptions, unregister };
+}
+
+async function assertTerminalRelayDispatch(withBatchSend: boolean): Promise<void> {
+	const harness = createTerminalRelayDispatchHarness(withBatchSend);
+	try {
+		harness.pi.events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, {
+			to: "target",
+			message: "done",
+			requestId: "request-1",
+			runId: "run-1",
+			children: [{ intercomTarget: "target" }],
+		});
+		await settleRelay();
+		const expected = [{ triggerTurn: true, stageAdmissionKey: "intercom:request-1" }];
+		if (withBatchSend) {
+			assert.deepEqual(harness.sentMessagesOptions, expected);
+			assert.deepEqual(harness.sentMessageOptions, []);
+		} else {
+			assert.deepEqual(harness.sentMessageOptions, expected);
+			assert.deepEqual(harness.sentMessagesOptions, []);
+		}
+	} finally {
+		harness.unregister();
+	}
+}
+
+test("terminal result relays carry an admission identity through pi.sendMessages", async () => {
+	await assertTerminalRelayDispatch(true);
+});
+
+test("terminal result relays carry an admission identity through dispatchRelayFallback", async () => {
+	await assertTerminalRelayDispatch(false);
+});
 
 describe("subagent result relay lifecycle acknowledgements", () => {
 	test("negatively acknowledges once when the relay is retired before connecting", async () => {
