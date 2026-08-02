@@ -4,8 +4,10 @@
  * A real workflow stage session loads this extension. On its first agent turn, it
  * waits briefly while the stand-in model is streaming, then sends the same
  * custom message/options used by subagent completion notification: triggerTurn
- * plus a persisted stageAdmissionKey. The model server answers the resulting
- * trailing turn with ACK-<nonce>.
+ * plus a persisted stageAdmissionKey. The stand-in selects the trailing ACK
+ * response or the mid-prompt ACK-plus-tool-call response from the ordering
+ * passed by the driver; the latter makes the real agent loop continue to the
+ * final deliverable turn.
  */
 
 import { readFile, writeFile } from "node:fs/promises";
