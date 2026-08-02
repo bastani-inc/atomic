@@ -7,6 +7,7 @@ import { interruptAllRuns, interruptRun, pauseRun, resumeRun } from "../runs/bac
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store } from "../shared/store.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { renderSessionList } from "../tui/session-list.js";
 import { openSessionPicker } from "../tui/session-overlays.js";
@@ -277,9 +278,12 @@ export async function handleRunControlCommand(
 						return true;
 					}
 					const run = store.runs().find((r) => r.id === resolved.runId);
-					const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
+					const isPaused = run !== undefined && workflowHasPausedState(store, resolved.runId);
 					const isResumableContinuation =
-						run !== undefined && !isPaused && run.exitReason !== "quit" && isWorkflowRunResumable(run);
+						run !== undefined &&
+						!isPaused &&
+						run.exitReason !== "quit" &&
+						isWorkflowRunResumable(workflowRunResumeCandidate(run));
 					if (isResumableContinuation) {
 						await ensureWorkflowResourcesVisible();
 						const continuation = await deps
@@ -476,7 +480,10 @@ export async function handleRunControlCommand(
 		const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 		const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
 		const isResumableContinuation =
-			run !== undefined && !isPaused && run.exitReason !== "quit" && isWorkflowRunResumable(run);
+			run !== undefined &&
+			!isPaused &&
+			run.exitReason !== "quit" &&
+			isWorkflowRunResumable(workflowRunResumeCandidate(run));
 		const isActivelyRunning =
 			run !== undefined &&
 			run.endedAt === undefined &&

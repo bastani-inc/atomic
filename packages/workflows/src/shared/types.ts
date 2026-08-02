@@ -392,6 +392,8 @@ export interface WorkflowRunContext<
 > {
 	/** Typed inputs provided by the caller, validated against the input schema. */
 	readonly inputs: TInputs;
+	/** Stable owning workflow-run id for durable run-scoped artifacts. */
+	readonly runId?: string;
 	/** Invocation working directory for workflow-owned artifacts. Defaults to the host process cwd when omitted. */
 	readonly cwd?: string;
 	/** Intentionally end this workflow run from any call depth. */

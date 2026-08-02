@@ -170,8 +170,8 @@ export function defaultResearchPath(prompt: string, now = new Date()): string {
   return join(DEFAULT_RESEARCH_DIR, `${date}-${slugifyResearchTopic(prompt)}.md`);
 }
 
-export async function createImplementationNotesFile(prompt: string): Promise<string> {
-  const notesDir = await createWorkflowArtifactDirectory();
+export async function createImplementationNotesFile(prompt: string, runId?: string): Promise<string> {
+  const notesDir = await createWorkflowArtifactDirectory(runId);
   const notesPath = join(notesDir, IMPLEMENTATION_NOTES_FILENAME);
   const initialNotes = [
     "# Implementation Notes",
@@ -195,8 +195,8 @@ export async function createImplementationNotesFile(prompt: string): Promise<str
 // write to it; the video file itself is produced by the orchestrator's QA pass
 // (and overwritten each iteration so it always reflects the latest state). The
 // final pull-request stage attaches it when it exists.
-export async function createQaEvidenceVideoPath(): Promise<string> {
-  const qaDir = await createWorkflowArtifactDirectory();
+export async function createQaEvidenceVideoPath(runId?: string): Promise<string> {
+  const qaDir = await createWorkflowArtifactDirectory(runId);
   return join(qaDir, QA_E2E_VIDEO_FILENAME);
 }
 
@@ -417,6 +417,7 @@ export type RalphWorkflowOptions = {
   readonly comparisonBaseBranch: string;
   readonly workflowStartCwd: string;
   readonly createPr: boolean;
+  readonly runId?: string;
 };
 
 export type RalphWorkflowResult = {

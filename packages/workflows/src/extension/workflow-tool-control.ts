@@ -8,6 +8,7 @@ import { workflowHasPausedStages, workflowHasPausedState } from "../runs/backgro
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -511,7 +512,10 @@ export async function workflowResumeAction(
 	const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 	const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
 	const isResumableContinuation =
-		run !== undefined && !isPaused && run.exitReason !== "quit" && isWorkflowRunResumable(run);
+		run !== undefined &&
+		!isPaused &&
+		run.exitReason !== "quit" &&
+		isWorkflowRunResumable(workflowRunResumeCandidate(run));
 	if (isResumableContinuation) {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();

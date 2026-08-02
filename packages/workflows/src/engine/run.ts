@@ -495,6 +495,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	});
 	const ctx: WorkflowRunContext<TInputs> = {
 		inputs: resolvedInputs as TInputs,
+		runId,
 		get cwd() {
 			return resolveWorkflowCwd();
 		},

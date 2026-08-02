@@ -55,9 +55,10 @@ export function appendLifecycleEvent(
 export async function createGoalLedger(
   objective: string,
   acceptanceCriteria = objective,
+  runId?: string,
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
   const goalId = randomUUID();
-  const artifactDir = await createWorkflowArtifactDirectory();
+  const artifactDir = await createWorkflowArtifactDirectory(runId);
   const now = new Date().toISOString();
   const ledger: GoalLedger = {
     goal_id: goalId,

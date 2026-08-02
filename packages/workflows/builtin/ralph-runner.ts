@@ -51,7 +51,7 @@ export async function runRalphWorkflow(
   ctx: WorkflowRunContext<RalphInputs>,
   options: RalphWorkflowOptions,
 ): Promise<RalphWorkflowResult> {
-  const { prompt, acceptanceCriteria, maxLoops, comparisonBaseBranch, workflowStartCwd, createPr } = options;
+  const { prompt, acceptanceCriteria, maxLoops, comparisonBaseBranch, workflowStartCwd, createPr, runId } = options;
   let latestReviewReportPath: string | undefined;
   let finalPlan = "";
   let finalPlanPath = "";
@@ -62,9 +62,9 @@ export async function runRalphWorkflow(
   const workflowCwdContext = workflowCwdContextSection(workflowStartCwd);
   const workflowPrompt = prompt;
   const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(workflowPrompt));
-  const implementationNotesPath = await createImplementationNotesFile(workflowPrompt);
-  const qaVideoPath = await createQaEvidenceVideoPath();
-  const artifactDir = await createWorkflowArtifactDirectory();
+  const implementationNotesPath = await createImplementationNotesFile(workflowPrompt, runId);
+  const qaVideoPath = await createQaEvidenceVideoPath(runId);
+  const artifactDir = await createWorkflowArtifactDirectory(runId);
   let approved = false;
   let iterationsCompleted = 0;
   let previousResearchPromptRefinementSessionFile: string | undefined;

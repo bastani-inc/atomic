@@ -4,6 +4,7 @@ import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.j
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { PiHostSessionPickerFunction, PiHostSessionPickerRow } from "../extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 
 export type WorkflowResumeSelectorResult =
 	| { kind: "live"; runId: string }
@@ -57,11 +58,7 @@ function completedStageCount(run: RunSnapshot): number {
 }
 
 function isResumePickerLiveRun(run: RunSnapshot): boolean {
-	const hasPausedState =
-		run.status === "paused" ||
-		run.exitReason === "quit" ||
-		run.stages.some((stage) => stage.status === "paused" || stage.status === "blocked");
-	return isWorkflowRunResumable({ ...run, hasPausedState });
+	return isWorkflowRunResumable(workflowRunResumeCandidate(run));
 }
 interface WorkflowStatusPresentation {
 	readonly label: string;

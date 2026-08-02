@@ -125,6 +125,7 @@ function savedOutputReference(
 	fullOutput: string,
 	transcriptPathValue: string,
 	transcriptText: string,
+	transcriptAvailable: boolean,
 	warning?: string,
 ): string {
 	const absolutePath = resolve(outputPath);
@@ -133,7 +134,9 @@ function savedOutputReference(
 	const transcriptBytes = Buffer.byteLength(transcriptText, "utf8");
 	const transcriptLines = countLines(transcriptText);
 	const outputReference = `Output saved to: ${absolutePath} (${formatByteSize(bytes)}, ${lines} ${lines === 1 ? "line" : "lines"}). Read this file if needed.`;
-	const transcriptReference = `Transcript saved to: ${transcriptPathValue} (${formatByteSize(transcriptBytes)}, ${transcriptLines} ${transcriptLines === 1 ? "line" : "lines"}). Search it with rg, read narrow line ranges, and do not read it whole.`;
+	const transcriptReference = transcriptAvailable
+		? `Transcript saved to: ${transcriptPathValue} (${formatByteSize(transcriptBytes)}, ${transcriptLines} ${transcriptLines === 1 ? "line" : "lines"}). Search it with rg, read narrow line ranges, and do not read it whole.`
+		: `Transcript unavailable at: ${transcriptPathValue}. Search it with rg when it becomes available, read narrow line ranges, and do not read it whole.`;
 	return [outputReference, transcriptReference, warning]
 		.filter((line): line is string => line !== undefined)
 		.join("\n");
@@ -234,15 +237,33 @@ export async function finalizePromptOutput(
 	} catch (err) {
 		return `${displayOutput}\n\nOutput file error: ${outputPath}\n${err instanceof Error ? err.message : String(err)}`;
 	}
+	let transcriptAvailable = false;
+	let transcriptError: string | undefined;
 	try {
 		await ensureWorkflowArtifactRunDirectory(runId);
 		await mkdir(dirname(transcriptFile), { recursive: true });
 		await writeFile(transcriptFile, transcript, "utf8");
+		transcriptAvailable = true;
 	} catch (err) {
-		return `${displayOutput}\n\nOutput file error: ${outputPath}\n${err instanceof Error ? err.message : String(err)}\n\nTranscript file error: ${transcriptFile}`;
+		transcriptError = err instanceof Error ? err.message : String(err);
 	}
 
-	const warning = degenerateWarning(fullOutput, outputPath);
-	const reference = savedOutputReference(outputPath, fullOutput, transcriptFile, transcript, warning);
+	const warning =
+		[
+			transcriptError === undefined
+				? undefined
+				: `WARNING: companion transcript unavailable at ${transcriptFile}: ${transcriptError}`,
+			degenerateWarning(fullOutput, outputPath),
+		]
+			.filter((line): line is string => line !== undefined)
+			.join("\n") || undefined;
+	const reference = savedOutputReference(
+		outputPath,
+		fullOutput,
+		transcriptFile,
+		transcript,
+		transcriptAvailable,
+		warning,
+	);
 	return outputOptions.outputMode === "file-only" ? reference : `${displayOutput}\n\n${reference}`;
 }

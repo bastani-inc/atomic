@@ -40,7 +40,7 @@ test("durable workflow artifacts default to the configured Atomic config root", 
 			async () => {
 				assert.equal(workflowArtifactRunsRoot(), join(root, "workflows", "runs"));
 				const runDirectory = await createWorkflowArtifactDirectory("durable-resume-run");
-				assert.equal(runDirectory, join(root, "workflows", "runs", "durable-resume-run"));
+				assert.match(runDirectory, /workflows\/runs\/durable-resume-run\/artifact-[^/]+$/);
 				await stat(runDirectory);
 			},
 		);
@@ -54,7 +54,24 @@ test("the workflow-artifact directory override redirects the durable root", asyn
 	try {
 		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
 			assert.equal(workflowArtifactRunsRoot(), join(root, "runs"));
-			assert.equal(await createWorkflowArtifactDirectory("override-run"), join(root, "runs", "override-run"));
+			assert.match(await createWorkflowArtifactDirectory("override-run"), /runs\/override-run\/artifact-[^/]+$/);
+		});
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("artifact directories remain unique and stay under their owning run", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-unique-"));
+	try {
+		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
+			const first = await createWorkflowArtifactDirectory("run-a");
+			const second = await createWorkflowArtifactDirectory("run-a");
+			const laterRun = await createWorkflowArtifactDirectory("run-b");
+			assert.notEqual(first, second);
+			assert.match(first, /runs\/run-a\/artifact-[^/]+$/);
+			assert.match(second, /runs\/run-a\/artifact-[^/]+$/);
+			assert.match(laterRun, /runs\/run-b\/artifact-[^/]+$/);
 		});
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -156,13 +173,37 @@ test("state-aware retention prunes terminal history but keeps old resumable, qui
 		await pruneWorkflowArtifactRuns(root, now, resolveWorkflowArtifactRunState);
 
 		await assert.rejects(stat(join(root, terminalId)), /ENOENT/);
-		assert.notEqual(backend.getLoadableWorkflow(terminalId), undefined);
+		assert.equal(backend.getLoadableWorkflow(terminalId), undefined);
 		for (const id of [pausedId, quitId, blockedId]) await stat(join(root, id));
 		assert.notEqual(backend.getLoadableWorkflow(pausedId), undefined);
 		assert.notEqual(backend.getLoadableWorkflow(quitId), undefined);
 		assert.notEqual(backend.getLoadableWorkflow(blockedId), undefined);
 	} finally {
 		store.removeRun(quitId);
+		setDurableBackend(undefined);
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("terminal artifact pruning preserves the directory when durable deletion is refused", async () => {
+	const root = await mkdtemp(join(tmpdir(), "workflow-artifact-retention-refused-"));
+	const now = Date.now();
+	const backend = new InMemoryDurableBackend();
+	const runId = "terminal-refused";
+	setDurableBackend(backend);
+	try {
+		backend.registerWorkflow({ workflowId: runId, name: runId, inputs: {}, createdAt: 1, status: "completed" });
+		const directory = join(root, runId);
+		await mkdir(directory, { recursive: true });
+		const staleTime = new Date(now - WORKFLOW_ARTIFACT_RETENTION_MS - 1);
+		await utimes(directory, staleTime, staleTime);
+		backend.deleteWorkflowIfInactive = async () => ({ ok: false, reason: "running" });
+
+		await pruneWorkflowArtifactRuns(root, now, resolveWorkflowArtifactRunState);
+
+		await stat(directory);
+		assert.notEqual(backend.getLoadableWorkflow(runId), undefined);
+	} finally {
 		setDurableBackend(undefined);
 		await rm(root, { recursive: true, force: true });
 	}

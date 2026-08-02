@@ -2,11 +2,15 @@
  * Unit tests for src/tui/session-picker.ts — selection logic, key handling,
  * and a render-smoke test (no thrown errors, expected content present).
  */
-
 import assert from "node:assert/strict";
+
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "vitest";
 import { isWorkflowRunResumable } from "../../packages/workflows/src/durable/resume-eligibility.ts";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
+import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
 	createSessionPickerState,
@@ -107,6 +111,29 @@ test("a paused run whose artifacts were pruned is not resumable", () => {
 	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true }), true);
 	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true, artifactsIntact: false }), false);
 	assert.equal(isWorkflowRunResumable({ ...paused, hasPausedState: true, hasDurableCheckpoint: false }), false);
+});
+
+test("resume picker production filtering hides a run whose referenced artifact directory is missing", async () => {
+	const root = await mkdtemp(join(tmpdir(), "session-picker-artifact-root-"));
+	const runId = "artifact-aware-run";
+	const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+	try {
+		process.env[ENV_WORKFLOW_ARTIFACT_DIR] = root;
+		const referenced = join(root, "runs", runId, "transcripts", "stage.transcript.md");
+		const run = makeRun({
+			id: runId,
+			status: "paused",
+			resumable: true,
+			result: { transcript_path: referenced },
+		});
+		assert.equal(selectRunsForPicker([run], "", true, Date.now(), "resume").length, 0);
+		await mkdir(join(root, "runs", runId), { recursive: true });
+		assert.equal(selectRunsForPicker([run], "", true, Date.now(), "resume").length, 1);
+	} finally {
+		if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+		else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 test("connect picker remains broad while resume hides a completed run", () => {

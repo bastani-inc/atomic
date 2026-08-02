@@ -1,5 +1,7 @@
+import { mkdir } from "node:fs/promises";
 import { describe, test } from "vitest";
 import { lastAssistantTextFromSession } from "../../packages/workflows/src/runs/foreground/stage-runner-messages.js";
+import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import type {
 	AgentSession,
 	AgentSessionAdapter,
@@ -18,6 +20,7 @@ import {
 	readFile,
 	rm,
 	tmpdir,
+	writeFile,
 } from "./stage-runner-helpers.js";
 
 type SessionMessage = AgentSession["messages"][number];
@@ -267,6 +270,44 @@ describe("createStageContext — prompt metadata propagation", () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
+	});
+
+	test("transcript failure preserves a compact file-only receipt and the primary artifact", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-transcript-failure-"));
+		const artifactRoot = await mkdtemp(join(tmpdir(), "pi-workflows-stage-transcript-root-"));
+		const previousRoot = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+		const output = join(dir, "answer.md");
+		const blockedRunDirectory = join(artifactRoot, "runs", "transcript-failure-run");
+		try {
+			await mkdir(join(artifactRoot, "runs"), { recursive: true });
+			await writeFile(blockedRunDirectory, "not a directory", "utf8");
+			process.env[ENV_WORKFLOW_ARTIFACT_DIR] = artifactRoot;
+			const ctx = createStageContext(
+				makeOpts({
+					runId: "transcript-failure-run",
+					adapters: {
+						prompt: {
+							async prompt() {
+								return "PRIMARY OUTPUT";
+							},
+						},
+					},
+				}),
+			);
+			const result = await ctx.prompt("go", { output, outputMode: "file-only" });
+
+			assert.match(result, /^Output saved to: /);
+			assert.match(result, /Transcript unavailable at: /);
+			assert.match(result, /WARNING: companion transcript unavailable at .*transcript-failure-run/);
+			assert.doesNotMatch(result, /PRIMARY OUTPUT/);
+			assert.doesNotMatch(result, /Output file error:/);
+			assert.equal(await readFile(output, "utf8"), "PRIMARY OUTPUT");
+		} finally {
+			if (previousRoot === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+			else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = previousRoot;
+			await rm(dir, { recursive: true, force: true });
+			await rm(artifactRoot, { recursive: true, force: true });
 		}
 	});
 	test("durable transcript survives simulated resume after the output worktree is removed", async () => {

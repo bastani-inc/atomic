@@ -1,4 +1,4 @@
-import type { RunStatus, WorkflowFailureRecoverability } from "../shared/store-types.js";
+import type { RunSnapshot, RunStatus, WorkflowFailureRecoverability } from "../shared/store-types.js";
 import type { DurableWorkflowStatus } from "./types.js";
 
 /** Metadata required to classify a current DBOS workflow as resumable. */
@@ -23,6 +23,15 @@ export interface WorkflowRunResumeCandidate {
 	/** Explicitly false when durable state or referenced artifacts are missing. */
 	readonly hasDurableCheckpoint?: boolean;
 	readonly artifactsIntact?: boolean;
+}
+
+/** Derive the paused/blocked state used by every workflow resume surface. */
+export function workflowRunHasPausedState(run: Pick<RunSnapshot, "status" | "exitReason" | "stages">): boolean {
+	return (
+		run.status === "paused" ||
+		run.exitReason === "quit" ||
+		run.stages.some((stage) => stage.status === "paused" || stage.status === "blocked")
+	);
 }
 
 /**

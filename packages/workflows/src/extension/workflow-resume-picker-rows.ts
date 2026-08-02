@@ -14,6 +14,7 @@ import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { WorkflowResumeRefresh } from "../tui/workflow-resume-selector.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { prepareWorkflowResumeCatalog } from "./workflow-durable-resume-command.js";
@@ -24,17 +25,7 @@ export interface ResumePickerLiveSource {
 	readonly activeLiveIds: ReadonlySet<string>;
 }
 
-/** Snapshot-derived paused/blocked state, shared by every predicate call here. */
-function hasPausedState(run: RunSnapshot): boolean {
-	return (
-		run.status === "paused" ||
-		run.exitReason === "quit" ||
-		run.stages.some((stage) => stage.status === "paused" || stage.status === "blocked")
-	);
-}
-
-/**
- * A live run is resumable when the shared predicate accepts it and the durable
+/** A live run is resumable when the shared predicate accepts it and the durable
  * backend has not explicitly deleted it. A live paused/quit run resumes through
  * its live stage controls, so it must NOT require a durable checkpoint here;
  * a restored snapshot that depends on durable state is filtered by its shadow
@@ -42,7 +33,7 @@ function hasPausedState(run: RunSnapshot): boolean {
  */
 function isResumableLiveRun(run: RunSnapshot): boolean {
 	if (!getDurableBackend().isWorkflowLoadable(run.id)) return false;
-	return isWorkflowRunResumable({ ...run, hasPausedState: hasPausedState(run) });
+	return isWorkflowRunResumable(workflowRunResumeCandidate(run));
 }
 
 export function collectResumePickerLiveRuns(runStore: Store): ResumePickerLiveSource {
@@ -61,7 +52,7 @@ export function collectResumePickerLiveRuns(runStore: Store): ResumePickerLiveSo
 					shadowClassification.get(run.id) !== "eligible" &&
 					run.endedAt === undefined &&
 					run.status === "running" &&
-					!isWorkflowRunResumable({ ...run, hasPausedState: hasPausedState(run) }) &&
+					!isWorkflowRunResumable(workflowRunResumeCandidate(run)) &&
 					run.exitReason !== "quit",
 			)
 			.map((run) => run.id),

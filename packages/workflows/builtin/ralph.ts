@@ -72,6 +72,7 @@ export default workflow({
       comparisonBaseBranch,
       workflowStartCwd,
       createPr,
+      runId: workflowCtx.runId,
     });
   },
 });

@@ -88,6 +88,8 @@ export interface WorkflowRunContext<
 	TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
 > {
 	readonly inputs: Readonly<TInputs>;
+	/** Stable owning workflow-run id for durable run-scoped artifacts. */
+	readonly runId?: string;
 	readonly cwd?: string;
 	exit(options?: WorkflowExitOptions<TOutputs>): never;
 	stage<TSchemaDef extends TSchema>(

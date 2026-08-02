@@ -64,6 +64,7 @@ function normalizeBranchInput(
 }
 type GoalRunnerContext = {
   readonly inputs: GoalWorkflowInputs;
+  readonly runId?: string;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
 };
@@ -109,7 +110,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     const reviewQuorum = DEFAULT_REVIEW_QUORUM;
     const blockerThreshold = Math.min(DEFAULT_BLOCKER_THRESHOLD, maxTurns);
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
-    const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective, acceptanceCriteria);
+    const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective, acceptanceCriteria, ctx.runId);
 
     let latestReviews: ReviewRecord[] = [];
     let latestReviewArtifactPaths: string[] = [];

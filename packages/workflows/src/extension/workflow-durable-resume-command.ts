@@ -7,6 +7,7 @@ import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
@@ -205,11 +206,9 @@ export function resolveWorkflowResumeTarget(
 
 function isExplicitResumeCandidate(run: RunSnapshot): boolean {
 	if (run.status === "completed") return true;
-	const hasPausedState =
-		run.status === "paused" ||
-		run.exitReason === "quit" ||
-		run.stages.some((stage) => stage.status === "paused" || stage.status === "blocked");
-	return isWorkflowRunResumable({ ...run, hasPausedState }) || (run.endedAt === undefined && run.status === "running");
+	return (
+		isWorkflowRunResumable(workflowRunResumeCandidate(run)) || (run.endedAt === undefined && run.status === "running")
+	);
 }
 
 async function resumeDurableTarget(

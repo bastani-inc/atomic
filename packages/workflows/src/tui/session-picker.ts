@@ -23,6 +23,7 @@ import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
@@ -81,13 +82,7 @@ export function selectRunsForPicker(
 	for (const r of runs) {
 		if (!isTopLevelWorkflowRun(r)) continue;
 		if (!matches(r)) continue;
-		if (intent === "resume") {
-			const hasPausedState =
-				r.status === "paused" ||
-				r.exitReason === "quit" ||
-				r.stages.some((stage) => stage.status === "paused" || stage.status === "blocked");
-			if (!isWorkflowRunResumable({ ...r, hasPausedState })) continue;
-		}
+		if (intent === "resume" && !isWorkflowRunResumable(workflowRunResumeCandidate(r))) continue;
 		const endedAt = r.endedAt;
 		if (endedAt === undefined) {
 			active.push({ run: r, bucket: "active" });

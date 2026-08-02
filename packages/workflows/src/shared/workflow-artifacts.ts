@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, getEnvValue } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { getDurableBackend } from "../durable/factory.js";
-import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
+import {
+	isDurableWorkflowResumable,
+	type WorkflowRunResumeCandidate,
+	workflowRunHasPausedState,
+} from "../durable/resume-eligibility.js";
 import { store } from "./store.js";
 import type { RunSnapshot } from "./store-types.js";
 
@@ -38,6 +43,36 @@ function safeRunId(runId: string): string {
 
 export function workflowArtifactRunPath(runId: string): string {
 	return join(workflowArtifactRunsRoot(), safeRunId(runId));
+}
+
+function workflowRunHasArtifactReference(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean {
+	const serialized = JSON.stringify({ result: run.result, stages: run.stages });
+	if (serialized === undefined) return false;
+	const normalized = serialized.replaceAll("\\", "/");
+	return normalized.includes(`/runs/${safeRunId(run.id)}/`);
+}
+
+/** Return artifact integrity only for runs whose snapshot names a run-scoped artifact. */
+export function workflowRunArtifactsIntact(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean | undefined {
+	if (!workflowRunHasArtifactReference(run)) return undefined;
+	return existsSync(workflowArtifactRunPath(run.id));
+}
+
+/** Build the one resume candidate shape used by all live-run resume surfaces. */
+export function workflowRunResumeCandidate(run: RunSnapshot): WorkflowRunResumeCandidate {
+	const artifactsIntact = workflowRunArtifactsIntact(run);
+	let hasDurableCheckpoint: boolean | undefined;
+	try {
+		hasDurableCheckpoint = getDurableBackend().isWorkflowLoadable(run.id);
+	} catch {
+		// A backend that is not ready cannot prove a missing checkpoint.
+	}
+	return {
+		...run,
+		hasPausedState: workflowRunHasPausedState(run),
+		...(hasDurableCheckpoint === undefined ? {} : { hasDurableCheckpoint }),
+		...(artifactsIntact === undefined ? {} : { artifactsIntact }),
+	};
 }
 
 function storeRunState(run: RunSnapshot): WorkflowArtifactRunState {
@@ -117,6 +152,22 @@ export function resolveWorkflowArtifactRunState(runId: string): WorkflowArtifact
 	return createWorkflowArtifactRunStateResolver()(runId);
 }
 
+/** Delete the durable owner of a terminal run before its artifacts are removed. */
+async function deleteTerminalDurableEntry(runId: string): Promise<boolean> {
+	let backend: DurableWorkflowBackend;
+	try {
+		backend = getDurableBackend();
+	} catch {
+		return false;
+	}
+	try {
+		const result = await backend.deleteWorkflowIfInactive(runId);
+		return result.ok || result.reason === "not_found";
+	} catch {
+		return false;
+	}
+}
+
 /** Remove stale run directories, retaining artifacts for resumable/non-terminal runs. */
 export async function pruneWorkflowArtifactRuns(
 	root = workflowArtifactRunsRoot(),
@@ -141,10 +192,10 @@ export async function pruneWorkflowArtifactRuns(
 			if (stateResolver === undefined) continue;
 			const state = stateResolver(entry.name);
 			if (state !== "terminal" && state !== "orphan") continue;
-			// Ordering invariant: durable history is explicit-delete-only in this
-			// release. If aligned durable retention is added later, delete the durable
-			// entry first, then this directory; never leave resumable metadata pointing
-			// at an artifact directory that has already been removed.
+			// Delete the durable owner first. If authoritative deletion is unavailable
+			// or refuses an active run, preserve the directory rather than leaving a
+			// durable entry pointing at missing artifacts.
+			if (state === "terminal" && !(await deleteTerminalDurableEntry(entry.name))) continue;
 			await rm(entryPath, { recursive: true, force: true });
 		}
 	} catch (error) {
@@ -156,7 +207,11 @@ export async function pruneWorkflowArtifactRuns(
 async function pruneArtifactRootIfDue(root: string, now: number): Promise<void> {
 	const pending = pendingArtifactPrunes.get(root);
 	if (pending !== undefined) {
-		await pending;
+		try {
+			await pending;
+		} catch {
+			// Pruning is opportunistic and must never block a stage artifact write.
+		}
 		return;
 	}
 	const previous = lastArtifactPruneAt.get(root);
@@ -165,11 +220,10 @@ async function pruneArtifactRootIfDue(root: string, now: number): Promise<void> 
 	pendingArtifactPrunes.set(root, operation);
 	try {
 		await operation;
-		lastArtifactPruneAt.set(root, now);
-	} catch (error) {
-		lastArtifactPruneAt.delete(root);
-		throw error;
+	} catch {
+		// A stale sibling that cannot be inspected is retained; writes continue.
 	} finally {
+		lastArtifactPruneAt.set(root, now);
 		pendingArtifactPrunes.delete(root);
 	}
 }
@@ -183,8 +237,11 @@ export async function ensureWorkflowArtifactRunDirectory(runId: string): Promise
 	return directory;
 }
 
-/** Create a durable run directory and prune expired siblings after resolving their state. */
+/** Create a unique durable artifact directory beneath the owning run and prune expired siblings. */
 export async function createWorkflowArtifactDirectory(runId?: string): Promise<string> {
-	const effectiveRunId = runId ?? store.activeRunId() ?? randomUUID();
-	return ensureWorkflowArtifactRunDirectory(effectiveRunId);
+	const effectiveRunId = runId ?? randomUUID();
+	const runDirectory = await ensureWorkflowArtifactRunDirectory(effectiveRunId);
+	const artifactDirectory = join(runDirectory, `artifact-${randomUUID()}`);
+	await mkdir(artifactDirectory, { recursive: true });
+	return artifactDirectory;
 }

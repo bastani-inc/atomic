@@ -290,7 +290,10 @@ describe("goal", () => {
 		assert.equal(typeof result.result, "string");
 		assert.equal(typeof result.review_report, "string");
 		assert.equal(typeof result.ledger_path, "string");
-		assert.match(normalizePathSeparators(result.ledger_path as string), /\/runs\/[^/]+\/goal-ledger\.json$/);
+		assert.match(
+			normalizePathSeparators(result.ledger_path as string),
+			/\/runs\/[^/]+\/artifact-[^/]+\/goal-ledger\.json$/,
+		);
 		const ledger = JSON.parse(readFileSync(result.ledger_path as string, "utf8")) as {
 			goal_id: string;
 			objective: string;
