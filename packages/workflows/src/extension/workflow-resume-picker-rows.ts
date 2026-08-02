@@ -22,7 +22,7 @@ import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
 
 export interface ResumePickerLiveSource {
 	readonly liveRuns: readonly RunSnapshot[];
-	/** Live ids whose durable/completed duplicates must be suppressed. */
+	/** Live ids whose resumable durable duplicates must be suppressed. */
 	readonly suppressedLiveIds: ReadonlySet<string>;
 }
 
@@ -59,7 +59,7 @@ export function collectResumePickerLiveRuns(runStore: Store): ResumePickerLiveSo
 			.map((run) => run.id),
 	);
 	// A non-running snapshot rejected by the shared predicate must not reappear as
-	// a durable row. Active running snapshots retain the existing durable fallback.
+	// a resumable durable row. Completed inspection rows remain visible separately.
 	const rejectedLiveIds = new Set(
 		runs.filter((run) => !isCurrentlyRunning(run) && resumableById.get(run.id) !== true).map((run) => run.id),
 	);

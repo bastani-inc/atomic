@@ -65,7 +65,7 @@ export async function prepareWorkflowResumeCatalog(
 			: listOpenableCompletedWorkflows(backend));
 	return {
 		resumable,
-		completed: completed.filter((entry) => !suppressedLiveIds.has(entry.workflowId) && isDisplayLoadable(entry)),
+		completed: completed.filter((entry) => isDisplayLoadable(entry)),
 	};
 }
 

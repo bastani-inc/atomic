@@ -170,14 +170,25 @@ function degenerateWarning(fullOutput: string, outputPath: string): string | und
 	const normalizedPath = outputPath.replaceAll("\\", "/");
 	const mentionsOutputPath = normalized.includes(normalizedPath) || normalized.includes(basename(normalizedPath));
 	if (!mentionsOutputPath || trimmed.includes("\n")) return undefined;
+	const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const pathReference = `(?:${escapeRegex(normalizedPath)}|${escapeRegex(basename(normalizedPath))})`;
 	const pointerOnly =
+		new RegExp(`^${pathReference}$`, "i").test(normalized) ||
 		/^(?:see|refer to|read|find|review)\s+(?:the\s+)?(?:output|artifact|report|results?)?(?:\s+(?:at|in|from))?\s*[^ ]+$/i.test(
 			normalized,
 		) ||
 		/^(?:research|report|output|artifact)\s+complete,\s+saved\s+to\s+[^ ]+$/i.test(normalized) ||
-		/^(?:research|report|output|artifact)?\s*(?:complete|saved|written|available)(?:\s+(?:to|at|in))?\s*[^ ]+$/i.test(
+		/^(?:output|artifact|report|research)?\s*(?:complete|saved|written|available)(?:\s+(?:to|at|in))?\s*[^ ]+$/i.test(
 			normalized,
-		);
+		) ||
+		new RegExp(
+			`^(?:done|complete|finished|ok|okay)[.!,:;]?\\s+(?:(?:the\\s+)?(?:output|artifact|report|results?)\\s+)?${pathReference}$`,
+			"i",
+		).test(normalized) ||
+		new RegExp(
+			`^(?:the\\s+)?(?:report|output|artifact|results?)\\s+(?:is|are)\\s+(?:at|in|from)\\s+${pathReference}$`,
+			"i",
+		).test(normalized);
 	return pointerOnly
 		? "WARNING: the nominated stage artifact only points to its own output path; inspect the companion transcript for the real work."
 		: undefined;
