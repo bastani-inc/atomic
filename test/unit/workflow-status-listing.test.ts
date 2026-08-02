@@ -9,7 +9,6 @@ import { beforeEach, describe, test } from "vitest";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import type { WorkflowRunStatusSummary } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
-import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import {
 	assert,
@@ -35,7 +34,6 @@ type StatusListing = {
 	filter: string;
 	runs: WorkflowRunStatusSummary[];
 	snapshots: Array<{ id: string }>;
-	allRuns?: RunSnapshot[];
 };
 
 function makeToolHandler() {
@@ -142,25 +140,54 @@ describe("workflow tool status run listing", () => {
 
 		assert.equal(result.action, "status");
 		if (result.action !== "status") return;
-		assert.deepEqual(
-			result.allRuns?.map((run) => run.id),
-			[rootId, childId],
-			"the producer must carry the full store snapshot alongside filtered status snapshots",
-		);
 
 		const awaitingGlyph = statusIcon("awaiting_input");
-		const withAllRuns = renderResult(result, { plain: true, width: 120, now: Date.now() });
+		const withAllRuns = renderResult(result, {
+			plain: true,
+			width: 120,
+			now: Date.now(),
+			allRuns: store.runs(),
+		});
 		const withRow = withAllRuns.split("\n").find((line) => line.includes("status-render-root"));
 		assert.ok(withRow, "root row should be rendered");
 		assert.ok(withRow.includes(awaitingGlyph), "nested run-level prompt should mark the root row");
 
-		const withoutAllRuns = renderResult(
-			{ ...result, allRuns: undefined },
-			{ plain: true, width: 120, now: Date.now() },
-		);
+		const withoutAllRuns = renderResult(result, { plain: true, width: 120, now: Date.now() });
 		const withoutRow = withoutAllRuns.split("\n").find((line) => line.includes("status-render-root"));
-		assert.ok(withoutRow, "root row should still be rendered without the optional field");
+		assert.ok(withoutRow, "root row should still be rendered without the render-only snapshot");
 		assert.ok(!withoutRow.includes(awaitingGlyph), "omitting allRuns preserves the historical fallback");
+	});
+
+	test.sequential("status JSON omits render-only nested snapshots", async () => {
+		const rootId = `status-json-root-${Date.now()}`;
+		const childId = `status-json-child-${Date.now()}`;
+		store.recordRunStart({
+			...makeInflightRun(rootId),
+			name: "status-json-root",
+		});
+		store.recordRunStart({
+			...makeInflightRun(childId),
+			name: "status-json-child",
+			parentRunId: rootId,
+			rootRunId: rootId,
+			pendingPrompt: {
+				id: "nested-json-prompt",
+				kind: "input",
+				message: "Continue?",
+				createdAt: Date.now(),
+			},
+		});
+		const handler = makeToolHandler();
+		const result = await handler({ action: "status" }, {} as never);
+
+		assert.equal(result.action, "status");
+		assert.deepEqual(
+			store.runs().map((run) => run.id),
+			[rootId, childId],
+			"the fixture includes a hidden nested child run",
+		);
+		const json = renderWorkflowToolContent(result, { action: "status", format: "json" });
+		assert.ok(!json.includes('"allRuns"'), "render-only snapshots must stay out of model-facing JSON");
 	});
 
 	test.sequential("statusFilter filters the run listing by run status", async () => {

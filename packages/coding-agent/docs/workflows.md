@@ -2874,7 +2874,7 @@ At the supported 40-column terminal minimum, attached stage chats use the compac
 
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
-Human-in-the-loop prompts appear as awaiting-input nodes in the workflow graph, not as ordinary chat modals — see [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input) for how to find and answer them. A run that is waiting on human input also swaps its run-level `●` indicator for the blue awaiting-input `？` in the BACKGROUND widget, the `/workflow connect` picker, and the `/workflow status` list, and reverts once the prompt is resolved.
+Human-in-the-loop prompts appear as awaiting-input nodes in the workflow graph, not as ordinary chat modals — see [Lifecycle Notices and Human Input](#lifecycle-notices-and-human-input) for how to find and answer them. A run that is waiting on human input also swaps its run-level `●` indicator for the blue awaiting-input `？` in the BACKGROUND widget, the `/workflow connect` picker, and the `/workflow status` list, and reverts once the prompt is resolved. The `/workflow connect` picker reports effective run status so its indicators agree with the BACKGROUND widget and `/workflow status`.
 
 ## Monitor and Control Runs
 

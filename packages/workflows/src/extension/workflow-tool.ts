@@ -1,6 +1,5 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { inspectRun } from "../runs/background/status.js";
-import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
@@ -107,7 +106,6 @@ export function makeExecuteWorkflowTool(
 					filter: listing.filter,
 					runs: listing.runs,
 					snapshots: listing.snapshots,
-					allRuns: [...store.runs()],
 				};
 			}
 			case "stages":

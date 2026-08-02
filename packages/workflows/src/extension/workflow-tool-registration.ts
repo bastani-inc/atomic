@@ -1,3 +1,4 @@
+import { store } from "../shared/store.js";
 import type { ExtensionAPI, PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import { renderCall } from "./render-call.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
@@ -44,6 +45,7 @@ export function registerWorkflowTool(
 					width,
 					now: capturedNow,
 					runInputs: (context as { args?: WorkflowToolArgs }).args?.inputs,
+					allRuns: store.runs(),
 				}),
 			);
 		},

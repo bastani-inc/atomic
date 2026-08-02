@@ -77,8 +77,6 @@ type StatusResult = {
 	runs: WorkflowRunStatusSummary[];
 	/** Live snapshots from the in-process store, filtered like `runs`. */
 	snapshots: RunSnapshot[];
-	/** Full in-process store snapshots for nested-run awaiting-input attribution. */
-	allRuns?: RunSnapshot[];
 };
 type StatusDetailResult =
 	| {
@@ -228,6 +226,8 @@ export interface RenderResultOpts {
 	/** Original workflow inputs from the tool call, used to render the same
 	 * dispatch confirmation card as `/workflow <name> ...` for background runs. */
 	runInputs?: Readonly<WorkflowInputValues>;
+	/** Render-only live store snapshot used to attribute nested awaiting-input runs. */
+	allRuns?: readonly RunSnapshot[];
 	/**
 	 * Suppress ANSI colour output (CLI flag paths / non-TTY consumers).
 	 * When false/undefined the canonical Catppuccin chrome is rendered.
@@ -337,7 +337,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 				theme: themed ? deriveGraphTheme({}) : undefined,
 				width: opts?.width,
 				now: opts?.now,
-				allRuns: r.allRuns,
+				allRuns: opts?.allRuns,
 			});
 		}
 
