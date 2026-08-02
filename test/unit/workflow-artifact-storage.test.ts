@@ -13,7 +13,11 @@ import {
 	resolveWorkflowArtifactRunState,
 	WORKFLOW_ARTIFACT_RETENTION_MS,
 	workflowArtifactRunsRoot,
+	workflowRunHasArtifactReference,
 } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+
+// Path assertions compare shapes, not separators: `join` yields "\" on Windows.
+const posix = (value: string): string => value.replaceAll("\\", "/");
 
 async function withEnv(values: Readonly<Record<string, string | undefined>>, body: () => Promise<void>): Promise<void> {
 	const previous = new Map<string, string | undefined>();
@@ -40,7 +44,7 @@ test("durable workflow artifacts default to the configured Atomic config root", 
 			async () => {
 				assert.equal(workflowArtifactRunsRoot(), join(root, "workflows", "runs"));
 				const runDirectory = await createWorkflowArtifactDirectory("durable-resume-run");
-				assert.match(runDirectory, /workflows\/runs\/durable-resume-run\/artifact-[^/]+$/);
+				assert.match(posix(runDirectory), /workflows\/runs\/durable-resume-run\/artifact-[^/]+$/);
 				await stat(runDirectory);
 			},
 		);
@@ -54,7 +58,10 @@ test("the workflow-artifact directory override redirects the durable root", asyn
 	try {
 		await withEnv({ [ENV_WORKFLOW_ARTIFACT_DIR]: root }, async () => {
 			assert.equal(workflowArtifactRunsRoot(), join(root, "runs"));
-			assert.match(await createWorkflowArtifactDirectory("override-run"), /runs\/override-run\/artifact-[^/]+$/);
+			assert.match(
+				posix(await createWorkflowArtifactDirectory("override-run")),
+				/runs\/override-run\/artifact-[^/]+$/,
+			);
 		});
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -69,9 +76,9 @@ test("artifact directories remain unique and stay under their owning run", async
 			const second = await createWorkflowArtifactDirectory("run-a");
 			const laterRun = await createWorkflowArtifactDirectory("run-b");
 			assert.notEqual(first, second);
-			assert.match(first, /runs\/run-a\/artifact-[^/]+$/);
-			assert.match(second, /runs\/run-a\/artifact-[^/]+$/);
-			assert.match(laterRun, /runs\/run-b\/artifact-[^/]+$/);
+			assert.match(posix(first), /runs\/run-a\/artifact-[^/]+$/);
+			assert.match(posix(second), /runs\/run-a\/artifact-[^/]+$/);
+			assert.match(posix(laterRun), /runs\/run-b\/artifact-[^/]+$/);
 		});
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -288,4 +295,32 @@ test("state-aware pruning never leaves a resumable durable entry without its art
 		setDurableBackend(undefined);
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+// Regression: this ran green on macOS and failed every Windows job. `JSON.stringify`
+// escapes each separator, so a Windows artifact path serialises as `…\\runs\\<id>\\…`
+// and a single backslash-to-slash pass leaves `//runs//<id>//`, which the probe never
+// matched. Every Windows artifact reference was therefore invisible and no run was
+// ever reported as having lost its artifacts. Both separator styles are asserted here
+// so the platform that runs the suite cannot hide the other one's behaviour.
+test("artifact references are detected with either path separator", () => {
+	const runId = "sep-run";
+	for (const separator of ["/", "\\"] as const) {
+		const artifact = ["C:", "Users", "x", "workflows", "runs", runId, "artifact-1", "report.md"].join(separator);
+		assert.equal(
+			workflowRunHasArtifactReference({
+				id: runId,
+				result: { research_path: artifact },
+				stages: [],
+			}),
+			true,
+			`a ${separator === "/" ? "posix" : "windows"} artifact path must be recognised`,
+		);
+	}
+
+	assert.equal(
+		workflowRunHasArtifactReference({ id: runId, result: { note: "no artifact here" }, stages: [] }),
+		false,
+		"unrelated content must not be read as an artifact reference",
+	);
 });

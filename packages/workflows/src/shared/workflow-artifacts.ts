@@ -41,10 +41,19 @@ export function workflowArtifactRunPath(runId: string): string {
 	return join(workflowArtifactRunsRoot(), safeRunId(runId));
 }
 
-function workflowRunHasArtifactReference(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean {
+/**
+ * Detect a run-scoped artifact path anywhere in a run's result or stages.
+ *
+ * `JSON.stringify` escapes each Windows separator, so `…\runs\<id>\…` serializes
+ * as `…\\runs\\<id>\\…` and a single backslash-to-slash pass leaves `//runs//`.
+ * Collapsing repeated separators after that pass makes the probe behave the same
+ * on both platforms; without it every Windows artifact reference was invisible,
+ * so no run was ever reported as having lost its artifacts.
+ */
+export function workflowRunHasArtifactReference(run: Pick<RunSnapshot, "id" | "result" | "stages">): boolean {
 	const serialized = JSON.stringify({ result: run.result, stages: run.stages });
 	if (serialized === undefined) return false;
-	const normalized = serialized.replaceAll("\\", "/");
+	const normalized = serialized.replaceAll("\\", "/").replace(/\/{2,}/g, "/");
 	return normalized.includes(`/runs/${safeRunId(run.id)}/`);
 }
 
