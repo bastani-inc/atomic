@@ -1,10 +1,28 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
-import type { PromptOptions } from "@bastani/atomic";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import type { AgentSession, PromptOptions } from "@bastani/atomic";
 import type { StageOutputOptions, StagePromptOptions, WorkflowMaxOutput } from "../../shared/types.js";
+import { pruneWorkflowArtifactRuns, workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
 const DEFAULT_MAX_OUTPUT_LINES = 5000;
+
+type TranscriptContentBlock = {
+	readonly type?: string;
+	readonly text?: string;
+	readonly name?: string;
+	readonly id?: string;
+};
+
+type TranscriptMessage = {
+	readonly role?: string;
+	readonly content?: string | readonly TranscriptContentBlock[];
+	readonly customType?: string;
+	readonly stageAdmissionKey?: string;
+	readonly toolCallId?: string;
+	readonly toolName?: string;
+};
 
 function normalizeMaxOutput(maxOutput: WorkflowMaxOutput | undefined): Required<WorkflowMaxOutput> {
 	return {
@@ -45,7 +63,7 @@ function truncateOutput(text: string, maxOutput: WorkflowMaxOutput | undefined):
 function countLines(text: string): number {
 	if (!text) return 0;
 	const newlineMatches = text.match(/\r\n|\r|\n/g);
-	return (newlineMatches?.length ?? 0) + (/[\r\n]$/.test(text) ? 0 : 1);
+	return (newlineMatches?.length ?? 0) + (text.endsWith("\n") || text.endsWith("\r") ? 0 : 1);
 }
 
 function formatByteSize(bytes: number): string {
@@ -60,11 +78,65 @@ function formatByteSize(bytes: number): string {
 	return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function savedOutputReference(outputPath: string, fullOutput: string): string {
+function transcriptPath(runId: string, outputPath: string): string {
+	const digest = createHash("sha256").update(outputPath).digest("hex").slice(0, 16);
+	return join(workflowArtifactRunPath(runId), "transcripts", `${digest}-${basename(outputPath)}.transcript.md`);
+}
+
+function appendContent(lines: string[], content: TranscriptMessage["content"]): void {
+	if (typeof content === "string") {
+		lines.push(content);
+		return;
+	}
+	if (!Array.isArray(content)) return;
+	for (const block of content) {
+		if (block.type === "text" && typeof block.text === "string") {
+			lines.push(block.text);
+			continue;
+		}
+		const serialized = JSON.stringify(block);
+		if (serialized !== undefined) lines.push(serialized);
+	}
+}
+
+function renderTranscript(messages: AgentSession["messages"] | undefined, fallbackOutput: string): string {
+	const lines = ["# Workflow stage transcript", ""];
+	for (const [index, message] of (messages ?? []).entries()) {
+		const record = message as TranscriptMessage;
+		const role = typeof record.role === "string" ? record.role : "message";
+		lines.push(`## ${index + 1} ${role}`);
+		if (typeof record.customType === "string") lines.push(`customType: ${record.customType}`);
+		if (typeof record.stageAdmissionKey === "string") lines.push(`stageAdmissionKey: ${record.stageAdmissionKey}`);
+		if (typeof record.toolName === "string") lines.push(`toolName: ${record.toolName}`);
+		if (typeof record.toolCallId === "string") lines.push(`toolCallId: ${record.toolCallId}`);
+		appendContent(lines, record.content);
+		lines.push("");
+	}
+	if ((messages?.length ?? 0) === 0) {
+		lines.push("## 1 assistant");
+		lines.push(fallbackOutput);
+		lines.push("");
+	}
+	return lines.join("\n");
+}
+
+function savedOutputReference(
+	outputPath: string,
+	fullOutput: string,
+	transcriptPathValue: string,
+	transcriptText: string,
+	warning?: string,
+): string {
 	const absolutePath = resolve(outputPath);
 	const bytes = Buffer.byteLength(fullOutput, "utf8");
 	const lines = countLines(fullOutput);
-	return `Output saved to: ${absolutePath} (${formatByteSize(bytes)}, ${lines} ${lines === 1 ? "line" : "lines"}). Read this file if needed.`;
+	const transcriptBytes = Buffer.byteLength(transcriptText, "utf8");
+	const transcriptLines = countLines(transcriptText);
+	const outputReference = `Output saved to: ${absolutePath} (${formatByteSize(bytes)}, ${lines} ${lines === 1 ? "line" : "lines"}). Read this file if needed.`;
+	const transcriptReference = `Transcript saved to: ${transcriptPathValue} (${formatByteSize(transcriptBytes)}, ${transcriptLines} ${transcriptLines === 1 ? "line" : "lines"}). Search it with rg, read narrow line ranges, and do not read it whole.`;
+	return [outputReference, transcriptReference, warning]
+		.filter((line): line is string => line !== undefined)
+		.join("\n");
 }
 
 function resolveOutputPath(
@@ -83,6 +155,26 @@ function resolveOutputPath(
 	return resolve(baseCwd, output);
 }
 
+function degenerateWarning(fullOutput: string, outputPath: string): string | undefined {
+	const trimmed = fullOutput.trim();
+	if (trimmed.length === 0)
+		return "WARNING: the nominated stage artifact is empty; inspect the companion transcript for the failed turn.";
+	const normalized = trimmed.replaceAll("\\", "/").replace(/\s+/g, " ");
+	const normalizedPath = outputPath.replaceAll("\\", "/");
+	const mentionsOutputPath = normalized.includes(normalizedPath) || normalized.includes(basename(normalizedPath));
+	if (!mentionsOutputPath || trimmed.includes("\n")) return undefined;
+	const pointerOnly =
+		/^(?:see|refer to|read|find|review)\s+(?:the\s+)?(?:output|artifact|report|results?)?(?:\s+(?:at|in|from))?\s*[^ ]+$/i.test(
+			normalized,
+		) ||
+		/^(?:research|report|output|artifact)\s+complete,\s+saved\s+to\s+[^ ]+$/i.test(normalized) ||
+		/^(?:research|report|output|artifact)?\s*(?:complete|saved|written|available)(?:\s+(?:to|at|in))?\s*[^ ]+$/i.test(
+			normalized,
+		);
+	return pointerOnly
+		? "WARNING: the nominated stage artifact only points to its own output path; inspect the companion transcript for the real work."
+		: undefined;
+}
 export function splitPromptOptions(options: StagePromptOptions | undefined): {
 	sdkOptions: PromptOptions | undefined;
 	outputOptions: StageOutputOptions;
@@ -126,19 +218,31 @@ export async function finalizePromptOutput(
 	fullOutput: string,
 	outputOptions: StageOutputOptions,
 	runtimeCwd: string,
+	runId: string,
+	messages?: AgentSession["messages"],
 ): Promise<string> {
 	const outputPath = resolveOutputPath(outputOptions.output, runtimeCwd, outputOptions.cwd);
 	validatePromptOutputOptions(outputOptions);
 	const displayOutput = truncateOutput(fullOutput, outputOptions.maxOutput);
 	if (outputPath === undefined) return displayOutput;
 
+	const transcriptFile = transcriptPath(runId, outputPath);
+	const transcript = renderTranscript(messages, fullOutput);
+	await pruneWorkflowArtifactRuns();
 	try {
 		await mkdir(dirname(outputPath), { recursive: true });
 		await writeFile(outputPath, fullOutput, "utf8");
 	} catch (err) {
 		return `${displayOutput}\n\nOutput file error: ${outputPath}\n${err instanceof Error ? err.message : String(err)}`;
 	}
+	try {
+		await mkdir(dirname(transcriptFile), { recursive: true });
+		await writeFile(transcriptFile, transcript, "utf8");
+	} catch (err) {
+		return `${displayOutput}\n\nOutput file error: ${outputPath}\n${err instanceof Error ? err.message : String(err)}\n\nTranscript file error: ${transcriptFile}`;
+	}
 
-	const reference = savedOutputReference(outputPath, fullOutput);
+	const warning = degenerateWarning(fullOutput, outputPath);
+	const reference = savedOutputReference(outputPath, fullOutput, transcriptFile, transcript, warning);
 	return outputOptions.outputMode === "file-only" ? reference : `${displayOutput}\n\n${reference}`;
 }

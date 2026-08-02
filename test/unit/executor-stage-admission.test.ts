@@ -9,7 +9,7 @@ import type { StageSessionCreateOptions } from "../../packages/workflows/src/run
 import { sleep } from "../helpers/runtime.js";
 import { assert, createStore, mockSession, run, type StageSessionRuntime, Type, workflow } from "./executor-shared.js";
 
-test("admitted queued delivery drains before stage finalization and supplies the terminal result", async () => {
+test("admitted queued delivery drains before stage finalization while preserving the stage's own result", async () => {
 	const store = createStore();
 	const closeStarted = Promise.withResolvers<void>();
 	const drain = Promise.withResolvers<void>();
@@ -63,10 +63,10 @@ test("admitted queued delivery drains before stage finalization and supplies the
 	assert.equal(result.status, "completed");
 	assert.equal(stageEnded, true);
 	assert.equal(closeCalls >= 1, true);
-	assert.equal(store.runs()[0]?.stages[0]?.result, "queued Intercom continuation");
+	assert.equal(store.runs()[0]?.stages[0]?.result, "initial structured output");
 });
 
-test("Intercom received inside structured_output crosses AgentSession admission and drains before terminal publication", async () => {
+test("Intercom received inside structured_output remains admitted but does not replace the structured result", async () => {
 	const store = createStore();
 	const drain = Promise.withResolvers<void>();
 	const closeStarted = Promise.withResolvers<void>();
@@ -159,7 +159,7 @@ test("Intercom received inside structured_output crosses AgentSession admission 
 	assert.equal(stageEnded, false);
 	drain.resolve();
 	assert.equal((await execution).status, "completed");
-	assert.equal(store.runs()[0]?.stages[0]?.result, "processed Intercom continuation");
+	assert.equal(store.runs()[0]?.stages[0]?.result, '{\n  "approved": true\n}');
 });
 
 test("stage close waits for a busy Intercom admission barrier before draining its queued message", async () => {

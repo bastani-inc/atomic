@@ -65,6 +65,7 @@ export class StageSessionController {
 	private activeCreation: Promise<StageSessionRuntime> | undefined;
 	private sessionPromise: Promise<StageSessionRuntime> | undefined;
 	private reattachSessionFile: string | undefined;
+	private lastPromptStartIndex: number | undefined;
 	private readonly terminatingToolCallIds = new Set<string>();
 	private latestStructuredOutputToolErrorValue: string | undefined;
 	private unsubscribeTerminateWatcher: (() => void) | undefined;
@@ -129,7 +130,12 @@ export class StageSessionController {
 	}
 
 	lastAssistantText(fallback: string | undefined): string | undefined {
-		return lastAssistantTextFromSession(this.session, fallback, this.terminatingToolCallIds);
+		return lastAssistantTextFromSession(
+			this.session,
+			fallback,
+			this.terminatingToolCallIds,
+			this.lastPromptStartIndex,
+		);
 	}
 
 	subscribe(listener: (event: StageSessionEvent) => void): () => void {
@@ -478,6 +484,7 @@ export class StageSessionController {
 				continue;
 			}
 			const promptStartIndex = activeSession.messages.length;
+			this.lastPromptStartIndex = promptStartIndex;
 			this.unresolvedContextOverflowMessage = undefined;
 			try {
 				await activeSession.prompt(nextText, sdkOptions);

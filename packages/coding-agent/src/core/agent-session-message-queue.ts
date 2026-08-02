@@ -119,7 +119,8 @@ export async function sendCustomMessage<T = unknown>(
 		details: message.details,
 		timestamp: Date.now(),
 		...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
-	} satisfies CustomMessage<T>;
+		...(options?.stageAdmissionKey === undefined ? {} : { stageAdmissionKey: options.stageAdmissionKey }),
+	} satisfies CustomMessage<T> & { stageAdmissionKey?: string };
 	const boundary = this._workflowStageAdmission;
 	const deliver = async (): Promise<void> => {
 		if (boundary && options?.stageAdmissionBarrier) await options.stageAdmissionBarrier();
@@ -152,7 +153,8 @@ export async function sendCustomMessages<T = unknown>(
 				details: message.details,
 				timestamp,
 				...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
-			}) satisfies CustomMessage<T>,
+				...(options?.stageAdmissionKey === undefined ? {} : { stageAdmissionKey: options.stageAdmissionKey }),
+			}) satisfies CustomMessage<T> & { stageAdmissionKey?: string },
 	);
 	if (appMessages.length === 0) return;
 	const boundary = this._workflowStageAdmission;
@@ -184,6 +186,7 @@ export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessa
 		owner._appendCustomMessage(message);
 		return;
 	}
+	const stageAdmissionMessage = message as CustomMessage<T> & { stageAdmissionKey?: string };
 	this.agent.state.messages.push(message);
 	this.sessionManager.appendCustomMessageEntry(
 		message.customType,
@@ -191,11 +194,12 @@ export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessa
 		message.display,
 		message.details,
 		customMessageExcludesContext(message),
+		undefined,
+		stageAdmissionMessage.stageAdmissionKey,
 	);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
 }
-
 export function _enqueueInterruptCustomMessage<T>(
 	this: AgentSession,
 	message: CustomMessage<T>,

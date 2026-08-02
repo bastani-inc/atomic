@@ -11,6 +11,32 @@ type MessageWithTextContent = {
 	readonly content?: string | readonly TextLikeContent[];
 };
 
+type MessageWithAdmissionKey = {
+	readonly role?: string;
+	readonly stageAdmissionKey?: string;
+};
+
+function isAdmittedExternalMessage(message: AgentSession["messages"][number]): boolean {
+	const record = message as MessageWithAdmissionKey;
+	return (
+		record.role === "custom" && typeof record.stageAdmissionKey === "string" && record.stageAdmissionKey.length > 0
+	);
+}
+
+/** Return the stage-owned assistant text before the first admitted external message in this prompt. */
+function nominatedAssistantText(messages: AgentSession["messages"], startIndex = 0): string | undefined {
+	let nominated: string | undefined;
+	for (let index = Math.max(0, startIndex); index < messages.length; index += 1) {
+		const message = messages[index];
+		if (!message) continue;
+		if (isAdmittedExternalMessage(message)) return nominated;
+		if (message.role !== "assistant") continue;
+		const text = extractMessageText(message).trim();
+		if (text) nominated = text;
+	}
+	return nominated;
+}
+
 export function extractMessageText(message: AgentSession["messages"][number]): string {
 	const { content } = message as MessageWithTextContent;
 	if (typeof content === "string") return content;
@@ -110,10 +136,13 @@ export function lastAssistantTextFromSession(
 	activeSession: StageSessionRuntime | undefined,
 	fallback: string | undefined,
 	terminatingToolCallIds: ReadonlySet<string>,
+	promptStartIndex?: number,
 ): string | undefined {
 	if (!activeSession) return fallback;
 	const terminatingText = terminatingToolResultText(activeSession.messages, terminatingToolCallIds);
 	if (terminatingText !== undefined) return terminatingText;
+	const nominated = nominatedAssistantText(activeSession.messages, promptStartIndex);
+	if (nominated !== undefined) return nominated;
 	const direct = activeSession.getLastAssistantText?.();
 	if (direct?.trim()) return direct;
 	return lastAssistantTextFromMessages(activeSession.messages) ?? direct ?? fallback;

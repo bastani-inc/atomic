@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
+import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import {
   ACCEPTANCE_MATRIX_CONTRACT,
   CONTRACT_FIDELITY_AUDIT,
@@ -65,7 +64,7 @@ export async function runRalphWorkflow(
   const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(workflowPrompt));
   const implementationNotesPath = await createImplementationNotesFile(workflowPrompt);
   const qaVideoPath = await createQaEvidenceVideoPath();
-  const artifactDir = await mkdtemp(join(tmpdir(), "atomic-ralph-run-"));
+  const artifactDir = await createWorkflowArtifactDirectory();
   let approved = false;
   let iterationsCompleted = 0;
   let previousResearchPromptRefinementSessionFile: string | undefined;

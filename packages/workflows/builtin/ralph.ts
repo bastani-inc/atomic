@@ -41,7 +41,7 @@ export default workflow({
     plan_path: Type.Optional(Type.String({ description: "Backward-compatible alias for research_path." })),
     research: Type.Optional(Type.String({ description: "Latest research report text or artifact reference." })),
     research_path: Type.Optional(Type.String({ description: "Path to the latest generated research artifact under research/." })),
-    implementation_notes_path: Type.Optional(Type.String({ description: "OS-temp notes file containing decisions, deviations, blockers, and validation notes." })),
+    implementation_notes_path: Type.Optional(Type.String({ description: "Durable run-scoped notes file containing decisions, deviations, blockers, and validation notes." })),
     qa_video_path: Type.Optional(Type.String({ description: "Absolute path to the reviewable QA end-to-end proof video recorded with playwright-cli for UI-applicable changes, when one was produced." })),
     pr_report: Type.Optional(Type.String({ description: "Pull-request report emitted only when create_pr=true and the final pull-request stage runs." })),
     approved: Type.Optional(Type.Boolean({ description: "Whether the reviewer loop approved before completion or optional final handoff." })),

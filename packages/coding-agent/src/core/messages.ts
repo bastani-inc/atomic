@@ -219,13 +219,15 @@ export function createCustomMessage(
 	details: unknown | undefined,
 	timestamp: string,
 	excludeFromContext?: boolean,
-): CustomMessage {
-	const message: CustomMessage & { excludeFromContext?: boolean } = {
+	stageAdmissionKey?: string,
+): CustomMessage & { stageAdmissionKey?: string } {
+	const message: CustomMessage & { excludeFromContext?: boolean; stageAdmissionKey?: string } = {
 		role: "custom",
 		customType,
 		content: content ?? [],
 		display,
 		details,
+		...(stageAdmissionKey === undefined ? {} : { stageAdmissionKey }),
 		timestamp: new Date(timestamp).getTime(),
 	};
 	if (excludeFromContext === true) message.excludeFromContext = true;

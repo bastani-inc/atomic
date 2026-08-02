@@ -1,7 +1,7 @@
-import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { APP_NAME, CONFIG_DIR_NAME, isCodexFastModeCandidateModelId } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, isCodexFastModeCandidateModelId } from "@bastani/atomic";
 import type { StageOptions, WorkflowArtifact, WorkflowTaskOptions, WorkflowTaskStep } from "../../shared/types.js";
+import { workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
 import { buildModelCandidatesFromCatalog, workflowModelId } from "../shared/model-fallback.js";
 import {
 	cleanupWorktrees,
@@ -211,8 +211,8 @@ function resolvedTaskCwd(cwd: string | undefined, workflowInvocationCwd: string)
 	return isAbsolute(cwd) ? cwd : resolve(workflowInvocationCwd, cwd);
 }
 
-function taskWorktreeOutputsRoot(): string {
-	return join(tmpdir(), `${APP_NAME}-workflow-outputs`);
+function taskWorktreeOutputsRoot(runId: string): string {
+	return join(workflowArtifactRunPath(runId), "task-outputs");
 }
 
 export function prepareTaskWorktrees(
@@ -250,7 +250,7 @@ export function prepareTaskWorktrees(
 		baseBranch: options.baseBranch,
 		symlinkDirectories,
 	});
-	const trustedRoot = taskWorktreeOutputsRoot();
+	const trustedRoot = taskWorktreeOutputsRoot(runId);
 	return {
 		tasks: tasks.map((task, index) => ({ ...task, cwd: setup.worktrees[index]!.agentCwd })),
 		setup,

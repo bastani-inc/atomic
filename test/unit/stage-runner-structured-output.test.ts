@@ -1,6 +1,22 @@
 import { describe, test } from "vitest";
-import type { AgentSessionAdapter, InternalStageContext, StageSessionCreateOptions } from "./stage-runner-helpers.js";
-import { assert, createStageContext, makeMockSession, makeOpts, Type } from "./stage-runner-helpers.js";
+import type {
+	AgentSession,
+	AgentSessionAdapter,
+	InternalStageContext,
+	StageSessionCreateOptions,
+} from "./stage-runner-helpers.js";
+import {
+	assert,
+	createStageContext,
+	join,
+	makeMockSession,
+	makeOpts,
+	mkdtemp,
+	readFile,
+	rm,
+	Type,
+	tmpdir,
+} from "./stage-runner-helpers.js";
 
 describe("createStageContext — structured_output corrective retry", () => {
 	test("schema-backed noTools=all stages still expose structured_output", async () => {
@@ -108,6 +124,69 @@ describe("createStageContext — structured_output corrective retry", () => {
 		assert.deepEqual(await ctx.prompt("review this"), { ok: true });
 		assert.equal(prompts.length, 2);
 		assert.match(prompts[1] ?? "", new RegExp(validationError.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	});
+
+	test("schema-backed output stays structured when an admitted turn follows it", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-structured-output-"));
+		let transcriptPath: string | undefined;
+		try {
+			let createOptions: StageSessionCreateOptions | undefined;
+			const messages = [] as AgentSession["messages"];
+			const mock = makeMockSession({
+				messages,
+				async prompt() {
+					const structuredTool = createOptions?.customTools?.find((tool) => tool.name === "structured_output");
+					assert.ok(structuredTool);
+					await structuredTool.execute(
+						"structured-call-schema",
+						{ ok: true },
+						undefined,
+						undefined,
+						undefined as never,
+					);
+					messages.push({
+						role: "custom",
+						customType: "subagent-notify",
+						stageAdmissionKey: "subagent:schema-job",
+						content: "late schema notification",
+						display: true,
+						timestamp: Date.now(),
+					} as AgentSession["messages"][number]);
+					messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "late acknowledgement" }],
+						timestamp: Date.now(),
+					} as AgentSession["messages"][number]);
+				},
+			});
+			const agentSession: AgentSessionAdapter = {
+				async create(options) {
+					createOptions = options;
+					return mock.session;
+				},
+			};
+			const output = join(dir, "structured.json");
+			const ctx = createStageContext(
+				makeOpts({
+					adapters: { agentSession },
+					stageOptions: { schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }) },
+				}),
+			);
+
+			assert.deepEqual(await ctx.prompt("return structured data", { output, outputMode: "file-only" }), {
+				ok: true,
+			});
+			assert.equal(await readFile(output, "utf8"), '{\n  "ok": true\n}');
+			const receipt = (ctx as InternalStageContext).getLastAssistantText();
+			assert.ok(receipt);
+			const transcriptMatch = receipt.match(/Transcript saved to: ([^ ]+) \(/);
+			assert.ok(transcriptMatch?.[1]);
+			transcriptPath = transcriptMatch[1];
+			assert.match(await readFile(transcriptPath, "utf8"), /late schema notification/);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
 	});
 
 	test("stops after three corrective prompts when structured_output is still missing", async () => {

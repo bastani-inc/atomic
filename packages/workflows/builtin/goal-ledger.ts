@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import { LEDGER_FILENAME, type GoalLedger, type GoalLifecycleEvent } from "./goal-types.js";
 
 type ModelVisibleGoalLedger = Omit<
@@ -56,10 +56,11 @@ export async function createGoalLedger(
   objective: string,
   acceptanceCriteria = objective,
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
-  const artifactDir = await mkdtemp(join(tmpdir(), "atomic-goal-runner-"));
+  const goalId = randomUUID();
+  const artifactDir = await createWorkflowArtifactDirectory(goalId);
   const now = new Date().toISOString();
   const ledger: GoalLedger = {
-    goal_id: randomUUID(),
+    goal_id: goalId,
     objective,
     acceptance_criteria: acceptanceCriteria,
     status: "active",

@@ -27,10 +27,20 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 	};
 	const controller = new StageSessionController(opts, meta, effectiveStageOptions, structuredOutputCapture);
 	let lastAssistantText: string | undefined;
+	let lastFinalizedOutput: string | undefined;
+	let lastFinalizedMessageCount: number | undefined;
 	let adapterMessages = [] as InternalStageContext["messages"];
 
 	function runtimeCwd(): string {
 		return typeof effectiveStageOptions?.cwd === "string" ? effectiveStageOptions.cwd : process.cwd();
+	}
+
+	function finalizedOutputIsCurrent(): boolean {
+		return (
+			lastFinalizedOutput !== undefined &&
+			(lastFinalizedMessageCount === undefined ||
+				controller.currentSession?.messages.length === lastFinalizedMessageCount)
+		);
 	}
 
 	return {
@@ -54,8 +64,16 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 					{ kind: "workflow.stage_adapter", name: `prompt:${stageName}`, runId, stageId },
 					() => adapters.prompt!.prompt(text, meta),
 				);
-				lastAssistantText = await finalizePromptOutput(rawText, outputOptions, runtimeCwd());
-				adapterMessages = assistantMessage(lastAssistantText);
+				adapterMessages = assistantMessage(rawText);
+				lastAssistantText = await finalizePromptOutput(
+					rawText,
+					outputOptions,
+					runtimeCwd(),
+					runId,
+					adapterMessages,
+				);
+				lastFinalizedOutput = lastAssistantText;
+				lastFinalizedMessageCount = controller.currentSession?.messages.length;
 				return lastAssistantText;
 			}
 			if (structuredOutputCapture) {
@@ -74,17 +92,35 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 					nextPrompt = formatStructuredOutputCorrectionPrompt(structuredOutputError, correctiveAttempts);
 				}
 				const rawStructuredText = stringifyStructuredOutputValue(structuredOutputCapture.value);
-				lastAssistantText = await finalizePromptOutput(rawStructuredText, outputOptions, runtimeCwd());
+				lastAssistantText = await finalizePromptOutput(
+					rawStructuredText,
+					outputOptions,
+					runtimeCwd(),
+					runId,
+					controller.currentSession?.messages,
+				);
+				lastFinalizedOutput = lastAssistantText;
+				lastFinalizedMessageCount = controller.currentSession?.messages.length;
 				return structuredOutputCapture.value as never;
 			}
 			await controller.promptWithFallback(text, sdkOptions);
 			const rawText = controller.lastAssistantText(lastAssistantText) ?? "";
-			lastAssistantText = await finalizePromptOutput(rawText, outputOptions, runtimeCwd());
+			lastAssistantText = await finalizePromptOutput(
+				rawText,
+				outputOptions,
+				runtimeCwd(),
+				runId,
+				controller.currentSession?.messages,
+			);
+			lastFinalizedOutput = lastAssistantText;
+			lastFinalizedMessageCount = controller.currentSession?.messages.length;
 			return lastAssistantText;
 		},
 
 		async complete(text, completeOpts) {
 			if (adapters.complete) {
+				lastFinalizedOutput = undefined;
+				lastFinalizedMessageCount = undefined;
 				lastAssistantText = await runCallback(
 					{ kind: "workflow.stage_adapter", name: `complete:${stageName}`, runId, stageId },
 					() => adapters.complete!.complete(text, completeOpts, meta),
@@ -102,6 +138,8 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				);
 			}
 			await controller.promptWithFallback(text, undefined, "complete");
+			lastFinalizedOutput = undefined;
+			lastFinalizedMessageCount = undefined;
 			lastAssistantText = controller.lastAssistantText(lastAssistantText) ?? "";
 			return lastAssistantText;
 		},
@@ -195,11 +233,11 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		},
 
 		__getLastAssistantText() {
-			return controller.lastAssistantText(lastAssistantText);
+			return finalizedOutputIsCurrent() ? lastFinalizedOutput : controller.lastAssistantText(lastAssistantText);
 		},
 
 		getLastAssistantText() {
-			return controller.lastAssistantText(lastAssistantText);
+			return finalizedOutputIsCurrent() ? lastFinalizedOutput : controller.lastAssistantText(lastAssistantText);
 		},
 
 		async __ensureSession() {

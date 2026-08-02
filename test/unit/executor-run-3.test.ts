@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { describe } from "vitest";
 import {
 	assert,
@@ -359,6 +360,8 @@ describe("executor.run", () => {
 	test("ctx.chain prepends reads as resolved instructions from chainDir", async () => {
 		const seenPrompts: string[] = [];
 		const dir = mkdtempSync(join(tmpdir(), "workflow-task-reads-"));
+		writeFileSync(join(dir, "notes.md"), "notes");
+		writeFileSync(join(dir, "absolute.md"), "absolute");
 		const def = workflow({
 			name: "task-reads-wf",
 			description: "",
@@ -397,6 +400,23 @@ describe("executor.run", () => {
 			),
 		);
 		assert.match(seenPrompts[0] ?? "", /summarize docs/);
+	});
+	test("ctx.task fails loudly when a referenced artifact is missing", async () => {
+		const missing = join(tmpdir(), "workflow-missing-artifact", "missing.md");
+		const def = workflow({
+			name: "missing-artifact-read-wf",
+			description: "",
+			inputs: {},
+			outputs: { done: Type.Optional(Type.Any()) },
+			run: async (ctx) => {
+				await ctx.task("reader", { prompt: "read the report", reads: [missing] });
+				return { done: true };
+			},
+		});
+		const result = await run(def, {}, { adapters: { prompt: { prompt: async () => "ok" } }, store: createStore() });
+		assert.equal(result.status, "failed");
+		assert.match(result.error ?? "", /referenced artifact does not exist:/);
+		assert.match(result.error ?? "", new RegExp(missing.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 	});
 	test("ctx.task forwards output options to the stage prompt", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "workflow-task-output-"));

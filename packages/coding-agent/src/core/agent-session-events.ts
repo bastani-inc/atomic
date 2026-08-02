@@ -175,6 +175,8 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 					event.message.display,
 					event.message.details,
 					customMessageExcludesContext(event.message),
+					undefined,
+					(event.message as { stageAdmissionKey?: string }).stageAdmissionKey,
 				);
 			}
 		} else if (

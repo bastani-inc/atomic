@@ -1,5 +1,7 @@
 import { describe, test } from "vitest";
+import { lastAssistantTextFromSession } from "../../packages/workflows/src/runs/foreground/stage-runner-messages.js";
 import type {
+	AgentSession,
 	AgentSessionAdapter,
 	InternalStageContext,
 	PromptAdapter,
@@ -30,6 +32,18 @@ describe("createStageContext — prompt metadata propagation", () => {
 		const ctx = createStageContext(makeOpts({ adapters: { prompt: promptAdapter }, runId: "run-001" }));
 		await ctx.prompt("hello");
 		assert.equal(received[0]?.runId, "run-001");
+	});
+	test("legacy sessions without admission identity keep the previous last-message behavior", () => {
+		const messages = [
+			{ role: "assistant", content: [{ type: "text", text: "legacy deliverable" }] },
+			{ role: "custom", customType: "subagent-notify", content: "legacy notification", display: true },
+			{ role: "assistant", content: [{ type: "text", text: "legacy acknowledgement" }] },
+		] as AgentSession["messages"];
+		const { session } = makeMockSession({
+			messages,
+			getLastAssistantText: () => "legacy acknowledgement",
+		});
+		assert.equal(lastAssistantTextFromSession(session, "fallback", new Set<string>(), 0), "legacy acknowledgement");
 	});
 
 	test("prompt adapter receives stageId from opts", async () => {
@@ -168,8 +182,9 @@ describe("createStageContext — prompt metadata propagation", () => {
 		assert.equal(received[0]?.executionMode, "non_interactive");
 	});
 
-	test("prompt outputMode=file-only writes full output and returns a saved-file reference", async () => {
+	test("prompt outputMode=file-only writes full output, transcript, and both receipt paths", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-output-"));
+		let transcriptPath: string | undefined;
 		try {
 			const output = join(dir, "answer.md");
 			const promptAdapter: PromptAdapter = {
@@ -186,9 +201,173 @@ describe("createStageContext — prompt metadata propagation", () => {
 
 			assert.match(result, /^Output saved to: /);
 			assert.match(result, /answer\.md/);
+			const transcriptMatch = result.match(/Transcript saved to: ([^ ]+) \(/);
+			assert.ok(transcriptMatch?.[1]);
+			transcriptPath = transcriptMatch[1];
+			assert.equal(transcriptPath.startsWith(dir), false);
+			assert.match(result, /Search it with rg, read narrow line ranges, and do not read it whole\./);
 			assert.equal(await readFile(output, "utf8"), "line one\nline two");
+			const transcript = await readFile(transcriptPath, "utf8");
+			assert.match(transcript, /## 1 assistant/);
+			assert.match(transcript, /line one/);
+			assert.match(transcript, /line two/);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
+			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
+	});
+	test("durable transcript survives simulated resume after the output worktree is removed", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-resume-"));
+		let transcriptPath: string | undefined;
+		try {
+			const output = join(dir, "resume.md");
+			const ctx = createStageContext(
+				makeOpts({
+					runId: "resume-transcript-run",
+					adapters: {
+						prompt: {
+							async prompt() {
+								return "durable stage work";
+							},
+						},
+					},
+				}),
+			);
+			const receipt = await ctx.prompt("go", { output, outputMode: "file-only" });
+			const transcriptMatch = receipt.match(/Transcript saved to: ([^ ]+) \(/);
+			assert.ok(transcriptMatch?.[1]);
+			transcriptPath = transcriptMatch[1];
+			await rm(dir, { recursive: true, force: true });
+			assert.match(await readFile(transcriptPath, "utf8"), /durable stage work/);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
+	});
+
+	test("prompt outputMode=inline names the artifact and transcript while returning inline text", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-inline-"));
+		let transcriptPath: string | undefined;
+		try {
+			const output = join(dir, "inline.md");
+			const ctx = createStageContext(
+				makeOpts({
+					adapters: {
+						prompt: {
+							async prompt() {
+								return "inline result";
+							},
+						},
+					},
+				}),
+			);
+			const result = await ctx.prompt("go", { output, outputMode: "inline" });
+			assert.match(result, /^inline result\n\nOutput saved to: /);
+			const transcriptMatch = result.match(/Transcript saved to: ([^ ]+) \(/);
+			assert.ok(transcriptMatch?.[1]);
+			transcriptPath = transcriptMatch[1];
+			assert.match(await readFile(transcriptPath, "utf8"), /inline result/);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
+	});
+
+	test("admitted external turns stay visible but cannot replace the stage deliverable", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-nomination-"));
+		let transcriptPath: string | undefined;
+		try {
+			const output = join(dir, "deliverable.md");
+			const messages = [] as AgentSession["messages"];
+			const { session } = makeMockSession({
+				messages,
+				getLastAssistantText() {
+					return "async acknowledgement";
+				},
+				async prompt() {
+					messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "REAL DELIVERABLE" }],
+						timestamp: Date.now(),
+					} as AgentSession["messages"][number]);
+					messages.push({
+						role: "custom",
+						customType: "subagent-notify",
+						stageAdmissionKey: "subagent:job-1",
+						content: "async result details",
+						display: true,
+						timestamp: Date.now(),
+					} as AgentSession["messages"][number]);
+					messages.push({
+						role: "assistant",
+						content: [{ type: "text", text: "async acknowledgement" }],
+						timestamp: Date.now(),
+					} as AgentSession["messages"][number]);
+				},
+			});
+			const ctx = createStageContext(
+				makeOpts({
+					adapters: {
+						agentSession: {
+							async create() {
+								return session;
+							},
+						},
+					},
+				}),
+			);
+			const result = await ctx.prompt("go", { output, outputMode: "file-only" });
+			assert.equal(await readFile(output, "utf8"), "REAL DELIVERABLE");
+			const transcriptMatch = result.match(/Transcript saved to: ([^ ]+) \(/);
+			assert.ok(transcriptMatch?.[1]);
+			transcriptPath = transcriptMatch[1];
+			const transcript = await readFile(transcriptPath, "utf8");
+			assert.match(transcript, /subagent-notify/);
+			assert.match(transcript, /async result details/);
+			assert.match(transcript, /async acknowledgement/);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			if (transcriptPath) await rm(transcriptPath, { force: true });
+		}
+	});
+
+	test("warns for empty and self-pointer artifacts but accepts short real output", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-degenerate-"));
+		const transcriptPaths: string[] = [];
+		try {
+			const cases = [
+				{ name: "empty.md", output: "", warning: /artifact is empty/ },
+				{
+					name: "pointer.md",
+					output: "research complete, saved to PLACEHOLDER",
+					warning: /only points to its own output path/,
+				},
+				{ name: "short.md", output: "short.md: OK", warning: undefined },
+			] as const;
+			for (const item of cases) {
+				const output = join(dir, item.name);
+				const resultText = item.name === "pointer.md" ? `research complete, saved to ${output}` : item.output;
+				const ctx = createStageContext(
+					makeOpts({
+						adapters: {
+							prompt: {
+								async prompt() {
+									return resultText;
+								},
+							},
+						},
+					}),
+				);
+				const result = await ctx.prompt("go", { output, outputMode: "file-only" });
+				if (item.warning) assert.match(result, item.warning);
+				else assert.doesNotMatch(result, /WARNING:/);
+				const transcriptMatch = result.match(/Transcript saved to: ([^ ]+) \(/);
+				assert.ok(transcriptMatch?.[1]);
+				transcriptPaths.push(transcriptMatch[1]);
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			for (const path of transcriptPaths) await rm(path, { force: true });
 		}
 	});
 

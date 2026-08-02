@@ -2295,7 +2295,9 @@ readonly outputMode?: "inline" | "file-only";
 
 Writes stage/task output to a path or disables output persistence with `false`. `outputMode` defaults to `inline`; `file-only` keeps the parent result compact by returning an artifact reference instead of full text and requires an output path.
 
-The runner writes the stage's **final message** to `output` after the stage ends, so that path belongs to the runner. Never point `output` at a file the same stage's prompt asks the agent to author: the agent's file is overwritten by its closing message, and downstream stages read the leftover summary instead of the work. Pick one owner per artifact — either the stage returns the content as its final message and the runner saves it, or the prompt tells the agent to write a path the stage does not declare as `output`.
+The runner writes the stage's **nominated final message** to `output` after the stage ends, so that path belongs to the runner. If an admitted external turn (for example, an async subagent completion) produces a follow-up assistant acknowledgement, the runtime keeps that turn visible to the model and transcript but does not nominate it over the stage's own deliverable. A stage that declares `output:` also automatically gets a full, rendered, line-oriented transcript of its session.
+
+The companion transcript is written once under the durable Atomic config root at `~/.atomic/workflows/runs/<runId>/transcripts/` (or the equivalent configured agent root; `ATOMIC_WORKFLOW_ARTIFACT_DIR` overrides that root). It is never placed inside the repository tree or OS temporary storage: a home-scoped durable location survives both worktree deletion and OS temp purges, and staying outside the repo keeps full tool output — which may contain secrets — from being committed accidentally. Run-scoped artifact directories are pruned by age on the next workflow artifact write, using the exported `WORKFLOW_ARTIFACT_RETENTION_MS` policy. Goal ledgers, Ralph implementation notes, and QA video paths share that same durable root and retention policy. The receipt names both absolute paths. Search the transcript with `rg`, then read only the narrow line ranges you need; do not read the whole transcript into a downstream prompt. The transcript is a secondary searchable record; the output artifact remains the curated handoff.
 
 ### `reads`
 
@@ -2305,7 +2307,7 @@ readonly reads?: readonly string[] | false;
 
 Names files for the stage to read before running, or disables inherited reads with `false`. Paths are supplied as readonly strings.
 
-`reads` passes **paths, not content**. It prepends a `[Read from: <paths>]` directive to the prompt and the stage reads those files itself with its own read tool, so a stage sees whatever is on disk when it runs — not a snapshot taken when the path was passed. Any stage that rewrites an artifact between producer and consumer changes what the consumer reads. This keeps large artifacts out of the prompt; state the expectation in the prompt too, for example `Read the file at ${artifactPath} before continuing.`
+`reads` passes **paths, not content**. It prepends a `[Read from: <paths>]` directive to the prompt and the stage reads those files itself with its own read tool, so a stage sees whatever is on disk when it runs — not a snapshot taken when the path was passed. Any stage that rewrites an artifact between producer and consumer changes what the consumer reads. The runtime fails the stage loudly before the model turn when a referenced path is missing, rather than allowing an empty read to look like valid context. This keeps large artifacts out of the prompt; state the expectation in the prompt too, for example `Read the file at ${artifactPath} before continuing.`
 
 ### `maxOutput`
 
@@ -3857,9 +3859,9 @@ Pass file references, not content. This is the strongly encouraged default for e
 
 Three rules make that work in practice:
 
-1. **One owner per artifact.** The runner writes the stage's final message to `output` after the stage ends. Do not also ask that stage's prompt to author the same path, or the agent's file is overwritten by its closing message. Either the stage returns the content and the runner saves it, or the prompt writes a path the stage does not declare as `output`.
+1. **One owner per artifact.** The runner writes the stage's nominated final message to `output` after the stage ends and automatically writes the companion transcript outside the repository tree. Do not also ask that stage's prompt to author the same output path; return the content as the stage's final message and let the runner save it, or have the prompt write a path the stage does not declare as `output`.
 2. **Do not read an artifact back just to return it.** `outputMode: "file-only"` exists so the parent receives a compact reference. Calling `readFile` on that artifact and returning its text as a workflow output cancels the saving and drops the whole report into the caller's context window. Return the reference and a `*_path` output instead.
-3. **Return paths from the workflow.** Declared outputs are consumed by the calling session, so a workflow's `result` should be a reference plus explicit `*_path` outputs. Callers that need the body read the path; callers that only need the outcome pay nothing for it.
+3. **Return paths from the workflow.** Declared outputs are consumed by the calling session, so a workflow's `result` should be a reference plus explicit `*_path` outputs. Callers that need the body read the path; callers that only need the outcome pay nothing for it. When a detail is missing from the curated artifact, search its companion transcript with `rg` and inspect a narrow range.
 
 Substantial handoffs should travel through files or durable artifacts instead of hidden transcript assumptions. This keeps stage prompts small, makes review/audit possible, and lets later stages reread the authoritative material without depending on what a previous model summarized. Remember that `reads` passes paths rather than content: a stage reads the file when it runs, so the artifact must hold the real report at that moment.
 

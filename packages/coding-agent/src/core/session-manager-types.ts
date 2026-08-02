@@ -158,6 +158,8 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	details?: T;
 	display: boolean;
 	excludeFromContext?: boolean;
+	/** Stable producer identity used by workflow stages to de-nominate admitted external turns. */
+	stageAdmissionKey?: string;
 	/** Internal crash-recovery marker for a model-facing protected turn. */
 	protectedReconciliation?: ProtectedReconciliationMarker;
 }

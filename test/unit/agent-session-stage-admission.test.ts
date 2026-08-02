@@ -3,8 +3,10 @@ import { describe, test } from "vitest";
 import {
 	closeWorkflowStageGeneration,
 	sendCustomMessage,
+	sendCustomMessages,
 	transferWorkflowStageDeliveriesTo,
 } from "../../packages/coding-agent/src/core/agent-session-message-queue.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager-core.ts";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 
 function harness(withRouter = true) {
@@ -47,6 +49,48 @@ function harness(withRouter = true) {
 }
 
 describe("AgentSession workflow-stage admission", () => {
+	test("stage admission identity survives the session-manager round trip", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendCustomMessageEntry(
+			"subagent-notify",
+			"async result",
+			true,
+			undefined,
+			undefined,
+			undefined,
+			"subagent:job-1",
+		);
+		const message = manager.buildSessionContext().messages[0];
+		assert.equal((message as { stageAdmissionKey?: string }).stageAdmissionKey, "subagent:job-1");
+	});
+
+	test("single and batched admitted messages retain their admission identity", async () => {
+		const captured: Array<{ readonly stageAdmissionKey?: string }> = [];
+		const surface = {
+			_workflowStageAdmission: undefined,
+			isStreaming: false,
+			_appendCustomMessage(message: { readonly stageAdmissionKey?: string }) {
+				captured.push(message);
+			},
+		};
+		await sendCustomMessage.call(
+			surface as never,
+			{ customType: "subagent-notify", content: "one", display: true },
+			{ stageAdmissionKey: "subagent:one" },
+		);
+		await sendCustomMessages.call(
+			surface as never,
+			[
+				{ customType: "subagent-notify", content: "two", display: true },
+				{ customType: "subagent-notify", content: "three", display: true },
+			],
+			{ stageAdmissionKey: "subagent:batch" },
+		);
+		assert.deepEqual(
+			captured.map((message) => message.stageAdmissionKey),
+			["subagent:one", "subagent:batch", "subagent:batch"],
+		);
+	});
 	test("an Intercom message admitted during streaming uses the native stage queue", async () => {
 		const current = harness();
 		await current.send("received during structured_output", "intercom:message-1");

@@ -39,6 +39,7 @@ function appendDurableDisplayCard(
 		card.details,
 		true,
 		{ delivery },
+		(message as { stageAdmissionKey?: string }).stageAdmissionKey,
 	);
 	session.agent.state.messages.push(card);
 	return { card, intentEntryId };
@@ -246,6 +247,8 @@ export function persistProtectedStreamingCustomMessage(session: AgentSession, me
 		message.display,
 		message.details,
 		customMessageExcludesContext(message),
+		undefined,
+		(message as { stageAdmissionKey?: string }).stageAdmissionKey,
 	);
 	pending.splice(index, 1);
 	return true;
@@ -322,6 +325,8 @@ export function prepareProtectedStreamingCustomMessagesForDisposal(session: Agen
 			entry.message.display,
 			entry.message.details,
 			customMessageExcludesContext(entry.message),
+			undefined,
+			(entry.message as { stageAdmissionKey?: string }).stageAdmissionKey,
 		);
 		removeQueuedProtectedReference(session, entry.message);
 		const index = pending.indexOf(entry);

@@ -9,12 +9,12 @@ import { assertStringOutput, makeMockCtx } from "./builtin-workflows-helpers.js"
 
 /**
  * The research stage declares `output: <researchPath>` with
- * `outputMode: "file-only"`, so the runner writes the stage's final message to
- * that path after the stage ends. The prompt therefore must not also ask the
- * agent to author that same file: anything it writes there is overwritten, and
- * downstream stages that follow `[Read from: ...]` then read a stub instead of
- * the report. `reads` passes a path, not file content, so whatever is on disk
- * when the next stage runs is exactly what that stage sees.
+ * `outputMode: "file-only"`, so the runner writes the stage's nominated final
+ * message to that path and always emits a durable searchable transcript. The
+ * prompt must not also ask the agent to author that same file: the runner owns
+ * the curated artifact while the transcript preserves tool output and admitted
+ * external turns. `reads` passes a path, not file content, so whatever is on
+ * disk when the next stage runs is exactly what that stage sees.
  */
 describe("ralph research artifact ownership", () => {
 	let tempCwd: string | undefined;

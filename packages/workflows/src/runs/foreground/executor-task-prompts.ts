@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type {
 	StageOptions,
@@ -80,6 +81,10 @@ export function taskReadInstruction(options: WorkflowTaskExecutionOptions): stri
 	if (options.reads === false || options.reads === undefined || options.reads.length === 0) return "";
 	const baseDir = taskBaseDir(options);
 	const files = options.reads.map((file) => resolveWorkflowPath(file, baseDir));
+	const missing = files.find((file) => !existsSync(file));
+	if (missing !== undefined) {
+		throw new Error(`atomic-workflows: referenced artifact does not exist: ${missing}`);
+	}
 	return `[Read from: ${files.join(", ")}]\n\n`;
 }
 

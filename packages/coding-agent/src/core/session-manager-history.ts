@@ -28,6 +28,7 @@ function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined 
 			entry.details,
 			entry.timestamp,
 			entry.excludeFromContext,
+			entry.stageAdmissionKey,
 		);
 	}
 	if (entry.type === "branch_summary" && typeof entry.summary === "string" && entry.summary.length > 0) {
@@ -80,6 +81,7 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 				entry.details,
 				entry.timestamp,
 				entry.excludeFromContext,
+				entry.stageAdmissionKey,
 			),
 		];
 	}
