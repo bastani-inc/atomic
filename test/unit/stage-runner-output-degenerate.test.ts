@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession } from "@bastani/atomic";
 import { test } from "vitest";
-import { finalizePromptOutput } from "../../packages/workflows/src/runs/foreground/stage-runner-output.js";
+import {
+	finalizePromptOutput,
+	stageOutputInstruction,
+} from "../../packages/workflows/src/runs/foreground/stage-runner-output.js";
 
 /**
  * The stage-output receipt reports facts only.
@@ -86,4 +89,15 @@ test("every receipt names the artifact and the transcript with its access patter
 	} finally {
 		await cleanupOutputCase(result);
 	}
+});
+
+test("the runtime states the artifact contract so prompts do not have to", () => {
+	const withOutput = stageOutputInstruction({ output: "/tmp/report.md" });
+	assert.match(withOutput, /final message is saved verbatim as its artifact/);
+	assert.match(withOutput, /rather than a pointer to it/);
+	assert.match(withOutput, /Files you write yourself are not the artifact/);
+
+	// No `output:` means no artifact, so the stage prompt is left untouched.
+	assert.equal(stageOutputInstruction({}), "");
+	assert.equal(stageOutputInstruction({ output: "" }), "");
 });

@@ -97,12 +97,10 @@ export async function runRalphWorkflow(
             acceptanceCriteria,
             workflowCwdContext,
             latestReviewReportPath,
-            researchPath: workflowResearchPath,
           })
         : renderForkedResearchPrompt({
             transformedResearchQuestion: researchPromptRefinement.text,
             latestReviewReportPath,
-            researchPath: workflowResearchPath,
           }),
       reads: latestReviewReportPath === undefined ? [] : [latestReviewReportPath],
       output: workflowResearchPath,

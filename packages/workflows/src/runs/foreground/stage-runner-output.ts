@@ -210,6 +210,19 @@ export function validatePromptOutputOptions(outputOptions: StageOutputOptions): 
 	}
 }
 
+/**
+ * Instruction appended to any prompt whose stage configures `output:`.
+ *
+ * The runtime owns the artifact write, so the prompt author should not have to
+ * describe that plumbing — or remember to. Without this, a stage can end with
+ * "done, see the file" and persist that sentence as its deliverable, which is a
+ * foot-gun the workflow definition cannot see.
+ */
+export function stageOutputInstruction(outputOptions: StageOutputOptions): string {
+	if (typeof outputOptions.output !== "string" || outputOptions.output.length === 0) return "";
+	return "\n\n[This stage's final message is saved verbatim as its artifact and is what later stages read. Return the complete result in that message rather than a pointer to it. Files you write yourself are not the artifact.]";
+}
+
 export async function finalizePromptOutput(
 	fullOutput: string,
 	outputOptions: StageOutputOptions,

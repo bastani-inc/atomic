@@ -367,7 +367,6 @@ export function renderResearchPrompt(args: {
   readonly acceptanceCriteria: string;
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
-  readonly researchPath: string;
 }): string {
   return taggedPrompt([
     ["acceptance_criteria", args.acceptanceCriteria],
@@ -386,8 +385,7 @@ export function renderResearchPrompt(args: {
     [
       "research_artifact",
       [
-        "Return the complete research report as your final message in the stage's own assistant turn. Around an admitted async completion, the runner identifies the latest post-admission assistant turn at or above 26 UTF-8 bytes. The last pre-admission assistant turn remains the default unless that latest qualifying turn is at least 3:2 larger; without pre-admission text, the latest qualifying turn is used, falling back to the latest non-empty post-admission turn when all are below the floor. Receipts warn when a pre-admission selection discards any non-empty post-admission turn, an override discards the pre-admission turn, or a no-pre-admission fallback discards another qualifying turn. Do not leave a short preamble as the only substantial candidate. The companion transcript preserves the full stage, including admitted async results and later turns; downstream implementation and review stages read the artifact first and search the transcript when they need omitted detail.",
-        `Do not write ${args.researchPath} yourself. The runner owns that artifact path and saves the nominated turn there; return complete findings in the stage's own final assistant message, while the companion transcript retains the session's tool output and admitted async results. Skill-owned notes under research/docs/ and research/web/ are unaffected.`,
+        "Return the complete research report as your final message. Downstream implementation and review stages read it from there.",
         "Produce a complete Markdown report with codebase and useful online/contextual findings, implementation guidance, relevant files/tests/docs, unresolved-finding analysis, and validation recommendations. Lead with conclusions; keep facts, caveats, and implementation-relevant next steps; drop background and repetition.",
         "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.",
         "Do not author an RFC/spec or implement code changes.",

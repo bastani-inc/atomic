@@ -2,7 +2,12 @@ import { createStructuredOutputCapture, runCallback } from "@bastani/atomic";
 import type { StageExecutionMeta } from "../../shared/types.js";
 import { StageSessionController } from "./stage-runner-controller.js";
 import { assistantMessage } from "./stage-runner-messages.js";
-import { finalizePromptOutput, splitPromptOptions, validatePromptOutputOptions } from "./stage-runner-output.js";
+import {
+	finalizePromptOutput,
+	splitPromptOptions,
+	stageOutputInstruction,
+	validatePromptOutputOptions,
+} from "./stage-runner-output.js";
 import {
 	formatStructuredOutputCorrectionPrompt,
 	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
@@ -49,6 +54,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		async prompt(text, options) {
 			const { sdkOptions, outputOptions } = splitPromptOptions(options);
 			validatePromptOutputOptions(outputOptions);
+			// The runtime owns the artifact write, so it states that contract itself
+			// rather than relying on every workflow definition to describe it.
+			const promptText = `${text}${stageOutputInstruction(outputOptions)}`;
 			if (structuredOutputCapture?.called) {
 				throw new Error(
 					"atomic-workflows: stage schema supports one prompt() call per stage context because structured_output may be called exactly once. Create a new ctx.stage(...) for each additional schema-backed prompt.",
@@ -62,7 +70,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				}
 				const rawText = await runCallback(
 					{ kind: "workflow.stage_adapter", name: `prompt:${stageName}`, runId, stageId },
-					() => adapters.prompt!.prompt(text, meta),
+					() => adapters.prompt!.prompt(promptText, meta),
 				);
 				adapterMessages = assistantMessage(rawText);
 				lastAssistantText = await finalizePromptOutput(
@@ -77,7 +85,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				return lastAssistantText;
 			}
 			if (structuredOutputCapture) {
-				let nextPrompt = text;
+				let nextPrompt = promptText;
 				let correctiveAttempts = 0;
 				let structuredOutputError = STRUCTURED_OUTPUT_MISSING_ERROR;
 				while (!structuredOutputCapture.called) {
@@ -103,7 +111,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 				lastFinalizedMessageCount = controller.currentSession?.messages.length;
 				return structuredOutputCapture.value as never;
 			}
-			await controller.promptWithFallback(text, sdkOptions);
+			await controller.promptWithFallback(promptText, sdkOptions);
 			const rawText = controller.lastAssistantText(lastAssistantText) ?? "";
 			lastAssistantText = await finalizePromptOutput(
 				rawText,

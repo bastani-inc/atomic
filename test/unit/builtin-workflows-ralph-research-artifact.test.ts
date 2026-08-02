@@ -91,32 +91,24 @@ describe("ralph research artifact ownership", () => {
 			assertStringOutput(options?.output);
 			const researchPath = options.output;
 
-			// The runner owns the artifact, so the prompt must route the complete report
-			// through the stage's final assistant message and describe the nomination heuristic.
+			// The runner owns the artifact and states that contract itself via
+			// `stageOutputInstruction`, so the workflow prompt only has to ask for the
+			// report. It must not describe the write mechanism: the prompt that spelled
+			// out nomination went stale the moment that logic was deleted.
 			assert.match(
 				prompt,
 				/Return the (complete|rewritten) research report[\s\S]*as your final message/,
 				`${stage} must ask for the complete report as its final message`,
 			);
-			assert.match(
+			assert.doesNotMatch(
 				prompt,
-				/latest post-admission assistant turn at or above 26 UTF-8 bytes[\s\S]*latest qualifying turn is at least 3:2 larger/,
-				`${stage} must describe the recency-first, size-qualified post-admission override`,
+				/UTF-8 bytes|3:2|post-admission|nominat|companion transcript/i,
+				`${stage} must not describe runner-owned write mechanics`,
 			);
-			assert.match(
-				prompt,
-				/without pre-admission text, the latest qualifying turn is used, falling back to the latest non-empty post-admission turn/,
-				`${stage} must describe the no-pre-admission recency fallback`,
-			);
-			assert.match(
-				prompt,
-				/Receipts warn when a pre-admission selection discards any non-empty post-admission turn[\s\S]*no-pre-admission fallback discards another qualifying turn/,
-				`${stage} must describe every nomination warning condition`,
-			);
-			assert.match(
+			assert.doesNotMatch(
 				prompt,
 				new RegExp(`Do not write ${escapeRegExp(researchPath)} yourself`),
-				`${stage} must forbid authoring the runner-owned artifact`,
+				`${stage} must not carry the obsolete artifact-authoring prohibition`,
 			);
 			assert.doesNotMatch(
 				prompt,
