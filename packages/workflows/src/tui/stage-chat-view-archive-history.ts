@@ -3,6 +3,7 @@ import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { renderPromptCard } from "./prompt-card.js";
+import { renderPromptIdentityBanner } from "./prompt-card-render.js";
 import { bannerLines, embedOrchestratorReturnHintInWidget } from "./stage-chat-view-footer-status.js";
 import {
 	blankLine,
@@ -205,7 +206,7 @@ export function renderBlockedBody(
 }
 
 export function renderPromptBody(ctx: StageChatViewContext, width: number, budget: number): string[] {
-	const primitiveLines = renderPrimitivePromptBody(ctx, width);
+	const primitiveLines = renderPrimitivePromptBody(ctx, width, budget);
 	if (primitiveLines) {
 		return fitPromptBodyLines(ctx, embedOrchestratorReturnHintInWidget(ctx, primitiveLines, width), width, budget);
 	}
@@ -223,7 +224,7 @@ export function renderPromptBody(ctx: StageChatViewContext, width: number, budge
 	return fitPromptBodyLines(ctx, embedOrchestratorReturnHintInWidget(ctx, lines, width), width, budget);
 }
 
-function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number): string[] | null {
+function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, budget: number): string[] | null {
 	const state = ctx.promptState;
 	const editor = ctx.promptEditor;
 	if (!state || !editor) return null;
@@ -231,19 +232,62 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number): st
 	setEditorBorderColor(editor, (text) => hexToAnsi(ctx.theme.accent) + text + RESET);
 
 	const innerWidth = Math.max(2, width - 2);
-	const bodyLines: string[] = [];
 	const messageBox = new Box(2, 1);
 	messageBox.addChild(new Text(paint(state.prompt.message, ctx.theme.text), 0, 0));
-	bodyLines.push(...messageBox.render(innerWidth));
-	bodyLines.push(...new Text(paint("response", ctx.theme.textMuted, { bold: true }), 2, 0).render(innerWidth));
-	for (const line of editor.render(Math.max(20, innerWidth - 4))) {
-		bodyLines.push(`  ${line}`);
-	}
-	bodyLines.push("");
-	bodyLines.push(...new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth));
+	const messageLines = messageBox.render(innerWidth);
+	const compactMessageLines = new Text(paint(state.prompt.message, ctx.theme.text), 2, 0).render(innerWidth);
+	const responseLines = new Text(paint("response", ctx.theme.textMuted, { bold: true }), 2, 0).render(innerWidth);
+	const editorLines = editor.render(Math.max(20, innerWidth - 4)).map((line) => `  ${line}`);
+	const hintLines = new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth);
+	const fullBodyLines = [...messageLines, ...responseLines, ...editorLines, "", ...hintLines];
+	const identity = { runId: ctx.runId, name: ctx.workflowName };
+	const bannerLines = renderPromptIdentityBanner(identity, ctx.theme, width);
+	const fullPromptLines = renderPrimitivePromptBlock(ctx, width, "AWAITING INPUT", fullBodyLines);
 
+	const renderCompactPrompt = (maxRows: number, title: string, requireMessage: boolean): string[] => {
+		const bodyBudget = Math.max(0, maxRows - 2);
+		const minimumMessageRows = requireMessage ? Math.min(1, compactMessageLines.length) : 0;
+		const requiredRows = minimumMessageRows + editorLines.length + hintLines.length;
+		if (bodyBudget < requiredRows) return [];
+
+		let remaining = bodyBudget - requiredRows;
+		let messageCount = minimumMessageRows;
+		if (messageCount === 0 && remaining > 0 && compactMessageLines.length > 0) {
+			messageCount = 1;
+			remaining -= 1;
+		}
+		const includeResponse = remaining >= responseLines.length;
+		if (includeResponse) remaining -= responseLines.length;
+		const extraMessageRows = Math.min(remaining, compactMessageLines.length - messageCount);
+		messageCount += extraMessageRows;
+		remaining -= extraMessageRows;
+		const includeBlank = remaining > 0;
+		return renderPrimitivePromptBlock(ctx, width, title, [
+			...compactMessageLines.slice(0, messageCount),
+			...(includeResponse ? responseLines : []),
+			...editorLines,
+			...(includeBlank ? [""] : []),
+			...hintLines,
+		]);
+	};
+
+	if (bannerLines.length + fullPromptLines.length <= budget) {
+		return [...bannerLines, ...renderPrimitivePromptBlock(ctx, width, "", fullBodyLines)];
+	}
+	const compactAttributedPrompt = renderCompactPrompt(budget - bannerLines.length, "", true);
+	if (compactAttributedPrompt.length > 0) return [...bannerLines, ...compactAttributedPrompt];
+	if (fullPromptLines.length <= budget) return fullPromptLines;
+	return renderCompactPrompt(budget, "AWAITING INPUT", false);
+}
+
+function renderPrimitivePromptBlock(
+	ctx: StageChatViewContext,
+	width: number,
+	title: string,
+	bodyLines: readonly string[],
+): string[] {
 	return renderRoundedBoxLines({
-		title: "AWAITING INPUT",
+		title,
 		bodyLines,
 		width,
 		theme: ctx.theme,

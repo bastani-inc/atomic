@@ -26,6 +26,29 @@ export interface PromptCardRenderOpts {
 	readonly maxRows?: number;
 }
 
+export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: GraphTheme, width: number): string[] {
+	const innerWidth = Math.max(20, width - 2);
+	const borderColor = theme.border;
+	const bg = "";
+	const identityRows = renderRunIdentityRows({
+		runId: identity.runId,
+		name: identity.name,
+		meta: identity.meta,
+		glyph: statusIcon("awaiting_input"),
+		glyphColor: statusColor("awaiting_input", theme),
+		theme,
+		width: innerWidth,
+		idIndent: 1,
+		idGap: 1,
+		nameIndent: 4,
+	});
+	return [
+		makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg),
+		...identityRows.map((row) => makePaddedRow(bg, borderColor, innerWidth, row)),
+		makeBorderBottom(borderColor, innerWidth, bg),
+	];
+}
+
 const MIN_COMPLETE_PROMPT_ROWS = 6;
 const LEGACY_PROMPT_ROWS = 10;
 
@@ -45,23 +68,7 @@ export function renderPromptCard(opts: PromptCardRenderOpts): string[] {
 		return renderPromptBodyBlock(state, theme, innerWidth, opts.cursorOn, borderColor, bg, maxRows);
 	}
 
-	const identityRows = renderRunIdentityRows({
-		runId: opts.identity.runId,
-		name: opts.identity.name,
-		meta: opts.identity.meta,
-		glyph: statusIcon("awaiting_input"),
-		glyphColor: statusColor("awaiting_input", theme),
-		theme,
-		width: innerWidth,
-		idIndent: 1,
-		idGap: 1,
-		nameIndent: 4,
-	});
-	const banner = [
-		makeBorderTop(borderColor, " AWAITING INPUT ", theme, innerWidth, bg),
-		...identityRows.map((row) => makePaddedRow(bg, borderColor, innerWidth, row)),
-		makeBorderBottom(borderColor, innerWidth, bg),
-	];
+	const banner = renderPromptIdentityBanner(opts.identity, theme, width);
 
 	// Attribution is supplementary. Keep it only when the remaining budget can
 	// still hold the normally spaced prompt; otherwise devote every row to the

@@ -553,6 +553,8 @@ describe("run identity rows", () => {
 
 		const cases = [
 			{ id: ids.running, name: "stage-output-transcript", glyph: statusIcon("running") },
+			// Provisional pin: today's card keeps the running glyph; the objective example shows `？`,
+			// but changing awaiting-input attribution belongs to PR #2135.
 			{ id: ids.awaiting, name: "build-check", glyph: statusIcon("running") },
 			{ id: ids.quit, name: "release-docs", glyph: statusIcon("pending") },
 			{ id: ids.completed, name: "publish-release", glyph: statusIcon("completed") },

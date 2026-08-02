@@ -19,6 +19,7 @@ import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/sh
 import { chatWidth } from "../../packages/workflows/src/tui/chat-surface.js";
 import { hexToAnsi, RESET } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
@@ -128,9 +129,9 @@ describe("renderStatusList — populated", () => {
 		assert.ok(plain.includes("abc123uuid"));
 		assert.ok(plain.includes("def456uuid"));
 		assert.ok(plain.includes("ghi789uuid"));
-		assert.match(plain, /refactor-auth\s+● running/);
-		assert.match(plain, /doc-update\s+● running/);
-		assert.match(plain, /scan-deps\s+✓ completed/);
+		assert.match(plain, new RegExp(`refactor-auth\\s+${statusIcon("running")} running`));
+		assert.match(plain, new RegExp(`doc-update\\s+${statusIcon("running")} running`));
+		assert.match(plain, new RegExp(`scan-deps\\s+${statusIcon("completed")} completed`));
 
 		// Row 3 — mode + progress strip + meta.
 		assert.match(plain, /chain\s+\[✓\]\[●\]\[○\]/);
@@ -259,7 +260,7 @@ describe("renderStatusList — populated", () => {
 
 		assert.match(out, /✓ 1/);
 		assert.match(out, /okauthuuid/);
-		assert.match(out, /tournament\s+✓ completed/);
+		assert.match(out, new RegExp(`tournament\\s+${statusIcon("completed")} completed`));
 		assert.doesNotMatch(out, /↑ 1 blocked/);
 		assert.doesNotMatch(out, /↑ blocked/);
 	});
@@ -314,12 +315,12 @@ describe("renderStatusList — populated", () => {
 
 		const runningRow = plain.split("\n").find((line) => line.includes("active-wf"));
 		assert.ok(runningRow, "running run row is present");
-		assert.match(runningRow, /active-wf\s+● running/);
+		assert.match(runningRow, new RegExp(`active-wf\\s+${statusIcon("running")} running`));
 
 		const pausedRow = plain.split("\n").find((line) => line.includes("paused-wf"));
 		assert.ok(pausedRow, "paused run row is present");
 		assert.match(plain, /pause222uuid/);
-		assert.match(pausedRow, /paused-wf\s+❚❚ paused/);
+		assert.match(pausedRow, new RegExp(`paused-wf\\s+${statusIcon("paused")} paused`));
 		assert.doesNotMatch(pausedRow, /○ pending/);
 		assert.doesNotMatch(pausedRow, /● running/);
 	});
@@ -341,7 +342,7 @@ describe("renderStatusList — populated", () => {
 		assert.match(out, /^╭ BACKGROUND {2}1 run /);
 		assert.match(out, /❚❚ 1 paused/);
 		assert.match(out, /pause333uuid/);
-		assert.match(out, /paused-plain\s+❚❚ paused/);
+		assert.match(out, new RegExp(`paused-plain\\s+${statusIcon("paused")} paused`));
 		assert.match(out, /single\s+\[❚❚\]/, "paused progress cell uses the paused glyph, not the pending cell");
 		assert.doesNotMatch(out, /○ pending/);
 		assert.doesNotMatch(out, /● 1(?:\s+running)?/);
