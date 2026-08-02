@@ -7,7 +7,7 @@
 - Moved durable workflow run artifacts—including goal ledgers, Ralph implementation notes, QA evidence video paths, and worktree task outputs—from per-invocation OS temp directories to the run-scoped durable root under the Atomic config directory (`~/.atomic/workflows/runs/<runId>/`, overridable with `ATOMIC_WORKFLOW_ARTIFACT_DIR`), so they survive OS temp purges and follow state-aware retention.
 - Toggling tool-output expansion (`ctrl+o`) no longer prints a `Tool output: expanded` / `Tool output: collapsed` status line. The chat re-renders in the new state, which is the same information without the extra line.
 
-- Workflow run identifiers are now shown as full UUIDs across the BACKGROUND widget, status and detail views, run pickers, control messages, and awaiting-input attribution banners. BACKGROUND cards use a two-line identity layout at 80 columns and wider, while narrow chat surfaces wrap full ids without cutting them or breaking their borders; commands continue to accept unique short prefixes and report ambiguous prefixes clearly.
+- Workflow run identifiers are now shown as full UUIDs across the BACKGROUND widget, status and detail views, run pickers, control messages, and awaiting-input attribution banners. BACKGROUND cards use a two-line identity layout at 80 columns and wider, while narrow chat surfaces wrap full ids without cutting them or breaking their borders; commands continue to accept unique short prefixes and report ambiguous prefixes clearly. The public `workflow({ action: "status", format: "json" })` payload no longer includes `runIdPrefix`; read `runId` instead, which now carries the full id.
 
 ### Fixed
 

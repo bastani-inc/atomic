@@ -23,6 +23,7 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
+import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -147,6 +148,52 @@ describe("renderNodeCard — queued-message badge", () => {
 		assert.match(rendered, /↵ enter to respond/);
 		assert.match(rendered, /awaiting input/);
 		assert.doesNotMatch(rendered, /waiting for response/);
+	});
+
+	test("keeps queued badges on awaiting-input child boundaries at the real card geometry", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const childBoundaries: Array<{ label: string; stage: Partial<StageSnapshot> }> = [
+			{
+				label: "live child",
+				stage: { workflowChildRun: { alias: "child", workflow: "publish-child", runId } },
+			},
+			{
+				label: "completed child",
+				stage: {
+					workflowChild: {
+						alias: "child",
+						workflow: "publish-child",
+						runId,
+						status: "completed",
+						outputs: {},
+					},
+				},
+			},
+		];
+
+		for (const { label, stage } of childBoundaries) {
+			for (const queuedMessageCount of [1, 2, 12, 100]) {
+				const lines = renderNodeCard(makeStage({ ...stage, status: "awaiting_input" }), {
+					theme,
+					width: 24,
+					height: 5,
+					queuedMessageCount,
+				});
+				const plainLines = lines.map(stripAnsi);
+				const rendered = plainLines.join("\n");
+				const context = `${label} queuedMessageCount=${queuedMessageCount}`;
+				const badgeLine = plainLines.find((line) => line.includes(`${queuedMessageCount} queued`));
+				const badgeText = badgeLine?.slice(1, -1).trim();
+
+				assert.equal(lines.length, 5, context);
+				for (const line of plainLines) assert.equal(visibleWidth(line), 24, context);
+				assert.notEqual(badgeText, undefined, context);
+				assert.match(badgeText!, new RegExp(`^\\S ${queuedMessageCount} queued$`), context);
+				assert.doesNotMatch(badgeText!, /…/, context);
+				assert.match(rendered, new RegExp(`${statusIcon("awaiting_input")} awaiting input`), context);
+				assert.match(rendered, /↵ enter to respond/, context);
+			}
+		}
 	});
 
 	test("omits the badge for zero, negative, and absent counts", () => {

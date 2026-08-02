@@ -326,9 +326,10 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 
 	// A queued steer/follow-up is invisible once the user leaves the stage chat,
 	// so it claims one existing body row rather than competing for space inside a
-	// line that would truncate. Child boundaries pack it beside status instead.
+	// line that would truncate. Child boundaries pack it beside status except when
+	// the awaiting-input interior leaves its redundant response row available.
 	const preferredBadgeRow =
-		childSummaryLine === undefined ? (stage.status === "awaiting_input" ? 1 : interior.length - 1) : -1;
+		stage.status === "awaiting_input" ? 1 : childSummaryLine === undefined ? interior.length - 1 : -1;
 
 	// Pad / clip to exactly `height` lines.
 	while (interior.length < contentRows) {
