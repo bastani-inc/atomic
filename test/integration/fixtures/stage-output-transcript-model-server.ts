@@ -1,12 +1,14 @@
 /**
  * Stand-in OpenAI Responses endpoint for stage-output-transcript terminal evidence.
  *
- * The trailing variant answers the admitted completion with ACK-<nonce> after the
- * first assistant turn. The mid-prompt variant answers with ACK plus a real bash
- * tool call; the agent executes that call and makes a third model request, which
- * returns the stage's REAL-DELIVERABLE-<nonce> after the acknowledgement.
+ * The trailing variant answers a settled-stage admission with ACK-<nonce> after
+ * the first assistant turn. The mid-prompt variant answers an active-stage
+ * admission with ACK plus a real bash tool call; the agent executes that call and
+ * makes a third request for REAL-DELIVERABLE-<nonce>. The deliverable-after-admission
+ * variant returns INTRO, then the admitted custom turn, then REAL-DELIVERABLE.
  *
- * Usage: bun stage-output-transcript-model-server.ts <state-dir> <nonce> [trailing|mid-prompt]
+ * Usage: bun stage-output-transcript-model-server.ts <state-dir> <nonce>
+ *   [trailing|mid-prompt|deliverable-after-admission]
  * Writes <state-dir>/model-port when ready and <state-dir>/request-count as calls arrive.
  */
 
@@ -101,9 +103,12 @@ function main(): void {
 		stateDir.trim() === "" ||
 		nonce === undefined ||
 		nonce.trim() === "" ||
-		(ordering !== "trailing" && ordering !== "mid-prompt")
+		(ordering !== "trailing" && ordering !== "mid-prompt" && ordering !== "deliverable-after-admission")
 	) {
-		console.error("stage-output-transcript model server: pass <state-dir> <nonce> [trailing|mid-prompt]");
+		console.error(
+			"stage-output-transcript model server: pass <state-dir> <nonce> " +
+				"[trailing|mid-prompt|deliverable-after-admission]",
+		);
 		process.exit(1);
 	}
 
@@ -118,7 +123,7 @@ function main(): void {
 		writeFileSync(join(stateDir, STAGE_OUTPUT_TRANSCRIPT_REQUEST_COUNT_FILE), String(requestCount), "utf8");
 		const messageId = `stage_output_transcript_${requestCount}`;
 		if (requestCount === 1) {
-			const firstText = ordering === "mid-prompt" ? introduction : deliverable;
+			const firstText = ordering === "trailing" ? deliverable : introduction;
 			const firstMessage = messageItem(messageId, firstText);
 			openMessage(response, 0, messageId, firstText);
 			heldResponses.add(response);
@@ -146,7 +151,7 @@ function main(): void {
 			]);
 			return;
 		}
-		const text = ordering === "mid-prompt" ? deliverable : acknowledgement;
+		const text = ordering === "trailing" ? acknowledgement : deliverable;
 		const finalMessage = messageItem(messageId, text);
 		openMessage(response, 0, messageId, text);
 		completeResponse(response, `stage_output_transcript_followup_${requestCount}`, [finalMessage]);

@@ -3,7 +3,8 @@
 # Terminal evidence for workflow stage-output nomination and durable transcripts.
 #
 # Optional third argument selects the ordering; the original two-argument invocation remains trailing.
-# Usage: bash scripts/e2e/stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [trailing|mid-prompt]
+# Usage: bash scripts/e2e/stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir>
+#   [trailing|mid-prompt|deliverable-after-admission]
 #
 # The caller creates a real tmux session; this script drives the REAL interactive
 # Atomic CLI in that pane and saves the final pane plus filesystem evidence under
@@ -15,19 +16,20 @@
 #     assistant REAL-DELIVERABLE -> admitted custom -> assistant ACK
 #   mid-prompt:
 #     assistant INTRO -> admitted custom -> assistant ACK + tool call -> assistant REAL-DELIVERABLE
-#     The tool call causes the real agent loop to request the final deliverable.
+#   deliverable-after-admission:
+#     assistant INTRO -> admitted custom -> assistant REAL-DELIVERABLE
 #
-# Both variants dispatch /workflow stage-output-transcript-e2e, whose one stage
+# All variants dispatch /workflow stage-output-transcript-e2e, whose one stage
 # declares output: "stage-output.md" and outputMode: "file-only".
 #
 # The filesystem assertions are the load-bearing evidence:
 #
 #   1. stage-output.md contains REAL-DELIVERABLE-<nonce>
-#   2. stage-output.md never contains ACK-<nonce>; mid-prompt also rejects INTRO-<nonce>
+#   2. stage-output.md never contains ACK-<nonce> or INTRO-<nonce>
 #   3. the rendered transcript exists under the configured durable run root,
 #      outside both the repository and $TMPDIR
-#   4. rg finds ACK-<nonce> in both transcripts, and INTRO-<nonce> in the mid-prompt
-#      transcript, proving admitted and intermediate turns stayed visible
+#   4. the transcript retains admitted and intermediate turns, and records the
+#      runtime admission provenance used by nomination
 #
 # ATOMIC_WORKFLOW_ARTIFACT_DIR is deliberately pointed at a per-run scratch
 # directory in the user's home (not the real ~/.atomic and not $TMPDIR). This
@@ -37,12 +39,12 @@
 
 set -euo pipefail
 
-SESSION="${1:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [trailing|mid-prompt]}"
-ARTIFACTS="${2:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [trailing|mid-prompt]}"
+SESSION="${1:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [trailing|mid-prompt|deliverable-after-admission]}"
+ARTIFACTS="${2:?usage: stage-output-transcript-evidence.sh <tmux-session-name> <artifact-dir> [trailing|mid-prompt|deliverable-after-admission]}"
 ORDERING="${3:-${STAGE_OUTPUT_TRANSCRIPT_ORDERING:-trailing}}"
 case "$ORDERING" in
-	trailing|mid-prompt) ;;
-	*) echo "stage-output-transcript evidence: ordering must be trailing or mid-prompt: $ORDERING" >&2; exit 1 ;;
+	trailing|mid-prompt|deliverable-after-admission) ;;
+	*) echo "stage-output-transcript evidence: unsupported ordering: $ORDERING" >&2; exit 1 ;;
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -98,7 +100,7 @@ await_text() {
 	local needle="$1" label="$2" timeout="${3:-120}"
 	local deadline=$((SECONDS + timeout))
 	while ((SECONDS < deadline)); do
-		if capture | grep -qF -- "$needle"; then return 0; fi
+		if grep -qF -- "$needle" <<<"$(capture)"; then return 0; fi
 		sleep 1
 	done
 	echo "stage-output-transcript evidence: timed out after ${timeout}s waiting for ${label}" >&2
@@ -151,7 +153,7 @@ type_command() {
 	sleep 0.5
 	tmux send-keys -t "$SESSION" Enter
 	sleep 0.5
-	if capture | grep -qF -- "❯ $1"; then
+	if grep -qF -- "❯ $1" <<<"$(capture)"; then
 		tmux send-keys -t "$SESSION" Enter
 		sleep 0.5
 	fi
@@ -304,8 +306,16 @@ case "$TRANSCRIPT_PATH" in
 	"${TMPDIR:-/tmp}"/*) echo "stage-output-transcript evidence: transcript is under TMPDIR: $TRANSCRIPT_PATH" >&2; exit 1 ;;
 esac
 cp "$TRANSCRIPT_PATH" "$ARTIFACTS/transcript.txt"
-if ! rg -nF -- "$ACK" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-ack-hit.txt"; then
-	echo "stage-output-transcript evidence: transcript does not contain $ACK" >&2
+if [[ "$ORDERING" != "deliverable-after-admission" ]]; then
+	if ! rg -nF -- "$ACK" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-ack-hit.txt"; then
+		echo "stage-output-transcript evidence: transcript does not contain $ACK" >&2
+		exit 1
+	fi
+fi
+EXPECTED_PROVENANCE="active-stage"
+if [[ "$ORDERING" == "trailing" ]]; then EXPECTED_PROVENANCE="assistant-settled"; fi
+if ! rg -nF -- "stageAdmissionProvenance: $EXPECTED_PROVENANCE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-provenance-hit.txt"; then
+	echo "stage-output-transcript evidence: transcript omitted provenance $EXPECTED_PROVENANCE" >&2
 	exit 1
 fi
 if [[ "$ORDERING" == "mid-prompt" ]]; then
@@ -316,6 +326,16 @@ if [[ "$ORDERING" == "mid-prompt" ]]; then
 		exit 1
 	fi
 	printf 'ordering=%s\ntranscript_exists=true\ntranscript_path=%s\nunder_durable_root=true\noutside_repo=true\noutside_tmpdir=true\nack_match=true\nintro_match=true\n' "$ORDERING" "$TRANSCRIPT_PATH" >"$ARTIFACTS/assertion-transcript.txt"
+elif [[ "$ORDERING" == "deliverable-after-admission" ]]; then
+	if ! rg -nF -- "$INTRO" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-intro-hit.txt"; then
+		echo "stage-output-transcript evidence: transcript does not contain $INTRO" >&2
+		exit 1
+	fi
+	if ! rg -nF -- "$DELIVERABLE" "$TRANSCRIPT_PATH" >"$ARTIFACTS/transcript-deliverable-hit.txt"; then
+		echo "stage-output-transcript evidence: transcript does not contain $DELIVERABLE" >&2
+		exit 1
+	fi
+	printf 'ordering=%s\ntranscript_exists=true\ntranscript_path=%s\nunder_durable_root=true\noutside_repo=true\noutside_tmpdir=true\nintro_match=true\ndeliverable_match=true\n' "$ORDERING" "$TRANSCRIPT_PATH" >"$ARTIFACTS/assertion-transcript.txt"
 else
 	printf 'transcript_exists=true\ntranscript_path=%s\nunder_durable_root=true\noutside_repo=true\noutside_tmpdir=true\nack_match=true\n' "$TRANSCRIPT_PATH" >"$ARTIFACTS/assertion-transcript.txt"
 fi

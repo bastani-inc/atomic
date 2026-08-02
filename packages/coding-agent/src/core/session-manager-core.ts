@@ -3,7 +3,7 @@ import { existsSync, statSync } from "fs";
 import { resolve } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
-import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import type { BashExecutionMessage, CustomMessage, StageAdmissionProvenance } from "./messages.ts";
 import { createBackupSnapshot, createBranchedSessionState, forkSessionFromFile } from "./session-manager-archive.ts";
 import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
@@ -291,6 +291,7 @@ export class SessionManager {
 		excludeFromContext?: boolean,
 		protectedReconciliation?: { delivery: "steer" | "followUp" },
 		stageAdmissionKey?: string,
+		stageAdmissionProvenance?: StageAdmissionProvenance,
 	): string {
 		const entry = createCustomMessageEntry(
 			customType,
@@ -302,6 +303,7 @@ export class SessionManager {
 			this.byId,
 			this.leafId,
 			stageAdmissionKey,
+			stageAdmissionProvenance,
 		);
 		this._appendEntry(entry);
 		return entry.id;

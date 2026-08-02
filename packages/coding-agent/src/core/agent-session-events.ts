@@ -29,6 +29,7 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "./extensions/index.ts";
+import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
@@ -168,6 +169,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	if (event.type === "message_end") {
 		// Check if this is a custom message from extensions
 		if (event.message.role === "custom") {
+			const admitted = event.message as StageAdmittedCustomMessage;
 			if (protectedMessage === undefined) {
 				this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
@@ -176,7 +178,8 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 					event.message.details,
 					customMessageExcludesContext(event.message),
 					undefined,
-					(event.message as { stageAdmissionKey?: string }).stageAdmissionKey,
+					admitted.stageAdmissionKey,
+					admitted.stageAdmissionProvenance,
 				);
 			}
 		} else if (

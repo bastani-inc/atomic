@@ -20,6 +20,7 @@ type TranscriptMessage = {
 	readonly content?: string | readonly TranscriptContentBlock[];
 	readonly customType?: string;
 	readonly stageAdmissionKey?: string;
+	readonly stageAdmissionProvenance?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
 };
@@ -107,6 +108,9 @@ function renderTranscript(messages: AgentSession["messages"] | undefined, fallba
 		lines.push(`## ${index + 1} ${role}`);
 		if (typeof record.customType === "string") lines.push(`customType: ${record.customType}`);
 		if (typeof record.stageAdmissionKey === "string") lines.push(`stageAdmissionKey: ${record.stageAdmissionKey}`);
+		if (typeof record.stageAdmissionProvenance === "string") {
+			lines.push(`stageAdmissionProvenance: ${record.stageAdmissionProvenance}`);
+		}
 		if (typeof record.toolName === "string") lines.push(`toolName: ${record.toolName}`);
 		if (typeof record.toolCallId === "string") lines.push(`toolCallId: ${record.toolCallId}`);
 		appendContent(lines, record.content);

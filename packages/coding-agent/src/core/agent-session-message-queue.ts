@@ -15,7 +15,7 @@ import {
 	normalizeInterruptAbortMessage,
 } from "./agent-session-types.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
-import type { CustomMessage } from "./messages.ts";
+import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 
 export { transferWorkflowStageDeliveriesTo };
 
@@ -186,7 +186,7 @@ export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessa
 		owner._appendCustomMessage(message);
 		return;
 	}
-	const stageAdmissionMessage = message as CustomMessage<T> & { stageAdmissionKey?: string };
+	const stageAdmissionMessage = message as StageAdmittedCustomMessage;
 	this.agent.state.messages.push(message);
 	this.sessionManager.appendCustomMessageEntry(
 		message.customType,
@@ -196,6 +196,7 @@ export function _appendCustomMessage<T>(this: AgentSession, message: CustomMessa
 		customMessageExcludesContext(message),
 		undefined,
 		stageAdmissionMessage.stageAdmissionKey,
+		stageAdmissionMessage.stageAdmissionProvenance,
 	);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });

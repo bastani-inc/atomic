@@ -167,6 +167,7 @@ export function createCustomMessageEntry<T = unknown>(
 	byId: { has(id: string): boolean },
 	parentId: string | null,
 	stageAdmissionKey?: string,
+	stageAdmissionProvenance?: CustomMessageEntry["stageAdmissionProvenance"],
 ): CustomMessageEntry<T> {
 	return {
 		type: "custom_message",
@@ -176,6 +177,7 @@ export function createCustomMessageEntry<T = unknown>(
 		details,
 		...(excludeFromContext === true ? { excludeFromContext: true } : {}),
 		...(stageAdmissionKey === undefined ? {} : { stageAdmissionKey }),
+		...(stageAdmissionProvenance === undefined ? {} : { stageAdmissionProvenance }),
 		...(protectedReconciliation === undefined ? {} : { protectedReconciliation }),
 		...entryBase(byId, parentId),
 	};

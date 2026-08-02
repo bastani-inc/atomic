@@ -11,9 +11,12 @@ type MessageWithTextContent = {
 	readonly content?: string | readonly TextLikeContent[];
 };
 
+type AdmissionProvenance = "active-stage" | "assistant-settled";
+
 type MessageWithAdmissionKey = {
 	readonly role?: string;
 	readonly stageAdmissionKey?: string;
+	readonly stageAdmissionProvenance?: AdmissionProvenance;
 };
 
 function isAdmittedExternalMessage(message: AgentSession["messages"][number]): boolean {
@@ -23,27 +26,32 @@ function isAdmittedExternalMessage(message: AgentSession["messages"][number]): b
 	);
 }
 
+function admissionProvenance(message: AgentSession["messages"][number]): AdmissionProvenance | undefined {
+	const provenance = (message as MessageWithAdmissionKey).stageAdmissionProvenance;
+	return provenance === "active-stage" || provenance === "assistant-settled" ? provenance : undefined;
+}
+
 /**
- * A steer admission prompts one immediate assistant acknowledgement; a later assistant turn means the stage kept
- * working after that acknowledgement. Skip only the turn directly after the last admission, then nominate the latest
- * remaining stage work. If nothing remains, the caller preserves its existing last-message fallback.
+ * Return the latest assistant work before the first admission that is known to have started an external response.
+ * Restored sessions without provenance are ambiguous: the runtime produces stopReason "stop" for both a mid-turn
+ * preamble and a completed deliverable. Preserve origin/main's latest-assistant behavior rather than risk replacing a
+ * post-admission deliverable with an earlier preamble.
  */
 function nominatedAssistantText(messages: AgentSession["messages"], startIndex = 0): string | undefined {
 	const firstIndex = Math.max(0, startIndex);
-	let lastAdmissionIndex: number | undefined;
-	for (let index = messages.length - 1; index >= firstIndex; index -= 1) {
+	let responseBoundary = messages.length;
+	for (let index = firstIndex; index < messages.length; index += 1) {
 		const message = messages[index];
-		if (message && isAdmittedExternalMessage(message)) {
-			lastAdmissionIndex = index;
+		if (message && isAdmittedExternalMessage(message) && admissionProvenance(message) === "assistant-settled") {
+			responseBoundary = index;
 			break;
 		}
 	}
-	if (lastAdmissionIndex === undefined) return undefined;
+	if (responseBoundary === messages.length) return undefined;
 
-	const acknowledgementIndex = lastAdmissionIndex + 1;
-	for (let index = messages.length - 1; index >= firstIndex; index -= 1) {
+	for (let index = responseBoundary - 1; index >= firstIndex; index -= 1) {
 		const message = messages[index];
-		if (index === acknowledgementIndex || message?.role !== "assistant") continue;
+		if (message?.role !== "assistant") continue;
 		const text = extractMessageText(message).trim();
 		if (text) return text;
 	}

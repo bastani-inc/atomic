@@ -1,13 +1,11 @@
 /**
  * Evidence-only extension that reproduces an admitted async subagent completion.
  *
- * A real workflow stage session loads this extension. On its first agent turn, it
- * waits briefly while the stand-in model is streaming, then sends the same
- * custom message/options used by subagent completion notification: triggerTurn
- * plus a persisted stageAdmissionKey. The stand-in selects the trailing ACK
- * response or the mid-prompt ACK-plus-tool-call response from the ordering
- * passed by the driver; the latter makes the real agent loop continue to the
- * final deliverable turn.
+ * A real workflow stage session loads this extension and sends the same custom
+ * message/options used by subagent completion notification: triggerTurn plus a
+ * persisted stageAdmissionKey. The trailing case dispatches after the stage's
+ * first assistant has settled; the other cases dispatch while that assistant is
+ * streaming. This makes the runtime-recorded admission provenance observable.
  */
 
 import { readFile, writeFile } from "node:fs/promises";
@@ -18,6 +16,7 @@ const NOTIFY_DELAY_MS = 500;
 export default function registerStageOutputTranscriptNotify(pi: ExtensionAPI): void {
 	let sent = false;
 	const nonce = process.env.STAGE_OUTPUT_TRANSCRIPT_NONCE ?? "missing-nonce";
+	const ordering = process.env.STAGE_OUTPUT_TRANSCRIPT_ORDERING ?? "trailing";
 	const statePath = process.env.STAGE_OUTPUT_TRANSCRIPT_STATE;
 	const receiptPath = process.env.STAGE_OUTPUT_TRANSCRIPT_RECEIPT_STATE;
 	const mark = (value: string): void => {
@@ -39,23 +38,30 @@ export default function registerStageOutputTranscriptNotify(pi: ExtensionAPI): v
 		},
 	});
 
-	pi.on("agent_start", (_event, context) => {
-		if (sent || context.orchestrationContext?.kind !== "workflow-stage") return;
+	const dispatch = (): void => {
+		if (sent) return;
 		sent = true;
-		setTimeout(() => {
-			mark("notify-dispatching");
-			const delivery = pi.sendMessage(
-				{
-					customType: "subagent-notify",
-					content: `ASYNC-COMPLETION-${nonce}`,
-					display: true,
-				},
-				{ triggerTurn: true, stageAdmissionKey: `subagent:e2e-${nonce}` },
-			);
-			void Promise.resolve(delivery).then(
-				() => mark("notify-admitted"),
-				() => mark("notify-failed"),
-			);
-		}, NOTIFY_DELAY_MS).unref?.();
+		mark("notify-dispatching");
+		const delivery = pi.sendMessage(
+			{
+				customType: "subagent-notify",
+				content: `ASYNC-COMPLETION-${nonce}`,
+				display: true,
+			},
+			{ triggerTurn: true, stageAdmissionKey: `subagent:e2e-${nonce}` },
+		);
+		void Promise.resolve(delivery).then(
+			() => mark("notify-admitted"),
+			() => mark("notify-failed"),
+		);
+	};
+
+	pi.on("agent_start", (_event, context) => {
+		if (ordering === "trailing" || sent || context.orchestrationContext?.kind !== "workflow-stage") return;
+		setTimeout(dispatch, NOTIFY_DELAY_MS).unref?.();
+	});
+	pi.on("agent_end", (_event, context) => {
+		if (ordering !== "trailing" || sent || context.orchestrationContext?.kind !== "workflow-stage") return;
+		dispatch();
 	});
 }

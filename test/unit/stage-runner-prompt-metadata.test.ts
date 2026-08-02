@@ -25,23 +25,55 @@ import {
 
 type SessionMessage = AgentSession["messages"][number];
 
-function assistantTurn(text: string): SessionMessage {
-	return { role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() } as SessionMessage;
+function assistantTurn(text: string, stopReason = "stop"): SessionMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		stopReason,
+		timestamp: Date.now(),
+	} as SessionMessage;
+}
+function assistantToolCallTurn(toolCallId = "t"): SessionMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id: toolCallId, name: "t", arguments: {} }],
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	} as SessionMessage;
 }
 
-function admittedTurn(stageAdmissionKey = "subagent:job-1"): SessionMessage {
+type AdmissionProvenance = "active-stage" | "assistant-settled";
+
+function latestAssistantText(messages: AgentSession["messages"]): string | undefined {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+		const text = message.content
+			.map((block) => (block.type === "text" ? block.text : ""))
+			.join("")
+			.trim();
+		if (text) return text;
+	}
+	return undefined;
+}
+
+function admittedTurn(
+	stageAdmissionKey = "subagent:job-1",
+	stageAdmissionProvenance?: AdmissionProvenance,
+): SessionMessage {
 	return {
 		role: "custom",
 		customType: "subagent-notify",
 		stageAdmissionKey,
+		...(stageAdmissionProvenance === undefined ? {} : { stageAdmissionProvenance }),
 		content: "async result details",
 		display: true,
 		timestamp: Date.now(),
 	} as SessionMessage;
 }
 
-function toolResultTurn(): SessionMessage {
-	return { role: "toolResult", toolCallId: "t", toolName: "t", content: [], isError: false, timestamp: Date.now() };
+function toolResultTurn(toolCallId = "t"): SessionMessage {
+	return { role: "toolResult", toolCallId, toolName: "t", content: [], isError: false, timestamp: Date.now() };
 }
 
 async function assertNominationScenario(scenario: readonly SessionMessage[], expected: string): Promise<string> {
@@ -52,7 +84,7 @@ async function assertNominationScenario(scenario: readonly SessionMessage[], exp
 		const messages = [assistantTurn("PREVIOUS PROMPT")] as AgentSession["messages"];
 		const { session } = makeMockSession({
 			messages,
-			getLastAssistantText: () => expected,
+			getLastAssistantText: () => latestAssistantText(messages),
 			async prompt() {
 				messages.push(...scenario);
 			},
@@ -63,7 +95,7 @@ async function assertNominationScenario(scenario: readonly SessionMessage[], exp
 		const directMessages = [assistantTurn("PREVIOUS PROMPT"), ...scenario] as AgentSession["messages"];
 		const { session: directSession } = makeMockSession({
 			messages: directMessages,
-			getLastAssistantText: () => expected,
+			getLastAssistantText: () => latestAssistantText(directMessages),
 		});
 		assert.equal(lastAssistantTextFromSession(directSession, "fallback", new Set<string>(), 1), expected);
 		const transcriptMatch = result.match(/Transcript saved to: ([^ ]+) \(/);
@@ -367,42 +399,56 @@ describe("createStageContext — prompt metadata propagation", () => {
 		}
 	});
 
-	test("admitted external turns stay visible but cannot replace the stage deliverable", async () => {
-		const transcript = await assertNominationScenario(
-			[assistantTurn("REAL DELIVERABLE"), admittedTurn(), assistantTurn("async acknowledgement")],
-			"REAL DELIVERABLE",
-		);
-		assert.match(transcript, /subagent-notify/);
-		assert.match(transcript, /async result details/);
-		assert.match(transcript, /async acknowledgement/);
-	});
-
-	test("N2 nominates work completed after a mid-prompt admission acknowledgement", async () => {
+	test("S1 nominates a deliverable completed directly after an active-stage admission", async () => {
 		await assertNominationScenario(
-			[assistantTurn("intro"), admittedTurn(), assistantTurn("ACK"), assistantTurn("REAL DELIVERABLE")],
+			[assistantTurn("INTRO"), admittedTurn("subagent:job-1", "active-stage"), assistantTurn("REAL DELIVERABLE")],
 			"REAL DELIVERABLE",
 		);
 	});
 
-	test("N3 nominates the report between two admitted completion acknowledgements", async () => {
+	test("S2 nominates a deliverable after tool output and an active-stage admission", async () => {
 		await assertNominationScenario(
 			[
-				assistantTurn("intro"),
-				admittedTurn("subagent:job-1"),
-				assistantTurn("REPORT"),
-				admittedTurn("subagent:job-2"),
-				assistantTurn("ACK"),
+				assistantTurn("INTRO", "toolUse"),
+				toolResultTurn(),
+				admittedTurn("subagent:job-1", "active-stage"),
+				assistantTurn("REAL DELIVERABLE"),
 			],
-			"REPORT",
+			"REAL DELIVERABLE",
 		);
 	});
 
-	test("N4 nominates work after an admitted acknowledgement and tool result", async () => {
+	test("S3 nominates the final work after two active-stage admissions", async () => {
 		await assertNominationScenario(
 			[
-				assistantTurn("intro"),
-				admittedTurn(),
+				assistantTurn("INTRO"),
+				admittedTurn("subagent:job-1", "active-stage"),
+				assistantTurn("mid"),
+				admittedTurn("subagent:job-2", "active-stage"),
+				assistantTurn("REAL DELIVERABLE"),
+			],
+			"REAL DELIVERABLE",
+		);
+	});
+
+	test("S4/N2 nominates work completed after an active-stage admission acknowledgement", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("INTRO"),
+				admittedTurn("subagent:job-1", "active-stage"),
 				assistantTurn("ACK"),
+				assistantTurn("REAL DELIVERABLE"),
+			],
+			"REAL DELIVERABLE",
+		);
+	});
+
+	test("S5/N4 nominates work after an active-stage acknowledgement and tool result", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("INTRO"),
+				admittedTurn("subagent:job-1", "active-stage"),
+				assistantTurn("ACK", "toolUse"),
 				toolResultTurn(),
 				assistantTurn("REAL DELIVERABLE"),
 			],
@@ -410,8 +456,92 @@ describe("createStageContext — prompt metadata propagation", () => {
 		);
 	});
 
-	test("N7 falls back to the first assistant response when there is no preamble", async () => {
-		await assertNominationScenario([admittedTurn(), assistantTurn("REAL DELIVERABLE")], "REAL DELIVERABLE");
+	test("S6/N7 nominates the first assistant response when admission precedes all assistant work", async () => {
+		await assertNominationScenario(
+			[admittedTurn("subagent:job-1", "active-stage"), assistantTurn("REAL DELIVERABLE")],
+			"REAL DELIVERABLE",
+		);
+	});
+
+	test("S7/N3 nominates the report before a settled-assistant admission acknowledgement", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("INTRO"),
+				admittedTurn("subagent:job-1", "active-stage"),
+				assistantTurn("REPORT"),
+				admittedTurn("subagent:job-2", "assistant-settled"),
+				assistantTurn("ACK"),
+			],
+			"REPORT",
+		);
+	});
+
+	test("S8/N6 uses the last assistant response when there is no admission", async () => {
+		await assertNominationScenario([assistantTurn("A"), assistantTurn("B")], "B");
+	});
+
+	test("S9 excludes the response to one settled-assistant admission", async () => {
+		const transcript = await assertNominationScenario(
+			[assistantTurn("REAL DELIVERABLE"), admittedTurn("subagent:job-1", "assistant-settled"), assistantTurn("ACK")],
+			"REAL DELIVERABLE",
+		);
+		assert.match(transcript, /subagent-notify/);
+		assert.match(transcript, /async result details/);
+		assert.match(transcript, /ACK/);
+	});
+
+	test("S10 excludes acknowledgements to two settled-assistant admissions", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("REAL DELIVERABLE"),
+				admittedTurn("subagent:job-1", "assistant-settled"),
+				assistantTurn("ACK1"),
+				admittedTurn("subagent:job-2", "assistant-settled"),
+				assistantTurn("ACK2"),
+			],
+			"REAL DELIVERABLE",
+		);
+	});
+
+	test("S11 excludes a multi-turn response to a settled-assistant admission", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("REAL DELIVERABLE"),
+				admittedTurn("subagent:job-1", "assistant-settled"),
+				assistantTurn("ACK1", "toolUse"),
+				toolResultTurn(),
+				assistantTurn("ACK2"),
+			],
+			"REAL DELIVERABLE",
+		);
+	});
+
+	test("S12 excludes a tool-calling response to a settled-assistant admission", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("REAL DELIVERABLE"),
+				admittedTurn("subagent:job-1", "assistant-settled"),
+				assistantToolCallTurn(),
+				toolResultTurn(),
+				assistantTurn("ACK"),
+			],
+			"REAL DELIVERABLE",
+		);
+	});
+
+	test("S13 excludes all three admitted acknowledgement turns", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("REAL DELIVERABLE"),
+				admittedTurn("subagent:job-1", "assistant-settled"),
+				assistantTurn("ACK1"),
+				admittedTurn("subagent:job-2", "assistant-settled"),
+				assistantTurn("ACK2"),
+				admittedTurn("subagent:job-3", "assistant-settled"),
+				assistantTurn("ACK3"),
+			],
+			"REAL DELIVERABLE",
+		);
 	});
 
 	test("N5 legacy external turns keep the previous end-to-end last-message behavior", async () => {
@@ -425,8 +555,11 @@ describe("createStageContext — prompt metadata propagation", () => {
 		);
 	});
 
-	test("N6 uses the last assistant response when there is no admission", async () => {
-		await assertNominationScenario([assistantTurn("A"), assistantTurn("B")], "B");
+	test("N8 admitted legacy messages without provenance preserve origin/main latest-assistant behavior", async () => {
+		await assertNominationScenario(
+			[assistantTurn("INTRO"), admittedTurn("subagent:legacy"), assistantTurn("REAL DELIVERABLE")],
+			"REAL DELIVERABLE",
+		);
 	});
 
 	test("warns for empty and self-pointer artifacts but accepts short real output", async () => {
