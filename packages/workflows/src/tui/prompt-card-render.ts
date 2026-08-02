@@ -57,7 +57,7 @@ export function renderPromptIdentityBanner(identity: PromptCardIdentity, theme: 
 	];
 }
 
-function renderPromptRunIdBanner(identity: PromptCardIdentity, theme: GraphTheme, width: number): string[] {
+export function renderPromptRunIdBanner(identity: PromptCardIdentity, theme: GraphTheme, width: number): string[] {
 	const banner = renderPromptIdentityBanner(identity, theme, width);
 	// The canonical identity renderer appends the workflow-name row last, after
 	// every wrapped run-id row. Remove only that row for the middle ladder rung.

@@ -2,7 +2,12 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
-import { type PromptCardLayout, renderPromptCardLayout, renderPromptIdentityBanner } from "./prompt-card-render.js";
+import {
+	type PromptCardLayout,
+	renderPromptCardLayout,
+	renderPromptIdentityBanner,
+	renderPromptRunIdBanner,
+} from "./prompt-card-render.js";
 import { bannerLines, embedOrchestratorReturnHintInWidget } from "./stage-chat-view-footer-status.js";
 import {
 	blankLine,
@@ -257,7 +262,6 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, bud
 	const editorLines = editor.render(Math.max(20, innerWidth - 4)).map((line) => `  ${line}`);
 	const hintLines = new Text(renderHintsForPrompt(state.prompt.kind, ctx.theme), 2, 0).render(innerWidth);
 	const identity = { runId: ctx.runId, name: ctx.workflowName };
-	const banner = renderPromptIdentityBanner(identity, ctx.theme, width);
 	const unattributed = renderPrimitivePromptBlockLayout(
 		ctx,
 		width,
@@ -268,30 +272,40 @@ function renderPrimitivePromptBody(ctx: StageChatViewContext, width: number, bud
 		editorLines,
 		hintLines,
 	);
-	const promptBudget = Math.max(0, budget - banner.length);
-	const attributed = renderPrimitivePromptBlockLayout(
-		ctx,
-		width,
-		promptBudget,
-		"",
-		messageLines,
-		responseLines,
-		editorLines,
-		hintLines,
-	);
 	const minimumPromptRows = 2 + editorLines.length + hintLines.length + (messageLines.length > 0 ? 1 : 0);
-	if (
-		banner.length + minimumPromptRows > budget ||
-		attributed.visibleQuestionRows === 0 ||
-		attributed.visibleQuestionRows < unattributed.visibleQuestionRows
-	) {
-		return unattributed;
+	// Same degradation ladder as the standard prompt surface: two identity rows,
+	// then the run id alone, then no banner. The middle rung matters most here,
+	// because the editor and hint rows leave the least room for attribution.
+	const banners = [
+		renderPromptIdentityBanner(identity, ctx.theme, width),
+		renderPromptRunIdBanner(identity, ctx.theme, width),
+	];
+	for (const banner of banners) {
+		const promptBudget = Math.max(0, budget - banner.length);
+		const attributed = renderPrimitivePromptBlockLayout(
+			ctx,
+			width,
+			promptBudget,
+			"",
+			messageLines,
+			responseLines,
+			editorLines,
+			hintLines,
+		);
+		if (
+			banner.length + minimumPromptRows > budget ||
+			attributed.visibleQuestionRows === 0 ||
+			attributed.visibleQuestionRows < unattributed.visibleQuestionRows
+		) {
+			continue;
+		}
+		return {
+			lines: [...banner, ...attributed.lines],
+			totalQuestionRows: attributed.totalQuestionRows,
+			visibleQuestionRows: attributed.visibleQuestionRows,
+		};
 	}
-	return {
-		lines: [...banner, ...attributed.lines],
-		totalQuestionRows: attributed.totalQuestionRows,
-		visibleQuestionRows: attributed.visibleQuestionRows,
-	};
+	return unattributed;
 }
 
 function renderPrimitivePromptBlockLayout(

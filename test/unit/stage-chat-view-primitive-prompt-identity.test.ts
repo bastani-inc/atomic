@@ -122,9 +122,21 @@ test("primitive prompt row budgets emit only complete attribution and editor box
 				assert.ok(rendered.includes("Budgeted question"), `${kind} question must remain below a compact banner`);
 				assert.ok(rendered.includes("fake-pi-editor:"), `${kind} editor must remain below a compact banner`);
 			}
+			// The primitive path degrades through the same three rungs as the standard
+			// prompt surface. Row 10 is the middle rung, which this path was missing:
+			// the run id survives alone once both identity rows no longer fit.
 			if (viewportRows === 10) {
-				assert.doesNotMatch(rendered, new RegExp(RUN_ID), `${kind} must omit attribution at smaller heights`);
+				assert.ok(rendered.includes(RUN_ID), `${kind} must keep the run id on the middle rung`);
 				assert.match(rendered, /╭ AWAITING INPUT /, `${kind} must retain the complete interactive prompt box`);
+				assert.ok(rendered.includes("Budgeted question"), `${kind} question must survive banner degradation`);
+				assert.ok(rendered.includes("fake-pi-editor:"), `${kind} editor must survive banner degradation`);
+			}
+			if (viewportRows === 9) {
+				assert.doesNotMatch(
+					rendered,
+					new RegExp(RUN_ID),
+					`${kind} must drop attribution entirely below the middle rung`,
+				);
 				assert.ok(rendered.includes("Budgeted question"), `${kind} question must survive attribution omission`);
 				assert.ok(rendered.includes("fake-pi-editor:"), `${kind} editor must survive attribution omission`);
 			}
