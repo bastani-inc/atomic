@@ -89,6 +89,7 @@ function renderPromptBodyBlock(
 	if (maxRows !== undefined && maxRows < MIN_COMPLETE_PROMPT_ROWS) return [];
 	const messageRows = wrapText(state.prompt.message, innerWidth - 4);
 	const desiredResponseRows = responseRowCount(state);
+	const minimumResponseRows = minimumResponseRowCount(state);
 	const normallySpaced = maxRows === undefined || maxRows >= LEGACY_PROMPT_ROWS;
 	let messageCount = messageRows.length;
 	let responseCount = desiredResponseRows;
@@ -97,8 +98,11 @@ function renderPromptBodyBlock(
 		// response top/bottom + hints. Normally spaced cards add three blanks.
 		const fixedRows = 5 + (normallySpaced ? 3 : 0);
 		const variableBudget = Math.max(1, maxRows - fixedRows);
-		messageCount = variableBudget >= 2 ? 1 : 0;
-		responseCount = 1;
+		// A scrolling select needs one choice plus SelectList's scroll-info row.
+		// If both cannot fit, emit no card rather than a box with missing content.
+		if (variableBudget < minimumResponseRows) return [];
+		messageCount = variableBudget >= minimumResponseRows + 1 ? 1 : 0;
+		responseCount = minimumResponseRows;
 		let remaining = variableBudget - messageCount - responseCount;
 		const responseExtra = Math.min(remaining, Math.max(0, desiredResponseRows - responseCount));
 		responseCount += responseExtra;
@@ -151,13 +155,20 @@ function wrapText(text: string, width: number): string[] {
 
 function responseRowCount(state: PromptCardState): number {
 	switch (state.prompt.kind) {
-		case "select":
-			return Math.max(1, Math.min(5, state.prompt.choices?.length ?? 0));
+		case "select": {
+			const choiceCount = state.prompt.choices?.length ?? 0;
+			const visibleChoices = Math.max(1, Math.min(5, choiceCount));
+			return visibleChoices + (choiceCount > visibleChoices ? 1 : 0);
+		}
 		case "editor":
 			return 6;
 		default:
 			return 1;
 	}
+}
+
+function minimumResponseRowCount(state: PromptCardState): number {
+	return state.prompt.kind === "select" && (state.prompt.choices?.length ?? 0) > 1 ? 2 : 1;
 }
 
 function renderResponseFieldBox(
@@ -228,7 +239,9 @@ function renderSelectRows(state: PromptCardState, theme: GraphTheme, usable: num
 	if (choices.length === 0) {
 		return [padToUsable(paint("(no choices)", theme.dim), usable)];
 	}
-	const maxVisible = Math.max(1, Math.min(5, choices.length, Math.floor(maxRows)));
+	const rowBudget = Math.max(1, Math.floor(maxRows));
+	const scrolls = choices.length > Math.min(5, rowBudget);
+	const maxVisible = Math.max(1, Math.min(5, choices.length, rowBudget - (scrolls ? 1 : 0)));
 	const list = createPromptSelectList(state, theme, maxVisible);
 	return list.render(usable).map((line) => padToUsable(line, usable));
 }

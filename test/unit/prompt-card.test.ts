@@ -246,6 +246,31 @@ describe("renderPromptCard", () => {
 		}
 	});
 
+	test("never emits more complete rows than the caller's budget for any prompt kind", () => {
+		const kinds: PendingPrompt["kind"][] = ["input", "confirm", "select", "editor"];
+		for (const kind of kinds) {
+			for (const choiceCount of [2, 3, 5, 8]) {
+				const choices = Array.from({ length: choiceCount }, (_, index) => `choice-${index + 1}`);
+				const state = createPromptCardState(
+					makePrompt({
+						kind,
+						choices: kind === "select" ? choices : undefined,
+						initial: kind === "editor" ? "first\nsecond\nthird" : undefined,
+					}),
+				);
+				for (let width = 40; width <= 100; width += 2) {
+					for (let maxRows = 1; maxRows <= 30; maxRows++) {
+						const lines = renderPromptCard({ state, theme, width, cursorOn: false, maxRows });
+						assert.ok(
+							lines.length <= maxRows,
+							`kind=${kind} choices=${choiceCount} width=${width} maxRows=${maxRows} emitted=${lines.length}`,
+						);
+					}
+				}
+			}
+		}
+	});
+
 	test("includes the prompt message in the rendered text", () => {
 		const state = createPromptCardState(makePrompt({ message: "UNIQUE-MARKER-XYZ" }));
 		const lines = renderPromptCard({ state, theme, width: 60, cursorOn: false });

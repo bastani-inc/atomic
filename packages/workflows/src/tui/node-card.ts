@@ -150,7 +150,7 @@ function workflowChildMetaText(stage: StageSnapshot): string | undefined {
 
 function joinCompactStatusMeta(status: string, meta: string, width: number): string {
 	const candidates = [`${status} · ${meta}`, `${status} ·${meta}`, `${status}· ${meta}`, `${status}·${meta}`];
-	return candidates.find((candidate) => visibleWidth(candidate) <= width) ?? candidates[candidates.length - 1]!;
+	return candidates.find((candidate) => visibleWidth(candidate) <= width) ?? meta;
 }
 
 function statusLabel(status: StageStatus): string {

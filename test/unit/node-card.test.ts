@@ -22,6 +22,7 @@ import { hexBg, hexToAnsi } from "../../packages/workflows/src/tui/color-utils.j
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
+import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -35,6 +36,8 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
 		status: opts.status ?? ("pending" as StageStatus),
 		parentIds: opts.parentIds ?? [],
 		topologyState: opts.topologyState,
+		nodeKind: opts.nodeKind,
+		toolStatus: opts.toolStatus,
 		toolEvents: opts.toolEvents ?? [],
 		durationMs: opts.durationMs,
 		pausedDurationMs: opts.pausedDurationMs,
@@ -155,6 +158,61 @@ describe("renderNodeCard — queued-message badge", () => {
 			assert.doesNotMatch(stripAnsi(lines.join("\n")), /queued/, `count ${String(queuedMessageCount)}`);
 			assert.equal(lines.length, NODE_H);
 			for (const line of lines) assert.equal(stripAnsi(line).length, NODE_W);
+		}
+	});
+	test("keeps every child-run queued badge whole for long status labels at the real geometry", () => {
+		const runId = "339e05a4-2289-408e-9076-d1a348f582ae";
+		const statuses: Array<{
+			label: string;
+			stage: Partial<StageSnapshot>;
+			expectedStatusText: string;
+		}> = [
+			{
+				label: "cancelled",
+				stage: { status: "skipped", nodeKind: "tool", toolStatus: "cancelled" },
+				expectedStatusText: `${statusIcon("cancelled")} cancelled`,
+			},
+			{
+				label: "complete",
+				stage: {
+					status: "completed",
+					durationMs: 1,
+					workflowChild: {
+						alias: "child",
+						workflow: "publish-child",
+						runId,
+						status: "completed",
+						outputs: { artifact: "ready" },
+					},
+				},
+				expectedStatusText: `${statusIcon("completed")} complete`,
+			},
+			{
+				label: "running",
+				stage: { status: "running", startedAt: 1 },
+				expectedStatusText: `${statusIcon("running")} running`,
+			},
+		];
+
+		for (const { label, stage, expectedStatusText } of statuses) {
+			for (const queuedMessageCount of [1, 12, 100]) {
+				const lines = renderNodeCard(
+					makeStage({
+						...stage,
+						workflowChildRun: { alias: "child", workflow: "publish-child", runId },
+					}),
+					{ theme, width: 24, height: 5, queuedMessageCount },
+				);
+				const plainLines = lines.map(stripAnsi);
+				const rendered = plainLines.join("\n");
+				const context = `${label} queuedMessageCount=${queuedMessageCount}`;
+
+				assert.equal(lines.length, 5, context);
+				for (const line of plainLines) assert.equal(line.length, 24, context);
+				assert.match(rendered, new RegExp(`${queuedMessageCount} queued`), context);
+				assert.doesNotMatch(rendered, /…/, context);
+				if (queuedMessageCount === 1) assert.match(rendered, new RegExp(expectedStatusText), context);
+			}
 		}
 	});
 });

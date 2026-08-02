@@ -157,7 +157,11 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			maxRows: bodyTarget,
 		});
 		const bodyStart = 3;
+		const bodyEnd = bodyStart + bodyTarget;
 		const slot = Math.max(bodyStart, bodyStart + Math.floor((bodyTarget - cardLines.length) / 2));
+		// The card renderer owns row budgeting, but keep this composition boundary
+		// defensive: a complete card fits wholly in the body or is not painted.
+		if (cardLines.length > bodyTarget || slot + cardLines.length > bodyEnd) return;
 		const leftPad = Math.max(0, Math.floor((frameWidth - cardWidth) / 2));
 		for (let i = 0; i < cardLines.length; i++) {
 			const lineIdx = slot + i;

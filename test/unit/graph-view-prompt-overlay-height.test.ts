@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { PendingPrompt, RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { ANSI_RE, defaultTheme, makePendingPrompt, makeRunPromptSnap, makeStore } from "./overlay-graph-helpers.js";
 
 const RUN_ID = "339e05a4-2289-408e-9076-d1a348f582ae";
 
-function renderPromptOverlay(viewportRows: number): string[] {
-	const snapshot = makeRunPromptSnap([], makePendingPrompt({ message: "Continue?" }));
+function renderPromptOverlay(viewportRows: number, prompt = makePendingPrompt({ message: "Continue?" })): string[] {
+	const snapshot = makeRunPromptSnap([], prompt);
 	const run: RunSnapshot = { ...snapshot.runs[0]!, id: RUN_ID, name: "build-check" };
 	const view = new GraphView({
 		mode: "overlay",
@@ -24,6 +24,61 @@ function renderPromptOverlay(viewportRows: number): string[] {
 
 function stripAnsi(line: string): string {
 	return line.replace(ANSI_RE, "");
+}
+
+function assertRoundedBoxesClosed(plain: string[], context: string): void {
+	const openBoxes: Array<{ left: number; width: number }> = [];
+	for (const line of plain) {
+		for (let column = 0; column < line.length; column++) {
+			if (line[column] === "╭") {
+				const right = line.indexOf("╮", column + 1);
+				assert.ok(right > column, `${context} has an open top border`);
+				openBoxes.push({ left: column, width: right - column });
+			}
+			if (line[column] === "╰") {
+				const openBox = openBoxes.pop();
+				const right = line.indexOf("╯", column + 1);
+				assert.ok(openBox, `${context} closes a box before one is open`);
+				assert.equal(column, openBox.left, `${context} shifts a box's bottom border`);
+				assert.equal(right - column, openBox.width, `${context} changes a box's bottom width`);
+			}
+		}
+	}
+	assert.equal(openBoxes.length, 0, `${context} leaves a box unclosed\n${plain.join("\n")}`);
+}
+
+function assertGraphFooterAtBodyBoundary(plain: string[], viewportRows: number, context: string): void {
+	const marginRows = viewportRows >= 9 ? 1 : 0;
+	const footerStart = viewportRows - marginRows - 3;
+	assert.match(plain[footerStart]!, /╭─+╮/, `${context} is missing the GRAPH footer top border`);
+	assert.match(plain[footerStart + 1]!, /│ GRAPH │/, `${context} is missing the GRAPH footer label`);
+	assert.match(plain[footerStart + 2]!, /╰─+╯/, `${context} is missing the GRAPH footer bottom border`);
+	for (const line of plain.slice(footerStart + 3)) {
+		assert.equal(line.trim(), "", `${context} painted past the panel body/status region`);
+	}
+}
+
+function promptCases(): Array<{ label: string; prompt: PendingPrompt }> {
+	const cases: Array<{ label: string; prompt: PendingPrompt }> = [
+		{ label: "input", prompt: makePendingPrompt({ kind: "input", message: "Continue?" }) },
+		{ label: "confirm", prompt: makePendingPrompt({ kind: "confirm", message: "Continue?" }) },
+		{
+			label: "editor",
+			prompt: makePendingPrompt({ kind: "editor", message: "Explain the decision", initial: "first\nsecond" }),
+		},
+	];
+	for (const choiceCount of [2, 3, 5, 6, 8]) {
+		const choices = Array.from({ length: choiceCount }, (_, index) =>
+			choiceCount === 8 && index === 0
+				? "A deliberately long option label that must remain width-safe while the select list scrolls"
+				: `choice-${index + 1}`,
+		);
+		cases.push({
+			label: `select choices=${choiceCount}${choiceCount === 8 ? " long-label" : ""}`,
+			prompt: makePendingPrompt({ kind: "select", message: "Choose one", choices }),
+		});
+	}
+	return cases;
 }
 
 describe("GraphView prompt overlay height budget", () => {
@@ -57,6 +112,21 @@ describe("GraphView prompt overlay height budget", () => {
 			assert.match(plain.join("\n"), /enter Submit · ctrl\+c Skip/, `viewportRows=${viewportRows}`);
 			assert.equal(lines.length, viewportRows);
 			for (const line of lines) assert.equal(visibleWidth(line), 96, `viewportRows=${viewportRows}`);
+		}
+	});
+
+	test("keeps the graph footer and every prompt box closed for every prompt kind across viewport heights", () => {
+		for (const { label, prompt } of promptCases()) {
+			for (let viewportRows = 8; viewportRows <= 40; viewportRows++) {
+				const context = `${label} viewportRows=${viewportRows}`;
+				const lines = renderPromptOverlay(viewportRows, prompt);
+				const plain = lines.map(stripAnsi);
+
+				assertRoundedBoxesClosed(plain, context);
+				assertGraphFooterAtBodyBoundary(plain, viewportRows, context);
+				assert.equal(lines.length, viewportRows, context);
+				for (const line of lines) assert.equal(visibleWidth(line), 96, context);
+			}
 		}
 	});
 
