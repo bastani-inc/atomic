@@ -15,6 +15,7 @@
 - Fixed the workflow resume picker offering stale or non-resumable runs. Picker and command paths now share one resumability predicate and revalidate durable state before displaying a target, while explicit ids retain their explanatory rejection.
 - Fixed workflow `reads:` references to fail loudly when an artifact path no longer exists instead of handing the model an empty, silently missing context file.
 - Fixed relayed terminal subagent results retaining their stable stage-admission identity when delivered through the intercom ordering barrier, preventing an acknowledgement turn from clobbering a running stage's nominated `output:` artifact.
+- Fixed workflow stage output nomination dropping deliverables produced after a mid-prompt admitted completion; nomination now ignores only the immediate acknowledgement after the last admission and retains subsequent stage work.
 
 ### Added
 

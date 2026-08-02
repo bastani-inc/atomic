@@ -20,6 +20,59 @@ import {
 	tmpdir,
 } from "./stage-runner-helpers.js";
 
+type SessionMessage = AgentSession["messages"][number];
+
+function assistantTurn(text: string): SessionMessage {
+	return { role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() } as SessionMessage;
+}
+
+function admittedTurn(stageAdmissionKey = "subagent:job-1"): SessionMessage {
+	return {
+		role: "custom",
+		customType: "subagent-notify",
+		stageAdmissionKey,
+		content: "async result details",
+		display: true,
+		timestamp: Date.now(),
+	} as SessionMessage;
+}
+
+function toolResultTurn(): SessionMessage {
+	return { role: "toolResult", toolCallId: "t", toolName: "t", content: [], isError: false, timestamp: Date.now() };
+}
+
+async function assertNominationScenario(scenario: readonly SessionMessage[], expected: string): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-nomination-"));
+	let transcriptPath: string | undefined;
+	try {
+		const output = join(dir, "deliverable.md");
+		const messages = [assistantTurn("PREVIOUS PROMPT")] as AgentSession["messages"];
+		const { session } = makeMockSession({
+			messages,
+			getLastAssistantText: () => expected,
+			async prompt() {
+				messages.push(...scenario);
+			},
+		});
+		const ctx = createStageContext(makeOpts({ adapters: { agentSession: { create: async () => session } } }));
+		const result = await ctx.prompt("go", { output, outputMode: "file-only" });
+		assert.equal(await readFile(output, "utf8"), expected);
+		const directMessages = [assistantTurn("PREVIOUS PROMPT"), ...scenario] as AgentSession["messages"];
+		const { session: directSession } = makeMockSession({
+			messages: directMessages,
+			getLastAssistantText: () => expected,
+		});
+		assert.equal(lastAssistantTextFromSession(directSession, "fallback", new Set<string>(), 1), expected);
+		const transcriptMatch = result.match(/Transcript saved to: ([^ ]+) \(/);
+		assert.ok(transcriptMatch?.[1]);
+		transcriptPath = transcriptMatch[1];
+		return await readFile(transcriptPath, "utf8");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+		if (transcriptPath) await rm(transcriptPath, { force: true });
+	}
+}
+
 describe("createStageContext — prompt metadata propagation", () => {
 	test("prompt adapter receives runId from opts", async () => {
 		const received: StageExecutionMeta[] = [];
@@ -274,61 +327,65 @@ describe("createStageContext — prompt metadata propagation", () => {
 	});
 
 	test("admitted external turns stay visible but cannot replace the stage deliverable", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "pi-workflows-stage-nomination-"));
-		let transcriptPath: string | undefined;
-		try {
-			const output = join(dir, "deliverable.md");
-			const messages = [] as AgentSession["messages"];
-			const { session } = makeMockSession({
-				messages,
-				getLastAssistantText() {
-					return "async acknowledgement";
-				},
-				async prompt() {
-					messages.push({
-						role: "assistant",
-						content: [{ type: "text", text: "REAL DELIVERABLE" }],
-						timestamp: Date.now(),
-					} as AgentSession["messages"][number]);
-					messages.push({
-						role: "custom",
-						customType: "subagent-notify",
-						stageAdmissionKey: "subagent:job-1",
-						content: "async result details",
-						display: true,
-						timestamp: Date.now(),
-					} as AgentSession["messages"][number]);
-					messages.push({
-						role: "assistant",
-						content: [{ type: "text", text: "async acknowledgement" }],
-						timestamp: Date.now(),
-					} as AgentSession["messages"][number]);
-				},
-			});
-			const ctx = createStageContext(
-				makeOpts({
-					adapters: {
-						agentSession: {
-							async create() {
-								return session;
-							},
-						},
-					},
-				}),
-			);
-			const result = await ctx.prompt("go", { output, outputMode: "file-only" });
-			assert.equal(await readFile(output, "utf8"), "REAL DELIVERABLE");
-			const transcriptMatch = result.match(/Transcript saved to: ([^ ]+) \(/);
-			assert.ok(transcriptMatch?.[1]);
-			transcriptPath = transcriptMatch[1];
-			const transcript = await readFile(transcriptPath, "utf8");
-			assert.match(transcript, /subagent-notify/);
-			assert.match(transcript, /async result details/);
-			assert.match(transcript, /async acknowledgement/);
-		} finally {
-			await rm(dir, { recursive: true, force: true });
-			if (transcriptPath) await rm(transcriptPath, { force: true });
-		}
+		const transcript = await assertNominationScenario(
+			[assistantTurn("REAL DELIVERABLE"), admittedTurn(), assistantTurn("async acknowledgement")],
+			"REAL DELIVERABLE",
+		);
+		assert.match(transcript, /subagent-notify/);
+		assert.match(transcript, /async result details/);
+		assert.match(transcript, /async acknowledgement/);
+	});
+
+	test("N2 nominates work completed after a mid-prompt admission acknowledgement", async () => {
+		await assertNominationScenario(
+			[assistantTurn("intro"), admittedTurn(), assistantTurn("ACK"), assistantTurn("REAL DELIVERABLE")],
+			"REAL DELIVERABLE",
+		);
+	});
+
+	test("N3 nominates the report between two admitted completion acknowledgements", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("intro"),
+				admittedTurn("subagent:job-1"),
+				assistantTurn("REPORT"),
+				admittedTurn("subagent:job-2"),
+				assistantTurn("ACK"),
+			],
+			"REPORT",
+		);
+	});
+
+	test("N4 nominates work after an admitted acknowledgement and tool result", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("intro"),
+				admittedTurn(),
+				assistantTurn("ACK"),
+				toolResultTurn(),
+				assistantTurn("REAL DELIVERABLE"),
+			],
+			"REAL DELIVERABLE",
+		);
+	});
+
+	test("N7 falls back to the first assistant response when there is no preamble", async () => {
+		await assertNominationScenario([admittedTurn(), assistantTurn("REAL DELIVERABLE")], "REAL DELIVERABLE");
+	});
+
+	test("N5 legacy external turns keep the previous end-to-end last-message behavior", async () => {
+		await assertNominationScenario(
+			[
+				assistantTurn("REAL DELIVERABLE"),
+				{ role: "custom", customType: "subagent-notify", content: "legacy notification" } as SessionMessage,
+				assistantTurn("legacy acknowledgement"),
+			],
+			"legacy acknowledgement",
+		);
+	});
+
+	test("N6 uses the last assistant response when there is no admission", async () => {
+		await assertNominationScenario([assistantTurn("A"), assistantTurn("B")], "B");
 	});
 
 	test("warns for empty and self-pointer artifacts but accepts short real output", async () => {
@@ -440,7 +497,3 @@ describe("createStageContext — prompt metadata propagation", () => {
 		}
 	});
 });
-
-// ---------------------------------------------------------------------------
-// complete — metadata propagation + CompleteStageOpts preservation
-// ---------------------------------------------------------------------------

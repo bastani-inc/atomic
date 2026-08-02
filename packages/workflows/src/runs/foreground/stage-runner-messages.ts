@@ -23,18 +23,31 @@ function isAdmittedExternalMessage(message: AgentSession["messages"][number]): b
 	);
 }
 
-/** Return the stage-owned assistant text before the first admitted external message in this prompt. */
+/**
+ * A steer admission prompts one immediate assistant acknowledgement; a later assistant turn means the stage kept
+ * working after that acknowledgement. Skip only the turn directly after the last admission, then nominate the latest
+ * remaining stage work. If nothing remains, the caller preserves its existing last-message fallback.
+ */
 function nominatedAssistantText(messages: AgentSession["messages"], startIndex = 0): string | undefined {
-	let nominated: string | undefined;
-	for (let index = Math.max(0, startIndex); index < messages.length; index += 1) {
+	const firstIndex = Math.max(0, startIndex);
+	let lastAdmissionIndex: number | undefined;
+	for (let index = messages.length - 1; index >= firstIndex; index -= 1) {
 		const message = messages[index];
-		if (!message) continue;
-		if (isAdmittedExternalMessage(message)) return nominated;
-		if (message.role !== "assistant") continue;
-		const text = extractMessageText(message).trim();
-		if (text) nominated = text;
+		if (message && isAdmittedExternalMessage(message)) {
+			lastAdmissionIndex = index;
+			break;
+		}
 	}
-	return nominated;
+	if (lastAdmissionIndex === undefined) return undefined;
+
+	const acknowledgementIndex = lastAdmissionIndex + 1;
+	for (let index = messages.length - 1; index >= firstIndex; index -= 1) {
+		const message = messages[index];
+		if (index === acknowledgementIndex || message?.role !== "assistant") continue;
+		const text = extractMessageText(message).trim();
+		if (text) return text;
+	}
+	return undefined;
 }
 
 export function extractMessageText(message: AgentSession["messages"][number]): string {
