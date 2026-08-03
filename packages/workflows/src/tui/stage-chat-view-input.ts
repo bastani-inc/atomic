@@ -56,7 +56,7 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 			return ctx.chatHost.handleInput(data);
 		}
 		if (isAbortableStreamingSession(ctx)) {
-			void ctx.chatHost.interrupt();
+			void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
 			return true;
 		}
 		ctx.onClose();

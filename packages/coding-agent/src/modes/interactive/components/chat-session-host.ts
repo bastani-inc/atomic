@@ -172,8 +172,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return handleChatSessionInput(this.state, data, this.editorCallbacks());
 	}
 
-	async interrupt(): Promise<void> {
-		await interruptChatSession(this.state);
+	async interrupt(options?: { restoreQueuedMessages?: boolean }): Promise<void> {
+		await interruptChatSession(this.state, options);
 	}
 
 	async submit(mode: ChatSessionSubmitMode = "auto", submittedText?: string): Promise<void> {
@@ -271,14 +271,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		submit: (mode: "auto" | "followUp", submittedText?: string) => void | Promise<void>;
 		restoreQueuedMessagesToEditor: () => boolean;
 		abortCompaction: () => void | Promise<void>;
-		interrupt: () => void | Promise<void>;
+		interrupt: (options?: { restoreQueuedMessages?: boolean }) => void | Promise<void>;
 		abortBash: () => void | Promise<void>;
 	} {
 		return {
 			submit: (mode, submittedText) => this.submit(mode, submittedText),
 			restoreQueuedMessagesToEditor: () => this.restoreQueuedMessagesToEditor(),
 			abortCompaction: () => abortChatSessionCompaction(this.state),
-			interrupt: () => this.interrupt(),
+			interrupt: (options) => this.interrupt(options),
 			abortBash: () => abortChatSessionBash(this.state),
 		};
 	}

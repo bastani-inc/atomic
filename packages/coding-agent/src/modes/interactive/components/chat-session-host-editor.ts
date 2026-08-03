@@ -16,7 +16,7 @@ export interface ChatSessionEditorCallbacks {
 	submit: (mode: ChatSessionSubmitMode, submittedText?: string) => void | Promise<void>;
 	restoreQueuedMessagesToEditor: () => boolean;
 	abortCompaction: () => void | Promise<void>;
-	interrupt: () => void | Promise<void>;
+	interrupt: (options?: { restoreQueuedMessages?: boolean }) => void | Promise<void>;
 	abortBash: () => void | Promise<void>;
 }
 
@@ -77,7 +77,7 @@ export function createChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 			return;
 		}
 		if (isChatSessionStreaming(state)) {
-			void callbacks.interrupt();
+			void callbacks.interrupt({ restoreQueuedMessages: true });
 			return;
 		}
 		if (isChatSessionBashRunning(state)) {
@@ -114,7 +114,7 @@ export function handleChatSessionInput<TExtraEntry extends ChatTranscriptEntryLi
 			return true;
 		}
 		if (isChatSessionStreaming(state)) {
-			void callbacks.interrupt();
+			void callbacks.interrupt({ restoreQueuedMessages: true });
 			return true;
 		}
 		if (isChatSessionBashRunning(state)) {
