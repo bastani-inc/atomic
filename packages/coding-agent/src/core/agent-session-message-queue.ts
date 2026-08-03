@@ -3,11 +3,15 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
 import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { restoreProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
+import {
+	isProtectedStreamingCustomMessage,
+	restoreProtectedStreamingCustomMessages,
+} from "./agent-session-persistent-custom-messages.ts";
 import { abort, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
 import { transferWorkflowStageDeliveriesTo } from "./agent-session-transfer.ts";
 import {
 	type AgentQueueAccess,
+	type ClearQueueOptions,
 	customMessageExcludesContext,
 	type DrainedAgentQueues,
 	drainAgentMessageQueue,
@@ -341,26 +345,47 @@ export function _restoreQueuedAgentMessages(this: AgentSession, queues: DrainedA
 	}
 }
 /**
- * Send a user message to the agent. Always triggers a turn.
- * When the agent is streaming, use deliverAs to specify how to queue the message.
- *
- * @param content User message content (string or content array)
- * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
+ * Clear queued text for editor restoration while retaining optional raw custom entries.
  */
-export function clearQueue(this: AgentSession): { steering: string[]; followUp: string[] } {
+export function clearQueue(
+	this: AgentSession,
+	options?: ClearQueueOptions,
+): { steering: string[]; followUp: string[] } {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.clearQueue();
+	if (owner !== this) return owner.clearQueue(options);
 	const steering = [...this._steeringMessages];
 	const followUp = [...this._followUpMessages];
 	this._steeringMessages = [];
 	this._followUpMessages = [];
 	const removed = this._drainQueuedAgentMessages();
-	if (this._activeInterruptQueueHold !== undefined) {
-		removed.steering.push(...this._activeInterruptQueueHold.steering.splice(0));
-		removed.followUp.push(...this._activeInterruptQueueHold.followUp.splice(0));
+	const hold = this._activeInterruptQueueHold;
+	if (hold !== undefined) {
+		removed.steering.push(...hold.steering.splice(0));
+		removed.followUp.push(...hold.followUp.splice(0));
 	}
 	restoreProtectedStreamingCustomMessages(this, removed);
-	const hold = this._activeInterruptQueueHold;
+	if (options?.preserveUnprotectedCustomMessages && hold !== undefined) {
+		const restoreUnprotectedCustomMessages = (
+			removedMessages: AgentMessage[],
+			heldMessages: AgentMessage[],
+		): void => {
+			const currentlyHeld = [...heldMessages];
+			const preserved = removedMessages.filter(
+				(message): message is Extract<AgentMessage, { role: "custom" }> =>
+					message.role === "custom" && !isProtectedStreamingCustomMessage(this, message),
+			);
+			if (preserved.length === 0) return;
+			const preservedReferences = new Set<AgentMessage>(preserved);
+			const restoredProtected = new Set(currentlyHeld);
+			const ordered = removedMessages.filter(
+				(message) => preservedReferences.has(message) || restoredProtected.has(message),
+			);
+			const unmatched = currentlyHeld.filter((message) => !ordered.includes(message));
+			heldMessages.splice(0, heldMessages.length, ...ordered, ...unmatched);
+		};
+		restoreUnprotectedCustomMessages(removed.steering, hold.steering);
+		restoreUnprotectedCustomMessages(removed.followUp, hold.followUp);
+	}
 	if (
 		!this._queuedMessagesPaused &&
 		this._pendingInterruptDeliveries === 0 &&

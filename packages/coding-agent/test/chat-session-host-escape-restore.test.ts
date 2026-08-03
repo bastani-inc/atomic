@@ -101,7 +101,9 @@ function makePauseSession(events: string[]): AgentSession {
 	return {
 		pauseQueuedMessages: vi.fn(() => events.push("pause")),
 		resumeQueuedMessages: vi.fn(),
-		clearQueue: vi.fn(() => events.push("clear")),
+		clearQueue: vi.fn((options?: { preserveUnprotectedCustomMessages?: boolean }) =>
+			events.push(options?.preserveUnprotectedCustomMessages ? "clear-preserve" : "clear"),
+		),
 	} as unknown as AgentSession;
 }
 
@@ -132,7 +134,7 @@ describe("chat session host Escape queue restoration", () => {
 		assert.equal(state.inputBuffer, "first steering\n\nsecond steering\n\nfollow-up\n\ncurrent draft");
 		assert.deepEqual(state.pendingSteeringMessages, []);
 		assert.deepEqual(state.pendingFollowUpMessages, []);
-		assert.deepEqual(events, ["pause", "clear", "interrupt"]);
+		assert.deepEqual(events, ["pause", "clear-preserve", "interrupt"]);
 		assert.equal(interruptCalls.count, 1);
 	});
 
@@ -154,7 +156,7 @@ describe("chat session host Escape queue restoration", () => {
 		assert.equal(state.inputBuffer, "steering\n\nfollow-up\n\ndraft");
 		assert.deepEqual(state.pendingSteeringMessages, []);
 		assert.deepEqual(state.pendingFollowUpMessages, []);
-		assert.deepEqual(events, ["pause", "clear", "interrupt"]);
+		assert.deepEqual(events, ["pause", "clear-preserve", "interrupt"]);
 	});
 
 	test("handleInput Escape suppresses the empty-queue notice while alt+up keeps it", async () => {

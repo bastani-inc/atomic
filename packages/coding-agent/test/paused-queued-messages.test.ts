@@ -4,6 +4,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { pauseAndAbortInteractiveSession } from "../src/modes/interactive/interactive-pause.ts";
 import { createHarness, getMessageText, getUserTexts, type Harness } from "./suite/harness.ts";
 
 type QueueHold = {
@@ -41,8 +42,15 @@ type EscapeHost = {
 	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
 	editor: EscapeEditor;
 	lastEscapeTime: number;
-	clearAllQueues: () => { steering: string[]; followUp: string[] };
-	restoreQueuedMessagesToEditor: (options?: { abort?: boolean; currentText?: string }) => number;
+	clearAllQueues: (options?: { preserveUnprotectedCustomMessages?: boolean }) => {
+		steering: string[];
+		followUp: string[];
+	};
+	restoreQueuedMessagesToEditor: (options?: {
+		abort?: boolean;
+		currentText?: string;
+		preserveUnprotectedCustomMessages?: boolean;
+	}) => number;
 	updatePendingMessagesDisplay: () => void;
 	showWorkingLoaderNow: () => void;
 	stopWorkingLoader: () => void;
@@ -68,9 +76,12 @@ type SubmitHost = EscapeHost & {
 const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandlers") as (this: EscapeHost) => void;
 const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor") as (
 	this: EscapeHost,
-	options?: { abort?: boolean; currentText?: string },
+	options?: { abort?: boolean; currentText?: string; preserveUnprotectedCustomMessages?: boolean },
 ) => number;
-const clearAllQueues = Reflect.get(InteractiveMode.prototype, "clearAllQueues") as (this: EscapeHost) => {
+const clearAllQueues = Reflect.get(InteractiveMode.prototype, "clearAllQueues") as (
+	this: EscapeHost,
+	options?: { preserveUnprotectedCustomMessages?: boolean },
+) => {
 	steering: string[];
 	followUp: string[];
 };
@@ -102,7 +113,7 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 		compactionQueuedMessages: [],
 		editor,
 		lastEscapeTime: 0,
-		clearAllQueues: () => clearAllQueues.call(host),
+		clearAllQueues: (options) => clearAllQueues.call(host, options),
 		restoreQueuedMessagesToEditor: (options) => restoreQueuedMessagesToEditor.call(host, options),
 		updatePendingMessagesDisplay() {},
 		showWorkingLoaderNow() {},
@@ -124,11 +135,140 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 	return host;
 }
 
+async function queueRawMessages(session: AgentSession): Promise<void> {
+	await session.steer("first raw steering");
+	await session.steer("second raw steering");
+	await session.followUp("duplicate raw follow-up");
+	await session.followUp("duplicate raw follow-up");
+	await session.sendCustomMessage(
+		{
+			customType: "pause-raw-custom",
+			content: [{ type: "text", text: "\traw custom content  \n" }],
+			display: true,
+			details: { optional: { untouched: true }, sequence: 3 },
+		},
+		{ deliverAs: "followUp" },
+	);
+}
+
+function expectExactHeldQueue(session: AgentSession): void {
+	const hold = (session as PauseAwareSession)._activeInterruptQueueHold;
+	expect(hold?.steering.map(getMessageText)).toEqual(["first raw steering", "second raw steering"]);
+	expect(hold?.followUp).toHaveLength(3);
+	const [first, second, custom] = hold?.followUp ?? [];
+	expect(first).not.toBe(second);
+	expect([first, second].map(getMessageText)).toEqual(["duplicate raw follow-up", "duplicate raw follow-up"]);
+	expect(custom).toMatchObject({
+		role: "custom",
+		customType: "pause-raw-custom",
+		content: [{ type: "text", text: "\traw custom content  \n" }],
+		display: true,
+		details: { optional: { untouched: true }, sequence: 3 },
+	});
+}
 describe("regular chat paused queued messages", () => {
 	const harnesses: Harness[] = [];
 
 	afterEach(() => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
+	});
+
+	test("Ctrl+C pause retains duplicate identity and custom-message fidelity in the raw hold", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const providerStarted = Promise.withResolvers<void>();
+		const abortObserved = Promise.withResolvers<void>();
+		const allowAbortToSettle = Promise.withResolvers<void>();
+		harness.setResponses([
+			async (_context, options) => {
+				providerStarted.resolve();
+				await new Promise<void>((resolve) => {
+					const observeAbort = () => {
+						abortObserved.resolve();
+						void allowAbortToSettle.promise.then(resolve);
+					};
+					if (options?.signal?.aborted) observeAbort();
+					else options?.signal?.addEventListener("abort", observeAbort, { once: true });
+				});
+				return fauxAssistantMessage("interrupted by Ctrl+C");
+			},
+			fauxAssistantMessage("unused resume response"),
+		]);
+		const activePrompt = harness.session.prompt("start Ctrl+C hold");
+		await providerStarted.promise;
+		await queueRawMessages(harness.session);
+
+		pauseAndAbortInteractiveSession({
+			session: harness.session,
+			showError(message: string) {
+				assert.fail(message);
+			},
+		} as Parameters<typeof pauseAndAbortInteractiveSession>[0]);
+		await abortObserved.promise;
+		expect((harness.session as PauseAwareSession).queuedMessagesPaused).toBe(true);
+		expectExactHeldQueue(harness.session);
+
+		allowAbortToSettle.resolve();
+		await activePrompt;
+	});
+	test("Escape restores queued text while preserving an unprotected custom message for resume", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const providerStarted = Promise.withResolvers<void>();
+		const abortObserved = Promise.withResolvers<void>();
+		const allowAbortToSettle = Promise.withResolvers<void>();
+		harness.setResponses([
+			async (_context, options) => {
+				providerStarted.resolve();
+				await new Promise<void>((resolve) => {
+					const observeAbort = () => {
+						abortObserved.resolve();
+						void allowAbortToSettle.promise.then(resolve);
+					};
+					if (options?.signal?.aborted) observeAbort();
+					else options?.signal?.addEventListener("abort", observeAbort, { once: true });
+				});
+				return fauxAssistantMessage("interrupted");
+			},
+			fauxAssistantMessage("resume acknowledged"),
+		]);
+		const activePrompt = harness.session.prompt("start custom preservation");
+		await providerStarted.promise;
+		await harness.session.steer("plain steering");
+		await harness.session.sendCustomMessage(
+			{
+				customType: "escape-unprotected-custom",
+				content: [{ type: "text", text: "\tcustom payload  \n" }],
+				display: true,
+				details: { sequence: 7 },
+			},
+			{ deliverAs: "followUp" },
+		);
+
+		const host = createEscapeHost(harness.session);
+		host.editor.setText("draft");
+		host.defaultEditor.onEscape?.();
+		await abortObserved.promise;
+
+		assert.equal(host.editor.getText(), "plain steering\n\ndraft");
+		const hold = (harness.session as PauseAwareSession)._activeInterruptQueueHold;
+		assert.equal(hold?.steering.length, 0);
+		assert.equal(hold?.followUp.length, 1);
+		expect(hold?.followUp[0]).toMatchObject({
+			role: "custom",
+			customType: "escape-unprotected-custom",
+			content: [{ type: "text", text: "\tcustom payload  \n" }],
+			display: true,
+			details: { sequence: 7 },
+		});
+
+		allowAbortToSettle.resolve();
+		await activePrompt;
+		await runUserPromptTurn.call(host, "resume custom preservation");
+		const delivered = harness.session.messages.filter(
+			(message) => message.role === "custom" && message.customType === "escape-unprotected-custom",
+		);
+		assert.equal(delivered.length, 1);
 	});
 
 	test("Escape restores queued messages to the editor while preserving the paused late-admission hold", async () => {

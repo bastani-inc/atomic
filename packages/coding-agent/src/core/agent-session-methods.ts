@@ -13,6 +13,7 @@ import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
 	AgentSessionReloadOptions,
+	ClearQueueOptions,
 	DrainedAgentQueues,
 	ExtensionBindings,
 	InterruptQueueHold,
@@ -196,7 +197,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_queueAgentMessage(message: AgentMessage, delivery: "steer" | "followUp"): void;
 	_drainQueuedAgentMessages(): DrainedAgentQueues;
 	_restoreQueuedAgentMessages(queues: DrainedAgentQueues): void;
-	clearQueue(): { steering: string[]; followUp: string[] };
+	clearQueue(options?: ClearQueueOptions): { steering: string[]; followUp: string[] };
 	getSteeringMessages(): readonly string[];
 	getFollowUpMessages(): readonly string[];
 	abort(): Promise<void>;

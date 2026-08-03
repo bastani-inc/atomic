@@ -17,11 +17,14 @@ InteractiveModeBase.prototype.getAllQueuedMessages = function (this: Interactive
 	};
 };
 
-InteractiveModeBase.prototype.clearAllQueues = function (this: InteractiveModeBase): {
+InteractiveModeBase.prototype.clearAllQueues = function (
+	this: InteractiveModeBase,
+	options?: { preserveUnprotectedCustomMessages?: boolean },
+): {
 	steering: string[];
 	followUp: string[];
 } {
-	const { steering, followUp } = this.session.clearQueue();
+	const { steering, followUp } = this.session.clearQueue(options);
 	const compactionSteering = this.compactionQueuedMessages
 		.filter((msg) => msg.mode === "steer")
 		.map((msg) => msg.text);
@@ -59,9 +62,10 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = function (
 	options?: {
 		abort?: boolean;
 		currentText?: string;
+		preserveUnprotectedCustomMessages?: boolean;
 	},
 ): number {
-	const { steering, followUp } = this.clearAllQueues();
+	const { steering, followUp } = this.clearAllQueues(options);
 	const allQueued = [...steering, ...followUp];
 	if (allQueued.length === 0) {
 		this.updatePendingMessagesDisplay();

@@ -291,9 +291,16 @@ declare module "./interactive-mode-base.ts" {
 		showNewVersionNotification(newVersion: string, targetContainer?: Container): void;
 		showPackageUpdateNotification(packages: string[], targetContainer?: Container): void;
 		getAllQueuedMessages(): { steering: string[]; followUp: string[] };
-		clearAllQueues(): { steering: string[]; followUp: string[] };
+		clearAllQueues(options?: { preserveUnprotectedCustomMessages?: boolean }): {
+			steering: string[];
+			followUp: string[];
+		};
 		updatePendingMessagesDisplay(): void;
-		restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number;
+		restoreQueuedMessagesToEditor(options?: {
+			abort?: boolean;
+			currentText?: string;
+			preserveUnprotectedCustomMessages?: boolean;
+		}): number;
 		queueCompactionMessage(text: string, mode: "steer" | "followUp"): void;
 		isExtensionCommand(text: string): boolean;
 		flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;

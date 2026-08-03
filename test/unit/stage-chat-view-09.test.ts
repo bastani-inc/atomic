@@ -233,10 +233,23 @@ describe("StageChatView", () => {
 				closed += 1;
 			},
 		});
-
+		const chatHost = (
+			view as unknown as {
+				chatHost: {
+					interrupt(options?: { restoreQueuedMessages?: boolean }): Promise<void>;
+				};
+			}
+		).chatHost;
+		const interruptOptions: Array<{ restoreQueuedMessages?: boolean } | undefined> = [];
+		const originalInterrupt = chatHost.interrupt.bind(chatHost);
+		chatHost.interrupt = async (options) => {
+			interruptOptions.push(options);
+			await originalInterrupt(options);
+		};
 		view.handleInput("\x1b");
 		await flush();
 		await flush();
+		assert.deepEqual(interruptOptions, [{ restoreQueuedMessages: true }]);
 		assert.equal(abortCalls, 1);
 		assert.equal(nativePaused, true);
 		assert.equal(state.pauseCalls, 0);

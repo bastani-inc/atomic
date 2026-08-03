@@ -91,6 +91,9 @@ export interface InterruptQueueHold {
 	readonly steering: AgentMessage[];
 	readonly followUp: AgentMessage[];
 }
+export interface ClearQueueOptions {
+	preserveUnprotectedCustomMessages?: boolean;
+}
 
 export function drainAgentMessageQueue(queue: PendingAgentMessageQueue | undefined): AgentMessage[] {
 	if (!queue) return [];
