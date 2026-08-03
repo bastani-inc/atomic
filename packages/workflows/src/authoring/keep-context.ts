@@ -17,7 +17,10 @@ export const KEEP_CONTEXT_CLOSE_TAG = "</keepContext>";
  * of the compression ratio. Because the tag lines are protected too, the span is re-detected on
  * each subsequent boundary and stays protected for the life of the session.
  *
- * Tags must sit on their own line, and a span is scoped to one message.
+ * Tags must sit on their own line, and a span is scoped to one message. User and assistant
+ * messages may both protect, so an agent can pin its own core information as well as its prompt;
+ * tags inside tool results are inert, so file, page, or command output an agent reads cannot
+ * mark itself unreclaimable.
  *
  * Reserve it for text whose loss silently changes behavior — role constraints, acceptance
  * criteria and immutable contracts, explicit prohibitions, and identifiers a stage must not

@@ -167,21 +167,46 @@ function keepContextMarker(line: string): "open" | "close" | undefined {
 	return undefined;
 }
 
+/** Message roles whose payload is external, so its tag text is data rather than syntax. */
+const UNTRUSTED_MARKER_ROLE = "Tool result";
+
+/**
+ * Whether a message role may declare protection.
+ *
+ * User and assistant messages both may. Prompt construction — stage prompts, run inputs, and
+ * steering — arrives as user messages, and agents need protection in their own output too, to
+ * restate a contract amendment in a handoff report or pin a decision that changes later
+ * behavior. A user-only rule would make those inert while still looking correct at the call site.
+ *
+ * Tool results may not. Their payload is file contents, fetched pages, and command output —
+ * bytes an attacker can choose — and honoring tags there would let read material mark itself
+ * unreclaimable and persist through compaction ahead of real transcript content. An agent that
+ * wants to keep something it read can restate it in its own message, which is also the more
+ * selective habit.
+ *
+ * An undefined role is the prior compaction summary prepended ahead of the first role header.
+ * That is compaction's own output, and honoring it is what lets a span re-arm on later
+ * boundaries after its header line has itself been compacted away.
+ */
+function roleMayProtect(role: string | undefined): boolean {
+	return role !== UNTRUSTED_MARKER_ROLE;
+}
+
 /**
  * One-based line numbers covered by `<keepContext>` spans, inclusive of the tag lines.
  *
  * Spans are scoped to a single message: a role header ends any span still open, and an unclosed
- * span protects through the end of its own message rather than the end of the region.
- * That scoping is what makes the permissive unclosed case
- * safe — the region is untrusted serialized user, assistant, and tool-result payload, and a
- * region-wide span would let one quoted tag make everything after it unreclaimable. Compaction
- * that cannot reclaim is an overflow, not a safe failure.
+ * span protects through the end of its own message rather than the end of the region. Together
+ * with the whole-line marker rule and the tool-result exclusion, that keeps the permissive
+ * unclosed case safe — quoted or injected tag text costs at most its own message instead of
+ * everything after it. Compaction that cannot reclaim is an overflow, not a safe failure.
  *
  * Nested openers flatten into the outermost span, and a closing tag with no opener is inert.
  */
 export function keepContextLineNumbers(lines: readonly string[]): Set<number> {
 	const protectedLines = new Set<number>();
 	let openIndex: number | undefined;
+	let role: string | undefined;
 	const protectThrough = (endIndex: number): void => {
 		if (openIndex === undefined) return;
 		for (let line = openIndex; line <= endIndex; line++) protectedLines.add(line + 1);
@@ -189,7 +214,12 @@ export function keepContextLineNumbers(lines: readonly string[]): Set<number> {
 	};
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index];
-		if (ROLE_HEADER_RE.test(line)) protectThrough(index - 1);
+		const header = ROLE_HEADER_RE.exec(line);
+		if (header) {
+			protectThrough(index - 1);
+			role = header[1];
+		}
+		if (!roleMayProtect(role)) continue;
 		const marker = keepContextMarker(line);
 		if (marker === "open") {
 			if (openIndex === undefined) openIndex = index;

@@ -648,7 +648,7 @@ const prompt = [
 ].join("\n\n");
 ```
 
-Every line of the span is protected, tag lines included. The guarantee is mechanical rather than advisory: protected lines are removed from the planner's deletion ranges after it responds. Because the tag lines are protected too, the span is re-detected on each later boundary — which matters, since every compaction re-ranks the previous compaction's output, so a constraint must survive every cycle rather than only the first. Tags must sit on their own line, and a span is scoped to one message.
+Every line of the span is protected, tag lines included. The guarantee is mechanical rather than advisory: protected lines are removed from the planner's deletion ranges after it responds. Because the tag lines are protected too, the span is re-detected on each later boundary — which matters, since every compaction re-ranks the previous compaction's output, so a constraint must survive every cycle rather than only the first. Tags must sit on their own line, and a span is scoped to one message. User and assistant messages may both protect — stage prompts, run inputs, and steering arrive as user messages, and a stage may pin its own core information — while tags inside tool results are inert, so file, page, or command output a stage reads cannot mark itself unreclaimable.
 
 `keepContext` is a pure string helper, not a `ctx.*` primitive: it creates no graph node and has no side effect, so call it anywhere a prompt is assembled. It is idempotent, so composing already-wrapped text will not nest.
 
