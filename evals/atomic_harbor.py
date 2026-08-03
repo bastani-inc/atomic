@@ -218,6 +218,13 @@ class Atomic(BaseInstalledAgent):
         first credentialed candidate is selected before launch. The rest become
         `fallbackModels`, which main-chat turns walk on rate limits, quota
         exhaustion, and provider errors.
+
+        The adapter owns this file. Each trial provisions a fresh sandbox agent
+        directory, and nothing else in the image writes `settings.json`, so a
+        whole-document write has nothing to preserve. Atomic's own writes go the
+        other way safely: `persistScopedSettings` re-reads the file and replaces
+        only the fields it modified, so a `defaultModel` write during the run
+        does not drop these entries.
         """
         fallback_models = [
             f"{candidate_provider}/{candidate_model}"
