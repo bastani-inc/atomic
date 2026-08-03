@@ -65,10 +65,11 @@ Add `--n-attempts <k>` for pass@k-style repeats. Sizing `--n-concurrent`: each t
 
 ### Default (Used for official Atomic Deep SWE run)
 
-Note: The OpenRouter provider can first try making requests to the OpenAI and Anthropic APIs directly and otherwise falls back to OpenRouter.
+Note: the main chat walks a fallback chain. Codex runs go `openai-codex` -> `openai` -> `openrouter`; Anthropic runs go `anthropic` -> `openrouter`. The adapters start the session on the first candidate whose credential is present and write the rest to `settings.fallbackModels` in the sandbox, so the running session advances on rate limits, quota exhaustion, and provider errors.
 
 ```bash
-export OPENROUTER_API_KEY="..."  # fallback for rate limits, relies on OpenAI Codex and Claude Code subscriptions
+export OPENAI_API_KEY="..."      # first fallback for Codex runs
+export OPENROUTER_API_KEY="..."  # last fallback, relies on OpenAI Codex and Claude Code subscriptions
 
 uv run pier run \
   -p deep-swe/tasks \
@@ -136,12 +137,13 @@ uv run pier run \
 
 For GHES use `COPILOT_API_TARGET=api.enterprise.githubcopilot.com`; for GHEC use the tenant-specific GHE Copilot routing host.
 
-### Anthropic subscription with OpenRouter fallback
+### Anthropic subscription with API-key and OpenRouter fallback
 
-Export `ANTHROPIC_OAUTH_TOKEN` to run Anthropic models through the subscription OAuth path. Also export `OPENROUTER_API_KEY` if you want the adapters to fall back to the equivalent `openrouter/anthropic/...` model when the subscription token is unavailable:
+Export `ANTHROPIC_OAUTH_TOKEN` to run Anthropic models through the subscription OAuth path. Atomic cannot tell a subscription apart from an API key — both route through the `anthropic` provider — so `ANTHROPIC_API_KEY` keeps `anthropic` as the primary candidate. Also export `OPENROUTER_API_KEY` if you want a fallback to the equivalent `openrouter/anthropic/...` model when no Anthropic credential is present:
 
 ```bash
 export ANTHROPIC_OAUTH_TOKEN="..."
+export ANTHROPIC_API_KEY="..."   # optional; same `anthropic` provider
 export OPENROUTER_API_KEY="..."  # optional fallback
 
 uv run pier run \
@@ -159,12 +161,13 @@ uv run pier run \
 
 The native Anthropic provider uses dash-form model ids such as `claude-opus-4-8`; when falling back, the adapters translate version suffixes to OpenRouter's matching dot-form slugs such as `openrouter/anthropic/claude-opus-4.8`.
 
-### OpenAI Codex subscription with OpenRouter fallback
+### OpenAI Codex subscription with OpenAI and OpenRouter fallback
 
-For `openai-codex/...` models, Atomic uses OAuth credentials stored in the agent auth file rather than an environment variable. Log in on the host so `~/.atomic/agent/auth.json` (or legacy `~/.pi/agent/auth.json`) contains an `openai-codex` entry. The Pier and Harbor adapters merge valid local entries with Atomic taking precedence over legacy Pi, remove denied providers and providers shadowed by explicit environment credentials, then write the remainder to the sandbox user's `~/.atomic/agent/auth.json` with `0600` permissions. Export `OPENROUTER_API_KEY` if you want missing Codex subscription auth to fall back to the equivalent `openrouter/openai/...` model.
+For `openai-codex/...` models, Atomic uses OAuth credentials stored in the agent auth file rather than an environment variable. Log in on the host so `~/.atomic/agent/auth.json` (or legacy `~/.pi/agent/auth.json`) contains an `openai-codex` entry. The Pier and Harbor adapters merge valid local entries with Atomic taking precedence over legacy Pi, remove denied providers and providers shadowed by explicit environment credentials, then write the remainder to the sandbox user's `~/.atomic/agent/auth.json` with `0600` permissions. Export `OPENAI_API_KEY` and `OPENROUTER_API_KEY` for the `openai` and `openrouter` rungs behind the subscription; each is used only when its key is exported, both as the pre-launch selection when the subscription is missing and as a main-chat `fallbackModels` entry when it is not.
 
 ```bash
-export OPENROUTER_API_KEY="..."  # optional fallback
+export OPENAI_API_KEY="..."      # optional first fallback
+export OPENROUTER_API_KEY="..."  # optional last fallback
 
 uv run pier run \
   -p deep-swe/tasks \
