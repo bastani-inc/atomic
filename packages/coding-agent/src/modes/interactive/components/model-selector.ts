@@ -9,7 +9,7 @@ import {
 	Text,
 	type TUI,
 } from "@earendil-works/pi-tui";
-import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../../../core/model-refresh-timeout.ts";
+import { boundedInteractiveModelRefresh } from "../../../core/bounded-model-refresh.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
@@ -65,7 +65,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private scopeText?: Text;
 	private scopeHintText?: Text;
 	private readonly refreshAbortController = new AbortController();
-	private refreshTimeout?: ReturnType<typeof setTimeout>;
 	private closed = false;
 
 	constructor(
@@ -161,49 +160,35 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshModels(): Promise<void> {
-		const timedOut = Symbol("model refresh timed out");
-		const timeoutResult = new Promise<typeof timedOut>((resolve) => {
-			this.refreshTimeout = setTimeout(() => {
-				this.refreshAbortController.abort();
-				resolve(timedOut);
-			}, INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS);
-		});
-		try {
-			const refresh = this.modelRuntime.refresh({ signal: this.refreshAbortController.signal });
-			const outcome = await Promise.race([refresh, timeoutResult]);
-			if (this.closed) return;
-			this.refreshStatusMessage = "";
-			if (outcome === timedOut) {
-				this.errorMessage = "Model refresh timed out; showing cached models.";
-			} else if (outcome.errors.size === 1) {
-				this.errorMessage = `Could not refresh ${outcome.errors.keys().next().value}; showing cached models.`;
-			} else if (outcome.errors.size > 1) {
-				this.errorMessage = `Could not refresh ${outcome.errors.size} model catalogs; showing cached models.`;
-			} else {
-				this.errorMessage = this.modelRuntime.getError();
-				if (!this.errorMessage) {
-					this.refreshStatusMessage = "Model catalogs refreshed.";
-					this.refreshStatusSuccess = true;
-				}
-			}
-			this.loadModelsFromSnapshot();
-			this.filterModels(this.searchInput.getValue());
-			this.tui.requestRender();
-		} catch {
-			if (this.closed) return;
-			this.refreshStatusMessage = "";
+		const outcome = await boundedInteractiveModelRefresh(
+			(options) => this.modelRuntime.refresh(options),
+			{},
+			this.refreshAbortController.signal,
+		);
+		if (this.closed) return;
+		this.refreshStatusMessage = "";
+		if (outcome.status === "timed-out") {
+			this.errorMessage = "Model refresh timed out; showing cached models.";
+		} else if (outcome.status === "rejected") {
 			this.errorMessage = "Could not refresh model catalogs; showing cached models.";
-			this.loadModelsFromSnapshot();
-			this.filterModels(this.searchInput.getValue());
-			this.tui.requestRender();
-		} finally {
-			if (this.refreshTimeout) clearTimeout(this.refreshTimeout);
+		} else if (outcome.status === "success" && outcome.value.errors.size === 1) {
+			this.errorMessage = `Could not refresh ${outcome.value.errors.keys().next().value}; showing cached models.`;
+		} else if (outcome.status === "success" && outcome.value.errors.size > 1) {
+			this.errorMessage = `Could not refresh ${outcome.value.errors.size} model catalogs; showing cached models.`;
+		} else if (outcome.status === "success") {
+			this.errorMessage = this.modelRuntime.getError();
+			if (!this.errorMessage) {
+				this.refreshStatusMessage = "Model catalogs refreshed.";
+				this.refreshStatusSuccess = true;
+			}
 		}
+		this.loadModelsFromSnapshot();
+		this.filterModels(this.searchInput.getValue());
+		this.tui.requestRender();
 	}
 
 	private close(): void {
 		this.closed = true;
-		if (this.refreshTimeout) clearTimeout(this.refreshTimeout);
 		this.refreshAbortController.abort();
 	}
 

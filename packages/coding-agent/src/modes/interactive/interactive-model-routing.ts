@@ -1,3 +1,4 @@
+import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -53,7 +54,9 @@ InteractiveModeBase.prototype.getModelCandidates = async function (this: Interac
 	}
 
 	const allowNetwork = !isOfflineModeEnabled();
-	await this.session.modelRuntime.refresh({ allowNetwork });
+	await boundedInteractiveModelRefresh((refreshOptions) => this.session.modelRuntime.refresh(refreshOptions), {
+		allowNetwork,
+	});
 	try {
 		return [...this.session.modelRuntime.getAvailableSnapshot()];
 	} catch {
