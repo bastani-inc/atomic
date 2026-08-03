@@ -130,20 +130,43 @@ function Test-AtomicPathContains {
     return $false
 }
 
+function Get-AtomicDirectoryEntry {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $parentPath = [IO.Path]::GetDirectoryName($fullPath)
+    $leafName = [IO.Path]::GetFileName($fullPath.TrimEnd([char[]]@('\', '/')))
+    if ([string]::IsNullOrWhiteSpace($parentPath) -or -not [IO.Directory]::Exists($parentPath)) {
+        return $null
+    }
+
+    foreach ($item in (Get-ChildItem -LiteralPath $parentPath -Force)) {
+        if ($item.Name -ieq $leafName) {
+            return $item
+        }
+    }
+
+    return $null
+}
+
 function Remove-AtomicDirectoryLinkOrTree {
     param([string]$Path)
 
-    if (-not (Test-Path -LiteralPath $Path)) {
+    $item = Get-AtomicDirectoryEntry $Path
+    if ($null -eq $item) {
         return
     }
 
-    $item = Get-Item -LiteralPath $Path -Force
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         [IO.Directory]::Delete($item.FullName)
         return
     }
 
-    Remove-Item -LiteralPath $Path -Recurse -Force
+    Remove-Item -LiteralPath $item.FullName -Recurse -Force
 }
 
 $requestedRef = $null
@@ -198,14 +221,15 @@ if (-not [string]::IsNullOrWhiteSpace($token)) {
 
 $latestApi = "https://api.github.com/repos/bastani-inc/atomic/releases/latest"
 $tagsApiBase = "https://api.github.com/repos/bastani-inc/atomic/releases/tags"
+$release = $null
+$releaseTag = $null
 if ([string]::IsNullOrWhiteSpace($requestedRef)) {
     $redirectTag = Get-AtomicRedirectTag "https://github.com/bastani-inc/atomic/releases/latest"
     if ([string]::IsNullOrWhiteSpace($redirectTag)) {
         $release = Invoke-AtomicApiRequest $latestApi $apiHeaders
     }
     else {
-        $encodedRedirectTag = [Uri]::EscapeDataString($redirectTag)
-        $release = Invoke-AtomicApiRequest "$tagsApiBase/$encodedRedirectTag" $apiHeaders
+        $releaseTag = $redirectTag
     }
 }
 else {
@@ -213,12 +237,14 @@ else {
     $release = Invoke-AtomicApiRequest "$tagsApiBase/$encodedRequestedRef" $apiHeaders
 }
 
-if ($null -eq $release -or $null -eq $release.PSObject.Properties["tag_name"]) {
-    throw "GitHub release API response did not include tag_name."
-}
-$releaseTag = [string]$release.tag_name
 if ([string]::IsNullOrWhiteSpace($releaseTag)) {
-    throw "GitHub release API returned an empty tag_name."
+    if ($null -eq $release -or $null -eq $release.PSObject.Properties["tag_name"]) {
+        throw "GitHub release API response did not include tag_name."
+    }
+    $releaseTag = [string]$release.tag_name
+    if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+        throw "GitHub release API returned an empty tag_name."
+    }
 }
 
 $encodedReleaseTag = [Uri]::EscapeDataString($releaseTag)
@@ -314,7 +340,7 @@ try {
         $versionInstalled = $true
 
         New-Item -ItemType Junction -Path $currentNextPath -Target $versionPath | Out-Null
-        if (Test-Path -LiteralPath $currentPath) {
+        if ($null -ne (Get-AtomicDirectoryEntry $currentPath)) {
             Move-Item -LiteralPath $currentPath -Destination $currentBackupPath
             $previousCurrentMoved = $true
         }
@@ -326,7 +352,7 @@ try {
         $currentAtomic = Join-Path $currentPath "atomic.exe"
         $shimAtomic = $currentAtomic.Replace("%", "%%")
         $shimContent = "@echo off`r`n`"$shimAtomic`" %*`r`nexit /b %ERRORLEVEL%`r`n"
-        Set-Content -LiteralPath $shimNextPath -Value $shimContent -Encoding ASCII -NoNewline
+        Set-Content -LiteralPath $shimNextPath -Value $shimContent -Encoding Unicode -NoNewline
         if (Test-Path -LiteralPath $shimPath) {
             Move-Item -LiteralPath $shimPath -Destination $shimBackupPath
             $previousShimMoved = $true
@@ -433,7 +459,7 @@ finally {
     if ($null -ne $shimNextPath -and (Test-Path -LiteralPath $shimNextPath)) {
         Remove-Item -LiteralPath $shimNextPath -Force -ErrorAction SilentlyContinue
     }
-    if ($null -ne $currentNextPath -and (Test-Path -LiteralPath $currentNextPath)) {
+    if ($null -ne $currentNextPath -and $null -ne (Get-AtomicDirectoryEntry $currentNextPath)) {
         try { Remove-AtomicDirectoryLinkOrTree $currentNextPath }
         catch { Write-Warning "Failed to remove temporary current pointer ${currentNextPath}: $_" }
     }

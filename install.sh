@@ -131,9 +131,9 @@ esac
 
 INSTALL_ROOT=${ATOMIC_INSTALL_DIR:-${HOME:?HOME is not set}/.local/share/atomic}
 BIN_DIR=${ATOMIC_BIN_DIR:-${HOME:?HOME is not set}/.local/bin}
-VERSIONS_DIR=$INSTALL_ROOT/versions
-CURRENT_PATH=$INSTALL_ROOT/current
-BIN_PATH=$BIN_DIR/atomic
+VERSIONS_DIR=
+CURRENT_PATH=
+BIN_PATH=
 
 TOKEN=${GITHUB_TOKEN:-}
 if [ -z "$TOKEN" ]; then
@@ -321,22 +321,26 @@ parse_release_tag() {
 }
 
 TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags
+RELEASE_TAG=
+API_URL=
 if [ -n "$REQUESTED_REF" ]; then
     API_URL=$TAGS_API/$REQUESTED_REF
 else
     REDIRECT_TAG=
     if REDIRECT_TAG=$(resolve_redirect_tag); then
-        API_URL=$TAGS_API/$REDIRECT_TAG
+        RELEASE_TAG=$REDIRECT_TAG
     else
         API_URL=$GITHUB_API/repos/$REPOSITORY/releases/latest
     fi
 fi
 
-if ! RELEASE_JSON=$(http_get "$API_URL"); then
-    fail "failed to resolve the GitHub release"
-fi
-if ! RELEASE_TAG=$(parse_release_tag "$RELEASE_JSON"); then
-    fail "GitHub release response did not contain a valid tag_name"
+if [ -z "$RELEASE_TAG" ]; then
+    if ! RELEASE_JSON=$(http_get "$API_URL"); then
+        fail "failed to resolve the GitHub release"
+    fi
+    if ! RELEASE_TAG=$(parse_release_tag "$RELEASE_JSON"); then
+        fail "GitHub release response did not contain a valid tag_name"
+    fi
 fi
 case $RELEASE_TAG in
     ''|.|..|*/*|*\\*) fail "release tag cannot be used as a version directory: $RELEASE_TAG" ;;
@@ -400,6 +404,17 @@ if ! "$PAYLOAD_ROOT/atomic" --version >/dev/null; then
     fail "staged atomic --version check failed"
 fi
 
+case $INSTALL_ROOT in
+    /*) ;;
+    *)
+        INSTALL_WORKING_DIR=$(pwd -P) || fail "unable to resolve the current working directory"
+        INSTALL_ROOT=$INSTALL_WORKING_DIR/$INSTALL_ROOT
+        ;;
+esac
+VERSIONS_DIR=$INSTALL_ROOT/versions
+CURRENT_PATH=$INSTALL_ROOT/current
+BIN_PATH=$BIN_DIR/atomic
+
 if [ ! -d "$INSTALL_ROOT" ]; then
     mkdir -p "$INSTALL_ROOT"
     CREATED_INSTALL_ROOT=1
@@ -424,30 +439,30 @@ BIN_BACKUP=$BIN_DIR/.atomic-backup-$TRANSACTION_ID
 mv "$PAYLOAD_ROOT" "$VERSION_STAGE"
 PAYLOAD_ROOT=
 if path_exists "$VERSION_PATH"; then
-    mv "$VERSION_PATH" "$VERSION_BACKUP"
     VERSION_BACKED_UP=1
+    mv "$VERSION_PATH" "$VERSION_BACKUP"
 fi
+VERSION_INSTALLED=1
 mv "$VERSION_STAGE" "$VERSION_PATH"
 VERSION_STAGE=
-VERSION_INSTALLED=1
 
 ln -s "versions/$RELEASE_TAG" "$CURRENT_NEXT"
 if path_exists "$CURRENT_PATH"; then
-    mv "$CURRENT_PATH" "$CURRENT_BACKUP"
     CURRENT_BACKED_UP=1
+    mv "$CURRENT_PATH" "$CURRENT_BACKUP"
 fi
+CURRENT_INSTALLED=1
 mv "$CURRENT_NEXT" "$CURRENT_PATH"
 CURRENT_NEXT=
-CURRENT_INSTALLED=1
 
 ln -s "$CURRENT_PATH/atomic" "$BIN_NEXT"
 if path_exists "$BIN_PATH"; then
-    mv "$BIN_PATH" "$BIN_BACKUP"
     BIN_BACKED_UP=1
+    mv "$BIN_PATH" "$BIN_BACKUP"
 fi
+BIN_INSTALLED=1
 mv "$BIN_NEXT" "$BIN_PATH"
 BIN_NEXT=
-BIN_INSTALLED=1
 
 if ! "$BIN_PATH" --version >/dev/null; then
     fail "installed atomic --version check failed"

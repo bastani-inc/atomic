@@ -62,6 +62,61 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.match(source, /Restart your terminal/u);
 });
 
+test("Windows installer uses a successful latest redirect without querying the GitHub API", () => {
+	const source = installerSource();
+	const redirectAttempt = source.indexOf("$redirectTag = Get-AtomicRedirectTag");
+	const latestApiFallback = source.indexOf("Invoke-AtomicApiRequest $latestApi", redirectAttempt);
+	const redirectSuccessStart = source.indexOf("else {", latestApiFallback);
+	const requestedRefStart = source.indexOf("\nelse {", redirectSuccessStart + 1);
+	assert.ok(
+		redirectAttempt >= 0 && latestApiFallback > redirectAttempt && redirectSuccessStart > latestApiFallback,
+		"latest release resolution branches were not found",
+	);
+	assert.ok(requestedRefStart > redirectSuccessStart, "explicit ref resolution branch was not found");
+
+	const redirectSuccess = source.slice(redirectSuccessStart, requestedRefStart);
+	assert.match(redirectSuccess, /\$releaseTag\s*=\s*\$redirectTag/u);
+	assert.doesNotMatch(redirectSuccess, /Invoke-AtomicApiRequest|api\.github\.com/u);
+
+	const apiRequest = source.slice(
+		source.indexOf("function Invoke-AtomicApiRequest"),
+		source.indexOf("function Invoke-AtomicDownload"),
+	);
+	const assetDownload = source.slice(
+		source.indexOf("function Invoke-AtomicDownload"),
+		source.indexOf("function Test-AtomicPathContains"),
+	);
+	assert.match(apiRequest, /Invoke-WebRequest[^\r\n]+-Headers\s+\$Headers/u);
+	assert.doesNotMatch(assetDownload, /-Headers/u);
+});
+
+test("Windows installer writes the command shim with a PowerShell 5.1 Unicode-safe encoding", () => {
+	const source = installerSource();
+	const shimWrite = source.match(/Set-Content\s+-LiteralPath\s+\$shimNextPath[^\r\n]*/u)?.[0] ?? "";
+	assert.match(shimWrite, /-Encoding\s+Unicode/u);
+	assert.doesNotMatch(shimWrite, /-Encoding\s+ASCII/iu);
+});
+
+test("Windows installer finds and removes junctions through their parent directory entries", () => {
+	const source = installerSource();
+	const entryLookup = source.slice(
+		source.indexOf("function Get-AtomicDirectoryEntry"),
+		source.indexOf("function Remove-AtomicDirectoryLinkOrTree"),
+	);
+	const linkRemoval = source.slice(
+		source.indexOf("function Remove-AtomicDirectoryLinkOrTree"),
+		source.indexOf("$requestedRef = $null"),
+	);
+
+	assert.match(entryLookup, /Get-ChildItem\s+-LiteralPath\s+\$parentPath\s+-Force/u);
+	assert.match(entryLookup, /\.Name\s+-ieq\s+\$leafName/u);
+	assert.match(linkRemoval, /\$item\s*=\s*Get-AtomicDirectoryEntry\s+\$Path/u);
+	assert.match(linkRemoval, /\[IO\.Directory\]::Delete\(\$item\.FullName\)/u);
+	assert.match(source, /Get-AtomicDirectoryEntry\s+\$currentPath/u);
+	assert.match(source, /Get-AtomicDirectoryEntry\s+\$currentNextPath/u);
+	assert.match(source, /Remove-AtomicDirectoryLinkOrTree\s+\$currentBackupPath/u);
+	assert.doesNotMatch(source, /Test-Path\s+-LiteralPath\s+\$(?:currentPath|currentNextPath|currentBackupPath)\b/u);
+});
 function findWindowsPowerShell(): string | undefined {
 	const candidates = ["powershell.exe", "powershell"];
 	for (const directory of (process.env.PATH ?? "").split(delimiter)) {
@@ -118,10 +173,24 @@ function Get-ExactPathEntryCount {
     return $count
 }
 
+function Assert-NoTransactionResidue {
+    param([string]$InstallRoot, [string]$BinDir)
+    $versionsDir = Join-Path $InstallRoot "versions"
+    if ([IO.Directory]::Exists($versionsDir)) {
+        Assert-Fixture (@(Get-ChildItem -LiteralPath $versionsDir -Force | Where-Object { $_.Name -like ".stage-*" -or $_.Name -like ".backup-*" }).Count -eq 0) "version transaction artifacts were not cleaned"
+    }
+    if ([IO.Directory]::Exists($InstallRoot)) {
+        Assert-Fixture (@(Get-ChildItem -LiteralPath $InstallRoot -Force | Where-Object { $_.Name -like ".current-*" }).Count -eq 0) "current transaction artifacts were not cleaned"
+    }
+    if ([IO.Directory]::Exists($BinDir)) {
+        Assert-Fixture (@(Get-ChildItem -LiteralPath $BinDir -Force | Where-Object { $_.Name -like ".atomic-*" }).Count -eq 0) "shim transaction artifacts were not cleaned"
+    }
+}
+
 $workspace = Split-Path -Parent $MyInvocation.MyCommand.Path
 $assetRoot = Join-Path $workspace "releases"
-$installRoot = Join-Path $workspace "install root"
-$binDir = Join-Path $workspace "bin root"
+$installRoot = if ($Scenario -eq "unicode") { Join-Path $workspace "安装-Δοκιμή" } else { Join-Path $workspace "install root" }
+$binDir = if ($Scenario -eq "unicode") { Join-Path $installRoot "bin" } else { Join-Path $workspace "bin root" }
 $fixtureTemp = Join-Path $workspace "temp"
 New-Item -ItemType Directory -Path $assetRoot, $fixtureTemp -Force | Out-Null
 
@@ -185,6 +254,8 @@ $global:AtomicFixtureAssetRoot = $assetRoot
 $global:AtomicFixtureRequests = New-Object System.Collections.ArrayList
 $global:AtomicFixtureBadChecksumTag = $null
 $global:AtomicFixtureLastAssetName = $null
+$global:AtomicFixtureFailApi = $false
+$global:AtomicFixtureRedirectFails = $false
 
 function global:Invoke-WebRequest {
     [CmdletBinding()]
@@ -203,18 +274,28 @@ function global:Invoke-WebRequest {
     [void]$global:AtomicFixtureRequests.Add([pscustomobject]@{ Uri = $Uri; Authorization = $authorization })
 
     if ($Uri -eq "https://github.com/bastani-inc/atomic/releases/latest") {
+        if ($global:AtomicFixtureRedirectFails) {
+            return [pscustomobject]@{
+                Headers = @{}
+                BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]"https://github.com/bastani-inc/atomic/releases/latest" }
+            }
+        }
         return [pscustomobject]@{
             Headers = @{ Location = "/bastani-inc/atomic/releases/tag/2.0.0" }
             BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]"https://github.com/bastani-inc/atomic/releases/latest" }
         }
     }
 
-    if ($Uri -match '/repos/bastani-inc/atomic/releases/latest$') {
-        return [pscustomobject]@{ Content = '{"tag_name":"2.0.0"}'; Headers = @{} }
-    }
-    if ($Uri -match '/repos/bastani-inc/atomic/releases/tags/([^/]+)$') {
-        $tag = [Uri]::UnescapeDataString($Matches[1])
-        return [pscustomobject]@{ Content = ('{"tag_name":"' + $tag + '"}'); Headers = @{} }
+    if ($Uri -match '^https://api\.github\.com/') {
+        if ($global:AtomicFixtureFailApi) { throw "GitHub API is unavailable in this fixture scenario: $Uri" }
+        if ($Uri -match '/repos/bastani-inc/atomic/releases/latest$') {
+            return [pscustomobject]@{ Content = '{"tag_name":"2.0.0"}'; Headers = @{} }
+        }
+        if ($Uri -match '/repos/bastani-inc/atomic/releases/tags/([^/]+)$') {
+            $requestedTag = [Uri]::UnescapeDataString($Matches[1])
+            $canonicalTag = if ($requestedTag -eq "requested-alias") { "1.0.0" } else { $requestedTag }
+            return [pscustomobject]@{ Content = ('{"tag_name":"' + $canonicalTag + '"}'); Headers = @{} }
+        }
     }
 
     if (-not [string]::IsNullOrWhiteSpace($OutFile) -and $Uri -match '/releases/download/([^/]+)/([^/]+)$') {
@@ -232,6 +313,21 @@ function global:Invoke-WebRequest {
     }
 
     throw "Unexpected fixture request: $Uri"
+}
+
+$global:AtomicFixtureFailCurrentNextMove = $false
+function global:Move-Item {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$LiteralPath,
+        [Parameter(Mandatory=$true)][string]$Destination
+    )
+
+    $leafName = [IO.Path]::GetFileName($LiteralPath)
+    if ($global:AtomicFixtureFailCurrentNextMove -and $leafName -match '^\.current-[0-9a-f]{32}$') {
+        throw "Injected failure while committing temporary current junction: $LiteralPath"
+    }
+    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
 }
 
 $environmentNames = @(
@@ -263,7 +359,7 @@ try {
         $env:ATOMIC_VERSION = "environment-must-not-win"
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "ARM64"
-        & $InstallerPath -Ref "1.0.0" | Out-Null
+        & $InstallerPath -Ref "requested-alias" | Out-Null
 
         $versionOne = Join-Path $installRoot "versions\1.0.0"
         $current = Join-Path $installRoot "current"
@@ -280,9 +376,10 @@ try {
         Assert-Fixture (Test-ExactPathEntry ([Environment]::GetEnvironmentVariable("Path", "User")) $binDir) "User PATH was not persisted"
         Assert-Fixture (Test-ExactPathEntry $env:Path $binDir) "current PATH was not refreshed"
 
-        $firstApiRequest = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })[0]
+        $firstApiRequest = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/requested-alias$' })[0]
         Assert-Fixture ($null -ne $firstApiRequest) "explicit -Ref did not use the exact tag endpoint"
         Assert-Fixture ($firstApiRequest.Authorization -eq "Bearer github-token") "GITHUB_TOKEN did not win over GH_TOKEN"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/download/1\.0\.0/' }).Count -eq 2) "explicit -Ref did not use canonical API tag_name for downloads"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match 'environment-must-not-win' }).Count -eq 0) "ATOMIC_VERSION overrode explicit -Ref"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match 'atomic-windows-x64\.zip$' }).Count -eq 1) "WOW64 architecture did not select x64"
 
@@ -302,10 +399,25 @@ try {
         Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "version.txt") -Raw) -eq "2.0.0") "upgrade did not repoint current"
         Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "asset.txt") -Raw) -eq "atomic-windows-arm64.zip") "ARM64 archive was not extracted"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match 'atomic-windows-arm64\.zip$' }).Count -eq 1) "ARM64 architecture did not select arm64"
+
         $env:ATOMIC_VERSION = $null
+        $defaultRequestStart = $global:AtomicFixtureRequests.Count
+        $global:AtomicFixtureFailApi = $true
         & $InstallerPath | Out-Null
-        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -eq 'https://github.com/bastani-inc/atomic/releases/latest' }).Count -eq 1) "default install did not try the stable release redirect"
-        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/2\.0\.0$' }).Count -ge 2) "stable redirect tag was not resolved through the release API"
+        $defaultRequests = @($global:AtomicFixtureRequests | Select-Object -Skip $defaultRequestStart)
+        Assert-Fixture (@($defaultRequests | Where-Object { $_.Uri -eq 'https://github.com/bastani-inc/atomic/releases/latest' }).Count -eq 1) "default install did not try the stable release redirect"
+        Assert-Fixture (@($defaultRequests | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "successful stable redirect queried the GitHub API"
+        Assert-Fixture (@($defaultRequests | Where-Object { $_.Uri -match '/releases/download/2\.0\.0/' -and $null -ne $_.Authorization }).Count -eq 0) "token header leaked to release downloads"
+
+        $global:AtomicFixtureFailApi = $false
+        $global:AtomicFixtureRedirectFails = $true
+        $fallbackRequestStart = $global:AtomicFixtureRequests.Count
+        & $InstallerPath | Out-Null
+        $fallbackRequests = @($global:AtomicFixtureRequests | Select-Object -Skip $fallbackRequestStart)
+        Assert-Fixture (@($fallbackRequests | Where-Object { $_.Uri -match '/repos/bastani-inc/atomic/releases/latest$' }).Count -eq 1) "failed stable redirect did not query the latest release API"
+        Assert-Fixture (@($fallbackRequests | Where-Object { $_.Uri -match '/repos/bastani-inc/atomic/releases/latest$' -and $_.Authorization -eq 'Bearer gh-token' }).Count -eq 1) "latest API fallback did not use the configured token"
+        $global:AtomicFixtureRedirectFails = $false
+
         Assert-Fixture ((Get-ExactPathEntryCount ([Environment]::GetEnvironmentVariable("Path", "User")) $binDir) -eq 1) "User PATH contains duplicate bin entries"
         Assert-Fixture ((Get-ExactPathEntryCount $env:Path $binDir) -eq 1) "current PATH contains duplicate bin entries"
         Assert-Fixture (@(Get-ChildItem -LiteralPath (Join-Path $installRoot "versions") -Force | Where-Object { $_.Name -like ".stage-*" -or $_.Name -like ".backup-*" }).Count -eq 0) "version transaction artifacts were not cleaned"
@@ -343,6 +455,71 @@ try {
         Assert-Fixture ($env:Path -eq $beforeProcessPath) "failed final smoke did not restore current PATH"
         Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "failed final smoke left a new installation"
     }
+    elseif ($Scenario -eq "unicode") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+
+        $current = Join-Path $installRoot "current"
+        $shim = Join-Path $binDir "atomic.cmd"
+        $expectedAtomicPath = Join-Path $current "atomic.exe"
+        $shimContent = Get-Content -LiteralPath $shim -Raw
+        Assert-Fixture ($installRoot.Contains("安装") -and $installRoot.Contains("Δοκιμή")) "Unicode fixture root lost CJK or Greek text"
+        Assert-Fixture ($shimContent.Contains($expectedAtomicPath)) "shim did not retain the complete Unicode atomic.exe path"
+        Assert-Fixture ($shimContent -notmatch '\?') "shim replaced Unicode path characters with question marks"
+        $versionOutput = (& $shim "--version" | Out-String).Trim()
+        Assert-Fixture ($LASTEXITCODE -eq 0 -and $versionOutput -eq "1.0.0") "Unicode-path shim --version failed"
+
+        $beforeUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $beforeProcessPath = $env:Path
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "2.0.0"
+        $failure = $null
+        try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+        catch { $failure = $_ }
+        Assert-Fixture ($null -ne $failure -and $failure.Exception.Message -match 'Installed atomic\.cmd --version failed') "Unicode-path final shim smoke failure was not reported"
+        Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -eq $beforeUserPath) "Unicode-path rollback changed User PATH"
+        Assert-Fixture ($env:Path -eq $beforeProcessPath) "Unicode-path rollback changed current PATH"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "version.txt") -Raw) -eq "1.0.0") "Unicode-path rollback did not restore current"
+        Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions\2.0.0"))) "Unicode-path rollback retained the failed version"
+        $rollbackOutput = (& $shim "--version" | Out-String).Trim()
+        Assert-Fixture ($LASTEXITCODE -eq 0 -and $rollbackOutput -eq "1.0.0") "Unicode-path rollback did not restore the working shim"
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
+    elseif ($Scenario -eq "dangling-junction") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+
+        $versionOne = Join-Path $installRoot "versions\1.0.0"
+        $current = Join-Path $installRoot "current"
+        $shim = Join-Path $binDir "atomic.cmd"
+        Remove-Item -LiteralPath $versionOne -Recurse -Force
+        $danglingCurrent = @(Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -eq "current" })
+        Assert-Fixture ($danglingCurrent.Count -eq 1) "deleting the version also removed the current junction entry"
+        Assert-Fixture (($danglingCurrent[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "dangling current entry is not a junction"
+        Assert-Fixture (-not [IO.Directory]::Exists($current)) "current junction target was not deleted"
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        $repairedCurrent = @(Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -eq "current" })
+        Assert-Fixture ($repairedCurrent.Count -eq 1) "same-version reinstall did not leave one current entry"
+        Assert-Fixture (($repairedCurrent[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "same-version reinstall did not recreate current as a junction"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $current "atomic.exe")) "recreated current junction does not resolve atomic.exe"
+        $reinstallOutput = (& $shim "--version" | Out-String).Trim()
+        Assert-Fixture ($LASTEXITCODE -eq 0 -and $reinstallOutput -eq "1.0.0") "shim failed after dangling junction recovery"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        $global:AtomicFixtureFailCurrentNextMove = $true
+        $failure = $null
+        try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+        catch { $failure = $_ }
+        $global:AtomicFixtureFailCurrentNextMove = $false
+        Assert-Fixture ($null -ne $failure -and $failure.Exception.Message -match 'Injected failure while committing temporary current junction') "temporary current failure was not injected"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "version.txt") -Raw) -eq "1.0.0") "failed transaction did not restore current"
+        Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions\2.0.0"))) "failed transaction retained the new version"
+        $rollbackOutput = (& $shim "--version" | Out-String).Trim()
+        Assert-Fixture ($LASTEXITCODE -eq 0 -and $rollbackOutput -eq "1.0.0") "shim failed after temporary dangling junction cleanup"
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
     else {
         throw "Unknown fixture scenario: $Scenario"
     }
@@ -360,11 +537,26 @@ finally {
 }
 `;
 
-function runPowerShellFixture(scenario: "install" | "checksum" | "final-smoke"): string {
+test("Windows PowerShell 5.1 fixtures cover Unicode paths and dangling junction recovery", () => {
+	assert.match(fixtureHarness, /安装-Δοκιμή/u);
+	assert.match(fixtureHarness, /\$shimContent\.Contains\(\$expectedAtomicPath\)/u);
+	assert.match(fixtureHarness, /\$shimContent\s+-notmatch\s+'\\\?'/u);
+	assert.match(fixtureHarness, /Remove-Item\s+-LiteralPath\s+\$versionOne[\s\S]+& \$InstallerPath -Ref "1\.0\.0"/u);
+	assert.match(fixtureHarness, /Get-ChildItem\s+-LiteralPath\s+\$installRoot\s+-Force[\s\S]+ReparsePoint/u);
+	assert.match(fixtureHarness, /AtomicFixtureFailCurrentNextMove[\s\S]+Assert-NoTransactionResidue/u);
+	assert.match(
+		fixtureHarness,
+		/AtomicFixtureFailApi\s*=\s*\$true[\s\S]+successful stable redirect queried the GitHub API/u,
+	);
+});
+
+function runPowerShellFixture(
+	scenario: "install" | "checksum" | "final-smoke" | "unicode" | "dangling-junction",
+): string {
 	assert.ok(powershellExecutable);
 	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
 	const harnessPath = join(workspace, "fixture.ps1");
-	writeFileSync(harnessPath, fixtureHarness);
+	writeFileSync(harnessPath, `\uFEFF${fixtureHarness}`, "utf16le");
 	try {
 		const result = spawnSyncCollect(
 			[
@@ -407,4 +599,12 @@ powershellTest("PowerShell 5.1 fixture rejects a checksum mismatch without mutat
 
 powershellTest("PowerShell 5.1 fixture rolls back a failing final shim smoke and PATH changes", () => {
 	runPowerShellFixture("final-smoke");
+});
+
+powershellTest("PowerShell 5.1 fixture preserves Unicode install paths and rolls back final smoke failure", () => {
+	runPowerShellFixture("unicode");
+});
+
+powershellTest("PowerShell 5.1 fixture repairs and cleans up dangling junctions", () => {
+	runPowerShellFixture("dangling-junction");
 });

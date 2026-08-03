@@ -8,6 +8,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
@@ -161,9 +162,11 @@ const curlWrapper = [
 	`        printf 'https://github.com/bastani-inc/atomic/releases/tag/%s' "$ATOMIC_FIXTURE_LATEST_TAG"`,
 	"        ;;",
 	"    https://api.github.com/repos/bastani-inc/atomic/releases/latest)",
+	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 22`,
 	`        printf '{"tag_name":"%s"}\\n' "$ATOMIC_FIXTURE_LATEST_TAG"`,
 	"        ;;",
 	"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
+	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 22`,
 	`        tag=${shellExpansion("url##*/")}`,
 	`        canonical=${shellExpansion("ATOMIC_FIXTURE_CANONICAL_TAG:-$tag")}`,
 	`        printf '{"tag_name":"%s"}\\n' "$canonical"`,
@@ -202,9 +205,11 @@ const wgetWrapper = [
 	`        printf '  Location: https://github.com/bastani-inc/atomic/releases/tag/%s [following]\\n' "$ATOMIC_FIXTURE_LATEST_TAG" >&2`,
 	"        ;;",
 	"    https://api.github.com/repos/bastani-inc/atomic/releases/latest)",
+	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 1`,
 	`        printf '{"tag_name":"%s"}\\n' "$ATOMIC_FIXTURE_LATEST_TAG"`,
 	"        ;;",
 	"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
+	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 1`,
 	`        tag=${shellExpansion("url##*/")}`,
 	`        canonical=${shellExpansion("ATOMIC_FIXTURE_CANONICAL_TAG:-$tag")}`,
 	`        printf '{"tag_name":"%s"}\\n' "$canonical"`,
@@ -235,10 +240,25 @@ function createFixture(): InstallerFixture {
 	mkdirSync(releasesRoot);
 	writeFileSync(requestLog, "");
 
-	for (const command of ["tar", "mkdir", "mv", "chmod", "ln", "rm", "rmdir", "cat", "gzip"]) {
+	for (const command of ["tar", "mkdir", "chmod", "ln", "rm", "rmdir", "cat", "gzip"]) {
 		const source = resolveExecutable(command);
 		symlinkSync(source, join(tools, command));
 	}
+	writeExecutable(
+		join(tools, "mv"),
+		[
+			"#!/bin/sh",
+			'"$ATOMIC_FIXTURE_REAL_MV" "$@" || exit $?',
+			`case "${shellExpansion("ATOMIC_FIXTURE_SIGNAL_AFTER_MOVE:-")}:$2" in`,
+			"    version-backup:*/versions/.backup-*|version-install:*/versions/[!.]*|current-backup:*/.current-backup-*|current-install:*/current|bin-backup:*/.atomic-backup-*|bin-install:*/atomic)",
+			'        if [ ! -e "$ATOMIC_FIXTURE_SIGNAL_MARKER" ]; then',
+			'            : > "$ATOMIC_FIXTURE_SIGNAL_MARKER"',
+			`            kill -"${shellExpansion("ATOMIC_FIXTURE_SIGNAL:-TERM")}" "$PPID"`,
+			"        fi",
+			"        ;;",
+			"esac",
+		].join("\n"),
+	);
 	let checksumCommand: "sha256sum" | "shasum";
 	try {
 		checksumCommand = "sha256sum";
@@ -299,6 +319,8 @@ function createFixture(): InstallerFixture {
 				GH_TOKEN: undefined,
 				ATOMIC_FIXTURE_LOG: requestLog,
 				ATOMIC_FIXTURE_RELEASES: releasesRoot,
+				ATOMIC_FIXTURE_REAL_MV: resolveExecutable("mv"),
+				ATOMIC_FIXTURE_SIGNAL_MARKER: join(runTools, "signal-sent"),
 				ATOMIC_FIXTURE_LATEST_TAG: "2.0.0",
 				ATOMIC_FIXTURE_OS: options.os ?? "Linux",
 				ATOMIC_FIXTURE_ARCH: options.arch ?? "x86_64",
@@ -306,7 +328,11 @@ function createFixture(): InstallerFixture {
 				ATOMIC_FIXTURE_LIBC: options.libc ?? "glibc",
 				...options.environment,
 			};
-			return spawnSyncCollect(["/bin/sh", installerPath, ...(options.args ?? [])], { env, timeout: 15_000 });
+			return spawnSyncCollect(["/bin/sh", installerPath, ...(options.args ?? [])], {
+				cwd: workspace,
+				env,
+				timeout: 15_000,
+			});
 		},
 	};
 	addRelease(fixture, "1.0.0");
@@ -336,12 +362,18 @@ function assertNoTemporaryState(fixture: InstallerFixture): void {
 			0,
 		);
 	}
+	if (existsSync(fixture.installRoot)) {
+		assert.equal(readdirSync(fixture.installRoot).filter((name) => name.startsWith(".current-")).length, 0);
+	}
+	if (existsSync(fixture.binDir)) {
+		assert.equal(readdirSync(fixture.binDir).filter((name) => name.startsWith(".atomic-")).length, 0);
+	}
 }
 
 unixTest("shell installer follows the stable redirect, installs the full tar payload, and prints a PATH hint", () => {
 	const fixture = createFixture();
 	try {
-		const result = fixture.run();
+		const result = fixture.run({ environment: { ATOMIC_FIXTURE_FAIL_API: "1" } });
 		assertSuccess(result);
 		assert.equal(currentVersion(fixture), "2.0.0");
 		assert.ok(lstatSync(join(fixture.installRoot, "current")).isSymbolicLink());
@@ -362,7 +394,8 @@ unixTest("shell installer follows the stable redirect, installs the full tar pay
 		assert.equal(installed.stdout.toString().trim(), "2.0.0");
 		assert.match(result.stdout.toString(), /export PATH=".*bin root:\$PATH"/u);
 		const requests = readFileSync(fixture.requestLog, "utf8");
-		assert.ok(requests.indexOf("/releases/latest") < requests.indexOf("/releases/tags/2.0.0"));
+		assert.match(requests, /GET https:\/\/github\.com\/bastani-inc\/atomic\/releases\/latest/u);
+		assert.doesNotMatch(requests, /api\.github\.com/u);
 		assert.match(requests, /atomic-linux-x64\.tar\.gz/u);
 		assert.match(requests, /SHA256SUMS/u);
 		assertNoTemporaryState(fixture);
@@ -430,6 +463,31 @@ unixTest("shell installer supports curl and wget fallback, API fallback, every r
 	}
 });
 
+unixTest("shell installer resolves a relative install root before creating launcher links", () => {
+	const fixture = createFixture();
+	try {
+		const result = fixture.run({
+			args: ["--ref", "1.0.0"],
+			environment: { ATOMIC_INSTALL_DIR: "install root" },
+		});
+		assertSuccess(result);
+		assert.equal(currentVersion(fixture), "1.0.0");
+		const binTarget = readlinkSync(join(fixture.binDir, "atomic"));
+		assert.ok(binTarget.startsWith("/"), `bin target is not absolute: ${binTarget}`);
+		assert.equal(
+			realpathSync(join(fixture.binDir, "atomic")),
+			realpathSync(join(fixture.installRoot, "current", "atomic")),
+		);
+		const installed = spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"], {
+			env: { PATH: fixture.tools },
+		});
+		assert.equal(installed.exitCode, 0, installed.stderr.toString());
+		assert.equal(installed.stdout.toString().trim(), "1.0.0");
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
 unixTest("shell installer selects every Darwin and Linux archive, including Rosetta and musl", () => {
 	const cases = [
 		[{ os: "Darwin", arch: "x86_64", arm64Sysctl: "1" }, "atomic-darwin-arm64.tar.gz"],
@@ -575,5 +633,42 @@ unixTest("same-version reinstall and upgrade are clean, idempotent, and roll bac
 		assertNoTemporaryState(fixture);
 	} finally {
 		fixture.cleanup();
+	}
+});
+
+unixTest("catchable signals after transaction moves restore the complete previous install", () => {
+	const cases = [
+		["version-backup", "TERM"],
+		["version-install", "INT"],
+		["current-backup", "TERM"],
+		["current-install", "INT"],
+		["bin-backup", "TERM"],
+		["bin-install", "INT"],
+	] as const;
+	for (const [move, signal] of cases) {
+		const fixture = createFixture();
+		try {
+			assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+			const versionOne = join(fixture.installRoot, "versions", "1.0.0");
+			writeFileSync(join(versionOne, "preserve.txt"), `${move}-${signal}`);
+			const interrupted = fixture.run({
+				args: ["--ref", "1.0.0"],
+				environment: {
+					ATOMIC_FIXTURE_SIGNAL: signal,
+					ATOMIC_FIXTURE_SIGNAL_AFTER_MOVE: move,
+				},
+			});
+			assert.notEqual(interrupted.exitCode, 0, `${move} ${signal} unexpectedly passed`);
+			assert.equal(readFileSync(join(versionOne, "preserve.txt"), "utf8"), `${move}-${signal}`);
+			assert.equal(currentVersion(fixture), "1.0.0");
+			const installed = spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"], {
+				env: { PATH: fixture.tools },
+			});
+			assert.equal(installed.exitCode, 0, `${move} ${signal}: ${installed.stderr.toString()}`);
+			assert.equal(installed.stdout.toString().trim(), "1.0.0");
+			assertNoTemporaryState(fixture);
+		} finally {
+			fixture.cleanup();
+		}
 	}
 });
