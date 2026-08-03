@@ -96,6 +96,13 @@ describe("builtin workflow steering propagation", () => {
 						text.includes("<steering_propagation>"),
 						`${builtin.module} stage "${stageName}" prompt is missing the steering propagation contract`,
 					);
+					// The contract only survives a long stage if compaction cannot delete it. An
+					// unprotected copy looks identical here but erodes mid-run, which is the
+					// failure this whole pattern exists to prevent.
+					assert.ok(
+						text.includes("<steering_propagation>\n<keepContext>"),
+						`${builtin.module} stage "${stageName}" carries the steering propagation contract unprotected; wrap it with keepContext`,
+					);
 				}
 			}
 		});

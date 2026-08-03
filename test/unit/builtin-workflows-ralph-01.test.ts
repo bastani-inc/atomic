@@ -197,7 +197,10 @@ describe("ralph", () => {
 			ctx.calls.prompts["reviewer-a"]?.[0] ?? "",
 		];
 		for (const text of stagePrompts) {
-			assert.match(text, /<acceptance_criteria>\nAdd a small feature\n<\/acceptance_criteria>/);
+			assert.match(
+				text,
+				/<acceptance_criteria>\n<keepContext>\nAdd a small feature\n<\/keepContext>\n<\/acceptance_criteria>/,
+			);
 			assert.match(text, /<literal_contract>/);
 		}
 		const ctxWithCriteria = makeMockCtx({
@@ -217,7 +220,10 @@ describe("ralph", () => {
 		];
 		for (const text of criteriaPrompts) {
 			assert.match(text, /<objective>[\s\S]*Follow-up delta[\s\S]*<\/objective>/);
-			assert.match(text, /<acceptance_criteria>\nOriginal task contract\n<\/acceptance_criteria>/);
+			assert.match(
+				text,
+				/<acceptance_criteria>\n<keepContext>\nOriginal task contract\n<\/keepContext>\n<\/acceptance_criteria>/,
+			);
 		}
 	});
 

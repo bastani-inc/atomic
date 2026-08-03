@@ -633,6 +633,36 @@ While implementing:
 
 At the end, report three things: what the contract was, evidence each criterion passes, and the deferred list. Scope changes belong in the report, never in the diff.
 
+### Protect the contract from compaction
+
+A long-running stage gets compacted, and compaction ranks lines individually rather than preserving whole instructions. That ranking has a bias worth knowing: an objective is verbose and restated, while the constraint that bounds it is usually one line. Rank them independently and the constraint is the cheaper deletion — so what survives is coherent, actionable, and missing its boundary conditions. A prohibition removed from context reads as permission.
+
+Wrap contract text in `keepContext` so it survives verbatim regardless of the compression ratio:
+
+```ts
+import { keepContext, workflow } from "@bastani/workflows";
+
+const prompt = [
+  keepContext("Research only. Do not implement code changes."),
+  `Investigate: ${ctx.inputs.question}`,
+].join("\n\n");
+```
+
+Every line of the span is protected, tag lines included. The guarantee is mechanical rather than advisory: protected lines are removed from the planner's deletion ranges after it responds, and the keep target rises to fit them. Because the tag lines are protected too, the span is re-detected on each later boundary — which matters, since every compaction re-ranks the previous compaction's output, so a constraint must survive every cycle rather than only the first.
+
+`keepContext` is a pure string helper, not a `ctx.*` primitive: it creates no graph node and has no side effect, so call it anywhere a prompt is assembled. It is idempotent, so composing already-wrapped text will not nest.
+
+Tag:
+
+- role constraints that bound a stage to part of the work — "research only", "review and report, do not repair";
+- acceptance criteria and immutable contracts a later stage is judged against;
+- explicit prohibitions;
+- identifiers a stage must not lose, such as a target branch, worktree path, or run ID.
+
+Do not tag bulk context. Protection raises the keep target, so a large protected span forces heavier deletion everywhere else. Tag the constraint, not the material it applies to — pass that through files and `reads`.
+
+Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all protected. See [Compaction](/compaction#keepcontext-tags) for the retention mechanism.
+
 ### Practical consequences
 
 - **Steer freely — it is the supported amendment channel.** You do not need to restart a run to add a requirement.
@@ -928,30 +958,7 @@ Also document the context that stages pass to one another:
 
 See [Context Engineering](#context-engineering) for details.
 
-#### Protect critical instructions with `keepContext`
-
-A long-running stage will be compacted, and compaction ranks lines individually. An objective is verbose and restated, while the constraint that narrows it is usually one line — so the constraint is the cheaper deletion. What survives is then coherent, actionable, and missing its boundary conditions, which is harder to notice than plain amnesia.
-
-Wrap any critical part of a stage prompt in `<keepContext>` / `</keepContext>`. Tagged content survives compression verbatim regardless of the compression ratio:
-
-```ts
-const prompt = `<keepContext>
-Research only. Do not implement code changes or author a spec.
-</keepContext>
-
-${researchQuestion}`;
-```
-
-Use it for anything whose loss silently changes what the stage does:
-
-- role constraints that bound a stage to part of the work ("research only", "review only, do not repair");
-- acceptance criteria and immutable contracts a later stage is judged against;
-- explicit prohibitions, since a negation deleted from context reads as permission;
-- identifiers a stage must not lose, such as a target branch, worktree path, or run ID.
-
-Do not wrap bulk context. Protection raises the keep target, so a large protected span forces heavier deletion everywhere else. Tag the constraint, not the material it applies to — pass that through files and `reads`.
-
-See [Compaction](/compaction#keepcontext-tags) for the retention guarantee.
+Protect a stage's role constraints, acceptance criteria, and prohibitions with `keepContext` so compaction cannot delete them out from under a long-running stage — see [Protect the contract from compaction](#protect-the-contract-from-compaction).
 
 ### Inputs
 

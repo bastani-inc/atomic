@@ -5,6 +5,7 @@ import type { WorkflowTaskResult } from "../src/shared/types.js";
 import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import {
   E2E_VERIFICATION_GUIDANCE,
+  keepContext,
   LITERAL_OBJECTIVE_CONTRACT,
 } from "./shared-prompts.js";
 import type { ReviewDecision, ReviewFinding } from "./ralph-review-gate.js";
@@ -336,7 +337,7 @@ export function renderResearchPromptRefinementPrompt(args: {
   readonly latestReviewReportPath: string | undefined;
 }): string {
   return taggedPrompt([
-    ["acceptance_criteria", args.acceptanceCriteria],
+    ["acceptance_criteria", keepContext(args.acceptanceCriteria)],
     ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
     args.workflowCwdContext,
     [
@@ -351,7 +352,9 @@ export function renderResearchPromptRefinementPrompt(args: {
     ["objective", `Research the full requested task: ${args.request}`],
     [
       "output",
-      "Return only one concise, complete codebase and online research question. Do not implement code changes or write an RFC/spec.",
+      keepContext(
+        "Return only one concise, complete codebase and online research question. Do not implement code changes or write an RFC/spec.",
+      ),
     ],
     [
       "instruction",
@@ -369,7 +372,7 @@ export function renderResearchPrompt(args: {
   readonly latestReviewReportPath: string | undefined;
 }): string {
   return taggedPrompt([
-    ["acceptance_criteria", args.acceptanceCriteria],
+    ["acceptance_criteria", keepContext(args.acceptanceCriteria)],
     ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
     args.workflowCwdContext,
     [
@@ -388,7 +391,7 @@ export function renderResearchPrompt(args: {
         "Return the complete research report as your final message. Downstream implementation and review stages read it from there.",
         "Produce a complete Markdown report with codebase and useful online/contextual findings, implementation guidance, relevant files/tests/docs, unresolved-finding analysis, and validation recommendations. Lead with conclusions; keep facts, caveats, and implementation-relevant next steps; drop background and repetition.",
         "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.",
-        "<keepContext>\nThis stage researches only. Do not author an RFC/spec or implement code changes.\n</keepContext>",
+        keepContext("This stage researches only. Do not author an RFC/spec or implement code changes."),
       ].join("\n"),
     ],
     [

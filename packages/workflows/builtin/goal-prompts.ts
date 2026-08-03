@@ -14,6 +14,7 @@ import {
   SCOPE_DISCIPLINE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
   WORKTREE_DISCIPLINE_CONTRACT,
+  keepContext,
   renderE2eQaVideoReviewGuidance,
 } from "./shared-prompts.js";
 import type { GoalLedger } from "./goal-types.js";
@@ -196,7 +197,9 @@ export function renderReviewerPrompt(args: {
       "Lead with the verdict. Keep evidence, decisions, caveats, and next action; omit background and repetition while remaining readable rather than using fragments, arrow chains, or invented shorthand.",
     ].join("\n")],
     ["objective", [
-      "Act as an independent, skeptical, technically fair reviewer. Inspect and report; do not implement. Protect correctness, security, performance, maintainability, and full objective completion without bikeshedding.",
+      keepContext(
+        "Act as an independent, skeptical, technically fair reviewer. Inspect and report; do not implement. Protect correctness, security, performance, maintainability, and full objective completion without bikeshedding.",
+      ),
       args.reviewerRole,
       args.focus,
       "Review the delivered change against the run objective stored in the goal ledger.",

@@ -8,11 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Workflow authoring guidance now covers `<keepContext>` / `</keepContext>` tags for stage prompts. Wrap role constraints, acceptance criteria, explicit prohibitions, and identifiers a stage must not lose; compaction protects the span verbatim regardless of the compression ratio ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+- Added `keepContext` to the public authoring surface: `import { keepContext } from "@bastani/workflows"`. It wraps prompt text so compaction protects it verbatim regardless of the compression ratio, and is a pure, idempotent string helper rather than a `ctx.*` primitive — no graph node, no side effect, callable anywhere a prompt is assembled. `KEEP_CONTEXT_OPEN_TAG` and `KEEP_CONTEXT_CLOSE_TAG` are exported alongside it. Reserve it for text whose loss silently changes behavior — role constraints, acceptance criteria, explicit prohibitions, and identifiers a stage must not lose — and not for bulk context, since protection raises the keep target ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
 
 ### Fixed
 
-- Ralph's research stage wraps its research-only constraint in `<keepContext>` tags, so compaction can no longer delete it partway through a long research session and leave the stage acting on the surviving "implement" objective alone ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+- Builtin workflows protect their own invariants with `keepContext`, so a long-running stage can no longer lose the rules that bound it: the steering propagation contract carried by every builtin stage prompt, the literal objective contract, scope discipline, worktree discipline, ralph's per-run acceptance criteria, ralph's research-only role constraint, and goal's reviewer "inspect and report; do not implement" constraint. Previously a research stage could be compacted past its own prohibition and start implementing, and a stage could lose the checkout it was bound to ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
 
 ## [0.9.11] - 2026-08-03
 

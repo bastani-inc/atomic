@@ -238,6 +238,18 @@ export declare function workflow<
 	const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
 	TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
 >(spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>): AuthoredWorkflowDefinition<TInputs, TOutputs>;
+
+/**
+ * Wrap prompt text so compaction protects it verbatim, regardless of the compression ratio.
+ *
+ * Reserve it for text whose loss silently changes behavior: role constraints, acceptance
+ * criteria and immutable contracts, explicit prohibitions, and identifiers a stage must not
+ * lose. Do not wrap bulk context — protection raises the keep target, so a large span forces
+ * heavier deletion elsewhere.
+ */
+export declare function keepContext(text: string): string;
+export declare const KEEP_CONTEXT_OPEN_TAG: string;
+export declare const KEEP_CONTEXT_CLOSE_TAG: string;
 export declare function createRegistry<
 	TDefinitions extends readonly AnyWorkflowDefinition[] = readonly AnyWorkflowDefinition[],
 >(initial?: TDefinitions): WorkflowRegistry;

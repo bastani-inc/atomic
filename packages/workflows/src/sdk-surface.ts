@@ -6,6 +6,7 @@
  */
 
 export type { Static, TSchema } from "typebox";
+export { KEEP_CONTEXT_CLOSE_TAG, KEEP_CONTEXT_OPEN_TAG, keepContext } from "./authoring/keep-context.js";
 export { workflow } from "./authoring/workflow.js";
 
 const REMOVED_RUN_WORKFLOW_MESSAGE =

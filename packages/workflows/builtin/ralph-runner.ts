@@ -11,6 +11,7 @@ import {
   SCOPE_DISCIPLINE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
   WORKTREE_DISCIPLINE_CONTRACT,
+  keepContext,
 } from "./shared-prompts.js";
 import { renderRalphReviewerPrompt } from "./ralph-reviewer-prompt.js";
 import {
@@ -117,7 +118,7 @@ export async function runRalphWorkflow(
     const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionFile);
     const orchestratorPrompt = orchestratorForkOptions.forkFromSessionFile === undefined
       ? taggedPrompt([
-        ["acceptance_criteria", acceptanceCriteria],
+        ["acceptance_criteria", keepContext(acceptanceCriteria)],
         ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
         ["acceptance_matrix", ACCEPTANCE_MATRIX_CONTRACT],
         ["divergence_audit", CONTRACT_FIDELITY_AUDIT],

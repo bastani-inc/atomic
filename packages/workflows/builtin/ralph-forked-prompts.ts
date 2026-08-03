@@ -1,5 +1,6 @@
 // Forked stages inherit their contracts and receive only the iteration delta.
 import { taggedPrompt } from "./ralph-core.js";
+import { keepContext } from "./shared-prompts.js";
 
 export function renderForkedResearchPromptRefinementPrompt(args: {
   readonly latestReviewReportPath: string | undefined;
@@ -16,7 +17,9 @@ export function renderForkedResearchPromptRefinementPrompt(args: {
     ],
     [
       "output",
-      "Return only one concise, complete codebase and online research question. Do not implement code changes or write an RFC/spec.",
+      keepContext(
+        "Return only one concise, complete codebase and online research question. Do not implement code changes or write an RFC/spec.",
+      ),
     ],
     [
       "instruction",
@@ -44,7 +47,7 @@ export function renderForkedResearchPrompt(args: {
       [
         "Return the rewritten research report for this iteration as your final message.",
         "Restate the still-applicable findings in full rather than referring back to the previous iteration's artifact; the current artifact and transcript are the authoritative records for this iteration.",
-        "Do not author an RFC/spec or implement code changes.",
+        keepContext("This stage researches only. Do not author an RFC/spec or implement code changes."),
       ].join("\n"),
     ],
     [
