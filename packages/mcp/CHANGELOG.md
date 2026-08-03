@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-08-03
+
+### Removed
+
+- Removed Cursor MCP configuration discovery and the `cursor` compatibility import kind ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+
+### Fixed
+
+- Declared `handlesCtrlC` on the `/mcp` panel, the `/mcp setup` panel, and the MCP OAuth panel, so Ctrl+C still reaches each panel's own handler — and its cancel and cleanup work — in isolated interactive sessions.
+
 ## [0.9.11-alpha.9] - 2026-08-01
 
 ### Fixed

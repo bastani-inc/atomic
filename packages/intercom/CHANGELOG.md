@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-08-03
+
+### Changed
+
+- Released with Atomic 0.9.11. No functional intercom changes since 0.9.10; the extension now runs under the reworked isolated-engine and workflow-group behaviour shipped by the host.
+
 ## [0.9.11-alpha.1] - 2026-07-20
 
 ### Changed

@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-08-03
+
+### Changed
+
+- Adopted Claude Opus 5 across every builtin subagent `fallbackModels` policy and normalized provider ordering: each Anthropic family lists its direct `anthropic/...` candidate ahead of the `github-copilot/...` mirror, Opus 5 leads the Anthropic group (`:high` for the debugger, `:low` elsewhere), and `claude-fable-5` gains its missing Copilot mirror.
+- Reworked all nine bundled agent system prompts and all seven chain task templates for GPT-5.6, Claude Opus 5, and Claude Fable 5. Agent bodies are outcome-first with explicit success, evidence, output, escalation, and stop contracts, shrinking from 1,418 to 561 lines. Removing repeated self-verification and requests to reproduce internal reasoning also avoids Claude Fable 5 `reasoning_extraction` refusals that could force model fallback. Frontmatter and exported behaviour are unchanged.
+- Made the builtin debugger write-capable with the same tool list as `worker`, so it applies the smallest in-scope fix after proving the root cause, and gave it the `tdd`, `playwright-cli`, and `tmux` skills plus Intercom coordination.
+- Generalized orchestration guidance across parent chats and workflow stages: orchestrators preserve each agent's declared model and fallback policy by default, explicit overrides require a user request or documented need, and every invocation shares one invocation-specific Intercom group while retaining `contact_supervisor` escalation.
+
+### Removed
+
+- Removed Cursor MCP compatibility imports from delegated direct-tool resolution and Cursor model candidates from every builtin subagent fallback policy ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+- Removed the `(1m)` context-window token from every builtin fallback policy; candidates now use the model's catalog context window (`github-copilot/claude-opus-4.8:medium`).
+
+### Fixed
+
+- Fixed startup artifact cleanup escaping isolated agent directories, and made it far cheaper: the global scan now stays inside a host-provided sessions root, runs at most once per 24 hours per root behind a `.last-cleanup` marker and an exclusive `.cleanup.lock`, is deferred ten minutes after startup, and stops at the first entry newer than the cutoff instead of recursively stat-ing whole subtrees — eliminating tens of thousands of synchronous fs calls on long-lived machines ([#2070](https://github.com/bastani-inc/atomic/issues/2070)).
+- Fixed worktree setup hooks being reported as failed when they never read their stdin. A hook that exited before the JSON input flushed made `spawnSync` report `EPIPE` and tore down the whole worktree even though the hook had completed; the child's exit status and output are now authoritative. Timeouts and other spawn errors stay fatal.
+- Fixed foreground subagent runs that detached for intercom coordination completing silently. A detached single, chain, or parallel child now delivers a "Detached subagent task" completion, failure, or paused notice to the parent session through the same deduplicated, turn-triggering pipeline as background completions, including per-child `(n/m)` attribution.
+
 ## [0.9.11-alpha.9] - 2026-08-01
 
 ### Fixed

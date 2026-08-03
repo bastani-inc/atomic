@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-08-03
+
+### Fixed
+
+- Fixed PDF extraction dropping text and streaming `TypeError: Math.sumPrecise is not a function` on Node runtimes without `Math.sumPrecise`. `unpdf` is now exact-pinned to `1.7.0` — the newest release that still ships the guarded fallback — instead of floating to 1.8.0, and that upgrade also adds `cMapUrl` CJK font support, releases document proxies and canvas resources, and preserves line breaks in `extractText` ([#2141](https://github.com/bastani-inc/atomic/issues/2141)).
+- Fixed retained GitHub README truncations by copying bounded text into flat strings before storing long-lived results ([#2151](https://github.com/bastani-inc/atomic/issues/2151)).
+
 ## [0.9.11-alpha.12] - 2026-08-03
 
 ### Fixed
