@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.11-alpha.12] - 2026-08-03
+
 ### Fixed
 
 - Fixed PDF extraction dropping text and streaming `TypeError: Math.sumPrecise is not a function` warnings on Node runtimes that do not implement `Math.sumPrecise`. The `unpdf` dependency was declared as the floating range `^1.6.2`, which resolves to 1.8.0 in a published or global install; that release's bundled PDF.js v6.1 dropped the guarded fallback and calls the builtin unconditionally, so extraction threw per glyph, emitted font-substitution warnings, and silently returned fewer text items. `unpdf` is now exact-pinned to `1.7.0`, the newest release that still ships the fallback, so no install can float to 1.8.0 ([#2141](https://github.com/bastani-inc/atomic/issues/2141)).
