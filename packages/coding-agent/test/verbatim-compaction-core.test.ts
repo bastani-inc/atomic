@@ -147,14 +147,31 @@ describe("verbatim transcript serialization", () => {
 		expect(region.protectedLineNumbers).toBeUndefined();
 	});
 
-	it("protects to the end of the region when a span is left open by the region boundary", () => {
-		const region = createNumberedRegion("intro\n<keepContext>\nrole constraint\nstill inside");
-		expect([...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b)).toEqual([2, 3, 4]);
+	it("bounds an unclosed span to its own message rather than the rest of the region", () => {
+		const region = createNumberedRegion("[User]: <keepContext>\nrole constraint\n[Assistant]: reply\nline a\nline b");
+		expect([...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b)).toEqual([1, 2]);
 	});
 
-	it("protects a single line carrying both tags and matches case-insensitively", () => {
-		const region = createNumberedRegion("intro\n<KeepContext>do not implement</keepcontext>\ntrailing");
-		expect([...(region.protectedLineNumbers ?? [])]).toEqual([2]);
+	it("protects an unclosed span through the end of the region when its message runs to the end", () => {
+		const region = createNumberedRegion("[User]: <keepContext>\nrole constraint\nstill inside");
+		expect([...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+	});
+
+	it("ignores tag text mentioned inside ordinary prose", () => {
+		const region = createNumberedRegion(
+			"[User]: how does compaction work?\n[Assistant]: wrap text in <keepContext> to protect it\nline a\nline b",
+		);
+		expect(region.protectedLineNumbers).toBeUndefined();
+	});
+
+	it("ignores a matched pair embedded in a single prose line", () => {
+		const region = createNumberedRegion("intro\nthe <keepContext>x</keepContext> tag protects x\ntrailing");
+		expect(region.protectedLineNumbers).toBeUndefined();
+	});
+
+	it("detects an opener carrying the serializer's role header and matches case-insensitively", () => {
+		const region = createNumberedRegion("[User]: <KeepContext>\nrole constraint\n</keepcontext>\ntrailing");
+		expect([...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b)).toEqual([1, 2, 3]);
 	});
 
 	it("unions detected spans with explicitly supplied protected lines", () => {
@@ -239,6 +256,18 @@ describe("mechanical reconstruction", () => {
 		expect(result.text).toBe(` α \n${filteredMarker(1)}\nγ\nδ\nε`);
 		const survivors = result.text.split("\n").filter((line) => !FILTERED_MARKER_RE.test(line));
 		expect(survivors).toEqual([" α ", "γ", "δ", "ε"]);
+	});
+
+	it("reports force-preserved ranges so accidental protection is diagnosable", () => {
+		const region = createNumberedRegion("[User]: <keepContext>\nrule\n</keepContext>\ntail a\ntail b");
+		const result = reconstructCompactedTranscript(region, validateDeletedRanges([{ start: 1, end: 5 }], region));
+		expect(result.keptRanges).toEqual([{ start: 1, end: 3 }]);
+	});
+
+	it("reports no force-preserved ranges when nothing is protected", () => {
+		const region = createNumberedRegion("a\nb\nc\nd");
+		const result = reconstructCompactedTranscript(region, validateDeletedRanges([{ start: 2, end: 3 }], region));
+		expect(result.keptRanges).toEqual([]);
 	});
 
 	it("sums swallowed prior markers", () => {

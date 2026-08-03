@@ -648,7 +648,7 @@ const prompt = [
 ].join("\n\n");
 ```
 
-Every line of the span is protected, tag lines included. The guarantee is mechanical rather than advisory: protected lines are removed from the planner's deletion ranges after it responds, and the keep target rises to fit them. Because the tag lines are protected too, the span is re-detected on each later boundary — which matters, since every compaction re-ranks the previous compaction's output, so a constraint must survive every cycle rather than only the first.
+Every line of the span is protected, tag lines included. The guarantee is mechanical rather than advisory: protected lines are removed from the planner's deletion ranges after it responds. Because the tag lines are protected too, the span is re-detected on each later boundary — which matters, since every compaction re-ranks the previous compaction's output, so a constraint must survive every cycle rather than only the first. Tags must sit on their own line, and a span is scoped to one message.
 
 `keepContext` is a pure string helper, not a `ctx.*` primitive: it creates no graph node and has no side effect, so call it anywhere a prompt is assembled. It is idempotent, so composing already-wrapped text will not nest.
 
@@ -659,9 +659,33 @@ Tag:
 - explicit prohibitions;
 - identifiers a stage must not lose, such as a target branch, worktree path, or run ID.
 
-Do not tag bulk context. Protection raises the keep target, so a large protected span forces heavier deletion everywhere else. Tag the constraint, not the material it applies to — pass that through files and `reads`.
+Do not tag bulk context. Protected lines count against the keep target rather than raising it, so a large protected span makes the surrounding transcript compress harder. Tag the constraint, not the material it applies to — pass that through files and `reads`.
 
 Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all protected. See [Compaction](/compaction#keepcontext-tags) for the retention mechanism.
+
+#### Tagging is not only for workflow authors
+
+The tags are plain text, so they work anywhere text becomes a stage prompt — you do not need to be writing a workflow definition to use them. Two cases matter in everyday use, and both apply to an agent driving the `workflow` tool on your behalf.
+
+**Run inputs.** Workflows inject their inputs into stage prompts, so anything you tag in an input is inherited by the stages that receive it:
+
+```
+workflow({ action: "run", workflow: "ralph", inputs: {
+  prompt: "<keepContext>\nResearch and implement issue #2170. Do not touch the release pipeline.\n</keepContext>\n\n" + issueBody,
+  acceptance_criteria: "<keepContext>\n1. ...\n2. ...\n</keepContext>",
+}})
+```
+
+Note what is tagged and what is not: the constraint and the criteria are protected, the quoted issue body is not. A launch prompt is usually mostly reference material, and protecting all of it would raise the keep target so far that stages lose the transcript evidence they need.
+
+**Steering.** A `send` amendment is authoritative and stages must carry it forward, but it is one short message arriving late into an already-long session, competing against the entire transcript for retention. Tagging it keeps it alive until the stage acts on it:
+
+```
+workflow({ action: "send", runId, text:
+  "<keepContext>\nNew requirement: the fix must not change the public API.\n</keepContext>" })
+```
+
+An agent launching or steering a run should make this call per message rather than tagging by habit — protect the clause that must hold, and leave the surrounding explanation to be compacted normally.
 
 ### Practical consequences
 

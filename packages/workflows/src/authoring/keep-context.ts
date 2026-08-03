@@ -12,11 +12,12 @@ export const KEEP_CONTEXT_CLOSE_TAG = "</keepContext>";
 /**
  * Wrap text so compaction protects it verbatim.
  *
- * Every line of the span, tag lines included, becomes a protected line. Protected lines are
- * removed from the planner's deletion ranges after it responds, and the keep target rises to
- * fit them, so the span survives regardless of the compression ratio. Because the tag lines are
- * protected too, the span is re-detected on each subsequent boundary and stays protected for
- * the life of the session.
+ * Every line of the span, tag lines included, becomes a protected line, and protected lines are
+ * removed from the planner's deletion ranges after it responds, so the span survives regardless
+ * of the compression ratio. Because the tag lines are protected too, the span is re-detected on
+ * each subsequent boundary and stays protected for the life of the session.
+ *
+ * Tags must sit on their own line, and a span is scoped to one message.
  *
  * Reserve it for text whose loss silently changes behavior — role constraints, acceptance
  * criteria and immutable contracts, explicit prohibitions, and identifiers a stage must not
@@ -24,9 +25,9 @@ export const KEEP_CONTEXT_CLOSE_TAG = "</keepContext>";
  * so a terse constraint loses to the verbose objective it qualifies, and a prohibition deleted
  * from context reads as permission.
  *
- * Do not wrap bulk context. Protection raises the keep target, so a large protected span forces
- * heavier deletion everywhere else; tag the constraint, not the material it applies to, and
- * pass that through files and `reads`.
+ * Do not wrap bulk context. Protected lines count against the keep target rather than raising
+ * it, so a large protected span makes the surrounding transcript compress harder; tag the
+ * constraint, not the material it applies to, and pass that through files and `reads`.
  *
  * Nesting is flattened rather than rejected: an already-wrapped string is returned unchanged.
  *

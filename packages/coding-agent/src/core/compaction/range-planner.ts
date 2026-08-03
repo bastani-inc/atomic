@@ -4,7 +4,6 @@ import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@earendi
 import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import type {
 	BorrowedPlanner,
-	LineRange,
 	NumberedRegion,
 	PlannerBudget,
 	RawLineRange,
@@ -17,6 +16,7 @@ import type { DiagnosticFailureCategory } from "./range-planner-diagnostics.js";
 import { writeDiagnosticSidecar, writeRecoveryDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import { numberRegionLines } from "./transcript-serialization.js";
 import { parseRangeRecords, recoverTruncatedRecords } from "./truncated-range-recovery.js";
+import { contiguousRanges } from "./utils.js";
 
 export const RANGE_PLANNER_SYSTEM_PROMPT = `You are a context compaction assistant. Your task is to globally rank the continuation value of every unprotected numbered transcript line, apply the stated keep threshold once, and output only the lines to DELETE as bare deletion records.
 
@@ -66,17 +66,7 @@ export function extractDeletedRanges(text: string): RawLineRange[] | undefined {
 	return parseRangeRecords(text);
 }
 
-/** Collapse a sparse set of line numbers into ascending contiguous inclusive ranges. */
-export function contiguousRanges(lines: ReadonlySet<number>): LineRange[] {
-	const sorted = [...lines].sort((left, right) => left - right);
-	const ranges: LineRange[] = [];
-	for (const line of sorted) {
-		const last = ranges[ranges.length - 1];
-		if (last && line === last.end + 1) last.end = line;
-		else ranges.push({ start: line, end: line });
-	}
-	return ranges;
-}
+export { contiguousRanges };
 
 function formatProtectedRanges(region: NumberedRegion): string {
 	const ranges = contiguousRanges(region.protectedLineNumbers ?? new Set<number>());
@@ -86,12 +76,11 @@ function formatProtectedRanges(region: NumberedRegion): string {
 export function buildRangePlannerPrompt(
 	region: NumberedRegion,
 	parameters: VerbatimCompactionParameters,
-	targetKeepLines = Math.max(
-		region.protectedLineNumbers?.size ?? 0,
-		Math.round(region.lines.length * parameters.compression_ratio),
-	),
+	targetKeepLines = Math.round(region.lines.length * parameters.compression_ratio),
 ): string {
 	const targetDeleteLines = Math.max(0, region.lines.length - targetKeepLines);
+	const protectedCount = region.protectedLineNumbers?.size ?? 0;
+	const unprotectedKeepBudget = Math.max(0, targetKeepLines - protectedCount);
 	return `<numbered-transcript>
 ${numberRegionLines(region)}
 </numbered-transcript>
@@ -103,10 +92,12 @@ Target lines to keep: ${targetKeepLines}
 Target lines to delete: ${targetDeleteLines}
 Relevance focus: ${parameters.query}
 Protected 1-based inclusive ranges: ${formatProtectedRanges(region)}
+Protected lines already consuming the keep target: ${protectedCount}
+Additional unprotected lines you may keep: ${unprotectedKeepBudget}
 
 <EXTREMELY_IMPORTANT>
 Protected ranges are absolute. Callers wrap content they never want compressed in \`<keepContext>\` / \`</keepContext>\` tags, and every line of such a span, tag lines included, is listed above as protected. Tagged content survives verbatim regardless of the compression ratio.
-Never emit a deletion record covering a protected line, whatever the keep target says. If the protected ranges alone meet or exceed the keep target, delete every remaining low-priority line and keep all protected lines.
+Never emit a deletion record covering a protected line, whatever the keep target says. Protected lines count against the keep target rather than raising it, so the unprotected remainder must compress harder to reach the same total. If the protected ranges alone meet or exceed the keep target, delete every remaining low-priority line and keep all protected lines.
 </EXTREMELY_IMPORTANT>
 
 Output exactly bare deletion records, one per line. Each line is one inclusive \`start,end\` range. Emit only ASCII decimal integers and one comma per line—no spaces, blank lines, header, count, Markdown fence, prose, or reasoning.

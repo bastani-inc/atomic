@@ -4,6 +4,7 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai/compat";
+import type { LineRange } from "./compaction-types.js";
 
 // ============================================================================
 // File Operation Tracking
@@ -168,3 +169,19 @@ export function serializeConversation(messages: Message[]): string {
 export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
+
+// ============================================================================
+// Line Range Helpers
+// ============================================================================
+
+/** Collapse a sparse set of line numbers into ascending contiguous inclusive ranges. */
+export function contiguousRanges(lines: ReadonlySet<number>): LineRange[] {
+	const sorted = [...lines].sort((left, right) => left - right);
+	const ranges: LineRange[] = [];
+	for (const line of sorted) {
+		const last = ranges[ranges.length - 1];
+		if (last && line === last.end + 1) last.end = line;
+		else ranges.push({ start: line, end: line });
+	}
+	return ranges;
+}

@@ -10,9 +10,15 @@ export const ROLE_HEADER_RE = /^\[(User|Assistant|Assistant thinking|Assistant t
  * such a span, tag lines included, becomes a protected line, so the span survives verbatim
  * regardless of the compression ratio. Protecting the tags themselves is what makes the span
  * re-detectable on the next boundary, since each compaction re-ranks the previous output.
+ *
+ * The region is untrusted: it is serialized user, assistant, and tool-result payload, and a
+ * message may quote or document the tag text. Detection is therefore deliberately narrow — a
+ * marker must be the entire line once an optional role header is stripped, and only a matched
+ * open/close pair protects anything. Prose that merely mentions a tag matches nothing, and an
+ * unmatched opener protects nothing rather than swallowing the rest of the region.
  */
-export const KEEP_CONTEXT_OPEN_RE = /<keepContext>/gi;
-export const KEEP_CONTEXT_CLOSE_RE = /<\/keepContext>/gi;
+const KEEP_CONTEXT_OPEN_LINE_RE = /^<keepContext>$/i;
+const KEEP_CONTEXT_CLOSE_LINE_RE = /^<\/keepContext>$/i;
 
 const TOOL_RESULT_MAX_CHARS = 16_000;
 
@@ -146,30 +152,52 @@ export function serializeRetainedTranscript(messages: Message[]): TranscriptChun
 	return serializeTranscriptChunks(messages, "retained");
 }
 
-function countMatches(line: string, pattern: RegExp): number {
-	pattern.lastIndex = 0;
-	let count = 0;
-	while (pattern.exec(line) !== null) count++;
-	return count;
+/**
+ * Classify a line as a `keepContext` marker.
+ *
+ * The serializer prefixes the first line of a message with its role header, so a span opened at
+ * the start of a stage prompt arrives as `[User]: <keepContext>`. The header is stripped before
+ * matching, and the remainder must be the whole line — prose that mentions a tag mid-sentence is
+ * payload, not syntax.
+ */
+function keepContextMarker(line: string): "open" | "close" | undefined {
+	const body = line.replace(ROLE_HEADER_RE, "").trim();
+	if (KEEP_CONTEXT_OPEN_LINE_RE.test(body)) return "open";
+	if (KEEP_CONTEXT_CLOSE_LINE_RE.test(body)) return "close";
+	return undefined;
 }
 
 /**
  * One-based line numbers covered by `<keepContext>` spans, inclusive of the tag lines.
  *
- * A span left open at the end of the region stays protected through the last line: the region is
- * a prefix of the conversation, so a span may legitimately close in the retained tail. Erring
- * toward keeping is the safe direction, and `targetKeepLines` already rises to fit protection.
- * A closing tag with no opener is inert.
+ * Spans are scoped to a single message: a role header ends any span still open, and an unclosed
+ * span protects through the end of its own message rather than the end of the region.
+ * That scoping is what makes the permissive unclosed case
+ * safe — the region is untrusted serialized user, assistant, and tool-result payload, and a
+ * region-wide span would let one quoted tag make everything after it unreclaimable. Compaction
+ * that cannot reclaim is an overflow, not a safe failure.
+ *
+ * Nested openers flatten into the outermost span, and a closing tag with no opener is inert.
  */
 export function keepContextLineNumbers(lines: readonly string[]): Set<number> {
 	const protectedLines = new Set<number>();
-	let depth = 0;
+	let openIndex: number | undefined;
+	const protectThrough = (endIndex: number): void => {
+		if (openIndex === undefined) return;
+		for (let line = openIndex; line <= endIndex; line++) protectedLines.add(line + 1);
+		openIndex = undefined;
+	};
 	for (let index = 0; index < lines.length; index++) {
-		const opens = countMatches(lines[index], KEEP_CONTEXT_OPEN_RE);
-		const closes = countMatches(lines[index], KEEP_CONTEXT_CLOSE_RE);
-		if (depth > 0 || opens > 0) protectedLines.add(index + 1);
-		depth = Math.max(0, depth + opens - closes);
+		const line = lines[index];
+		if (ROLE_HEADER_RE.test(line)) protectThrough(index - 1);
+		const marker = keepContextMarker(line);
+		if (marker === "open") {
+			if (openIndex === undefined) openIndex = index;
+			continue;
+		}
+		if (marker === "close") protectThrough(index);
 	}
+	protectThrough(lines.length - 1);
 	return protectedLines;
 }
 

@@ -64,12 +64,15 @@ You are researching only. Do not implement code changes.
 </keepContext>
 ```
 
-Every line of the span becomes a protected line, tag lines included, and the guarantee is mechanical rather than advisory. Deletion ranges are split around protected lines after the planner responds, so a protected line survives even if the planner ignores its instructions, and the keep target rises to fit protection instead of competing with it.
+Every line of the span becomes a protected line, tag lines included, and the guarantee is mechanical rather than advisory: deletion ranges are split around protected lines after the planner responds, so a protected line survives even if the planner ignores its instructions.
 
-Two properties are worth knowing when using this for long-lived instructions:
+Three properties are worth knowing when using this for long-lived instructions:
 
 - **Spans re-arm themselves.** Each compaction re-ranks the previous compaction's output, so a constraint must survive every cycle, not just the first. Because the tag lines are protected too, the span is re-detected on the next boundary and stays protected for the life of the session.
-- **Open spans stay protected.** The compactable region is a prefix of the conversation, so a span may legitimately close in the retained recent tail. An unclosed span protects through the end of the region. A closing tag with no opener is ignored.
+- **Tags are structural, and scoped to one message.** Each tag must be the whole line, after the transcript's role header — a tag mentioned inside prose is payload, not syntax. A span opens and closes within a single message; an unclosed span protects through the end of *its own message*, never the rest of the region. That scoping is what keeps the region safe: it is untrusted serialized user, assistant, and tool-result text, and a region-wide span would let one quoted tag make everything after it unreclaimable. Compaction that cannot reclaim is an overflow, not a safe failure. A closing tag with no opener is ignored.
+- **Kept content counts against the compression budget.** Protection does not raise the keep target. Protect 40% under a `compression_ratio` of `0.5` and the remaining 60% compresses harder to reach the same total, so the ratio stays a real bound on output size. Protecting more therefore costs the surrounding transcript, which is why the guidance is to tag the constraint rather than the material it applies to.
+
+Results report the force-preserved ranges as `keptRanges`, so protection that fired unexpectedly is diagnosable rather than a silent reduction in what compaction reclaimed.
 
 Use it for role constraints, invariants, and anything whose loss would silently change behavior. Prefer it over restating a constraint: without tags, a one-line constraint competes line-by-line against bulky tool output and is the cheaper deletion.
 

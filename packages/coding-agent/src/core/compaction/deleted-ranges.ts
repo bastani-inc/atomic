@@ -7,6 +7,7 @@ import type {
 	ValidatedRanges,
 } from "./compaction-types.js";
 import { filteredMarker } from "./transcript-serialization.js";
+import { contiguousRanges } from "./utils.js";
 
 function coerceEndpoint(value: RawLineEndpoint | undefined): number | undefined {
 	if (value === undefined) return undefined;
@@ -125,6 +126,7 @@ export function reconstructCompactedTranscript(region: NumberedRegion, ranges: V
 	return {
 		text,
 		ranges: finalRanges,
+		keptRanges: contiguousRanges(region.protectedLineNumbers ?? new Set<number>()),
 		stats: {
 			linesBefore: region.lines.length,
 			linesDeleted,
