@@ -83,19 +83,27 @@ function readReadmeInFrame(localPath: string): string {
 	return readme;
 }
 
-function externalMemoryAfterCollection(): number {
+/**
+ * Where the README string lives depends on the Node/V8 build: `readFileSync`
+ * with an encoding may hand back a V8 *external* string (counted only in
+ * `external_memory`) or an ordinary in-heap string (counted only in
+ * `heapUsed`), and which one you get varies by version and platform. Probe the
+ * sum of both counters so a pinned parent is visible either way — and so the
+ * positive-control arm still fails loudly if neither counter observes it.
+ */
+function totalMemoryAfterCollection(): number {
 	collect();
 	collect();
-	return v8.getHeapStatistics().external_memory;
+	return process.memoryUsage().heapUsed + v8.getHeapStatistics().external_memory;
 }
 
 function retainedReadme(read: (localPath: string) => string): { retained: number; summary: string } {
 	const localPath = mkdtempSync(join(tmpdir(), "web-access-flat-string-"));
 	try {
 		writeLargeReadme(localPath);
-		const baseline = externalMemoryAfterCollection();
+		const baseline = totalMemoryAfterCollection();
 		const summary = read(localPath);
-		const retained = externalMemoryAfterCollection() - baseline;
+		const retained = totalMemoryAfterCollection() - baseline;
 		// Read the summary after measuring so it is not collected early.
 		assert.equal(summary.length, README_LIMIT + README_SUFFIX.length);
 		return { retained, summary };
@@ -133,7 +141,7 @@ describe("web-access flattenTruncatedString", () => {
 		assert.equal(summary, "r".repeat(README_LIMIT) + README_SUFFIX);
 		assert.ok(
 			retained > RETAINED_PARENT_BYTES,
-			`expected a bare file-backed slice to pin its parent, retained ${retained} external bytes`,
+			`expected a bare file-backed slice to pin its parent, retained ${retained} bytes across heap and external memory`,
 		);
 	});
 
@@ -143,7 +151,7 @@ describe("web-access flattenTruncatedString", () => {
 		// A release can make the signed delta negative when external memory is reclaimed during the measurement.
 		assert.ok(
 			retained < RETAINED_PARENT_BYTES,
-			`expected readReadme to release its README source, retained ${retained} external bytes`,
+			`expected readReadme to release its README source, retained ${retained} bytes across heap and external memory`,
 		);
 	});
 });
