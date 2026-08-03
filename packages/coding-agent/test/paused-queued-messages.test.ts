@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
@@ -123,38 +124,6 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 	return host;
 }
 
-async function queueRawMessages(session: AgentSession): Promise<void> {
-	await session.steer("first raw steering");
-	await session.steer("second raw steering");
-	await session.followUp("duplicate raw follow-up");
-	await session.followUp("duplicate raw follow-up");
-	await session.sendCustomMessage(
-		{
-			customType: "pause-raw-custom",
-			content: [{ type: "text", text: "\traw custom content  \n" }],
-			display: true,
-			details: { optional: { untouched: true }, sequence: 3 },
-		},
-		{ deliverAs: "followUp" },
-	);
-}
-
-function expectExactHeldQueue(session: AgentSession): void {
-	const hold = (session as PauseAwareSession)._activeInterruptQueueHold;
-	expect(hold?.steering.map(getMessageText)).toEqual(["first raw steering", "second raw steering"]);
-	expect(hold?.followUp).toHaveLength(3);
-	const [first, second, custom] = hold?.followUp ?? [];
-	expect(first).not.toBe(second);
-	expect([first, second].map(getMessageText)).toEqual(["duplicate raw follow-up", "duplicate raw follow-up"]);
-	expect(custom).toMatchObject({
-		role: "custom",
-		customType: "pause-raw-custom",
-		content: [{ type: "text", text: "\traw custom content  \n" }],
-		display: true,
-		details: { optional: { untouched: true }, sequence: 3 },
-	});
-}
-
 describe("regular chat paused queued messages", () => {
 	const harnesses: Harness[] = [];
 
@@ -162,7 +131,7 @@ describe("regular chat paused queued messages", () => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
 
-	test("Escape holds raw queued messages until the next real user prompt resumes the chat", async () => {
+	test("Escape restores queued messages to the editor while preserving the paused late-admission hold", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const providerStarted = Promise.withResolvers<void>();
@@ -182,80 +151,41 @@ describe("regular chat paused queued messages", () => {
 				return fauxAssistantMessage("interrupted");
 			},
 			fauxAssistantMessage("resume acknowledged"),
-			fauxAssistantMessage("first steering handled"),
-			fauxAssistantMessage("first duplicate handled"),
-			fauxAssistantMessage("second duplicate handled"),
-			fauxAssistantMessage("custom handled"),
+			fauxAssistantMessage("late steering handled"),
 		]);
 		const activePrompt = harness.session.prompt("start regular chat");
 		await providerStarted.promise;
-		await queueRawMessages(harness.session);
-		expect(harness.session.getSteeringMessages()).toEqual(["first raw steering", "second raw steering"]);
-		expect(harness.session.getFollowUpMessages()).toEqual(["duplicate raw follow-up", "duplicate raw follow-up"]);
-		expect(harness.session.agent.hasQueuedMessages()).toBe(true);
+		await harness.session.steer("first raw steering");
+		await harness.session.steer("second raw steering");
+		await harness.session.followUp("first raw follow-up");
+		await harness.session.followUp("second raw follow-up");
 
 		const host = createEscapeHost(harness.session);
+		host.editor.setText("current draft");
 		host.defaultEditor.onEscape?.();
 		await abortObserved.promise;
-		host.defaultEditor.onEscape?.();
-		await Promise.resolve();
-		expectExactHeldQueue(harness.session);
-		let resumedSubmissionSettled = false;
-		let resumedSubmissionError: Error | undefined;
 
-		const settledBeforeAbort = resumedSubmissionSettled;
-		const streamingBeforeAbort = harness.session.isStreaming;
-		const steeringBeforeAbort = [...harness.session.getSteeringMessages()];
-		const followUpBeforeAbort = [...harness.session.getFollowUpMessages()];
-		const pausedBeforeAbort = (harness.session as PauseAwareSession).queuedMessagesPaused;
-		const coreQueuedBeforeAbort = harness.session.agent.hasQueuedMessages();
-		const responsesBeforeAbort = harness.getPendingResponseCount();
-		const usersBeforeAbort = getUserTexts(harness);
+		assert.equal(
+			host.editor.getText(),
+			"first raw steering\n\nsecond raw steering\n\nfirst raw follow-up\n\nsecond raw follow-up\n\ncurrent draft",
+		);
+		assert.deepEqual(harness.session.getSteeringMessages(), []);
+		assert.deepEqual(harness.session.getFollowUpMessages(), []);
+		assert.equal((harness.session as PauseAwareSession).queuedMessagesPaused, true);
+		assert.equal(harness.session.agent.hasQueuedMessages(), false);
+		const hold = (harness.session as PauseAwareSession)._activeInterruptQueueHold;
+		assert.deepEqual(hold, { steering: [], followUp: [] });
+
+		await harness.session.steer("late steering");
+		assert.deepEqual(hold?.steering.map(getMessageText), ["late steering"]);
 
 		allowAbortToSettle.resolve();
 		await activePrompt;
-		host.defaultEditor.onEscape?.();
-		await Promise.resolve();
-		expectExactHeldQueue(harness.session);
-		const resumedSubmission = runUserPromptTurn
-			.call(host, "resume regular chat")
-			.catch((error) => {
-				resumedSubmissionError = error instanceof Error ? error : new Error(String(error));
-			})
-			.finally(() => {
-				resumedSubmissionSettled = true;
-			});
-		await resumedSubmission;
+		await runUserPromptTurn.call(host, "resume regular chat");
 
-		expect(settledBeforeAbort).toBe(false);
-		expect(streamingBeforeAbort).toBe(true);
-		expect(steeringBeforeAbort).toEqual(["first raw steering", "second raw steering"]);
-		expect(followUpBeforeAbort).toEqual(["duplicate raw follow-up", "duplicate raw follow-up"]);
-		expect(pausedBeforeAbort).toBe(true);
-		expect(coreQueuedBeforeAbort).toBe(false);
-		expect(responsesBeforeAbort).toBe(5);
-		expect(usersBeforeAbort).toEqual(["start regular chat"]);
-		expect(resumedSubmissionError).toBeUndefined();
-		expect(harness.session.isStreaming).toBe(false);
-		expect((harness.session as PauseAwareSession).queuedMessagesPaused).toBe(false);
-		expect(harness.getPendingResponseCount()).toBe(0);
-		expect(getUserTexts(harness)).toEqual([
-			"start regular chat",
-			"resume regular chat",
-			"first raw steering",
-			"second raw steering",
-			"duplicate raw follow-up",
-			"duplicate raw follow-up",
-		]);
-		const deliveredCustom = harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "pause-raw-custom",
-		);
-		expect(deliveredCustom).toHaveLength(1);
-		expect(deliveredCustom[0]).toMatchObject({
-			content: [{ type: "text", text: "\traw custom content  \n" }],
-			display: true,
-			details: { optional: { untouched: true }, sequence: 3 },
-		});
+		assert.equal((harness.session as PauseAwareSession).queuedMessagesPaused, false);
+		assert.equal(harness.session.agent.hasQueuedMessages(), false);
+		assert.deepEqual(getUserTexts(harness), ["start regular chat", "resume regular chat", "late steering"]);
 	});
 
 	test("an immediate editor submission takes the paused-resume path instead of streaming queue admission", async () => {

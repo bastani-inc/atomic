@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Fixed Escape aborts restoring queued steering and follow-up messages to the editor instead of leaving them stuck in the pending-message queue.
 - Fixed `/model <model_name>` waiting indefinitely when a model-catalog refresh never settles; it now stops after the interactive 15-second deadline and searches cached models.
 - Quit workflow cards now expire from the BACKGROUND widget after the same recent-run window as finished cards while remaining resumable and discoverable through workflow status; the header count now matches the rendered cards after expiry.
 - Fixed detached foreground subagent completion notifications rendering as an unstyled dump of the full child output. They now use the same structured, collapsed notification UI as background completions while preserving the distinct detached-task wording, and persisted notifications with custom labels remain parseable.

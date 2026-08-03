@@ -57,7 +57,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveMode
 	this.defaultEditor.onEscape = () => {
 		if (!this.session.isStreaming && interruptBlockedInteractiveEngine(this.runtimeHost)) return;
 		if (this.session.isStreaming || this.session.agent.hasQueuedMessages() || this.session.queuedMessagesPaused) {
-			pauseAndAbortInteractiveSession(this);
+			pauseAndAbortInteractiveSession(this, { restoreQueuedMessages: true });
 		} else if (this.session.isBashRunning) {
 			this.session.abortBash();
 		} else if (this.isBashMode) {

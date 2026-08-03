@@ -155,6 +155,7 @@ describe("InteractiveMode Ctrl+C", () => {
 			settingsManager: { getDoubleEscapeAction: () => "none" },
 			isBashMode: false,
 			lastEscapeTime: 0,
+			restoreQueuedMessagesToEditor: vi.fn(),
 			showError,
 		};
 		setupKeyHandlers.call(host);
