@@ -104,6 +104,11 @@ Target lines to delete: ${targetDeleteLines}
 Relevance focus: ${parameters.query}
 Protected 1-based inclusive ranges: ${formatProtectedRanges(region)}
 
+<EXTREMELY_IMPORTANT>
+Protected ranges are absolute. Callers wrap content they never want compressed in \`<keepContext>\` / \`</keepContext>\` tags, and every line of such a span, tag lines included, is listed above as protected. Tagged content survives verbatim regardless of the compression ratio.
+Never emit a deletion record covering a protected line, whatever the keep target says. If the protected ranges alone meet or exceed the keep target, delete every remaining low-priority line and keep all protected lines.
+</EXTREMELY_IMPORTANT>
+
 Output exactly bare deletion records, one per line. Each line is one inclusive \`start,end\` range. Emit only ASCII decimal integers and one comma per line—no spaces, blank lines, header, count, Markdown fence, prose, or reasoning.
 
 Example (priority order, deliberately not numeric order):

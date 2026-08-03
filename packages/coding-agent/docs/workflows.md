@@ -928,6 +928,31 @@ Also document the context that stages pass to one another:
 
 See [Context Engineering](#context-engineering) for details.
 
+#### Protect critical instructions with `keepContext`
+
+A long-running stage will be compacted, and compaction ranks lines individually. An objective is verbose and restated, while the constraint that narrows it is usually one line — so the constraint is the cheaper deletion. What survives is then coherent, actionable, and missing its boundary conditions, which is harder to notice than plain amnesia.
+
+Wrap any critical part of a stage prompt in `<keepContext>` / `</keepContext>`. Tagged content survives compression verbatim regardless of the compression ratio:
+
+```ts
+const prompt = `<keepContext>
+Research only. Do not implement code changes or author a spec.
+</keepContext>
+
+${researchQuestion}`;
+```
+
+Use it for anything whose loss silently changes what the stage does:
+
+- role constraints that bound a stage to part of the work ("research only", "review only, do not repair");
+- acceptance criteria and immutable contracts a later stage is judged against;
+- explicit prohibitions, since a negation deleted from context reads as permission;
+- identifiers a stage must not lose, such as a target branch, worktree path, or run ID.
+
+Do not wrap bulk context. Protection raises the keep target, so a large protected span forces heavier deletion everywhere else. Tag the constraint, not the material it applies to — pass that through files and `reads`.
+
+See [Compaction](/compaction#keepcontext-tags) for the retention guarantee.
+
 ### Inputs
 
 Inputs are declared with TypeBox `Type.*` schemas in the `inputs` object. Import `Type` from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so TypeBox schemas resolve under `tsc` — see [Programmatic Usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:

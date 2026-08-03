@@ -136,6 +136,36 @@ describe("verbatim transcript serialization", () => {
 		expect([...region.headerLineNumbers]).toEqual([1, 4]);
 		expect([...region.priorMarkerNs]).toEqual([[3, 12]]);
 	});
+
+	it("protects <keepContext> spans including the tag lines", () => {
+		const region = createNumberedRegion("intro\n<keepContext>\nrole constraint\n</keepContext>\ntrailing");
+		expect([...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b)).toEqual([2, 3, 4]);
+	});
+
+	it("leaves protectedLineNumbers undefined when no span is present", () => {
+		const region = createNumberedRegion("intro\nbody\ntrailing");
+		expect(region.protectedLineNumbers).toBeUndefined();
+	});
+
+	it("protects to the end of the region when a span is left open by the region boundary", () => {
+		const region = createNumberedRegion("intro\n<keepContext>\nrole constraint\nstill inside");
+		expect([...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b)).toEqual([2, 3, 4]);
+	});
+
+	it("protects a single line carrying both tags and matches case-insensitively", () => {
+		const region = createNumberedRegion("intro\n<KeepContext>do not implement</keepcontext>\ntrailing");
+		expect([...(region.protectedLineNumbers ?? [])]).toEqual([2]);
+	});
+
+	it("unions detected spans with explicitly supplied protected lines", () => {
+		const region = createNumberedRegion("intro\n<keepContext>\nrule\n</keepContext>\ntail", new Set([5]));
+		expect([...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b)).toEqual([2, 3, 4, 5]);
+	});
+
+	it("ignores a stray closing tag", () => {
+		const region = createNumberedRegion("intro\n</keepContext>\ntrailing");
+		expect(region.protectedLineNumbers).toBeUndefined();
+	});
 });
 
 describe("deleted range validation", () => {
@@ -164,6 +194,14 @@ describe("deleted range validation", () => {
 	it("returns an empty branded range list when explicit protection covers every line", () => {
 		const region = createNumberedRegion("[User]: task\n[Assistant]: ok", new Set([1, 2]));
 		expect([...validateDeletedRanges([{ start: 1, end: 2 }, {}], region)]).toEqual([]);
+	});
+
+	it("survives a whole-region deletion request for a <keepContext> span", () => {
+		const region = createNumberedRegion("noise\n<keepContext>\ndo not implement\n</keepContext>\nmore noise");
+		expect([...validateDeletedRanges([{ start: 1, end: 5 }], region)]).toEqual([
+			{ start: 1, end: 1 },
+			{ start: 5, end: 5 },
+		]);
 	});
 
 	it("preserves range invariants for arbitrary raw input", () => {

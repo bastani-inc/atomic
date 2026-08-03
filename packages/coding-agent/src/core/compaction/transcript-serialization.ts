@@ -5,6 +5,15 @@ export const FILTERED_MARKER_RE = /^\(filtered (\d+) lines\)$/;
 export const LINE_NUMBER_SEPARATOR = "→";
 export const ROLE_HEADER_RE = /^\[(User|Assistant|Assistant thinking|Assistant tool calls|Tool result)\]: /;
 
+/**
+ * Callers wrap never-compressible content in `<keepContext>` / `</keepContext>`. Every line of
+ * such a span, tag lines included, becomes a protected line, so the span survives verbatim
+ * regardless of the compression ratio. Protecting the tags themselves is what makes the span
+ * re-detectable on the next boundary, since each compaction re-ranks the previous output.
+ */
+export const KEEP_CONTEXT_OPEN_RE = /<keepContext>/gi;
+export const KEEP_CONTEXT_CLOSE_RE = /<\/keepContext>/gi;
+
 const TOOL_RESULT_MAX_CHARS = 16_000;
 
 /** One piece of a serialized transcript: literal text, or an image kept at its position. */
@@ -137,6 +146,33 @@ export function serializeRetainedTranscript(messages: Message[]): TranscriptChun
 	return serializeTranscriptChunks(messages, "retained");
 }
 
+function countMatches(line: string, pattern: RegExp): number {
+	pattern.lastIndex = 0;
+	let count = 0;
+	while (pattern.exec(line) !== null) count++;
+	return count;
+}
+
+/**
+ * One-based line numbers covered by `<keepContext>` spans, inclusive of the tag lines.
+ *
+ * A span left open at the end of the region stays protected through the last line: the region is
+ * a prefix of the conversation, so a span may legitimately close in the retained tail. Erring
+ * toward keeping is the safe direction, and `targetKeepLines` already rises to fit protection.
+ * A closing tag with no opener is inert.
+ */
+export function keepContextLineNumbers(lines: readonly string[]): Set<number> {
+	const protectedLines = new Set<number>();
+	let depth = 0;
+	for (let index = 0; index < lines.length; index++) {
+		const opens = countMatches(lines[index], KEEP_CONTEXT_OPEN_RE);
+		const closes = countMatches(lines[index], KEEP_CONTEXT_CLOSE_RE);
+		if (depth > 0 || opens > 0) protectedLines.add(index + 1);
+		depth = Math.max(0, depth + opens - closes);
+	}
+	return protectedLines;
+}
+
 export function createNumberedRegion(text: string, protectedLineNumbers?: ReadonlySet<number>): NumberedRegion {
 	const lines = text.split("\n");
 	const headerLineNumbers = new Set<number>();
@@ -147,12 +183,15 @@ export function createNumberedRegion(text: string, protectedLineNumbers?: Readon
 		const markerMatch = FILTERED_MARKER_RE.exec(lines[index]);
 		if (markerMatch) priorMarkerNs.set(lineNumber, Number(markerMatch[1]));
 	}
+	const detected = keepContextLineNumbers(lines);
+	const merged =
+		protectedLineNumbers === undefined ? detected : new Set<number>([...protectedLineNumbers, ...detected]);
 	return {
 		__brand: "NumberedRegion",
 		lines,
 		headerLineNumbers,
 		priorMarkerNs,
-		protectedLineNumbers,
+		protectedLineNumbers: merged.size > 0 ? merged : undefined,
 		tokenEstimate: Math.ceil(text.length / 4),
 	};
 }

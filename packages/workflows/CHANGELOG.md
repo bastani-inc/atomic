@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Workflow authoring guidance now covers `<keepContext>` / `</keepContext>` tags for stage prompts. Wrap role constraints, acceptance criteria, explicit prohibitions, and identifiers a stage must not lose; compaction protects the span verbatim regardless of the compression ratio ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+
+### Fixed
+
+- Ralph's research stage wraps its research-only constraint in `<keepContext>` tags, so compaction can no longer delete it partway through a long research session and leave the stage acting on the surviving "implement" objective alone ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+
 ## [0.9.11] - 2026-08-03
 
 ### Added

@@ -5,7 +5,6 @@ import {
 } from "./compaction-types.js";
 
 export const COMPACTION_AUTO_QUERY = "the latest user request";
-const QUERY_MAX_CHARS = 1000;
 
 function normalizeCompressionRatio(value: number | undefined): number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1
@@ -19,10 +18,13 @@ function normalizePreserveRecent(value: number | undefined): number {
 		: DEFAULT_PRESERVE_RECENT;
 }
 
+/**
+ * The query is the planner's relevance focus, so it is kept whole. Truncating it made prompt
+ * order the retention policy: for a long structured prompt only the leading section survived,
+ * and any constraint stated later could not influence what the planner kept.
+ */
 export function normalizeCompactionQuery(value: string | undefined, fallback: string): string {
-	const query = value?.trim() || fallback.trim() || COMPACTION_AUTO_QUERY;
-	if (query.length <= QUERY_MAX_CHARS) return query;
-	return `${query.slice(0, QUERY_MAX_CHARS)}\n[... ${query.length - QUERY_MAX_CHARS} more characters omitted from compaction query]`;
+	return value?.trim() || fallback.trim() || COMPACTION_AUTO_QUERY;
 }
 
 export function normalizeCompactionParameters(

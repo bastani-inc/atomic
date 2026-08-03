@@ -54,6 +54,25 @@ Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines
 
 Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text remains capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
 
+### `keepContext` tags
+
+Wrap any section you never want compressed in `<keepContext>` / `</keepContext>`. Tagged content survives compression verbatim regardless of the compression ratio:
+
+```
+<keepContext>
+You are researching only. Do not implement code changes.
+</keepContext>
+```
+
+Every line of the span becomes a protected line, tag lines included, and the guarantee is mechanical rather than advisory. Deletion ranges are split around protected lines after the planner responds, so a protected line survives even if the planner ignores its instructions, and the keep target rises to fit protection instead of competing with it.
+
+Two properties are worth knowing when using this for long-lived instructions:
+
+- **Spans re-arm themselves.** Each compaction re-ranks the previous compaction's output, so a constraint must survive every cycle, not just the first. Because the tag lines are protected too, the span is re-detected on the next boundary and stays protected for the life of the session.
+- **Open spans stay protected.** The compactable region is a prefix of the conversation, so a span may legitimately close in the retained recent tail. An unclosed span protects through the end of the region. A closing tag with no opener is ignored.
+
+Use it for role constraints, invariants, and anything whose loss would silently change behavior. Prefer it over restating a constraint: without tags, a one-line constraint competes line-by-line against bulky tool output and is the cheaper deletion.
+
 ## Parameters
 
 The effective parameters appear in extension events and successful results:
@@ -65,6 +84,8 @@ The effective parameters appear in extension events and successful results:
 | `query` | Last visible user message | Relevance focus for deciding which older lines to retain |
 
 `preserve_recent` counts context-visible messages without aligning the boundary to a user turn. An assistant message or tool result may therefore begin the kept tail. Because such a tail can start or end mid-turn, the kept messages are not replayed as structured message blocks: they are serialized with the same transcript grammar as the compacted region and appended to the end of the boundary string, so the whole boundary reaches the provider as one message. Serialization of the kept tail is lossless — tool results keep their full text instead of being truncated at 16k characters, and images stay attached as image blocks rather than becoming `[image]` markers — so protected content is preserved, not merely summarized. A value of `0` protects no messages and makes the entire active transcript compactable. If `query` is absent, Atomic derives it from the last visible user message.
+
+The query is used whole and is never truncated. This matters for structured prompts: a truncated query would make section order the retention policy, because only the leading section could influence what the planner kept, and a constraint stated later in the prompt could not. Long queries are safe — an oversized planner request surfaces as an explicit provider-overflow failure rather than silent truncation — but `keepContext` tags, not query length, are the way to guarantee a span survives.
 
 Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 

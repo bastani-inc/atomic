@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Compaction honors `<keepContext>` / `</keepContext>` tags. Wrap any part of a prompt you never want compressed, and every line of the span — tag lines included — is protected verbatim regardless of the compression ratio. The guarantee is mechanical rather than advisory: deletion ranges are split around protected lines after the planner responds, and the keep target rises to fit protection instead of competing with it. Because the tag lines are protected too, a span is re-detected on each subsequent boundary and stays protected for the life of the session ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+
+### Fixed
+
+- The compaction relevance query is no longer truncated to 1,000 characters. Truncation made prompt section order the retention policy: for a long structured prompt only the leading section reached the planner, so a constraint stated later could not influence what was kept, while the objective it qualified survived and was acted on. Long queries are safe — an oversized planner request surfaces as an explicit provider-overflow failure rather than silent truncation ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+
 ## [0.9.11] - 2026-08-03
 
 Cumulative release of the `0.9.11-alpha.1` – `0.9.11-alpha.12` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.
