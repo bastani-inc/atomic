@@ -9,33 +9,33 @@ Atomic is the loop engine for all engineering work: a terminal coding-agent runt
 
 ## Quick start
 
-Install Atomic globally with npm, pnpm, or Bun:
+Install the self-contained release archive on macOS or Linux:
 
-With npm:
+```bash
+curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
+```
+
+Archive installation does not require Node.js or a package manager. It verifies the GitHub Release checksum and installs the full payload under a versioned root. See the [Quickstart](/quickstart#release-archive) for exact-version flags, default paths, `ATOMIC_INSTALL_DIR`, `ATOMIC_BIN_DIR`, `ATOMIC_VERSION`, optional `GITHUB_TOKEN`/`GH_TOKEN`, and PATH guidance.
+
+Package installation still requires Node.js. With npm, pnpm, or Bun:
 
 ```bash
 npm install -g @bastani/atomic
-```
-
-With pnpm:
-
-```bash
 pnpm add -g @bastani/atomic
-```
-
-With Bun:
-
-```bash
 bun add -g @bastani/atomic
 ```
 
-Atomic does not require package install scripts. If you want to disable dependency lifecycle scripts during the Atomic install, you can add `--ignore-scripts` to the install command.
-
-Or download an `atomic-*` archive from the Atomic GitHub Release for your platform.
+Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
 
 ### Alpine and musl Linux archives
 
-Alpine Linux x64 and arm64 users can download `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. These archives include native search and PTY bindings. Install the required runtime libraries before running an archive:
+The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. These archives include native search and PTY bindings. Install the required runtime libraries before running Atomic:
 
 ```bash
 apk add --no-cache libgcc libstdc++

@@ -10,7 +10,7 @@ Pull request / selected branch push
    ├─ suites (Linux, Windows): build package -> unit -> integration
    ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node, then Bun)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
-   ├─ static-checks (Linux): typecheck, docs, Mintlify, contracts
+   ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
    └─ test (2 legs): result gate carrying both required contexts
 
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
@@ -43,7 +43,7 @@ The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, a
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
 | `agent-suite` | both | build native bindings -> coding-agent vitest (Node), then its Bun-hosted SQLite selector project | 126 s | 232 s |
 | `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s |
-| `static-checks` | Linux only | typecheck, docs links, Mintlify, CI contracts | 30 s | – |
+| `static-checks` | Linux only | typecheck, docs links, Mintlify, Alpine/Debian installer smoke, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
 
 Those are the per-step costs sampled from four sequential-job runs, which put the critical path on the Windows `agent-suite` chain at about 247 s against the 452 s (434–483 s, n=3 healthy) the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
@@ -113,6 +113,8 @@ The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang d
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
 
 Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
+
+The static job also runs `scripts/test-installers-containers.sh`. It executes `install.sh` with a restricted PATH and local release fixture inside `alpine:3.22` BusyBox `sh` and `debian:bookworm-slim`, checks the full payload and launcher, and gives the installer no JavaScript runtime or package manager.
 
 ## Direct release trigger and recovery
 
