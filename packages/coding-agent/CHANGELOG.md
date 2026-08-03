@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.9.11-alpha.11] - 2026-08-03
+
 ### Breaking Changes
 
 - Workflow run targets now require the full 36-character run UUID. Typed prefixes are no longer resolved by any command or workflow-tool action that accepts `runId`, including `status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, and `quit`, and by `/workflow connect`, `/workflow attach`, and `/workflow resume`. A target that is not a well-formed 8-4-4-4-12 hex UUID — a prefix, a 32-character dashless id, or a same-length non-hex string — is rejected with `Run id must be a full 36-character UUID; got "339e05a4" (8 chars).`, which is deliberately distinct from `Run not found:` so a truncated paste is diagnosable as truncated rather than looking like a stale run. Since every user-facing surface already prints the full id, copy it back verbatim. Because ids are unique and now matched exactly, run-target ambiguity is unreachable and the "Ambiguous run prefix" diagnostic is gone.

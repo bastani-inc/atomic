@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.11-alpha.11] - 2026-08-03
+
 ### Fixed
 
 - Fixed retained GitHub README truncations by copying bounded text into flat strings before storing long-lived results ([#2151](https://github.com/bastani-inc/atomic/issues/2151)).
