@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { pauseAndAbortInteractiveSession } from "../src/modes/interactive/interactive-pause.ts";
 import { createHarness, getMessageText, getUserTexts, type Harness } from "./suite/harness.ts";
 
 type QueueHold = {
@@ -74,6 +73,9 @@ type SubmitHost = EscapeHost & {
 };
 
 const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandlers") as (this: EscapeHost) => void;
+const interruptActiveOperation = Reflect.get(InteractiveMode.prototype, "interruptActiveOperation") as (
+	this: EscapeHost,
+) => boolean;
 const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor") as (
 	this: EscapeHost,
 	options?: { abort?: boolean; currentText?: string; preserveUnprotectedCustomMessages?: boolean },
@@ -172,8 +174,7 @@ describe("regular chat paused queued messages", () => {
 	afterEach(() => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
-
-	test("Ctrl+C pause retains duplicate identity and custom-message fidelity in the raw hold", async () => {
+	test("Ctrl+C pause retains duplicate identity and custom-message fidelity through resume", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const providerStarted = Promise.withResolvers<void>();
@@ -192,24 +193,47 @@ describe("regular chat paused queued messages", () => {
 				});
 				return fauxAssistantMessage("interrupted by Ctrl+C");
 			},
-			fauxAssistantMessage("unused resume response"),
+			fauxAssistantMessage("resume acknowledged"),
+			fauxAssistantMessage("first steering handled"),
+			fauxAssistantMessage("first duplicate handled"),
+			fauxAssistantMessage("second duplicate handled"),
+			fauxAssistantMessage("custom handled"),
 		]);
 		const activePrompt = harness.session.prompt("start Ctrl+C hold");
 		await providerStarted.promise;
 		await queueRawMessages(harness.session);
 
-		pauseAndAbortInteractiveSession({
-			session: harness.session,
-			showError(message: string) {
-				assert.fail(message);
-			},
-		} as Parameters<typeof pauseAndAbortInteractiveSession>[0]);
+		const host = createEscapeHost(harness.session);
+		const restore = vi.fn(host.restoreQueuedMessagesToEditor);
+		host.restoreQueuedMessagesToEditor = restore;
+		assert.equal(interruptActiveOperation.call(host), true);
+		expect(restore).not.toHaveBeenCalled();
 		await abortObserved.promise;
 		expect((harness.session as PauseAwareSession).queuedMessagesPaused).toBe(true);
 		expectExactHeldQueue(harness.session);
 
 		allowAbortToSettle.resolve();
 		await activePrompt;
+		await runUserPromptTurn.call(host, "resume Ctrl+C hold");
+
+		expect(getUserTexts(harness)).toEqual([
+			"start Ctrl+C hold",
+			"resume Ctrl+C hold",
+			"first raw steering",
+			"second raw steering",
+			"duplicate raw follow-up",
+			"duplicate raw follow-up",
+		]);
+		const deliveredCustom = harness.session.messages.filter(
+			(message) => message.role === "custom" && message.customType === "pause-raw-custom",
+		);
+		expect(deliveredCustom).toHaveLength(1);
+		expect(deliveredCustom[0]).toMatchObject({
+			content: [{ type: "text", text: "\traw custom content  \n" }],
+			display: true,
+			details: { optional: { untouched: true }, sequence: 3 },
+		});
+		expect((harness.session as PauseAwareSession).queuedMessagesPaused).toBe(false);
 	});
 	test("Escape restores queued text while preserving an unprotected custom message for resume", async () => {
 		const harness = await createHarness();
