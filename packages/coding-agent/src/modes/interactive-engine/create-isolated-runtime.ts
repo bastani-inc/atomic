@@ -2,14 +2,14 @@ import { basename } from "node:path";
 import type { Args } from "../../cli/args.ts";
 import { ENV_AGENT_DIR, getEnvValue } from "../../config.ts";
 import {
-	createAgentSessionRuntime,
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionRuntime,
 } from "../../core/agent-session-runtime.ts";
 import type { SessionManager } from "../../core/session-manager.ts";
 import { RpcClient } from "../rpc/rpc-client.ts";
-import { buildInteractiveEngineArgs, type InteractiveEngineResourcePaths } from "./engine-args.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
+import { buildInteractiveEngineArgs, type InteractiveEngineResourcePaths } from "./engine-args.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 
 export async function createIsolatedInteractiveRuntime(options: {
@@ -22,7 +22,8 @@ export async function createIsolatedInteractiveRuntime(options: {
 	const executableName = basename(process.execPath).toLowerCase();
 	const launchedByRuntime = ["bun", "bun.exe", "node", "node.exe"].includes(executableName);
 	const cliPath = launchedByRuntime ? process.argv[1] : "";
-	if (launchedByRuntime && !cliPath) throw new Error("Cannot start isolated interactive engine: Atomic entrypoint is unavailable");
+	if (launchedByRuntime && !cliPath)
+		throw new Error("Cannot start isolated interactive engine: Atomic entrypoint is unavailable");
 	let isolatedRuntime: IsolatedInteractiveRuntime | undefined;
 	const pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
 	let callbackActive = false;
@@ -34,16 +35,18 @@ export async function createIsolatedInteractiveRuntime(options: {
 		args: buildInteractiveEngineArgs(options.parsed, options.sessionManager, options.resources),
 		env: {
 			...(explicitAgentDir !== undefined ? { [ENV_AGENT_DIR]: explicitAgentDir } : {}),
-			...(options.parsed.apiKey ? { ATOMIC_INTERACTIVE_ENGINE_API_KEY: options.parsed.apiKey } : {}),
 		},
 		interactiveEngine: {
-			onDiagnostic: (diagnostic) => isolatedRuntime
-				? isolatedRuntime.emitDiagnostic(diagnostic)
-				: pendingDiagnostics.push(diagnostic),
+			onDiagnostic: (diagnostic) =>
+				isolatedRuntime ? isolatedRuntime.emitDiagnostic(diagnostic) : pendingDiagnostics.push(diagnostic),
 			onActivityChange: (active) => {
 				callbackActive = active;
 				isolatedRuntime?.setEngineCallbackActive(active);
 			},
+			onHeartbeat: () => isolatedRuntime?.noteEngineHeartbeat(),
+			// Handed to the child through the protected bootstrap file so it never
+			// enters an environment the child's own subprocesses can inherit.
+			...(options.parsed.apiKey ? { apiKey: options.parsed.apiKey } : {}),
 		},
 	});
 	try {
@@ -69,7 +72,9 @@ export async function createRuntimeForMode(
 	resources: InteractiveEngineResourcePaths,
 ): Promise<AgentSessionRuntime> {
 	if (isolateInteractiveHost && hasInlineExtensionFactories) {
-		throw new Error("Interactive engine isolation cannot serialize inline extension factories; load the extension from a module path instead.");
+		throw new Error(
+			"Interactive engine isolation cannot serialize inline extension factories; load the extension from a module path instead.",
+		);
 	}
 	const localRuntime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager });
 	if (!isolateInteractiveHost) return localRuntime;

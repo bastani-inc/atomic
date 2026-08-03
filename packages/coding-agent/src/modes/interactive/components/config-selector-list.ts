@@ -1,6 +1,13 @@
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
-import { type Component, type Focusable, getKeybindings, Input, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	type Focusable,
+	getKeybindings,
+	Input,
+	matchesKey,
+	truncateToWidth,
+} from "@earendil-works/pi-tui";
 import { CONFIG_DIR_NAME } from "../../../config.ts";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
@@ -175,7 +182,13 @@ export class ResourceList implements Component, Focusable {
 		this._focused = value;
 		this.searchInput.focused = value;
 	}
-	constructor(groups: ResourceGroup[], settingsManager: SettingsManager, cwd: string, agentDir: string, terminalHeight?: number) {
+	constructor(
+		groups: ResourceGroup[],
+		settingsManager: SettingsManager,
+		cwd: string,
+		agentDir: string,
+		terminalHeight?: number,
+	) {
 		this.groups = groups;
 		this.settingsManager = settingsManager;
 		this.cwd = cwd;
@@ -185,7 +198,9 @@ export class ResourceList implements Component, Focusable {
 		this.buildFlatList();
 		this.filteredItems = [...this.flatItems];
 	}
-	setWriteScope(scope: "global" | "project"): void { this.writeScope = scope; }
+	setWriteScope(scope: "global" | "project"): void {
+		this.writeScope = scope;
+	}
 	setGroups(groups: ResourceGroup[]): void {
 		this.groups = groups;
 		this.buildFlatList();
@@ -267,8 +282,13 @@ export class ResourceList implements Component, Focusable {
 		item.enabled = enabled;
 		for (const group of this.groups) {
 			for (const subgroup of group.subgroups) {
-				const found = subgroup.items.find((candidate) => candidate.path === item.path && candidate.resourceType === item.resourceType);
-				if (found) { found.enabled = enabled; return; }
+				const found = subgroup.items.find(
+					(candidate) => candidate.path === item.path && candidate.resourceType === item.resourceType,
+				);
+				if (found) {
+					found.enabled = enabled;
+					return;
+				}
 			}
 		}
 	}
@@ -276,13 +296,18 @@ export class ResourceList implements Component, Focusable {
 	render(width: number): string[] {
 		const lines = [...this.searchInput.render(width), ""];
 		if (this.filteredItems.length === 0) return [...lines, theme.fg("muted", "  No resources found")];
-		const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible));
+		const startIndex = Math.max(
+			0,
+			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
+		);
 		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredItems.length);
 		for (let i = startIndex; i < endIndex; i++) {
 			const entry = this.filteredItems[i];
 			const selected = i === this.selectedIndex;
-			if (entry.type === "group") lines.push(truncateToWidth(`  ${theme.fg("accent", theme.bold(entry.group.label))}`, width, ""));
-			else if (entry.type === "subgroup") lines.push(truncateToWidth(`    ${theme.fg("muted", entry.subgroup.label)}`, width, ""));
+			if (entry.type === "group")
+				lines.push(truncateToWidth(`  ${theme.fg("accent", theme.bold(entry.group.label))}`, width, ""));
+			else if (entry.type === "subgroup")
+				lines.push(truncateToWidth(`    ${theme.fg("muted", entry.subgroup.label)}`, width, ""));
 			else {
 				const cursor = selected ? "> " : "  ";
 				const checkbox = entry.item.enabled ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]");
@@ -292,7 +317,8 @@ export class ResourceList implements Component, Focusable {
 		}
 		if (startIndex > 0 || endIndex < this.filteredItems.length) {
 			const itemCount = this.filteredItems.filter((entry) => entry.type === "item").length;
-			const current = this.filteredItems.slice(0, this.selectedIndex).filter((entry) => entry.type === "item").length + 1;
+			const current =
+				this.filteredItems.slice(0, this.selectedIndex).filter((entry) => entry.type === "item").length + 1;
 			lines.push(theme.fg("dim", `  (${current}/${itemCount})`));
 		}
 		return lines;
@@ -345,7 +371,8 @@ export class ResourceList implements Component, Focusable {
 			const entry = this.filteredItems[this.selectedIndex];
 			if (entry?.type === "item") {
 				const newEnabled = !entry.item.enabled;
-				if (this.writeScope === "project") toggleProjectResource(this.settingsManager, entry.item, this.cwd, newEnabled);
+				if (this.writeScope === "project")
+					toggleProjectResource(this.settingsManager, entry.item, this.cwd, newEnabled);
 				else this.toggleResource(entry.item, newEnabled);
 				this.updateItem(entry.item, newEnabled);
 				this.onToggle?.(entry.item, newEnabled);
@@ -364,7 +391,8 @@ export class ResourceList implements Component, Focusable {
 	}
 	private toggleTopLevelResource(item: ResourceItem, enabled: boolean): void {
 		const scope = item.metadata.scope as "user" | "project";
-		const settings = scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
+		const settings =
+			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
 		const arrayKey = item.resourceType;
 		const pattern = this.getResourcePattern(item);
 		const updated = (settings[arrayKey] ?? []).filter((entry) => {
@@ -388,15 +416,20 @@ export class ResourceList implements Component, Focusable {
 	}
 	private togglePackageResource(item: ResourceItem, enabled: boolean): void {
 		const scope = item.metadata.scope as "user" | "project";
-		const settings = scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
+		const settings =
+			scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
 		const packages = [...(settings.packages ?? [])] as PackageSource[];
-		const pkgIndex = packages.findIndex((pkg) => (typeof pkg === "string" ? pkg : pkg.source) === item.metadata.source);
+		const pkgIndex = packages.findIndex(
+			(pkg) => (typeof pkg === "string" ? pkg : pkg.source) === item.metadata.source,
+		);
 		if (pkgIndex === -1) return;
 		let pkg = packages[pkgIndex];
 		if (typeof pkg === "string") pkg = { source: pkg };
 		const arrayKey = item.resourceType;
 		const pattern = this.getPackageResourcePattern(item);
-		const updated = (pkg[arrayKey] ?? []).filter((entry) => (/^[!+-]/.test(entry) ? entry.slice(1) : entry) !== pattern);
+		const updated = (pkg[arrayKey] ?? []).filter(
+			(entry) => (/^[!+-]/.test(entry) ? entry.slice(1) : entry) !== pattern,
+		);
 		updated.push(`${enabled ? "+" : "-"}${pattern}`);
 		pkg[arrayKey] = updated;
 		packages[pkgIndex] = pkg;

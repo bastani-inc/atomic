@@ -7,18 +7,18 @@
  * `agent.continue()`. Contrast `_trySwitchToFallbackModel`, which does all four.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
+import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
+import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { preparation, registryOf, runRequest, scriptedStream, testModel } from "./compaction-rung-support.js";
 
@@ -31,7 +31,14 @@ function assistantMessage(text: string, timestamp: number): AssistantMessage {
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
-		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp,
 	} as AssistantMessage;
@@ -44,17 +51,25 @@ function rescueStream(): { streamFn: StreamFn; models: string[] } {
 		models.push(`${model.provider}/${model.id}`);
 		const throttled = model.provider === "anthropic";
 		return {
-			result: async (): Promise<AssistantMessage> => ({
-				role: "assistant",
-				content: throttled ? [] : [{ type: "text", text: "3,8\n" }],
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-				stopReason: throttled ? "error" : "stop",
-				...(throttled ? { errorMessage: "429 Too Many Requests" } : {}),
-				timestamp: Date.now(),
-			} as AssistantMessage),
+			result: async (): Promise<AssistantMessage> =>
+				({
+					role: "assistant",
+					content: throttled ? [] : [{ type: "text", text: "3,8\n" }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: throttled ? "error" : "stop",
+					...(throttled ? { errorMessage: "429 Too Many Requests" } : {}),
+					timestamp: Date.now(),
+				}) as AssistantMessage,
 		};
 	}) as unknown as StreamFn;
 	return { streamFn, models };
@@ -69,7 +84,11 @@ test("the borrowing operation itself touches no session state and emits no event
 		fallbackAttemptedKeys: new Set<string>(),
 		entries: [{ id: "e1" }, { id: "e2" }],
 		emit: (event: string) => events.push(event),
-		agent: { continue: async () => { continued += 1; } },
+		agent: {
+			continue: async () => {
+				continued += 1;
+			},
+		},
 	};
 	const before = {
 		model: session.model,

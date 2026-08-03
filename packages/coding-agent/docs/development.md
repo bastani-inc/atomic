@@ -7,15 +7,15 @@ See [AGENTS.md](https://github.com/bastani-inc/atomic/blob/main/AGENTS.md) for a
 ```bash
 git clone https://github.com/bastani-inc/atomic
 cd atomic
-bun install
-bun run typecheck
+npm ci --ignore-scripts
+npm run typecheck
 ```
 
-This monorepo uses Bun for development commands; avoid npm/yarn/pnpm except for npm registry publishing. Run package scripts from the monorepo root or package directory with Bun, for example:
+This monorepo runs a hybrid toolchain matching upstream pi: npm installs, builds, checks, and runs the vitest suites, while Bun compiles the release binaries and runs `scripts/*.ts`. Avoid yarn and pnpm. Run package scripts from the monorepo root or a package directory, for example:
 
 ```bash
-bun run test:unit
-bun run --cwd packages/coding-agent build
+npm run test:unit
+npm run build --workspace=@bastani/atomic
 ```
 
 Atomic keeps the caller's current working directory when launched from development wrappers.
@@ -60,15 +60,16 @@ Set `ATOMIC_TIMING=1` when profiling startup. Normal interactive launches print 
 ## Testing
 
 ```bash
-bun run typecheck                 # Type-check the monorepo
-bun run test:unit                 # Run unit tests
-bun run test:integration          # Run integration tests
-bun run test:all                  # Run all tests
-# Run package Vitest tests
-bun run --cwd packages/coding-agent test -- test/specific.test.ts
+npm run typecheck                 # Type-check the monorepo
+npm run test:unit                 # Run unit tests
+npm run test:integration          # Run integration tests
+npm run test:all                  # Run all tests
+npm run test:scripts              # Run the repository script tests under node --test
+# Run the package Vitest suite (Node-hosted)
+npm run test --workspace=@bastani/atomic -- test/specific.test.ts
+# Run its Bun-hosted half. Required: the SQLite selector tests load bun:sqlite,
+# which the shipped binary has and Node does not.
 ```
-
-The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded.
 
 ## Deterministic installs
 

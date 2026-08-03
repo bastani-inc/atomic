@@ -12,17 +12,17 @@
  * `structured_output` for this extension/runtime only.
  */
 
-import {
-	createStructuredOutputTool,
-	type ExtensionAPI,
-} from "@bastani/atomic";
+import { createStructuredOutputTool, type ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 
-const SummarySchema = Type.Object({
-	headline: Type.String({ description: "Short title for the result" }),
-	summary: Type.String({ description: "One-paragraph summary" }),
-	actionItems: Type.Array(Type.String(), { description: "Concrete next steps or key bullets" }),
-}, { additionalProperties: false });
+const SummarySchema = Type.Object(
+	{
+		headline: Type.String({ description: "Short title for the result" }),
+		summary: Type.String({ description: "One-paragraph summary" }),
+		actionItems: Type.Array(Type.String(), { description: "Concrete next steps or key bullets" }),
+	},
+	{ additionalProperties: false },
+);
 
 const structuredOutputTool = createStructuredOutputTool({
 	schema: SummarySchema,

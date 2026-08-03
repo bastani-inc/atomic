@@ -1,5 +1,5 @@
-import { Container, Text } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
@@ -16,6 +16,7 @@ type PromptTurnContext = {
 	options: { deferredModelScopePatterns?: string[] };
 	session: {
 		isStreaming: boolean;
+		subscribe: (listener: (event: { type: string }) => void) => () => void;
 		reload: (options: { reason: string }) => Promise<void>;
 		resumeQueuedMessages: () => Promise<boolean>;
 		prompt: (text: string) => Promise<void>;
@@ -53,7 +54,9 @@ function proto<K extends string>(name: K): unknown {
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve!: () => void;
-	const promise = new Promise<void>((r) => { resolve = r; });
+	const promise = new Promise<void>((r) => {
+		resolve = r;
+	});
 	return { promise, resolve };
 }
 
@@ -74,6 +77,7 @@ function createContext(overrides: {
 		options: {},
 		session: {
 			isStreaming: false,
+			subscribe: vi.fn(() => () => {}),
 			reload: vi.fn(async () => {}),
 			resumeQueuedMessages: vi.fn(async () => false),
 			prompt: vi.fn(async () => {
@@ -88,7 +92,11 @@ function createContext(overrides: {
 			_tryExecuteExtensionCommand: vi.fn(async () => false),
 		},
 		settingsManager: { getClearOnShrink: () => false },
-		themeController: { applyFromSettings: vi.fn(async () => { await (overrides.themeGate ?? Promise.resolve()); }) },
+		themeController: {
+			applyFromSettings: vi.fn(async () => {
+				await (overrides.themeGate ?? Promise.resolve());
+			}),
+		},
 		bindCurrentSessionExtensions: vi.fn(async () => {}),
 		setupAutocompleteProvider: vi.fn(),
 		setupExtensionShortcuts: vi.fn(),
@@ -116,7 +124,8 @@ function createContext(overrides: {
 }
 
 function indicatorVisible(context: PromptTurnContext): boolean {
-	const mounted = context.loadingAnimation !== undefined && context.statusContainer.children.includes(context.loadingAnimation);
+	const mounted =
+		context.loadingAnimation !== undefined && context.statusContainer.children.includes(context.loadingAnimation);
 	return mounted && stripVTControlCharacters(context.statusContainer.render(80).join("\n")).includes("Working...");
 }
 
@@ -157,9 +166,13 @@ describe("prompt turn working indicator continuity", () => {
 
 	it("keeps the indicator through failed deferred startup until prompt preflight, then clears it when no turn starts", async () => {
 		const context = createContext({});
-		context.session.reload = vi.fn(async () => { throw new Error("reload failed"); });
+		context.session.reload = vi.fn(async () => {
+			throw new Error("reload failed");
+		});
 		let promptSawIndicator = false;
-		context.session.prompt = vi.fn(async () => { promptSawIndicator = indicatorVisible(context); });
+		context.session.prompt = vi.fn(async () => {
+			promptSawIndicator = indicatorVisible(context);
+		});
 
 		await context.runUserPromptTurn.call(context, "resume after startup failure");
 

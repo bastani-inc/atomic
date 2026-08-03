@@ -1,11 +1,11 @@
 import { createExtensionRuntime, type WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "./package-manager.ts";
-import { createSourceInfo } from "./source-info.ts";
+import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { resolveResourcePath } from "./resource-loader-paths.ts";
-import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot, ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
+import { createSourceInfo } from "./source-info.ts";
 
 export function emptyResolvedPaths(): ResolvedPaths {
 	return { extensions: [], skills: [], prompts: [], themes: [], workflows: [] };
@@ -36,17 +36,21 @@ export async function resolvePackageResourcePaths(
 			options.trustedBorrowedProjectLocalSources,
 		);
 	}
-	const builtinPackagePaths = state.builtinPackagePaths.length > 0
-		? markBundledResources(await state.packageManager.resolveExtensionSources(state.builtinPackagePaths, { temporary: true }))
-		: emptyResolvedPaths();
+	const builtinPackagePaths =
+		state.builtinPackagePaths.length > 0
+			? markBundledResources(
+					await state.packageManager.resolveExtensionSources(state.builtinPackagePaths, { temporary: true }),
+				)
+			: emptyResolvedPaths();
 	return { resolvedPaths, cliExtensionPaths, builtinPackagePaths };
 }
 
 function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
-	const mark = (resources: ResolvedResource[]): ResolvedResource[] => resources.map((resource) => ({
-		...resource,
-		metadata: { ...resource.metadata, configurationOrigin: "bundled" },
-	}));
+	const mark = (resources: ResolvedResource[]): ResolvedResource[] =>
+		resources.map((resource) => ({
+			...resource,
+			metadata: { ...resource.metadata, configurationOrigin: "bundled" },
+		}));
 	return {
 		extensions: mark(paths.extensions),
 		skills: mark(paths.skills),

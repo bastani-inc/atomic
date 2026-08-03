@@ -1,11 +1,11 @@
-import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
+import { afterEach, describe, test } from "vitest";
+import { type AsyncJobState, WIDGET_KEY } from "../../packages/subagents/src/shared/types.js";
 import { renderWidget, stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
-import { WIDGET_KEY, type AsyncJobState } from "../../packages/subagents/src/shared/types.js";
 
 type SetWidgetArgs = Parameters<ExtensionContext["ui"]["setWidget"]>;
 interface WidgetCall {
@@ -28,18 +28,26 @@ function makeTempRoot(prefix: string): string {
 	return root;
 }
 
-function makeCtx(cwd: string, sessionFile: string, options: MakeCtxOptions = {}): { ctx: ExtensionContext; widgetCalls: WidgetCall[]; renderCount: () => number } {
+function makeCtx(
+	cwd: string,
+	sessionFile: string,
+	options: MakeCtxOptions = {},
+): { ctx: ExtensionContext; widgetCalls: WidgetCall[]; renderCount: () => number } {
 	const widgetCalls: WidgetCall[] = [];
 	let renders = 0;
-	const setStatus = options.setStatus ?? (options.statuses
-		? (key: string, value: string | undefined) => {
-			if (value === undefined) options.statuses?.delete(key);
-			else options.statuses?.set(key, value);
-		}
-		: undefined);
-	const setWidget = options.setWidget ?? ((key: string, content: SetWidgetArgs[1], widgetOptions?: SetWidgetArgs[2]) => {
-		widgetCalls.push({ key, content, options: widgetOptions });
-	});
+	const setStatus =
+		options.setStatus ??
+		(options.statuses
+			? (key: string, value: string | undefined) => {
+					if (value === undefined) options.statuses?.delete(key);
+					else options.statuses?.set(key, value);
+				}
+			: undefined);
+	const setWidget =
+		options.setWidget ??
+		((key: string, content: SetWidgetArgs[1], widgetOptions?: SetWidgetArgs[2]) => {
+			widgetCalls.push({ key, content, options: widgetOptions });
+		});
 	const ctx = {
 		hasUI: true,
 		cwd,
@@ -137,16 +145,8 @@ describe("subagent render widget logical owner stability", () => {
 		renderWidget(fresh.ctx, [makeJob()]);
 		renderWidget(empty.ctx, []);
 
-		assert.equal(
-			undefinedCalls(first.widgetCalls),
-			0,
-			"stale wrappers should not receive same-owner teardown",
-		);
-		assert.equal(
-			undefinedCalls(fresh.widgetCalls),
-			1,
-			"teardown should target the freshest same-owner wrapper",
-		);
+		assert.equal(undefinedCalls(first.widgetCalls), 0, "stale wrappers should not receive same-owner teardown");
+		assert.equal(undefinedCalls(fresh.widgetCalls), 1, "teardown should target the freshest same-owner wrapper");
 		assert.equal(
 			undefinedCalls(empty.widgetCalls),
 			0,
@@ -229,7 +229,11 @@ describe("subagent render widget logical owner stability", () => {
 		renderWidget(parent.ctx, [makeJob()], parentApi);
 		renderWidget(stage.ctx, [makeJob()], stageApi);
 		renderWidget(stage.ctx, [], stageApi);
-		assert.equal(statuses.get(WIDGET_KEY), "Async agents: 1 running", "stage empty updates must preserve parent status");
+		assert.equal(
+			statuses.get(WIDGET_KEY),
+			"Async agents: 1 running",
+			"stage empty updates must preserve parent status",
+		);
 		stopWidgetAnimation(undefined, stageApi);
 		renderWidget(parent.ctx, [makeJob("complete")], parentApi);
 
@@ -305,7 +309,10 @@ describe("subagent render widget logical owner stability", () => {
 			0,
 		);
 		assert.equal(preEmptyBlankCount, 0, "status and terminal updates should not publish a transient blank");
-		assert.equal(mountCalls(first.widgetCalls) + mountCalls(status.widgetCalls) + mountCalls(terminal.widgetCalls), 1);
+		assert.equal(
+			mountCalls(first.widgetCalls) + mountCalls(status.widgetCalls) + mountCalls(terminal.widgetCalls),
+			1,
+		);
 		assert.equal(status.renderCount() + terminal.renderCount(), 2);
 
 		renderWidget(empty.ctx, []);
@@ -313,11 +320,7 @@ describe("subagent render widget logical owner stability", () => {
 			(sum, item) => sum + undefinedCalls(item.widgetCalls),
 			0,
 		);
-		assert.equal(
-			postEmptyBlankCount,
-			1,
-			"the blank frame is reserved for the no-active transition",
-		);
+		assert.equal(postEmptyBlankCount, 1, "the blank frame is reserved for the no-active transition");
 		assert.equal(
 			undefinedCalls(terminal.widgetCalls),
 			1,

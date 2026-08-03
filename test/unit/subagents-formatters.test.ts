@@ -1,5 +1,5 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { describe, test } from "vitest";
 import { formatDuration, formatModelThinking } from "../../packages/subagents/src/shared/formatters.js";
 
 describe("subagent formatModelThinking", () => {
@@ -12,14 +12,14 @@ describe("subagent formatModelThinking", () => {
 
 	test("omits fast when fast mode metadata is missing or disabled", () => {
 		assert.equal(formatModelThinking("openai/gpt-5.1-codex:medium"), "gpt-5.1-codex · thinking medium");
-		assert.equal(formatModelThinking("openai/gpt-5.1-codex:medium", undefined, false), "gpt-5.1-codex · thinking medium");
+		assert.equal(
+			formatModelThinking("openai/gpt-5.1-codex:medium", undefined, false),
+			"gpt-5.1-codex · thinking medium",
+		);
 	});
 
 	test("appends fast after explicit thinking metadata", () => {
-		assert.equal(
-			formatModelThinking("openai/gpt-5.1-codex", "high", true),
-			"gpt-5.1-codex · thinking high · fast",
-		);
+		assert.equal(formatModelThinking("openai/gpt-5.1-codex", "high", true), "gpt-5.1-codex · thinking high · fast");
 	});
 });
 

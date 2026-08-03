@@ -1,15 +1,23 @@
 import { getShellEnv } from "../utils/shell.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { BashResult } from "./bash-executor.ts";
 import { executeBashWithOperations } from "./bash-executor.ts";
 import type { BashExecutionMessage } from "./messages.ts";
-import { createLocalBashOperations, type BashOperations, type BashOutputChannel } from "./tools/bash.ts";
+import { type BashOperations, type BashOutputChannel, createLocalBashOperations } from "./tools/bash.ts";
 import { applyBashSessionEnvironment, snapshotBashSessionEnvironment } from "./tools/bash-session-environment.ts";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
-export async function executeBash(this: AgentSession,
+export async function executeBash(
+	this: AgentSession,
 	command: string,
 	onChunk?: (chunk: string, channel: BashOutputChannel) => void,
-	options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations; pty?: boolean; emitEvent?: boolean; recordResult?: boolean },
+	options?: {
+		excludeFromContext?: boolean;
+		id?: string;
+		operations?: BashOperations;
+		pty?: boolean;
+		emitEvent?: boolean;
+		recordResult?: boolean;
+	},
 ): Promise<BashResult> {
 	const requestKey = options?.id ?? Symbol("bash-request");
 	const abortController = new AbortController();
@@ -51,7 +59,12 @@ export async function executeBash(this: AgentSession,
  * Used by executeBash and by extensions that handle bash execution themselves.
  */
 
-export function recordBashResult(this: AgentSession, command: string, result: BashResult, options?: { excludeFromContext?: boolean; persist?: boolean; defer?: boolean }): void {
+export function recordBashResult(
+	this: AgentSession,
+	command: string,
+	result: BashResult,
+	options?: { excludeFromContext?: boolean; persist?: boolean; defer?: boolean },
+): void {
 	const bashMessage: BashExecutionMessage = {
 		role: "bashExecution",
 		command,
@@ -84,7 +97,9 @@ export function abortBash(this: AgentSession, id?: string): void {
 		this._bashAbortControllers.get(id)?.abort();
 		return;
 	}
-	for (const controller of this._bashAbortControllers.values()) controller.abort();
+	// Snapshot first: aborting settles owners, and a listener that removes its own
+	// entry must not shorten the cancellation sweep.
+	for (const controller of [...this._bashAbortControllers.values()]) controller.abort();
 }
 
 /** Whether a bash command is currently running */

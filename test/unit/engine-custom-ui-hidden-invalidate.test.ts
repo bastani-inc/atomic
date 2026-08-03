@@ -9,103 +9,105 @@
  * is hidden, and include them again once they are shown.
  */
 
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { OverlayHandle } from "@earendil-works/pi-tui";
+import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import { parseInteractiveEngineMessage } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 
 interface Harness {
-  service: EngineCustomUiService;
-  invalidatedComponentIds(): string[];
-  clearMessages(): void;
+	service: EngineCustomUiService;
+	invalidatedComponentIds(): string[];
+	clearMessages(): void;
 }
 
 function makeHarness(): Harness {
-  const lines: string[] = [];
-  const service = new EngineCustomUiService((line) => lines.push(line), new KeybindingsManager());
-  return {
-    service,
-    invalidatedComponentIds: () =>
-      lines
-        .map((line) => parseInteractiveEngineMessage(line))
-        .filter((message) => message?.type === "engine_custom_invalidate")
-        .map((message) => (message as { componentId: string }).componentId),
-    clearMessages: () => {
-      lines.length = 0;
-    },
-  };
+	const lines: string[] = [];
+	const service = new EngineCustomUiService((line) => lines.push(line), new KeybindingsManager());
+	return {
+		service,
+		invalidatedComponentIds: () =>
+			lines
+				.map((line) => parseInteractiveEngineMessage(line))
+				.filter((message) => message?.type === "engine_custom_invalidate")
+				.map((message) => (message as { componentId: string }).componentId),
+		clearMessages: () => {
+			lines.length = 0;
+		},
+	};
 }
 function stubComponent(): { render(width: number): string[]; invalidate(): void } {
-  return { render: () => ["stub"], invalidate: () => {} };
+	return { render: () => ["stub"], invalidate: () => {} };
 }
 
 async function openOverlay(service: EngineCustomUiService): Promise<OverlayHandle> {
-  let handle: OverlayHandle | undefined;
-  void service.custom(
-    (_tui, _theme, _keys, _done) => stubComponent(),
-    { overlay: true, onHandle: (h) => { handle = h; } },
-  );
-  // custom() awaits the (synchronous) factory before registering the
-  // component and emitting onHandle; drain microtasks until it lands.
-  for (let i = 0; i < 10 && handle === undefined; i++) await Promise.resolve();
-  assert.ok(handle, "expected overlay handle from onHandle");
-  return handle;
+	let handle: OverlayHandle | undefined;
+	void service.custom((_tui, _theme, _keys, _done) => stubComponent(), {
+		overlay: true,
+		onHandle: (h) => {
+			handle = h;
+		},
+	});
+	// custom() awaits the (synchronous) factory before registering the
+	// component and emitting onHandle; drain microtasks until it lands.
+	for (let i = 0; i < 10 && handle === undefined; i++) await Promise.resolve();
+	assert.ok(handle, "expected overlay handle from onHandle");
+	return handle;
 }
 
 async function openInline(service: EngineCustomUiService): Promise<void> {
-  void service.custom((_tui, _theme, _keys, _done) => stubComponent(), {});
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+	void service.custom((_tui, _theme, _keys, _done) => stubComponent(), {});
+	for (let i = 0; i < 10; i++) await Promise.resolve();
 }
 
 describe("EngineCustomUiService targeted invalidation (#1856)", () => {
-  test("requestRender broadcast skips hidden overlay components", async () => {
-    const { service, invalidatedComponentIds, clearMessages } = makeHarness();
-    const overlayHandle = await openOverlay(service);
-    await openInline(service);
+	test("requestRender broadcast skips hidden overlay components", async () => {
+		const { service, invalidatedComponentIds, clearMessages } = makeHarness();
+		const overlayHandle = await openOverlay(service);
+		await openInline(service);
 
-    clearMessages();
-    service.requestRender();
-    assert.equal(invalidatedComponentIds().length, 2, "both visible components invalidate");
+		clearMessages();
+		service.requestRender();
+		assert.equal(invalidatedComponentIds().length, 2, "both visible components invalidate");
 
-    overlayHandle.setHidden(true);
-    clearMessages();
-    service.requestRender();
-    const afterHide = invalidatedComponentIds();
-    assert.equal(afterHide.length, 1, "hidden overlay must be skipped by the broadcast");
+		overlayHandle.setHidden(true);
+		clearMessages();
+		service.requestRender();
+		const afterHide = invalidatedComponentIds();
+		assert.equal(afterHide.length, 1, "hidden overlay must be skipped by the broadcast");
 
-    service.dispose();
-  });
+		service.dispose();
+	});
 
-  test("a shown-again overlay rejoins the requestRender broadcast", async () => {
-    const { service, invalidatedComponentIds, clearMessages } = makeHarness();
-    const overlayHandle = await openOverlay(service);
+	test("a shown-again overlay rejoins the requestRender broadcast", async () => {
+		const { service, invalidatedComponentIds, clearMessages } = makeHarness();
+		const overlayHandle = await openOverlay(service);
 
-    overlayHandle.setHidden(true);
-    clearMessages();
-    service.requestRender();
-    assert.equal(invalidatedComponentIds().length, 0);
+		overlayHandle.setHidden(true);
+		clearMessages();
+		service.requestRender();
+		assert.equal(invalidatedComponentIds().length, 0);
 
-    overlayHandle.setHidden(false);
-    assert.equal(overlayHandle.isHidden(), false);
-    clearMessages();
-    service.requestRender();
-    assert.equal(invalidatedComponentIds().length, 1, "shown overlay must be invalidated again");
+		overlayHandle.setHidden(false);
+		assert.equal(overlayHandle.isHidden(), false);
+		clearMessages();
+		service.requestRender();
+		assert.equal(invalidatedComponentIds().length, 1, "shown overlay must be invalidated again");
 
-    service.dispose();
-  });
+		service.dispose();
+	});
 
-  test("hide() marks the component hidden like setHidden(true)", async () => {
-    const { service, invalidatedComponentIds, clearMessages } = makeHarness();
-    const overlayHandle = await openOverlay(service);
+	test("hide() marks the component hidden like setHidden(true)", async () => {
+		const { service, invalidatedComponentIds, clearMessages } = makeHarness();
+		const overlayHandle = await openOverlay(service);
 
-    overlayHandle.hide();
-    assert.equal(overlayHandle.isHidden(), true);
-    clearMessages();
-    service.requestRender();
-    assert.equal(invalidatedComponentIds().length, 0, "hide() must also exclude the component");
+		overlayHandle.hide();
+		assert.equal(overlayHandle.isHidden(), true);
+		clearMessages();
+		service.requestRender();
+		assert.equal(invalidatedComponentIds().length, 0, "hide() must also exclude the component");
 
-    service.dispose();
-  });
+		service.dispose();
+	});
 });

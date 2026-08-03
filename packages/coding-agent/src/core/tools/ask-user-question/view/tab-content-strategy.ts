@@ -1,5 +1,5 @@
-import type { Theme } from "../../../../modes/interactive/theme/theme.ts";
 import { type Component, Container, type Input, Spacer, Text } from "@earendil-works/pi-tui";
+import type { Theme } from "../../../../modes/interactive/theme/theme.ts";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
 import type { QuestionData } from "../tool/types.ts";
 import type { ChatRowView } from "./components/chat-row-view.ts";
@@ -61,7 +61,7 @@ export class QuestionTabStrategy implements TabContentStrategy {
 	/** Spacer(1) + chatRow(1) + Spacer(1) + Text(hint, 1) = 4 rendered rows. */
 	readonly footerRowCount = 4;
 
-	declare private readonly config: QuestionTabStrategyConfig;
+	private declare readonly config: QuestionTabStrategyConfig;
 
 	constructor(config: QuestionTabStrategyConfig) {
 		this.config = config;
@@ -95,11 +95,7 @@ export class QuestionTabStrategy implements TabContentStrategy {
 
 	midRows(state: DialogState): Component[] {
 		if (!state.notesVisible) return [];
-		return [
-			new Text(this.config.theme.fg("muted", NOTES_HEADER), 1, 0),
-			this.config.notesInput,
-			new Spacer(1),
-		];
+		return [new Text(this.config.theme.fg("muted", NOTES_HEADER), 1, 0), this.config.notesInput, new Spacer(1)];
 	}
 
 	footerRows(state: DialogState): Component[] {
@@ -123,17 +119,14 @@ export class SubmitTabStrategy implements TabContentStrategy {
 	/** Spacer(1) + Text(prompt, 1) + Spacer(1) + submitPicker(2) = 5 rendered rows. Fallback path lands at 5 via 2 trailing Spacer(1)s. */
 	readonly footerRowCount = 5;
 
-	declare private readonly config: SubmitTabStrategyConfig;
+	private declare readonly config: SubmitTabStrategyConfig;
 
 	constructor(config: SubmitTabStrategyConfig) {
 		this.config = config;
 	}
 
 	headingRows(_state: DialogState): Component[] {
-		return [
-			new Text(this.config.theme.bold(this.config.theme.fg("accent", REVIEW_HEADING)), 1, 0),
-			new Spacer(1),
-		];
+		return [new Text(this.config.theme.bold(this.config.theme.fg("accent", REVIEW_HEADING)), 1, 0), new Spacer(1)];
 	}
 
 	bodyComponent(state: DialogState): Component {
@@ -174,10 +167,7 @@ export class SubmitTabStrategy implements TabContentStrategy {
 		const promptText =
 			missing.length === 0
 				? this.config.theme.fg("muted", READY_PROMPT)
-				: this.config.theme.fg(
-						"warning",
-						`${INCOMPLETE_WARNING_PREFIX} ${missing.join(", ")}`,
-					);
+				: this.config.theme.fg("warning", `${INCOMPLETE_WARNING_PREFIX} ${missing.join(", ")}`);
 		const out: Component[] = [new Spacer(1), new Text(promptText, 1, 0), new Spacer(1)];
 		if (this.config.submitPicker) {
 			out.push(this.config.submitPicker);

@@ -2,9 +2,17 @@ import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
+import type {
+	ForkHandler,
+	NavigateTreeHandler,
+	NewSessionHandler,
+	ReloadHandler,
+	SwitchSessionHandler,
+} from "./runner-handlers.ts";
 import type {
 	CompactOptions,
 	ContextUsage,
@@ -14,13 +22,6 @@ import type {
 	ExtensionUIContext,
 	OrchestrationContext,
 } from "./types.ts";
-import type {
-	ForkHandler,
-	NavigateTreeHandler,
-	NewSessionHandler,
-	ReloadHandler,
-	SwitchSessionHandler,
-} from "./runner-handlers.ts";
 
 export interface ExtensionContextSource {
 	assertActive(): void;
@@ -31,6 +32,7 @@ export interface ExtensionContextSource {
 	getSessionManager(): SessionManager;
 	getModelRegistry(): ModelRegistry;
 	getModel(): Model<Api> | undefined;
+	getScopedModels(): readonly ScopedModel[];
 	getThinkingLevel(): ThinkingLevel | undefined;
 	getOrchestrationContext(): OrchestrationContext | undefined;
 	isIdle(): boolean;
@@ -52,6 +54,52 @@ export interface ExtensionCommandContextSource extends ExtensionContextSource {
 	navigateTree: NavigateTreeHandler;
 	switchSession: SwitchSessionHandler;
 	reload: ReloadHandler;
+}
+
+/**
+ * A copy of `value` that shares no mutable structure with it, frozen through.
+ *
+ * Arrays and plain objects are rebuilt; everything else — primitives, and any
+ * value carrying a prototype this does not own, such as a function or a class
+ * instance — is passed through untouched rather than mangled into a plain
+ * object. A `Model` is plain data (`input`, `cost.tiers`, `headers`,
+ * `thinkingLevelMap`, `compat`), so the whole of one is rebuilt.
+ */
+function deepFrozenCopy<T>(value: T): T {
+	if (Array.isArray(value)) return Object.freeze(value.map(deepFrozenCopy)) as T;
+	if (typeof value !== "object" || value === null) return value;
+	const prototype: unknown = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) return value;
+	const copied: Record<string, unknown> = {};
+	for (const [key, nested] of Object.entries(value)) copied[key] = deepFrozenCopy(nested);
+	return Object.freeze(copied) as T;
+}
+
+/**
+ * A defensive copy of the model scope, entries included.
+ *
+ * `readonly ScopedModel[]` is a compile-time claim only, so the array is
+ * copied: a JavaScript extension, or one asserting the `readonly` away, could
+ * otherwise push onto the session's own array and have `cycleModel()` treat the
+ * entry as in scope.
+ *
+ * Copying the array alone is not enough. The entries are the session's objects,
+ * so mutating `entry.model` or `entry.thinkingLevel` in place reaches the very
+ * array `cycleModel()` reads, and swaps the model it selects without ever
+ * touching the array.
+ *
+ * Nor is copying the entry and its model one level deep. `Object.freeze` and a
+ * spread both stop at the first level, so `model.headers`, `model.input`,
+ * `model.cost.tiers`, `model.thinkingLevelMap` and `model.compat` stayed the
+ * session's own objects: writing through any of them changed the model used for
+ * selection and request composition, and the freeze reported nothing. The copy
+ * goes all the way down, and freezes all the way down with it, so an attempt
+ * fails loudly under strict mode instead of silently succeeding.
+ *
+ * The accessor reports the scope; it must not be a way to change it.
+ */
+export function copyScopedModels(scoped: readonly ScopedModel[]): readonly ScopedModel[] {
+	return Object.freeze(scoped.map((entry) => deepFrozenCopy(entry)));
 }
 
 /**
@@ -87,6 +135,10 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		get model() {
 			source.assertActive();
 			return source.getModel();
+		},
+		get scopedModels() {
+			source.assertActive();
+			return copyScopedModels(source.getScopedModels());
 		},
 		get thinkingLevel() {
 			source.assertActive();

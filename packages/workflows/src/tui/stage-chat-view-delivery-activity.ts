@@ -18,72 +18,64 @@ import type { StageDeliveryActivityEvent } from "../runs/foreground/stage-delive
 import { isTerminalStageChatState } from "./stage-chat-view-status.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
-export function subscribeStageChatDeliveryActivity(
-  ctx: StageChatViewContext,
-): (() => void) | null {
-  const handle = ctx.handle;
-  if (!handle?.subscribeDeliveryActivity) return null;
-  return handle.subscribeDeliveryActivity((event) => {
-    applyStageChatDeliveryActivityEvent(ctx, event);
-  });
+export function subscribeStageChatDeliveryActivity(ctx: StageChatViewContext): (() => void) | null {
+	const handle = ctx.handle;
+	if (!handle?.subscribeDeliveryActivity) return null;
+	return handle.subscribeDeliveryActivity((event) => {
+		applyStageChatDeliveryActivityEvent(ctx, event);
+	});
 }
 
 export function applyStageChatDeliveryActivityEvent(
-  ctx: StageChatViewContext,
-  event: StageDeliveryActivityEvent,
+	ctx: StageChatViewContext,
+	event: StageDeliveryActivityEvent,
 ): void {
-  if (event.type === "delivery_start") {
-    // Replaces any lifecycle this same delivery id already owned; the map keeps
-    // one live token per delivery so settlement stays correlated. A start that
-    // arrives after terminal cleanup is fresh authorization for a retained
-    // post-mortem turn, so it also lifts the stale-start fence.
-    ctx.terminalLifecycleFenced = false;
-    ctx.deliveryLifecycles.set(event.deliveryId, ctx.chatHost.beginExternalPromptLifecycle());
-    return;
-  }
-  if (!ctx.deliveryLifecycles.has(event.deliveryId)) return;
-  const generation = ctx.deliveryLifecycles.get(event.deliveryId);
-  ctx.deliveryLifecycles.delete(event.deliveryId);
-  // A pre-turn compaction reasserts one lifecycle and hands the same token to
-  // every lease still open, so several deliveries can alias one generation.
-  // Only the last owner may settle it; otherwise the first lease to finish
-  // would stop Working while another accepted delivery is still running.
-  // Distinct generations — including stale ones — keep reaching the host's own
-  // generation fence exactly as before.
-  if (!ownsStageChatLifecycleGeneration(ctx, generation)) {
-    ctx.chatHost.settleExternalPromptLifecycle(generation);
-  }
-  // The map is the reference count: overlapping leases keep authorization open,
-  // and the last one to settle on a finished stage restores stale-start
-  // suppression. Otherwise the fence stayed open forever after the first
-  // post-terminal delivery and a late start could repaint a settled chat.
-  if (!hasActiveStageChatDelivery(ctx) && isStageChatContextTerminal(ctx)) {
-    ctx.terminalLifecycleFenced = true;
-  }
+	if (event.type === "delivery_start") {
+		// Replaces any lifecycle this same delivery id already owned; the map keeps
+		// one live token per delivery so settlement stays correlated. A start that
+		// arrives after terminal cleanup is fresh authorization for a retained
+		// post-mortem turn, so it also lifts the stale-start fence.
+		ctx.terminalLifecycleFenced = false;
+		ctx.deliveryLifecycles.set(event.deliveryId, ctx.chatHost.beginExternalPromptLifecycle());
+		return;
+	}
+	if (!ctx.deliveryLifecycles.has(event.deliveryId)) return;
+	const generation = ctx.deliveryLifecycles.get(event.deliveryId);
+	ctx.deliveryLifecycles.delete(event.deliveryId);
+	// A pre-turn compaction reasserts one lifecycle and hands the same token to
+	// every lease still open, so several deliveries can alias one generation.
+	// Only the last owner may settle it; otherwise the first lease to finish
+	// would stop Working while another accepted delivery is still running.
+	// Distinct generations — including stale ones — keep reaching the host's own
+	// generation fence exactly as before.
+	if (!ownsStageChatLifecycleGeneration(ctx, generation)) {
+		ctx.chatHost.settleExternalPromptLifecycle(generation);
+	}
+	// The map is the reference count: overlapping leases keep authorization open,
+	// and the last one to settle on a finished stage restores stale-start
+	// suppression. Otherwise the fence stayed open forever after the first
+	// post-terminal delivery and a late start could repaint a settled chat.
+	if (!hasActiveStageChatDelivery(ctx) && isStageChatContextTerminal(ctx)) {
+		ctx.terminalLifecycleFenced = true;
+	}
 }
 
 /** True while another still-active delivery references this exact lifecycle token. */
-function ownsStageChatLifecycleGeneration(
-  ctx: StageChatViewContext,
-  generation: number | undefined,
-): boolean {
-  for (const active of ctx.deliveryLifecycles.values()) {
-    if (active === generation) return true;
-  }
-  return false;
+function ownsStageChatLifecycleGeneration(ctx: StageChatViewContext, generation: number | undefined): boolean {
+	for (const active of ctx.deliveryLifecycles.values()) {
+		if (active === generation) return true;
+	}
+	return false;
 }
 
 /** True while at least one admitted delivery still owns this chat's Working period. */
 export function hasActiveStageChatDelivery(ctx: StageChatViewContext): boolean {
-  return ctx.deliveryLifecycles.size > 0;
+	return ctx.deliveryLifecycles.size > 0;
 }
 
 /** True when the last observed run or stage status is terminal. */
 export function isStageChatContextTerminal(ctx: StageChatViewContext): boolean {
-  return (
-    isTerminalStageChatState(ctx.lastObservedRunStatus) ||
-    isTerminalStageChatState(ctx.lastObservedStageStatus)
-  );
+	return isTerminalStageChatState(ctx.lastObservedRunStatus) || isTerminalStageChatState(ctx.lastObservedStageStatus);
 }
 
 /**
@@ -95,12 +87,12 @@ export function isStageChatContextTerminal(ctx: StageChatViewContext): boolean {
  * text, so a compaction error still outranks ordinary Working.
  */
 export function reconcileStageChatDeliveryLifecycle(ctx: StageChatViewContext): void {
-  if (!hasActiveStageChatDelivery(ctx)) return;
-  if (ctx.chatHost.isStreaming() && ctx.chatHost.hasAnimationTick()) return;
-  const generation = ctx.chatHost.reassertExternalPromptLifecycle();
-  for (const deliveryId of [...ctx.deliveryLifecycles.keys()]) {
-    ctx.deliveryLifecycles.set(deliveryId, generation);
-  }
+	if (!hasActiveStageChatDelivery(ctx)) return;
+	if (ctx.chatHost.isStreaming() && ctx.chatHost.hasAnimationTick()) return;
+	const generation = ctx.chatHost.reassertExternalPromptLifecycle();
+	for (const deliveryId of [...ctx.deliveryLifecycles.keys()]) {
+		ctx.deliveryLifecycles.set(deliveryId, generation);
+	}
 }
 
 /**
@@ -116,6 +108,6 @@ export function reconcileStageChatDeliveryLifecycle(ctx: StageChatViewContext): 
  * `agent_start` there is genuine retained-session work and stays visible.
  */
 export function invalidateStageChatDeliveryLifecycles(ctx: StageChatViewContext): void {
-  ctx.deliveryLifecycles.clear();
-  ctx.terminalLifecycleFenced = true;
+	ctx.deliveryLifecycles.clear();
+	ctx.terminalLifecycleFenced = true;
 }

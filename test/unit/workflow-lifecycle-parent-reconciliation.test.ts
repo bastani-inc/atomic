@@ -1,14 +1,14 @@
-import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, type Context } from "@earendil-works/pi-ai/compat";
+import { type Context, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { afterEach, describe, test } from "vitest";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import {
 	installWorkflowLifecycleNotifications,
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
@@ -44,18 +44,22 @@ describe("workflow lifecycle parent reconciliation", () => {
 			description: "Launch a named workflow",
 			parameters: Type.Object({}),
 			execute: async () => ({
-				content: [{ type: "text", text: "Workflow fast-final started in background (run-fast-final). Status: running" }],
+				content: [
+					{ type: "text", text: "Workflow fast-final started in background (run-fast-final). Status: running" },
+				],
 				details: { action: "run", runId: "run-fast-final", status: "running" },
 			}),
 		};
 		const harness = await createHarness({ tools: [workflowTool] });
 		harnesses.push(harness);
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+			}),
+		);
 
 		let terminalized = false;
 		let reconciliationContext: Context | undefined;
@@ -74,7 +78,9 @@ describe("workflow lifecycle parent reconciliation", () => {
 		});
 		unsubscriptions.push(unsubscribeEvents);
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-fast-final" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-fast-final" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("The workflow is still proceeding; I will keep monitoring it."),
 			(context) => {
 				reconciliationContext = context;
@@ -102,7 +108,10 @@ describe("workflow lifecycle parent reconciliation", () => {
 		assert.equal(card?.role, "custom");
 		if (card?.role !== "custom") throw new Error("missing lifecycle custom card");
 		assert.equal(card.display, true);
-		assert.equal(card.content, '✓ Workflow "fast-final" completed (run run-fast-final). Inspect: /workflow status run-fast-final');
+		assert.equal(
+			card.content,
+			'✓ Workflow "fast-final" completed (run run-fast-final). Inspect: /workflow status run-fast-final',
+		);
 		const cardDetails = card.details as WorkflowLifecycleNoticeDetails | undefined;
 		assert.equal(cardDetails?.kind, "completed");
 		assert.equal(cardDetails?.scope, "run");
@@ -112,9 +121,9 @@ describe("workflow lifecycle parent reconciliation", () => {
 		const terminalRun = store.runs().find((run) => run.id === "run-fast-final");
 		assert.equal(cardDetails?.durationMs, terminalRun?.durationMs);
 		assert.equal(cardDetails?.createdAt, terminalRun?.endedAt);
-		const persistedCards = harness.sessionManager.getEntries().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		);
+		const persistedCards = harness.sessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE);
 		assert.equal(persistedCards.length, 1, "terminal card must be durable exactly once");
 		assert.equal(persistedCards[0]?.type, "custom_message");
 		if (persistedCards[0]?.type === "custom_message") {
@@ -125,11 +134,9 @@ describe("workflow lifecycle parent reconciliation", () => {
 			(message) => message.role === "assistant" && getMessageText(message).includes("still proceeding"),
 		);
 		assert.equal(staleFinal?.role, "assistant");
-		if (staleFinal?.role === "assistant") assert.equal(staleFinal.stopReason, "stop", "lifecycle delivery must not interrupt unrelated final text");
-		assert.equal(
-			harness.session.getLastAssistantText(),
-			"Correction: fast-final already completed successfully.",
-		);
+		if (staleFinal?.role === "assistant")
+			assert.equal(staleFinal.stopReason, "stop", "lifecycle delivery must not interrupt unrelated final text");
+		assert.equal(harness.session.getLastAssistantText(), "Correction: fast-final already completed successfully.");
 	});
 
 	test("clearQueue at the core-local in-flight boundary does not restore a duplicate notice alias", async () => {
@@ -144,27 +151,33 @@ describe("workflow lifecycle parent reconciliation", () => {
 		});
 		const harness = await createHarness();
 		harnesses.push(harness);
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+			}),
+		);
 		let terminalized = false;
 		let clearedInFlight = false;
 		let reconciliationContext: Context | undefined;
-		unsubscriptions.push(harness.session.subscribe((event) => {
-			if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-				terminalized = true;
-				assert.equal(store.recordRunEnd("run-clear-in-flight", "completed", {}), true);
-			}
-		}));
-		unsubscriptions.push(harness.session.agent.subscribe((event) => {
-			if (terminalized && !clearedInFlight && event.type === "turn_start") {
-				clearedInFlight = true;
-				harness.session.clearQueue();
-			}
-		}));
+		unsubscriptions.push(
+			harness.session.subscribe((event) => {
+				if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+					terminalized = true;
+					assert.equal(store.recordRunEnd("run-clear-in-flight", "completed", {}), true);
+				}
+			}),
+		);
+		unsubscriptions.push(
+			harness.session.agent.subscribe((event) => {
+				if (terminalized && !clearedInFlight && event.type === "turn_start") {
+					clearedInFlight = true;
+					harness.session.clearQueue();
+				}
+			}),
+		);
 		harness.setResponses([
 			fauxAssistantMessage("This stale response finishes without lifecycle interruption."),
 			(context) => {
@@ -180,7 +193,8 @@ describe("workflow lifecycle parent reconciliation", () => {
 		assert.ok(reconciliationContext);
 		assert.equal(
 			reconciliationContext.messages.filter(
-				(message) => message.role === "user" && getMessageText(message).includes('Workflow "clear-in-flight" completed'),
+				(message) =>
+					message.role === "user" && getMessageText(message).includes('Workflow "clear-in-flight" completed'),
 			).length,
 			1,
 		);
@@ -191,15 +205,16 @@ describe("workflow lifecycle parent reconciliation", () => {
 			1,
 		);
 		assert.equal(
-			harness.sessionManager.getEntries().filter(
-				(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-			).length,
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE)
+				.length,
 			1,
 		);
 		assert.equal(
-			harness.sessionManager.getEntries().filter(
-				(entry) => entry.type === "custom_message" && entry.display === false,
-			).length,
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.display === false).length,
 			1,
 			"clear at the in-flight boundary must persist one hidden reconciliation entry",
 		);
@@ -218,25 +233,35 @@ describe("workflow lifecycle parent reconciliation", () => {
 		harnesses.push(harness);
 		const appendCustomMessageEntry = harness.sessionManager.appendCustomMessageEntry.bind(harness.sessionManager);
 		let hiddenPersistenceAttempts = 0;
-		harness.sessionManager.appendCustomMessageEntry = ((customType, content, display, details, excludeFromContext) => {
+		harness.sessionManager.appendCustomMessageEntry = ((
+			customType,
+			content,
+			display,
+			details,
+			excludeFromContext,
+		) => {
 			if (display === false && hiddenPersistenceAttempts++ === 0) {
 				throw new Error("transient hidden reconciliation write failure");
 			}
 			return appendCustomMessageEntry(customType, content, display, details, excludeFromContext);
 		}) as typeof harness.sessionManager.appendCustomMessageEntry;
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+			}),
+		);
 		let terminalized = false;
-		unsubscriptions.push(harness.session.subscribe((event) => {
-			if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-				terminalized = true;
-				assert.equal(store.recordRunEnd("run-persist-retry", "completed", {}), true);
-			}
-		}));
+		unsubscriptions.push(
+			harness.session.subscribe((event) => {
+				if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+					terminalized = true;
+					assert.equal(store.recordRunEnd("run-persist-retry", "completed", {}), true);
+				}
+			}),
+		);
 		harness.setResponses([
 			fauxAssistantMessage("Stale until persistence retry."),
 			fauxAssistantMessage("persist-retry corrected."),
@@ -254,7 +279,11 @@ describe("workflow lifecycle parent reconciliation", () => {
 		);
 		const customEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "custom_message");
 		assert.equal(customEntries.filter((entry) => entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE).length, 1);
-		assert.equal(customEntries.filter((entry) => entry.display === false).length, 1, "one hidden reconciliation is durable after retry");
+		assert.equal(
+			customEntries.filter((entry) => entry.display === false).length,
+			1,
+			"one hidden reconciliation is durable after retry",
+		);
 	});
 	test("session disposal flushes a consumed reconciliation after repeated transient write failures", async () => {
 		const store = createStore();
@@ -273,50 +302,63 @@ describe("workflow lifecycle parent reconciliation", () => {
 		harnesses.push(harness);
 		const appendCustomMessageEntry = harness.sessionManager.appendCustomMessageEntry.bind(harness.sessionManager);
 		let hiddenPersistenceAttempts = 0;
-		harness.sessionManager.appendCustomMessageEntry = ((customType, content, display, details, excludeFromContext) => {
+		harness.sessionManager.appendCustomMessageEntry = ((
+			customType,
+			content,
+			display,
+			details,
+			excludeFromContext,
+		) => {
 			if (customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE && hiddenPersistenceAttempts++ < 2) {
 				throw new Error("repeated transient hidden reconciliation write failure");
 			}
 			return appendCustomMessageEntry(customType, content, display, details, excludeFromContext);
 		}) as typeof harness.sessionManager.appendCustomMessageEntry;
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+			}),
+		);
 		let terminalized = false;
 		let disposeScheduled = false;
 		let resolveDisposed!: () => void;
 		const disposed = new Promise<void>((resolve) => {
 			resolveDisposed = resolve;
 		});
-		unsubscriptions.push(harness.session.subscribe((event) => {
-			if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-				terminalized = true;
-				assert.equal(store.recordRunEnd("run-dispose-retry", "failed", { error: "boom" }), true);
-				return;
-			}
-			if (
-				!disposeScheduled &&
-				event.type === "message_end" &&
-				event.message.role === "custom" &&
-				event.message.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE
-			) {
-				disposeScheduled = true;
-				queueMicrotask(() => {
-					harness.session.dispose();
-					resolveDisposed();
-				});
-				throw new Error("listener failure before session replacement");
-			}
-		}));
+		unsubscriptions.push(
+			harness.session.subscribe((event) => {
+				if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+					terminalized = true;
+					assert.equal(store.recordRunEnd("run-dispose-retry", "failed", { error: "boom" }), true);
+					return;
+				}
+				if (
+					!disposeScheduled &&
+					event.type === "message_end" &&
+					event.message.role === "custom" &&
+					event.message.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE
+				) {
+					disposeScheduled = true;
+					queueMicrotask(() => {
+						harness.session.dispose();
+						resolveDisposed();
+					});
+					throw new Error("listener failure before session replacement");
+				}
+			}),
+		);
 		harness.setResponses([
 			fauxAssistantMessage("This stale response is still proceeding."),
 			fauxAssistantMessage("dispose-retry failed and was reconciled."),
 		]);
 
-		await assert.rejects(harness.session.prompt("Wait for dispose-retry."), /listener failure before session replacement/);
+		await assert.rejects(
+			harness.session.prompt("Wait for dispose-retry."),
+			/listener failure before session replacement/,
+		);
 		await disposed;
 
 		assert.equal(disposeScheduled, true);
@@ -326,41 +368,54 @@ describe("workflow lifecycle parent reconciliation", () => {
 		const reopened = SessionManager.open(sessionFile, harness.sessionManager.getSessionDir());
 		const customEntries = reopened.getEntries().filter((entry) => entry.type === "custom_message");
 		assert.equal(customEntries.filter((entry) => entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE).length, 1);
-		assert.equal(customEntries.filter((entry) => entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE).length, 1);
+		assert.equal(
+			customEntries.filter((entry) => entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE).length,
+			1,
+		);
 	});
 	test("stage delivery transfer moves queued notice protection while source keeps its core-local in-flight notice", async () => {
 		const store = createStore();
-		for (const [id, name] of [["run-transfer-a", "transfer-a"], ["run-transfer-b", "transfer-b"]] as const) {
+		for (const [id, name] of [
+			["run-transfer-a", "transfer-a"],
+			["run-transfer-b", "transfer-b"],
+		] as const) {
 			store.recordRunStart({ id, name, inputs: {}, status: "running", stages: [], startedAt: 1 });
 		}
 		const source = await createHarness();
 		const target = await createHarness();
 		harnesses.push(source, target);
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => source.session.sendCustomMessage(message, options),
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => source.session.sendCustomMessage(message, options),
+			}),
+		);
 		let terminalized = false;
 		let transferred = false;
 		let sourceContext: Context | undefined;
 		let targetContext: Context | undefined;
-		unsubscriptions.push(source.session.subscribe((event) => {
-			if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-				terminalized = true;
-				assert.equal(store.recordRunEnd("run-transfer-a", "completed", {}), true);
-				assert.equal(store.recordRunEnd("run-transfer-b", "completed", {}), true);
-			}
-		}));
-		unsubscriptions.push(source.session.agent.subscribe((event) => {
-			if (terminalized && !transferred && event.type === "turn_start") {
-				transferred = true;
-				(source.session as typeof source.session & { transferWorkflowStageDeliveriesTo(target: object): void })
-					.transferWorkflowStageDeliveriesTo(target.session);
-				target.session.clearQueue();
-			}
-		}));
+		unsubscriptions.push(
+			source.session.subscribe((event) => {
+				if (!terminalized && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+					terminalized = true;
+					assert.equal(store.recordRunEnd("run-transfer-a", "completed", {}), true);
+					assert.equal(store.recordRunEnd("run-transfer-b", "completed", {}), true);
+				}
+			}),
+		);
+		unsubscriptions.push(
+			source.session.agent.subscribe((event) => {
+				if (terminalized && !transferred && event.type === "turn_start") {
+					transferred = true;
+					(
+						source.session as typeof source.session & { transferWorkflowStageDeliveriesTo(target: object): void }
+					).transferWorkflowStageDeliveriesTo(target.session);
+					target.session.clearQueue();
+				}
+			}),
+		);
 		source.setResponses([
 			fauxAssistantMessage("A stale source response finishes before reconciliation."),
 			(context) => {
@@ -410,22 +465,23 @@ describe("workflow lifecycle parent reconciliation", () => {
 			2,
 		);
 		assert.equal(
-			source.sessionManager.getEntries().filter(
-				(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-			).length,
+			source.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE)
+				.length,
 			2,
 		);
 		assert.equal(
-			source.sessionManager.getEntries().filter(
-				(entry) => entry.type === "custom_message" && entry.display === false,
-			).length,
+			source.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.display === false).length,
 			1,
 			"the core-local in-flight reconciliation persists only at source",
 		);
 		assert.equal(
-			target.sessionManager.getEntries().filter(
-				(entry) => entry.type === "custom_message" && entry.display === false,
-			).length,
+			target.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.display === false).length,
 			1,
 			"the transferred queued reconciliation persists only at target",
 		);

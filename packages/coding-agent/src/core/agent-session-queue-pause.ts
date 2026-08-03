@@ -1,15 +1,19 @@
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
 async function settlePauseAbortBoundaries(boundaries: readonly Promise<void>[]): Promise<void> {
 	let throwFirstFailure: (() => never) | undefined;
-	await Promise.all(boundaries.map(async (boundary) => {
-		try {
-			await boundary;
-		} catch (error) {
-			throwFirstFailure ??= () => { throw error; };
-		}
-	}));
+	await Promise.all(
+		boundaries.map(async (boundary) => {
+			try {
+				await boundary;
+			} catch (error) {
+				throwFirstFailure ??= () => {
+					throw error;
+				};
+			}
+		}),
+	);
 	throwFirstFailure?.();
 }
 
@@ -17,16 +21,17 @@ async function settlePauseAbortBoundaries(boundaries: readonly Promise<void>[]):
 export function composePauseAbortBoundaries(
 	boundaries: readonly (Promise<void> | undefined)[],
 ): Promise<void> | undefined {
-	const pending = boundaries.filter(
-		(boundary): boundary is Promise<void> => boundary !== undefined,
-	);
+	const pending = boundaries.filter((boundary): boundary is Promise<void> => boundary !== undefined);
 	return pending.length === 0 ? undefined : settlePauseAbortBoundaries(pending);
 }
 
 /** Synchronously hold raw queue entries before pausing and aborting an active turn. */
 export function pauseQueuedMessages(this: AgentSession): void {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.pauseQueuedMessages();
+	if (owner !== this) {
+		owner.pauseQueuedMessages();
+		return;
+	}
 	if (this._queuedMessagesPaused) return;
 	this._queuedMessagesPaused = true;
 	this._queuedMessagesPauseAbortBoundary = undefined;
@@ -34,10 +39,7 @@ export function pauseQueuedMessages(this: AgentSession): void {
 }
 
 /** Release a pause hold without starting a turn; report whether raw work was released. */
-export async function resumeQueuedMessages(
-	this: AgentSession,
-	beforeRelease?: () => void,
-): Promise<boolean> {
+export async function resumeQueuedMessages(this: AgentSession, beforeRelease?: () => void): Promise<boolean> {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.resumeQueuedMessages(beforeRelease);
 	if (!this._queuedMessagesPaused) return false;
@@ -76,10 +78,7 @@ export function abort(this: AgentSession): Promise<void> {
 		await this._agentEventQueue;
 	})();
 	if (this._queuedMessagesPaused) {
-		const tracked = composePauseAbortBoundaries([
-			this._queuedMessagesPauseAbortBoundary,
-			boundary,
-		]);
+		const tracked = composePauseAbortBoundaries([this._queuedMessagesPauseAbortBoundary, boundary]);
 		if (tracked === undefined) return boundary;
 		this._queuedMessagesPauseAbortBoundary = tracked;
 		void tracked.catch(() => {});

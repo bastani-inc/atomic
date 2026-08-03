@@ -2,17 +2,20 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { type ModelCycleResult, THINKING_LEVELS } from "./agent-session-types.ts";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { THINKING_LEVELS, type ModelCycleResult } from "./agent-session-types.ts";
 
-export async function _getRequiredRequestAuth(this: AgentSession, model: Model<Api>): Promise<{
+export async function _getRequiredRequestAuth(
+	this: AgentSession,
+	model: Model<Api>,
+): Promise<{
 	apiKey?: string;
 	headers?: ProviderHeaders;
 	env?: Record<string, string>;
 }> {
-	let result;
+	let result: Awaited<ReturnType<AgentSession["_modelRuntime"]["getAuth"]>>;
 	try {
 		result = await this._modelRuntime.getAuth(model);
 	} catch (error) {
@@ -24,12 +27,16 @@ export async function _getRequiredRequestAuth(this: AgentSession, model: Model<A
 	}
 	if (result && (result.auth.apiKey || result.auth.headers)) {
 		const headers = result.auth.headers
-			? Object.fromEntries(Object.entries(result.auth.headers).filter((entry): entry is [string, string] => entry[1] !== null))
+			? Object.fromEntries(
+					Object.entries(result.auth.headers).filter((entry): entry is [string, string] => entry[1] !== null),
+				)
 			: undefined;
 		return { apiKey: result.auth.apiKey, headers, env: result.env };
 	}
 	if (this._modelRuntime.isUsingOAuth(model.provider)) {
-		throw new Error(`Authentication failed for "${model.provider}". Credentials may have expired or network is unavailable. Run '/login ${model.provider}' to re-authenticate.`);
+		throw new Error(
+			`Authentication failed for "${model.provider}". Credentials may have expired or network is unavailable. Run '/login ${model.provider}' to re-authenticate.`,
+		);
 	}
 	throw new Error(formatNoApiKeyFoundMessage(model.provider));
 }
@@ -43,7 +50,8 @@ export async function _getRequiredRequestAuth(this: AgentSession, model: Model<A
  * happens here instead of in wrappers.
  */
 
-export function _emitModelChanged(this: AgentSession, 
+export function _emitModelChanged(
+	this: AgentSession,
 	nextModel: Model<Api>,
 	previousModel: Model<Api> | undefined,
 	source: "set" | "cycle" | "restore" | "fallback",
@@ -57,8 +65,8 @@ export function _emitModelChanged(this: AgentSession,
 	});
 }
 
-
-export async function _emitModelSelect(this: AgentSession, 
+export async function _emitModelSelect(
+	this: AgentSession,
 	nextModel: Model<Api>,
 	previousModel: Model<Api> | undefined,
 	source: "set" | "cycle" | "restore" | "fallback",
@@ -105,16 +113,23 @@ export async function setModel(this: AgentSession, model: Model<Api>): Promise<v
  * @returns The new model info, or undefined if only one model available
  */
 
-export async function cycleModel(this: AgentSession, direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+export async function cycleModel(
+	this: AgentSession,
+	direction: "forward" | "backward" = "forward",
+): Promise<ModelCycleResult | undefined> {
 	if (this._scopedModels.length > 0) {
 		return this._cycleScopedModel(direction);
 	}
 	return this._cycleAvailableModel(direction);
 }
 
-
-export async function _cycleScopedModel(this: AgentSession, direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-	const scopedModels = this._scopedModels.filter((scoped) => this._modelRuntime.hasConfiguredAuth(scoped.model.provider));
+export async function _cycleScopedModel(
+	this: AgentSession,
+	direction: "forward" | "backward",
+): Promise<ModelCycleResult | undefined> {
+	const scopedModels = this._scopedModels.filter((scoped) =>
+		this._modelRuntime.hasConfiguredAuth(scoped.model.provider),
+	);
 	if (scopedModels.length <= 1) return undefined;
 
 	const currentModel = this.model;
@@ -145,8 +160,10 @@ export async function _cycleScopedModel(this: AgentSession, direction: "forward"
 	return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: true };
 }
 
-
-export async function _cycleAvailableModel(this: AgentSession, direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+export async function _cycleAvailableModel(
+	this: AgentSession,
+	direction: "forward" | "backward",
+): Promise<ModelCycleResult | undefined> {
 	const availableModels = await this._modelRuntime.getAvailableSnapshot();
 	if (availableModels.length <= 1) return undefined;
 
@@ -243,7 +260,6 @@ export function supportsThinking(this: AgentSession): boolean {
 	return !!this.model?.reasoning;
 }
 
-
 export function _getThinkingLevelForModelSwitch(this: AgentSession, explicitLevel?: ThinkingLevel): ThinkingLevel {
 	if (explicitLevel !== undefined) {
 		return explicitLevel;
@@ -254,11 +270,13 @@ export function _getThinkingLevelForModelSwitch(this: AgentSession, explicitLeve
 	return this.thinkingLevel;
 }
 
-
-export function _clampThinkingLevel(this: AgentSession, level: ThinkingLevel, _availableLevels: ThinkingLevel[]): ThinkingLevel {
+export function _clampThinkingLevel(
+	this: AgentSession,
+	level: ThinkingLevel,
+	_availableLevels: ThinkingLevel[],
+): ThinkingLevel {
 	return this.model ? (clampThinkingLevel(this.model, level) as ThinkingLevel) : "off";
 }
-
 
 // =========================================================================
 // Queue Mode Management

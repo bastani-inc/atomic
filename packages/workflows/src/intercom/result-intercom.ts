@@ -23,14 +23,14 @@ import type { WorkflowDetails } from "../shared/types.js";
 
 /** Minimal pi events bus surface used by this module. */
 export interface PiEventBus {
-  on?: (event: string, handler: (payload: unknown) => void) => void | (() => void);
-  emit?: (event: string, payload: Record<string, unknown>) => void;
+	on?: (event: string, handler: (payload: unknown) => void) => unknown;
+	emit?: (event: string, payload: Record<string, unknown>) => void;
 }
 
 /** Minimal ExtensionAPI surface expected by result-intercom module. */
 export interface PiResultIntercomExtensionAPI {
-  events?: PiEventBus;
-  [key: string]: unknown;
+	events?: PiEventBus;
+	[key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,17 +45,17 @@ export interface PiResultIntercomExtensionAPI {
  * opaquely to callbacks.
  */
 export interface IntercomControlPayload {
-  /** Escalation kind: a blocking decision request or an informational notice. */
-  type: "need_decision" | "notify" | string;
-  /** Human-readable message from the child agent. */
-  message: string;
-  /** Originating run/stage context if the child is inside a workflow. */
-  runId?: string;
-  stageId?: string;
-  /** The child agent's identifier (pi-subagents populates this). */
-  agentId?: string;
-  /** Arbitrary extra fields forwarded from pi-subagents. */
-  [key: string]: unknown;
+	/** Escalation kind: a blocking decision request or an informational notice. */
+	type: "need_decision" | "notify" | string;
+	/** Human-readable message from the child agent. */
+	message: string;
+	/** Originating run/stage context if the child is inside a workflow. */
+	runId?: string;
+	stageId?: string;
+	/** The child agent's identifier (pi-subagents populates this). */
+	agentId?: string;
+	/** Arbitrary extra fields forwarded from pi-subagents. */
+	[key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -76,106 +76,106 @@ export type OnNotify = (payload: IntercomControlPayload) => void | Promise<void>
 
 /** Callback bag passed to `subscribeIntercomControl`. */
 export interface IntercomControlCallbacks {
-  onNeedDecision?: OnNeedDecision;
-  onNotify?: OnNotify;
-  /**
-   * Fallback called for unknown `type` values — useful for forward
-   * compatibility as pi-subagents adds new escalation kinds.
-   */
-  onUnknown?: (payload: IntercomControlPayload) => void | Promise<void>;
+	onNeedDecision?: OnNeedDecision;
+	onNotify?: OnNotify;
+	/**
+	 * Fallback called for unknown `type` values — useful for forward
+	 * compatibility as pi-subagents adds new escalation kinds.
+	 */
+	onUnknown?: (payload: IntercomControlPayload) => void | Promise<void>;
 }
 
 export type WorkflowIntercomDelivery = "off" | "notify" | "result" | "control-and-result";
 
 export interface WorkflowResultIntercomPort {
-  emit?: (event: string, payload: Record<string, unknown>) => void;
-  parentSession?: string | (() => string | undefined);
+	emit?: (event: string, payload: Record<string, unknown>) => void;
+	parentSession?: string | (() => string | undefined);
 }
 
 export interface WorkflowIntercomEventOptions {
-  readonly delivery: Exclude<WorkflowIntercomDelivery, "off">;
-  readonly parentSession?: string;
+	readonly delivery: Exclude<WorkflowIntercomDelivery, "off">;
+	readonly parentSession?: string;
 }
 
 export interface WorkflowControlIntercomPayload {
-  readonly type: "notify" | "needs_attention";
-  readonly runId: string;
-  readonly mode: WorkflowDetails["mode"];
-  readonly status: WorkflowDetails["status"];
-  readonly message: string;
-  readonly parentSession?: string;
-  readonly createdAt: number;
+	readonly type: "notify" | "needs_attention";
+	readonly runId: string;
+	readonly mode: WorkflowDetails["mode"];
+	readonly status: WorkflowDetails["status"];
+	readonly message: string;
+	readonly parentSession?: string;
+	readonly createdAt: number;
 }
 
 export interface WorkflowResultIntercomPayload {
-  readonly runId: string;
-  readonly mode: WorkflowDetails["mode"];
-  readonly status: WorkflowDetails["status"];
-  readonly details: WorkflowDetails;
-  readonly parentSession?: string;
-  readonly createdAt: number;
+	readonly runId: string;
+	readonly mode: WorkflowDetails["mode"];
+	readonly status: WorkflowDetails["status"];
+	readonly details: WorkflowDetails;
+	readonly parentSession?: string;
+	readonly createdAt: number;
 }
 
 function parentSessionFromPort(port: WorkflowResultIntercomPort, override?: string): string | undefined {
-  if (override !== undefined) return override;
-  if (typeof port.parentSession === "function") return port.parentSession();
-  return port.parentSession;
+	if (override !== undefined) return override;
+	if (typeof port.parentSession === "function") return port.parentSession();
+	return port.parentSession;
 }
 
 function shouldEmitControl(delivery: WorkflowIntercomDelivery): boolean {
-  return delivery === "notify" || delivery === "control-and-result";
+	return delivery === "notify" || delivery === "control-and-result";
 }
 
 function shouldEmitResult(delivery: WorkflowIntercomDelivery): boolean {
-  return delivery === "result" || delivery === "control-and-result";
+	return delivery === "result" || delivery === "control-and-result";
 }
 
 export function workflowIntercomAvailable(port: WorkflowResultIntercomPort | undefined): boolean {
-  return typeof port?.emit === "function";
+	return typeof port?.emit === "function";
 }
 
 export function emitWorkflowControlIntercom(
-  port: WorkflowResultIntercomPort | undefined,
-  details: WorkflowDetails,
-  message: string,
-  options: WorkflowIntercomEventOptions,
+	port: WorkflowResultIntercomPort | undefined,
+	details: WorkflowDetails,
+	message: string,
+	options: WorkflowIntercomEventOptions,
 ): boolean {
-  if (!workflowIntercomAvailable(port) || !shouldEmitControl(options.delivery) || details.runId === undefined) {
-    return false;
-  }
-  const parentSession = parentSessionFromPort(port!, options.parentSession);
-  const payload: WorkflowControlIntercomPayload = {
-    type: "notify",
-    runId: details.runId,
-    mode: details.mode,
-    status: details.status,
-    message,
-    ...(parentSession !== undefined ? { parentSession } : {}),
-    createdAt: Date.now(),
-  };
-  port!.emit!("workflow:control-intercom", payload as unknown as Record<string, unknown>);
-  return true;
+	if (!workflowIntercomAvailable(port) || !shouldEmitControl(options.delivery) || details.runId === undefined) {
+		return false;
+	}
+	const parentSession = parentSessionFromPort(port!, options.parentSession);
+	const payload: WorkflowControlIntercomPayload = {
+		type: "notify",
+		runId: details.runId,
+		mode: details.mode,
+		status: details.status,
+		message,
+		...(parentSession !== undefined ? { parentSession } : {}),
+		createdAt: Date.now(),
+	};
+	port!.emit!("workflow:control-intercom", payload as unknown as Record<string, unknown>);
+	return true;
 }
 
 export function emitWorkflowResultIntercom(
-  port: WorkflowResultIntercomPort | undefined,
-  details: WorkflowDetails,
-  options: WorkflowIntercomEventOptions,
+	port: WorkflowResultIntercomPort | undefined,
+	details: WorkflowDetails,
+	options: WorkflowIntercomEventOptions,
 ): boolean {
-  if (!workflowIntercomAvailable(port) || !shouldEmitResult(options.delivery) || details.runId === undefined) {
-    return false;
-  }
-  const parentSession = parentSessionFromPort(port!, options.parentSession);
-  const payload: WorkflowResultIntercomPayload = {
-    runId: details.runId,
-    mode: details.mode,
-    status: details.status,
-    details,
-    ...(parentSession !== undefined ? { parentSession } : {}),
-    createdAt: Date.now(),
-  };
-  port!.emit!("workflow:result-intercom", payload as unknown as Record<string, unknown>);
-  return true;
+	if (!workflowIntercomAvailable(port) || !shouldEmitResult(options.delivery) || details.runId === undefined) {
+		return false;
+	}
+	const parentSession = parentSessionFromPort(port!, options.parentSession);
+	const payload: WorkflowResultIntercomPayload = {
+		runId: details.runId,
+		mode: details.mode,
+		status: details.status,
+		details,
+		...(parentSession !== undefined ? { parentSession } : {}),
+		createdAt: Date.now(),
+	};
+	port!.emit!("workflow:result-intercom", payload as unknown as Record<string, unknown>);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,47 +194,47 @@ export function emitWorkflowResultIntercom(
  *          Returns `null` when the subscription could not be established.
  */
 export function subscribeIntercomControl(
-  pi: PiResultIntercomExtensionAPI,
-  callbacks: IntercomControlCallbacks,
+	pi: PiResultIntercomExtensionAPI,
+	callbacks: IntercomControlCallbacks,
 ): (() => void) | null {
-  if (typeof pi.events?.on !== "function") return null;
+	if (typeof pi.events?.on !== "function") return null;
 
-  let active = true;
+	let active = true;
 
-  const handler = (rawPayload: unknown): void => {
-    if (!active) return;
+	const handler = (rawPayload: unknown): void => {
+		if (!active) return;
 
-    // Coerce to typed payload — we trust pi-subagents' contract but guard
-    // defensively against malformed emissions.
-    const payload = rawPayload as IntercomControlPayload;
+		// Coerce to typed payload — we trust pi-subagents' contract but guard
+		// defensively against malformed emissions.
+		const payload = rawPayload as IntercomControlPayload;
 
-    if (!payload || typeof payload !== "object" || typeof payload.type !== "string") return;
+		if (!payload || typeof payload !== "object" || typeof payload.type !== "string") return;
 
-    const dispatch = (): Promise<void> => {
-      switch (payload.type) {
-        case "need_decision":
-          return Promise.resolve(callbacks.onNeedDecision?.(payload));
-        case "notify":
-          return Promise.resolve(callbacks.onNotify?.(payload));
-        default:
-          return Promise.resolve(callbacks.onUnknown?.(payload));
-      }
-    };
+		const dispatch = (): Promise<void> => {
+			switch (payload.type) {
+				case "need_decision":
+					return Promise.resolve(callbacks.onNeedDecision?.(payload));
+				case "notify":
+					return Promise.resolve(callbacks.onNotify?.(payload));
+				default:
+					return Promise.resolve(callbacks.onUnknown?.(payload));
+			}
+		};
 
-    dispatch().catch((err) => {
-      // Surface errors without breaking the event loop.
-      Promise.reject(
-        new Error(
-          `atomic-workflows: intercom callback error (type=${payload.type}): ${err instanceof Error ? err.message : String(err)}`,
-        ),
-      );
-    });
-  };
+		dispatch().catch((err) => {
+			// Surface errors without breaking the event loop.
+			Promise.reject(
+				new Error(
+					`atomic-workflows: intercom callback error (type=${payload.type}): ${err instanceof Error ? err.message : String(err)}`,
+				),
+			);
+		});
+	};
 
-  const unsubscribe = pi.events!.on!("subagent:control-intercom", handler);
+	const unsubscribe = pi.events!.on!("subagent:control-intercom", handler);
 
-  return () => {
-    active = false;
-    if (typeof unsubscribe === "function") unsubscribe();
-  };
+	return () => {
+		active = false;
+		if (typeof unsubscribe === "function") unsubscribe();
+	};
 }

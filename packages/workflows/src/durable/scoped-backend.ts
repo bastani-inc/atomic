@@ -19,10 +19,26 @@
  * cross-ref: issue #1498 — child side effects under the root durable workflow.
  */
 
-import type { DurableCheckpoint, DurableStageCheckpoint, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import type { DurableInactiveDeleteResult, DurableWorkflowBackend, DurableWorkflowCatalogEntries, WorkflowRegistrationInput } from "./backend.js";
-import { claimDurablePromptToken, durablePromptScope, releaseDurablePrompt, reserveDurablePrompt, type PromptReservationToken } from "./prompt-reservations.js";
+import type {
+	DurableInactiveDeleteResult,
+	DurableWorkflowBackend,
+	DurableWorkflowCatalogEntries,
+	WorkflowRegistrationInput,
+} from "./backend.js";
+import {
+	claimDurablePromptToken,
+	durablePromptScope,
+	type PromptReservationToken,
+	releaseDurablePrompt,
+	reserveDurablePrompt,
+} from "./prompt-reservations.js";
+import type {
+	DurableCheckpoint,
+	DurableStageCheckpoint,
+	DurableWorkflowStatus,
+	ResumableWorkflowEntry,
+} from "./types.js";
 
 /**
  * Durable scope for a child workflow run.
@@ -33,8 +49,8 @@ import { claimDurablePromptToken, durablePromptScope, releaseDurablePrompt, rese
  *   collide.
  */
 export interface DurableScope {
-  readonly rootWorkflowId: string;
-  readonly scopePrefix: string;
+	readonly rootWorkflowId: string;
+	readonly scopePrefix: string;
 }
 
 /**
@@ -43,241 +59,246 @@ export interface DurableScope {
  * truth; this wrapper only translates keys.
  */
 export class ScopedDurableBackend implements DurableWorkflowBackend {
-  public readonly persistent: boolean;
-  private readonly inner: DurableWorkflowBackend;
-  private readonly scope: DurableScope;
+	public readonly persistent: boolean;
+	private readonly inner: DurableWorkflowBackend;
+	private readonly scope: DurableScope;
 
-  constructor(inner: DurableWorkflowBackend, scope: DurableScope) {
-    this.inner = inner;
-    this.scope = scope;
-    this.persistent = inner.persistent;
-  }
+	constructor(inner: DurableWorkflowBackend, scope: DurableScope) {
+		this.inner = inner;
+		this.scope = scope;
+		this.persistent = inner.persistent;
+	}
 
-  registerWorkflow(_handle: WorkflowRegistrationInput): void {
-    // Child runs are not independently resumable; only the root is registered.
-  }
+	registerWorkflow(_handle: WorkflowRegistrationInput): void {
+		// Child runs are not independently resumable; only the root is registered.
+	}
 
-  recordCheckpoint(checkpoint: DurableCheckpoint): void {
-    this.inner.recordCheckpoint(this.remap(checkpoint));
-  }
+	recordCheckpoint(checkpoint: DurableCheckpoint): void {
+		this.inner.recordCheckpoint(this.remap(checkpoint));
+	}
 
-  async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-    await this.inner.recordCheckpointAsync(this.remap(checkpoint));
-  }
+	async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+		await this.inner.recordCheckpointAsync(this.remap(checkpoint));
+	}
 
-  async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
-    return await this.inner.recordAdditiveCheckpointBestEffort(this.remap(checkpoint));
-  }
+	async recordAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
+		return await this.inner.recordAdditiveCheckpointBestEffort(this.remap(checkpoint));
+	}
 
-  flush(): Promise<void> {
-    return this.inner.flush();
-  }
+	flush(): Promise<void> {
+		return this.inner.flush();
+	}
 
-  getToolOutput(_workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
-    return this.inner.getToolOutput(this.scope.rootWorkflowId, this.scopeKey(argsHash));
-  }
+	getToolOutput(_workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {
+		return this.inner.getToolOutput(this.scope.rootWorkflowId, this.scopeKey(argsHash));
+	}
 
-  getToolCheckpoint(_workflowId: string, argsHash: string) {
-    return this.inner.getToolCheckpoint(this.scope.rootWorkflowId, this.scopeKey(argsHash));
-  }
+	getToolCheckpoint(_workflowId: string, argsHash: string) {
+		return this.inner.getToolCheckpoint(this.scope.rootWorkflowId, this.scopeKey(argsHash));
+	}
 
-  getUiResponse(_workflowId: string, promptHash: string): WorkflowSerializableValue | undefined {
-    return this.inner.getUiResponse(this.scope.rootWorkflowId, this.scopeKey(promptHash));
-  }
+	getUiResponse(_workflowId: string, promptHash: string): WorkflowSerializableValue | undefined {
+		return this.inner.getUiResponse(this.scope.rootWorkflowId, this.scopeKey(promptHash));
+	}
 
-  getStageOutput(_workflowId: string, replayKey: string): WorkflowSerializableValue | undefined {
-    return this.inner.getStageOutput(this.scope.rootWorkflowId, this.scopeKey(replayKey));
-  }
+	getStageOutput(_workflowId: string, replayKey: string): WorkflowSerializableValue | undefined {
+		return this.inner.getStageOutput(this.scope.rootWorkflowId, this.scopeKey(replayKey));
+	}
 
-  getStageSession(_workflowId: string, replayKey: string): {
-    sessionId?: string;
-    sessionFile?: string;
-    startedAt?: number;
-    durationMs?: number;
-  } | undefined {
-    return this.inner.getStageSession(this.scope.rootWorkflowId, this.scopeKey(replayKey));
-  }
+	getStageSession(
+		_workflowId: string,
+		replayKey: string,
+	):
+		| {
+				sessionId?: string;
+				sessionFile?: string;
+				startedAt?: number;
+				durationMs?: number;
+		  }
+		| undefined {
+		return this.inner.getStageSession(this.scope.rootWorkflowId, this.scopeKey(replayKey));
+	}
 
-  listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
-    const prefix = `${this.scope.scopePrefix}:`;
-    return this.inner.listCheckpoints(this.scope.rootWorkflowId)
-      .filter((checkpoint) => checkpointHasPrefix(checkpoint, prefix))
-      .map((checkpoint) => localCheckpoint(checkpoint, workflowId, prefix));
-  }
+	listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
+		const prefix = `${this.scope.scopePrefix}:`;
+		return this.inner
+			.listCheckpoints(this.scope.rootWorkflowId)
+			.filter((checkpoint) => checkpointHasPrefix(checkpoint, prefix))
+			.map((checkpoint) => localCheckpoint(checkpoint, workflowId, prefix));
+	}
 
-  getWorkflow(_workflowId: string): undefined {
-    // Child runs have no independent resumable handle.
-    return undefined;
-  }
+	getWorkflow(_workflowId: string): undefined {
+		// Child runs have no independent resumable handle.
+		return undefined;
+	}
 
-  getLoadableWorkflow(_workflowId: string): undefined {
-    return undefined;
-  }
+	getLoadableWorkflow(_workflowId: string): undefined {
+		return undefined;
+	}
 
-  setWorkflowStatus(_workflowId: string, _status: DurableWorkflowStatus, _pendingPrompts?: number, _resumable?: boolean): void {
-    // No-op: child status is reflected via the root workflow boundary.
-  }
+	setWorkflowStatus(
+		_workflowId: string,
+		_status: DurableWorkflowStatus,
+		_pendingPrompts?: number,
+		_resumable?: boolean,
+	): void {
+		// No-op: child status is reflected via the root workflow boundary.
+	}
 
-  async transitionWorkflowStatus(
-    _workflowId: string,
-    _expectedStatuses: readonly DurableWorkflowStatus[],
-    _status: DurableWorkflowStatus,
-    _pendingPrompts?: number,
-    _resumable?: boolean,
-  ): Promise<boolean> {
-    return false;
-  }
+	async transitionWorkflowStatus(
+		_workflowId: string,
+		_expectedStatuses: readonly DurableWorkflowStatus[],
+		_status: DurableWorkflowStatus,
+		_pendingPrompts?: number,
+		_resumable?: boolean,
+	): Promise<boolean> {
+		return false;
+	}
 
-  adjustPendingPrompts(_workflowId: string, delta: number): void {
-    this.inner.adjustPendingPrompts(this.scope.rootWorkflowId, delta);
-  }
+	adjustPendingPrompts(_workflowId: string, delta: number): void {
+		this.inner.adjustPendingPrompts(this.scope.rootWorkflowId, delta);
+	}
 
-  promptReservationScope(_workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
-    return this.effectivePromptScope();
-  }
+	promptReservationScope(_workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
+		return this.effectivePromptScope();
+	}
 
-  pendingPromptToken(_workflowId: string, reservationId: string): PromptReservationToken | undefined {
-    return claimDurablePromptToken(this.inner, this.scope.rootWorkflowId, reservationId);
-  }
+	pendingPromptToken(_workflowId: string, reservationId: string): PromptReservationToken | undefined {
+		return claimDurablePromptToken(this.inner, this.scope.rootWorkflowId, reservationId);
+	}
 
-  reservePendingPrompt(_workflowId: string, reservationId: string): PromptReservationToken {
-    return reserveDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId);
-  }
+	reservePendingPrompt(_workflowId: string, reservationId: string): PromptReservationToken {
+		return reserveDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId);
+	}
 
-  releasePendingPrompt(_workflowId: string, reservationId: string, token: PromptReservationToken): void {
-    releaseDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId, token);
-  }
+	releasePendingPrompt(_workflowId: string, reservationId: string, token: PromptReservationToken): void {
+		releaseDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId, token);
+	}
 
-  listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
-    return [];
-  }
+	listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
+		return [];
+	}
 
-  listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {
-    return [];
-  }
+	listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {
+		return [];
+	}
 
-  async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
-    return { resumable: [], completed: [] };
-  }
+	async prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
+		return { resumable: [], completed: [] };
+	}
 
-  toMetadata(_workflowId: string): undefined {
-    return undefined;
-  }
+	toMetadata(_workflowId: string): undefined {
+		return undefined;
+	}
 
-  async deleteWorkflow(_workflowId: string): Promise<void> {
-    // No-op: scoped children never own or delete root durable state.
-  }
+	async deleteWorkflow(_workflowId: string): Promise<void> {
+		// No-op: scoped children never own or delete root durable state.
+	}
 
-  async deleteWorkflowIfInactive(_workflowId: string): Promise<DurableInactiveDeleteResult> {
-    return { ok: false, reason: "not_found" };
-  }
+	async deleteWorkflowIfInactive(_workflowId: string): Promise<DurableInactiveDeleteResult> {
+		return { ok: false, reason: "not_found" };
+	}
 
-  isWorkflowLoadable(_workflowId: string): boolean {
-    return false;
-  }
+	isWorkflowLoadable(_workflowId: string): boolean {
+		return false;
+	}
 
-  reset(): void {
-    // No-op: scoped backends never own root state.
-  }
+	reset(): void {
+		// No-op: scoped backends never own root state.
+	}
 
-  hydrateWorkflow(_workflowId: string): Promise<void> {
-    return Promise.resolve();
-  }
+	hydrateWorkflow(_workflowId: string): Promise<void> {
+		return Promise.resolve();
+	}
 
-  hydrateResumableWorkflows(): Promise<void> {
-    return Promise.resolve();
-  }
+	hydrateResumableWorkflows(): Promise<void> {
+		return Promise.resolve();
+	}
 
-  private effectivePromptScope(): { readonly rootWorkflowId: string; readonly scope: string } {
-    const parent = durablePromptScope(this.inner, this.scope.rootWorkflowId);
-    const scope = parent.scope === "root"
-      ? this.scope.scopePrefix
-      : `${parent.scope}:${this.scope.scopePrefix}`;
-    return {
-      rootWorkflowId: parent.rootWorkflowId,
-      scope,
-    };
-  }
+	private effectivePromptScope(): { readonly rootWorkflowId: string; readonly scope: string } {
+		const parent = durablePromptScope(this.inner, this.scope.rootWorkflowId);
+		const scope = parent.scope === "root" ? this.scope.scopePrefix : `${parent.scope}:${this.scope.scopePrefix}`;
+		return {
+			rootWorkflowId: parent.rootWorkflowId,
+			scope,
+		};
+	}
 
-  private scopeKey(key: string): string {
-    return `${this.scope.scopePrefix}:${key}`;
-  }
+	private scopeKey(key: string): string {
+		return `${this.scope.scopePrefix}:${key}`;
+	}
 
-  private remap(checkpoint: DurableCheckpoint): DurableCheckpoint {
-    const workflowId = this.scope.rootWorkflowId;
-    if (checkpoint.kind === "tool") {
-      return {
-        ...checkpoint,
-        workflowId,
-        checkpointId: this.scopeKey(checkpoint.checkpointId),
-        argsHash: this.scopeKey(checkpoint.argsHash),
-      };
-    }
-    if (checkpoint.kind === "ui") {
-      return {
-        ...checkpoint,
-        workflowId,
-        checkpointId: this.scopeKey(checkpoint.checkpointId),
-        promptHash: this.scopeKey(checkpoint.promptHash),
-      };
-    }
-    return {
-      ...checkpoint,
-      workflowId,
-      checkpointId: this.scopeKey(checkpoint.checkpointId),
-      replayKey: this.scopeKey(checkpoint.replayKey),
-      ...remappedBoundaryScope(checkpoint, this.scopeKey(checkpoint.topology?.boundary?.replayScope ?? "")),
-    };
-  }
+	private remap(checkpoint: DurableCheckpoint): DurableCheckpoint {
+		const workflowId = this.scope.rootWorkflowId;
+		if (checkpoint.kind === "tool") {
+			return {
+				...checkpoint,
+				workflowId,
+				checkpointId: this.scopeKey(checkpoint.checkpointId),
+				argsHash: this.scopeKey(checkpoint.argsHash),
+			};
+		}
+		if (checkpoint.kind === "ui") {
+			return {
+				...checkpoint,
+				workflowId,
+				checkpointId: this.scopeKey(checkpoint.checkpointId),
+				promptHash: this.scopeKey(checkpoint.promptHash),
+			};
+		}
+		return {
+			...checkpoint,
+			workflowId,
+			checkpointId: this.scopeKey(checkpoint.checkpointId),
+			replayKey: this.scopeKey(checkpoint.replayKey),
+			...remappedBoundaryScope(checkpoint, this.scopeKey(checkpoint.topology?.boundary?.replayScope ?? "")),
+		};
+	}
 }
 
 /** Return true only when every stored identity belongs to this immediate scope. */
 function checkpointHasPrefix(checkpoint: DurableCheckpoint, prefix: string): boolean {
-  if (!checkpoint.checkpointId.startsWith(prefix)) return false;
-  if (checkpoint.kind === "tool") return checkpoint.argsHash.startsWith(prefix);
-  if (checkpoint.kind === "ui") return checkpoint.promptHash.startsWith(prefix);
-  return checkpoint.replayKey.startsWith(prefix);
+	if (!checkpoint.checkpointId.startsWith(prefix)) return false;
+	if (checkpoint.kind === "tool") return checkpoint.argsHash.startsWith(prefix);
+	if (checkpoint.kind === "ui") return checkpoint.promptHash.startsWith(prefix);
+	return checkpoint.replayKey.startsWith(prefix);
 }
 
 /** Strip exactly one wrapper prefix to expose a composable child-local view. */
-function localCheckpoint(
-  checkpoint: DurableCheckpoint,
-  workflowId: string,
-  prefix: string,
-): DurableCheckpoint {
-  const checkpointId = checkpoint.checkpointId.slice(prefix.length);
-  if (checkpoint.kind === "tool") {
-    return { ...checkpoint, workflowId, checkpointId, argsHash: checkpoint.argsHash.slice(prefix.length) };
-  }
-  if (checkpoint.kind === "ui") {
-    return { ...checkpoint, workflowId, checkpointId, promptHash: checkpoint.promptHash.slice(prefix.length) };
-  }
-  const replayKey = checkpoint.replayKey.slice(prefix.length);
-  const replayScope = stripOnePrefix(checkpoint.topology?.boundary?.replayScope, prefix);
-  return {
-    ...checkpoint,
-    workflowId,
-    checkpointId,
-    replayKey,
-    ...remappedBoundaryScope(checkpoint, replayScope),
-  };
+function localCheckpoint(checkpoint: DurableCheckpoint, workflowId: string, prefix: string): DurableCheckpoint {
+	const checkpointId = checkpoint.checkpointId.slice(prefix.length);
+	if (checkpoint.kind === "tool") {
+		return { ...checkpoint, workflowId, checkpointId, argsHash: checkpoint.argsHash.slice(prefix.length) };
+	}
+	if (checkpoint.kind === "ui") {
+		return { ...checkpoint, workflowId, checkpointId, promptHash: checkpoint.promptHash.slice(prefix.length) };
+	}
+	const replayKey = checkpoint.replayKey.slice(prefix.length);
+	const replayScope = stripOnePrefix(checkpoint.topology?.boundary?.replayScope, prefix);
+	return {
+		...checkpoint,
+		workflowId,
+		checkpointId,
+		replayKey,
+		...remappedBoundaryScope(checkpoint, replayScope),
+	};
 }
 
 function remappedBoundaryScope(
-  checkpoint: DurableStageCheckpoint,
-  replayScope: string | undefined,
+	checkpoint: DurableStageCheckpoint,
+	replayScope: string | undefined,
 ): Pick<DurableStageCheckpoint, "topology"> | Record<string, never> {
-  const topology = checkpoint.topology;
-  if (topology?.boundary === undefined || replayScope === undefined) return {};
-  return {
-    topology: {
-      ...topology,
-      boundary: { ...topology.boundary, replayScope },
-    },
-  };
+	const topology = checkpoint.topology;
+	if (topology?.boundary === undefined || replayScope === undefined) return {};
+	return {
+		topology: {
+			...topology,
+			boundary: { ...topology.boundary, replayScope },
+		},
+	};
 }
 
 function stripOnePrefix(value: string | undefined, prefix: string): string | undefined {
-  if (value === undefined || !value.startsWith(prefix)) return value;
-  return value.slice(prefix.length);
+	if (value === undefined || !value.startsWith(prefix)) return value;
+	return value.slice(prefix.length);
 }

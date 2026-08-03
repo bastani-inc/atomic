@@ -2,6 +2,13 @@
 # package ecosystems to update and where the package manifests are located.
 # Please see the documentation for all configuration options:
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Every ecosystem below declares `cooldown`. `npm ci` installs package-lock.json
+# verbatim, so the `min-release-age=2` gate in the committed .npmrc only binds
+# when the lockfile is *updated*. Without a matching cooldown here an automated
+# bump could open a PR against a release younger than the local gate would ever
+# install, and merging it would write that version into the lockfile. The two
+# controls express the same policy from opposite sides and must stay in step.
 
 version: 2
 updates:
@@ -10,32 +17,57 @@ updates:
       directory: "/"
       schedule:
           interval: "weekly"
+      cooldown:
+          default-days: 2
       commit-message:
           prefix: "ci"
       labels:
           - "dependencies"
           - "github-actions"
 
-    # Bun packages (root)
-    - package-ecosystem: "bun"
+    # npm packages (root workspace)
+    - package-ecosystem: "npm"
       directory: "/"
       schedule:
           interval: "weekly"
+      cooldown:
+          default-days: 2
       commit-message:
           prefix: "deps"
       labels:
           - "dependencies"
-          - "bun"
+          - "npm"
       ignore:
           # @types/node is pinned via a root `overrides` entry to match
           # upstream Pi's resolved lockfile (see #1489); bumps here are no-ops.
           - dependency-name: "@types/node"
+
+    # npm packages (packages/natives)
+    #
+    # `@napi-rs/cli` lives only in this workspace's devDependencies and was
+    # proposed solely by the removed bun ecosystem, so it recurred as an orphan
+    # that had to be carried by hand. An explicit npm entry makes it a normal
+    # proposal again. `cooldown` matches every other entry, and therefore the
+    # `min-release-age=2` gate in the committed .npmrc.
+    - package-ecosystem: "npm"
+      directory: "/packages/natives"
+      schedule:
+          interval: "weekly"
+      cooldown:
+          default-days: 2
+      commit-message:
+          prefix: "deps"
+      labels:
+          - "dependencies"
+          - "npm"
 
     # Rust crates (workspace)
     - package-ecosystem: "cargo"
       directory: "/"
       schedule:
           interval: "weekly"
+      cooldown:
+          default-days: 2
       commit-message:
           prefix: "deps"
       labels:

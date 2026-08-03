@@ -1,8 +1,7 @@
 import type { ExtensionAPI, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.ts";
-import type { ChainStep } from "../../shared/settings.ts";
-import type { AvailableModelInfo } from "../shared/model-fallback.ts";
 import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
+import type { ChainStep } from "../../shared/settings.ts";
 import type {
 	ArtifactConfig,
 	Details,
@@ -11,6 +10,7 @@ import type {
 	ResolvedControlConfig,
 	SubagentRunMode,
 } from "../../shared/types.ts";
+import type { AvailableModelInfo } from "../shared/model-fallback.ts";
 
 export interface AsyncExecutionContext {
 	pi: ExtensionAPI;
@@ -50,12 +50,7 @@ export interface AsyncChainParams {
 	supervisorAuthorizations?: Array<SupervisorAuthorization | undefined>;
 	dynamicSupervisorAuthorizations?: Record<number, SupervisorAuthorization[]>;
 	/** Internal launch seam used by focused runtime tests. */
-	spawnRunner?: (
-		config: object,
-		suffix: string,
-		cwd: string,
-		env?: Record<string, string>,
-	) => AsyncSpawnResult;
+	spawnRunner?: (config: object, suffix: string, cwd: string, env?: Record<string, string>) => AsyncSpawnResult;
 	nestedRoute?: NestedRouteInfo;
 }
 
@@ -89,12 +84,7 @@ export interface AsyncSingleParams {
 	supervisorAuthorization?: SupervisorAuthorization;
 	nestedRoute?: NestedRouteInfo;
 	/** Internal launch seam used by focused runtime tests. */
-	spawnRunner?: (
-		config: object,
-		suffix: string,
-		cwd: string,
-		env?: Record<string, string>,
-	) => AsyncSpawnResult;
+	spawnRunner?: (config: object, suffix: string, cwd: string, env?: Record<string, string>) => AsyncSpawnResult;
 }
 
 export interface AsyncExecutionResult {

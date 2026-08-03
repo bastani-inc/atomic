@@ -1,21 +1,21 @@
-import { afterEach, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getKeybindings, setKeybindings, type Terminal } from "@earendil-works/pi-tui";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { getKeybindings, setKeybindings, type Terminal } from "@earendil-works/pi-tui";
+import { afterEach, test } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
-import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import type { AgentSessionReloadOptions } from "../../packages/coding-agent/src/core/agent-session-types.ts";
+import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
+import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
-import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.ts";
 import { keyText } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -58,7 +58,12 @@ async function createMode(agentDir: string, extensionFactory?: ExtensionFactory)
 	const faux = registerFauxProvider();
 	const authStorage = AuthStorage.inMemory({ [faux.getModel().provider]: { type: "api_key", key: "faux-key" } });
 	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
-	const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd: runtimeCwd, agentDir: runtimeAgentDir, sessionManager, sessionStartEvent }) => {
+	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+		cwd: runtimeCwd,
+		agentDir: runtimeAgentDir,
+		sessionManager,
+		sessionStartEvent,
+	}) => {
 		const services = await createAgentSessionServices({
 			cwd: runtimeCwd,
 			agentDir: runtimeAgentDir,
@@ -97,33 +102,41 @@ async function createMode(agentDir: string, extensionFactory?: ExtensionFactory)
 	return mode;
 }
 
-test.serial("exported InteractiveMode uses services.agentDir for display and editor input", async () => {
+test.sequential("exported InteractiveMode uses services.agentDir for display and editor input", async () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-explicit-agent-dir-"));
 	writeExpandBinding(agentDir, "ctrl+x");
 	const ambientDir = mkdtempSync(join(tmpdir(), "atomic-ambient-agent-dir-"));
 	process.env.ATOMIC_CODING_AGENT_DIR = ambientDir;
-	cleanup.push(async () => { rmSync(ambientDir, { recursive: true, force: true }); });
+	cleanup.push(async () => {
+		rmSync(ambientDir, { recursive: true, force: true });
+	});
 	const mode = await createMode(agentDir);
 	let dispatches = 0;
-	mode.defaultEditor.onAction("app.tools.expand", () => { dispatches++; });
+	mode.defaultEditor.onAction("app.tools.expand", () => {
+		dispatches++;
+	});
 
 	assert.deepEqual(mode.keybindings.getKeys("app.tools.expand"), ["ctrl+x"]);
 	assert.equal(keyText("app.tools.expand"), "ctrl+x");
 	mode.defaultEditor.handleInput("\x18");
 	assert.equal(dispatches, 1);
 	let hostDisposals = 0;
-	mode.disposeInteractiveEngineHost = () => { hostDisposals++; };
+	mode.disposeInteractiveEngineHost = () => {
+		hostDisposals++;
+	};
 	mode.stop();
 	assert.equal(hostDisposals, 1, "mode stop must dispose its interactive-engine host attachment");
 });
 
-test.serial("local slash and extension-context reloads stage keybindings before session_start and roll back in place", async () => {
+test.sequential("local slash and extension-context reloads stage keybindings before session_start and roll back in place", async () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-local-reload-agent-dir-"));
 	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 	writeExpandBinding(agentDir, "ctrl+x");
 	const observed: string[] = [];
 	const extension: ExtensionFactory = (api) => {
-		api.on("session_start", (event) => { observed.push(`${event.reason}:${keyText("app.tools.expand")}`); });
+		api.on("session_start", (event) => {
+			observed.push(`${event.reason}:${keyText("app.tools.expand")}`);
+		});
 		api.registerCommand("fixture-reload", {
 			description: "reload through extension context",
 			handler: async (_args, ctx) => ctx.reload(),

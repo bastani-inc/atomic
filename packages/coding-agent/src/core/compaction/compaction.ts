@@ -4,8 +4,8 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
-import type { SessionEntry } from "../session-manager.ts";
 import { messageIsLlmVisible, userLikeContentBlockIsLlmVisible } from "../messages.ts";
+import type { SessionEntry } from "../session-manager.ts";
 
 export interface CompactionSettings {
 	enabled: boolean;
@@ -44,7 +44,12 @@ export function calculateContextTokens(usage: Usage, api?: Api): number {
 	const hasComponents = input > 0 || output > 0 || cacheTokens > 0;
 	if (!hasComponents) return Math.max(0, usage.totalTokens || 0);
 
-	const cacheMirrorsInput = api === "anthropic-messages" && input > 0 && cacheTokens > 0 && cacheTokens >= input * 0.9 && cacheTokens <= input * 1.1;
+	const cacheMirrorsInput =
+		api === "anthropic-messages" &&
+		input > 0 &&
+		cacheTokens > 0 &&
+		cacheTokens >= input * 0.9 &&
+		cacheTokens <= input * 1.1;
 	const promptTokens = cacheMirrorsInput ? input : input + cacheTokens;
 	return promptTokens + output;
 }

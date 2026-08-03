@@ -1,5 +1,5 @@
-import type { Theme } from "../../../../../modes/interactive/theme/theme.ts";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { Theme } from "../../../../../modes/interactive/theme/theme.ts";
 import type { StatefulView } from "../stateful-view.ts";
 
 /**
@@ -19,7 +19,7 @@ export interface TabBarProps {
 export class TabBar implements StatefulView<TabBarProps> {
 	private props: TabBarProps;
 
-	declare private readonly theme: Theme;
+	private declare readonly theme: Theme;
 
 	constructor(theme: Theme) {
 		this.theme = theme;

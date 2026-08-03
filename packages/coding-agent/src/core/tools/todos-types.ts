@@ -22,17 +22,7 @@ export interface LockInfo {
 }
 
 export const TodoParams = Type.Object({
-	action: StringEnum([
-		"list",
-		"list-all",
-		"get",
-		"create",
-		"update",
-		"append",
-		"delete",
-		"claim",
-		"release",
-	] as const),
+	action: StringEnum(["list", "list-all", "get", "create", "update", "append", "delete", "claim", "release"] as const),
 	id: Type.Optional(Type.String({ description: "Todo id (TODO-<hex> or raw hex filename)" })),
 	title: Type.Optional(Type.String({ description: "Short summary shown in lists" })),
 	status: Type.Optional(Type.String({ description: "Todo status" })),
@@ -47,16 +37,7 @@ export const TodoParams = Type.Object({
 
 export type TodoToolParams = Static<typeof TodoParams>;
 
-export type TodoAction =
-	| "list"
-	| "list-all"
-	| "get"
-	| "create"
-	| "update"
-	| "append"
-	| "delete"
-	| "claim"
-	| "release";
+export type TodoAction = "list" | "list-all" | "get" | "create" | "update" | "append" | "delete" | "claim" | "release";
 
 export type TodoRecordAction = Exclude<TodoAction, "list" | "list-all">;
 

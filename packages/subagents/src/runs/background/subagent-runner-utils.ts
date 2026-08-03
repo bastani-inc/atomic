@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { TokenUsage, Usage } from "../../shared/types.ts";
-import type { ModelAttempt } from "../../shared/types.ts";
+import type { ModelAttempt, TokenUsage, Usage } from "../../shared/types.ts";
 import type { RunnerStatusStep, SubagentStep } from "./subagent-runner-types.ts";
 
 export function findLatestSessionFile(sessionDir: string): string | null {
@@ -54,7 +53,7 @@ export function resetStepLiveDetail(step: RunnerStatusStep): void {
 }
 
 export function fastModeForStepAttempt(step: SubagentStep, model: string | undefined): boolean | undefined {
-	if (model && step.modelFastModes && Object.prototype.hasOwnProperty.call(step.modelFastModes, model)) {
+	if (model && step.modelFastModes && Object.hasOwn(step.modelFastModes, model)) {
 		return step.modelFastModes[model];
 	}
 	if (model === undefined || model === step.model) return step.fastMode;

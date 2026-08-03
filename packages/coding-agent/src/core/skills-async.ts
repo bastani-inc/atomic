@@ -1,13 +1,13 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
-import ignore from "ignore";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import ignore from "ignore";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
-import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
+import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
-import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import type { LoadSkillsOptions, LoadSkillsResult, Skill, SkillFrontmatter } from "./skills.ts";
+import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
@@ -16,7 +16,12 @@ const YIELD_AFTER_MS = 8;
 type IgnoreMatcher = ReturnType<typeof ignore>;
 
 async function exists(path: string): Promise<boolean> {
-	try { await access(path); return true; } catch { return false; }
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function toPosixPath(path: string): string {
@@ -57,17 +62,22 @@ async function addIgnoreRules(ig: IgnoreMatcher, dir: string, rootDir: string): 
 
 function createSkillSourceInfo(filePath: string, baseDir: string, source: string): SourceInfo {
 	switch (source) {
-		case "user": return createSyntheticSourceInfo(filePath, { source: "local", scope: "user", baseDir });
-		case "project": return createSyntheticSourceInfo(filePath, { source: "local", scope: "project", baseDir });
-		case "path": return createSyntheticSourceInfo(filePath, { source: "local", baseDir });
-		default: return createSyntheticSourceInfo(filePath, { source, baseDir });
+		case "user":
+			return createSyntheticSourceInfo(filePath, { source: "local", scope: "user", baseDir });
+		case "project":
+			return createSyntheticSourceInfo(filePath, { source: "local", scope: "project", baseDir });
+		case "path":
+			return createSyntheticSourceInfo(filePath, { source: "local", baseDir });
+		default:
+			return createSyntheticSourceInfo(filePath, { source, baseDir });
 	}
 }
 
 function validateName(name: string): string[] {
 	const errors: string[] = [];
 	if (name.length > MAX_NAME_LENGTH) errors.push(`name exceeds ${MAX_NAME_LENGTH} characters (${name.length})`);
-	if (!/^[a-z0-9-]+$/.test(name)) errors.push("name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)");
+	if (!/^[a-z0-9-]+$/.test(name))
+		errors.push("name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)");
 	if (name.startsWith("-") || name.endsWith("-")) errors.push("name must not start or end with a hyphen");
 	if (name.includes("--")) errors.push("name must not contain consecutive hyphens");
 	return errors;
@@ -81,13 +91,17 @@ function validateDescription(description: string | undefined): string[] {
 	return [];
 }
 
-async function loadSkillFromFile(filePath: string, source: string): Promise<{ skill: Skill | null; diagnostics: ResourceDiagnostic[] }> {
+async function loadSkillFromFile(
+	filePath: string,
+	source: string,
+): Promise<{ skill: Skill | null; diagnostics: ResourceDiagnostic[] }> {
 	const diagnostics: ResourceDiagnostic[] = [];
 	try {
 		const rawContent = await readFile(filePath, "utf-8");
 		const { frontmatter } = parseFrontmatter<SkillFrontmatter>(rawContent);
 		const skillDir = dirname(filePath);
-		for (const error of validateDescription(frontmatter.description)) diagnostics.push({ type: "warning", message: error, path: filePath });
+		for (const error of validateDescription(frontmatter.description))
+			diagnostics.push({ type: "warning", message: error, path: filePath });
 		const name = frontmatter.name || basename(skillDir);
 		for (const error of validateName(name)) diagnostics.push({ type: "warning", message: error, path: filePath });
 		if (!frontmatter.description || frontmatter.description.trim() === "") return { skill: null, diagnostics };
@@ -130,7 +144,11 @@ async function loadSkillsFromDirInternal(
 			const fullPath = join(dir, entry.name);
 			let isFile = entry.isFile();
 			if (entry.isSymbolicLink()) {
-				try { isFile = (await stat(fullPath)).isFile(); } catch { continue; }
+				try {
+					isFile = (await stat(fullPath)).isFile();
+				} catch {
+					continue;
+				}
 			}
 			const relPath = toPosixPath(relative(root, fullPath));
 			if (!isFile || ig.ignores(relPath)) continue;
@@ -150,7 +168,9 @@ async function loadSkillsFromDirInternal(
 					const stats = await stat(fullPath);
 					isDirectory = stats.isDirectory();
 					isFile = stats.isFile();
-				} catch { continue; }
+				} catch {
+					continue;
+				}
 			}
 			const relPath = toPosixPath(relative(root, fullPath));
 			if (ig.ignores(isDirectory ? `${relPath}/` : relPath)) continue;
@@ -190,7 +210,12 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 					type: "collision",
 					message: `name "${skill.name}" collision`,
 					path: skill.filePath,
-					collision: { resourceType: "skill", name: skill.name, winnerPath: existing.filePath, loserPath: skill.filePath },
+					collision: {
+						resourceType: "skill",
+						name: skill.name,
+						winnerPath: existing.filePath,
+						loserPath: skill.filePath,
+					},
 				});
 			} else {
 				skillMap.set(skill.name, skill);
@@ -204,7 +229,10 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 	}
 	const isUnderPath = (target: string, root: string): boolean => {
 		const normalizedRoot = resolve(root);
-		return target === normalizedRoot || target.startsWith(normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`);
+		return (
+			target === normalizedRoot ||
+			target.startsWith(normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`)
+		);
 	};
 	const getSource = (resolvedPath: string): "user" | "project" | "path" => {
 		if (!includeDefaults) {

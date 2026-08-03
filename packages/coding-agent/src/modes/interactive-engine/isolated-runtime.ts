@@ -1,45 +1,47 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import type { AgentSession, AgentSessionEvent } from "../../core/agent-session.ts";
+import type { AgentSession, AgentSessionEvent, CompactionReason } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { PromptOptions } from "../../core/agent-session-types.ts";
-import { loginIsolatedOAuthProvider, type AtomicOAuthLoginCallbacks } from "./isolated-auth.ts";
-import { SessionManager } from "../../core/session-manager.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import { SessionManager } from "../../core/session-manager.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
-import type { RpcAutocompleteItem, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcModelCatalog, RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
+import type {
+	RpcAutocompleteItem,
+	RpcEvent,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+	RpcModelCatalog,
+	RpcSlashCommand,
+} from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
+import type { InteractiveEngineGenerationEndedListener } from "./engine-generation.ts";
+import { type EngineDiagnosticListener, EngineHealthController } from "./engine-health.ts";
+import { type AtomicOAuthLoginCallbacks, loginIsolatedOAuthProvider } from "./isolated-auth.ts";
 import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
-import { sleep } from "../../utils/sleep.ts";
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	private readonly patchedSessions = new WeakSet<AgentSession>();
 	private streaming = false;
 	private compacting = false;
+	private compactionReason: CompactionReason | undefined;
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
 	private engineCallbackActive = false;
 	private readonly queuePause: RemoteQueuePause;
-	private readonly diagnosticListeners = new Set<(diagnostic: ActivityWatchdogDiagnostic) => void>();
-	private pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
-	private lastDiagnostic: ActivityWatchdogDiagnostic | undefined;
 	private autoCompactionEnabled = true;
 	private autoRetryEnabled = true;
 	private remoteSessionName: string | undefined;
 	private remoteSessionFile: string | undefined;
-	private restartPromise: Promise<void> | undefined;
+	private readonly health: EngineHealthController;
 	private readonly remoteCommands: RemoteCommandCatalog;
 	private readonly remoteModelCatalog: RemoteModelCatalog;
 	private resourceOverlaps: ResourceOverlap[] = [];
 
-	constructor(
-		localRuntime: AgentSessionRuntime,
-		createRuntime: CreateAgentSessionRuntimeFactory,
-		client: RpcClient,
-	) {
+	constructor(localRuntime: AgentSessionRuntime, createRuntime: CreateAgentSessionRuntimeFactory, client: RpcClient) {
 		super(
 			localRuntime.session,
 			localRuntime.services,
@@ -52,7 +54,22 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteCommands = new RemoteCommandCatalog(client);
 		this.remoteModelCatalog = new RemoteModelCatalog(client);
 		this.queuePause = new RemoteQueuePause(client);
+		this.health = new EngineHealthController({
+			stop: () => this.client.stop(),
+			restart: async () => {
+				await this.client.restart(this.remoteSessionFile);
+				await this.initializeFromEngine();
+			},
+			clearActivity: () => {
+				this.streaming = false;
+				this.compacting = false;
+				this.compactionReason = undefined;
+				this.engineCallbackActive = false;
+				this.health.markCooperativeAbortSettled();
+			},
+		});
 		this.client.onEvent((event) => this.observeEvent(event));
+		this.client.onGenerationEnded((event) => this.health.handleGenerationEnded(event));
 	}
 
 	override get session(): AgentSession {
@@ -79,10 +96,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteSessionFile = state.sessionFile;
 		this.streaming = state.isStreaming;
 		this.compacting = state.isCompacting;
+		this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
 		this.queuePause.synchronize(state.queuedMessagesPaused === true);
 		this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
 		this.refreshSessionView();
 		this.engineCallbackActive = false;
+		this.health.clearUnresponsive();
+		this.health.markCooperativeAbortSettled();
 		// Non-blocking refresh so isolated autocomplete lists engine-only extension
 		// commands after bind/restart/reload/new/resume/fork. See RemoteCommandCatalog.
 		this.remoteCommands.refresh();
@@ -95,15 +115,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async logoutProvider(provider: string) {
 		const result = await this.client.logoutProvider(provider);
 		this.remoteModelCatalog.applyModels({ models: result.models, scopedModels: result.scopedModels ?? [] });
-		await super.session.modelRuntime.reloadCredentials();
+		await super.session.modelRuntime.reloadCredentials({ refreshAvailability: false });
+		super.session.modelRuntime.applyExternalProviderAuthStatus(provider, result.authStatus);
 		super.session.refreshCurrentModelFromRegistry();
 		return result;
 	}
 
-	onDiagnostic(listener: (diagnostic: ActivityWatchdogDiagnostic) => void): () => void {
-		for (const diagnostic of this.pendingDiagnostics.splice(0)) listener(diagnostic);
-		this.diagnosticListeners.add(listener);
-		return () => this.diagnosticListeners.delete(listener);
+	onDiagnostic(listener: EngineDiagnosticListener): () => void {
+		return this.health.onDiagnostic(listener);
 	}
 
 	onEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
@@ -117,22 +136,56 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.sendInteractiveEngineCommand(command);
 	}
 
-	getRemoteCommands(): readonly RpcSlashCommand[] { return this.remoteCommands.getCommands(); }
-	onRemoteCommandsChanged(listener: RemoteCommandsListener): () => void { return this.remoteCommands.onChange(listener); }
+	getRemoteCommands(): readonly RpcSlashCommand[] {
+		return this.remoteCommands.getCommands();
+	}
+	onRemoteCommandsChanged(listener: RemoteCommandsListener): () => void {
+		return this.remoteCommands.onChange(listener);
+	}
 	getRemoteCommandCompletions(commandName: string, argumentPrefix: string): Promise<RpcAutocompleteItem[] | null> {
 		return this.client.getCommandCompletions(commandName, argumentPrefix);
 	}
-
 
 	async invokeRemoteShortcut(key: string): Promise<void> {
 		await this.client.requestInternal<void>({ type: "invoke_shortcut", key });
 	}
 
-	waitUntilBound(): Promise<void> { return this.client.waitForInteractiveEngineBound(); }
-	getEnginePid(): number | undefined { return this.client.getEnginePid(); }
-	getEngineGeneration(): number { return this.client.getGeneration(); }
-	isRecovering(): boolean { return this.restartPromise !== undefined; }
-	getResourceOverlaps(): readonly ResourceOverlap[] { return this.resourceOverlaps; }
+	waitUntilBound(): Promise<void> {
+		return this.client.waitForInteractiveEngineBound();
+	}
+	getEnginePid(): number | undefined {
+		return this.client.getEnginePid();
+	}
+	getEngineGeneration(): number {
+		return this.client.getGeneration();
+	}
+	isRecovering(): boolean {
+		return this.health.isRecovering();
+	}
+	/** Subscribe to host-local engine generation death (see engine-generation.ts). */
+	onGenerationEnded(listener: InteractiveEngineGenerationEndedListener): () => void {
+		return this.client.onGenerationEnded(listener);
+	}
+	/**
+	 * A heartbeat proves the child's event loop is turning again, so a stall the
+	 * watchdog already reported must stop arming the Ctrl+C escape hatch. Fed by a
+	 * dedicated client callback rather than a generic engine-message subscriber,
+	 * which would consume buffered startup custom-UI messages.
+	 */
+	noteEngineHeartbeat(): void {
+		this.health.clearUnresponsive();
+	}
+	/** True only when the engine is provably not answering (see EngineHealthController). */
+	needsExplicitTermination(): boolean {
+		return this.health.needsExplicitTermination();
+	}
+	/** Explicit user-driven engine termination and recovery (Ctrl+C escape hatch). */
+	terminateAndRecover(): Promise<void> {
+		return this.health.terminate();
+	}
+	getResourceOverlaps(): readonly ResourceOverlap[] {
+		return this.resourceOverlaps;
+	}
 	async synchronize(): Promise<void> {
 		const state = await this.client.getState();
 		this.remoteSessionFile = state.sessionFile;
@@ -140,7 +193,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.resourceOverlaps = state.resourceOverlaps ?? [];
 	}
 
-	setEngineCallbackActive(active: boolean): void { this.engineCallbackActive = active; }
+	setEngineCallbackActive(active: boolean): void {
+		this.engineCallbackActive = active;
+	}
 
 	interruptBlockedCallback(): boolean {
 		if (!this.engineCallbackActive) return false;
@@ -152,24 +207,24 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		handler: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse | undefined>,
 	): () => void {
 		return this.client.onExtensionUIRequest((request) => {
-			void handler(request).then(async (response) => {
-				if (response) await this.client.respondExtensionUI(response);
-			}).catch((error: Error) => {
-				this.emitDiagnostic({
-					activity: undefined,
-					elapsedMs: 0,
-					level: "unresponsive",
-					message: `Interactive engine UI bridge failed: ${error.message}`,
+			void handler(request)
+				.then(async (response) => {
+					if (response) await this.client.respondExtensionUI(response);
+				})
+				.catch((error: Error) => {
+					this.emitDiagnostic({
+						activity: undefined,
+						elapsedMs: 0,
+						level: "unresponsive",
+						message: `Interactive engine UI bridge failed: ${error.message}`,
+					});
 				});
-			});
 		});
 	}
 
 	emitDiagnostic(diagnostic: ActivityWatchdogDiagnostic): void {
-		this.lastDiagnostic = diagnostic;
 		this.engineCallbackActive = true;
-		if (this.diagnosticListeners.size === 0) this.pendingDiagnostics.push(diagnostic);
-		for (const listener of this.diagnosticListeners) listener(diagnostic);
+		this.health.publish(diagnostic);
 	}
 
 	override async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
@@ -193,7 +248,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	override async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
 		const result = await this.client.requestInternal<{ cancelled: boolean }>({
-			type: "import_session", inputPath, cwdOverride,
+			type: "import_session",
+			inputPath,
+			cwdOverride,
 		});
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
@@ -222,7 +279,19 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return { cancelled: false, selectedText };
 	}
 
+	/**
+	 * The child engine already settled (and persisted) its own turn before it
+	 * reported the replacement, and the host facade's `abort()` is `abortAndRecover()`
+	 * — an unbounded cooperative round trip. Re-entering it during teardown would
+	 * hang session replacement on an unresponsive or dead engine, which is exactly
+	 * what engine recovery exists to survive.
+	 */
+	protected override async settleActiveResponseBeforeTeardown(): Promise<void> {}
+
 	override async dispose(): Promise<void> {
+		// Joins any in-flight replacement: shutdown voids the client's restart
+		// permit and waits for the attempt, so nothing spawns after this returns.
+		await this.health.shutdown();
 		await this.client.stop();
 		await super.dispose();
 	}
@@ -234,6 +303,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		Object.defineProperties(session, {
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
+			compactionReason: { configurable: true, get: () => this.compactionReason },
 			isBashRunning: { configurable: true, get: () => this.activeBashRequestIds.size > 0 },
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
@@ -254,26 +324,55 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			steer: { configurable: true, value: (text: string) => this.client.steer(text) },
 			followUp: { configurable: true, value: (text: string) => this.client.followUp(text) },
 			abort: { configurable: true, value: () => this.abortAndRecover() },
-			executeBash: { configurable: true, value: async (command: string, onChunk?: Parameters<AgentSession["executeBash"]>[1], options?: Parameters<AgentSession["executeBash"]>[2]) => {
-				const key = options?.id ?? Symbol("isolated-bash-request");
-				try { return await this.client.userBashWithUpdates(command, (delta, channel) => onChunk?.(delta, channel), {
-						excludeFromContext: options?.excludeFromContext, onRequestId: (requestId) => this.activeBashRequestIds.set(key, requestId),
-					});
-				} finally { this.activeBashRequestIds.delete(key); }
-			} },
+			executeBash: {
+				configurable: true,
+				value: async (
+					command: string,
+					onChunk?: Parameters<AgentSession["executeBash"]>[1],
+					options?: Parameters<AgentSession["executeBash"]>[2],
+				) => {
+					const key = options?.id ?? Symbol("isolated-bash-request");
+					try {
+						return await this.client.userBashWithUpdates(command, (delta, channel) => onChunk?.(delta, channel), {
+							excludeFromContext: options?.excludeFromContext,
+							onRequestId: (requestId) => this.activeBashRequestIds.set(key, requestId),
+						});
+					} finally {
+						this.activeBashRequestIds.delete(key);
+					}
+				},
+			},
 			recordBashResult: { configurable: true, value: () => {} },
-			abortBash: { configurable: true, value: (id?: string) => {
-				if (id === undefined) this.dispatchBestEffort("abort bash", this.client.abortBash());
-				else { const requestId = this.activeBashRequestIds.get(id); if (requestId) this.dispatchBestEffort("abort bash", this.client.abortBash(requestId)); }
-			} },
+			abortBash: {
+				configurable: true,
+				value: (id?: string) => {
+					if (id === undefined) this.dispatchBestEffort("abort bash", this.client.abortBash());
+					else {
+						const requestId = this.activeBashRequestIds.get(id);
+						if (requestId) this.dispatchBestEffort("abort bash", this.client.abortBash(requestId));
+					}
+				},
+			},
 			compact: { configurable: true, value: () => this.client.compact() },
-			abortCompaction: { configurable: true, value: () => this.dispatchBestEffort("abort compaction", this.client.requestInternal<void>({ type: "abort_compaction" })) },
-			abortRetry: { configurable: true, value: () => this.dispatchBestEffort("abort retry", this.client.abortRetry()) },
+			abortCompaction: {
+				configurable: true,
+				value: () =>
+					this.dispatchBestEffort(
+						"abort compaction",
+						this.client.requestInternal<void>({ type: "abort_compaction" }),
+					),
+			},
+			abortRetry: {
+				configurable: true,
+				value: () => this.dispatchBestEffort("abort retry", this.client.abortRetry()),
+			},
 			navigateTree: {
 				configurable: true,
 				value: async (targetId: string, options?: Parameters<AgentSession["navigateTree"]>[1]) =>
 					this.client.requestInternal<Awaited<ReturnType<AgentSession["navigateTree"]>>>({
-						type: "navigate_tree", targetId, options,
+						type: "navigate_tree",
+						targetId,
+						options,
 					}),
 			},
 			reload: {
@@ -287,7 +386,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: (name: string) => {
 					this.remoteSessionName = name;
-					this.dispatchBestEffort("set session name", this.client.setSessionName(name).then(() => this.refreshSessionView()));
+					this.dispatchBestEffort(
+						"set session name",
+						this.client.setSessionName(name).then(() => this.refreshSessionView()),
+					);
 				},
 			},
 			getSteeringMessages: { configurable: true, value: () => [...this.steeringMessages] },
@@ -378,38 +480,26 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 	}
 
+	/**
+	 * Cooperative interrupt. Requests the engine's own abort and waits for it —
+	 * no timeout, no termination, no restart. A genuinely wedged engine is the
+	 * user's call to terminate with Ctrl+C (see terminateAndRecover), never an
+	 * automatic consequence of pressing Escape.
+	 */
 	private async abortAndRecover(): Promise<void> {
-		if (this.restartPromise) return this.restartPromise;
 		await this.queuePause.settleBeforeAbort();
-		const cooperativeAbort = this.client.abort().then(() => true, () => false);
-		if (await Promise.race([cooperativeAbort, sleep(250).then(() => false)])) {
+		this.health.markCooperativeAbortStarted();
+		try {
+			await this.client.abort();
+		} finally {
+			this.health.markCooperativeAbortSettled();
 			this.engineCallbackActive = false;
-			return;
 		}
-		const activity = this.lastDiagnostic?.activity;
-		const label = activity ? `${activity.kind} ${activity.name}` : "engine callback";
-		const diagnostic: ActivityWatchdogDiagnostic = {
-			activity,
-			elapsedMs: this.lastDiagnostic?.elapsedMs ?? 0,
-			level: "unresponsive",
-			message: `Engine terminated; ${label} result unknown; inspect side effects before retrying`,
-		};
-		this.streaming = false;
-		this.compacting = false;
-		this.engineCallbackActive = false;
-		for (const listener of this.diagnosticListeners) listener(diagnostic);
-		this.restartPromise = (async () => {
-			await this.client.restart(this.remoteSessionFile);
-			await this.initializeFromEngine();
-		})().catch((error: Error) => {
-			this.emitDiagnostic({ ...diagnostic, message: `${diagnostic.message}; engine restart failed: ${error.message}` });
-		}).finally(() => { this.restartPromise = undefined; });
-		await this.restartPromise;
 	}
 
 	private dispatchBestEffort(label: string, operation: Promise<unknown>): void {
 		void operation.catch((error: Error) => {
-			if (this.restartPromise) return;
+			if (this.health.isRecovering()) return;
 			this.emitDiagnostic({
 				activity: undefined,
 				elapsedMs: 0,
@@ -433,7 +523,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			value: (entryId: string, label?: string) => {
 				this.dispatchBestEffort(
 					"set label",
-					this.client.requestInternal<void>({ type: "set_label", entryId, label }).then(() => this.refreshSessionView()),
+					this.client
+						.requestInternal<void>({ type: "set_label", entryId, label })
+						.then(() => this.refreshSessionView()),
 				);
 			},
 		});
@@ -462,9 +554,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				break;
 			case "compaction_start":
 				this.compacting = true;
+				this.compactionReason = event.reason;
 				break;
 			case "compaction_end":
 				this.compacting = false;
+				this.compactionReason = undefined;
 				break;
 			case "queue_update":
 				this.steeringMessages = [...event.steering];

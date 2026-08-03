@@ -57,7 +57,7 @@ jobs:
     steps:
       - name: Install cargo-xwin
         timeout-minutes: 3
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2.85.5
         with:
           tool: cargo-xwin@0.23.0
       - name: Resolve MSVC CRT cache directory
@@ -65,7 +65,7 @@ jobs:
         run: echo "XWIN_CACHE_DIR=$HOME/.cache/cargo-xwin" >> "$GITHUB_ENV"
       # The key epoch must match `publish.yml`.
       - name: Restore MSVC CRT and Windows SDK
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/cargo-xwin
           key: xwin-v1-${{ matrix.arch }}-17

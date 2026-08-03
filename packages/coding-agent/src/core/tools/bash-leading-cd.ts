@@ -8,8 +8,12 @@ export interface LeadingCdSpawnContext {
 	env: NodeJS.ProcessEnv;
 }
 
-function isShellWhitespace(char: string | undefined): boolean { return char === " " || char === "\t" || char === "\n" || char === "\r"; }
-function requiresShellExpansion(pathValue: string): boolean { return pathValue.includes("$") || pathValue.includes("`") || pathValue.includes("("); }
+function isShellWhitespace(char: string | undefined): boolean {
+	return char === " " || char === "\t" || char === "\n" || char === "\r";
+}
+function requiresShellExpansion(pathValue: string): boolean {
+	return pathValue.includes("$") || pathValue.includes("`") || pathValue.includes("(");
+}
 function expandHomePath(pathValue: string): string {
 	if (pathValue === "~") return homedir();
 	if (pathValue.startsWith("~/")) return resolvePath(homedir(), pathValue.slice(2));
@@ -46,5 +50,7 @@ export function stripLeadingCdCommand(command: string, cwd: string): LeadingCdSp
 	index += separatorLength;
 	while (isShellWhitespace(command[index])) index++;
 	const nextCommand = command.slice(index);
-	return nextCommand ? { command: nextCommand, cwd: resolvePath(cwd, expandHomePath(rawPath)), env: { ...getShellEnv() } } : undefined;
+	return nextCommand
+		? { command: nextCommand, cwd: resolvePath(cwd, expandHomePath(rawPath)), env: { ...getShellEnv() } }
+		: undefined;
 }

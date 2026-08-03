@@ -1,25 +1,28 @@
-import { describe, test } from "bun:test";
-import { Value } from "typebox/value";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { Value } from "typebox/value";
+import { describe, test } from "vitest";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
+import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
+import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
+import type {
+	ExecutorDeps,
+	SubagentExecutorRuntimeDeps,
+} from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
 import { stripParentOnlySubagentMessages } from "../../packages/subagents/src/runs/shared/subagent-prompt-runtime.js";
+import type { SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
+import { resolveTopLevelParallelMaxTasks } from "../../packages/subagents/src/shared/types.js";
 import {
 	PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT,
 	PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT,
 	registerPromptTemplateDelegationBridge,
 } from "../../packages/subagents/src/slash/prompt-template-bridge.js";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
-import type { ExecutorDeps, SubagentExecutorRuntimeDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { resolveTopLevelParallelMaxTasks } from "../../packages/subagents/src/shared/types.js";
-import type { SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
-import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
 
 type Handler = (data: unknown) => void;
 
@@ -146,7 +149,12 @@ function result(agent: string, task: string, exitCode = 0, finalOutput = "ok", e
 		usage,
 		finalOutput,
 		...(error ? { error } : {}),
-		artifactPaths: { inputPath: "/tmp/in.md", outputPath: "/tmp/out.md", jsonlPath: "/tmp/run.jsonl", metadataPath: "/tmp/meta.json" },
+		artifactPaths: {
+			inputPath: "/tmp/in.md",
+			outputPath: "/tmp/out.md",
+			jsonlPath: "/tmp/run.jsonl",
+			metadataPath: "/tmp/meta.json",
+		},
 	};
 }
 
@@ -158,13 +166,15 @@ describe("recent upstream subagent syncs", () => {
 			getContext: () => ({ cwd: "/repo" }),
 			execute: async () => ({
 				details: {
-					results: [{
-						finalOutput: "finished",
-						toolCalls: [
-							{ text: "write src/output.md", expandedText: "write src/output.md" },
-							{ text: "$ bun test", expandedText: "$ bun test" },
-						],
-					}],
+					results: [
+						{
+							finalOutput: "finished",
+							toolCalls: [
+								{ text: "write src/output.md", expandedText: "write src/output.md" },
+								{ text: "$ bun test", expandedText: "$ bun test" },
+							],
+						},
+					],
 				},
 			}),
 		});
@@ -179,10 +189,15 @@ describe("recent upstream subagent syncs", () => {
 			cwd: "/repo",
 		});
 
-		const response = await responsePromise as { messages: Array<{ role?: string; content?: Array<{ type?: string; text?: string }> }> };
+		const response = (await responsePromise) as {
+			messages: Array<{ role?: string; content?: Array<{ type?: string; text?: string }> }>;
+		};
 		const content = response.messages[0]?.content ?? [];
 		const text = content.find((part) => part.type === "text")?.text ?? "";
-		assert.equal(content.some((part) => part.type === "toolCall"), false);
+		assert.equal(
+			content.some((part) => part.type === "toolCall"),
+			false,
+		);
 		assert.match(text, /Tool calls:\n- write src\/output\.md\n- \$ bun test/);
 		assert.match(text, /finished/);
 		assert.equal(
@@ -199,14 +214,22 @@ describe("recent upstream subagent syncs", () => {
 		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
 		try {
 			const user = { role: "user", content: "Task" };
-			const subagentCall = { role: "assistant", content: [{ type: "toolCall", name: "subagent", input: { agent: "delegate" } }] };
+			const subagentCall = {
+				role: "assistant",
+				content: [{ type: "toolCall", name: "subagent", input: { agent: "delegate" } }],
+			};
 			const subagentResult = { role: "toolResult", toolName: "subagent", content: "OK" };
-			const slashTextResult = { role: "custom", customType: "subagent-slash-text-result", content: "Subagent profiles" };
+			const slashTextResult = {
+				role: "custom",
+				customType: "subagent-slash-text-result",
+				content: "Subagent profiles",
+			};
 
-			assert.deepEqual(
-				stripParentOnlySubagentMessages([user, subagentCall, subagentResult, slashTextResult]),
-				[user, subagentCall, subagentResult],
-			);
+			assert.deepEqual(stripParentOnlySubagentMessages([user, subagentCall, subagentResult, slashTextResult]), [
+				user,
+				subagentCall,
+				subagentResult,
+			]);
 		} finally {
 			if (previous === undefined) delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
 			else process.env[SUBAGENT_FANOUT_CHILD_ENV] = previous;
@@ -216,7 +239,7 @@ describe("recent upstream subagent syncs", () => {
 	test("omits provider-rejected chain schema keywords", () => {
 		const serialized = JSON.stringify(SubagentParams);
 		for (const keyword of ["allOf", "const", "if", "then", "not"]) {
-			assert.equal(serialized.includes(`\"${keyword}\"`), false, `schema should omit ${keyword}`);
+			assert.equal(serialized.includes(`"${keyword}"`), false, `schema should omit ${keyword}`);
 		}
 	});
 
@@ -227,10 +250,11 @@ describe("recent upstream subagent syncs", () => {
 	});
 
 	test("accepts 50 top-level parallel tasks in the tool schema and rejects 51", () => {
-		const makeTasks = (count: number) => Array.from({ length: count }, (_, index) => ({
-			agent: "worker",
-			task: `Task ${index + 1}`,
-		}));
+		const makeTasks = (count: number) =>
+			Array.from({ length: count }, (_, index) => ({
+				agent: "worker",
+				task: `Task ${index + 1}`,
+			}));
 
 		assert.equal(Value.Check(SubagentParams, { tasks: makeTasks(50) }), true);
 		assert.equal(Value.Check(SubagentParams, { tasks: makeTasks(51) }), false);
@@ -249,9 +273,15 @@ describe("recent upstream subagent syncs", () => {
 				},
 			});
 
-			const output = await executor.execute("parallel-limit", {
-				tasks: [{ agent: "worker", task: "Repeated task", count: 51 }],
-			}, new AbortController().signal, undefined, makeContext(cwd));
+			const output = await executor.execute(
+				"parallel-limit",
+				{
+					tasks: [{ agent: "worker", task: "Repeated task", count: 51 }],
+				},
+				new AbortController().signal,
+				undefined,
+				makeContext(cwd),
+			);
 			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
 
 			assert.equal(output.isError, true);
@@ -275,16 +305,22 @@ describe("recent upstream subagent syncs", () => {
 				},
 			});
 
-			const output = await executor.execute("malformed-chain", {
-				chain: [
-					{ agent: "scout", task: "Find targets", as: "targets", outputSchema: { type: "object" } },
-					{
-						expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-						parallel: [{ agent: "reviewer", task: "Review" }],
-						collect: { as: "reviews" },
-					},
-				] as never,
-			}, new AbortController().signal, undefined, makeContext(cwd));
+			const output = await executor.execute(
+				"malformed-chain",
+				{
+					chain: [
+						{ agent: "scout", task: "Find targets", as: "targets", outputSchema: { type: "object" } },
+						{
+							expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
+							parallel: [{ agent: "reviewer", task: "Review" }],
+							collect: { as: "reviews" },
+						},
+					] as never,
+				},
+				new AbortController().signal,
+				undefined,
+				makeContext(cwd),
+			);
 			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
 
 			assert.equal(output.isError, true);
@@ -310,14 +346,35 @@ describe("recent upstream subagent syncs", () => {
 			});
 			const ctx = makeContext(cwd);
 
-			const first = executor.execute("first", { agent: "echo", task: "First" }, new AbortController().signal, undefined, ctx);
-			const second = await executor.execute("second", { agent: "echo", task: "Duplicate" }, new AbortController().signal, undefined, ctx);
-			const status = await executor.execute("status", { action: "status" }, new AbortController().signal, undefined, ctx);
+			const first = executor.execute(
+				"first",
+				{ agent: "echo", task: "First" },
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			const second = await executor.execute(
+				"second",
+				{ agent: "echo", task: "Duplicate" },
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			const status = await executor.execute(
+				"status",
+				{ action: "status" },
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
 			const firstResult = await first;
 
 			assert.equal(firstResult.isError, undefined);
 			assert.equal(second.isError, true);
-			assert.match(second.content[0]?.type === "text" ? second.content[0].text : "", /Issue exactly ONE subagent call per turn/);
+			assert.match(
+				second.content[0]?.type === "text" ? second.content[0].text : "",
+				/Issue exactly ONE subagent call per turn/,
+			);
 			assert.equal(status.isError, undefined);
 			assert.equal(calls.length, 1);
 		} finally {
@@ -332,10 +389,22 @@ describe("recent upstream subagent syncs", () => {
 				cwd,
 				agents: [makeAgent("oracle")],
 				runSync: async (_parentCwd, _agents, agentName, task) =>
-					result(agentName, task, 1, "Oracle review:\n- finding one\n- finding two", "completed without making edits"),
+					result(
+						agentName,
+						task,
+						1,
+						"Oracle review:\n- finding one\n- finding two",
+						"completed without making edits",
+					),
 			});
 
-			const output = await executor.execute("failed", { agent: "oracle", task: "Implement" }, new AbortController().signal, undefined, makeContext(cwd));
+			const output = await executor.execute(
+				"failed",
+				{ agent: "oracle", task: "Implement" },
+				new AbortController().signal,
+				undefined,
+				makeContext(cwd),
+			);
 			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
 
 			assert.equal(output.isError, true);

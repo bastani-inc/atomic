@@ -7,440 +7,431 @@
  * store-backed background adapter (see `background-ui-adapter.test.ts`).
  */
 
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { join } from "node:path";
-import {
-    buildRuntimeAdapters,
-    prepareAtomicStageSessionOptions,
-} from "../../packages/workflows/src/extension/wiring.js";
-import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import {
-    DefaultResourceLoader,
-    type CreateAgentSessionOptions,
-    type DefaultResourceLoaderInheritanceSnapshot,
-    type PackageSource,
-} from "@bastani/atomic";
 import type {
-    PiCodingAgentSdk,
-    PiSdkResourceLoader,
-    PiSdkSettingsManager,
+	CreateAgentSessionOptions,
+	DefaultResourceLoaderInheritanceSnapshot,
+	PackageSource,
+} from "@bastani/atomic";
+import { describe, test } from "vitest";
+import type {
+	PiCodingAgentSdk,
+	PiSdkResourceLoader,
+	PiSdkSettingsManager,
 } from "../../packages/workflows/src/extension/wiring.js";
+import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import type { StageExecutionMeta } from "../../packages/workflows/src/shared/types.js";
 
 function fakeSession(): StageSessionRuntime {
-    let last = "";
-    return {
-        async prompt(text: string): Promise<string> {
-            last = `reply:${text}`;
-            return last;
-        },
-        async steer(text: string): Promise<void> {
-            last = `steer:${text}`;
-        },
-        async followUp(text: string): Promise<void> {
-            last = `follow:${text}`;
-        },
-        subscribe: () => () => {},
-        sessionFile: undefined,
-        sessionId: "session-1",
-        async setModel(): Promise<void> {},
-        setThinkingLevel(): void {},
-        async cycleModel(): Promise<undefined> {
-            return undefined;
-        },
-        cycleThinkingLevel(): undefined {
-            return undefined;
-        },
-        agent: {} as StageSessionRuntime["agent"],
-        model: undefined,
-        thinkingLevel: "medium" as StageSessionRuntime["thinkingLevel"],
-        messages: [],
-        isStreaming: false,
-        async navigateTree(): Promise<{ cancelled: boolean }> {
-            return { cancelled: true };
-        },
-        async compact(): ReturnType<StageSessionRuntime["compact"]> {
-            return undefined as unknown as Awaited<
-                ReturnType<StageSessionRuntime["compact"]>
-            >;
-        },
-        abortCompaction(): void {},
-        async abort(): Promise<void> {},
-        dispose(): void {},
-        getLastAssistantText(): string | undefined {
-            return last;
-        },
-    };
+	let last = "";
+	return {
+		async prompt(text: string): Promise<string> {
+			last = `reply:${text}`;
+			return last;
+		},
+		async steer(text: string): Promise<void> {
+			last = `steer:${text}`;
+		},
+		async followUp(text: string): Promise<void> {
+			last = `follow:${text}`;
+		},
+		subscribe: () => () => {},
+		sessionFile: undefined,
+		sessionId: "session-1",
+		async setModel(): Promise<void> {},
+		setThinkingLevel(): void {},
+		async cycleModel(): Promise<undefined> {
+			return undefined;
+		},
+		cycleThinkingLevel(): undefined {
+			return undefined;
+		},
+		agent: {} as StageSessionRuntime["agent"],
+		model: undefined,
+		thinkingLevel: "medium" as StageSessionRuntime["thinkingLevel"],
+		messages: [],
+		isStreaming: false,
+		async navigateTree(): Promise<{ cancelled: boolean }> {
+			return { cancelled: true };
+		},
+		async compact(): ReturnType<StageSessionRuntime["compact"]> {
+			return undefined as unknown as Awaited<ReturnType<StageSessionRuntime["compact"]>>;
+		},
+		abortCompaction(): void {},
+		async abort(): Promise<void> {},
+		dispose(): void {},
+		getLastAssistantText(): string | undefined {
+			return last;
+		},
+	};
 }
 
-function deferred(): {
-    readonly promise: Promise<void>;
-    readonly resolve: () => void;
-    readonly reject: (reason?: unknown) => void;
+function _deferred(): {
+	readonly promise: Promise<void>;
+	readonly resolve: () => void;
+	readonly reject: (reason?: unknown) => void;
 } {
-    let resolvePromise: (() => void) | undefined;
-    let rejectPromise: ((reason?: unknown) => void) | undefined;
-    const promise = new Promise<void>((resolve, reject) => {
-        resolvePromise = resolve;
-        rejectPromise = reject;
-    });
-    return {
-        promise,
-        resolve: () => resolvePromise?.(),
-        reject: (reason?: unknown) => rejectPromise?.(reason),
-    };
+	let resolvePromise: (() => void) | undefined;
+	let rejectPromise: ((reason?: unknown) => void) | undefined;
+	const promise = new Promise<void>((resolve, reject) => {
+		resolvePromise = resolve;
+		rejectPromise = reject;
+	});
+	return {
+		promise,
+		resolve: () => resolvePromise?.(),
+		reject: (reason?: unknown) => rejectPromise?.(reason),
+	};
 }
 
-async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-        if (predicate()) return;
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
-    assert.fail(message);
+async function _waitUntil(predicate: () => boolean, message: string): Promise<void> {
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		if (predicate()) return;
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	assert.fail(message);
 }
 
-function makeFakeAtomicSdk(
-    defaultAgentDir: string,
-    builtinPackagePaths: string[] = [],
+function _makeFakeAtomicSdk(
+	defaultAgentDir: string,
+	builtinPackagePaths: string[] = [],
 ): {
-    readonly sdk: PiCodingAgentSdk;
-    readonly loaderOptions: Array<{
-        cwd: string;
-        agentDir: string;
-        settingsManager?: PiSdkSettingsManager;
-        builtinPackagePaths?: PackageSource[];
-        resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
-    }>;
-    readonly settingsCalls: Array<{
-        cwd?: string;
-        agentDir?: string;
-        options?: { projectTrusted?: boolean };
-    }>;
-    readonly reloads: PiSdkResourceLoader[];
+	readonly sdk: PiCodingAgentSdk;
+	readonly loaderOptions: Array<{
+		cwd: string;
+		agentDir: string;
+		settingsManager?: PiSdkSettingsManager;
+		builtinPackagePaths?: PackageSource[];
+		resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
+	}>;
+	readonly settingsCalls: Array<{
+		cwd?: string;
+		agentDir?: string;
+		options?: { projectTrusted?: boolean };
+	}>;
+	readonly reloads: PiSdkResourceLoader[];
 } {
-    const loaderOptions: Array<{
-        cwd: string;
-        agentDir: string;
-        settingsManager?: PiSdkSettingsManager;
-        builtinPackagePaths?: PackageSource[];
-        resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
-    }> = [];
-    const settingsCalls: Array<{
-        cwd?: string;
-        agentDir?: string;
-        options?: { projectTrusted?: boolean };
-    }> = [];
-    const reloads: PiSdkResourceLoader[] = [];
+	const loaderOptions: Array<{
+		cwd: string;
+		agentDir: string;
+		settingsManager?: PiSdkSettingsManager;
+		builtinPackagePaths?: PackageSource[];
+		resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
+	}> = [];
+	const settingsCalls: Array<{
+		cwd?: string;
+		agentDir?: string;
+		options?: { projectTrusted?: boolean };
+	}> = [];
+	const reloads: PiSdkResourceLoader[] = [];
 
-    class FakeResourceLoader implements PiSdkResourceLoader {
-        constructor(options: {
-            cwd: string;
-            agentDir: string;
-            settingsManager?: PiSdkSettingsManager;
-            builtinPackagePaths?: PackageSource[];
-            resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
-        }) {
-            loaderOptions.push(options);
-        }
+	class FakeResourceLoader implements PiSdkResourceLoader {
+		constructor(options: {
+			cwd: string;
+			agentDir: string;
+			settingsManager?: PiSdkSettingsManager;
+			builtinPackagePaths?: PackageSource[];
+			resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
+		}) {
+			loaderOptions.push(options);
+		}
 
-        async reload(): Promise<void> {
-            reloads.push(this);
-        }
-    }
+		async reload(): Promise<void> {
+			reloads.push(this);
+		}
+	}
 
-    const sdk: PiCodingAgentSdk = {
-        getAgentDir: () => defaultAgentDir,
-        getBuiltinPackagePaths: () => builtinPackagePaths,
-        SettingsManager: {
-            create(
-                cwd?: string,
-                agentDir?: string,
-                options?: { projectTrusted?: boolean },
-            ): PiSdkSettingsManager {
-                settingsCalls.push({ cwd, agentDir, options });
-                return {
-                    getCodexFastModeSettings: () => ({
-                        chat: false,
-                        workflow: false,
-                    }),
-                };
-            },
-        },
-        DefaultResourceLoader: FakeResourceLoader,
-        async createAgentSession(): Promise<{ session: StageSessionRuntime }> {
-            return { session: fakeSession() };
-        },
-    };
+	const sdk: PiCodingAgentSdk = {
+		getAgentDir: () => defaultAgentDir,
+		getBuiltinPackagePaths: () => builtinPackagePaths,
+		SettingsManager: {
+			create(cwd?: string, agentDir?: string, options?: { projectTrusted?: boolean }): PiSdkSettingsManager {
+				settingsCalls.push({ cwd, agentDir, options });
+				return {
+					getCodexFastModeSettings: () => ({
+						chat: false,
+						workflow: false,
+					}),
+				};
+			},
+		},
+		DefaultResourceLoader: FakeResourceLoader,
+		async createAgentSession(): Promise<{ session: StageSessionRuntime }> {
+			return { session: fakeSession() };
+		},
+	};
 
-    return { sdk, loaderOptions, settingsCalls, reloads };
+	return { sdk, loaderOptions, settingsCalls, reloads };
 }
 
 describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
-    test("provides an agentSession adapter without requiring pi.exec", () => {
-        const adapters = buildRuntimeAdapters({});
-        assert.notEqual(adapters.agentSession, undefined);
-        assert.equal(adapters.prompt, undefined);
-        assert.equal(adapters.complete, undefined);
-        assert.equal(
-            Object.prototype.hasOwnProperty.call(adapters, "subagent"),
-            false,
-        );
-    });
+	test("provides an agentSession adapter without requiring pi.exec", () => {
+		const adapters = buildRuntimeAdapters({});
+		assert.notEqual(adapters.agentSession, undefined);
+		assert.equal(adapters.prompt, undefined);
+		assert.equal(adapters.complete, undefined);
+		assert.equal(Object.hasOwn(adapters, "subagent"), false);
+	});
 
-    test("falls back to the pi SDK createAgentSession in production (NODE_ENV unset) — proves pi-coding-agent ≥ 0.74 integration", () => {
-        // The pi SDK (`@bastani/atomic` ≥ 0.74) exposes
-        // `createAgentSession` as a top-level package export, NOT on the
-        // ExtensionAPI surface. The workflow extension MUST resolve a default
-        // session factory from that package in production (no test context,
-        // no caller-provided seam). Otherwise stages that rely on the default
-        // SDK-backed prompt() path crash with "prompt adapter not configured"
-        // at runtime.
-        const savedNodeEnv = process.env["NODE_ENV"];
-        const savedNodeTestCtx = process.env["NODE_TEST_CONTEXT"];
-        delete process.env["NODE_ENV"];
-        delete process.env["NODE_TEST_CONTEXT"];
-        try {
-            const adapters = buildRuntimeAdapters({});
-            assert.notEqual(
-                adapters.agentSession,
-                undefined,
-                "production buildRuntimeAdapters MUST wire an agentSession adapter via the pi SDK; got undefined.",
-            );
-        } finally {
-            if (savedNodeEnv === undefined) delete process.env["NODE_ENV"];
-            else process.env["NODE_ENV"] = savedNodeEnv;
-            if (savedNodeTestCtx === undefined)
-                delete process.env["NODE_TEST_CONTEXT"];
-            else process.env["NODE_TEST_CONTEXT"] = savedNodeTestCtx;
-        }
-    });
+	test("falls back to the pi SDK createAgentSession in production (NODE_ENV unset) — proves pi-coding-agent ≥ 0.74 integration", () => {
+		// The pi SDK (`@bastani/atomic` ≥ 0.74) exposes
+		// `createAgentSession` as a top-level package export, NOT on the
+		// ExtensionAPI surface. The workflow extension MUST resolve a default
+		// session factory from that package in production (no test context,
+		// no caller-provided seam). Otherwise stages that rely on the default
+		// SDK-backed prompt() path crash with "prompt adapter not configured"
+		// at runtime.
+		const savedNodeEnv = process.env.NODE_ENV;
+		const savedNodeTestCtx = process.env.NODE_TEST_CONTEXT;
+		delete process.env.NODE_ENV;
+		delete process.env.NODE_TEST_CONTEXT;
+		try {
+			const adapters = buildRuntimeAdapters({});
+			assert.notEqual(
+				adapters.agentSession,
+				undefined,
+				"production buildRuntimeAdapters MUST wire an agentSession adapter via the pi SDK; got undefined.",
+			);
+		} finally {
+			if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+			else process.env.NODE_ENV = savedNodeEnv;
+			if (savedNodeTestCtx === undefined) delete process.env.NODE_TEST_CONTEXT;
+			else process.env.NODE_TEST_CONTEXT = savedNodeTestCtx;
+		}
+	});
 
-    test("agentSession.create delegates to createAgentSession seam", async () => {
-        const calls: Array<CreateAgentSessionOptions | undefined> = [];
-        const adapters = buildRuntimeAdapters(
-            {},
-            {
-                createAgentSession: async (options) => {
-                    calls.push(options);
-                    return { session: fakeSession() };
-                },
-            },
-        );
-        const result = await adapters.agentSession!.create({
-            cwd: "/tmp/project",
-        });
-        assert.equal(
-            "session" in result ? result.session.sessionId : result.sessionId,
-            "session-1",
-        );
-        assert.equal(calls[0]?.cwd, "/tmp/project");
-    });
+	test("agentSession.create delegates to createAgentSession seam", async () => {
+		const calls: Array<CreateAgentSessionOptions | undefined> = [];
+		const adapters = buildRuntimeAdapters(
+			{},
+			{
+				createAgentSession: async (options) => {
+					calls.push(options);
+					return { session: fakeSession() };
+				},
+			},
+		);
+		const result = await adapters.agentSession!.create({
+			cwd: "/tmp/project",
+		});
+		assert.equal("session" in result ? result.session.sessionId : result.sessionId, "session-1");
+		assert.equal(calls[0]?.cwd, "/tmp/project");
+	});
 
-    test("agentSession.create returns the SDK-prepared settings manager for workflow metadata", async () => {
-        const settingsManager = {
-            getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
-        };
-        const adapters = buildRuntimeAdapters(
-            {},
-            {
-                createAgentSession: async () => ({
-                    session: fakeSession(),
-                    settingsManager,
-                }),
-            },
-        );
+	test("agentSession.create returns the SDK-prepared settings manager for workflow metadata", async () => {
+		const settingsManager = {
+			getCodexFastModeSettings: () => ({ chat: false, workflow: true }),
+		};
+		const adapters = buildRuntimeAdapters(
+			{},
+			{
+				createAgentSession: async () => ({
+					session: fakeSession(),
+					settingsManager,
+				}),
+			},
+		);
 
-        const result = await adapters.agentSession!.create({
-            cwd: "/tmp/project",
-        });
+		const result = await adapters.agentSession!.create({
+			cwd: "/tmp/project",
+		});
 
-        assert.equal(
-            "session" in result ? result.settingsManager : undefined,
-            settingsManager,
-        );
-    });
+		assert.equal("session" in result ? result.settingsManager : undefined, settingsManager);
+	});
 
-    test("agentSession.create marks workflow stages with orchestration constraints and excludes workflow tool", async () => {
-        const calls: Array<CreateAgentSessionOptions | undefined> = [];
-        const externallyRouted: string[] = [];
-        const adapters = buildRuntimeAdapters(
-            {
-                sendMessage: (message) => {
-                    if (typeof message.content === "string") externallyRouted.push(message.content);
-                },
-            },
-            {
-                createAgentSession: async (options) => {
-                    calls.push(options);
-                    return { session: fakeSession() };
-                },
-            },
-        );
+	test("agentSession.create marks workflow stages with orchestration constraints and excludes workflow tool", async () => {
+		const calls: Array<CreateAgentSessionOptions | undefined> = [];
+		const externallyRouted: string[] = [];
+		const adapters = buildRuntimeAdapters(
+			{
+				sendMessage: (message) => {
+					if (typeof message.content === "string") externallyRouted.push(message.content);
+				},
+			},
+			{
+				createAgentSession: async (options) => {
+					calls.push(options);
+					return { session: fakeSession() };
+				},
+			},
+		);
 
-        await adapters.agentSession!.create(
-            {
-                cwd: "/tmp/project",
-                excludedTools: ["ask_user_question", "workflow"],
-            },
-            { runId: "run-1", stageId: "stage-1", stageName: "Implement" },
-        );
+		await adapters.agentSession!.create(
+			{
+				cwd: "/tmp/project",
+				excludedTools: ["ask_user_question", "workflow"],
+			},
+			{ runId: "run-1", stageId: "stage-1", stageName: "Implement" },
+		);
 
-        assert.deepEqual(calls[0]?.excludedTools, [
-            "ask_user_question",
-            "workflow",
-        ]);
-        const orchestration = calls[0]?.orchestrationContext;
-        assert.equal(orchestration?.kind, "workflow-stage");
-        assert.equal(orchestration?.workflowRunId, "run-1");
-        assert.equal(orchestration?.workflowStageId, "stage-1");
-        assert.equal(orchestration?.workflowStageName, "Implement");
-        assert.deepEqual(orchestration?.constraints, { disableWorkflowTool: true, maxSubagentDepth: 5 });
-        assert.equal(typeof orchestration?.lateMessageRouter?.routeMessage, "function");
-        await orchestration?.lateMessageRouter?.routeMessage({ customType: "async-job-result", content: "late result", display: true });
-        assert.deepEqual(externallyRouted, ["late result"]);
-    });
+		assert.deepEqual(calls[0]?.excludedTools, ["ask_user_question", "workflow"]);
+		const orchestration = calls[0]?.orchestrationContext;
+		assert.equal(orchestration?.kind, "workflow-stage");
+		assert.equal(orchestration?.workflowRunId, "run-1");
+		assert.equal(orchestration?.workflowStageId, "stage-1");
+		assert.equal(orchestration?.workflowStageName, "Implement");
+		assert.deepEqual(orchestration?.constraints, { disableWorkflowTool: true, maxSubagentDepth: 5 });
+		assert.equal(typeof orchestration?.lateMessageRouter?.routeMessage, "function");
+		await orchestration?.lateMessageRouter?.routeMessage({
+			customType: "async-job-result",
+			content: "late result",
+			display: true,
+		});
+		assert.deepEqual(externallyRouted, ["late result"]);
+	});
 
+	test("late Intercom traffic is handed to the parent extension event before generic routing", async () => {
+		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+		const routed: string[] = [];
+		const targets: Array<{ runId: string; stageId: string; stageName: string }> = [];
+		const adapters = buildRuntimeAdapters(
+			{
+				events: {
+					emit(_channel, payload) {
+						const event = payload as {
+							handled: boolean;
+							messages: Array<{ content?: string }>;
+							workflowRunId: string;
+							workflowStageId: string;
+							workflowStageName: string;
+						};
+						event.handled = true;
+						targets.push({
+							runId: event.workflowRunId,
+							stageId: event.workflowStageId,
+							stageName: event.workflowStageName,
+						});
+						if (typeof event.messages[0]?.content === "string") routed.push(event.messages[0].content);
+					},
+				},
+			},
+			{
+				createAgentSession: async (options) => {
+					orchestration = options?.orchestrationContext;
+					return { session: fakeSession() };
+				},
+			},
+		);
+		await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
 
-    test("late Intercom traffic is handed to the parent extension event before generic routing", async () => {
-        let orchestration: CreateAgentSessionOptions["orchestrationContext"];
-        const routed: string[] = [];
-        const targets: Array<{ runId: string; stageId: string; stageName: string }> = [];
-        const adapters = buildRuntimeAdapters({
-            events: {
-                emit(_channel, payload) {
-                    const event = payload as {
-                        handled: boolean;
-                        messages: Array<{ content?: string }>;
-                        workflowRunId: string;
-                        workflowStageId: string;
-                        workflowStageName: string;
-                    };
-                    event.handled = true;
-                    targets.push({ runId: event.workflowRunId, stageId: event.workflowStageId, stageName: event.workflowStageName });
-                    if (typeof event.messages[0]?.content === "string") routed.push(event.messages[0].content);
-                },
-            },
-        }, {
-            createAgentSession: async (options) => {
-                orchestration = options?.orchestrationContext;
-                return { session: fakeSession() };
-            },
-        });
-        await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+		await orchestration?.lateMessageRouter?.routeMessage({
+			customType: "intercom_message",
+			content: "late reviewer message",
+			display: true,
+		});
+		assert.deepEqual(routed, ["late reviewer message"]);
+		assert.deepEqual(targets, [{ runId: "run-1", stageId: "stage-1", stageName: "Implement" }]);
+	});
 
-        await orchestration?.lateMessageRouter?.routeMessage({
-            customType: "intercom_message",
-            content: "late reviewer message",
-            display: true,
-        });
-        assert.deepEqual(routed, ["late reviewer message"]);
-        assert.deepEqual(targets, [{ runId: "run-1", stageId: "stage-1", stageName: "Implement" }]);
-    });
+	test("late stage routing fails when the host has no external message route", async () => {
+		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+		const adapters = buildRuntimeAdapters(
+			{},
+			{
+				createAgentSession: async (options) => {
+					orchestration = options?.orchestrationContext;
+					return { session: fakeSession() };
+				},
+			},
+		);
+		await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
 
-    test("late stage routing fails when the host has no external message route", async () => {
-        let orchestration: CreateAgentSessionOptions["orchestrationContext"];
-        const adapters = buildRuntimeAdapters({}, {
-            createAgentSession: async (options) => {
-                orchestration = options?.orchestrationContext;
-                return { session: fakeSession() };
-            },
-        });
-        await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+		await assert.rejects(async () => {
+			await orchestration?.lateMessageRouter?.routeMessage({
+				customType: "async-job-result",
+				content: "late",
+				display: true,
+			});
+		}, /main-chat late-message route is unavailable/);
+	});
 
-        await assert.rejects(async () => {
-            await orchestration?.lateMessageRouter?.routeMessage({ customType: "async-job-result", content: "late", display: true });
-        }, /main-chat late-message route is unavailable/);
-    });
+	test("late batch fallback routing awaits ordered sends and propagates failures", async () => {
+		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+		const routed: string[] = [];
+		const adapters = buildRuntimeAdapters(
+			{
+				async sendMessage(message) {
+					if (typeof message.content === "string") routed.push(message.content);
+					if (message.content === "second") throw new Error("injected route failure");
+				},
+			},
+			{
+				createAgentSession: async (options) => {
+					orchestration = options?.orchestrationContext;
+					return { session: fakeSession() };
+				},
+			},
+		);
+		await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
 
-    test("late batch fallback routing awaits ordered sends and propagates failures", async () => {
-        let orchestration: CreateAgentSessionOptions["orchestrationContext"];
-        const routed: string[] = [];
-        const adapters = buildRuntimeAdapters({
-            async sendMessage(message) {
-                if (typeof message.content === "string") routed.push(message.content);
-                if (message.content === "second") throw new Error("injected route failure");
-            },
-        }, {
-            createAgentSession: async (options) => {
-                orchestration = options?.orchestrationContext;
-                return { session: fakeSession() };
-            },
-        });
-        await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+		await assert.rejects(
+			() =>
+				orchestration!.lateMessageRouter!.routeMessages([
+					{ customType: "async-job-result", content: "first", display: true },
+					{ customType: "async-job-result", content: "second", display: true },
+					{ customType: "async-job-result", content: "third", display: true },
+				]),
+			/injected route failure/,
+		);
+		assert.deepEqual(routed, ["first", "second"]);
+	});
+	test("interactive stage sessions exclude workflow without blocking opt-in structured_output", async () => {
+		const calls: Array<CreateAgentSessionOptions | undefined> = [];
+		const adapters = buildRuntimeAdapters(
+			{},
+			{
+				createAgentSession: async (options) => {
+					calls.push(options);
+					return { session: fakeSession() };
+				},
+			},
+		);
 
-        await assert.rejects(
-            () => orchestration!.lateMessageRouter!.routeMessages([
-                { customType: "async-job-result", content: "first", display: true },
-                { customType: "async-job-result", content: "second", display: true },
-                { customType: "async-job-result", content: "third", display: true },
-            ]),
-            /injected route failure/,
-        );
-        assert.deepEqual(routed, ["first", "second"]);
-    });
-    test("interactive stage sessions exclude workflow without blocking opt-in structured_output", async () => {
-        const calls: Array<CreateAgentSessionOptions | undefined> = [];
-        const adapters = buildRuntimeAdapters(
-            {},
-            {
-                createAgentSession: async (options) => {
-                    calls.push(options);
-                    return { session: fakeSession() };
-                },
-            },
-        );
+		await adapters.agentSession!.create(
+			{ cwd: "/tmp/project" },
+			{
+				runId: "run-1",
+				stageId: "stage-1",
+				stageName: "Implement",
+				executionMode: "interactive",
+			},
+		);
 
-        await adapters.agentSession!.create(
-            { cwd: "/tmp/project" },
-            {
-                runId: "run-1",
-                stageId: "stage-1",
-                stageName: "Implement",
-                executionMode: "interactive",
-            },
-        );
+		assert.deepEqual(calls[0]?.excludedTools, ["workflow"]);
+		assert.equal(calls[0]?.excludedTools?.includes("structured_output"), false);
+	});
 
-        assert.deepEqual(calls[0]?.excludedTools, ["workflow"]);
-        assert.equal(calls[0]?.excludedTools?.includes("structured_output"), false);
-    });
+	test("non-interactive stage sessions exclude ask_user_question without blocking opt-in structured_output", async () => {
+		const calls: Array<CreateAgentSessionOptions | undefined> = [];
+		let bindCalls = 0;
+		const session = {
+			...fakeSession(),
+			async bindExtensions(): Promise<void> {
+				bindCalls += 1;
+			},
+		} satisfies StageSessionRuntime & { bindExtensions(): Promise<void> };
+		const adapters = buildRuntimeAdapters(
+			{},
+			{
+				createAgentSession: async (options) => {
+					calls.push(options);
+					return { session };
+				},
+			},
+		);
 
-    test("non-interactive stage sessions exclude ask_user_question without blocking opt-in structured_output", async () => {
-        const calls: Array<CreateAgentSessionOptions | undefined> = [];
-        let bindCalls = 0;
-        const session = {
-            ...fakeSession(),
-            async bindExtensions(): Promise<void> {
-                bindCalls += 1;
-            },
-        } satisfies StageSessionRuntime & { bindExtensions(): Promise<void> };
-        const adapters = buildRuntimeAdapters(
-            {},
-            {
-                createAgentSession: async (options) => {
-                    calls.push(options);
-                    return { session };
-                },
-            },
-        );
+		await adapters.agentSession!.create(
+			{ cwd: "/tmp/project" },
+			{
+				runId: "run-1",
+				stageId: "stage-1",
+				stageName: "Implement",
+				executionMode: "non_interactive",
+			},
+		);
 
-        await adapters.agentSession!.create(
-            { cwd: "/tmp/project" },
-            {
-                runId: "run-1",
-                stageId: "stage-1",
-                stageName: "Implement",
-                executionMode: "non_interactive",
-            },
-        );
-
-        assert.deepEqual(calls[0]?.excludedTools, [
-            "workflow",
-            "ask_user_question",
-        ]);
-        assert.equal(calls[0]?.excludedTools?.includes("structured_output"), false);
-        assert.equal(bindCalls, 0);
-    });
+		assert.deepEqual(calls[0]?.excludedTools, ["workflow", "ask_user_question"]);
+		assert.equal(calls[0]?.excludedTools?.includes("structured_output"), false);
+		assert.equal(bindCalls, 0);
+	});
 });

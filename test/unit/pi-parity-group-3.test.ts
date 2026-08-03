@@ -1,11 +1,14 @@
-import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OpenAICompletionsCompat } from "@earendil-works/pi-ai/compat";
+import { afterEach, describe, test } from "vitest";
 import { parseConfigCommand } from "../../packages/coding-agent/src/config-command-parser.ts";
-import { applyHttpProxySettings, parseHttpIdleTimeoutMs } from "../../packages/coding-agent/src/core/http-dispatcher.ts";
+import {
+	applyHttpProxySettings,
+	parseHttpIdleTimeoutMs,
+} from "../../packages/coding-agent/src/core/http-dispatcher.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { DefaultPackageManager } from "../../packages/coding-agent/src/core/package-manager.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
@@ -27,7 +30,8 @@ describe("HTTP settings parity", () => {
 		assert.equal(parseHttpIdleTimeoutMs(" 1250 "), 1250);
 		assert.equal(parseHttpIdleTimeoutMs("DISABLED"), 0);
 		assert.equal(parseHttpIdleTimeoutMs(1.9), 1);
-		for (const invalid of ["", "nope", -1, Number.NaN, null]) assert.equal(parseHttpIdleTimeoutMs(invalid), undefined);
+		for (const invalid of ["", "nope", -1, Number.NaN, null])
+			assert.equal(parseHttpIdleTimeoutMs(invalid), undefined);
 	});
 
 	test("proxy settings trim values, preserve environment precedence, and ignore blanks", () => {
@@ -43,8 +47,10 @@ describe("HTTP settings parity", () => {
 			applyHttpProxySettings("   ");
 			assert.equal(process.env.HTTP_PROXY, undefined);
 		} finally {
-			if (oldHttp === undefined) delete process.env.HTTP_PROXY; else process.env.HTTP_PROXY = oldHttp;
-			if (oldHttps === undefined) delete process.env.HTTPS_PROXY; else process.env.HTTPS_PROXY = oldHttps;
+			if (oldHttp === undefined) delete process.env.HTTP_PROXY;
+			else process.env.HTTP_PROXY = oldHttp;
+			if (oldHttps === undefined) delete process.env.HTTPS_PROXY;
+			else process.env.HTTPS_PROXY = oldHttps;
 		}
 	});
 });
@@ -52,14 +58,21 @@ describe("HTTP settings parity", () => {
 test("models.json preserves deferredToolsMode and constructs configured Radius providers", async () => {
 	const dir = await tempDir();
 	const path = join(dir, "models.json");
-	await writeFile(path, JSON.stringify({ providers: {
-		kimi: {
-			baseUrl: "https://kimi.example/v1", apiKey: "key", api: "openai-completions",
-			compat: { deferredToolsMode: "kimi" },
-			models: [{ id: "moonshot" }],
-		},
-		corporate: { name: "Corporate Radius", baseUrl: "https://radius.example/v1", oauth: "radius" },
-	} }));
+	await writeFile(
+		path,
+		JSON.stringify({
+			providers: {
+				kimi: {
+					baseUrl: "https://kimi.example/v1",
+					apiKey: "key",
+					api: "openai-completions",
+					compat: { deferredToolsMode: "kimi" },
+					models: [{ id: "moonshot" }],
+				},
+				corporate: { name: "Corporate Radius", baseUrl: "https://radius.example/v1", oauth: "radius" },
+			},
+		}),
+	);
 	const runtime = await ModelRuntime.create({ modelsPath: path });
 	const compat = runtime.getModels("kimi")[0]?.compat as OpenAICompletionsCompat | undefined;
 	assert.equal(compat?.deferredToolsMode, "kimi");
@@ -83,7 +96,10 @@ test("project autoload:false is a delta over a global package including workflow
 	await writeFile(join(pkg, "workflows", "other.ts"), "export default {}\n");
 	await writeFile(join(pkg, "extensions", "index.ts"), "export default () => {}\n");
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [pkg] }));
-	await writeFile(join(cwd, ".atomic", "settings.json"), JSON.stringify({ packages: [{ source: pkg, autoload: false, workflows: ["+workflows/selected.ts"] }] }));
+	await writeFile(
+		join(cwd, ".atomic", "settings.json"),
+		JSON.stringify({ packages: [{ source: pkg, autoload: false, workflows: ["+workflows/selected.ts"] }] }),
+	);
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
 	const resolved = await new DefaultPackageManager({ cwd, agentDir, settingsManager: manager }).resolve();
 	const selected = resolved.workflows.find((entry) => entry.path.endsWith("selected.ts"));
@@ -93,7 +109,11 @@ test("project autoload:false is a delta over a global package including workflow
 });
 
 test("config parser supports local/trust/help and rejects extra arguments", () => {
-	assert.deepEqual(parseConfigCommand(["config", "-l", "--approve"]), { local: true, help: false, projectTrustOverride: true });
+	assert.deepEqual(parseConfigCommand(["config", "-l", "--approve"]), {
+		local: true,
+		help: false,
+		projectTrustOverride: true,
+	});
 	assert.equal(parseConfigCommand(["config", "--help"])?.help, true);
 	assert.equal(parseConfigCommand(["config", "--wat"])?.invalidOption, "--wat");
 	assert.equal(parseConfigCommand(["config", "extra"])?.invalidArgument, "extra");
@@ -101,7 +121,11 @@ test("config parser supports local/trust/help and rejects extra arguments", () =
 });
 
 test("self-update plans pin the selected package and version and retain notes", () => {
-	const plan = buildSelfUpdatePlan({ version: "99.1.2", packageName: "@bastani/atomic-next", note: "**Migrate** first" });
+	const plan = buildSelfUpdatePlan({
+		version: "99.1.2",
+		packageName: "@bastani/atomic-next",
+		note: "**Migrate** first",
+	});
 	assert.equal(plan.installSpec, "@bastani/atomic-next@99.1.2");
 	assert.equal(plan.version, "99.1.2");
 	assert.equal(plan.note, "**Migrate** first");

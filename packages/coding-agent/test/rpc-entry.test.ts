@@ -17,8 +17,6 @@ describe("rpc-entry env marker and forced RPC mode", () => {
 		expect(RPC_ENTRY_SOURCE).toMatch(
 			/main\(\s*insertForcedOptionsBeforeTerminator\(\s*process\.argv\.slice\(2\),\s*\["--mode",\s*"rpc"\]\s*\)\s*\)/,
 		);
-		expect(RPC_ENTRY_SOURCE).toContain(
-			'import { insertForcedOptionsBeforeTerminator } from "./cli/args.ts";',
-		);
+		expect(RPC_ENTRY_SOURCE).toContain('import { insertForcedOptionsBeforeTerminator } from "./cli/args.ts";');
 	});
 });

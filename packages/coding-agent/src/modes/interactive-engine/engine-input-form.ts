@@ -1,8 +1,8 @@
 import type { HostInputFormRequest } from "../../core/extensions/ui-types.ts";
 import {
+	type InteractiveEngineMessage,
 	parseInteractiveEngineCommand,
 	serializeInteractiveEngineMessage,
-	type InteractiveEngineMessage,
 } from "./protocol.ts";
 
 interface ActiveForm {
@@ -23,7 +23,9 @@ export class EngineInputFormService {
 		if (signal?.aborted) return Promise.resolve(undefined);
 		const componentId = `input_form_${++this.nextId}`;
 		let resolveResult!: (values: Record<string, string> | undefined) => void;
-		const result = new Promise<Record<string, string> | undefined>((resolve) => { resolveResult = resolve; });
+		const result = new Promise<Record<string, string> | undefined>((resolve) => {
+			resolveResult = resolve;
+		});
 		const onAbort = () => {
 			this.send({ type: "engine_input_form_close", componentId });
 			record.resolve(undefined);
@@ -40,13 +42,20 @@ export class EngineInputFormService {
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		this.active.set(componentId, record);
-		this.send({ type: "engine_input_form_open", componentId, title: request.title, fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })), ...(request.heading !== undefined ? { heading: request.heading } : {}), ...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}) });
+		this.send({
+			type: "engine_input_form_open",
+			componentId,
+			title: request.title,
+			fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })),
+			...(request.heading !== undefined ? { heading: request.heading } : {}),
+			...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}),
+		});
 		return result;
 	}
 
 	handleLine(line: string): boolean {
 		const command = parseInteractiveEngineCommand(line);
-		if (!command || !command.type.startsWith("engine_input_form_")) return false;
+		if (!command?.type.startsWith("engine_input_form_")) return false;
 		const record = this.active.get(command.componentId);
 		if (!record) return true;
 		if (command.type === "engine_input_form_submit") record.resolve(command.values);

@@ -2,499 +2,403 @@
  * Shared state and constructor wiring for interactive mode.
  * Responsibility-specific behavior is installed by sibling modules.
  */
-import type {} from "./interactive-mode-surface.ts";
-import { type AssistantMessage, type AutocompleteProvider, type EditorComponent, type Component, type LoaderIndicatorOptions, type AgentSession, type AgentSessionRuntime, type AutocompleteProviderFactory, type EditorFactory, type HostCustomUiStateListener, Container, Loader, ProcessTerminal, Spacer, setKeybindings, Text, TUI, VERSION, FooterDataProvider, KeybindingsManager, AssistantMessageComponent, BashExecutionComponent, CountdownTimer, CustomEditor, ExtensionEditorComponent, ExtensionInputComponent, ExtensionSelectorComponent, FooterComponent, UsageMeterComponent, ToolExecutionComponent, getEditorTheme, setRegisteredThemes, InteractiveThemeController } from "./interactive-mode-deps.ts";
+
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
-import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
-import { shouldRenderEngineDiagnosticAsChatError } from "../interactive-engine/activity-watchdog.ts";
+import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import {
+	type AgentSession,
+	type AgentSessionRuntime,
+	type AssistantMessage,
+	type AssistantMessageComponent,
+	type AutocompleteProvider,
+	type AutocompleteProviderFactory,
+	type BashExecutionComponent,
+	type Component,
+	Container,
+	type CountdownTimer,
+	CustomEditor,
+	type EditorComponent,
+	type EditorFactory,
+	type ExtensionEditorComponent,
+	type ExtensionInputComponent,
+	type ExtensionSelectorComponent,
+	FooterComponent,
+	FooterDataProvider,
+	getEditorTheme,
+	type HostCustomUiStateListener,
+	InteractiveThemeController,
+	KeybindingsManager,
+	type Loader,
+	type LoaderIndicatorOptions,
+	ProcessTerminal,
+	type Spacer,
+	setKeybindings,
+	setRegisteredThemes,
+	type Text,
+	type ToolExecutionComponent,
+	TUI,
+	UsageMeterComponent,
+	VERSION,
+} from "./interactive-mode-deps.ts";
+import type {} from "./interactive-mode-surface.ts";
+import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
+import type { InteractiveSubmission } from "./interactive-submission.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
-  const trimmed = text.trimStart();
-  return trimmed.startsWith("/") || trimmed.startsWith("!");
+	const trimmed = text.trimStart();
+	return trimmed.startsWith("/") || trimmed.startsWith("!");
 }
 
 export function seedStartupInput(
-  pendingUserInputs: string[],
-  editor: { setText(text: string): void },
-  startupInput: EarlyInputSnapshot | undefined,
-  startupReplayInputs: string[] = [],
-  setStartupDraftText?: (text: string) => void,
-  setStartupReplayActiveInput?: (text: string) => void,
+	pendingUserInputs: InteractiveSubmission[],
+	editor: { setText(text: string): void },
+	startupInput: EarlyInputSnapshot | undefined,
+	startupReplayInputs: string[] = [],
+	setStartupDraftText?: (text: string) => void,
+	setStartupReplayActiveInput?: (text: string) => void,
 ): void {
-  if (!startupInput) return;
-  let commandReplayStarted = false;
-  for (const submission of startupInput.submissions) {
-    if (commandReplayStarted) {
-      startupReplayInputs.push(submission);
-    } else if (isCommandLikeStartupInput(submission)) {
-      const commandText = submission.trim();
-      commandReplayStarted = true;
-      editor.setText(commandText);
-      setStartupReplayActiveInput?.(commandText);
-    } else {
-      pendingUserInputs.push(submission);
-    }
-  }
-  if (startupInput.text.length === 0) return;
-  if (commandReplayStarted) {
-    setStartupDraftText?.(startupInput.text);
-  } else {
-    editor.setText(startupInput.text);
-  }
+	if (!startupInput) return;
+	let commandReplayStarted = false;
+	for (const submission of startupInput.submissions) {
+		if (commandReplayStarted) {
+			startupReplayInputs.push(submission);
+		} else if (isCommandLikeStartupInput(submission)) {
+			const commandText = submission.trim();
+			commandReplayStarted = true;
+			editor.setText(commandText);
+			setStartupReplayActiveInput?.(commandText);
+		} else {
+			pendingUserInputs.push({ text: submission, draft: submission });
+		}
+	}
+	if (startupInput.text.length === 0) return;
+	if (commandReplayStarted) {
+		setStartupDraftText?.(startupInput.text);
+	} else {
+		editor.setText(startupInput.text);
+	}
 }
 
 export class InteractiveModeBase {
+	runtimeHost: AgentSessionRuntime;
 
-  runtimeHost: AgentSessionRuntime;
+	ui: TUI;
 
+	chatContainer: Container;
+	resourceDisclosureContainer: Container;
+	startupNoticesContainer: Container;
+	pendingMessagesContainer: Container;
 
-  ui: TUI;
+	statusContainer: Container;
 
+	defaultEditor: CustomEditor;
 
-  chatContainer: Container;
-  resourceDisclosureContainer: Container;
-  startupNoticesContainer: Container;
-  pendingMessagesContainer: Container;
+	editor: EditorComponent;
 
+	editorComponentFactory: EditorFactory | undefined;
 
-  statusContainer: Container;
+	autocompleteProvider: AutocompleteProvider | undefined;
 
+	autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
 
-  defaultEditor: CustomEditor;
+	fdPath: string | undefined;
 
+	editorContainer: Container;
 
-  editor: EditorComponent;
+	footer: FooterComponent;
 
+	usageMeter: UsageMeterComponent;
 
-  editorComponentFactory: EditorFactory | undefined;
+	footerDataProvider: FooterDataProvider;
 
+	// Stored so the same manager can be injected into custom editors, selectors, and extension UI.
+	keybindings: KeybindingsManager;
 
-  autocompleteProvider: AutocompleteProvider | undefined;
+	reloadCoordinator: KeybindingsReloadCoordinator;
 
+	interactiveEngineShortcutHandler: ((data: string) => boolean) | undefined;
 
-  autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
+	disposeInteractiveEngineHost: () => void = () => {};
 
+	version: string;
 
-  fdPath: string | undefined;
+	isInitialized = false;
 
+	onInputCallback?: (submission: InteractiveSubmission) => void;
 
-  editorContainer: Container;
+	pendingUserInputs: InteractiveSubmission[] = [];
 
+	startupReplayInputs: string[] = [];
 
-  footer: FooterComponent;
+	startupReplayActiveInput: string | undefined = undefined;
 
+	startupDraftText: string | undefined = undefined;
 
-  usageMeter: UsageMeterComponent;
+	startupCookedInputRecovered = false;
 
+	deferredRenderedUserInputs: string[] = [];
 
-  footerDataProvider: FooterDataProvider;
+	deferredRenderedUserInputComponents = new Map<string, Component[][]>();
 
+	loadingAnimation: Loader | AtomicWorkingLoader | undefined = undefined;
 
-  // Stored so the same manager can be injected into custom editors, selectors, and extension UI.
-  keybindings: KeybindingsManager;
+	workingMessage: string | undefined = undefined;
 
+	workingVisible = true;
 
-  reloadCoordinator: KeybindingsReloadCoordinator;
+	workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
 
+	readonly defaultWorkingMessage = "Working...";
 
-  interactiveEngineShortcutHandler: ((data: string) => boolean) | undefined;
+	readonly defaultHiddenThinkingLabel = "Thinking...";
 
+	hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
 
-  disposeInteractiveEngineHost: () => void = () => {};
+	lastSigintTime = 0;
 
+	lastEscapeTime = 0;
 
-  version: string;
+	changelogMarkdown: string | undefined = undefined;
 
+	startupNoticesShown = false;
+	startupNoticesPrepared = false;
 
-  isInitialized = false;
+	anthropicSubscriptionWarningShown = false;
 
+	firstRunNoticeVisible = false;
 
-  onInputCallback?: (text: string) => void;
+	hadLastChangelogVersionAtStartup = false;
 
+	firstRunOnboardingNoticeComponents: Component[] = [];
 
-  pendingUserInputs: string[] = [];
+	autoTrustOnReloadCwd: string | undefined;
 
-  startupReplayInputs: string[] = [];
+	// Status line tracking (for mutating immediately-sequential status updates)
+	lastStatusSpacer: Spacer | undefined = undefined;
 
+	lastStatusText: Text | undefined = undefined;
 
-  startupReplayActiveInput: string | undefined = undefined;
+	// Streaming message tracking
+	streamingComponent: AssistantMessageComponent | undefined = undefined;
 
+	streamingMessage: AssistantMessage | undefined = undefined;
 
-  startupDraftText: string | undefined = undefined;
+	// Tool execution tracking: toolCallId -> component
+	pendingTools = new Map<string, ToolExecutionComponent | RemoteToolExecutionComponent>();
 
-  startupCookedInputRecovered = false;
+	// Tool output expansion state
+	toolOutputExpanded = false;
 
+	// Thinking block visibility state
+	hideThinkingBlock = false;
+	outputPad: 0 | 1 = 1;
 
-  deferredRenderedUserInputs: string[] = [];
+	// Skill commands: command name -> skill file path
+	skillCommands = new Map<string, string>();
 
+	// Agent subscription unsubscribe function
+	unsubscribe?: () => void;
 
-  deferredRenderedUserInputComponents = new Map<string, Component[][]>();
+	signalCleanupHandlers: Array<() => void> = [];
 
+	// Track if editor is in bash mode (text starts with !)
+	isBashMode = false;
 
-  loadingAnimation: Loader | AtomicWorkingLoader | undefined = undefined;
+	// Track current bash execution component
+	bashComponent: BashExecutionComponent | undefined = undefined;
 
+	// Track pending bash components (shown in pending area, moved to chat on submit)
+	pendingBashComponents: BashExecutionComponent[] = [];
 
-  workingMessage: string | undefined = undefined;
+	// Auto-compaction state
+	autoCompactionLoader: AtomicWorkingLoader | undefined = undefined;
 
+	autoCompactionEscapeHandler?: () => void;
 
-  workingVisible = true;
+	/** True once the pre-compaction Escape handler has been captured for restore. */
+	autoCompactionEscapeHandlerSaved = false;
 
+	/** True while `runUserPromptTurn()` owns the working loader. */
+	promptTurnWorkingLoaderActive = false;
 
-  workingIndicatorOptions: LoaderIndicatorOptions | undefined =
-    undefined;
+	// Auto-retry state
+	retryLoader: Loader | undefined = undefined;
+	fallbackLoader: Loader | undefined = undefined;
 
+	retryCountdown: CountdownTimer | undefined = undefined;
 
-  readonly defaultWorkingMessage = "Working...";
+	retryEscapeHandler?: () => void;
 
+	// Messages queued while compaction is running
+	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 
-  readonly defaultHiddenThinkingLabel = "Thinking...";
+	// Deferred extension load state (first paint happens before extensions load)
+	deferredStartupPending = false;
+	initialStartupBinding = false;
+	deferredStartupPromise: Promise<void> | undefined = undefined;
 
+	inputHandlerReadyRecorded = false;
 
-  hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
+	firstSubmitRecorded = false;
 
+	// Shutdown state
+	shutdownRequested = false;
 
+	// Extension UI state
+	extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 
-  lastSigintTime = 0;
+	extensionInput: ExtensionInputComponent | undefined = undefined;
 
+	extensionEditor: ExtensionEditorComponent | undefined = undefined;
 
-  lastEscapeTime = 0;
+	extensionTerminalInputUnsubscribers = new Set<() => void>();
 
+	blockingInlineCustomUiDepth = 0;
 
-  changelogMarkdown: string | undefined = undefined;
+	deferredInlineCustomUiFocusDepth = 0;
 
-  startupNoticesShown = false;
-  startupNoticesPrepared = false;
+	pendingInlineCustomUiFocus: Component | undefined = undefined;
 
-  anthropicSubscriptionWarningShown = false;
+	hostCustomUiStateListeners = new Set<HostCustomUiStateListener>();
 
-  firstRunNoticeVisible = false;
+	themeController: InteractiveThemeController;
 
-  hadLastChangelogVersionAtStartup = false;
+	// Extension widgets (components rendered above/below the editor)
+	extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
 
-  firstRunOnboardingNoticeComponents: Component[] = [];
+	extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
 
-  autoTrustOnReloadCwd: string | undefined;
+	widgetContainerAbove!: Container;
 
+	widgetContainerBelow!: Container;
 
-
-  // Status line tracking (for mutating immediately-sequential status updates)
-  lastStatusSpacer: Spacer | undefined = undefined;
-
-
-  lastStatusText: Text | undefined = undefined;
-
-
-
-  // Streaming message tracking
-  streamingComponent: AssistantMessageComponent | undefined = undefined;
-
-
-  streamingMessage: AssistantMessage | undefined = undefined;
-
-
-
-  // Tool execution tracking: toolCallId -> component
-  pendingTools = new Map<string, ToolExecutionComponent | RemoteToolExecutionComponent>();
-
-
-
-  // Tool output expansion state
-  toolOutputExpanded = false;
-
-
-
-  // Thinking block visibility state
-  hideThinkingBlock = false;
-  outputPad: 0 | 1 = 1;
-
-
-
-  // Skill commands: command name -> skill file path
-  skillCommands = new Map<string, string>();
-
-
-
-  // Agent subscription unsubscribe function
-  unsubscribe?: () => void;
-
-
-  signalCleanupHandlers: Array<() => void> = [];
-
-
-
-  // Track if editor is in bash mode (text starts with !)
-  isBashMode = false;
-
-
-
-  // Track current bash execution component
-  bashComponent: BashExecutionComponent | undefined = undefined;
-
-
-
-  // Track pending bash components (shown in pending area, moved to chat on submit)
-  pendingBashComponents: BashExecutionComponent[] = [];
-
-
-
-  // Auto-compaction state
-  autoCompactionLoader: AtomicWorkingLoader | undefined = undefined;
-
-
-  autoCompactionEscapeHandler?: () => void;
-
-  /** True once the pre-compaction Escape handler has been captured for restore. */
-  autoCompactionEscapeHandlerSaved = false;
-
-  /** True while `runUserPromptTurn()` owns the working loader. */
-  promptTurnWorkingLoaderActive = false;
-
-
-
-  // Auto-retry state
-  retryLoader: Loader | undefined = undefined;
-  fallbackLoader: Loader | undefined = undefined;
-
-  retryCountdown: CountdownTimer | undefined = undefined;
-
-
-  retryEscapeHandler?: () => void;
-
-
-
-  // Messages queued while compaction is running
-  compactionQueuedMessages: CompactionQueuedMessage[] = [];
-
-
-
-  // Deferred extension load state (first paint happens before extensions load)
-  deferredStartupPending = false;
-  initialStartupBinding = false;
-  deferredStartupPromise: Promise<void> | undefined = undefined;
-
-
-  inputHandlerReadyRecorded = false;
-
-  firstSubmitRecorded = false;
-
-
-
-
-
-
-  // Shutdown state
-  shutdownRequested = false;
-
-
-
-  // Extension UI state
-  extensionSelector: ExtensionSelectorComponent | undefined = undefined;
-
-
-  extensionInput: ExtensionInputComponent | undefined = undefined;
-
-
-  extensionEditor: ExtensionEditorComponent | undefined = undefined;
-
-
-  extensionTerminalInputUnsubscribers = new Set<() => void>();
-
-
-  blockingInlineCustomUiDepth = 0;
-
-
-  deferredInlineCustomUiFocusDepth = 0;
-
-
-  pendingInlineCustomUiFocus: Component | undefined = undefined;
-
-
-  hostCustomUiStateListeners = new Set<HostCustomUiStateListener>();
-
-
-  themeController: InteractiveThemeController;
-
-
-
-  // Extension widgets (components rendered above/below the editor)
-  extensionWidgetsAbove = new Map<
-    string,
-    Component & { dispose?(): void }
-  >();
-
-
-  extensionWidgetsBelow = new Map<
-    string,
-    Component & { dispose?(): void }
-  >();
-
-
-  widgetContainerAbove!: Container;
-
-
-  widgetContainerBelow!: Container;
-
-
-
-  // Custom footer from extension (undefined = use built-in footer)
-  customFooter: (Component & { dispose?(): void }) | undefined =
-    undefined;
-
-
-
-  // Header container that holds the built-in or custom header
-  headerContainer: Container;
-
-
-  // Built-in header (logo + keybinding hints + changelog)
-  builtInHeader: Component | undefined = undefined;
-
-
-
-  // Custom header from extension (undefined = use built-in header)
-  customHeader: (Component & { dispose?(): void }) | undefined =
-    undefined;
-
-
-
-  // Convenience accessors
-  get session(): AgentSession & AgentSessionQueuePauseControl {
-    return this.runtimeHost.session as AgentSession & AgentSessionQueuePauseControl;
-  }
-
-
-  get agent() {
-    return this.session.agent;
-  }
-
-
-  get sessionManager() {
-    return this.session.sessionManager;
-  }
-
-
-  get settingsManager() {
-    return this.session.settingsManager;
-  }
-
-
-
-  declare options: InteractiveModeOptions;
-
-
-
-  constructor(
-    runtimeHost: AgentSessionRuntime,
-    options: InteractiveModeOptions = {},
-  ) {
-    this.options = options;
-    this.deferredStartupPending = Boolean(options.deferredExtensionLoad);
-    this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
-    this.runtimeHost = runtimeHost;
-    this.runtimeHost.setBeforeSessionInvalidate(() => {
-      this.resetExtensionUI();
-    });
-    this.runtimeHost.setRebindSession(async () => {
-      await this.rebindCurrentSession();
-    });
-    this.version = VERSION;
-    this.ui = new TUI(
-      options.terminal ?? new ProcessTerminal(),
-      this.settingsManager.getShowHardwareCursor(),
-      runtimeHost.services.agentDir,
-    );
-    this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
-    this.headerContainer = new Container();
-    this.chatContainer = new StartupChatContainer();
-    this.resourceDisclosureContainer = new Container();
-    this.startupNoticesContainer = new Container();
-    // The isolated engine can emit session_start UI requests as soon as its
-    // bridge attaches below, before init() mounts chat in the TUI. Reserve the
-    // ordering slots now so those messages can never precede RESOURCES.
-    this.chatContainer.addChild(this.resourceDisclosureContainer);
-    this.chatContainer.addChild(this.startupNoticesContainer);
-    this.pendingMessagesContainer = new Container();
-    this.statusContainer = new Container();
-    this.widgetContainerAbove = new Container();
-    this.widgetContainerBelow = new Container();
-    this.keybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
-    this.reloadCoordinator = new KeybindingsReloadCoordinator(this.keybindings);
-    setKeybindings(this.keybindings);
-    const editorPaddingX = this.settingsManager.getEditorPaddingX();
-    const autocompleteMaxVisible =
-      this.settingsManager.getAutocompleteMaxVisible();
-    this.defaultEditor = new CustomEditor(
-      this.ui,
-      getEditorTheme(),
-      this.keybindings,
-      {
-        paddingX: editorPaddingX,
-        autocompleteMaxVisible,
-      },
-    );
-
-    this.editor = this.defaultEditor;
-    this.editorContainer = new Container();
-    this.editorContainer.addChild(this.editor as Component);
-    this.footerDataProvider = new FooterDataProvider(
-      this.sessionManager.getCwd(),
-    );
-    this.footer = new FooterComponent(this.session, this.footerDataProvider);
-    this.usageMeter = new UsageMeterComponent(this.session);
-    this.usageMeter.setAutoCompactEnabled(this.session.autoCompactionEnabled);
-
-    // Load hide thinking block setting
-    this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
-    this.outputPad = this.settingsManager.getOutputPad();
-
-    // Register themes from resource loader and initialize
-    setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-    this.themeController = new InteractiveThemeController(
-      this.ui,
-      this.settingsManager,
-      (message) => this.showError(message),
-      () => this.updateEditorBorderColor(),
-    );
-    this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
-      runtimeHost,
-      this.createExtensionUIContext(),
-		(diagnostic) => {
-			if (diagnostic.message.startsWith("Engine terminated;")) {
-				this.stopWorkingLoader();
-				this.ui.setFocus(this.editor);
-				this.ui.requestRender();
-			}
-			if (shouldRenderEngineDiagnosticAsChatError(diagnostic)) this.showError(diagnostic.message);
-		},
-      (handler) => {
-        this.interactiveEngineShortcutHandler = handler;
-        this.defaultEditor.onExtensionShortcut = handler;
-        return () => {
-          if (this.interactiveEngineShortcutHandler === handler) this.interactiveEngineShortcutHandler = undefined;
-          if (this.defaultEditor.onExtensionShortcut === handler) this.defaultEditor.onExtensionShortcut = undefined;
-        };
-      },
-      this.keybindings,
-    );
-  }
-
-
-
-  // Maximum total widget lines to prevent viewport overflow
-  static readonly MAX_WIDGET_LINES = 10;
-
-
-
-  /**
-   * Gracefully shutdown the agent.
-   * Stops the TUI before emitting shutdown events so extension UI cleanup cannot
-   * repaint the final frame while the process is exiting.
-   */
-  isShuttingDown = false;
+	// Custom footer from extension (undefined = use built-in footer)
+	customFooter: (Component & { dispose?(): void }) | undefined = undefined;
+
+	// Header container that holds the built-in or custom header
+	headerContainer: Container;
+
+	// Built-in header (logo + keybinding hints + changelog)
+	builtInHeader: Component | undefined = undefined;
+
+	// Custom header from extension (undefined = use built-in header)
+	customHeader: (Component & { dispose?(): void }) | undefined = undefined;
+
+	// Convenience accessors
+	get session(): AgentSession & AgentSessionQueuePauseControl {
+		return this.runtimeHost.session as AgentSession & AgentSessionQueuePauseControl;
+	}
+
+	get agent() {
+		return this.session.agent;
+	}
+
+	get sessionManager() {
+		return this.session.sessionManager;
+	}
+
+	get settingsManager() {
+		return this.session.settingsManager;
+	}
+
+	declare options: InteractiveModeOptions;
+
+	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
+		this.options = options;
+		this.deferredStartupPending = Boolean(options.deferredExtensionLoad);
+		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
+		this.runtimeHost = runtimeHost;
+		this.runtimeHost.setBeforeSessionInvalidate(() => {
+			this.resetExtensionUI();
+		});
+		this.runtimeHost.setRebindSession(async () => {
+			await this.rebindCurrentSession();
+		});
+		this.version = VERSION;
+		this.ui = new TUI(
+			options.terminal ?? new ProcessTerminal(),
+			this.settingsManager.getShowHardwareCursor(),
+			runtimeHost.services.agentDir,
+		);
+		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
+		this.headerContainer = new Container();
+		this.chatContainer = new StartupChatContainer();
+		this.resourceDisclosureContainer = new Container();
+		this.startupNoticesContainer = new Container();
+		// The isolated engine can emit session_start UI requests as soon as its
+		// bridge attaches below, before init() mounts chat in the TUI. Reserve the
+		// ordering slots now so those messages can never precede RESOURCES.
+		this.chatContainer.addChild(this.resourceDisclosureContainer);
+		this.chatContainer.addChild(this.startupNoticesContainer);
+		this.pendingMessagesContainer = new Container();
+		this.statusContainer = new Container();
+		this.widgetContainerAbove = new Container();
+		this.widgetContainerBelow = new Container();
+		this.keybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
+		this.reloadCoordinator = new KeybindingsReloadCoordinator(this.keybindings);
+		setKeybindings(this.keybindings);
+		const editorPaddingX = this.settingsManager.getEditorPaddingX();
+		const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
+		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
+			paddingX: editorPaddingX,
+			autocompleteMaxVisible,
+		});
+
+		this.editor = this.defaultEditor;
+		this.editorContainer = new Container();
+		this.editorContainer.addChild(this.editor as Component);
+		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
+		this.footer = new FooterComponent(this.session, this.footerDataProvider);
+		this.usageMeter = new UsageMeterComponent(this.session);
+		this.usageMeter.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+
+		// Load hide thinking block setting
+		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+		this.outputPad = this.settingsManager.getOutputPad();
+
+		// Register themes from resource loader and initialize
+		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+		this.themeController = new InteractiveThemeController(
+			this.ui,
+			this.settingsManager,
+			(message) => this.showError(message),
+			() => this.updateEditorBorderColor(),
+		);
+		this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
+			runtimeHost,
+			this.createExtensionUIContext(),
+			(diagnostic) =>
+				renderEngineDiagnostic(diagnostic, {
+					stopWorkingLoader: () => this.stopWorkingLoader(),
+					showStatus: (message) => this.showStatus(message),
+					showError: (message) => this.showError(message),
+				}),
+			(handler) => {
+				this.interactiveEngineShortcutHandler = handler;
+				this.defaultEditor.onExtensionShortcut = handler;
+				return () => {
+					if (this.interactiveEngineShortcutHandler === handler) this.interactiveEngineShortcutHandler = undefined;
+					if (this.defaultEditor.onExtensionShortcut === handler)
+						this.defaultEditor.onExtensionShortcut = undefined;
+				};
+			},
+			this.keybindings,
+		);
+	}
+
+	// Maximum total widget lines to prevent viewport overflow
+	static readonly MAX_WIDGET_LINES = 10;
+
+	/**
+	 * Gracefully shutdown the agent.
+	 * Stops the TUI before emitting shutdown events so extension UI cleanup cannot
+	 * repaint the final frame while the process is exiting.
+	 */
+	isShuttingDown = false;
 }

@@ -15,8 +15,12 @@ import { exportOpenClaudeDesign, refineOpenClaudeDesign } from "./open-claude-de
 import {
   NO_REFERENCES_BRIEF,
   buildReferenceDiscoveryPrompt,
+  designContextPath,
+  persistDesignContext,
   persistReferencesBrief,
+  referencesBriefPath,
   runDiscoveryAndInit,
+  type LiveReviewGateUi,
 } from "./open-claude-design-setup.js";
 
 const GROUNDED_REPORTING =
@@ -37,6 +41,7 @@ type OpenClaudeDesignContext = {
   exit?(options?: { readonly status?: string; readonly reason?: string; readonly outputs?: Partial<OpenClaudeDesignOutputs> }): never;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
+  readonly ui: LiveReviewGateUi;
 };
 
 export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext): Promise<OpenClaudeDesignOutputs> {
@@ -61,6 +66,10 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   );
   const previewFileUrl = `file://${previewPath}`;
   const specFileUrl = `file://${specPath}`;
+  const partialArtifactOutputs = {
+    playwright_cli_status: playwrightCli.summary, run_id: runId, artifact_dir: artifactDir,
+    preview_path: previewPath, preview_file_url: previewFileUrl, spec_path: specPath, spec_file_url: specFileUrl,
+  };
 
   // Browser-centric workflow: the discovery/preview review and the interactive
   // `live` QA loop need the playwright-cli browser. If it is unavailable, exit
@@ -72,12 +81,30 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   ) {
     designContext.exit({
       reason: `open-claude-design needs the playwright-cli skill's browser for interactive design review, which is unavailable (${playwrightCli.error ?? playwrightCli.summary}). No design was generated. Install it (\`npm install -g @playwright/cli@latest\` + \`npx playwright install chromium\`) and re-run.`,
-      outputs: {
-        playwright_cli_status: playwrightCli.summary, run_id: runId, artifact_dir: artifactDir,
-        preview_path: previewPath, preview_file_url: previewFileUrl, spec_path: specPath, spec_file_url: specFileUrl,
-      },
+      outputs: partialArtifactOutputs,
     });
   }
+
+  // design-context.md / references.md are required `reads` inputs for the
+  // reference-discovery, generate, and exporter stages. A failed write must
+  // not let those stages dispatch against nonexistent context: exit the run
+  // as `blocked` through ctx.exit (mirroring the browser early-exit) with the
+  // artifact paths surfaced, or propagate the error when ctx.exit is absent.
+  const persistRequiredContextOrExit = (persist: () => void): void => {
+    try {
+      persist();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (typeof designContext.exit === "function") {
+        designContext.exit({
+          status: "blocked",
+          reason: `${detail} No design was generated.`,
+          outputs: partialArtifactOutputs,
+        });
+      }
+      throw error;
+    }
+  };
 
   // Anthropic-heavy chain for design taste. Opus stays at :xhigh here because
   // visual quality, rather than cost per task, is the primary objective.
@@ -229,41 +256,10 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   });
   const onboardingSummary = joinResults(onboardingAnalysis);
 
-  const referenceResult = discoverReferences
-    ? await designContext.task("reference-discovery", {
-        prompt: buildReferenceDiscoveryPrompt({
-          prompt: designBrief,
-          outputType,
-          designContextHint: [
-            projectContext.summary,
-            "Design-system/reference discovery evidence from codebase design discovery stages:",
-            onboardingSummary,
-          ].join("\n\n"),
-          artifactDir,
-          browserBootstrapRules,
-        }),
-        previous: onboardingAnalysis,
-        ...designModelConfig,
-      })
-    : undefined;
-  const contextResults = referenceResult === undefined
-    ? onboardingAnalysis
-    : [...onboardingAnalysis, referenceResult];
-
-  const referencesBriefRaw = (referenceResult?.text ?? "").trim();
-  const referencesBrief =
-    referencesBriefRaw.length > 0 ? referencesBriefRaw : NO_REFERENCES_BRIEF;
-  if (referencesBriefRaw.length > 0) persistReferencesBrief(artifactDir, referencesBrief);
-
-  const importContext = references.length > 0
-    ? [
-        REFERENCE_PRECEDENCE,
-        "Reference sources:",
-        userReferenceContext,
-        "",
-        onboardingSummary,
-      ].join("\n")
-    : "No user reference was provided; infer the design direction from the brief, project design context, research, and curated reference inspiration.";
+  // Large research context is handed to later stages as an artifact file plus
+  // `reads`, never as an inline prompt embed or `previous` payload, so one
+  // oversized research result cannot become one oversized prompt message
+  // (issue #2121; same failure class as the #1499 413).
   const designSystem = [
     "Project design context from `/skill:impeccable init` and PRODUCT.md/DESIGN.md:",
     projectContext.summary,
@@ -271,6 +267,40 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     "Design-system and user-reference evidence:",
     onboardingSummary,
   ].join("\n\n");
+  persistRequiredContextOrExit(() => persistDesignContext(artifactDir, designSystem));
+  const designContextFile = designContextPath(artifactDir);
+
+  const referenceResult = discoverReferences
+    ? await designContext.task("reference-discovery", {
+        prompt: buildReferenceDiscoveryPrompt({
+          prompt: designBrief,
+          outputType,
+          designContextFile,
+          artifactDir,
+          browserBootstrapRules,
+        }),
+        reads: [designContextFile],
+        ...designModelConfig,
+      })
+    : undefined;
+
+  const referencesBriefRaw = (referenceResult?.text ?? "").trim();
+  const referencesBrief =
+    referencesBriefRaw.length > 0 ? referencesBriefRaw : NO_REFERENCES_BRIEF;
+  // Always persist so the generate stages' `reads` target exists even when
+  // discovery is skipped or returned nothing.
+  persistRequiredContextOrExit(() => persistReferencesBrief(artifactDir, referencesBrief));
+  const referencesFile = referencesBriefPath(artifactDir);
+
+  const importContext = references.length > 0
+    ? [
+        REFERENCE_PRECEDENCE,
+        "Reference sources:",
+        userReferenceContext,
+        "",
+        "Full design-system and reference evidence: read the design-context file.",
+      ].join("\n")
+    : "No user reference was provided; infer the design direction from the brief, project design context, research, and curated reference inspiration.";
 
   let latestDesign = "";
   let approvedForExport = false;
@@ -285,12 +315,12 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     previewFileUrl,
     artifactDir,
     browserBootstrapRules,
-    designSystem,
-    generationContext: contextResults,
+    designContextFile,
+    referencesFile,
     designModelConfig,
     workflowCwd,
-    referencesBrief,
     importContext,
+    ui: designContext.ui,
   });
   latestDesign = refinement.latestDesign;
   approvedForExport = refinement.approvedForExport;
@@ -305,7 +335,8 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     specPath,
     specFileUrl,
     browserBootstrapRules,
-    designSystem,
+    designContextFile,
+    referencesFile,
     latestDesign,
     designModelConfig,
   });

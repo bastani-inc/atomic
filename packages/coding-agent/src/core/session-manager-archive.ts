@@ -1,10 +1,6 @@
 import { join } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
-import {
-	createLabelEntry,
-	createSessionFilePath,
-	createSessionHeader,
-} from "./session-manager-entries.ts";
+import { createLabelEntry, createSessionFilePath, createSessionHeader } from "./session-manager-entries.ts";
 import { getDefaultSessionDir } from "./session-manager-paths.ts";
 import {
 	appendSessionEntry,
@@ -29,7 +25,11 @@ export function createBackupSnapshot(
 	label = "compact",
 ): string | undefined {
 	if (!sessionFile) return undefined;
-	const safeLabel = label.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "backup";
+	const safeLabel =
+		label
+			.replace(/[^a-z0-9_-]/gi, "-")
+			.replace(/-+/g, "-")
+			.replace(/^-|-$/g, "") || "backup";
 	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 	const backupPath = `${sessionFile}.${timestamp}.${safeLabel}.bak`;
 	writeSessionEntries(backupPath, entries);

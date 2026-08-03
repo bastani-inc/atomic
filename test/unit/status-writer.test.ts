@@ -12,15 +12,15 @@
  * cross-ref: src/extension/status-writer.ts
  */
 
-import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import {
-  resolveStatusFilePath,
-  atomicWriteJson,
-  createStatusWriter,
+	atomicWriteJson,
+	createStatusWriter,
+	resolveStatusFilePath,
 } from "../../packages/workflows/src/extension/status-writer.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
@@ -30,18 +30,18 @@ import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/
 // ---------------------------------------------------------------------------
 
 function makeConfig(overrides: Partial<WorkflowRuntimeConfig> = {}): WorkflowRuntimeConfig {
-  return {
-    maxDepth: 4,
-    defaultConcurrency: 4,
-    persistRuns: true,
-    statusFile: true,
-    resumeInFlight: "ask",
-    ...overrides,
-  };
+	return {
+		maxDepth: 4,
+		defaultConcurrency: 4,
+		persistRuns: true,
+		statusFile: true,
+		resumeInFlight: "ask",
+		...overrides,
+	};
 }
 
 async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -49,27 +49,27 @@ async function sleep(ms: number): Promise<void> {
 // ---------------------------------------------------------------------------
 
 describe("resolveStatusFilePath", () => {
-  test("uses statusFilePath from config when provided", () => {
-    const cfg = makeConfig({ statusFilePath: "/explicit/path/status.json" });
-    assert.equal(resolveStatusFilePath(cfg), "/explicit/path/status.json");
-  });
+	test("uses statusFilePath from config when provided", () => {
+		const cfg = makeConfig({ statusFilePath: "/explicit/path/status.json" });
+		assert.equal(resolveStatusFilePath(cfg), "/explicit/path/status.json");
+	});
 
-  test("ignores projectRoot when statusFilePath is set", () => {
-    const cfg = makeConfig({ statusFilePath: "/explicit/status.json" });
-    assert.equal(resolveStatusFilePath(cfg, { projectRoot: "/some/root" }), "/explicit/status.json");
-  });
+	test("ignores projectRoot when statusFilePath is set", () => {
+		const cfg = makeConfig({ statusFilePath: "/explicit/status.json" });
+		assert.equal(resolveStatusFilePath(cfg, { projectRoot: "/some/root" }), "/explicit/status.json");
+	});
 
-  test("defaults to <projectRoot>/.atomic/workflows/status.json", () => {
-    const cfg = makeConfig({ statusFilePath: undefined });
-    const result = resolveStatusFilePath(cfg, { projectRoot: "/myproject" });
-    assert.equal(result, join("/myproject", ".atomic", "workflows", "status.json"));
-  });
+	test("defaults to <projectRoot>/.atomic/workflows/status.json", () => {
+		const cfg = makeConfig({ statusFilePath: undefined });
+		const result = resolveStatusFilePath(cfg, { projectRoot: "/myproject" });
+		assert.equal(result, join("/myproject", ".atomic", "workflows", "status.json"));
+	});
 
-  test("uses process.cwd() when projectRoot not provided", () => {
-    const cfg = makeConfig({ statusFilePath: undefined });
-    const result = resolveStatusFilePath(cfg);
-    assert.equal(result, join(process.cwd(), ".atomic", "workflows", "status.json"));
-  });
+	test("uses process.cwd() when projectRoot not provided", () => {
+		const cfg = makeConfig({ statusFilePath: undefined });
+		const result = resolveStatusFilePath(cfg);
+		assert.equal(result, join(process.cwd(), ".atomic", "workflows", "status.json"));
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -77,43 +77,43 @@ describe("resolveStatusFilePath", () => {
 // ---------------------------------------------------------------------------
 
 describe("atomicWriteJson", () => {
-  let tmpDir: string;
+	let tmpDir: string;
 
-  beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), "status-writer-test-"));
-  });
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), "status-writer-test-"));
+	});
 
-  afterEach(async () => {
-    await rm(tmpDir, { recursive: true, force: true });
-  });
+	afterEach(async () => {
+		await rm(tmpDir, { recursive: true, force: true });
+	});
 
-  test("writes content to target path", async () => {
-    const path = join(tmpDir, "status.json");
-    await atomicWriteJson(path, '{"ok":true}');
-    const content = await readFile(path, "utf8");
-    assert.equal(content, '{"ok":true}');
-  });
+	test("writes content to target path", async () => {
+		const path = join(tmpDir, "status.json");
+		await atomicWriteJson(path, '{"ok":true}');
+		const content = await readFile(path, "utf8");
+		assert.equal(content, '{"ok":true}');
+	});
 
-  test("creates parent directories", async () => {
-    const path = join(tmpDir, "nested", "deep", "status.json");
-    await atomicWriteJson(path, "{}");
-    const content = await readFile(path, "utf8");
-    assert.equal(content, "{}");
-  });
+	test("creates parent directories", async () => {
+		const path = join(tmpDir, "nested", "deep", "status.json");
+		await atomicWriteJson(path, "{}");
+		const content = await readFile(path, "utf8");
+		assert.equal(content, "{}");
+	});
 
-  test("leaves no tmp file on success", async () => {
-    const path = join(tmpDir, "status.json");
-    await atomicWriteJson(path, "{}");
-    await assert.rejects(stat(`${path}.tmp`));
-  });
+	test("leaves no tmp file on success", async () => {
+		const path = join(tmpDir, "status.json");
+		await atomicWriteJson(path, "{}");
+		await assert.rejects(stat(`${path}.tmp`));
+	});
 
-  test("overwrites existing file", async () => {
-    const path = join(tmpDir, "status.json");
-    await atomicWriteJson(path, '"first"');
-    await atomicWriteJson(path, '"second"');
-    const content = await readFile(path, "utf8");
-    assert.equal(content, '"second"');
-  });
+	test("overwrites existing file", async () => {
+		const path = join(tmpDir, "status.json");
+		await atomicWriteJson(path, '"first"');
+		await atomicWriteJson(path, '"second"');
+		const content = await readFile(path, "utf8");
+		assert.equal(content, '"second"');
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -121,42 +121,39 @@ describe("atomicWriteJson", () => {
 // ---------------------------------------------------------------------------
 
 describe("createStatusWriter — statusFile:false", () => {
-  test("returns a writer with no-op unsubscribe", () => {
-    const s = createStore();
-    const writer = createStatusWriter(s, makeConfig({ statusFile: false }));
-    // Should not throw
-    writer.unsubscribe();
-  });
+	test("returns a writer with no-op unsubscribe", () => {
+		const s = createStore();
+		const writer = createStatusWriter(s, makeConfig({ statusFile: false }));
+		// Should not throw
+		writer.unsubscribe();
+	});
 
-  test("does not write files when statusFile is false", async () => {
-    let tmpDir: string | null = null;
-    try {
-      tmpDir = await mkdtemp(join(tmpdir(), "status-writer-noop-"));
-      const filePath = join(tmpDir, "should-not-exist.json");
-      const s = createStore();
-      const writer = createStatusWriter(
-        s,
-        makeConfig({ statusFile: false, statusFilePath: filePath }),
-      );
+	test("does not write files when statusFile is false", async () => {
+		let tmpDir: string | null = null;
+		try {
+			tmpDir = await mkdtemp(join(tmpdir(), "status-writer-noop-"));
+			const filePath = join(tmpDir, "should-not-exist.json");
+			const s = createStore();
+			const writer = createStatusWriter(s, makeConfig({ statusFile: false, statusFilePath: filePath }));
 
-      // Trigger a store update
-      s.recordRunStart({
-        id: "run-1",
-        name: "test",
-        inputs: {},
-        status: "running",
-        stages: [],
-        startedAt: Date.now(),
-      });
+			// Trigger a store update
+			s.recordRunStart({
+				id: "run-1",
+				name: "test",
+				inputs: {},
+				status: "running",
+				stages: [],
+				startedAt: Date.now(),
+			});
 
-      await sleep(50);
-      writer.unsubscribe();
+			await sleep(50);
+			writer.unsubscribe();
 
-      await assert.rejects(stat(filePath));
-    } finally {
-      if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
-    }
-  });
+			await assert.rejects(stat(filePath));
+		} finally {
+			if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -164,174 +161,170 @@ describe("createStatusWriter — statusFile:false", () => {
 // ---------------------------------------------------------------------------
 
 describe("createStatusWriter — statusFile:true", () => {
-  let tmpDir: string;
+	let tmpDir: string;
 
-  beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), "status-writer-active-"));
-  });
+	beforeEach(async () => {
+		tmpDir = await mkdtemp(join(tmpdir(), "status-writer-active-"));
+	});
 
-  afterEach(async () => {
-    await rm(tmpDir, { recursive: true, force: true });
-  });
+	afterEach(async () => {
+		await rm(tmpDir, { recursive: true, force: true });
+	});
 
-  test("creates status file on store update", async () => {
-    const filePath = join(tmpDir, "status.json");
-    const s = createStore();
-    const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
+	test("creates status file on store update", async () => {
+		const filePath = join(tmpDir, "status.json");
+		const s = createStore();
+		const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
 
-    s.recordRunStart({
-      id: "run-1",
-      name: "wf",
-      inputs: {},
-      status: "running",
-      stages: [],
-      startedAt: 1000,
-    });
+		s.recordRunStart({
+			id: "run-1",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1000,
+		});
 
-    await sleep(50);
-    writer.unsubscribe();
+		await sleep(50);
+		writer.unsubscribe();
 
-    const raw = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(raw) as { runs: Array<{ id: string }>; version: number };
-    assert.equal(parsed.runs.length, 1);
-    assert.equal(parsed.runs[0]?.id, "run-1");
-    assert.ok(parsed.version > 0);
-  });
+		const raw = await readFile(filePath, "utf8");
+		const parsed = JSON.parse(raw) as { runs: Array<{ id: string }>; version: number };
+		assert.equal(parsed.runs.length, 1);
+		assert.equal(parsed.runs[0]?.id, "run-1");
+		assert.ok(parsed.version > 0);
+	});
 
-  test("writes after each terminal state (completed/failed/killed)", async () => {
-    const filePath = join(tmpDir, "terminal.json");
-    const s = createStore();
-    const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
+	test("writes after each terminal state (completed/failed/killed)", async () => {
+		const filePath = join(tmpDir, "terminal.json");
+		const s = createStore();
+		const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
 
-    s.recordRunStart({
-      id: "r-terminal",
-      name: "wf",
-      inputs: {},
-      status: "running",
-      stages: [],
-      startedAt: Date.now(),
-    });
-    s.recordRunEnd("r-terminal", "completed", { x: 1 });
+		s.recordRunStart({
+			id: "r-terminal",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: Date.now(),
+		});
+		s.recordRunEnd("r-terminal", "completed", { x: 1 });
 
-    await sleep(50);
-    writer.unsubscribe();
+		await sleep(50);
+		writer.unsubscribe();
 
-    const parsed = JSON.parse(await readFile(filePath, "utf8")) as {
-      runs: Array<{ id: string; status: string }>;
-    };
-    assert.equal(parsed.runs[0]?.status, "completed");
-  });
+		const parsed = JSON.parse(await readFile(filePath, "utf8")) as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(parsed.runs[0]?.status, "completed");
+	});
 
-  test("does not flush after unsubscribe", async () => {
-    const filePath = join(tmpDir, "after-unsub.json");
-    const s = createStore();
-    const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
+	test("does not flush after unsubscribe", async () => {
+		const filePath = join(tmpDir, "after-unsub.json");
+		const s = createStore();
+		const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
 
-    s.recordRunStart({
-      id: "r1",
-      name: "wf",
-      inputs: {},
-      status: "running",
-      stages: [],
-      startedAt: Date.now(),
-    });
+		s.recordRunStart({
+			id: "r1",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: Date.now(),
+		});
 
-    await sleep(50);
+		await sleep(50);
 
-    // Unsubscribe BEFORE the next store update
-    writer.unsubscribe();
+		// Unsubscribe BEFORE the next store update
+		writer.unsubscribe();
 
-    const contentBefore = await readFile(filePath, "utf8");
+		const contentBefore = await readFile(filePath, "utf8");
 
-    s.recordRunEnd("r1", "failed", undefined, "oops");
+		s.recordRunEnd("r1", "failed", undefined, "oops");
 
-    await sleep(50);
+		await sleep(50);
 
-    const contentAfter = await readFile(filePath, "utf8");
-    // File should not have changed since we unsubscribed
-    assert.equal(contentAfter, contentBefore);
-  });
+		const contentAfter = await readFile(filePath, "utf8");
+		// File should not have changed since we unsubscribed
+		assert.equal(contentAfter, contentBefore);
+	});
 
-  test("adds warning notice on write error, deduplicates subsequent errors", async () => {
-    // Use an invalid path (file in place of directory) to force write errors.
-    // Create a file where the parent directory should be.
-    const blockingFile = join(tmpDir, "blocker");
-    await atomicWriteJson(blockingFile, "{}"); // create as file, not dir
-    const filePath = join(blockingFile, "status.json"); // parent is a file → ENOTDIR
+	test("adds warning notice on write error, deduplicates subsequent errors", async () => {
+		// Use an invalid path (file in place of directory) to force write errors.
+		// Create a file where the parent directory should be.
+		const blockingFile = join(tmpDir, "blocker");
+		await atomicWriteJson(blockingFile, "{}"); // create as file, not dir
+		const filePath = join(blockingFile, "status.json"); // parent is a file → ENOTDIR
 
-    const s = createStore();
-    const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
+		const s = createStore();
+		const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
 
-    // First store update — triggers write failure → 1 notice added (which triggers
-    // another write attempt — that also fails, but same error → no second notice).
-    s.recordRunStart({
-      id: "run-err",
-      name: "wf",
-      inputs: {},
-      status: "running",
-      stages: [],
-      startedAt: Date.now(),
-    });
+		// First store update — triggers write failure → 1 notice added (which triggers
+		// another write attempt — that also fails, but same error → no second notice).
+		s.recordRunStart({
+			id: "run-err",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: Date.now(),
+		});
 
-    await sleep(100);
-    writer.unsubscribe();
+		await sleep(100);
+		writer.unsubscribe();
 
-    const notices = s.notices();
-    const writerNotices = notices.filter((n) => n.message.includes("status file write failed"));
-    // Exactly one notice added (deduplication prevented more)
-    assert.equal(writerNotices.length, 1);
-    assert.equal(writerNotices[0]?.level, "warning");
-  });
+		const notices = s.notices();
+		const writerNotices = notices.filter((n) => n.message.includes("status file write failed"));
+		// Exactly one notice added (deduplication prevented more)
+		assert.equal(writerNotices.length, 1);
+		assert.equal(writerNotices[0]?.level, "warning");
+	});
 
-  test("clears error dedup on successful write", async () => {
-    const filePath = join(tmpDir, "recover.json");
-    const s = createStore();
-    const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
+	test("clears error dedup on successful write", async () => {
+		const filePath = join(tmpDir, "recover.json");
+		const s = createStore();
+		const writer = createStatusWriter(s, makeConfig({ statusFilePath: filePath }));
 
-    // Write succeeds on first run start
-    s.recordRunStart({
-      id: "r-ok",
-      name: "wf",
-      inputs: {},
-      status: "running",
-      stages: [],
-      startedAt: Date.now(),
-    });
-    await sleep(50);
+		// Write succeeds on first run start
+		s.recordRunStart({
+			id: "r-ok",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: Date.now(),
+		});
+		await sleep(50);
 
-    const raw = await readFile(filePath, "utf8");
-    assert.ok(JSON.parse(raw));
+		const raw = await readFile(filePath, "utf8");
+		assert.ok(JSON.parse(raw));
 
-    writer.unsubscribe();
-    // No error notices expected
-    assert.equal(s.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
-  });
+		writer.unsubscribe();
+		// No error notices expected
+		assert.equal(s.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
+	});
 
-  test("resolves default path relative to projectRoot", async () => {
-    // Use a real nested path under tmpDir as projectRoot
-    const projectRoot = join(tmpDir, "myproject");
-    const expectedPath = join(projectRoot, ".atomic", "workflows", "status.json");
+	test("resolves default path relative to projectRoot", async () => {
+		// Use a real nested path under tmpDir as projectRoot
+		const projectRoot = join(tmpDir, "myproject");
+		const expectedPath = join(projectRoot, ".atomic", "workflows", "status.json");
 
-    const s = createStore();
-    const writer = createStatusWriter(
-      s,
-      makeConfig({ statusFilePath: undefined }),
-      { projectRoot },
-    );
+		const s = createStore();
+		const writer = createStatusWriter(s, makeConfig({ statusFilePath: undefined }), { projectRoot });
 
-    s.recordRunStart({
-      id: "r-default",
-      name: "wf",
-      inputs: {},
-      status: "running",
-      stages: [],
-      startedAt: Date.now(),
-    });
+		s.recordRunStart({
+			id: "r-default",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: Date.now(),
+		});
 
-    await writer.flush();
-    writer.unsubscribe();
+		await writer.flush();
+		writer.unsubscribe();
 
-    const raw = await readFile(expectedPath, "utf8");
-    assert.ok(JSON.parse(raw));
-  });
+		const raw = await readFile(expectedPath, "utf8");
+		assert.ok(JSON.parse(raw));
+	});
 });

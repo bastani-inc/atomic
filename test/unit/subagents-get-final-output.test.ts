@@ -1,6 +1,6 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Message } from "@earendil-works/pi-ai/compat";
+import { describe, test } from "vitest";
 import { getFinalOutput } from "../../packages/subagents/src/shared/utils.js";
 
 function assistantContent(content: unknown[]): Message {
@@ -19,20 +19,24 @@ function toolResultContent(toolName: string, content: unknown[], isError = false
 
 describe("subagents getFinalOutput", () => {
 	test("uses the last non-empty text part in the latest assistant message", () => {
-		const messages = [assistantContent([
-			{ type: "text", text: "" },
-			{ type: "text", text: "Summary" },
-		])];
+		const messages = [
+			assistantContent([
+				{ type: "text", text: "" },
+				{ type: "text", text: "Summary" },
+			]),
+		];
 
 		assert.equal(getFinalOutput(messages), "Summary");
 	});
 
 	test("prefers final text over progress text in a multi-part assistant message", () => {
-		const messages = [assistantContent([
-			{ type: "text", text: "Working on the fix..." },
-			{ type: "thinking", thinking: "Editor shell: shell $ npm test" },
-			{ type: "text", text: "Implemented: patch applied." },
-		])];
+		const messages = [
+			assistantContent([
+				{ type: "text", text: "Working on the fix..." },
+				{ type: "thinking", thinking: "Editor shell: shell $ npm test" },
+				{ type: "text", text: "Implemented: patch applied." },
+			]),
+		];
 
 		assert.equal(getFinalOutput(messages), "Implemented: patch applied.");
 	});

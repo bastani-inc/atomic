@@ -50,10 +50,7 @@ describe("SettingsManager codexFastMode", () => {
 	});
 
 	it("merges missing nested fields from global and project settings", () => {
-		writeFileSync(
-			join(agentDir, "settings.json"),
-			JSON.stringify({ codexFastMode: { chat: true } }, null, 2),
-		);
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ codexFastMode: { chat: true } }, null, 2));
 		mkdirSync(join(cwd, ".atomic"), { recursive: true });
 		writeFileSync(
 			join(cwd, ".atomic", "settings.json"),

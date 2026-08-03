@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
-import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import { runCallback, runSynchronousCallback } from "../callback-activity.ts";
+import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 
 declare module "@earendil-works/pi-agent-core" {
 	interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
@@ -46,9 +46,14 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 			: undefined,
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate, context?: ExtensionContext) =>
-			runCallback(
-				{ kind: "tool.execute", name: definition.name, toolCallId },
-				() => definition.execute(toolCallId, params as Static<TParams>, signal, onUpdate, context ?? (ctxFactory?.() as ExtensionContext)),
+			runCallback({ kind: "tool.execute", name: definition.name, toolCallId }, () =>
+				definition.execute(
+					toolCallId,
+					params as Static<TParams>,
+					signal,
+					onUpdate,
+					context ?? (ctxFactory?.() as ExtensionContext),
+				),
 			),
 	};
 }
@@ -75,17 +80,19 @@ export function createToolDefinitionFromAgentTool<TParams extends TSchema = TSch
 		label: tool.label,
 		description: tool.description,
 		parameters: tool.parameters,
-		...(Object.hasOwn(tool, "constrainedSampling")
-			? { constrainedSampling: tool.constrainedSampling }
-			: {}),
+		...(Object.hasOwn(tool, "constrainedSampling") ? { constrainedSampling: tool.constrainedSampling } : {}),
 		promptSnippet: tool.promptSnippet,
 		promptGuidelines: tool.promptGuidelines,
 		maxResultSizeChars: tool.maxResultSizeChars,
-		prepareArguments: tool.prepareArguments
-			? (args) => tool.prepareArguments?.(args) as Static<TParams>
-			: undefined,
+		prepareArguments: tool.prepareArguments ? (args) => tool.prepareArguments?.(args) as Static<TParams> : undefined,
 		executionMode: tool.executionMode,
 		execute: async (toolCallId, params, signal, onUpdate, context) =>
-			(tool.execute as ContextualAgentExecute<TParams, TDetails>)(toolCallId, params as PiToolParams<TParams>, signal, onUpdate, context),
+			(tool.execute as ContextualAgentExecute<TParams, TDetails>)(
+				toolCallId,
+				params as PiToolParams<TParams>,
+				signal,
+				onUpdate,
+				context,
+			),
 	};
 }

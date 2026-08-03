@@ -1,19 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
+import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
-	const {
-		providerConfig,
-		writeModelsJson,
-		getModelsForProvider,
-		toShPath,
-		overrideConfig,
-		writeRawModelsJson,
-		openAiModel,
-		emptyContext,
-	} = context;
+	const { providerConfig, getModelsForProvider, overrideConfig, writeRawModelsJson } = context;
 	describe("baseUrl override (no custom models)", () => {
 		test("overriding baseUrl keeps all built-in models", async () => {
 			writeRawModelsJson({
@@ -246,5 +236,4 @@ describeModelRegistry((context) => {
 			expect(getModelsForProvider(registry, "anthropic")[0].baseUrl).toBe("https://second-proxy.example.com/v1");
 		});
 	});
-
 });

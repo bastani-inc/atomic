@@ -10,6 +10,7 @@ import {
 	atomicWorkingFrame,
 } from "../src/modes/interactive/components/atomic-working-status.ts";
 import { WorkingStatusComponent } from "../src/modes/interactive/components/working-status.ts";
+import { ansi256ToHex, fgAnsi } from "../src/modes/interactive/theme/color-utils.ts";
 import {
 	initTheme,
 	setThemeInstance,
@@ -18,14 +19,18 @@ import {
 	type ThemeColor,
 } from "../src/modes/interactive/theme/theme.ts";
 import { loadTheme, loadThemeFromContent, loadThemeJson } from "../src/modes/interactive/theme/theme-loading.ts";
-import { ansi256ToHex, fgAnsi } from "../src/modes/interactive/theme/color-utils.ts";
 import { WHIMSICAL_WORKING_MESSAGES } from "../src/modes/interactive/whimsical-messages.ts";
 
 const plain = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, "");
 const renderedContent = (loader: AtomicWorkingLoader): string => plain(loader.render(64)[1]!).trimEnd();
 const rgb = (text: string): string | undefined => {
 	const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m/.exec(text);
-	return match ? `#${match.slice(1).map((value) => Number(value).toString(16).padStart(2, "0")).join("")}` : undefined;
+	return match
+		? `#${match
+				.slice(1)
+				.map((value) => Number(value).toString(16).padStart(2, "0"))
+				.join("")}`
+		: undefined;
 };
 const indexed = (text: string): number | undefined => {
 	const match = /\u001b\[38;5;(\d+)m/.exec(text);
@@ -33,17 +38,24 @@ const indexed = (text: string): number | undefined => {
 };
 
 const luminance = (hex: string): number => {
-	const channels = hex.slice(1).match(/../g)?.map((value) => Number.parseInt(value, 16) / 255);
-	if (!channels || channels.length !== 3) throw new Error(`Invalid hex color: ${hex}`);
-	const [red, green, blue] = channels.map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+	const channels = hex
+		.slice(1)
+		.match(/../g)
+		?.map((value) => Number.parseInt(value, 16) / 255);
+	if (channels?.length !== 3) throw new Error(`Invalid hex color: ${hex}`);
+	const [red, green, blue] = channels.map((value) =>
+		value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
+	);
 	return 0.2126 * red! + 0.7152 * green! + 0.0722 * blue!;
 };
 
 const contrastRatio = (foreground: string, background: string): number => {
 	const foregroundLuminance = luminance(foreground);
 	const backgroundLuminance = luminance(background);
-	return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
-		/ (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+	return (
+		(Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+		(Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+	);
 };
 
 const quantizedHex = (hex: string): string => {
@@ -77,23 +89,37 @@ describe("Atomic working status", () => {
 	it("keeps exact literal one-cell identity through the approved ten-phase ramp", () => {
 		expect(ATOMIC_WORKING_FRAMES).toEqual(Array(10).fill("∀"));
 		expect(ATOMIC_WORKING_FRAMES.map(visibleWidth)).toEqual(Array(10).fill(1));
-		expect(ATOMIC_WORKING_BOLD_PHASES).toEqual([
-			false, false, false, false, true, true, true, false, false, false,
-		]);
+		expect(ATOMIC_WORKING_BOLD_PHASES).toEqual([false, false, false, false, true, true, true, false, false, false]);
 		expect(ATOMIC_WORKING_PHASES).toEqual([
-			"dark", "lift", "muted", "accent", "bright",
-			"peak", "bright", "accent", "muted", "lift",
+			"dark",
+			"lift",
+			"muted",
+			"accent",
+			"bright",
+			"peak",
+			"bright",
+			"accent",
+			"muted",
+			"lift",
 		]);
 	});
 
 	it("interpolates a custom theme dark to accent to bright and back with a bold peak", () => {
 		setThemeInstance(customTheme());
-		const rendered = ATOMIC_WORKING_FRAMES.map((_, frame) =>
-			new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!,
+		const rendered = ATOMIC_WORKING_FRAMES.map(
+			(_, frame) => new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!,
 		);
 		expect(rendered.map(rgb)).toEqual([
-			"#101010", "#1c2c3c", "#2d537a", "#4080c0", "#a1beda",
-			"#f0f0f0", "#a1beda", "#4080c0", "#2d537a", "#1c2c3c",
+			"#101010",
+			"#1c2c3c",
+			"#2d537a",
+			"#4080c0",
+			"#a1beda",
+			"#f0f0f0",
+			"#a1beda",
+			"#4080c0",
+			"#2d537a",
+			"#1c2c3c",
 		]);
 		expect(rendered.map((line) => plain(line).trimEnd())).toEqual(Array(10).fill(" ∀ Working..."));
 		expect(rendered.map((line) => line.includes("\u001b[1m"))).toEqual(ATOMIC_WORKING_BOLD_PHASES);
@@ -105,16 +131,28 @@ describe("Atomic working status", () => {
 			rgb(new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!),
 		);
 		expect(colors).toEqual([
-			"#70759f", "#7f849c", "#789bd0", "#89b4fa", "#b8d2ff",
-			"#eef4ff", "#b8d2ff", "#89b4fa", "#789bd0", "#7f849c",
+			"#70759f",
+			"#7f849c",
+			"#789bd0",
+			"#89b4fa",
+			"#b8d2ff",
+			"#eef4ff",
+			"#b8d2ff",
+			"#89b4fa",
+			"#789bd0",
+			"#7f849c",
 		]);
 	});
 
 	it("reads a supplied caller palette lazily on every render", () => {
 		setThemeInstance(loadTheme("dark", "truecolor"));
 		let palette = {
-			dark: "#101010", lift: "#202020", muted: "#303030",
-			accent: "#4080c0", bright: "#a0c0e0", peak: "#f0f0f0",
+			dark: "#101010",
+			lift: "#202020",
+			muted: "#303030",
+			accent: "#4080c0",
+			bright: "#a0c0e0",
+			peak: "#f0f0f0",
 		};
 		const component = new AtomicWorkingStatusComponent({ frame: 0, palette: () => palette });
 		expect(rgb(component.render(64)[1]!)).toBe("#101010");
@@ -125,8 +163,12 @@ describe("Atomic working status", () => {
 	it("quantizes caller-supplied workflow palettes to the detected 256-color mode", () => {
 		setThemeInstance(loadTheme("dark", "256color"));
 		const palette = {
-			dark: "#45475a", lift: "#6c7086", muted: "#789bd0",
-			accent: "#89b4fa", bright: "#b8d2ff", peak: "#eef4ff",
+			dark: "#45475a",
+			lift: "#6c7086",
+			muted: "#789bd0",
+			accent: "#89b4fa",
+			bright: "#b8d2ff",
+			peak: "#eef4ff",
 		};
 		const rendered = new AtomicWorkingStatusComponent({ frame: 0, palette, messageColor: String }).render(64)[1]!;
 		expect(indexed(rendered)).toBe(59);
@@ -154,10 +196,12 @@ describe("Atomic working status", () => {
 		};
 		setThemeInstance(loadThemeFromContent("indexed-spinner.json", JSON.stringify(source), "256color"));
 		const expected = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2];
-		const rendered = ATOMIC_WORKING_FRAMES.map((_, frame) =>
-			new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!,
+		const rendered = ATOMIC_WORKING_FRAMES.map(
+			(_, frame) => new AtomicWorkingStatusComponent({ frame, messageColor: String }).render(64)[1]!,
 		);
-		expect(rendered.map((line, index) => line.includes(`\u001b[38;5;${expected[index]}m∀`))).toEqual(Array(10).fill(true));
+		expect(rendered.map((line, index) => line.includes(`\u001b[38;5;${expected[index]}m∀`))).toEqual(
+			Array(10).fill(true),
+		);
 	});
 
 	it("derives omitted tones from standard ANSI indices while preserving explicit indices", () => {
@@ -197,7 +241,11 @@ describe("Atomic working status", () => {
 		});
 		expect(quantized).toEqual(["#5f87af", "#8787af", "#8787d7", "#87afff", "#afd7ff", "#ffffff"]);
 
-		for (const [colors, phaseBackground] of [[truecolor, background], [quantized, background], [quantized, quantizedHex(background)]] as const) {
+		for (const [colors, phaseBackground] of [
+			[truecolor, background],
+			[quantized, background],
+			[quantized, quantizedHex(background)],
+		] as const) {
 			const ratios = colors.map((color) => contrastRatio(color, phaseBackground));
 			expect(ratios.every((ratio) => ratio >= 3)).toBe(true);
 			expect(ratios.slice(1).every((ratio, index) => ratio > ratios[index]!)).toBe(true);
@@ -246,10 +294,13 @@ describe("Atomic working status", () => {
 	it("renders one identity cell and keeps every randomized message in 64 columns", () => {
 		expect(WHIMSICAL_WORKING_MESSAGES).toHaveLength(453);
 		const longest = WHIMSICAL_WORKING_MESSAGES.reduce((current, message) =>
-			visibleWidth(message) > visibleWidth(current) ? message : current);
+			visibleWidth(message) > visibleWidth(current) ? message : current,
+		);
 		expect(longest).toBe("Archeologically analyzing the architecture...");
 		for (const message of WHIMSICAL_WORKING_MESSAGES) {
-			const lines = new AtomicWorkingStatusComponent({ frame: 5, message, messageColor: String }).render(64).map(plain);
+			const lines = new AtomicWorkingStatusComponent({ frame: 5, message, messageColor: String })
+				.render(64)
+				.map(plain);
 			expect(lines).toHaveLength(2);
 			expect(lines[1]!.trimEnd()).toBe(` ∀ ${message}`);
 			expect(lines[1]!.match(/∀/g)).toEqual(["∀"]);
@@ -310,8 +361,8 @@ describe("Atomic working status", () => {
 
 	it("keeps regular/bold activity under NO_COLOR without foreground escapes", () => {
 		process.env.NO_COLOR = "";
-		const rendered = ATOMIC_WORKING_FRAMES.map((_, frame) =>
-			new AtomicWorkingStatusComponent({ frame }).render(64)[1]!,
+		const rendered = ATOMIC_WORKING_FRAMES.map(
+			(_, frame) => new AtomicWorkingStatusComponent({ frame }).render(64)[1]!,
 		);
 		expect(rendered.every((line) => !line.includes("\u001b[38;"))).toBe(true);
 		expect(rendered.every((line) => plain(line).trimEnd() === " ∀ Working...")).toBe(true);

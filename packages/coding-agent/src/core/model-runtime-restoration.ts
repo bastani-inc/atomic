@@ -13,10 +13,12 @@ function hasOpenAICompatibleModel(
 	models: readonly ConfiguredModel[] | undefined,
 	defaultApi: Api | undefined,
 ): boolean {
-	return models?.some((model) => {
-		const api = model.api ?? defaultApi;
-		return api !== undefined && OPENAI_COMPATIBLE_APIS.has(api);
-	}) === true;
+	return (
+		models?.some((model) => {
+			const api = model.api ?? defaultApi;
+			return api !== undefined && OPENAI_COMPATIBLE_APIS.has(api);
+		}) === true
+	);
 }
 
 /** Whether an authenticated provider may reconstruct an absent saved model ID. */

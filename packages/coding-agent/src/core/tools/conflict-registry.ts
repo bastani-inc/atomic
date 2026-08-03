@@ -12,14 +12,20 @@ export interface ConflictBlock {
 const conflictRegistry = new Map<string, ConflictBlock[]>();
 
 export function parseConflictBlocks(file: string, text: string): ConflictBlock[] {
-	const lines = text.split("\n"), blocks: ConflictBlock[] = [];
+	const lines = text.split("\n"),
+		blocks: ConflictBlock[] = [];
 	for (let index = 0; index < lines.length; index++) {
 		if (!lines[index]?.startsWith("<<<<<<<")) continue;
-		let baseSep: number | undefined, sep = -1, end = -1;
+		let baseSep: number | undefined,
+			sep = -1,
+			end = -1;
 		for (let cursor = index + 1; cursor < lines.length; cursor++) {
 			if (lines[cursor]?.startsWith("|||||||")) baseSep = cursor;
 			else if (lines[cursor]?.startsWith("=======")) sep = cursor;
-			else if (lines[cursor]?.startsWith(">>>>>>>")) { end = cursor; break; }
+			else if (lines[cursor]?.startsWith(">>>>>>>")) {
+				end = cursor;
+				break;
+			}
 		}
 		if (sep < 0 || end < 0) continue;
 		blocks.push({

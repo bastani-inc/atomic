@@ -6,21 +6,8 @@
  * stays focused.
  */
 
-import type {
-	Agent,
-	AgentTool,
-	ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+import type { Agent, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
-import type { VerbatimCompactionResult } from "./compaction/index.ts";
-import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
-import type { ResourceLoader } from "./resource-loader.ts";
-import type { SessionManager } from "./session-manager.js";
-import type { SettingsManager } from "./settings-manager.ts";
-import type { BuildSystemPromptOptions } from "./system-prompt.ts";
-import type { AsyncJobManager } from "./async/job-manager.js";
-import { createSessionAsyncJobManager } from "./async/session-manager.js";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
 import { agentSessionBashMethods } from "./agent-session-bash.ts";
@@ -29,24 +16,26 @@ import { agentSessionCustomMessageCommitMethods } from "./agent-session-custom-m
 import { agentSessionEventsMethods } from "./agent-session-events.ts";
 import { agentSessionExportMethods } from "./agent-session-export.ts";
 import { agentSessionExtensionBindingsMethods } from "./agent-session-extension-bindings.ts";
-import type { AgentSessionInternalSurface, AgentSessionPublicSurface } from "./agent-session-methods.ts";
 import { agentSessionMessageQueueMethods } from "./agent-session-message-queue.ts";
+import type { AgentSessionInternalSurface, AgentSessionPublicSurface } from "./agent-session-methods.ts";
 import { agentSessionModelsMethods } from "./agent-session-models.ts";
-import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
-import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool-compaction.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
+import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool-compaction.ts";
+import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
 import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
-import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 import type {
 	AgentSessionConfig,
 	AgentSessionEventListener,
 	InterruptQueueHold,
 	ToolDefinitionEntry,
 } from "./agent-session-types.ts";
+import type { AsyncJobManager } from "./async/job-manager.js";
+import { createSessionAsyncJobManager } from "./async/session-manager.js";
+import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ExtensionCommandContextActions,
 	ExtensionErrorListener,
@@ -57,20 +46,28 @@ import type {
 	SessionStartEvent,
 	ToolDefinition,
 } from "./extensions/index.ts";
+import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
+import type { ResourceLoader } from "./resource-loader.ts";
+import type { SessionManager } from "./session-manager.js";
+import type { SettingsManager } from "./settings-manager.ts";
+import type { BuildSystemPromptOptions } from "./system-prompt.ts";
+import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 
+export type { ParsedSkillBlock } from "./agent-session-skill-block.ts";
+export { parseSkillBlock } from "./agent-session-skill-block.ts";
 export type {
 	AgentSessionConfig,
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	CompactionReason,
 	ExtensionBindings,
 	ModelCycleResult,
 	PromptOptions,
 	SessionStats,
 } from "./agent-session-types.ts";
-export { parseSkillBlock } from "./agent-session-skill-block.ts";
-export type { ParsedSkillBlock } from "./agent-session-skill-block.ts";
 
-export class AgentSession {
+class AgentSessionBase {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settingsManager: SettingsManager;
@@ -97,6 +94,7 @@ export class AgentSession {
 		phase: "queued" | "consumed-unpersisted" | "persistence-failed";
 	}> = [];
 	protected _compactionAbortController: AbortController | undefined = undefined;
+	protected _compactionReason: import("./agent-session-types.ts").CompactionReason | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
@@ -162,13 +160,20 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;
-		const stageContext = config.orchestrationContext?.kind === "workflow-stage"
-			? config.orchestrationContext
-			: undefined;
-		this._workflowStageAdmission = stageContext?.messageAdmission?.boundary
-			?? (stageContext ? new WorkflowStageAdmissionBoundary() : undefined);
+		const stageContext =
+			config.orchestrationContext?.kind === "workflow-stage" ? config.orchestrationContext : undefined;
+		this._workflowStageAdmission =
+			stageContext?.messageAdmission?.boundary ?? (stageContext ? new WorkflowStageAdmissionBoundary() : undefined);
 		if (this._workflowStageAdmission && stageContext && stageContext.messageAdmission === undefined) {
-			(stageContext as { messageAdmission?: { boundary: WorkflowStageAdmissionBoundary; extensionState: Map<string, object>; isOpen(): boolean } }).messageAdmission = {
+			(
+				stageContext as {
+					messageAdmission?: {
+						boundary: WorkflowStageAdmissionBoundary;
+						extensionState: Map<string, object>;
+						isOpen(): boolean;
+					};
+				}
+			).messageAdmission = {
 				boundary: this._workflowStageAdmission,
 				extensionState: new Map(),
 				isOpen: () => this._workflowStageAdmission?.isOpen() === true,
@@ -189,7 +194,12 @@ export class AgentSession {
 	}
 }
 
-export interface AgentSession extends AgentSessionPublicSurface {}
+export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {}
+
+export const AgentSession = AgentSessionBase as unknown as {
+	new (config: AgentSessionConfig): AgentSession;
+	readonly prototype: AgentSession;
+};
 
 installAgentSessionAccessors(AgentSession.prototype as unknown as AgentSessionInternalSurface);
 Object.assign(

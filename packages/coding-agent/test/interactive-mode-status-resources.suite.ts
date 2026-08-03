@@ -3,8 +3,12 @@ import * as path from "node:path";
 import { beforeAll, describe, expect, test } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { normalizeRenderedOutput, renderAll, type ExtensionFixture } from "./interactive-mode-status-helpers.ts";
-import { createExtensionFixtures, createShowLoadedResourcesThis, createSourceInfo } from "./interactive-mode-status-resources-helpers.ts";
+import { type ExtensionFixture, normalizeRenderedOutput, renderAll } from "./interactive-mode-status-helpers.ts";
+import {
+	createExtensionFixtures,
+	createShowLoadedResourcesThis,
+	createSourceInfo,
+} from "./interactive-mode-status-resources-helpers.ts";
 
 describe("InteractiveMode.showLoadedResources", () => {
 	beforeAll(() => {
@@ -93,7 +97,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 8 extensions"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 8 extensions"`,
+		);
 	});
 
 	test("adds more parent folders until local extension labels are unique", () => {
@@ -137,7 +143,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 3 extensions"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 3 extensions"`,
+		);
 	});
 
 	test("strips index.ts from local extension label, showing parent dir", () => {
@@ -163,7 +171,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 1 extension"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 1 extension"`,
+		);
 	});
 
 	test("strips index.js from local extension label, showing parent dir", () => {
@@ -189,7 +199,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 1 extension"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 1 extension"`,
+		);
 	});
 
 	test("mixed single-file and subdirectory index.ts extensions strip index.ts", () => {
@@ -224,7 +236,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 2 extensions"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 2 extensions"`,
+		);
 	});
 
 	test("multiple index.ts with unique parent dirs need no disambiguation", () => {
@@ -259,7 +273,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 2 extensions"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 2 extensions"`,
+		);
 	});
 
 	test("multiple index.ts with same parent dir name disambiguated with grandparent", () => {
@@ -294,7 +310,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 2 extensions"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 2 extensions"`,
+		);
 	});
 
 	test("non-index file in subdirectory stays as filename", () => {
@@ -320,7 +338,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 1 extension"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 1 extension"`,
+		);
 	});
 
 	test("package extensions still strip index.ts correctly (regression guard)", () => {
@@ -346,7 +366,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			force: false,
 		});
 
-		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(`"RESOURCES context ready · 1 extension"`);
+		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toMatchInlineSnapshot(
+			`"RESOURCES context ready · 1 extension"`,
+		);
 	});
 	test("captures mixed extension layouts in expanded output", () => {
 		const fakeThis = createShowLoadedResourcesThis({
@@ -388,6 +410,22 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).not.toContain(`${cwd.replace(/\\/g, "/")}/AGENTS.md`);
 		// compact summary only: no expanded detail rows
 		expect(output).not.toContain("available");
+	});
+
+	test("lists system prompt sources before project context files", () => {
+		const cwd = path.join(homedir(), "Development", "pi-mono");
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			cwd,
+			systemPromptSource: { path: path.join(cwd, ".atomic", "SYSTEM.md") },
+			appendSystemPromptSources: [{ path: path.join(cwd, ".atomic", "APPEND_SYSTEM.md") }],
+			contextFiles: [{ path: path.join(cwd, "AGENTS.md") }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+
+		const output = renderAll(fakeThis.chatContainer).replace(/\\/g, "/");
+		expect(output).toContain(".atomic/SYSTEM.md, .atomic/APPEND_SYSTEM.md, AGENTS.md");
 	});
 
 	test("shows full context paths when expanded", () => {
@@ -484,7 +522,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 		const noticePrefix = "Extension overlap detected:";
 		expect(output.split(noticePrefix)).toHaveLength(2);
 		expect(output).toContain("`pi-subagents` provides resources already bundled with Atomic.");
-		expect(output).toContain("Atomic kept its bundled versions; non-conflicting extension features remain available.");
+		expect(output).toContain(
+			"Atomic kept its bundled versions; non-conflicting extension features remain available.",
+		);
 		expect(output).not.toContain("[Prompt conflicts]");
 		expect(output).not.toContain("[Extension issues]");
 	});

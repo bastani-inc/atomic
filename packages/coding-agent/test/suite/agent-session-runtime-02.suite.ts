@@ -11,20 +11,8 @@ import {
 } from "../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
-import type {
-	ExtensionAPI,
-	ExtensionFactory,
-	SessionBeforeForkEvent,
-	SessionBeforeSwitchEvent,
-	SessionShutdownEvent,
-	SessionStartEvent,
-} from "../../src/index.ts";
+import type { ExtensionAPI, ExtensionFactory } from "../../src/index.ts";
 
-type RecordedSessionEvent =
-	| SessionBeforeSwitchEvent
-	| SessionBeforeForkEvent
-	| SessionShutdownEvent
-	| SessionStartEvent;
 describe("AgentSessionRuntime characterization", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
 

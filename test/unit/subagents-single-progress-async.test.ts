@@ -1,9 +1,9 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@bastani/atomic";
+import { test } from "vitest";
 import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { executeAsyncSingle } from "../../packages/subagents/src/runs/background/async-execution-single.js";

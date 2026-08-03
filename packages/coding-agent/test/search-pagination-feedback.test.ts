@@ -23,9 +23,12 @@ afterEach(async () => {
 describe("search pagination feedback", () => {
 	it("emits one continuation hint when the first page is full", async () => {
 		const dir = await tempDir();
-		for (let i = 0; i < 25; i++) await writeFile(join(dir, `file-${String(i).padStart(2, "0")}.txt`), "needle\n", "utf8");
+		for (let i = 0; i < 25; i++)
+			await writeFile(join(dir, `file-${String(i).padStart(2, "0")}.txt`), "needle\n", "utf8");
 		const search = createSearchToolDefinition(dir);
-		const output = text(await search.execute("search-page", { pattern: "needle", paths: "." }, undefined, undefined, {} as never));
+		const output = text(
+			await search.execute("search-page", { pattern: "needle", paths: "." }, undefined, undefined, {} as never),
+		);
 		const hints = output.match(/\[20 matching files shown\. Use skip=20 to view more\.\]/g) ?? [];
 		expect(hints).toHaveLength(1);
 	});
@@ -34,9 +37,19 @@ describe("search pagination feedback", () => {
 		const dir = await tempDir();
 		const filesDir = join(dir, "many");
 		await mkdir(filesDir);
-		await Promise.all(Array.from({ length: 2005 }, (_, i) => writeFile(join(filesDir, `file-${String(i).padStart(4, "0")}.txt`), "needle\n", "utf8")));
+		await Promise.all(
+			Array.from({ length: 2005 }, (_, i) =>
+				writeFile(join(filesDir, `file-${String(i).padStart(4, "0")}.txt`), "needle\n", "utf8"),
+			),
+		);
 		const search = createSearchToolDefinition(dir);
-		const result = await search.execute("search-cap", { pattern: "needle", paths: "many", skip: 2000 }, undefined, undefined, {} as never);
+		const result = await search.execute(
+			"search-cap",
+			{ pattern: "needle", paths: "many", skip: 2000 },
+			undefined,
+			undefined,
+			{} as never,
+		);
 		const output = text(result);
 		expect(output).toContain("No more results (skip=2000)");
 		expect(output).toContain("Search collected the first 2000 matches before pagination");
@@ -45,10 +58,20 @@ describe("search pagination feedback", () => {
 
 	it("counts per-file search output caps by matches instead of context lines", async () => {
 		const dir = await tempDir();
-		const content = Array.from({ length: 6 }, (_, index) => [`before ${index}`, `needle ${index}`, `after ${index}a`, `after ${index}b`, `after ${index}c`].join("\n")).join("\n");
+		const content = Array.from({ length: 6 }, (_, index) =>
+			[`before ${index}`, `needle ${index}`, `after ${index}a`, `after ${index}b`, `after ${index}c`].join("\n"),
+		).join("\n");
 		await writeFile(join(dir, "many-matches.txt"), `${content}\n`, "utf8");
 		const search = createSearchToolDefinition(dir);
-		const output = text(await search.execute("search-context-lines", { pattern: "needle", paths: "." }, undefined, undefined, {} as never));
+		const output = text(
+			await search.execute(
+				"search-context-lines",
+				{ pattern: "needle", paths: "." },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		);
 		expect(output).toContain("needle 5");
 	});
 
@@ -56,7 +79,15 @@ describe("search pagination feedback", () => {
 		const dir = await tempDir();
 		await writeFile(join(dir, "one.txt"), "needle\n", "utf8");
 		const search = createSearchToolDefinition(dir);
-		const output = text(await search.execute("single-skip", { pattern: "needle", paths: "one.txt", skip: 20 }, undefined, undefined, {} as never));
+		const output = text(
+			await search.execute(
+				"single-skip",
+				{ pattern: "needle", paths: "one.txt", skip: 20 },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		);
 		expect(output).toContain("skip is ignored for single-file search");
 	});
 });

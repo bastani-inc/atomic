@@ -4,8 +4,8 @@
  * Shows how to select a specific model and thinking level.
  */
 
-import { getModel } from "@earendil-works/pi-ai/compat";
 import { createAgentSession, ModelRuntime } from "@bastani/atomic";
+import { getModel } from "@earendil-works/pi-ai/compat";
 
 // ModelRuntime owns credential resolution and built-in/custom model discovery.
 const modelRuntime = await ModelRuntime.create();

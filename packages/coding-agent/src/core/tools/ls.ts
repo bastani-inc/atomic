@@ -81,7 +81,8 @@ function formatLsResult(
 		const remaining = lines.length - maxLines;
 		text += `\n${displayLines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 		if (remaining > 0) {
-			text += theme.fg("muted", "\n... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${remaining} more lines`);
+			text +=
+				theme.fg("muted", "\n... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${remaining} more lines`);
 		}
 	}
 

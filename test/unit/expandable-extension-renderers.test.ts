@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings, type KeyId } from "@earendil-works/pi-tui";
+import { getKeybindings, type KeyId, setKeybindings } from "@earendil-works/pi-tui";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
@@ -10,24 +10,32 @@ import { renderWebSearchResult } from "../../packages/web-access/result-renderer
 const originalKeybindings = getKeybindings();
 
 function installExpandBinding(binding?: KeyId | KeyId[]): void {
-	setKeybindings(binding === undefined
-		? new KeybindingsManager()
-		: new KeybindingsManager({ "app.tools.expand": binding }));
+	setKeybindings(
+		binding === undefined ? new KeybindingsManager() : new KeybindingsManager({ "app.tools.expand": binding }),
+	);
 }
 
 function renderNotification(): string {
-	const component = renderSubagentNotification({
-		content: "",
-		details: { agent: "scout", status: "completed", resultPreview: "one\ntwo" },
-	}, { expanded: false }, theme);
+	const component = renderSubagentNotification(
+		{
+			content: "",
+			details: { agent: "scout", status: "completed", resultPreview: "one\ntwo" },
+		},
+		{ expanded: false },
+		theme,
+	);
 	return stripAnsi(component.render(100).join("\n"));
 }
 
 function renderWebSearch(): string {
-	const component = renderWebSearchResult({
-		content: [{ type: "text", text: "one\ntwo\nthree\nfour" }],
-		details: { queryCount: 1, successfulQueries: 1, totalResults: 4 },
-	}, { expanded: false, isPartial: false }, theme);
+	const component = renderWebSearchResult(
+		{
+			content: [{ type: "text", text: "one\ntwo\nthree\nfour" }],
+			details: { queryCount: 1, successfulQueries: 1, totalResults: 4 },
+		},
+		{ expanded: false, isPartial: false },
+		theme,
+	);
 	return stripAnsi(component.render(100).join("\n"));
 }
 
@@ -53,7 +61,7 @@ describe("subagent notification expand affordance", () => {
 		installExpandBinding([]);
 		const rendered = renderNotification();
 		assert.match(rendered, /✓ scout completed/);
-		assert.match(rendered, /⎿  one/);
+		assert.match(rendered, /⎿ {2}one/);
 		assert.doesNotMatch(rendered, /full notification|ctrl\+o|\(\s*\)/);
 	});
 });

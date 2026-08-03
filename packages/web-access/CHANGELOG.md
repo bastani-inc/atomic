@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-08-03
+
+### Fixed
+
+- Fixed PDF extraction dropping text and streaming `TypeError: Math.sumPrecise is not a function` on Node runtimes without `Math.sumPrecise`. `unpdf` is now exact-pinned to `1.7.0` — the newest release that still ships the guarded fallback — instead of floating to 1.8.0, and that upgrade also adds `cMapUrl` CJK font support, releases document proxies and canvas resources, and preserves line breaks in `extractText` ([#2141](https://github.com/bastani-inc/atomic/issues/2141)).
+- Fixed retained GitHub README truncations by copying bounded text into flat strings before storing long-lived results ([#2151](https://github.com/bastani-inc/atomic/issues/2151)).
+
+## [0.9.11-alpha.12] - 2026-08-03
+
+### Fixed
+
+- Fixed PDF extraction dropping text and streaming `TypeError: Math.sumPrecise is not a function` warnings on Node runtimes that do not implement `Math.sumPrecise`. The `unpdf` dependency was declared as the floating range `^1.6.2`, which resolves to 1.8.0 in a published or global install; that release's bundled PDF.js v6.1 dropped the guarded fallback and calls the builtin unconditionally, so extraction threw per glyph, emitted font-substitution warnings, and silently returned fewer text items. On the reported 17-page arXiv PDF this cost 69 text items and 221 characters. `unpdf` is now exact-pinned to `1.7.0`, the newest release that still ships the fallback, so no install can float to 1.8.0 ([#2141](https://github.com/bastani-inc/atomic/issues/2141)).
+- Upgraded the pinned `unpdf` from 1.6.2 to 1.7.0, which adds `cMapUrl` CJK font support under Node, destroys internally created document proxies and canvas resources, and preserves line breaks in `extractText` with `mergePages`.
+
+## [0.9.11-alpha.11] - 2026-08-03
+
+### Fixed
+
+- Fixed retained GitHub README truncations by copying bounded text into flat strings before storing long-lived results ([#2151](https://github.com/bastani-inc/atomic/issues/2151)).
+
 ## [0.9.11-alpha.1] - 2026-07-20
 
 ### Changed

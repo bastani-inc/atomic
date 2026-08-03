@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import type { Message } from "../../packages/intercom/types.js";
+import { sleep } from "../helpers/runtime.js";
 
 function reply(replyTo: string, text = "answer"): Message {
 	return { id: `reply-${replyTo}`, timestamp: Date.now(), replyTo, content: { text } };
@@ -113,7 +114,7 @@ describe("ReplyWaiterSlot admission", () => {
 		assert.ok(admission.ok);
 		// Reject while the owner is "between awaits" and never awaits afterwards.
 		admission.wait.cancel(new Error("delivery failed"));
-		await Bun.sleep(5);
+		await sleep(5);
 		assert.deepEqual(unhandledRejections, []);
 	});
 });

@@ -7,7 +7,7 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { createBashTool, type BashOperations } from "../src/core/tools/bash.ts";
+import { type BashOperations, createBashTool } from "../src/core/tools/bash.ts";
 
 const roots: string[] = [];
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -15,7 +15,8 @@ const switchedModel = getModel("openai", "gpt-4o")!;
 
 function makeRoot(): { root: string; cwd: string; agentDir: string } {
 	const root = join(tmpdir(), `atomic-bash-session-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-	const cwd = join(root, "project"), agentDir = join(root, "custom-agent");
+	const cwd = join(root, "project"),
+		agentDir = join(root, "custom-agent");
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
 	roots.push(root);
@@ -23,24 +24,38 @@ function makeRoot(): { root: string; cwd: string; agentDir: string } {
 }
 
 function text(result: Awaited<ReturnType<ReturnType<typeof createBashTool>["execute"]>>): string {
-	return result.content.filter((item) => item.type === "text").map((item) => item.text).join("");
+	return result.content
+		.filter((item) => item.type === "text")
+		.map((item) => item.text)
+		.join("");
 }
 
-const printSessionEnvironment = "printf '%s\\n' \"$ATOMIC_SESSION_ID\" \"$PI_SESSION_ID\" \"$ATOMIC_SESSION_FILE\" \"$PI_SESSION_FILE\" \"$ATOMIC_PROVIDER\" \"$PI_PROVIDER\" \"$ATOMIC_MODEL\" \"$PI_MODEL\" \"$ATOMIC_REASONING_LEVEL\" \"$PI_REASONING_LEVEL\"";
+const printSessionEnvironment =
+	'printf \'%s\\n\' "$ATOMIC_SESSION_ID" "$PI_SESSION_ID" "$ATOMIC_SESSION_FILE" "$PI_SESSION_FILE" "$ATOMIC_PROVIDER" "$PI_PROVIDER" "$ATOMIC_MODEL" "$PI_MODEL" "$ATOMIC_REASONING_LEVEL" "$PI_REASONING_LEVEL"';
 
 async function createSession(options: { persisted?: boolean; stage?: string } = {}) {
 	const { cwd, agentDir } = makeRoot();
-	const sessionManager = options.persisted === false
-		? SessionManager.inMemory(cwd)
-		: SessionManager.create(cwd, join(agentDir, "sessions"));
-	const orchestrationContext = options.stage ? {
-		kind: "workflow-stage" as const,
-		workflowRunId: "run-metadata",
-		workflowStageId: options.stage,
-		workflowStageName: options.stage,
-		constraints: { disableWorkflowTool: true as const, maxSubagentDepth: 2 },
-	} : undefined;
-	const result = await createAgentSession({ cwd, agentDir, model, thinkingLevel: "high", sessionManager, orchestrationContext });
+	const sessionManager =
+		options.persisted === false
+			? SessionManager.inMemory(cwd)
+			: SessionManager.create(cwd, join(agentDir, "sessions"));
+	const orchestrationContext = options.stage
+		? {
+				kind: "workflow-stage" as const,
+				workflowRunId: "run-metadata",
+				workflowStageId: options.stage,
+				workflowStageName: options.stage,
+				constraints: { disableWorkflowTool: true as const, maxSubagentDepth: 2 },
+			}
+		: undefined;
+	const result = await createAgentSession({
+		cwd,
+		agentDir,
+		model,
+		thinkingLevel: "high",
+		sessionManager,
+		orchestrationContext,
+	});
 	return { ...result, cwd, agentDir };
 }
 
@@ -62,13 +77,25 @@ describe("session-aware bash environment", () => {
 	it("exposes equal Atomic and PI aliases from the current persisted session", async () => {
 		const { session } = await createSession();
 		const bash = session.agent.state.tools.find((tool) => tool.name === "bash")!;
-		const lines = text(await bash.execute("metadata", { command: printSessionEnvironment })).trim().split("\n");
+		const lines = text(await bash.execute("metadata", { command: printSessionEnvironment }))
+			.trim()
+			.split("\n");
 		expect(lines).toEqual([
-			session.sessionId, session.sessionId, session.sessionFile, session.sessionFile,
-			model.provider, model.provider, model.id, model.id, "high", "high",
+			session.sessionId,
+			session.sessionId,
+			session.sessionFile,
+			session.sessionFile,
+			model.provider,
+			model.provider,
+			model.id,
+			model.id,
+			"high",
+			"high",
 		]);
 		session.setThinkingLevel("low");
-		const refreshed = text(await bash.execute("metadata-2", { command: printSessionEnvironment })).trim().split("\n");
+		const refreshed = text(await bash.execute("metadata-2", { command: printSessionEnvironment }))
+			.trim()
+			.split("\n");
 		expect(refreshed.slice(-2)).toEqual(["low", "low"]);
 		session.dispose();
 	});
@@ -80,14 +107,18 @@ describe("session-aware bash environment", () => {
 		try {
 			const { session } = await createSession({ persisted: false });
 			const bash = session.agent.state.tools.find((tool) => tool.name === "bash")!;
-			const command = "printf '%s\\n' \"${ATOMIC_SESSION_FILE-unset}\" \"${PI_SESSION_FILE-unset}\" \"$ATOMIC_PROVIDER\" \"$PI_PROVIDER\"";
-			const lines = text(await bash.execute("unsaved", { command })).trim().split("\n");
+			const shellExpansionStart = "${";
+			const command = `printf '%s\\n' "${shellExpansionStart}ATOMIC_SESSION_FILE-unset}" "${shellExpansionStart}PI_SESSION_FILE-unset}" "$ATOMIC_PROVIDER" "$PI_PROVIDER"`;
+			const lines = text(await bash.execute("unsaved", { command }))
+				.trim()
+				.split("\n");
 			expect(lines).toEqual(["unset", "unset", model.provider, model.provider]);
 			session.dispose();
 		} finally {
 			for (const key of stale) {
 				const value = previous[key];
-				if (value === undefined) delete process.env[key]; else process.env[key] = value;
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
 			}
 		}
 	});
@@ -98,9 +129,17 @@ describe("session-aware bash environment", () => {
 		const sessionFile = created.getSessionFile();
 		if (!sessionFile) throw new Error("persisted session fixture did not create a file");
 		const resumed = SessionManager.open(sessionFile, join(agentDir, "sessions"));
-		const { session } = await createAgentSession({ cwd, agentDir, model, thinkingLevel: "medium", sessionManager: resumed });
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			thinkingLevel: "medium",
+			sessionManager: resumed,
+		});
 		const bash = session.agent.state.tools.find((tool) => tool.name === "bash")!;
-		const lines = text(await bash.execute("resumed", { command: printSessionEnvironment })).trim().split("\n");
+		const lines = text(await bash.execute("resumed", { command: printSessionEnvironment }))
+			.trim()
+			.split("\n");
 		expect(lines.slice(0, 4)).toEqual([session.sessionId, session.sessionId, sessionFile, sessionFile]);
 		session.dispose();
 	});
@@ -109,31 +148,67 @@ describe("session-aware bash environment", () => {
 		const { cwd, agentDir } = makeRoot();
 		const captures: NodeJS.ProcessEnv[] = [];
 		const hookCaptures: NodeJS.ProcessEnv[] = [];
-		const operations: BashOperations = { exec: async (_command, _cwd, options) => {
-			captures.push({ ...options.env });
-			return { exitCode: 0 };
-		} };
+		const operations: BashOperations = {
+			exec: async (_command, _cwd, options) => {
+				captures.push({ ...options.env });
+				return { exitCode: 0 };
+			},
+		};
 		const settingsManager = SettingsManager.create(cwd, agentDir);
-		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, extensionFactories: [
-			(pi) => pi.registerTool(Object.assign(createBashTool(cwd, { operations, spawnHook: (context) => {
-				hookCaptures.push({ ...context.env }); return context;
-			} }), { name: "factory_bash", label: "factory bash" })),
-		] });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			extensionFactories: [
+				(pi) =>
+					pi.registerTool(
+						Object.assign(
+							createBashTool(cwd, {
+								operations,
+								spawnHook: (context) => {
+									hookCaptures.push({ ...context.env });
+									return context;
+								},
+							}),
+							{ name: "factory_bash", label: "factory bash" },
+						),
+					),
+			],
+		});
 		await resourceLoader.reload();
-		const { session } = await createAgentSession({ cwd, agentDir, model, thinkingLevel: "high", settingsManager, resourceLoader, sessionManager: SessionManager.inMemory(cwd) });
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			thinkingLevel: "high",
+			settingsManager,
+			resourceLoader,
+			sessionManager: SessionManager.inMemory(cwd),
+		});
 		const bash = session.agent.state.tools.find((tool) => tool.name === "factory_bash")!;
-		await bash.execute("factory-1", { command: "ignored", env: { KEEP_VERBATIM: "  raw value  ", PI_MODEL: "stale" } });
+		await bash.execute("factory-1", {
+			command: "ignored",
+			env: { KEEP_VERBATIM: "  raw value  ", PI_MODEL: "stale" },
+		});
 		session.setThinkingLevel("minimal");
 		session.agent.state.model = switchedModel;
 		await bash.execute("factory-2", { command: "ignored" });
 		expect(captures[0]).toMatchObject({
-			KEEP_VERBATIM: "  raw value  ", ATOMIC_SESSION_ID: session.sessionId, PI_SESSION_ID: session.sessionId,
-			ATOMIC_MODEL: model.id, PI_MODEL: model.id, ATOMIC_REASONING_LEVEL: "high", PI_REASONING_LEVEL: "high",
+			KEEP_VERBATIM: "  raw value  ",
+			ATOMIC_SESSION_ID: session.sessionId,
+			PI_SESSION_ID: session.sessionId,
+			ATOMIC_MODEL: model.id,
+			PI_MODEL: model.id,
+			ATOMIC_REASONING_LEVEL: "high",
+			PI_REASONING_LEVEL: "high",
 		});
 		expect(captures[1]).toMatchObject({
-			ATOMIC_PROVIDER: switchedModel.provider, PI_PROVIDER: switchedModel.provider,
-			ATOMIC_MODEL: switchedModel.id, PI_MODEL: switchedModel.id,
-			ATOMIC_REASONING_LEVEL: "minimal", PI_REASONING_LEVEL: "minimal",
+			ATOMIC_PROVIDER: switchedModel.provider,
+			PI_PROVIDER: switchedModel.provider,
+			ATOMIC_MODEL: switchedModel.id,
+			PI_MODEL: switchedModel.id,
+			ATOMIC_REASONING_LEVEL: "minimal",
+			PI_REASONING_LEVEL: "minimal",
 		});
 		expect(hookCaptures[0]).toMatchObject({ ATOMIC_SESSION_ID: session.sessionId, PI_SESSION_ID: session.sessionId });
 		session.dispose();
@@ -166,13 +241,15 @@ describe("session-aware bash environment", () => {
 		const stage = await createSession({ persisted: false, stage: "stage-one" });
 		const mainBash = main.session.agent.state.tools.find((tool) => tool.name === "bash")!;
 		const stageBash = stage.session.agent.state.tools.find((tool) => tool.name === "bash")!;
-		const command = "printf '%s:%s\\n' \"$ATOMIC_SESSION_ID\" \"$PI_SESSION_ID\"";
+		const command = 'printf \'%s:%s\\n\' "$ATOMIC_SESSION_ID" "$PI_SESSION_ID"';
 		const [mainResult, stageResult] = await Promise.all([
-			mainBash.execute("main", { command }), stageBash.execute("stage", { command }),
+			mainBash.execute("main", { command }),
+			stageBash.execute("stage", { command }),
 		]);
 		expect(text(mainResult).trim()).toBe(`${main.session.sessionId}:${main.session.sessionId}`);
 		expect(text(stageResult).trim()).toBe(`${stage.session.sessionId}:${stage.session.sessionId}`);
 		expect(stage.session.sessionId).not.toBe(main.session.sessionId);
-		main.session.dispose(); stage.session.dispose();
+		main.session.dispose();
+		stage.session.dispose();
 	});
 });

@@ -311,4 +311,3 @@ export function parsePackageCommand(args: string[]): PackageCommandOptions | und
 		conflictingOptions,
 	};
 }
-

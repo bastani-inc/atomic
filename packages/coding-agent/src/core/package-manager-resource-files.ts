@@ -18,7 +18,12 @@ type DirEntryInfo = {
 };
 
 async function exists(path: string): Promise<boolean> {
-	try { await access(path); return true; } catch { return false; }
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function prefixIgnorePattern(line: string, prefix: string): string | null {
@@ -26,8 +31,10 @@ function prefixIgnorePattern(line: string, prefix: string): string | null {
 	if (!trimmed || (trimmed.startsWith("#") && !trimmed.startsWith("\\#"))) return null;
 	let pattern = line;
 	let negated = false;
-	if (pattern.startsWith("!")) { negated = true; pattern = pattern.slice(1); }
-	else if (pattern.startsWith("\\!")) pattern = pattern.slice(1);
+	if (pattern.startsWith("!")) {
+		negated = true;
+		pattern = pattern.slice(1);
+	} else if (pattern.startsWith("\\!")) pattern = pattern.slice(1);
 	if (pattern.startsWith("/")) pattern = pattern.slice(1);
 	const prefixed = prefix ? `${prefix}${pattern}` : pattern;
 	return negated ? `!${prefixed}` : prefixed;
@@ -48,7 +55,13 @@ async function addIgnoreRules(ig: IgnoreMatcher, dir: string, rootDir: string): 
 	}
 }
 
-async function getEntryInfo(dir: string, name: string, isDirectory: boolean, isFileEntry: boolean, isSymlink: boolean): Promise<DirEntryInfo | null> {
+async function getEntryInfo(
+	dir: string,
+	name: string,
+	isDirectory: boolean,
+	isFileEntry: boolean,
+	isSymlink: boolean,
+): Promise<DirEntryInfo | null> {
 	const fullPath = join(dir, name);
 	let isDir = isDirectory;
 	let isFile = isFileEntry;
@@ -57,12 +70,20 @@ async function getEntryInfo(dir: string, name: string, isDirectory: boolean, isF
 			const stats = await stat(fullPath);
 			isDir = stats.isDirectory();
 			isFile = stats.isFile();
-		} catch { return null; }
+		} catch {
+			return null;
+		}
 	}
 	return { fullPath, isDir, isFile };
 }
 
-export async function collectFiles(dir: string, filePattern: RegExp, skipNodeModules = true, ignoreMatcher?: IgnoreMatcher, rootDir?: string): Promise<string[]> {
+export async function collectFiles(
+	dir: string,
+	filePattern: RegExp,
+	skipNodeModules = true,
+	ignoreMatcher?: IgnoreMatcher,
+	rootDir?: string,
+): Promise<string[]> {
 	const files: string[] = [];
 	if (!(await exists(dir))) return files;
 	const root = rootDir ?? dir;
@@ -79,14 +100,19 @@ export async function collectFiles(dir: string, filePattern: RegExp, skipNodeMod
 			const relPath = toPosixPath(relative(root, info.fullPath));
 			const ignorePath = info.isDir ? `${relPath}/` : relPath;
 			if (ig.ignores(ignorePath)) continue;
-			if (info.isDir) files.push(...await collectFiles(info.fullPath, filePattern, skipNodeModules, ig, root));
+			if (info.isDir) files.push(...(await collectFiles(info.fullPath, filePattern, skipNodeModules, ig, root)));
 			else if (info.isFile && filePattern.test(entry.name)) files.push(info.fullPath);
 		}
 	} catch {}
 	return files;
 }
 
-async function collectSkillEntries(dir: string, mode: SkillDiscoveryMode, ignoreMatcher?: IgnoreMatcher, rootDir?: string): Promise<string[]> {
+async function collectSkillEntries(
+	dir: string,
+	mode: SkillDiscoveryMode,
+	ignoreMatcher?: IgnoreMatcher,
+	rootDir?: string,
+): Promise<string[]> {
 	const entries: string[] = [];
 	if (!(await exists(dir))) return entries;
 	const root = rootDir ?? dir;
@@ -100,7 +126,10 @@ async function collectSkillEntries(dir: string, mode: SkillDiscoveryMode, ignore
 			const info = await getEntryInfo(dir, entry.name, entry.isDirectory(), entry.isFile(), entry.isSymbolicLink());
 			if (!info) continue;
 			const relPath = toPosixPath(relative(root, info.fullPath));
-			if (info.isFile && !ig.ignores(relPath)) { entries.push(info.fullPath); return entries; }
+			if (info.isFile && !ig.ignores(relPath)) {
+				entries.push(info.fullPath);
+				return entries;
+			}
 		}
 		for (const entry of dirEntries) {
 			await yieldToEventLoopIfSlow(startedAt, RESOURCE_DISCOVERY_YIELD_AFTER_MS);
@@ -113,7 +142,7 @@ async function collectSkillEntries(dir: string, mode: SkillDiscoveryMode, ignore
 				continue;
 			}
 			if (!info.isDir || ig.ignores(`${relPath}/`)) continue;
-			entries.push(...await collectSkillEntries(info.fullPath, mode, ig, root));
+			entries.push(...(await collectSkillEntries(info.fullPath, mode, ig, root)));
 		}
 	} catch {}
 	return entries;
@@ -237,5 +266,8 @@ export async function collectResourceFiles(dir: string, resourceType: ResourceTy
 export function isPathUnder(target: string, root: string): boolean {
 	const resolvedRoot = resolve(root);
 	const resolvedTarget = resolve(target);
-	return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(resolvedRoot.endsWith(sep) ? resolvedRoot : `${resolvedRoot}${sep}`);
+	return (
+		resolvedTarget === resolvedRoot ||
+		resolvedTarget.startsWith(resolvedRoot.endsWith(sep) ? resolvedRoot : `${resolvedRoot}${sep}`)
+	);
 }

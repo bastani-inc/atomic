@@ -11,7 +11,9 @@ export function matchesIntercomDetachRoute(
 	event: IntercomDetachRoute,
 	expected: { childIntercomTarget?: string },
 ): boolean {
-	return typeof event.childIntercomTarget === "string"
-		&& event.childIntercomTarget.length > 0
-		&& event.childIntercomTarget === expected.childIntercomTarget;
+	return (
+		typeof event.childIntercomTarget === "string" &&
+		event.childIntercomTarget.length > 0 &&
+		event.childIntercomTarget === expected.childIntercomTarget
+	);
 }

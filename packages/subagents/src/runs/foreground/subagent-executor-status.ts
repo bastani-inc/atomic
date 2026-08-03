@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.ts";
+import { type IntercomBridgeState, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	attachNestedChildrenToResultChildren,
 	buildSubagentResultIntercomPayload,
@@ -8,23 +8,27 @@ import {
 	resolveSubagentResultStatus,
 	stripDetailsOutputsForIntercomReceipt,
 } from "../../intercom/result-intercom.ts";
-import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
-import { formatControlIntercomMessage, formatControlNoticeMessage, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
-import { deliverLocalCompletionNotification } from "../background/completion-notification.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
 import {
-	SUBAGENT_CONTROL_EVENT,
-	SUBAGENT_CONTROL_INTERCOM_EVENT,
 	type ControlEvent,
 	type Details,
 	type NestedRunSummary,
 	type SingleResult,
+	SUBAGENT_CONTROL_EVENT,
+	SUBAGENT_CONTROL_INTERCOM_EVENT,
 	type SubagentRunMode,
 	type SubagentState,
 	type SubagentToolResult,
 } from "../../shared/types.ts";
-import { resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
-import type { ExecutorDeps, ExecutionContextData, ForegroundControl } from "./subagent-executor-types.ts";
+import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.ts";
+import { deliverLocalCompletionNotification } from "../background/completion-notification.ts";
+import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
+import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
+import {
+	formatControlIntercomMessage,
+	formatControlNoticeMessage,
+	shouldNotifyControlEvent,
+} from "../shared/subagent-control.ts";
+import type { ExecutionContextData, ExecutorDeps, ForegroundControl } from "./subagent-executor-types.ts";
 
 export function getForegroundControl(state: SubagentState, runId: string | undefined): ForegroundControl | undefined {
 	if (runId) return state.foregroundControls.get(runId);
@@ -41,7 +45,10 @@ export function getForegroundControl(state: SubagentState, runId: string | undef
 
 function formatForegroundActivity(control: ForegroundControl): string | undefined {
 	const facts: string[] = [];
-	if (control.currentTool && control.currentToolStartedAt) facts.push(`tool ${control.currentTool} for ${Math.floor(Math.max(0, Date.now() - control.currentToolStartedAt) / 1000)}s`);
+	if (control.currentTool && control.currentToolStartedAt)
+		facts.push(
+			`tool ${control.currentTool} for ${Math.floor(Math.max(0, Date.now() - control.currentToolStartedAt) / 1000)}s`,
+		);
 	else if (control.currentTool) facts.push(`tool ${control.currentTool}`);
 	if (control.currentPath) facts.push(`path ${control.currentPath}`);
 	if (control.turnCount !== undefined) facts.push(`${control.turnCount} turns`);
@@ -49,12 +56,14 @@ function formatForegroundActivity(control: ForegroundControl): string | undefine
 	if (control.toolCount !== undefined) facts.push(`${control.toolCount} tools`);
 	if (!control.lastActivityAt) {
 		if (control.currentActivityState === "needs_attention") return ["needs attention", ...facts].join(" | ");
-		if (control.currentActivityState === "active_long_running") return ["active but long-running", ...facts].join(" | ");
+		if (control.currentActivityState === "active_long_running")
+			return ["active but long-running", ...facts].join(" | ");
 		return facts.length ? facts.join(" | ") : undefined;
 	}
 	const seconds = Math.floor(Math.max(0, Date.now() - control.lastActivityAt) / 1000);
 	if (control.currentActivityState === "needs_attention") return [`no activity for ${seconds}s`, ...facts].join(" | ");
-	if (control.currentActivityState === "active_long_running") return [`active but long-running; last activity ${seconds}s ago`, ...facts].join(" | ");
+	if (control.currentActivityState === "active_long_running")
+		return [`active but long-running; last activity ${seconds}s ago`, ...facts].join(" | ");
 	return [`active ${seconds}s ago`, ...facts].join(" | ");
 }
 
@@ -70,7 +79,9 @@ export function foregroundStatusResult(control: ForegroundControl): SubagentTool
 		`Run: ${control.runId}`,
 		"State: running",
 		`Mode: ${control.mode}`,
-		control.currentAgent ? `Current: ${control.currentAgent}${control.currentIndex !== undefined ? ` step ${control.currentIndex + 1}` : ""}` : undefined,
+		control.currentAgent
+			? `Current: ${control.currentAgent}${control.currentIndex !== undefined ? ` step ${control.currentIndex + 1}` : ""}`
+			: undefined,
 		activity ? `Activity: ${activity}` : undefined,
 	].filter((line): line is string => Boolean(line));
 	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
@@ -82,11 +93,15 @@ export function retainedForegroundStatusResult(state: SubagentState, runId: stri
 	const run = state.foregroundRuns?.get(runId);
 	if (!run) return undefined;
 	const statuses = run.children.map((child) => child.status);
-	const stateLabel = statuses.includes("detached") ? "detached"
-		: statuses.includes("failed") ? "failed"
-		: statuses.includes("paused") ? "paused"
-		: statuses.every((status) => status === "completed") ? "completed"
-		: statuses[0] ?? "unknown";
+	const stateLabel = statuses.includes("detached")
+		? "detached"
+		: statuses.includes("failed")
+			? "failed"
+			: statuses.includes("paused")
+				? "paused"
+				: statuses.every((status) => status === "completed")
+					? "completed"
+					: (statuses[0] ?? "unknown");
 	const lines = [`Run: ${run.runId}`, `State: ${stateLabel}`, `Mode: ${run.mode}`];
 	for (const child of run.children) {
 		lines.push(`Child ${child.index + 1}: ${child.agent} (${child.status})`);
@@ -101,7 +116,6 @@ const earlyDetachedResults = new WeakMap<SubagentState, Map<string, Map<number, 
 const MAX_EARLY_DETACHED_RUNS = 50;
 const MAX_EARLY_DETACHED_CHILDREN_PER_RUN = 50;
 
-
 function takeEarlyDetachedResult(state: SubagentState, runId: string, index: number): SingleResult | undefined {
 	const byRun = earlyDetachedResults.get(state);
 	const byIndex = byRun?.get(runId);
@@ -111,7 +125,10 @@ function takeEarlyDetachedResult(state: SubagentState, runId: string, index: num
 	return result;
 }
 
-export function rememberForegroundRun(state: SubagentState, input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] }): void {
+export function rememberForegroundRun(
+	state: SubagentState,
+	input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] },
+): void {
 	state.foregroundRuns ??= new Map();
 	state.foregroundRuns.set(input.runId, {
 		runId: input.runId,
@@ -123,7 +140,11 @@ export function rememberForegroundRun(state: SubagentState, input: { runId: stri
 			return {
 				agent: result.agent,
 				index,
-				status: resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, detached: result.detached }),
+				status: resolveSubagentResultStatus({
+					exitCode: result.exitCode,
+					interrupted: result.interrupted,
+					detached: result.detached,
+				}),
 				...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
 				result,
 			};
@@ -136,7 +157,12 @@ export function rememberForegroundRun(state: SubagentState, input: { runId: stri
 	}
 }
 
-export function replaceForegroundRunChild(state: SubagentState, runId: string, index: number, result: SingleResult): void {
+export function replaceForegroundRunChild(
+	state: SubagentState,
+	runId: string,
+	index: number,
+	result: SingleResult,
+): void {
 	const retainedResult = compactForegroundResult(result);
 	const run = state.foregroundRuns?.get(runId);
 	if (!run) {
@@ -164,8 +190,12 @@ export function replaceForegroundRunChild(state: SubagentState, runId: string, i
 		return;
 	}
 	const child = run.children.find((entry) => entry.index === index);
-	if (!child || child.status !== "detached") return;
-	child.status = resolveSubagentResultStatus({ exitCode: retainedResult.exitCode, interrupted: retainedResult.interrupted, detached: retainedResult.detached });
+	if (child?.status !== "detached") return;
+	child.status = resolveSubagentResultStatus({
+		exitCode: retainedResult.exitCode,
+		interrupted: retainedResult.interrupted,
+		detached: retainedResult.detached,
+	});
 	child.result = retainedResult;
 	if (retainedResult.sessionFile) child.sessionFile = retainedResult.sessionFile;
 	run.updatedAt = Date.now();
@@ -190,7 +220,12 @@ export function emitControlNotification(input: {
 	if (input.controlConfig.notifyChannels.includes("event")) {
 		input.pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
 	}
-	if (input.event.type !== "active_long_running" && input.controlConfig.notifyChannels.includes("intercom") && input.intercomBridge.active && input.intercomBridge.orchestratorTarget) {
+	if (
+		input.event.type !== "active_long_running" &&
+		input.controlConfig.notifyChannels.includes("intercom") &&
+		input.intercomBridge.active &&
+		input.intercomBridge.orchestratorTarget
+	) {
 		input.pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
 			...payload,
 			to: input.intercomBridge.orchestratorTarget,
@@ -199,13 +234,17 @@ export function emitControlNotification(input: {
 	}
 }
 
-export function createForegroundControlNotifier(data: Pick<ExecutionContextData, "controlConfig" | "intercomBridge">, deps: Pick<ExecutorDeps, "pi">): (event: ControlEvent) => void {
-	return (event) => emitControlNotification({
-		pi: deps.pi,
-		controlConfig: data.controlConfig,
-		intercomBridge: data.intercomBridge,
-		event,
-	});
+export function createForegroundControlNotifier(
+	data: Pick<ExecutionContextData, "controlConfig" | "intercomBridge">,
+	deps: Pick<ExecutorDeps, "pi">,
+): (event: ControlEvent) => void {
+	return (event) =>
+		emitControlNotification({
+			pi: deps.pi,
+			controlConfig: data.controlConfig,
+			intercomBridge: data.intercomBridge,
+			event,
+		});
 }
 
 function resultSummaryForIntercom(result: SingleResult): string {
@@ -233,20 +272,26 @@ export function notifyDetachedForegroundChildExit(input: {
 	result: SingleResult;
 }): void {
 	const { pi, runId, index, result } = input;
-	void deliverLocalCompletionNotification(pi.events, {
-		id: runId,
-		runId,
-		agent: result.agent,
-		success: result.exitCode === 0 && !result.interrupted && !result.error,
-		summary: resultSummaryForIntercom(result),
-		exitCode: result.exitCode,
-		...(result.interrupted ? { state: "paused" } : {}),
-		timestamp: Date.now(),
-		...(result.progressSummary?.durationMs !== undefined ? { durationMs: result.progressSummary.durationMs } : {}),
-		...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
-		...(input.totalTasks !== undefined && input.totalTasks > 1 ? { taskIndex: index, totalTasks: input.totalTasks } : {}),
-		noticeLabel: "Detached subagent task",
-	}, `foreground-detach-${runId}-${index}`);
+	void deliverLocalCompletionNotification(
+		pi.events,
+		{
+			id: runId,
+			runId,
+			agent: result.agent,
+			success: result.exitCode === 0 && !result.interrupted && !result.error,
+			summary: resultSummaryForIntercom(result),
+			exitCode: result.exitCode,
+			...(result.interrupted ? { state: "paused" } : {}),
+			timestamp: Date.now(),
+			...(result.progressSummary?.durationMs !== undefined ? { durationMs: result.progressSummary.durationMs } : {}),
+			...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
+			...(input.totalTasks !== undefined && input.totalTasks > 1
+				? { taskIndex: index, totalTasks: input.totalTasks }
+				: {}),
+			noticeLabel: "Detached subagent task",
+		},
+		`foreground-detach-${runId}-${index}`,
+	);
 }
 
 async function emitForegroundResultIntercom(input: {
@@ -259,19 +304,25 @@ async function emitForegroundResultIntercom(input: {
 	nestedChildren?: NestedRunSummary[];
 }): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
 	if (!input.intercomBridge.active || !input.intercomBridge.orchestratorTarget) return null;
-	const children = input.results.flatMap((result, index) => result.detached ? [] : [{
-		agent: result.agent,
-		status: resolveSubagentResultStatus({
-			exitCode: result.exitCode,
-			interrupted: result.interrupted,
-			detached: result.detached,
-		}),
-		summary: resultSummaryForIntercom(result),
-		index,
-		artifactPath: result.artifactPaths?.outputPath,
-		sessionPath: result.sessionFile,
-		intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index),
-	}]);
+	const children = input.results.flatMap((result, index) =>
+		result.detached
+			? []
+			: [
+					{
+						agent: result.agent,
+						status: resolveSubagentResultStatus({
+							exitCode: result.exitCode,
+							interrupted: result.interrupted,
+							detached: result.detached,
+						}),
+						summary: resultSummaryForIntercom(result),
+						index,
+						artifactPath: result.artifactPaths?.outputPath,
+						sessionPath: result.sessionFile,
+						intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index),
+					},
+				],
+	);
 	if (children.length === 0) return null;
 	const payload = buildSubagentResultIntercomPayload({
 		to: input.intercomBridge.orchestratorTarget,

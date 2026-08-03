@@ -1,10 +1,8 @@
 import { setCallbackActivityReporter } from "../../core/callback-activity.ts";
 import { writeRawStdoutControl } from "../../core/output-guard.ts";
+import { interactiveEngineStartupEnv } from "../../utils/interactive-engine-env.ts";
 import { startParentProcessGuardian } from "../../utils/shell.ts";
-import {
-	INTERACTIVE_ENGINE_PROTOCOL_VERSION,
-	serializeInteractiveEngineMessage,
-} from "./protocol.ts";
+import { INTERACTIVE_ENGINE_PROTOCOL_VERSION, serializeInteractiveEngineMessage } from "./protocol.ts";
 
 export interface InteractiveEngineLiveness {
 	ready(): void;
@@ -16,16 +14,19 @@ let activeLiveness: InteractiveEngineLiveness | undefined;
 
 export function startInteractiveEngineLiveness(write: (line: string) => void): InteractiveEngineLiveness {
 	if (activeLiveness) return activeLiveness;
-	if (process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD !== "1") return { ready: () => {}, bound: () => {}, stop: () => {} };
-	const hostPid = Number.parseInt(process.env.ATOMIC_INTERACTIVE_ENGINE_HOST_PID ?? "", 10);
-	const stopGuardian = Number.isSafeInteger(hostPid) && hostPid > 0
-		? startParentProcessGuardian(hostPid, process.env.ATOMIC_INTERACTIVE_ENGINE_GUARD_FILE)
-		: async () => {};
+	const engineEnv = interactiveEngineStartupEnv();
+	if (engineEnv.child !== "1") return { ready: () => {}, bound: () => {}, stop: () => {} };
+	const hostPid = Number.parseInt(engineEnv.hostPid ?? "", 10);
+	const stopGuardian =
+		Number.isSafeInteger(hostPid) && hostPid > 0
+			? startParentProcessGuardian(hostPid, engineEnv.guardFile)
+			: async () => {};
 	const send = (message: Parameters<typeof serializeInteractiveEngineMessage>[0]) => {
 		write(serializeInteractiveEngineMessage(message));
 	};
 	setCallbackActivityReporter({
-		started: (activity) => writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity })),
+		started: (activity) =>
+			writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity })),
 		finished: (activityId) => send({ type: "engine_activity_finished", activityId }),
 	});
 	const heartbeat = setInterval(() => send({ type: "engine_heartbeat", at: performance.now() }), 50);

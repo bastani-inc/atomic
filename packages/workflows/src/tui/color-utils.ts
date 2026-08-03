@@ -4,21 +4,16 @@
  */
 
 function parseHex(hex: string): [number, number, number] {
-  const h = hex.replace(/^#/, "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return [r, g, b];
+	const h = hex.replace(/^#/, "");
+	const r = parseInt(h.slice(0, 2), 16);
+	const g = parseInt(h.slice(2, 4), 16);
+	const b = parseInt(h.slice(4, 6), 16);
+	return [r, g, b];
 }
 
 function toHex(r: number, g: number, b: number): string {
-  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
-  return (
-    "#" +
-    [clamp(r), clamp(g), clamp(b)]
-      .map((v) => v.toString(16).padStart(2, "0"))
-      .join("")
-  );
+	const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+	return `#${[clamp(r), clamp(g), clamp(b)].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 }
 
 /**
@@ -26,24 +21,24 @@ function toHex(r: number, g: number, b: number): string {
  * t in [0,1]. Returns hex string "#rrggbb".
  */
 export function lerpColor(a: string, b: string, t: number): string {
-  const [ar, ag, ab] = parseHex(a);
-  const [br, bg, bb] = parseHex(b);
-  const r = ar + (br - ar) * t;
-  const g = ag + (bg - ag) * t;
-  const bl = ab + (bb - ab) * t;
-  return toHex(r, g, bl);
+	const [ar, ag, ab] = parseHex(a);
+	const [br, bg, bb] = parseHex(b);
+	const r = ar + (br - ar) * t;
+	const g = ag + (bg - ag) * t;
+	const bl = ab + (bb - ab) * t;
+	return toHex(r, g, bl);
 }
 
 /** Convert a hex color to an ANSI 24-bit foreground escape sequence. */
 export function hexToAnsi(hex: string): string {
-  const [r, g, b] = parseHex(hex);
-  return `\x1b[38;2;${r};${g};${b}m`;
+	const [r, g, b] = parseHex(hex);
+	return `\x1b[38;2;${r};${g};${b}m`;
 }
 
 /** Convert a hex color to an ANSI 24-bit background escape sequence. */
 export function hexBg(hex: string): string {
-  const [r, g, b] = parseHex(hex);
-  return `\x1b[48;2;${r};${g};${b}m`;
+	const [r, g, b] = parseHex(hex);
+	return `\x1b[48;2;${r};${g};${b}m`;
 }
 
 export const RESET = "\x1b[0m";
@@ -53,12 +48,8 @@ export const BOLD = "\x1b[1m";
  * Combine a foreground hex + optional background hex into a single
  * styled ANSI run. Pass `bold: true` for the emphasised pill style.
  */
-export function paint(
-  text: string,
-  fg: string,
-  opts: { bg?: string; bold?: boolean } = {},
-): string {
-  const bgSeq = opts.bg ? hexBg(opts.bg) : "";
-  const boldSeq = opts.bold ? BOLD : "";
-  return `${bgSeq}${hexToAnsi(fg)}${boldSeq}${text}${RESET}`;
+export function paint(text: string, fg: string, opts: { bg?: string; bold?: boolean } = {}): string {
+	const bgSeq = opts.bg ? hexBg(opts.bg) : "";
+	const boldSeq = opts.bold ? BOLD : "";
+	return `${bgSeq}${hexToAnsi(fg)}${boldSeq}${text}${RESET}`;
 }

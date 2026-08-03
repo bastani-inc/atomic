@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { APP_NAME } from "@bastani/atomic";
-import { Compile } from "typebox/compile";
 import type { Message } from "@earendil-works/pi-ai/compat";
+import { Compile } from "typebox/compile";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
 const ENV_PREFIX = APP_NAME.toUpperCase();
@@ -11,7 +11,8 @@ export const STRUCTURED_OUTPUT_SCHEMA_ENV = `${ENV_PREFIX}_SUBAGENT_STRUCTURED_O
 export const STRUCTURED_OUTPUT_CAPTURE_ENV = `${ENV_PREFIX}_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE`;
 export const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 export const STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS = 3;
-export const STRUCTURED_OUTPUT_MISSING_ERROR = "Missing structured_output call; this step has outputSchema and must finish by calling structured_output.";
+export const STRUCTURED_OUTPUT_MISSING_ERROR =
+	"Missing structured_output call; this step has outputSchema and must finish by calling structured_output.";
 
 export interface StructuredOutputRuntime {
 	schema: JsonSchemaObject;
@@ -19,7 +20,10 @@ export interface StructuredOutputRuntime {
 	outputPath: string;
 }
 
-export function assertJsonSchemaDescriptor(schema: unknown, label = "outputSchema"): asserts schema is JsonSchemaObject {
+export function assertJsonSchemaDescriptor(
+	schema: unknown,
+	label = "outputSchema",
+): asserts schema is JsonSchemaObject {
 	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
 		throw new Error(`${label} must be a JSON Schema object descriptor.`);
 	}
@@ -35,22 +39,28 @@ export function createStructuredOutputRuntime(schema: JsonSchemaObject, baseDir?
 	return { schema, schemaPath, outputPath };
 }
 
-export function validateStructuredOutputValue(schema: JsonSchemaObject, value: unknown): { status: "valid" } | { status: "invalid"; message: string } {
+export function validateStructuredOutputValue(
+	schema: JsonSchemaObject,
+	value: unknown,
+): { status: "valid" } | { status: "invalid"; message: string } {
 	try {
-		const validator = (Compile as (schema: unknown) => {
-			Check(value: unknown): boolean;
-			Errors(value: unknown): Iterable<{ instancePath?: string; message?: string }>;
-		})(schema);
+		const validator = (
+			Compile as (schema: unknown) => {
+				Check(value: unknown): boolean;
+				Errors(value: unknown): Iterable<{ instancePath?: string; message?: string }>;
+			}
+		)(schema);
 		if (validator.Check(value)) return { status: "valid" };
-		const errors = [...validator.Errors(value)]
-			.slice(0, 8)
-			.map((error) => {
-				const pathText = error.instancePath ? error.instancePath.replace(/^\//, "").replace(/\//g, ".") : "root";
-				return `${pathText}: ${error.message}`;
-			});
+		const errors = [...validator.Errors(value)].slice(0, 8).map((error) => {
+			const pathText = error.instancePath ? error.instancePath.replace(/^\//, "").replace(/\//g, ".") : "root";
+			return `${pathText}: ${error.message}`;
+		});
 		return { status: "invalid", message: errors.join("; ") || "schema validation failed" };
 	} catch (error) {
-		return { status: "invalid", message: `invalid outputSchema: ${error instanceof Error ? error.message : String(error)}` };
+		return {
+			status: "invalid",
+			message: `invalid outputSchema: ${error instanceof Error ? error.message : String(error)}`,
+		};
 	}
 }
 
@@ -67,7 +77,9 @@ function textFromContent(content: unknown): string | undefined {
 	return text.length > 0 ? text : undefined;
 }
 
-export function latestStructuredOutputToolErrorFromMessages(messages: readonly Message[] | undefined): string | undefined {
+export function latestStructuredOutputToolErrorFromMessages(
+	messages: readonly Message[] | undefined,
+): string | undefined {
 	if (!messages) return undefined;
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index];
@@ -81,9 +93,11 @@ export function latestStructuredOutputToolErrorFromMessages(messages: readonly M
 
 export function isStructuredOutputContractError(error: string | undefined): boolean {
 	if (error === undefined) return false;
-	return error === STRUCTURED_OUTPUT_MISSING_ERROR
-		|| error.startsWith("Structured output validation failed:")
-		|| error.startsWith("Failed to read structured output:");
+	return (
+		error === STRUCTURED_OUTPUT_MISSING_ERROR ||
+		error.startsWith("Structured output validation failed:") ||
+		error.startsWith("Failed to read structured output:")
+	);
 }
 
 export function formatStructuredOutputCorrectionPrompt(args: {

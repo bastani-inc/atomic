@@ -6,7 +6,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { KeybindingsManager } from "../../../core/keybindings.ts";
+import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.ts";
 import { keyText } from "./keybinding-hints.ts";

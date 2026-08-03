@@ -13,12 +13,7 @@
  *   export default function (pi: ExtensionAPI) { ... }
  */
 
-import {
-	createAgentSession,
-	DefaultResourceLoader,
-	getAgentDir,
-	SessionManager,
-} from "@bastani/atomic";
+import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager } from "@bastani/atomic";
 
 // Extensions are discovered automatically from standard locations.
 // You can also add paths via settings.json or DefaultResourceLoader options.

@@ -2,17 +2,16 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { getModel, type AssistantMessage, type Usage } from "@earendil-works/pi-ai/compat";
+import { type AssistantMessage, getModel, type Usage } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { scrubPreCompactionAssistantUsage } from "../src/core/provider-context-usage.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { getLatestCompactionBoundaryEntry, SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
-import { createInMemoryModelRegistry, createModelRegistry } from "./model-runtime-test-utils.ts";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -43,7 +42,6 @@ function createAssistantMessage(text: string, timestamp: number, usage: Usage): 
 function createUserMessage(text: string, timestamp: number): AgentMessage {
 	return { role: "user", content: text, timestamp };
 }
-
 
 function getAssistantAt(messages: AgentMessage[], index: number): AssistantMessage {
 	const message = messages[index];

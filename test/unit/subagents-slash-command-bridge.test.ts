@@ -1,9 +1,9 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
+import { describe, test } from "vitest";
 import { CONFIG_DIR_NAME } from "../../packages/coding-agent/src/config.js";
 import type { SubagentParamsLike } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { SubagentState } from "../../packages/subagents/src/shared/types.js";
@@ -31,45 +31,55 @@ class FakeEvents {
 function writeAgent(cwd: string, name: string): void {
 	const agentsDir = join(cwd, CONFIG_DIR_NAME, "agents");
 	mkdirSync(agentsDir, { recursive: true });
-	writeFileSync(join(agentsDir, `${name}.md`), [
-		"---",
-		`name: ${name}`,
-		`description: ${name} slash command fixture`,
-		"---",
-		"",
-		"Run the assigned test task.",
-	].join("\n"));
+	writeFileSync(
+		join(agentsDir, `${name}.md`),
+		[
+			"---",
+			`name: ${name}`,
+			`description: ${name} slash command fixture`,
+			"---",
+			"",
+			"Run the assigned test task.",
+		].join("\n"),
+	);
 }
 
 function writeSavedChain(cwd: string): void {
 	const chainsDir = join(cwd, CONFIG_DIR_NAME, "chains");
 	mkdirSync(chainsDir, { recursive: true });
-	writeFileSync(join(chainsDir, "saved-review.chain.json"), JSON.stringify({
-		name: "saved-review",
-		description: "Saved slash command fixture",
-		chain: [
+	writeFileSync(
+		join(chainsDir, "saved-review.chain.json"),
+		JSON.stringify(
 			{
-				agent: "slash-alpha",
-				task: "Analyze {task}",
-				phase: "Research",
-				label: "Inspect",
-				output: "research.md",
-				reads: ["brief.md"],
-				progress: true,
-				skills: ["tdd"],
-				model: "test/saved",
+				name: "saved-review",
+				description: "Saved slash command fixture",
+				chain: [
+					{
+						agent: "slash-alpha",
+						task: "Analyze {task}",
+						phase: "Research",
+						label: "Inspect",
+						output: "research.md",
+						reads: ["brief.md"],
+						progress: true,
+						skills: ["tdd"],
+						model: "test/saved",
+					},
+					{
+						agent: "slash-beta",
+						task: "Finish from {previous}",
+						output: false,
+						outputMode: "inline",
+						reads: false,
+						progress: false,
+						skills: false,
+					},
+				],
 			},
-			{
-				agent: "slash-beta",
-				task: "Finish from {previous}",
-				output: false,
-				outputMode: "inline",
-				reads: false,
-				progress: false,
-				skills: false,
-			},
-		],
-	}, null, 2));
+			null,
+			2,
+		),
+	);
 }
 
 function makeContext(cwd: string): ExtensionCommandContext {
@@ -175,7 +185,7 @@ describe("human subagent slash command bridge", () => {
 		await withSlashHarness(async ({ invoke }) => {
 			const params = await invoke(
 				"chain",
-				"slash-alpha[output=alpha.md,reads=input.md,progress] \"inspect\" -> slash-beta[outputMode=file-only,skills=false] \"finish {previous}\" --fork --bg",
+				'slash-alpha[output=alpha.md,reads=input.md,progress] "inspect" -> slash-beta[outputMode=file-only,skills=false] "finish {previous}" --fork --bg',
 			);
 
 			assert.deepEqual(params, {
@@ -195,7 +205,7 @@ describe("human subagent slash command bridge", () => {
 		await withSlashHarness(async ({ invoke }) => {
 			const params = await invoke(
 				"parallel",
-				"slash-alpha[output=false,progress=false] \"inspect alpha\" -> slash-beta[reads=one.md+two.md,model=test/beta] \"inspect beta\" --bg --fork",
+				'slash-alpha[output=false,progress=false] "inspect alpha" -> slash-beta[reads=one.md+two.md,model=test/beta] "inspect beta" --bg --fork',
 			);
 
 			assert.deepEqual(params, {

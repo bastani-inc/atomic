@@ -1048,7 +1048,13 @@ function handlePollGet(req, res, url) {
     return;
   }
   state.lastPollAt = Date.now();
-  const timeout = parseInt(url.searchParams.get('timeout') || DEFAULT_POLL_TIMEOUT, 10);
+  // The poll timeout is client-supplied; clamp it so a request cannot park a
+  // timer (and this connection) for an arbitrary duration (CodeQL
+  // js/resource-exhaustion). NaN falls back to the default.
+  const requestedTimeout = parseInt(url.searchParams.get('timeout') || DEFAULT_POLL_TIMEOUT, 10);
+  const timeout = Number.isFinite(requestedTimeout)
+    ? Math.min(Math.max(requestedTimeout, 0), DEFAULT_POLL_TIMEOUT)
+    : DEFAULT_POLL_TIMEOUT;
   const leaseMs = parseInt(url.searchParams.get('leaseMs') || '30000', 10);
   const types = parsePollTypes(url.searchParams.get('types'));
   const available = findAvailablePendingEvent(Date.now(), types);

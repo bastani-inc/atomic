@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, test } from "vitest";
 import {
 	isSplitLauncherRuntime,
 	moduleDirFromMetaUrl,
@@ -60,9 +60,7 @@ describe("moduleDirFromMetaUrl", () => {
 	test("falls back to an executable-relative dir under the split launcher when decode fails", () => {
 		process.env.ATOMIC_CODING_AGENT = "true";
 		setExecPath(join("C:", "atomic", "atomic.exe"));
-		expect(moduleDirFromMetaUrl(NON_DECODABLE_URL, "dist", "core")).toBe(
-			join(splitLauncherDir(), "dist", "core"),
-		);
+		expect(moduleDirFromMetaUrl(NON_DECODABLE_URL, "dist", "core")).toBe(join(splitLauncherDir(), "dist", "core"));
 	});
 
 	test("rethrows a decode failure when not the split launcher", () => {

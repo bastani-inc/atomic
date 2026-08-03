@@ -123,8 +123,9 @@ export async function deliverClaimedCompletion(
 		return { owner: false, status: "conflict", noProgressFailures: claim.noProgressFailures };
 	}
 	claim.lastTouchedAt = now;
-	if (claim.terminalStatus) return { owner: false, status: claim.terminalStatus, noProgressFailures: claim.noProgressFailures };
-	if (claim.inFlight) return { owner: false, ...await claim.inFlight.promise };
+	if (claim.terminalStatus)
+		return { owner: false, status: claim.terminalStatus, noProgressFailures: claim.noProgressFailures };
+	if (claim.inFlight) return { owner: false, ...(await claim.inFlight.promise) };
 
 	const ownedClaim = claim;
 	const hasVisibleProgress = () => ownedClaim.intercomDelivered || ownedClaim.localDelivered;
@@ -150,10 +151,16 @@ export async function deliverClaimedCompletion(
 			persist(ownedClaim, phases.onState);
 			return { status: "retry", noProgressFailures: ownedClaim.noProgressFailures };
 		};
-		const runPhase = async (phase: ((value: FrozenCompletionEnvelope) => Promise<boolean> | boolean) | undefined): Promise<boolean | undefined> => {
+		const runPhase = async (
+			phase: ((value: FrozenCompletionEnvelope) => Promise<boolean> | boolean) | undefined,
+		): Promise<boolean | undefined> => {
 			if (!phase) return undefined;
 			if (phases.isOwned && !phases.isOwned()) return false;
-			try { return await phase(cloneEnvelope(ownedClaim.envelope)); } catch { return false; }
+			try {
+				return await phase(cloneEnvelope(ownedClaim.envelope));
+			} catch {
+				return false;
+			}
 		};
 		if (!ownedClaim.intercomDelivered && phases.intercom) {
 			const delivered = await runPhase(phases.intercom);
@@ -180,7 +187,7 @@ export async function deliverClaimedCompletion(
 	const flight: CompletionFlight = { promise: attempt };
 	ownedClaim.inFlight = flight;
 	try {
-		return { owner: true, ...await flight.promise };
+		return { owner: true, ...(await flight.promise) };
 	} finally {
 		// The explicit flight handle is the ownership token; comparing resolved
 		// values would let an older attempt clear a newer in-flight claim.

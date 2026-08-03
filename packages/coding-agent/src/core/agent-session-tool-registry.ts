@@ -1,14 +1,17 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { ExtensionRunner, wrapRegisteredTools, type ToolDefinition } from "./extensions/index.ts";
-import { createSyntheticSourceInfo } from "./source-info.ts";
-import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
-import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
-import { ModelRegistry } from "./model-registry.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinitionEntry } from "./agent-session-types.ts";
 import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
+import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.ts";
+import { ModelRegistry } from "./model-registry.ts";
+import { createSyntheticSourceInfo } from "./source-info.ts";
+import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
+import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
-export function _refreshToolRegistry(this: AgentSession, options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
+export function _refreshToolRegistry(
+	this: AgentSession,
+	options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean },
+): void {
 	const previousRegistryNames = new Set(this._toolRegistry.keys());
 	const previousActiveToolNames = this.getActiveToolNames();
 	const allowedToolNames = this._allowedToolNames;
@@ -108,12 +111,14 @@ export function _refreshToolRegistry(this: AgentSession, options?: { activeToolN
 	this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
 }
 
-
-export function _buildRuntime(this: AgentSession, options: {
-	activeToolNames?: string[];
-	flagValues?: Map<string, boolean | string>;
-	includeAllExtensionTools?: boolean;
-}): void {
+export function _buildRuntime(
+	this: AgentSession,
+	options: {
+		activeToolNames?: string[];
+		flagValues?: Map<string, boolean | string>;
+		includeAllExtensionTools?: boolean;
+	},
+): void {
 	const autoResizeImages = this.settingsManager.getImageAutoResize();
 	const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 	const shellPath = this.settingsManager.getShellPath();
@@ -138,7 +143,11 @@ export function _buildRuntime(this: AgentSession, options: {
 					interceptorEnabled: () => this.settingsManager.getBashInterceptorEnabled(),
 					availableTools: activeBuiltinTools,
 					asyncJobManager: this._asyncJobManager,
-					asyncJobDeliveryHandler: createSessionAsyncDeliveryHandler(this, this._asyncJobManager, this._asyncJobManagerSessionId),
+					asyncJobDeliveryHandler: createSessionAsyncDeliveryHandler(
+						this,
+						this._asyncJobManager,
+						this._asyncJobManagerSessionId,
+					),
 					asyncJobSessionId: this._asyncJobManagerSessionId,
 					interceptor: async (context) => {
 						const result = await this._extensionRunner.emitUserBash({
@@ -164,7 +173,8 @@ export function _buildRuntime(this: AgentSession, options: {
 	if (options.flagValues) {
 		for (const [name, value] of options.flagValues) {
 			extensionsResult.runtime.flagValues.set(name, value);
-			(extensionsResult.runtime.explicitFlagNames ??= new Set()).add(name);
+			extensionsResult.runtime.explicitFlagNames ??= new Set();
+			extensionsResult.runtime.explicitFlagNames.add(name);
 		}
 	}
 
@@ -191,7 +201,6 @@ export function _buildRuntime(this: AgentSession, options: {
 		includeAllExtensionTools: options.includeAllExtensionTools,
 	});
 }
-
 
 export const agentSessionToolRegistryMethods = {
 	_refreshToolRegistry,

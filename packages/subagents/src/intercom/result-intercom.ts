@@ -3,16 +3,16 @@ import * as fs from "node:fs";
 import {
 	type Details,
 	type IntercomEventBus,
+	MAX_SUBAGENT_NESTING_DEPTH,
 	type NestedRunSummary,
 	type PublicNestedRunSummary,
 	type SingleResult,
+	SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
+	SUBAGENT_RESULT_INTERCOM_EVENT,
 	type SubagentResultIntercomChild,
 	type SubagentResultIntercomPayload,
 	type SubagentResultStatus,
 	type SubagentRunMode,
-	MAX_SUBAGENT_NESTING_DEPTH,
-	SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
-	SUBAGENT_RESULT_INTERCOM_EVENT,
 } from "../shared/types.ts";
 
 export function resolveSubagentResultStatus(input: {
@@ -101,27 +101,39 @@ function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth 
 		...(run.endedAt !== undefined ? { endedAt: run.endedAt } : {}),
 		...(run.lastUpdate !== undefined ? { lastUpdate: run.lastUpdate } : {}),
 		...(run.error ? { error: run.error } : {}),
-		...(run.steps?.length ? { steps: run.steps.slice(0, 12).map((step) => ({
-			agent: step.agent,
-			status: step.status,
-			...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
-			...(step.activityState ? { activityState: step.activityState } : {}),
-			...(step.lastActivityAt !== undefined ? { lastActivityAt: step.lastActivityAt } : {}),
-			...(step.currentTool ? { currentTool: step.currentTool } : {}),
-			...(step.currentToolStartedAt !== undefined ? { currentToolStartedAt: step.currentToolStartedAt } : {}),
-			...(step.currentPath ? { currentPath: step.currentPath } : {}),
-			...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
-			...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
-			...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
-			...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
-			...(step.error ? { error: step.error } : {}),
-			...(depth < MAX_SUBAGENT_NESTING_DEPTH && step.children?.length ? { children: step.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) } : {}),
-		})) } : {}),
-		...(depth < MAX_SUBAGENT_NESTING_DEPTH && run.children?.length ? { children: run.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) } : {}),
+		...(run.steps?.length
+			? {
+					steps: run.steps.slice(0, 12).map((step) => ({
+						agent: step.agent,
+						status: step.status,
+						...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
+						...(step.activityState ? { activityState: step.activityState } : {}),
+						...(step.lastActivityAt !== undefined ? { lastActivityAt: step.lastActivityAt } : {}),
+						...(step.currentTool ? { currentTool: step.currentTool } : {}),
+						...(step.currentToolStartedAt !== undefined
+							? { currentToolStartedAt: step.currentToolStartedAt }
+							: {}),
+						...(step.currentPath ? { currentPath: step.currentPath } : {}),
+						...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
+						...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
+						...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
+						...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
+						...(step.error ? { error: step.error } : {}),
+						...(depth < MAX_SUBAGENT_NESTING_DEPTH && step.children?.length
+							? { children: step.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) }
+							: {}),
+					})),
+				}
+			: {}),
+		...(depth < MAX_SUBAGENT_NESTING_DEPTH && run.children?.length
+			? { children: run.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) }
+			: {}),
 	};
 }
 
-export function compactNestedResultChildren(children: Array<NestedRunSummary | PublicNestedRunSummary> | undefined): PublicNestedRunSummary[] | undefined {
+export function compactNestedResultChildren(
+	children: Array<NestedRunSummary | PublicNestedRunSummary> | undefined,
+): PublicNestedRunSummary[] | undefined {
 	if (!children?.length) return undefined;
 	return children.slice(0, 16).map((child) => compactNestedRun(child));
 }
@@ -132,14 +144,24 @@ export function attachNestedChildrenToResultChildren(
 	nestedChildren: NestedRunSummary[] | undefined,
 ): SubagentResultIntercomChild[] {
 	const compact = compactNestedResultChildren(nestedChildren);
-	if (!compact?.length) return children.map((child) => ({ ...child, children: compactNestedResultChildren(child.children) }));
+	if (!compact?.length)
+		return children.map((child) => ({ ...child, children: compactNestedResultChildren(child.children) }));
 	return children.map((child, index) => {
 		const childIndex = child.index ?? index;
 		const alreadyAttachedIds = new Set(child.children?.map((nested) => nested.id) ?? []);
-		const attached = compact.filter((nested) => nested.parentRunId === runId && nested.parentStepIndex === childIndex && !alreadyAttachedIds.has(nested.id));
-		const fallbackAttached = children.length === 1
-			? compact.filter((nested) => nested.parentRunId === runId && nested.parentStepIndex === undefined && !alreadyAttachedIds.has(nested.id))
-			: [];
+		const attached = compact.filter(
+			(nested) =>
+				nested.parentRunId === runId && nested.parentStepIndex === childIndex && !alreadyAttachedIds.has(nested.id),
+		);
+		const fallbackAttached =
+			children.length === 1
+				? compact.filter(
+						(nested) =>
+							nested.parentRunId === runId &&
+							nested.parentStepIndex === undefined &&
+							!alreadyAttachedIds.has(nested.id),
+					)
+				: [];
 		const merged = compactNestedResultChildren([...(child.children ?? []), ...attached, ...fallbackAttached]);
 		return merged?.length ? { ...child, children: merged } : { ...child, children: undefined };
 	});
@@ -184,7 +206,9 @@ function asyncResumeGuidance(input: {
 	asyncId?: string;
 }): string | undefined {
 	if (input.source !== "async" || !input.asyncId) return undefined;
-	const resumable = input.children.filter((child) => typeof child.sessionPath === "string" && fs.existsSync(child.sessionPath));
+	const resumable = input.children.filter(
+		(child) => typeof child.sessionPath === "string" && fs.existsSync(child.sessionPath),
+	);
 	if (input.children.length === 1 && resumable.length === 1) {
 		return `Revive: subagent({ action: "resume", id: "${input.asyncId}", message: "..." })`;
 	}
@@ -223,16 +247,21 @@ function formatSubagentResultIntercomMessage(input: {
 	if (resumeGuidance) lines.push(resumeGuidance);
 	if (input.children.some((child) => child.intercomTarget)) {
 		lines.push("");
-		lines.push(input.source === "async"
-			? "Previous intercom targets below identify child sessions used while they were running. Inspect artifacts or session logs if resume is unavailable."
-			: "Intercom targets below identify child sessions used while they were running; completed child sessions may no longer be reachable. Inspect artifacts or session logs for follow-up.");
+		lines.push(
+			input.source === "async"
+				? "Previous intercom targets below identify child sessions used while they were running. Inspect artifacts or session logs if resume is unavailable."
+				: "Intercom targets below identify child sessions used while they were running; completed child sessions may no longer be reachable. Inspect artifacts or session logs for follow-up.",
+		);
 	}
 
 	for (let index = 0; index < input.children.length; index++) {
 		const child = input.children[index]!;
 		lines.push("");
 		lines.push(`${index + 1}. ${child.agent} — ${child.status}`);
-		if (child.intercomTarget) lines.push(`${input.source === "async" ? "Previous intercom target" : "Run intercom target"}: ${child.intercomTarget}`);
+		if (child.intercomTarget)
+			lines.push(
+				`${input.source === "async" ? "Previous intercom target" : "Run intercom target"}: ${child.intercomTarget}`,
+			);
 		if (child.artifactPath) lines.push(`Output artifact: ${child.artifactPath}`);
 		if (child.sessionPath) lines.push(`Session: ${child.sessionPath}`);
 		lines.push(...formatNestedResultLines(child.children));
@@ -243,7 +272,9 @@ function formatSubagentResultIntercomMessage(input: {
 	return lines.join("\n");
 }
 
-export function buildSubagentResultIntercomPayload(input: GroupedResultIntercomMessageInput): SubagentResultIntercomPayload {
+export function buildSubagentResultIntercomPayload(
+	input: GroupedResultIntercomMessageInput,
+): SubagentResultIntercomPayload {
 	const children = input.children.map((child) => ({
 		...child,
 		summary: child.summary.trim() || "(no output)",
@@ -278,7 +309,13 @@ export async function deliverSubagentResultIntercomEvent(
 	payload: SubagentResultIntercomPayload,
 	timeoutMs: number | false = 500,
 ): Promise<boolean> {
-	return deliverSubagentIntercomMessageEvent(events, payload.to, payload.message, timeoutMs, payload as unknown as Record<string, unknown>);
+	return deliverSubagentIntercomMessageEvent(
+		events,
+		payload.to,
+		payload.message,
+		timeoutMs,
+		payload as unknown as Record<string, unknown>,
+	);
 }
 
 export async function deliverSubagentIntercomMessageEvent(
@@ -338,11 +375,12 @@ export function formatSubagentResultReceipt(input: {
 	payload: SubagentResultIntercomPayload;
 }): string {
 	const counts = countStatuses(input.payload.children);
-	const modeLabel = input.mode === "single"
-		? "single subagent result"
-		: input.mode === "parallel"
-			? "parallel subagent results"
-			: "chain subagent results";
+	const modeLabel =
+		input.mode === "single"
+			? "single subagent result"
+			: input.mode === "parallel"
+				? "parallel subagent results"
+				: "chain subagent results";
 	const lines = [
 		`Delivered ${modeLabel} via intercom.`,
 		`Run: ${input.runId}`,

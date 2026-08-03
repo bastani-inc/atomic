@@ -1,8 +1,8 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
+import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
 	describe("extension catalog credential resolution", () => {
@@ -73,10 +73,12 @@ describeModelRegistry((context) => {
 				}
 
 				await registry.refresh();
-				expect(observed).toEqual(new Map([
-					["stored-environment", "stored-environment-key"],
-					["stored-command", "stored-command-key"],
-				]));
+				expect(observed).toEqual(
+					new Map([
+						["stored-environment", "stored-environment-key"],
+						["stored-command", "stored-command-key"],
+					]),
+				);
 			} finally {
 				if (original === undefined) delete process.env[envVarName];
 				else process.env[envVarName] = original;
@@ -101,7 +103,10 @@ describeModelRegistry((context) => {
 
 			await registry.refresh();
 			expect(observedKey).toBe("runtime-key");
-			expect(await context.authStorage.read("credential-precedence")).toEqual({ type: "api_key", key: "stored-key" });
+			expect(await context.authStorage.read("credential-precedence")).toEqual({
+				type: "api_key",
+				key: "stored-key",
+			});
 		});
 
 		test("does not pass unresolved stored API-key expressions literally", async () => {

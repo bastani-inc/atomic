@@ -1,28 +1,17 @@
-import { applyPatch } from "diff";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { executeBashWithOperations } from "../src/core/bash-executor.ts";
-import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
-import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
-import {
-	createEditTool,
-	createFindTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
-} from "../src/index.ts";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createBashTool } from "../src/core/tools/bash.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import * as shellModule from "../src/utils/shell.ts";
+import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
 
-const readTool = createReadTool(process.cwd());
-const writeTool = createWriteTool(process.cwd());
-const editTool = createEditTool(process.cwd());
-const bashTool = createBashTool(process.cwd());
-const grepTool = createGrepTool(process.cwd());
-const findTool = createFindTool(process.cwd());
+const _readTool = createReadTool(process.cwd());
+const _writeTool = createWriteTool(process.cwd());
+const _editTool = createEditTool(process.cwd());
+const _bashTool = createBashTool(process.cwd());
+const _grepTool = createGrepTool(process.cwd());
+const _findTool = createFindTool(process.cwd());
 const lsTool = createLsTool(process.cwd());
 
 // Helper to extract text from content blocks
@@ -35,7 +24,7 @@ function getTextOutput(result: any): string {
 	);
 }
 
-function shellQuoteForTest(value: string): string {
+function _shellQuoteForTest(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 

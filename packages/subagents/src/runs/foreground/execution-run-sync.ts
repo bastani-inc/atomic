@@ -5,25 +5,21 @@ import { ensureArtifactsDir, getArtifactPaths, writeArtifact, writeMetadata } fr
 import { getSubagentCodexFastModeSettings, resolveSubagentCodexFastModeScope } from "../../shared/fast-mode.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import {
-	DEFAULT_MAX_OUTPUT,
 	type ArtifactPaths,
+	DEFAULT_MAX_OUTPUT,
 	type ModelAttempt,
 	type RunSyncOptions,
 	type SingleResult,
 	truncateOutput,
 } from "../../shared/types.ts";
 import { findLatestSessionFile } from "../../shared/utils.ts";
+import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
+import { buildModelCandidates, formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
 import { captureSingleOutputSnapshot, validateFileOnlyOutputMode } from "../shared/single-output.ts";
-import {
-	buildModelCandidates,
-	formatModelAttemptNote,
-	isRetryableModelFailure,
-} from "../shared/model-fallback.ts";
-import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
-import { artifactOutputByResult, emptyUsage, modelFailureSignalByResult, sumUsage } from "./execution-utils.ts";
 import { runSingleAttemptWithStructuredOutputRetries } from "./execution-structured-retries.ts";
 import { shouldSuppressIntermediateRetryableFailureUpdate } from "./execution-updates.ts";
+import { artifactOutputByResult, emptyUsage, modelFailureSignalByResult, sumUsage } from "./execution-utils.ts";
 
 /**
  * Run a subagent synchronously (blocking until complete)
@@ -37,9 +33,20 @@ export async function runSync(
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 	if (!agent) {
-		return { agent: agentName, task, exitCode: 1, messages: [], usage: emptyUsage(), error: `Unknown agent: ${agentName}` };
+		return {
+			agent: agentName,
+			task,
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error: `Unknown agent: ${agentName}`,
+		};
 	}
-	const outputModeValidationError = validateFileOnlyOutputMode(options.outputMode, options.outputPath, `Single run (${agentName})`);
+	const outputModeValidationError = validateFileOnlyOutputMode(
+		options.outputMode,
+		options.outputPath,
+		`Single run (${agentName})`,
+	);
 	if (outputModeValidationError) {
 		return {
 			agent: agentName,
@@ -56,9 +63,20 @@ export async function runSync(
 	const sessionEnabled = Boolean(options.sessionFile || options.sessionDir) || shareEnabled;
 	const skillNames = options.skills ?? agent.skills ?? [];
 	const skillCwd = options.cwd ?? runtimeCwd;
-	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, skillCwd, runtimeCwd);
+	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(
+		skillNames,
+		skillCwd,
+		runtimeCwd,
+	);
 	if (skillNames.some((skill) => skill.trim() === "subagent") && missingSkills.includes("subagent")) {
-		return { agent: agentName, task, exitCode: 1, messages: [], usage: emptyUsage(), error: "Skills not found: subagent" };
+		return {
+			agent: agentName,
+			task,
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error: "Skills not found: subagent",
+		};
 	}
 	let systemPrompt = agent.systemPrompt?.trim() || "";
 	if (resolvedSkills.length > 0) {
@@ -110,17 +128,27 @@ export async function runSync(
 		}
 		if (options.artifactConfig?.includeMetadata !== false) {
 			writeMetadata(artifactPathsResult.metadataPath, {
-				runId: options.runId, agent: agentName, task, exitCode: value.exitCode,
-				usage: value.usage, model: value.model, fastMode: value.fastMode,
-				attemptedModels: value.attemptedModels, modelAttempts: value.modelAttempts,
-				durationMs: value.progressSummary?.durationMs, toolCount: value.progressSummary?.toolCount,
-				error: value.error, skills: value.skills, skillsWarning: value.skillsWarning, timestamp: Date.now(),
+				runId: options.runId,
+				agent: agentName,
+				task,
+				exitCode: value.exitCode,
+				usage: value.usage,
+				model: value.model,
+				fastMode: value.fastMode,
+				attemptedModels: value.attemptedModels,
+				modelAttempts: value.modelAttempts,
+				durationMs: value.progressSummary?.durationMs,
+				toolCount: value.progressSummary?.toolCount,
+				error: value.error,
+				skills: value.skills,
+				skillsWarning: value.skillsWarning,
+				timestamp: Date.now(),
 			});
 		}
 	};
 
 	let lastResult: SingleResult | undefined;
-	const modelsToTry = candidates.length > 0 ? candidates : (rawCandidates.length === 0 ? [undefined] : []);
+	const modelsToTry = candidates.length > 0 ? candidates : rawCandidates.length === 0 ? [undefined] : [];
 	for (let i = 0; i < modelsToTry.length; i++) {
 		const candidate = modelsToTry[i];
 		if (candidate) attemptedModels.push(candidate);
@@ -130,7 +158,8 @@ export async function runSync(
 			...options,
 			onDetachedExit: (recovered) => {
 				recovered.attemptedModels = attemptedModels.length > 0 ? [...attemptedModels] : undefined;
-				const recoveredModel = applyThinkingSuffix(candidate, agent.thinking) ?? recovered.model ?? agent.model ?? "default";
+				const recoveredModel =
+					applyThinkingSuffix(candidate, agent.thinking) ?? recovered.model ?? agent.model ?? "default";
 				const completedAttempt: ModelAttempt = {
 					model: recoveredModel,
 					reasoningLevel: resolveEffectiveThinking(recoveredModel, agent.thinking),
@@ -154,19 +183,26 @@ export async function runSync(
 				},
 			};
 		}
-		const result = await runSingleAttemptWithStructuredOutputRetries(runtimeCwd, agent, task, candidate, attemptOptions, {
-			sessionEnabled,
-			systemPrompt,
-			resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
-			skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
-			jsonlPath,
-			artifactPaths: artifactPathsResult,
-			attemptNotes,
-			outputSnapshot,
-			fastModeSettings,
-			fastModeScope,
-			originalTask: task,
-		});
+		const result = await runSingleAttemptWithStructuredOutputRetries(
+			runtimeCwd,
+			agent,
+			task,
+			candidate,
+			attemptOptions,
+			{
+				sessionEnabled,
+				systemPrompt,
+				resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
+				skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
+				jsonlPath,
+				artifactPaths: artifactPathsResult,
+				attemptNotes,
+				outputSnapshot,
+				fastModeSettings,
+				fastModeScope,
+				originalTask: task,
+			},
+		);
 		lastResult = result;
 		sumUsage(aggregateUsage, result.usage);
 		totalToolCount += result.progressSummary?.toolCount ?? 0;
@@ -193,16 +229,19 @@ export async function runSync(
 		break;
 	}
 
-	const result = lastResult ?? {
-		agent: agentName,
-		task,
-		exitCode: 1,
-		messages: [],
-		usage: emptyUsage(),
-		error: modelAttempts.length > 0
-			? "No spawnable subagent model candidates after pre-spawn filtering."
-			: "Subagent did not produce a result.",
-	} satisfies SingleResult;
+	const result =
+		lastResult ??
+		({
+			agent: agentName,
+			task,
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error:
+				modelAttempts.length > 0
+					? "No spawnable subagent model candidates after pre-spawn filtering."
+					: "Subagent did not produce a result.",
+		} satisfies SingleResult);
 
 	result.usage = aggregateUsage;
 	result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;

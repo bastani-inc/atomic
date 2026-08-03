@@ -78,18 +78,7 @@ function createPnpmGlobalInstall(): { root: string; packageDir: string } {
 	tempDir = temp;
 	process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
 	process.env.ATOMIC_PACKAGE_DIR = packageDir;
-	setExecPath(
-		join(
-			root,
-			".pnpm",
-			"@bastani+atomic@0.0.0",
-			"node_modules",
-			"@bastani",
-			"atomic",
-			"dist",
-			"cli.js",
-		),
-	);
+	setExecPath(join(root, ".pnpm", "@bastani+atomic@0.0.0", "node_modules", "@bastani", "atomic", "dist", "cli.js"));
 	return { root, packageDir };
 }
 
@@ -251,7 +240,15 @@ describe("detectInstallMethod", () => {
 
 		const command = getSelfUpdateCommand("@bastani/atomic", []);
 
-		expect(command?.args).toEqual(["--prefix", prefix, "install", "-g", "--ignore-scripts", "--min-release-age=0", "@bastani/atomic"]);
+		expect(command?.args).toEqual([
+			"--prefix",
+			prefix,
+			"install",
+			"-g",
+			"--ignore-scripts",
+			"--min-release-age=0",
+			"@bastani/atomic",
+		]);
 	});
 
 	test("quotes npm self-update display paths", () => {
@@ -259,7 +256,9 @@ describe("detectInstallMethod", () => {
 
 		const command = getSelfUpdateCommand("@bastani/atomic");
 
-		expect(command?.display).toBe(`npm --prefix "${prefix}" install -g --ignore-scripts --min-release-age=0 @bastani/atomic`);
+		expect(command?.display).toBe(
+			`npm --prefix "${prefix}" install -g --ignore-scripts --min-release-age=0 @bastani/atomic`,
+		);
 	});
 
 	test("does not infer Windows npm custom prefixes from package paths", () => {
@@ -295,7 +294,8 @@ describe("detectInstallMethod", () => {
 		expect(command).toEqual({
 			command: "pnpm",
 			args: ["install", "-g", "--ignore-scripts", "--config.minimumReleaseAge=0", "@new-scope/pi"],
-			display: "pnpm remove -g @bastani/atomic && pnpm install -g --ignore-scripts --config.minimumReleaseAge=0 @new-scope/pi",
+			display:
+				"pnpm remove -g @bastani/atomic && pnpm install -g --ignore-scripts --config.minimumReleaseAge=0 @new-scope/pi",
 			steps: [
 				{
 					command: "pnpm",
@@ -345,7 +345,8 @@ describe("detectInstallMethod", () => {
 		expect(command).toEqual({
 			command: "bun",
 			args: ["install", "-g", "--ignore-scripts", "--minimum-release-age=0", "@new-scope/pi"],
-			display: "bun uninstall -g @bastani/atomic && bun install -g --ignore-scripts --minimum-release-age=0 @new-scope/pi",
+			display:
+				"bun uninstall -g @bastani/atomic && bun install -g --ignore-scripts --minimum-release-age=0 @new-scope/pi",
 			steps: [
 				{
 					command: "bun",
@@ -366,8 +367,6 @@ describe("detectInstallMethod", () => {
 		chmodSync(packageDir, 0o500);
 
 		expect(getSelfUpdateCommand("@bastani/atomic")).toBeUndefined();
-		expect(getSelfUpdateUnavailableInstruction("@bastani/atomic")).toContain(
-			"the install path is not writable",
-		);
+		expect(getSelfUpdateUnavailableInstruction("@bastani/atomic")).toContain("the install path is not writable");
 	});
 });

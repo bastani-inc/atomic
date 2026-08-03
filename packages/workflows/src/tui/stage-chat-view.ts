@@ -26,249 +26,249 @@
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
-  renderBlockedBody,
-  renderPausedBody,
-  renderPromptBody,
-  renderReadOnlyArchiveBody,
+	renderBlockedBody,
+	renderPausedBody,
+	renderPromptBody,
+	renderReadOnlyArchiveBody,
 } from "./stage-chat-view-archive-history.js";
 import { renderCustomUi } from "./stage-chat-view-custom-ui.js";
 import {
-  renderFooterWithOrchestratorReturnHint,
-  renderHeader,
-  renderReadOnlyArchiveFooter,
-  sepRule,
+	renderFooterWithOrchestratorReturnHint,
+	renderHeader,
+	renderReadOnlyArchiveFooter,
+	sepRule,
 } from "./stage-chat-view-footer-status.js";
 import { handleStageChatInput } from "./stage-chat-view-input.js";
 import { blankLine, takeRows } from "./stage-chat-view-render-helpers.js";
 import {
-  currentStage,
-  disposeStageChatView,
-  initializeStageChatView,
-  invalidateStageChatView,
-  isBlocked,
-  isPaused,
-  isReadOnlyArchive,
-  syncPromptState,
-  viewLineCount,
+	currentStage,
+	disposeStageChatView,
+	initializeStageChatView,
+	invalidateStageChatView,
+	isBlocked,
+	isPaused,
+	isReadOnlyArchive,
+	syncPromptState,
+	viewLineCount,
 } from "./stage-chat-view-state.js";
 import { transcriptDebugEntries } from "./stage-chat-view-transcript.js";
 import {
-  HEADER_ROWS,
-  SEP_ROWS,
-  type StageChatViewContext,
-  type StageChatViewOpts,
-  type TranscriptDebugEntry,
+	SEP_ROWS,
+	type StageChatViewContext,
+	type StageChatViewOpts,
+	type TranscriptDebugEntry,
 } from "./stage-chat-view-types.js";
 
 export type {
-  StageChatDetachMetadata,
-  StageChatDetachReason,
-  StageChatViewOpts,
+	StageChatDetachMetadata,
+	StageChatDetachReason,
+	StageChatViewOpts,
 } from "./stage-chat-view-types.js";
 
 export class StageChatView implements Component, Focusable {
-  focused = true;
-  private store!: StageChatViewContext["store"];
-  private theme!: StageChatViewContext["theme"];
-  private runId!: StageChatViewContext["runId"];
-  private stageId!: StageChatViewContext["stageId"];
-  private workflowName!: StageChatViewContext["workflowName"];
-  private handle!: StageChatViewContext["handle"];
-  private postMortemUnavailableReason!: StageChatViewContext["postMortemUnavailableReason"];
-  private onDetach!: StageChatViewContext["onDetach"];
-  private onClose!: StageChatViewContext["onClose"];
-  private requestRender!: StageChatViewContext["requestRender"];
-  private requestFocus!: StageChatViewContext["requestFocus"];
-  private focusHoldTimer!: StageChatViewContext["focusHoldTimer"];
-  private getViewportRows!: StageChatViewContext["getViewportRows"];
-  private piTui!: StageChatViewContext["piTui"];
-  private piTheme!: StageChatViewContext["piTheme"];
-  private piKeybindings!: StageChatViewContext["piKeybindings"];
-  private piEditorFactory!: StageChatViewContext["piEditorFactory"];
-  private getToolsExpanded!: StageChatViewContext["getToolsExpanded"];
-  private setToolsExpanded!: StageChatViewContext["setToolsExpanded"];
-  private footerData!: StageChatViewContext["footerData"];
-  private chatHost!: StageChatViewContext["chatHost"];
-  private stageUiBroker!: StageChatViewContext["stageUiBroker"];
-  private canSubmitPrompt!: StageChatViewContext["canSubmitPrompt"];
-  private mountedCustomUi!: StageChatViewContext["mountedCustomUi"];
-  private mountingRequestId!: StageChatViewContext["mountingRequestId"];
-  private promptState!: StageChatViewContext["promptState"];
-  private promptEditor!: StageChatViewContext["promptEditor"];
-  private promptEditorPromptId!: StageChatViewContext["promptEditorPromptId"];
-  private promptEditorSubmitFromEnter!: StageChatViewContext["promptEditorSubmitFromEnter"];
-  private promptScrollOffset!: StageChatViewContext["promptScrollOffset"];
-  private promptMaxScroll!: StageChatViewContext["promptMaxScroll"];
-  private localPaused!: StageChatViewContext["localPaused"];
-  private mouseScrollCaptureEnabled!: StageChatViewContext["mouseScrollCaptureEnabled"];
-  private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
-  private _unsubscribeStore!: StageChatViewContext["_unsubscribeStore"];
-  private _unsubscribeHandle!: StageChatViewContext["_unsubscribeHandle"];
-  private _unsubscribeFooterData!: StageChatViewContext["_unsubscribeFooterData"];
-  private _unregisterStageUiHost!: StageChatViewContext["_unregisterStageUiHost"];
+	focused = true;
+	private store!: StageChatViewContext["store"];
+	private theme!: StageChatViewContext["theme"];
+	private runId!: StageChatViewContext["runId"];
+	private stageId!: StageChatViewContext["stageId"];
+	private workflowName!: StageChatViewContext["workflowName"];
+	private handle!: StageChatViewContext["handle"];
+	private postMortemUnavailableReason!: StageChatViewContext["postMortemUnavailableReason"];
+	private onDetach!: StageChatViewContext["onDetach"];
+	private onClose!: StageChatViewContext["onClose"];
+	private requestRender!: StageChatViewContext["requestRender"];
+	private requestFocus!: StageChatViewContext["requestFocus"];
+	private focusHoldTimer!: StageChatViewContext["focusHoldTimer"];
+	private getViewportRows!: StageChatViewContext["getViewportRows"];
+	private piTui!: StageChatViewContext["piTui"];
+	private piTheme!: StageChatViewContext["piTheme"];
+	private piKeybindings!: StageChatViewContext["piKeybindings"];
+	private piEditorFactory!: StageChatViewContext["piEditorFactory"];
+	private getToolsExpanded!: StageChatViewContext["getToolsExpanded"];
+	private setToolsExpanded!: StageChatViewContext["setToolsExpanded"];
+	private footerData!: StageChatViewContext["footerData"];
+	private chatHost!: StageChatViewContext["chatHost"];
+	private stageUiBroker!: StageChatViewContext["stageUiBroker"];
+	private canSubmitPrompt!: StageChatViewContext["canSubmitPrompt"];
+	private mountedCustomUi!: StageChatViewContext["mountedCustomUi"];
+	private mountingRequestId!: StageChatViewContext["mountingRequestId"];
+	private promptState!: StageChatViewContext["promptState"];
+	private promptEditor!: StageChatViewContext["promptEditor"];
+	private promptEditorPromptId!: StageChatViewContext["promptEditorPromptId"];
+	private promptEditorSubmitFromEnter!: StageChatViewContext["promptEditorSubmitFromEnter"];
+	private promptScrollOffset!: StageChatViewContext["promptScrollOffset"];
+	private promptMaxScroll!: StageChatViewContext["promptMaxScroll"];
+	private promptVisibleRows!: StageChatViewContext["promptVisibleRows"];
+	private localPaused!: StageChatViewContext["localPaused"];
+	private mouseScrollCaptureEnabled!: StageChatViewContext["mouseScrollCaptureEnabled"];
+	private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
+	private _unsubscribeStore!: StageChatViewContext["_unsubscribeStore"];
+	private _unsubscribeHandle!: StageChatViewContext["_unsubscribeHandle"];
+	private _unsubscribeFooterData!: StageChatViewContext["_unsubscribeFooterData"];
+	private _unregisterStageUiHost!: StageChatViewContext["_unregisterStageUiHost"];
 
-  constructor(opts: StageChatViewOpts) {
-    initializeStageChatView(this._ctx(), opts);
-  }
+	constructor(opts: StageChatViewOpts) {
+		initializeStageChatView(this._ctx(), opts);
+	}
 
-  render(width: number): string[] {
-    const ctx = this._ctx();
-    const w = Math.max(40, width);
-    const stage = currentStage(ctx);
-    const blocked = isBlocked(ctx);
+	render(width: number): string[] {
+		const ctx = this._ctx();
+		const w = Math.max(40, width);
+		const stage = currentStage(ctx);
+		const blocked = isBlocked(ctx);
 
-    this.chatHost.focused = this.focused;
-    const headerLines = renderHeader(ctx, w, stage);
-    const sepLines = [sepRule(ctx, w)];
-    const customUiActive = this.mountedCustomUi !== null;
-    syncPromptState(ctx, stage?.pendingPrompt);
-    const promptActive = !customUiActive && this.promptState !== null;
-    const readOnlyArchive = isReadOnlyArchive(ctx, stage);
+		this.chatHost.focused = this.focused;
+		const headerLines = renderHeader(ctx, w, stage);
+		const sepLines = [sepRule(ctx, w)];
+		const customUiActive = this.mountedCustomUi !== null;
+		syncPromptState(ctx, stage?.pendingPrompt);
+		const promptActive = !customUiActive && this.promptState !== null;
+		const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 
-    const customUiLines = customUiActive ? renderCustomUi(ctx, w) : [];
-    const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
-    const pendingLines = chatChromeHidden ? [] : this.chatHost.renderPendingMessages(w);
-    const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
-    const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
-    const editorLines = chatChromeHidden ? [] : this.chatHost.renderEditor(w);
-    const footerLines = customUiActive || promptActive
-      ? []
-      : readOnlyArchive
-        ? renderReadOnlyArchiveFooter(ctx, w)
-        : renderFooterWithOrchestratorReturnHint(ctx, w, this.chatHost.renderFooter(w));
+		const customUiLines = customUiActive ? renderCustomUi(ctx, w) : [];
+		const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
+		const pendingLines = chatChromeHidden ? [] : this.chatHost.renderPendingMessages(w);
+		const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
+		const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
+		const editorLines = chatChromeHidden ? [] : this.chatHost.renderEditor(w);
+		const footerLines =
+			customUiActive || promptActive
+				? []
+				: readOnlyArchive
+					? renderReadOnlyArchiveFooter(ctx, w)
+					: renderFooterWithOrchestratorReturnHint(ctx, w, this.chatHost.renderFooter(w));
 
-    const totalRows = viewLineCount(ctx);
-    const plan = planStageChatFrame({
-      viewportRows: totalRows,
-      headerRows: HEADER_ROWS,
-      separatorRows: SEP_ROWS,
-      pendingRows: pendingLines.length,
-      workingRows: workingLines.length,
-      usageRows: usageLines.length,
-      editorRows: customUiActive ? customUiLines.length : editorLines.length,
-      footerRows: footerLines.length,
-    });
-    const visiblePendingLines = takeRows(pendingLines, plan.pendingRows);
-    const visibleWorkingLines = workingLines.slice(
-      Math.max(0, workingLines.length - plan.workingRows),
-    );
-    const visibleUsageLines = takeRows(usageLines, plan.usageRows);
-    const editorSlotLines = customUiActive ? customUiLines : editorLines;
-    const visibleEditorLines = takeRows(editorSlotLines, plan.editorRows);
-    const visibleFooterLines = takeRows(footerLines, plan.footerRows);
-    const bodyBudget = plan.bodyRows;
-    if (blocked) this.chatHost.scrollToBottom();
+		const totalRows = viewLineCount(ctx);
+		const plan = planStageChatFrame({
+			viewportRows: totalRows,
+			headerRows: headerLines.length,
+			separatorRows: SEP_ROWS,
+			pendingRows: pendingLines.length,
+			workingRows: workingLines.length,
+			usageRows: usageLines.length,
+			editorRows: customUiActive ? customUiLines.length : editorLines.length,
+			footerRows: footerLines.length,
+		});
+		const visiblePendingLines = takeRows(pendingLines, plan.pendingRows);
+		const visibleWorkingLines = workingLines.slice(Math.max(0, workingLines.length - plan.workingRows));
+		const visibleUsageLines = takeRows(usageLines, plan.usageRows);
+		const editorSlotLines = customUiActive ? customUiLines : editorLines;
+		const visibleEditorLines = takeRows(editorSlotLines, plan.editorRows);
+		const visibleFooterLines = takeRows(footerLines, plan.footerRows);
+		const bodyBudget = plan.bodyRows;
+		if (blocked) this.chatHost.scrollToBottom();
 
-    let bodyLines: string[];
-    if (bodyBudget <= 0) {
-      bodyLines = [];
-    } else if (promptActive) {
-      bodyLines = renderPromptBody(ctx, w, bodyBudget);
-    } else if (blocked) {
-      bodyLines = renderBlockedBody(ctx, w, bodyBudget, stage);
-    } else if (!readOnlyArchive && isPaused(ctx, stage)) {
-      bodyLines = renderPausedBody(ctx, w, bodyBudget);
-    } else if (readOnlyArchive) {
-      bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage);
-    } else {
-      bodyLines = this.chatHost.renderBody(w, bodyBudget);
-    }
+		let bodyLines: string[];
+		if (bodyBudget <= 0) {
+			bodyLines = [];
+		} else if (promptActive) {
+			bodyLines = renderPromptBody(ctx, w, bodyBudget);
+		} else if (blocked) {
+			bodyLines = renderBlockedBody(ctx, w, bodyBudget, stage);
+		} else if (!readOnlyArchive && isPaused(ctx, stage)) {
+			bodyLines = renderPausedBody(ctx, w, bodyBudget);
+		} else if (readOnlyArchive) {
+			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage);
+		} else {
+			bodyLines = this.chatHost.renderBody(w, bodyBudget);
+		}
 
-    const lines = [
-      ...headerLines,
-      ...sepLines,
-      ...bodyLines,
-      ...visiblePendingLines,
-      ...visibleWorkingLines,
-      ...visibleUsageLines,
-      ...visibleEditorLines,
-      ...visibleFooterLines,
-    ];
-    return fitStageChatFrame(lines, totalRows, blankLine(w));
-  }
+		const lines = [
+			...headerLines,
+			...sepLines,
+			...bodyLines,
+			...visiblePendingLines,
+			...visibleWorkingLines,
+			...visibleUsageLines,
+			...visibleEditorLines,
+			...visibleFooterLines,
+		];
+		return fitStageChatFrame(lines, totalRows, blankLine(w));
+	}
 
-  wantsMouseScrollTracking(): boolean {
-    return this.mouseScrollCaptureEnabled;
-  }
+	wantsMouseScrollTracking(): boolean {
+		return this.mouseScrollCaptureEnabled;
+	}
 
-  handleInput(data: string): boolean {
-    return handleStageChatInput(this._ctx(), data);
-  }
+	handleInput(data: string): boolean {
+		return handleStageChatInput(this._ctx(), data);
+	}
 
-  invalidate(): void {
-    invalidateStageChatView(this._ctx());
-  }
+	invalidate(): void {
+		invalidateStageChatView(this._ctx());
+	}
 
-  dispose(): void {
-    disposeStageChatView(this._ctx());
-  }
+	dispose(): void {
+		disposeStageChatView(this._ctx());
+	}
 
-  private _ctx(): StageChatViewContext {
-    // Helper modules operate on the same runtime object; these reads keep the
-    // private fields visible to noUnusedLocals while preserving the historical
-    // non-public TypeScript surface of StageChatView.
-    void this.store;
-    void this.theme;
-    void this.runId;
-    void this.stageId;
-    void this.workflowName;
-    void this.handle;
-    void this.postMortemUnavailableReason;
-    void this.onDetach;
-    void this.onClose;
-    void this.requestRender;
-    void this.requestFocus;
-    void this.focusHoldTimer;
-    void this.getViewportRows;
-    void this.piTui;
-    void this.piTheme;
-    void this.piKeybindings;
-    void this.piEditorFactory;
-    void this.getToolsExpanded;
-    void this.setToolsExpanded;
-    void this.footerData;
-    void this.stageUiBroker;
-    void this.canSubmitPrompt;
-    void this.mountingRequestId;
-    void this.promptEditor;
-    void this.promptEditorPromptId;
-    void this.promptEditorSubmitFromEnter;
-    void this.promptScrollOffset;
-    void this.promptMaxScroll;
-    void this.mouseScrollCaptureEnabled;
-    void this.seenNoticeIds;
-    void this._unsubscribeStore;
-    void this._unsubscribeHandle;
-    void this._unsubscribeFooterData;
-    void this._unregisterStageUiHost;
-    return this as unknown as StageChatViewContext;
-  }
+	private _ctx(): StageChatViewContext {
+		// Helper modules operate on the same runtime object; these reads keep the
+		// private fields visible to noUnusedLocals while preserving the historical
+		// non-public TypeScript surface of StageChatView.
+		void this.store;
+		void this.theme;
+		void this.runId;
+		void this.stageId;
+		void this.workflowName;
+		void this.handle;
+		void this.postMortemUnavailableReason;
+		void this.onDetach;
+		void this.onClose;
+		void this.requestRender;
+		void this.requestFocus;
+		void this.focusHoldTimer;
+		void this.getViewportRows;
+		void this.piTui;
+		void this.piTheme;
+		void this.piKeybindings;
+		void this.piEditorFactory;
+		void this.getToolsExpanded;
+		void this.setToolsExpanded;
+		void this.footerData;
+		void this.stageUiBroker;
+		void this.canSubmitPrompt;
+		void this.mountingRequestId;
+		void this.promptEditor;
+		void this.promptEditorPromptId;
+		void this.promptEditorSubmitFromEnter;
+		void this.promptScrollOffset;
+		void this.promptMaxScroll;
+		void this.promptVisibleRows;
+		void this.mouseScrollCaptureEnabled;
+		void this.seenNoticeIds;
+		void this._unsubscribeStore;
+		void this._unsubscribeHandle;
+		void this._unsubscribeFooterData;
+		void this._unregisterStageUiHost;
+		return this as unknown as StageChatViewContext;
+	}
 
-  get _inputBuffer(): string {
-    return this.chatHost.inputText();
-  }
+	get _inputBuffer(): string {
+		return this.chatHost.inputText();
+	}
 
-  get _transcript(): ReadonlyArray<TranscriptDebugEntry> {
-    return this.chatHost.entries().flatMap((entry) => transcriptDebugEntries(entry));
-  }
+	get _transcript(): ReadonlyArray<TranscriptDebugEntry> {
+		return this.chatHost.entries().flatMap((entry) => transcriptDebugEntries(entry));
+	}
 
-  get _statusMessage(): string {
-    return this.chatHost.statusText();
-  }
+	get _statusMessage(): string {
+		return this.chatHost.statusText();
+	}
 
-  get _isLocalPaused(): boolean {
-    return this.localPaused;
-  }
+	get _isLocalPaused(): boolean {
+		return this.localPaused;
+	}
 
-  get _hasAnimationTick(): boolean {
-    return this.chatHost.hasAnimationTick();
-  }
+	get _hasAnimationTick(): boolean {
+		return this.chatHost.hasAnimationTick();
+	}
 
-  get _bodyScrollFromBottom(): number {
-    return this.chatHost.bodyScrollFromBottom();
-  }
+	get _bodyScrollFromBottom(): number {
+		return this.chatHost.bodyScrollFromBottom();
+	}
 
-  get _lastBodyMaxScroll(): number {
-    return this.chatHost.bodyMaxScroll();
-  }
+	get _lastBodyMaxScroll(): number {
+		return this.chatHost.bodyMaxScroll();
+	}
 }

@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentEvent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
@@ -14,15 +14,14 @@ import {
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { convertToLlm } from "../src/core/messages.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { BuildSystemPromptOptions } from "../src/core/system-prompt.ts";
-import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
+import { createTestResourceLoader } from "./utilities.ts";
 
 // Mock stream that mimics AssistantMessageEventStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -58,7 +57,7 @@ function createAssistantMessage(text: string): AssistantMessage {
 	};
 }
 
-async function waitFor(condition: () => boolean, timeoutMs = 500): Promise<void> {
+async function _waitFor(condition: () => boolean, timeoutMs = 500): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (!condition()) {
 		if (Date.now() > deadline) {
@@ -88,7 +87,7 @@ function textFromAgentMessage(message: AgentMessage): string {
 		.join("\n");
 }
 
-function drainQueuedTexts(agent: Agent): { steering: string[]; followUp: string[] } {
+function _drainQueuedTexts(agent: Agent): { steering: string[]; followUp: string[] } {
 	const agentWithQueues = agent as unknown as AgentQueueAccessForTest;
 	const drain = (queue: PendingAgentMessageQueueForTest | undefined): string[] => {
 		const texts: string[] = [];
@@ -123,7 +122,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		}
 	});
 
-	async function createSession() {
+	async function _createSession() {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;
 
@@ -157,7 +156,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -195,7 +198,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -300,7 +307,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,

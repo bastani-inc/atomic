@@ -9,11 +9,7 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import { parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
-import {
-	isInternalHeader,
-	readSessionHeader,
-	sessionCwdMatches,
-} from "./session-manager-storage.ts";
+import { isInternalHeader, readSessionHeader, sessionCwdMatches } from "./session-manager-storage.ts";
 import type {
 	FileEntry,
 	SessionEntryBase,
@@ -145,9 +141,10 @@ async function mapSessionFilesCooperatively(
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const content = await readFile(filePath, "utf8");
-		const entries = content.length > COOPERATIVE_PARSE_CONTENT_BYTES
-			? await parseSessionEntriesCooperatively(content)
-			: parseSessionEntries(content);
+		const entries =
+			content.length > COOPERATIVE_PARSE_CONTENT_BYTES
+				? await parseSessionEntriesCooperatively(content)
+				: parseSessionEntries(content);
 
 		if (entries.length === 0) return null;
 		const header = entries[0];

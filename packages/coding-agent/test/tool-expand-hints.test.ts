@@ -28,11 +28,14 @@ function component(name: string, args: object, definition: ToolDefinition): Tool
 }
 
 function updateWithLines(target: ToolExecutionComponent, count: number): void {
-	target.updateResult({
-		content: [{ type: "text", text: Array.from({ length: count }, (_, index) => `line ${index + 1}`).join("\n") }],
-		details: {},
-		isError: false,
-	}, false);
+	target.updateResult(
+		{
+			content: [{ type: "text", text: Array.from({ length: count }, (_, index) => `line ${index + 1}`).join("\n") }],
+			details: {},
+			isError: false,
+		},
+		false,
+	);
 }
 
 function visible(target: ToolExecutionComponent): string {
@@ -56,7 +59,11 @@ describe("unbound tool expansion hints", () => {
 		setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
 		for (const scenario of [
 			{ path: join(process.cwd(), "tmux", "SKILL.md"), expected: "[skill] tmux", body: "skill body" },
-			{ path: join(process.cwd(), ".atomic", "AGENTS.md"), expected: "read resource .atomic/AGENTS.md", body: "resource body" },
+			{
+				path: join(process.cwd(), ".atomic", "AGENTS.md"),
+				expected: "read resource .atomic/AGENTS.md",
+				body: "resource body",
+			},
 			{ path: getReadmePath(), expected: "read docs README.md", body: "docs body" },
 		]) {
 			const target = component("read", { path: scenario.path }, createReadToolDefinition(process.cwd()));
@@ -74,7 +81,12 @@ describe("unbound tool expansion hints", () => {
 	test("keeps built-in truncation facts without dangling expand punctuation", () => {
 		setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
 		const definitions: Array<{ name: string; args: object; definition: ToolDefinition; lines: number }> = [
-			{ name: "bash", args: { command: "printf output" }, definition: createBashToolDefinition(process.cwd()), lines: 8 },
+			{
+				name: "bash",
+				args: { command: "printf output" },
+				definition: createBashToolDefinition(process.cwd()),
+				lines: 8,
+			},
 			{ name: "find", args: { paths: ["."] }, definition: createFindToolDefinition(process.cwd()), lines: 23 },
 			{ name: "grep", args: { pattern: "line" }, definition: createGrepToolDefinition(process.cwd()), lines: 18 },
 			{ name: "ls", args: { path: "." }, definition: createLsToolDefinition(process.cwd()), lines: 23 },
@@ -87,10 +99,14 @@ describe("unbound tool expansion hints", () => {
 			expectNoUnavailableExpandHint(rendered);
 		}
 
-		const write = component("write", {
-			path: "output.ts",
-			content: Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"),
-		}, createWriteToolDefinition(process.cwd()));
+		const write = component(
+			"write",
+			{
+				path: "output.ts",
+				content: Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"),
+			},
+			createWriteToolDefinition(process.cwd()),
+		);
 		const renderedWrite = visible(write);
 		expect(renderedWrite).toContain("2 more lines, 12 total");
 		expectNoUnavailableExpandHint(renderedWrite);

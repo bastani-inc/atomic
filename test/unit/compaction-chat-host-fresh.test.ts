@@ -8,10 +8,16 @@
  * rung the user is supposed to see.
  */
 
-import { beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { Text, type Component, type EditorTheme } from "@earendil-works/pi-tui";
+import { type Component, type EditorTheme, Text } from "@earendil-works/pi-tui";
+import { beforeAll, test } from "vitest";
+import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
+import type {
+	CompactionRung,
+	VerbatimCompactionDetails,
+	VerbatimCompactionResult,
+} from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { applyChatSessionAgentEvent } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-events.js";
 import { ChatSessionHostState } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-state.js";
 import type {
@@ -20,12 +26,6 @@ import type {
 } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-types.js";
 import { CompactionBoundaryMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/compaction-boundary-message.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import type {
-	CompactionRung,
-	VerbatimCompactionDetails,
-	VerbatimCompactionResult,
-} from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
-import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 
 beforeAll(() => initTheme("dark"));
 
@@ -63,7 +63,10 @@ function makeState(): ChatSessionHostState {
 	});
 }
 
-function compactionResult(rung: CompactionRung, extra: Partial<VerbatimCompactionResult> = {}): VerbatimCompactionResult {
+function compactionResult(
+	rung: CompactionRung,
+	extra: Partial<VerbatimCompactionResult> = {},
+): VerbatimCompactionResult {
 	return {
 		compactedText: "[User]: retained\n(filtered 12 lines)",
 		firstKeptEntryId: null,
@@ -121,7 +124,9 @@ test("the appended fresh boundary renders the degraded notice", () => {
 			text: "[User]: retained\n(filtered 12 lines)",
 			stats: details.stats,
 			rung: details.rung,
-		}).render(200).join("\n"),
+		})
+			.render(200)
+			.join("\n"),
 	);
 	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
 });
@@ -130,7 +135,10 @@ test("planned and extension boundaries still reach the event-only path", () => {
 	for (const rung of ["planned", "extension"] as const) {
 		const state = makeState();
 		applyChatSessionAgentEvent(state, endEvent(compactionResult(rung)));
-		assert.deepEqual(boundaryDetails(state).map((details) => details.rung), [rung]);
+		assert.deepEqual(
+			boundaryDetails(state).map((details) => details.rung),
+			[rung],
+		);
 	}
 });
 
@@ -164,7 +172,9 @@ test("a fresh boundary is not swallowed by an identical-text planned boundary", 
 			text: "[User]: retained\n(filtered 12 lines)",
 			stats: boundaryDetails(state)[1].stats,
 			rung: boundaryDetails(state)[1].rung,
-		}).render(200).join("\n"),
+		})
+			.render(200)
+			.join("\n"),
 	);
 	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
 });
@@ -173,7 +183,10 @@ test("a repeated same-rung, same-text result is still deduplicated", () => {
 	const state = makeState();
 	applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh")));
 	applyChatSessionAgentEvent(state, endEvent(compactionResult("fresh")));
-	assert.deepEqual(boundaryDetails(state).map((details) => details.rung), ["fresh"]);
+	assert.deepEqual(
+		boundaryDetails(state).map((details) => details.rung),
+		["fresh"],
+	);
 });
 
 const HARD_LIMIT_ERROR =
@@ -197,7 +210,9 @@ test("a committed fresh boundary stays visible when the final gate also errors",
 			text: "[User]: retained\n(filtered 12 lines)",
 			stats: details[0].stats,
 			rung: details[0].rung,
-		}).render(200).join("\n"),
+		})
+			.render(200)
+			.join("\n"),
 	);
 	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
 });

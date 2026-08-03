@@ -12,357 +12,295 @@
  * cross-ref: src/tui/workflow-attach-pane.ts
  */
 
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import {
-    Key,
-    type Component,
-    type EditorComponent,
-    type TUI,
-} from "@earendil-works/pi-tui";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import type {
-    PendingPrompt,
-    StageInputRequest,
-} from "../../packages/workflows/src/shared/store-types.js";
 import type { AgentSession } from "@bastani/atomic";
-import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
-import { makeFakeKeybindings } from "../support/fake-keybindings.js";
+import { Key } from "@earendil-works/pi-tui";
+import { describe, test } from "vitest";
+import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { PendingPrompt, StageInputRequest } from "../../packages/workflows/src/shared/store-types.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 
 type TestStageSeed = {
-    id: string;
-    name: string;
-    status?: "pending" | "running" | "paused" | "completed";
+	id: string;
+	name: string;
+	status?: "pending" | "running" | "paused" | "completed";
 };
 
-function setupRun(
-    store: ReturnType<typeof createStore>,
-    runId: string,
-    stages: TestStageSeed[],
-) {
-    store.recordRunStart({
-        id: runId,
-        name: "test-wf",
-        inputs: {},
-        status: "running",
-        stages: [],
-        startedAt: Date.now(),
-    });
-    for (const s of stages) {
-        store.recordStageStart(runId, {
-            id: s.id,
-            name: s.name,
-            status: s.status ?? "running",
-            parentIds: [],
-            toolEvents: [],
-        });
-    }
+function setupRun(store: ReturnType<typeof createStore>, runId: string, stages: TestStageSeed[]) {
+	store.recordRunStart({
+		id: runId,
+		name: "test-wf",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: Date.now(),
+	});
+	for (const s of stages) {
+		store.recordStageStart(runId, {
+			id: s.id,
+			name: s.name,
+			status: s.status ?? "running",
+			parentIds: [],
+			toolEvents: [],
+		});
+	}
 }
 
-function makePendingPrompt(
-    overrides: Partial<PendingPrompt> = {},
-): PendingPrompt {
-    return {
-        id: "prompt-1",
-        kind: "input",
-        message: "What should the workflow use?",
-        createdAt: Date.now(),
-        ...overrides,
-    };
+function makePendingPrompt(overrides: Partial<PendingPrompt> = {}): PendingPrompt {
+	return {
+		id: "prompt-1",
+		kind: "input",
+		message: "What should the workflow use?",
+		createdAt: Date.now(),
+		...overrides,
+	};
 }
 
-function makeInputRequest(
-    overrides: Partial<StageInputRequest> = {},
-): StageInputRequest {
-    return {
-        id: "input-request-1",
-        kind: "ask_user_question",
-        createdAt: Date.now(),
-        questions: [
-            {
-                question: "Which option should the workflow use?",
-                header: "Choice",
-                options: [{ label: "Use A" }, { label: "Use B" }],
-            },
-        ],
-        ...overrides,
-    };
-}
-
-class FakePromptEditor implements EditorComponent {
-    text = "";
-    focused = false;
-    onSubmit?: (text: string) => void;
-    onChange?: (text: string) => void;
-
-    render(): string[] {
-        return [`fake-prompt-editor:${this.text}`];
-    }
-
-    handleInput(data: string): void {
-        if (data === Key.enter || data === "\r" || data === "\n") {
-            this.onSubmit?.(this.text);
-            return;
-        }
-        this.text += data;
-        this.onChange?.(this.text);
-    }
-
-    invalidate(): void {}
-
-    getText(): string {
-        return this.text;
-    }
-
-    setText(text: string): void {
-        this.text = text;
-    }
+function _makeInputRequest(overrides: Partial<StageInputRequest> = {}): StageInputRequest {
+	return {
+		id: "input-request-1",
+		kind: "ask_user_question",
+		createdAt: Date.now(),
+		questions: [
+			{
+				question: "Which option should the workflow use?",
+				header: "Choice",
+				options: [{ label: "Use A" }, { label: "Use B" }],
+			},
+		],
+		...overrides,
+	};
 }
 
 function makeHandle(runId: string, stageId: string): StageControlHandle {
-    return {
-        runId,
-        stageId,
-        stageName: `stage-${stageId}`,
-        status: "running",
-        sessionId: undefined,
-        sessionFile: undefined,
-        isStreaming: false,
-        messages: [] as AgentSession["messages"],
-        async ensureAttached() {},
-        async prompt() {},
-        async steer() {},
-        async followUp() {},
-        async pause() {},
-        async resume() {},
-        subscribe() {
-            return () => {};
-        },
-    };
+	return {
+		runId,
+		stageId,
+		stageName: `stage-${stageId}`,
+		status: "running",
+		sessionId: undefined,
+		sessionFile: undefined,
+		isStreaming: false,
+		messages: [] as AgentSession["messages"],
+		async ensureAttached() {},
+		async prompt() {},
+		async steer() {},
+		async followUp() {},
+		async pause() {},
+		async resume() {},
+		subscribe() {
+			return () => {};
+		},
+	};
 }
 
-function makeClock(start = 0): {
-    now: () => number;
-    advance: (ms: number) => void;
+function _makeClock(start = 0): {
+	now: () => number;
+	advance: (ms: number) => void;
 } {
-    let current = start;
-    return {
-        now: () => current,
-        advance: (ms: number) => {
-            current += ms;
-        },
-    };
+	let current = start;
+	return {
+		now: () => current,
+		advance: (ms: number) => {
+			current += ms;
+		},
+	};
 }
 
-async function flush(): Promise<void> {
-    await Promise.resolve();
+async function _flush(): Promise<void> {
+	await Promise.resolve();
 }
 
 type AttachedStageChat = { handleInput(data: string): boolean };
 
-function getAttachedStageChat(pane: WorkflowAttachPane): AttachedStageChat {
-    const chatView = (pane as unknown as { chatView: AttachedStageChat | null }).chatView;
-    assert.ok(chatView, "expected initialAttachStageId to create a stage chat");
-    return chatView;
+function _getAttachedStageChat(pane: WorkflowAttachPane): AttachedStageChat {
+	const chatView = (pane as unknown as { chatView: AttachedStageChat | null }).chatView;
+	assert.ok(chatView, "expected initialAttachStageId to create a stage chat");
+	return chatView;
 }
 
-function submitAttachedStageChatText(chatView: AttachedStageChat, text: string): void {
-    for (const ch of text) chatView.handleInput(ch);
-    chatView.handleInput("\r");
+function _submitAttachedStageChatText(chatView: AttachedStageChat, text: string): void {
+	for (const ch of text) chatView.handleInput(ch);
+	chatView.handleInput("\r");
 }
 
-function setupTwoPromptAttachPane(
-    firstPrompt: PendingPrompt,
-    opts: { piKeybindings?: unknown; now?: () => number } = {},
+function _setupTwoPromptAttachPane(
+	firstPrompt: PendingPrompt,
+	opts: { piKeybindings?: unknown; now?: () => number } = {},
 ) {
-    const store = createStore();
-    setupRun(store, "run-1", [
-        { id: "stage-a", name: "A" },
-        { id: "stage-b", name: "B" },
-    ]);
-    const registry = createStageControlRegistry();
-    registry.register(makeHandle("run-1", "stage-a"));
-    registry.register(makeHandle("run-1", "stage-b"));
-    const secondPrompt = makePendingPrompt({ id: "prompt-b", createdAt: 2 });
-    assert.equal(
-        store.recordStagePendingPrompt("run-1", "stage-a", firstPrompt),
-        true,
-    );
-    assert.equal(
-        store.recordStagePendingPrompt("run-1", "stage-b", secondPrompt),
-        true,
-    );
-    const pending = store.awaitStagePendingPrompt(
-        "run-1",
-        "stage-a",
-        firstPrompt.id,
-    );
-    const pane = new WorkflowAttachPane({
-        store,
-        graphTheme: deriveGraphTheme({}),
-        runId: "run-1",
-        stageControlRegistry: registry,
-        onClose: () => {},
-        initialAttachStageId: "stage-a",
-        piKeybindings: opts.piKeybindings,
-        now: opts.now,
-    });
-    return { store, pane, pending, secondPrompt };
+	const store = createStore();
+	setupRun(store, "run-1", [
+		{ id: "stage-a", name: "A" },
+		{ id: "stage-b", name: "B" },
+	]);
+	const registry = createStageControlRegistry();
+	registry.register(makeHandle("run-1", "stage-a"));
+	registry.register(makeHandle("run-1", "stage-b"));
+	const secondPrompt = makePendingPrompt({ id: "prompt-b", createdAt: 2 });
+	assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", firstPrompt), true);
+	assert.equal(store.recordStagePendingPrompt("run-1", "stage-b", secondPrompt), true);
+	const pending = store.awaitStagePendingPrompt("run-1", "stage-a", firstPrompt.id);
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageControlRegistry: registry,
+		onClose: () => {},
+		initialAttachStageId: "stage-a",
+		piKeybindings: opts.piKeybindings,
+		now: opts.now,
+	});
+	return { store, pane, pending, secondPrompt };
 }
 
-function assertNextGraphEnterAttaches(
-    pane: WorkflowAttachPane,
-    expectedStageId: string,
-    message: string,
-): void {
-    pane.handleInput(Key.enter);
-    assert.equal(pane._mode, "stage-chat", message);
-    assert.equal(pane._lastAttachedStageId, expectedStageId);
+function _assertNextGraphEnterAttaches(pane: WorkflowAttachPane, expectedStageId: string, message: string): void {
+	pane.handleInput(Key.enter);
+	assert.equal(pane._mode, "stage-chat", message);
+	assert.equal(pane._lastAttachedStageId, expectedStageId);
 }
 
 describe("WorkflowAttachPane", () => {
-    test("retarget replaces the current run and optional attached stage", () => {
-        const store = createStore();
-        setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-        setupRun(store, "run-2", [{ id: "stage-b", name: "B" }]);
-        const registry = createStageControlRegistry();
-        registry.register(makeHandle("run-1", "stage-a"));
-        registry.register(makeHandle("run-2", "stage-b"));
-        const pane = new WorkflowAttachPane({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageControlRegistry: registry,
-            onClose: () => {},
-        });
+	test("retarget replaces the current run and optional attached stage", () => {
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		setupRun(store, "run-2", [{ id: "stage-b", name: "B" }]);
+		const registry = createStageControlRegistry();
+		registry.register(makeHandle("run-1", "stage-a"));
+		registry.register(makeHandle("run-2", "stage-b"));
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
 
-        pane.handleInput(Key.enter);
-        assert.equal(pane._mode, "stage-chat");
-        assert.equal(pane._runId, "run-1");
-        assert.equal(pane._lastAttachedStageId, "stage-a");
+		pane.handleInput(Key.enter);
+		assert.equal(pane._mode, "stage-chat");
+		assert.equal(pane._runId, "run-1");
+		assert.equal(pane._lastAttachedStageId, "stage-a");
 
-        pane.retarget("run-2");
-        assert.equal(pane._mode, "graph");
-        assert.equal(pane._runId, "run-2");
-        assert.equal(pane._lastAttachedStageId, null);
-        assert.equal(pane._hasChatView, false);
+		pane.retarget("run-2");
+		assert.equal(pane._mode, "graph");
+		assert.equal(pane._runId, "run-2");
+		assert.equal(pane._lastAttachedStageId, null);
+		assert.equal(pane._hasChatView, false);
 
-        pane.retarget("run-2", "stage-b");
-        assert.equal(pane._mode, "stage-chat");
-        assert.equal(pane._runId, "run-2");
-        assert.equal(pane._lastAttachedStageId, "stage-b");
-        assert.equal(pane._hasChatView, true);
-        pane.dispose();
-    });
+		pane.retarget("run-2", "stage-b");
+		assert.equal(pane._mode, "stage-chat");
+		assert.equal(pane._runId, "run-2");
+		assert.equal(pane._lastAttachedStageId, "stage-b");
+		assert.equal(pane._hasChatView, true);
+		pane.dispose();
+	});
 
-    test("stage chat captures mouse tracking by default and ctrl+t toggles copy mode", () => {
-        const store = createStore();
-        setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-        const registry = createStageControlRegistry();
-        registry.register(makeHandle("run-1", "stage-a"));
-        const mouseTracking: boolean[] = [];
-        const pane = new WorkflowAttachPane({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageControlRegistry: registry,
-            onClose: () => {},
-            setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
-        });
+	test("stage chat captures mouse tracking by default and ctrl+t toggles copy mode", () => {
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		const registry = createStageControlRegistry();
+		registry.register(makeHandle("run-1", "stage-a"));
+		const mouseTracking: boolean[] = [];
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+			setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
+		});
 
-        assert.equal(pane.wantsMouseScrollTracking(), true);
-        assert.deepEqual(mouseTracking, [true]);
-        pane.handleInput(Key.enter);
-        assert.equal(pane._mode, "stage-chat");
-        assert.equal(pane.wantsMouseScrollTracking(), true);
-        assert.deepEqual(mouseTracking, [true, true]);
+		assert.equal(pane.wantsMouseScrollTracking(), true);
+		assert.deepEqual(mouseTracking, [true]);
+		pane.handleInput(Key.enter);
+		assert.equal(pane._mode, "stage-chat");
+		assert.equal(pane.wantsMouseScrollTracking(), true);
+		assert.deepEqual(mouseTracking, [true, true]);
 
-        pane.handleInput("\x1b[27;5;116~");
-        assert.equal(pane.wantsMouseScrollTracking(), false);
-        assert.deepEqual(mouseTracking, [true, true, false]);
-        pane.handleInput("\x1b[116;5u");
-        assert.equal(pane.wantsMouseScrollTracking(), true);
-        assert.deepEqual(mouseTracking, [true, true, false, true]);
+		pane.handleInput("\x1b[27;5;116~");
+		assert.equal(pane.wantsMouseScrollTracking(), false);
+		assert.deepEqual(mouseTracking, [true, true, false]);
+		pane.handleInput("\x1b[116;5u");
+		assert.equal(pane.wantsMouseScrollTracking(), true);
+		assert.deepEqual(mouseTracking, [true, true, false, true]);
 
-        pane.handleInput(Key.ctrl("x"));
-        assert.equal(pane._mode, "graph");
-        assert.equal(pane.wantsMouseScrollTracking(), true);
-        assert.deepEqual(mouseTracking, [true, true, false, true, true]);
-        pane.dispose();
-        assert.deepEqual(mouseTracking, [true, true, false, true, true, false]);
-    });
-    test("read-only stage copy mode releases terminal mouse tracking and ctrl+x returns to graph", () => {
-        const store = createStore();
-        setupRun(store, "run-1", [{ id: "stage-a", name: "A", status: "completed" }]);
-        const mouseTracking: boolean[] = [];
-        const pane = new WorkflowAttachPane({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageControlRegistry: createStageControlRegistry(),
-            onClose: () => {},
-            setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
-        });
+		pane.handleInput(Key.ctrl("x"));
+		assert.equal(pane._mode, "graph");
+		assert.equal(pane.wantsMouseScrollTracking(), true);
+		assert.deepEqual(mouseTracking, [true, true, false, true, true]);
+		pane.dispose();
+		assert.deepEqual(mouseTracking, [true, true, false, true, true, false]);
+	});
+	test("read-only stage copy mode releases terminal mouse tracking and ctrl+x returns to graph", () => {
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A", status: "completed" }]);
+		const mouseTracking: boolean[] = [];
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: createStageControlRegistry(),
+			onClose: () => {},
+			setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
+		});
 
-        pane.handleInput(Key.enter);
-        assert.equal(pane._mode, "stage-chat");
-        assert.match(pane.render(96).join("\n"), /copy mode off/);
+		pane.handleInput(Key.enter);
+		assert.equal(pane._mode, "stage-chat");
+		assert.match(pane.render(96).join("\n"), /copy mode off/);
 
-        pane.handleInput("\x1b[116;5u");
-        assert.equal(pane.wantsMouseScrollTracking(), false);
-        assert.match(pane.render(96).join("\n"), /copy mode on/);
-        assert.equal(mouseTracking.at(-1), false);
+		pane.handleInput("\x1b[116;5u");
+		assert.equal(pane.wantsMouseScrollTracking(), false);
+		assert.match(pane.render(96).join("\n"), /copy mode on/);
+		assert.equal(mouseTracking.at(-1), false);
 
-        pane.handleInput(Key.ctrl("x"));
-        assert.equal(pane._mode, "graph");
-        assert.equal(pane.wantsMouseScrollTracking(), true);
-        assert.equal(mouseTracking.at(-1), true);
-        pane.dispose();
-    });
+		pane.handleInput(Key.ctrl("x"));
+		assert.equal(pane._mode, "graph");
+		assert.equal(pane.wantsMouseScrollTracking(), true);
+		assert.equal(mouseTracking.at(-1), true);
+		pane.dispose();
+	});
 
-    test("forwards getViewportRows to graph mode", () => {
-        // The host provides terminal.rows through `getViewportRows`; the
-        // attach pane must thread that through to GraphView so the
-        // overlay frame fills the terminal in graph mode.
-        const store = createStore();
-        setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-        const pane = new WorkflowAttachPane({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            onClose: () => {},
-            getViewportRows: () => 50,
-        });
-        const lines = pane.render(120);
-        assert.equal(pane._mode, "graph");
-        assert.equal(lines.length, 50);
-        pane.dispose();
-    });
+	test("forwards getViewportRows to graph mode", () => {
+		// The host provides terminal.rows through `getViewportRows`; the
+		// attach pane must thread that through to GraphView so the
+		// overlay frame fills the terminal in graph mode.
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			onClose: () => {},
+			getViewportRows: () => 50,
+		});
+		const lines = pane.render(120);
+		assert.equal(pane._mode, "graph");
+		assert.equal(lines.length, 50);
+		pane.dispose();
+	});
 
-    test("forwards getViewportRows to stage-chat mode after attach", () => {
-        // After Enter on a graph node the attach pane swaps the interior
-        // to StageChatView. The viewport accessor must continue to apply
-        // so the chat surface keeps filling the terminal.
-        const store = createStore();
-        setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-        const registry = createStageControlRegistry();
-        registry.register(makeHandle("run-1", "stage-a"));
-        const pane = new WorkflowAttachPane({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageControlRegistry: registry,
-            onClose: () => {},
-            getViewportRows: () => 44,
-        });
-        pane.handleInput(Key.enter);
-        assert.equal(pane._mode, "stage-chat");
-        const lines = pane.render(120);
-        assert.equal(lines.length, 44);
-        pane.dispose();
-    });
+	test("forwards getViewportRows to stage-chat mode after attach", () => {
+		// After Enter on a graph node the attach pane swaps the interior
+		// to StageChatView. The viewport accessor must continue to apply
+		// so the chat surface keeps filling the terminal.
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		const registry = createStageControlRegistry();
+		registry.register(makeHandle("run-1", "stage-a"));
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+			getViewportRows: () => 44,
+		});
+		pane.handleInput(Key.enter);
+		assert.equal(pane._mode, "stage-chat");
+		const lines = pane.render(120);
+		assert.equal(lines.length, 44);
+		pane.dispose();
+	});
 });

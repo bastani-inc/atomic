@@ -1,15 +1,18 @@
+import type {
+	AgentSessionInternalSurface as AgentSession,
+	VerbatimCompactionApplyOptions,
+} from "./agent-session-methods.ts";
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
-import type { AgentSessionInternalSurface as AgentSession, VerbatimCompactionApplyOptions } from "./agent-session-methods.ts";
 import {
+	type CompactionPlannerModel,
+	type CompactionPlanOptions,
+	type CompactionRung,
+	type FallbackPlannerContext,
 	getKeptTailTokenEstimate,
 	prepareCompactionBoundary,
 	runVerbatimCompaction,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
-	type CompactionPlannerModel,
-	type CompactionPlanOptions,
-	type CompactionRung,
-	type FallbackPlannerContext,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
@@ -27,7 +30,10 @@ function frozenCollectionMutation(): never {
 function deepFreeze<T>(value: T): T {
 	if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
 	if (value instanceof Map) {
-		for (const [key, nested] of value) { deepFreeze(key); deepFreeze(nested); }
+		for (const [key, nested] of value) {
+			deepFreeze(key);
+			deepFreeze(nested);
+		}
 		Object.defineProperties(value, {
 			set: { value: frozenCollectionMutation },
 			delete: { value: frozenCollectionMutation },
@@ -57,7 +63,8 @@ function extensionStats(preparation: VerbatimCompactionPreparation, compactedTex
 		rangeCount: 0,
 		tokensBefore: preparation.tokensBefore,
 		tokensAfter,
-		percentReduction: preparation.tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10,
+		percentReduction:
+			preparation.tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10,
 	};
 }
 
@@ -86,7 +93,10 @@ export async function _applyVerbatimCompaction(
 		{ allowSmallRegion },
 	);
 	if (!preparation) {
-		if (options.reason === "overflow") throw new Error("Context compaction found no compactable transcript entries; nothing more was safely deletable");
+		if (options.reason === "overflow")
+			throw new Error(
+				"Context compaction found no compactable transcript entries; nothing more was safely deletable",
+			);
 		return undefined;
 	}
 
@@ -97,20 +107,24 @@ export async function _applyVerbatimCompaction(
 		callbacks: createSummarizationRetryCallbacks(this, { source: "compaction", reason: options.reason }),
 	};
 	let fromExtension = false;
-	let compacted: {
-		text: string;
-		stats: VerbatimCompactionStats;
-		rung: CompactionRung;
-		plannerModel?: CompactionPlannerModel;
-		keptTail: boolean;
-	} | undefined;
+	let compacted:
+		| {
+				text: string;
+				stats: VerbatimCompactionStats;
+				rung: CompactionRung;
+				plannerModel?: CompactionPlannerModel;
+				keptTail: boolean;
+		  }
+		| undefined;
 
 	if (this._extensionRunner.hasHandlers("session_before_compact")) {
 		let snapshot: VerbatimCompactionPreparation;
 		try {
 			snapshot = deepFreeze(structuredClone(preparation));
 		} catch (error) {
-			throw new Error(`Failed to snapshot transcript for compaction extensions: ${error instanceof Error ? error.message : String(error)}`);
+			throw new Error(
+				`Failed to snapshot transcript for compaction extensions: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		const hookResult = (await this._extensionRunner.emit({
 			type: "session_before_compact",
@@ -123,7 +137,12 @@ export async function _applyVerbatimCompaction(
 		if (hookResult?.cancel) throw new Error("Compaction cancelled");
 		if (hookResult?.compactedText !== undefined) {
 			if (hookResult.compactedText.trim().length === 0) throw new Error("No compacted text provided by extension");
-			compacted = { text: hookResult.compactedText, stats: extensionStats(preparation, hookResult.compactedText), rung: "extension", keptTail: true };
+			compacted = {
+				text: hookResult.compactedText,
+				stats: extensionStats(preparation, hookResult.compactedText),
+				rung: "extension",
+				keptTail: true,
+			};
 			fromExtension = true;
 		}
 	}
@@ -168,7 +187,12 @@ export async function _applyVerbatimCompaction(
 		...(compacted.plannerModel ? { plannerModel: compacted.plannerModel } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
-	const entryId = this.sessionManager.appendCompaction(compacted.text, firstKeptEntryId, preparation.tokensBefore, details);
+	const entryId = this.sessionManager.appendCompaction(
+		compacted.text,
+		firstKeptEntryId,
+		preparation.tokensBefore,
+		details,
+	);
 	this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 	const result: VerbatimCompactionResult = {
 		compactedText: compacted.text,
@@ -183,9 +207,21 @@ export async function _applyVerbatimCompaction(
 	};
 	const compactionEntry = this.sessionManager.getEntry(entryId) as CompactionEntry<VerbatimCompactionDetails>;
 	try {
-		await this._extensionRunner.emit({ type: "session_compact", reason: options.reason, parameters: preparation.parameters, result, compactionEntry, fromExtension } satisfies SessionCompactEvent);
+		await this._extensionRunner.emit({
+			type: "session_compact",
+			reason: options.reason,
+			parameters: preparation.parameters,
+			result,
+			compactionEntry,
+			fromExtension,
+		} satisfies SessionCompactEvent);
 	} catch (error) {
-		this._extensionRunner.emitError({ extensionPath: "<session_compact>", event: "session_compact", error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined });
+		this._extensionRunner.emitError({
+			extensionPath: "<session_compact>",
+			event: "session_compact",
+			error: error instanceof Error ? error.message : String(error),
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 	}
 	return result;
 }
@@ -223,7 +259,14 @@ async function runOwnedManualCompaction(
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
-		this._emit({ type: "compaction_end", reason: "manual", result: undefined, aborted, willRetry: false, errorMessage: aborted ? undefined : `Compaction failed: ${message}` });
+		this._emit({
+			type: "compaction_end",
+			reason: "manual",
+			result: undefined,
+			aborted,
+			willRetry: false,
+			errorMessage: aborted ? undefined : `Compaction failed: ${message}`,
+		});
 		throw error;
 	}
 }
@@ -237,7 +280,10 @@ async function runOwnedManualCompaction(
  * than racing it. Only the owning call clears `_compactionAbortController` and
  * reconnects agent events, so `abortCompaction()` always reaches the live run.
  */
-export function compact(this: AgentSession, options: Partial<VerbatimCompactionParameters> = {}): Promise<VerbatimCompactionResult> {
+export function compact(
+	this: AgentSession,
+	options: Partial<VerbatimCompactionParameters> = {},
+): Promise<VerbatimCompactionResult> {
 	const inFlight = this._manualCompactionPromise;
 	if (inFlight) return inFlight;
 	if (this._autoCompactionAbortController) return Promise.reject(new Error(AUTOMATIC_COMPACTION_IN_PROGRESS_MESSAGE));
@@ -245,6 +291,7 @@ export function compact(this: AgentSession, options: Partial<VerbatimCompactionP
 	const controller = new AbortController();
 	this._disconnectFromAgent();
 	this._compactionAbortController = controller;
+	this._compactionReason = "manual";
 	let flight!: Promise<VerbatimCompactionResult>;
 	// Start the owned run in a microtask so both single-flight fields are
 	// published before any joiner can observe a partially claimed compaction.
@@ -253,6 +300,7 @@ export function compact(this: AgentSession, options: Partial<VerbatimCompactionP
 		.finally(() => {
 			if (this._compactionAbortController === controller) {
 				this._compactionAbortController = undefined;
+				if (this._compactionReason === "manual") this._compactionReason = undefined;
 				this._reconnectToAgent();
 			}
 			if (this._manualCompactionPromise === flight) this._manualCompactionPromise = undefined;
@@ -261,8 +309,21 @@ export function compact(this: AgentSession, options: Partial<VerbatimCompactionP
 	return flight;
 }
 
-export function abortCompaction(this: AgentSession): void { this._compactionAbortController?.abort(); this._autoCompactionAbortController?.abort(); }
-export function abortBranchSummary(this: AgentSession): void { this._branchSummaryAbortController?.abort(); }
-export function setAutoCompactionEnabled(this: AgentSession, enabled: boolean): void { this.settingsManager.setCompactionEnabled(enabled); }
+export function abortCompaction(this: AgentSession): void {
+	this._compactionAbortController?.abort();
+	this._autoCompactionAbortController?.abort();
+}
+export function abortBranchSummary(this: AgentSession): void {
+	this._branchSummaryAbortController?.abort();
+}
+export function setAutoCompactionEnabled(this: AgentSession, enabled: boolean): void {
+	this.settingsManager.setCompactionEnabled(enabled);
+}
 
-export const agentSessionCompactionMethods = { _applyVerbatimCompaction, compact, abortCompaction, abortBranchSummary, setAutoCompactionEnabled };
+export const agentSessionCompactionMethods = {
+	_applyVerbatimCompaction,
+	compact,
+	abortCompaction,
+	abortBranchSummary,
+	setAutoCompactionEnabled,
+};

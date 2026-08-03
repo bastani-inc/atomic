@@ -1,23 +1,26 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { Value } from "typebox/value";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
-import type { ExecutorDeps, SubagentExecutorRuntimeDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@bastani/atomic";
-import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
+import { Value } from "typebox/value";
+import { describe, test } from "vitest";
+import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import registerFanoutChildSubagentExtension from "../../packages/subagents/src/extension/fanout-child.js";
+import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
+import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
+import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
+import type {
+	ExecutorDeps,
+	SubagentExecutorRuntimeDeps,
+} from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
 import {
+	type SingleResult,
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
-	type SingleResult,
 } from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
-import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 
 type EventHandler = (data: unknown) => void;
 
@@ -104,7 +107,10 @@ function makeExecutor(
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 	return createSubagentExecutor({
-		pi: { events: { on: () => () => {}, emit: () => {} }, getSessionName: () => "parent" } as unknown as ExecutorDeps["pi"],
+		pi: {
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "parent",
+		} as unknown as ExecutorDeps["pi"],
 		state,
 		config: { asyncByDefault, maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
 		asyncByDefault,
@@ -126,24 +132,58 @@ test("root single reads are schema-valid, cwd-correct, and identical in foregrou
 		assert.equal(Value.Check(SubagentParams, { agent: "worker", task: "fix it", reads: true }), false);
 		const captured: string[] = [];
 		const foreground = makeExecutor(parentCwd, [makeAgent("worker")], {
-			runSync: async (_cwd, _agents, agent, task) => { captured.push(task); return makeResult(agent, task); },
-		});
-		const background = makeExecutor(parentCwd, [makeAgent("worker")], {
-			isAsyncAvailable: () => true,
-			executeAsyncSingle: (_id, params) => {
-				captured.push(params.task ?? "");
-				return { content: [{ type: "text", text: "launched" }], details: { mode: "single", results: [] } };
+			runSync: async (_cwd, _agents, agent, task) => {
+				captured.push(task);
+				return makeResult(agent, task);
 			},
-		}, true);
-		const context = makeContext(parentCwd, () => { throw new Error("unexpected prompt"); });
-		await foreground.execute("fg", { agent: "worker", task: "fix it", cwd: "child", reads }, new AbortController().signal, undefined, context);
-		await background.execute("bg", { agent: "worker", task: "fix it", cwd: "child", reads }, new AbortController().signal, undefined, context);
+		});
+		const background = makeExecutor(
+			parentCwd,
+			[makeAgent("worker")],
+			{
+				isAsyncAvailable: () => true,
+				executeAsyncSingle: (_id, params) => {
+					captured.push(params.task ?? "");
+					return { content: [{ type: "text", text: "launched" }], details: { mode: "single", results: [] } };
+				},
+			},
+			true,
+		);
+		const context = makeContext(parentCwd, () => {
+			throw new Error("unexpected prompt");
+		});
+		await foreground.execute(
+			"fg",
+			{ agent: "worker", task: "fix it", cwd: "child", reads },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
+		await background.execute(
+			"bg",
+			{ agent: "worker", task: "fix it", cwd: "child", reads },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		const expected = `[Read from: ${join(childCwd, "docs/a.md")}, ${join(parentCwd, "shared.md")}, ${absoluteRead}]\n\nfix it`;
 		assert.deepEqual(captured, [expected, expected]);
-		await foreground.execute("disabled", { agent: "worker", task: "plain", reads: false }, new AbortController().signal, undefined, context);
+		await foreground.execute(
+			"disabled",
+			{ agent: "worker", task: "plain", reads: false },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		assert.equal(captured.at(-1), "plain");
 
-		const invalid = await foreground.execute("bad", { agent: "worker", task: "fix it", reads: ["ok", 3] as never }, new AbortController().signal, undefined, context);
+		const invalid = await foreground.execute(
+			"bad",
+			{ agent: "worker", task: "fix it", reads: ["ok", 3] as never },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		assert.equal(invalid.isError, true);
 		assert.match(invalid.content[0]?.type === "text" ? invalid.content[0].text : "", /reads.*array.*strings.*false/i);
 	} finally {
@@ -152,16 +192,22 @@ test("root single reads are schema-valid, cwd-correct, and identical in foregrou
 });
 describe("programmatic subagent tool boundary", () => {
 	test("accepts supported output limits and rejects unknown fields", () => {
-		assert.equal(Value.Check(SubagentParams, {
-			agent: "worker",
-			task: "fix it",
-			maxOutput: { bytes: 1024, lines: 100 },
-		}), true);
-		assert.equal(Value.Check(SubagentParams, {
-			agent: "worker",
-			task: "fix it",
-			unsupported: true,
-		}), false);
+		assert.equal(
+			Value.Check(SubagentParams, {
+				agent: "worker",
+				task: "fix it",
+				maxOutput: { bytes: 1024, lines: 100 },
+			}),
+			true,
+		);
+		assert.equal(
+			Value.Check(SubagentParams, {
+				agent: "worker",
+				task: "fix it",
+				unsupported: true,
+			}),
+			false,
+		);
 	});
 
 	test("foreground single execution stays non-interactive", async () => {
@@ -180,7 +226,10 @@ describe("programmatic subagent tool boundary", () => {
 				{ agent: "worker", task: "fix it" },
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
+				makeContext(cwd, () => {
+					customCalls += 1;
+					throw new Error("unexpected UI prompt");
+				}),
 			);
 
 			assert.equal(result.isError, undefined);
@@ -197,24 +246,35 @@ describe("programmatic subagent tool boundary", () => {
 			let customCalls = 0;
 			let foregroundCalls = 0;
 			const backgroundCalls: Array<{ agent: string; task: string }> = [];
-			const executor = makeExecutor(cwd, [makeAgent("worker")], {
-				isAsyncAvailable: () => true,
-				executeAsyncSingle: (_id, params) => {
-					assert.ok(typeof params.task === "string");
-					backgroundCalls.push({ agent: params.agent, task: params.task });
-					return { content: [{ type: "text", text: "background started" }], details: { mode: "single", results: [] } };
+			const executor = makeExecutor(
+				cwd,
+				[makeAgent("worker")],
+				{
+					isAsyncAvailable: () => true,
+					executeAsyncSingle: (_id, params) => {
+						assert.ok(typeof params.task === "string");
+						backgroundCalls.push({ agent: params.agent, task: params.task });
+						return {
+							content: [{ type: "text", text: "background started" }],
+							details: { mode: "single", results: [] },
+						};
+					},
+					runSync: async (_cwd, _agents, agent, task) => {
+						foregroundCalls += 1;
+						return makeResult(agent, task);
+					},
 				},
-				runSync: async (_cwd, _agents, agent, task) => {
-					foregroundCalls += 1;
-					return makeResult(agent, task);
-				},
-			}, true);
+				true,
+			);
 			const result = await executor.execute(
 				"async-default",
 				{ agent: "worker", task: "fix it" },
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
+				makeContext(cwd, () => {
+					customCalls += 1;
+					throw new Error("unexpected UI prompt");
+				}),
 			);
 
 			assert.equal(result.content[0]?.type === "text" ? result.content[0].text : "", "background started");
@@ -234,7 +294,10 @@ describe("programmatic subagent tool boundary", () => {
 				isAsyncAvailable: () => true,
 				executeAsyncChain: () => {
 					dispatchCalls += 1;
-					return { content: [{ type: "text", text: "background started" }], details: { mode: "parallel", results: [] } };
+					return {
+						content: [{ type: "text", text: "background started" }],
+						details: { mode: "parallel", results: [] },
+					};
 				},
 			});
 			const result = await executor.execute(
@@ -242,7 +305,9 @@ describe("programmatic subagent tool boundary", () => {
 				{ tasks: [{ agent: "worker", task: "repeat", count: 51 }], async: true },
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { throw new Error("unexpected UI prompt"); }),
+				makeContext(cwd, () => {
+					throw new Error("unexpected UI prompt");
+				}),
 			);
 
 			assert.equal(result.isError, true);
@@ -261,7 +326,9 @@ describe("programmatic subagent tool boundary", () => {
 			process.env[SUBAGENT_CHILD_ENV] = "1";
 			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
 			const pi = {
-				registerTool: (tool: ToolDefinition) => { registered = tool; },
+				registerTool: (tool: ToolDefinition) => {
+					registered = tool;
+				},
 				events: { on: () => () => {}, emit: () => {} },
 				getSessionName: () => "fanout-child",
 			} as unknown as ExtensionAPI;
@@ -274,10 +341,16 @@ describe("programmatic subagent tool boundary", () => {
 				{ chain: [{ agent: "debugger" }] },
 				new AbortController().signal,
 				undefined,
-				makeContext(process.cwd(), () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
+				makeContext(process.cwd(), () => {
+					customCalls += 1;
+					throw new Error("unexpected UI prompt");
+				}),
 			);
 			assert.equal(customCalls, 0);
-			assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /First step in chain must have a task/);
+			assert.match(
+				result.content[0]?.type === "text" ? result.content[0].text : "",
+				/First step in chain must have a task/,
+			);
 		} finally {
 			if (previousChild === undefined) delete process.env[SUBAGENT_CHILD_ENV];
 			else process.env[SUBAGENT_CHILD_ENV] = previousChild;
@@ -307,12 +380,18 @@ describe("programmatic subagent tool boundary", () => {
 				},
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
+				makeContext(cwd, () => {
+					customCalls += 1;
+					throw new Error("unexpected UI prompt");
+				}),
 			);
 
 			assert.equal(result.isError, undefined);
 			assert.equal(customCalls, 0);
-			assert.deepEqual(runCalls.map((call) => call.agent), ["scout", "worker"]);
+			assert.deepEqual(
+				runCalls.map((call) => call.agent),
+				["scout", "worker"],
+			);
 			assert.equal(runCalls[1]?.task, "implement from handoff payload");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -340,7 +419,10 @@ describe("programmatic subagent tool boundary", () => {
 				},
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
+				makeContext(cwd, () => {
+					customCalls += 1;
+					throw new Error("unexpected UI prompt");
+				}),
 			);
 
 			assert.equal(result.isError, undefined);
@@ -365,24 +447,45 @@ describe("programmatic subagent tool boundary", () => {
 				},
 				executeAsyncChain: (_id, params) => {
 					asyncChains.push({ mode: params.resultMode, chainLength: params.chain.length });
-					return { content: [{ type: "text", text: "chain started" }], details: { mode: params.resultMode ?? "chain", results: [] } };
+					return {
+						content: [{ type: "text", text: "chain started" }],
+						details: { mode: params.resultMode ?? "chain", results: [] },
+					};
 				},
 			});
-			const ctx = makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); });
+			const ctx = makeContext(cwd, () => {
+				customCalls += 1;
+				throw new Error("unexpected UI prompt");
+			});
 			const signal = new AbortController().signal;
 
 			await executor.execute("async-single", { agent: "alpha", task: "one", async: true }, signal, undefined, ctx);
-			await executor.execute("async-parallel", {
-				tasks: [{ agent: "alpha", task: "one" }, { agent: "beta", task: "two" }],
-				async: true,
-			}, signal, undefined, ctx);
-			await executor.execute("async-chain", {
-				chain: [
-					{ agent: "alpha", task: "first" },
-					{ agent: "beta", task: "continue from {previous}" },
-				],
-				async: true,
-			}, signal, undefined, ctx);
+			await executor.execute(
+				"async-parallel",
+				{
+					tasks: [
+						{ agent: "alpha", task: "one" },
+						{ agent: "beta", task: "two" },
+					],
+					async: true,
+				},
+				signal,
+				undefined,
+				ctx,
+			);
+			await executor.execute(
+				"async-chain",
+				{
+					chain: [
+						{ agent: "alpha", task: "first" },
+						{ agent: "beta", task: "continue from {previous}" },
+					],
+					async: true,
+				},
+				signal,
+				undefined,
+				ctx,
+			);
 
 			assert.equal(customCalls, 0);
 			assert.deepEqual(asyncSingle, [{ agent: "alpha", task: "one" }]);
@@ -405,8 +508,12 @@ describe("programmatic subagent tool boundary", () => {
 			delete process.env[SUBAGENT_CHILD_ENV];
 			delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
 			const pi = {
-				registerTool: (tool: ToolDefinition) => { registered = tool; },
-				registerCommand: (name: string) => { commands.push(name); },
+				registerTool: (tool: ToolDefinition) => {
+					registered = tool;
+				},
+				registerCommand: (name: string) => {
+					commands.push(name);
+				},
 				registerMessageRenderer: () => {},
 				sendMessage: () => {},
 				on: (event: string, handler: () => void) => {
@@ -427,12 +534,23 @@ describe("programmatic subagent tool boundary", () => {
 				{ chain: [{ agent: "debugger" }] },
 				new AbortController().signal,
 				undefined,
-				makeContext(process.cwd(), () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
+				makeContext(process.cwd(), () => {
+					customCalls += 1;
+					throw new Error("unexpected UI prompt");
+				}),
 			);
 			assert.equal(customCalls, 0);
-			assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /First step in chain must have a task/);
+			assert.match(
+				result.content[0]?.type === "text" ? result.content[0].text : "",
+				/First step in chain must have a task/,
+			);
 
-			assert.deepEqual(commands.filter((name) => ["run", "chain", "parallel", "run-chain"].includes(name)).sort(), ["chain", "parallel", "run", "run-chain"]);
+			assert.deepEqual(commands.filter((name) => ["run", "chain", "parallel", "run-chain"].includes(name)).sort(), [
+				"chain",
+				"parallel",
+				"run",
+				"run-chain",
+			]);
 
 			const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
 			for (const args of [
@@ -456,11 +574,17 @@ describe("programmatic subagent tool boundary", () => {
 		const events = new FakeEvents();
 		let received: Record<string, unknown> | undefined;
 		const response = new Promise<void>((resolve) => {
-			const unsubscribe = events.on(SLASH_SUBAGENT_RESPONSE_EVENT, () => { unsubscribe(); resolve(); });
+			const unsubscribe = events.on(SLASH_SUBAGENT_RESPONSE_EVENT, () => {
+				unsubscribe();
+				resolve();
+			});
 		});
 		const bridge = registerSlashSubagentBridge({
 			events,
-			getContext: () => makeContext("/tmp", () => { throw new Error("not used"); }),
+			getContext: () =>
+				makeContext("/tmp", () => {
+					throw new Error("not used");
+				}),
 			execute: async (_id, params) => {
 				received = params as unknown as Record<string, unknown>;
 				return { content: [{ type: "text", text: "done" }], details: { mode: "chain", results: [] } };
@@ -476,5 +600,4 @@ describe("programmatic subagent tool boundary", () => {
 		assert.deepEqual(received, { chain: [{ agent: "worker", task: "one" }], async: true });
 		bridge.dispose();
 	});
-
 });

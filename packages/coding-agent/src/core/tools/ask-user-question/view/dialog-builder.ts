@@ -1,6 +1,6 @@
+import { type Component, Container, type Input, Spacer } from "@earendil-works/pi-tui";
 import { DynamicBorder } from "../../../../modes/interactive/components/index.ts";
 import type { Theme } from "../../../../modes/interactive/theme/theme.ts";
-import { type Component, Container, type Input, Spacer } from "@earendil-works/pi-tui";
 import type { QuestionnaireState } from "../state/state.ts";
 import type { QuestionData } from "../tool/types.ts";
 import { BodyResidualSpacer } from "./body-residual-spacer.ts";

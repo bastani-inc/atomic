@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { getProjectConfigDirs } from "../config.ts";
+import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs } from "./resource-loader-paths.ts";
-import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 
 export function discoverSystemPromptFile(loader: DefaultResourceLoader): string | undefined {
 	const state = resourceInternals(loader);

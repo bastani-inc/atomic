@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+
 describe("InteractiveMode.showExtensionCustom host custom UI state", () => {
 	function createCustomUiHostFixture() {
 		const fakeThis: any = {
@@ -162,4 +163,3 @@ describe("InteractiveMode.showExtensionCustom host custom UI state", () => {
 		]);
 	});
 });
-

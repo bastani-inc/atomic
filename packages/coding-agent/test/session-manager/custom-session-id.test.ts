@@ -106,7 +106,11 @@ describe("SessionManager.newSession with custom id", () => {
 			provider: "openai",
 			model: "gpt-5.4",
 			usage: {
-				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",
@@ -192,9 +196,16 @@ describe("SessionManager.newSession with custom id", () => {
 	it("persists valid workflow classification in the initial fork header", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
 		const sourcePath = join(tempDir, "source.jsonl");
-		writeFileSync(sourcePath, `${JSON.stringify({
-			type: "session", version: 3, id: "source-session-id", timestamp: new Date().toISOString(), cwd: tempDir,
-		})}\n`);
+		writeFileSync(
+			sourcePath,
+			`${JSON.stringify({
+				type: "session",
+				version: 3,
+				id: "source-session-id",
+				timestamp: new Date().toISOString(),
+				cwd: tempDir,
+			})}\n`,
+		);
 		const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
 
 		const forked = SessionManager.forkFrom(sourcePath, tempDir, tempDir, { internal: true, workflow });
@@ -206,14 +217,23 @@ describe("SessionManager.newSession with custom id", () => {
 	it("keeps ordinary forks visible and unclassified", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-session-manager-"));
 		const sourcePath = join(tempDir, "source.jsonl");
-		writeFileSync(sourcePath, `${JSON.stringify({
-			type: "session", version: 3, id: "source-session-id", timestamp: new Date().toISOString(), cwd: tempDir,
-		})}\n`);
+		writeFileSync(
+			sourcePath,
+			`${JSON.stringify({
+				type: "session",
+				version: 3,
+				id: "source-session-id",
+				timestamp: new Date().toISOString(),
+				cwd: tempDir,
+			})}\n`,
+		);
 
 		const forked = SessionManager.forkFrom(sourcePath, tempDir, tempDir);
 
 		expect(forked.getHeader()).not.toHaveProperty("internal");
 		expect(forked.getHeader()).not.toHaveProperty("workflow");
-		expect((await SessionManager.list(tempDir, tempDir)).map((session) => session.id)).toContain(forked.getSessionId());
+		expect((await SessionManager.list(tempDir, tempDir)).map((session) => session.id)).toContain(
+			forked.getSessionId(),
+		);
 	});
 });

@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentEvent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
@@ -13,7 +13,6 @@ import {
 	getModel,
 	type TextContent,
 } from "@earendil-works/pi-ai/compat";
-import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -21,7 +20,6 @@ import { convertToLlm } from "../src/core/messages.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { BuildSystemPromptOptions } from "../src/core/system-prompt.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 // Mock stream that mimics AssistantMessageEventStream
@@ -88,7 +86,7 @@ function textFromAgentMessage(message: AgentMessage): string {
 		.join("\n");
 }
 
-function drainQueuedTexts(agent: Agent): { steering: string[]; followUp: string[] } {
+function _drainQueuedTexts(agent: Agent): { steering: string[]; followUp: string[] } {
 	const agentWithQueues = agent as unknown as AgentQueueAccessForTest;
 	const drain = (queue: PendingAgentMessageQueueForTest | undefined): string[] => {
 		const texts: string[] = [];
@@ -157,7 +155,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -266,7 +268,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		const extensionsResult = await createTestExtensionsResult([
 			(pi) => {
@@ -342,9 +348,7 @@ describe("AgentSession concurrent prompt guard", () => {
 						.map(textFromAgentMessage);
 					userTurns.push(userTexts);
 
-					const hasInterruptMessage = userTexts.some((text) =>
-						text.includes("The workflow prompt was answered"),
-					);
+					const hasInterruptMessage = userTexts.some((text) => text.includes("The workflow prompt was answered"));
 					if (hasInterruptMessage) {
 						interruptTurnStarted = true;
 						stream.push({ type: "start", partial: createAssistantMessage("") });
@@ -379,7 +383,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,

@@ -1,8 +1,8 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
@@ -51,7 +51,10 @@ for (const scenario of [
 			});
 
 			assert.equal(await childAuth.read(scenario.provider), undefined);
-			assert.equal(childRuntime.getAvailableSnapshot().some((model) => model.provider === scenario.provider), false);
+			assert.equal(
+				childRuntime.getAvailableSnapshot().some((model) => model.provider === scenario.provider),
+				false,
+			);
 
 			const hostAuth = AuthStorage.create(authPath);
 			await hostAuth.modify(scenario.provider, async () => scenario.credential);
@@ -83,15 +86,19 @@ test("refresh_models uses newly persisted credentials for forced dynamic discove
 			refreshModels: async ({ credential, force }) => {
 				observedKey = credential?.type === "api_key" ? credential.key : undefined;
 				observedForce = force;
-				return observedKey ? [{
-					id: "discovered-after-login",
-					name: "Discovered",
-					reasoning: false,
-					input: ["text"],
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					contextWindow: 128_000,
-					maxTokens: 4_096,
-				}] : [];
+				return observedKey
+					? [
+							{
+								id: "discovered-after-login",
+								name: "Discovered",
+								reasoning: false,
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								contextWindow: 128_000,
+								maxTokens: 4_096,
+							},
+						]
+					: [];
 			},
 		});
 		const session = { modelRuntime: childRuntime, scopedModels: [] } as unknown as AgentSession;
@@ -101,7 +108,10 @@ test("refresh_models uses newly persisted credentials for forced dynamic discove
 			rebindSession: async () => {},
 			output: () => {},
 		});
-		await AuthStorage.create(authPath).modify("dynamic-login", async () => ({ type: "api_key", key: "new-dynamic-key" }));
+		await AuthStorage.create(authPath).modify("dynamic-login", async () => ({
+			type: "api_key",
+			key: "new-dynamic-key",
+		}));
 		assert.equal(await childAuth.read("dynamic-login"), undefined);
 
 		const response = await handle({ type: "refresh_models", allowNetwork: false, force: true });
@@ -119,7 +129,9 @@ test("refresh_models is unbounded by default and honors an explicit caller timeo
 	const signals: Array<AbortSignal | undefined> = [];
 	let reloads = 0;
 	const modelRuntime = {
-		reloadCredentials: async () => { reloads += 1; },
+		reloadCredentials: async () => {
+			reloads += 1;
+		},
 		refresh: async ({ signal }: { signal?: AbortSignal }) => {
 			signals.push(signal);
 			if (signal && !signal.aborted) {

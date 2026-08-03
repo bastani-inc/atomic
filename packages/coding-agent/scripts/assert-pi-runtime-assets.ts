@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const expectedPiVersion = "0.82.1";
+const expectedPiVersion = "0.83.0";
 const requiredPiAiFiles = [
 	"package.json",
 	"dist/models.generated.js",

@@ -3,10 +3,10 @@ import { join, resolve, sep } from "node:path";
 import { getProjectConfigDirs } from "../config.ts";
 import type { Extension } from "./extensions/types.ts";
 import type { PathMetadata } from "./package-manager.ts";
-import { createSourceInfo, type SourceInfo } from "./source-info.ts";
+import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs } from "./resource-loader-paths.ts";
-import type { DefaultResourceLoader } from "./resource-loader-core.ts";
+import { createSourceInfo, type SourceInfo } from "./source-info.ts";
 
 export function applyExtensionSourceInfo(
 	loader: DefaultResourceLoader,

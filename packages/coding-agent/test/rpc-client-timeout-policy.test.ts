@@ -47,8 +47,12 @@ describe("RpcClient request timeout policy", () => {
 			let settled: "resolved" | "rejected" | "pending" = "pending";
 			const pending = client
 				.prompt("hold the picker open")
-				.then(() => { settled = "resolved"; })
-				.catch(() => { settled = "rejected"; });
+				.then(() => {
+					settled = "resolved";
+				})
+				.catch(() => {
+					settled = "rejected";
+				});
 
 			await new Promise((resolve) => setTimeout(resolve, 500));
 
@@ -68,9 +72,7 @@ describe("RpcClient request timeout policy", () => {
 		});
 		await client.start();
 		try {
-			await expect(client.getCommands()).rejects.toThrow(
-				/Timeout waiting for response to get_commands/,
-			);
+			await expect(client.getCommands()).rejects.toThrow(/Timeout waiting for response to get_commands/);
 		} finally {
 			await client.stop();
 		}
@@ -85,9 +87,7 @@ describe("RpcClient request timeout policy", () => {
 		});
 		await client.start();
 		try {
-			await expect(client.prompt("trigger exit")).rejects.toThrow(
-				/Agent process exited \(code=37 signal=null\)/,
-			);
+			await expect(client.prompt("trigger exit")).rejects.toThrow(/Agent process exited \(code=37 signal=null\)/);
 		} finally {
 			await client.stop();
 		}

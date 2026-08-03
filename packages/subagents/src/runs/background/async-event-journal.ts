@@ -1,10 +1,13 @@
 import * as fs from "node:fs";
-import type { DrainableSource, JsonlWriteStream } from "../../shared/jsonl-writer.ts";
 import { acquireEventWriter } from "../../shared/event-jsonl-writer.ts";
+import type { DrainableSource, JsonlWriteStream } from "../../shared/jsonl-writer.ts";
 
 const DEFAULT_TELEMETRY_BYTES = 512 * 1024;
 const CAPPED_CHILD_EVENT_TYPES = new Set([
-	"message_update", "tool_execution_update", "subagent.child.stdout", "subagent.child.stderr",
+	"message_update",
+	"tool_execution_update",
+	"subagent.child.stdout",
+	"subagent.child.stderr",
 ]);
 
 interface ChildEventJournalContext {
@@ -81,10 +84,13 @@ export function createChildEventJournal(
 			const sanitized = sanitizeChildEvent(event);
 			const record = enrich(sanitized);
 			const lineBytes = Buffer.byteLength(`${JSON.stringify(record)}\n`, "utf-8");
-			const assistantEvent = event.type === "message_update" && event.assistantMessageEvent
-				&& typeof event.assistantMessageEvent === "object" && !Array.isArray(event.assistantMessageEvent)
-				? event.assistantMessageEvent as Record<string, unknown>
-				: undefined;
+			const assistantEvent =
+				event.type === "message_update" &&
+				event.assistantMessageEvent &&
+				typeof event.assistantMessageEvent === "object" &&
+				!Array.isArray(event.assistantMessageEvent)
+					? (event.assistantMessageEvent as Record<string, unknown>)
+					: undefined;
 			const nestedTerminal = assistantEvent?.type === "done" || assistantEvent?.type === "error";
 			const capped = !nestedTerminal && typeof event.type === "string" && CAPPED_CHILD_EVENT_TYPES.has(event.type);
 			if (capped && !writer.reserveTelemetry(lineBytes, maxTelemetryBytes)) {

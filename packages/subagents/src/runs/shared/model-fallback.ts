@@ -1,4 +1,8 @@
-import { THINKING_LEVELS, splitKnownThinkingSuffix, type ModelInfo as AvailableModelInfo } from "../../shared/model-info.ts";
+import {
+	type ModelInfo as AvailableModelInfo,
+	splitKnownThinkingSuffix,
+	THINKING_LEVELS,
+} from "../../shared/model-info.ts";
 import type { Usage } from "../../shared/types.ts";
 
 export type { AvailableModelInfo };
@@ -46,7 +50,9 @@ export function buildModelCandidates(
 ): string[] {
 	const seen = new Set<string>();
 	const candidates: string[] = [];
-	const fallbackEntries = (fallbackModels ?? []).map((model, index) => applyFallbackThinkingLevel(model, fallbackThinkingLevels?.[index]));
+	const fallbackEntries = (fallbackModels ?? []).map((model, index) =>
+		applyFallbackThinkingLevel(model, fallbackThinkingLevels?.[index]),
+	);
 	for (const raw of [primaryModel, ...fallbackEntries, currentModel]) {
 		if (!raw) continue;
 		const normalized = resolveModelCandidate(raw.trim(), availableModels, preferredProvider);
@@ -106,11 +112,7 @@ const NON_RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/interrupted/i,
 ];
 
-const CANCELLED_FAILURE_PATTERNS: readonly RegExp[] = [
-	/cancel/i,
-	/abort/i,
-	/interrupted/i,
-];
+const CANCELLED_FAILURE_PATTERNS: readonly RegExp[] = [/cancel/i, /abort/i, /interrupted/i];
 
 export type ModelFallbackFailureKind =
 	| "auth_on_candidate_provider"
@@ -150,7 +152,7 @@ const FALLBACKABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Se
 ]);
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === "object" ? value as Record<string, unknown> : undefined;
+	return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
 function field(value: unknown, key: string): unknown {
@@ -167,9 +169,7 @@ function errorName(value: unknown): string | undefined {
 }
 
 function directMessageFrom(value: unknown): string | undefined {
-	return stringField(value, "errorMessage")
-		?? stringField(value, "message")
-		?? stringField(value, "statusText");
+	return stringField(value, "errorMessage") ?? stringField(value, "message") ?? stringField(value, "statusText");
 }
 
 function integerFrom(value: unknown): number | undefined {
@@ -180,9 +180,11 @@ function integerFrom(value: unknown): number | undefined {
 }
 
 function statusFrom(value: unknown): number | undefined {
-	return integerFrom(field(value, "status"))
-		?? integerFrom(field(value, "statusCode"))
-		?? integerFrom(field(value, "httpStatus"));
+	return (
+		integerFrom(field(value, "status")) ??
+		integerFrom(field(value, "statusCode")) ??
+		integerFrom(field(value, "httpStatus"))
+	);
 }
 
 function codeFrom(value: unknown): string | number | undefined {
@@ -226,7 +228,8 @@ function normalizeCode(value: string | number | undefined): string | undefined {
 function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | undefined {
 	switch (status) {
 		case 400:
-		case 413: case 422:
+		case 413:
+		case 422:
 			return "request_incompatible";
 		case 401:
 		case 403:
@@ -244,13 +247,22 @@ function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | 
 }
 
 const REQUEST_INCOMPATIBLE_CODES: ReadonlySet<string> = new Set([
-	"invalid_request", "invalid_request_error", "bad_request", "context_length_exceeded",
-	"request_too_large", "too_large", "request_entity_too_large", "max_tokens",
-	"max_context_length", "context_window_exceeded",
+	"invalid_request",
+	"invalid_request_error",
+	"bad_request",
+	"context_length_exceeded",
+	"request_too_large",
+	"too_large",
+	"request_entity_too_large",
+	"max_tokens",
+	"max_context_length",
+	"context_window_exceeded",
 ]);
 function requestIncompatibleKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
-	return normalizedCode !== undefined && REQUEST_INCOMPATIBLE_CODES.has(normalizedCode) ? "request_incompatible" : undefined;
+	return normalizedCode !== undefined && REQUEST_INCOMPATIBLE_CODES.has(normalizedCode)
+		? "request_incompatible"
+		: undefined;
 }
 function refusalKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
@@ -274,12 +286,53 @@ function refusalKindFromCode(code: string | number | undefined): ModelFallbackFa
 }
 
 const CODE_KINDS_BY_KIND: ReadonlyArray<readonly [ModelFallbackFailureKind, ReadonlySet<string>]> = [
-	["auth_on_candidate_provider", new Set(["auth", "auth_required", "authentication_required", "unauthorized", "forbidden", "invalid_api_key", "missing_api_key", "invalid_key"])],
-	["network_timeout", new Set(["etimedout", "econnreset", "econnrefused", "enotfound", "eai_again", "fetch_failed", "network_error", "timeout", "timeout_error", "und_err_connect_timeout"])],
-	["rate_limit", new Set(["rate_limit", "rate_limit_exceeded", "too_many_requests", "quota_exceeded", "insufficient_quota", "usage_limit", "usage_limit_reached", "usage_limit_exceeded"])],
+	[
+		"auth_on_candidate_provider",
+		new Set([
+			"auth",
+			"auth_required",
+			"authentication_required",
+			"unauthorized",
+			"forbidden",
+			"invalid_api_key",
+			"missing_api_key",
+			"invalid_key",
+		]),
+	],
+	[
+		"network_timeout",
+		new Set([
+			"etimedout",
+			"econnreset",
+			"econnrefused",
+			"enotfound",
+			"eai_again",
+			"fetch_failed",
+			"network_error",
+			"timeout",
+			"timeout_error",
+			"und_err_connect_timeout",
+		]),
+	],
+	[
+		"rate_limit",
+		new Set([
+			"rate_limit",
+			"rate_limit_exceeded",
+			"too_many_requests",
+			"quota_exceeded",
+			"insufficient_quota",
+			"usage_limit",
+			"usage_limit_reached",
+			"usage_limit_exceeded",
+		]),
+	],
 	["cancelled", new Set(["aborterror", "aborted", "cancelled", "canceled"])],
 	["model_unavailable", new Set(["model_not_found", "model_unavailable", "model_disabled", "unknown_model"])],
-	["provider_unavailable", new Set(["provider_error", "api_error", "service_unavailable", "temporarily_unavailable", "overloaded"])],
+	[
+		"provider_unavailable",
+		new Set(["provider_error", "api_error", "service_unavailable", "temporarily_unavailable", "overloaded"]),
+	],
 ];
 function kindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
@@ -327,9 +380,16 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
 	if (!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return undefined;
-	if (/rate\s*limit|too many requests|\b429\b|quota|usage[\s_-]*limit|billing|credit/i.test(message)) return "rate_limit";
-	if (/auth|unauthori[sz]ed|\b40[13]\b|api key|token expired|forbidden|invalid key/i.test(message)) return "auth_on_candidate_provider";
-	if (/model.*(?:unavailable|disabled|not found|unknown)|(?:unavailable|disabled|not found|unknown).*model/i.test(message)) return "model_unavailable";
+	if (/rate\s*limit|too many requests|\b429\b|quota|usage[\s_-]*limit|billing|credit/i.test(message))
+		return "rate_limit";
+	if (/auth|unauthori[sz]ed|\b40[13]\b|api key|token expired|forbidden|invalid key/i.test(message))
+		return "auth_on_candidate_provider";
+	if (
+		/model.*(?:unavailable|disabled|not found|unknown)|(?:unavailable|disabled|not found|unknown).*model/i.test(
+			message,
+		)
+	)
+		return "model_unavailable";
 	if (/network|fetch failed|socket|connection refused|timeout|timed? out/i.test(message)) return "network_timeout";
 	return "provider_unavailable";
 }
@@ -370,10 +430,16 @@ function fallbackSignalForMessage(
 	const kind = fallbackKindFromMessage(message, errorName(value));
 	return kind === undefined ? undefined : makeSignal(kind, value, source);
 }
-function fallbackSignalFromMessage(value: unknown, source: ModelFallbackFailureSource | undefined): ModelFallbackFailureSignal | undefined {
+function fallbackSignalFromMessage(
+	value: unknown,
+	source: ModelFallbackFailureSource | undefined,
+): ModelFallbackFailureSignal | undefined {
 	return fallbackSignalForMessage(modelFailureMessage(value), value, source);
 }
-function fallbackSignalFromDirectMessage(value: unknown, source: ModelFallbackFailureSource | undefined): ModelFallbackFailureSignal | undefined {
+function fallbackSignalFromDirectMessage(
+	value: unknown,
+	source: ModelFallbackFailureSource | undefined,
+): ModelFallbackFailureSignal | undefined {
 	return fallbackSignalForMessage(directMessageFrom(value), value, source);
 }
 
@@ -381,9 +447,10 @@ function classifyAssistantRefusalSignal(
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
-	const codeRefusalKind = refusalKindFromCode(codeFrom(value))
-		?? refusalKindFromCode(errorName(value))
-		?? refusalKindFromCode(finishReasonFrom(value));
+	const codeRefusalKind =
+		refusalKindFromCode(codeFrom(value)) ??
+		refusalKindFromCode(errorName(value)) ??
+		refusalKindFromCode(finishReasonFrom(value));
 	if (codeRefusalKind !== undefined) return makeSignal(codeRefusalKind, value, source);
 
 	const messageRefusalKind = refusalKindFromMessage(directMessageFrom(value) ?? "");
@@ -415,15 +482,15 @@ function structuredSignal(
 	let firstNestedFallbackSignal: ModelFallbackFailureSignal | undefined;
 	const nestedSeen = new Set(seen);
 	for (const diagnosticError of diagnosticErrors(value)) {
-		const diagnosticSignal = structuredSignal(diagnosticError, nestedSeen, "diagnostic")
-			?? fallbackSignalFromMessage(diagnosticError, "diagnostic");
+		const diagnosticSignal =
+			structuredSignal(diagnosticError, nestedSeen, "diagnostic") ??
+			fallbackSignalFromMessage(diagnosticError, "diagnostic");
 		if (diagnosticSignal === undefined) continue;
 		if (isRefusalSignal(diagnosticSignal)) return diagnosticSignal;
 		firstNestedFallbackSignal ??= diagnosticSignal;
 	}
 	const cause = causeOf(value);
-	const causeSignal = structuredSignal(cause, nestedSeen, source)
-		?? fallbackSignalFromMessage(cause, source);
+	const causeSignal = structuredSignal(cause, nestedSeen, source) ?? fallbackSignalFromMessage(cause, source);
 	if (causeSignal !== undefined) {
 		if (isRefusalSignal(causeSignal)) return causeSignal;
 		firstNestedFallbackSignal ??= causeSignal;
@@ -477,9 +544,7 @@ export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailur
 	if (structured !== undefined) return structured;
 	const message = modelFailureMessage(error);
 	const name = errorName(error);
-	const fallbackKind = message.trim().length > 0
-		? fallbackKindFromMessage(message, name)
-		: undefined;
+	const fallbackKind = message.trim().length > 0 ? fallbackKindFromMessage(message, name) : undefined;
 	return {
 		kind: fallbackKind ?? "unknown",
 		message,

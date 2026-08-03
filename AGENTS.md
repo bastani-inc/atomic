@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repo is the private `atomic-monorepo` Bun workspace. It currently houses:
+This repo is the private `atomic-monorepo` npm workspace. It currently houses:
 
 - `@bastani/atomic` in `packages/coding-agent` — the Atomic-branded fork of pi's coding-agent CLI and the only independently published package.
 - `@bastani/workflows` in `packages/workflows` — a first-party extension for Atomic/pi that brings multi-stage, DAG-driven workflow execution to agent sessions.
@@ -15,18 +15,31 @@ Companion packages under `packages/*` ship as **raw TypeScript** (no compile ste
 
 ## Tech Stack
 
-This repo runs a **hybrid toolchain**, like upstream pi. Each tool is used where it is
-actually better, rather than one runtime being mandated everywhere.
+This repo runs a **hybrid toolchain, matching upstream `earendil-works/pi` task for task**.
+Each tool is used where it is actually better, rather than one runtime being mandated
+everywhere. Where the split differs from pi, the reason is written down.
 
 | Task | Tool | Why |
 | --- | --- | --- |
-| Dependency install | `bun install` | `bun.lock` is the lockfile, and `bunfig.toml` carries the `minimumReleaseAge` supply-chain gate and `linker = "hoisted"` |
-| Scripts, dev runtime, TS execution | `bun run`, `bun <file.ts>` | Runs `.ts` directly and resolves `.js` specifiers to `.ts` source with no loader hook |
-| Root test suites | `bun test` (`test/unit`, `test/integration`, `test/ci`) | `bun:test` + `node:assert/strict` |
-| `packages/coding-agent` suite | `vitest --run` | Inherited from upstream pi, which uses vitest for its workspace tests |
-| npm-package smoke tests | Node (`node-version: 24` in CI) | `test/integration/installed-package-node-extensions.test.ts` verifies the shipped `atomic` bin under `#!/usr/bin/env node`, which is how npm/bun installs run it |
-| Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too |
+| Dependency install | `npm ci --ignore-scripts` | `package-lock.json` is the single verified lockfile. `npm ci` refuses to install when it and `package.json` disagree; nothing enforced that while two lockfiles coexisted |
+| Supply-chain gate | committed `.npmrc` | Byte-identical to pi's: `save-exact=true` and `min-release-age=2`. Binds every contributor's install, not just CI. `.github/dependabot.yml` carries the matching `cooldown` |
+| Build | `npm run build` | tsgo, not Bun; no behaviour change |
+| Lint / format | `biome check` (`npm run check`, `npm run format`) | pi's rule set exactly: recommended preset plus the same six overrides. Tab indent width 3, line width 120 |
+| Typecheck / check | `npm run check` (biome + `tsc --noEmit` + shrinkwrap check) | pi runs biome + tsgo here |
+| Root test suites | `vitest --run --project {unit,integration,ci}` | pi uses vitest for its workspace tests, with a shared `vitest.base.ts` setting only `resolve.alias` |
+| `packages/coding-agent` suite | `vitest --run` | already parity; it now runs under Node rather than `bun --bun`, SQLite selectors included |
+| Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |
+| Repository scripts | `bun run scripts/*.ts` | Bun executes `.ts` directly and resolves `.js` specifiers to `.ts` source with no loader hook. Bare `node` cannot; scripts meant for `node --test` are `.mjs` |
+| Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too. Bun pinned to 1.3.14 |
+| npm-package smoke tests | Node (`node-version: 22` in CI, matching pi) | `test/integration/installed-package-node-extensions.test.ts` verifies the shipped `atomic` bin under `#!/usr/bin/env node`, which is how npm installs run it |
 | Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI, and npm trusted publishing requires a GitHub-hosted runner |
+
+**Where this repository deliberately declines pi's shape:** pi's CI is one `ubuntu-latest`
+job with no matrix and no `timeout-minutes`. Do not copy it. This workflow produces nine
+check contexts including full Windows coverage, runs on Blacksmith runners, and carries
+per-job timeout budgets that `test/ci/test-workflow-topology.test.ts` asserts. Adopting pi's
+topology would delete Windows coverage and orphan the two required check contexts. Parity is
+a *toolchain* goal, not a CI-topology goal.
 
 - TypeScript ≥ 5.x (strict, `noUnusedLocals`, `noUnusedParameters`)
 - `@sinclair/typebox` for schema definitions
@@ -36,17 +49,21 @@ actually better, rather than one runtime being mandated everywhere.
 
 ### Commands
 
-- `bun install` — install dependencies (writes `bun.lock`)
-- `bun run typecheck` / `bun run lint` — `tsc --noEmit`
-- `bun run test:unit`, `bun run test:integration`, `bun run test:ci-contracts`, `bun run test:all`
-- `bun run --cwd packages/coding-agent test` — the vitest suite
-- `bun run hooks:install`, `bun run hooks:run`
-- `bunx <package> <command>` for one-off tools
-- Git hooks are configured in `prek.toml`; `bun install` runs the root `prepare` script to install hooks with `prek install --prepare-hooks` using `default_install_hook_types`.
+- `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
+- `npm install <pkg>` — add a dependency; `.npmrc` applies the 3-day release-age gate and `save-exact`
+- `npm run check` — `tsc --noEmit` plus the published-shrinkwrap check. `npm run typecheck` is the typecheck alone
+- `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
+- `npm run test --workspace=@bastani/atomic` — the coding-agent vitest suite, under Node
+- `npm run test:scripts` — `node --test scripts/*.test.mjs`
+- `npm run hooks:install`, `npm run hooks:run`
+- `bun run scripts/<name>.ts` — repository scripts stay on Bun; see the Tech Stack table
+- Git hooks are configured in `prek.toml`; `npm install` runs the root `prepare` script to install hooks with `prek install --prepare-hooks` using `default_install_hook_types`.
 
-**One hard rule remains:** do not run `npm install`, `yarn install`, or `pnpm install` in this
-workspace. They write a competing lockfile, desync `bun.lock`, and bypass the `minimumReleaseAge`
-gate in `bunfig.toml`. Every other npm/Node use above is deliberate.
+**Do not run `yarn install` or `pnpm install`,** and do not reintroduce `bun install`: each
+writes a competing lockfile that `npm ci` neither reads nor verifies, and bypasses the
+`.npmrc` release-age gate. `bun.lock` and `packageManager: bun@…` were removed for this
+reason. Bun remains a declared engine and is still the right tool for the rows above that
+name it.
 
 ## Best Practices
 
@@ -65,10 +82,10 @@ Follow [`CONTRIBUTING.md`](CONTRIBUTING.md) for external-contributor coordinatio
 
 ## Testing
 
-Use `bun run test:unit` (or `test:integration`, `test:all`) and make use of your tdd skill to write high quality tests. Tests use `bun:test` + `node:assert/strict`:
+Use `npm run test:unit` (or `test:integration`, `test:all`) and make use of your tdd skill to write high quality tests. The suites run under **vitest**; the assertion style stays `node:assert/strict`:
 
 ```ts#test/unit/index.test.ts
-import { test } from "bun:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
 test("hello world", () => {
@@ -76,34 +93,81 @@ test("hello world", () => {
 });
 ```
 
+### Replacing Bun globals in tests
+
+Root suites run under Node, so `Bun.*` and `import.meta.dir` are unavailable. Use
+`test/helpers/runtime.ts` rather than reaching for `node:fs`/`node:child_process` directly —
+several of the replacements differ in ways that fail silently:
+
+| Bun | Helper | Trap it closes |
+| --- | --- | --- |
+| `Bun.sleep` | `sleep` | — |
+| `import.meta.dir` | `moduleDir(import.meta.url)` | — |
+| `Bun.file(p).text()/.json()/.exists()` | `readText` / `readJson` / `fileExists` | `readJson<T>()` returns `unknown` by default; `Bun.file().json()` returned `any` |
+| `Bun.write` | `writeFileEnsuringDir` | `Bun.write` creates parent directories; `fs.writeFile` throws ENOENT |
+| `Bun.spawnSync` | `spawnSyncCollect` | Node returns `status`, not `exitCode`; a raw port makes every `assert.equal(r.exitCode, 0)` compare against `undefined` |
+| `Bun.spawn` | `spawnProcess` | Node has no `.exited` promise and no web-stream stdio, and reports a missing binary asynchronously rather than throwing |
+| `process.execPath` **when spawning Bun** | `bunExecutable()` | Under vitest `process.execPath` is Node, so a `.ts` child, `bun run`, or a Bun-specific `-e` script silently runs under the wrong runtime |
+
+Shipped `packages/` code that uses `Bun.*` behind `isBunBinary`/`isBundledBuild` is **out of
+scope** and must not be edited to suit the test runner. One shipped module —
+`packages/web-access/subprocess.ts` — calls `Bun.spawn`/`Bun.sleep` *unguarded*, because it
+only ever runs inside the Bun-compiled binary. `test/unit/web-access-subprocess.test.ts`
+therefore calls `installBunGlobal()`, which substitutes the helpers above for those two
+globals. All five test names and their assertions survive, and what they cover — bounded
+draining, the byte cap, the timeout, the kill path — is unchanged. **What they no longer
+cover is Bun's own spawn implementation, which is what the shipped binary runs on.** The
+alternative, re-execing the file under Bun, would collapse five names into one wrapper
+assertion; that is a worse trade, but the gap is real and is stated here rather than only in
+the helper.
+
+### SQLite selectors run on either runtime
+
+`src/core/tools/resource-selectors.ts` loads `node:sqlite` first and falls back to
+`bun:sqlite`. `node:sqlite` is unflagged from Node v22.13.0 and is what upstream pi uses;
+Bun 1.3.14 does not ship it (oven-sh/bun#32498 is merged but unreleased), and the shipped
+binary is Bun-compiled, so the fallback is what keeps that binary working. When Bun releases
+`node:sqlite`, both runtimes take the first branch and the fallback can be deleted.
+
+`better-sqlite3` was evaluated and rejected: it segfaults Bun 1.3.14 on construction, which is
+worse than a catchable missing-module error.
+
+Test fixtures go through `packages/coding-agent/test/helpers/sqlite.ts`, which mirrors that
+preference order behind the `bun:sqlite`-shaped API the suites were written against. Never
+reintroduce a soft guard (`if (!sqlite) return`, or a `? it : it.skip`) — that is how one test
+skipped and eleven kept passing with every assertion dead. `test/ci/ci-workflow-contracts.test.ts`
+enforces the loader order and rejects those guards.
+
+
 ### Per-test timeout policy
 
-- The suite-wide per-test budget is **30000 ms**, declared once as `--timeout 30000` in the `test:unit`, `test:integration`, and `test:ci-contracts` scripts in the root `package.json`. `test/ci/ci-workflow-contracts.test.ts` enforces that all three still declare it and still agree.
-- Do **not** move the budget to `bunfig.toml`. Bun 1.3.14 silently ignores `[test] timeout`; it looks correct and does nothing. Do not set it only in `.github/workflows/test.yml` either: CI reaches every suite through `bun run <script>`, so `package.json` is the one place that keeps local and CI budgets identical.
-- One platform-neutral value, never a Windows-only branch. A Windows-only bump would leave Linux as the only place the budget is enforced and hide Windows regressions until they were far worse.
-- Add an explicit third-argument timeout only for a test whose cost is *structural* (a full builtin-package loader reload, a real CLI child process, a `tsc` invocation, a built-package install). Name the constant and keep it at the call site. Never restate the default value — an explicit timeout that merely repeats it silently lowers that test's budget when the default rises.
-- `scripts/run-flaky-test-suite.ts` scores every duration Bun prints against that test's effective timeout: warn at 40 % of budget, fail the step at 70 %. Every attempt is scored, so a fast bounded retry cannot hide a first attempt that burned a test's headroom. It always writes the per-test duration table to `.ci-diagnostics/<suite>-durations.md`, on green runs too. If it fails your test, make the test faster or justify a structural explicit timeout — do not raise the shared default.
-- The gate reads the `(pass) name [Nms]` records Bun prints per test, so `scripts/run-flaky-test-suite.ts` clears `CLAUDECODE`/`REPL_ID`/`AGENT` for the suite it spawns (Bun's agent-quiet reporter prints only the aggregate footer) and understands the `::group::` file headers Bun emits on GitHub Actions. A suite that runs tests yet prints no durations fails the step as *blind* rather than reporting a clean sheet.
-- The gate only reads a budget from a Bun *test* invocation (`bun test --timeout N`, or a `bun run <script>` whose script is one). Any other wrapped command leaves it disabled rather than scoring that command's output against a timeout Bun never applied. Explicit per-test budgets are matched by the fully qualified `scope > name` Bun prints, so a declaration inside `describe` never lends its budget to a same-named test in another scope.
+- The suite-wide per-test budget is **30000 ms**, declared once as `TEST_TIMEOUT_MS` in `test/helpers/test-timeout.ts` and applied by the root `vitest.config.ts` to all three projects. `test/ci/ci-workflow-contracts.test.ts` enforces that the three `test:*` scripts each select a project and that all three resolve to that one value.
+- Do **not** restate the budget in a package script, in `.github/workflows/test.yml`, or in `bunfig.toml`. The contract test rejects a `--timeout` flag in any script, and Bun ignores `[test] timeout` in bunfig anyway — it looks correct and does nothing.
+- One platform-neutral value, never a Windows-only branch. A Windows-only bump would leave Linux as the only place the budget is enforced and hide Windows regressions until they were far worse. (`packages/coding-agent/vitest.config.ts` keeps its own pre-existing 90 s Windows branch, local to that project.)
+- Add an explicit third-argument timeout only for a test whose cost is *structural* (a full builtin-package loader reload, a real CLI child process, a real `vitest` child, a `tsc` invocation, a built-package install). **Name the constant and keep it at the call site** — `REAL_VITEST_SUITE_TIMEOUT_MS` in `test/unit/flaky-test-suite-runner.test.ts` is the pattern; a bare `120_000` says nothing about why the cost is structural rather than a slow test nobody fixed. Never restate the default value — an explicit timeout that merely repeats it silently lowers that test's budget when the default rises.
+- `scripts/run-flaky-test-suite.ts` scores every duration against that test's effective timeout: warn at 40 % of budget, fail the step at 70 %. Every attempt is scored, so a fast bounded retry cannot hide a first attempt that burned a test's headroom. It always writes the per-test duration table to `.ci-diagnostics/<suite>-durations.md`, on green runs too. If it fails your test, make the test faster or justify a structural explicit timeout — do not raise the shared default.
+- The gate reads **vitest's JSON reporter**, which the wrapper requests alongside the default one so the step log stays readable. The reporter emits a record per test, so the gate now scores the whole suite rather than the 97 % that printed a duration under Bun's stdout, and `blind` — tests ran, no durations — finally means the harness broke. A report that is missing *or unreadable* counts as blind too: an unparsable report measures exactly as much as one that was never written.
+- The gate reads a budget only from a *vitest* invocation, following one `npm run <script>` indirection into `package.json` and then into the config that script selects. A leading `bun`/`bunx` is the runtime rather than the command and is stepped over. Any other wrapped command leaves the gate disabled rather than scoring output against a budget nothing enforced. Explicit per-test budgets are matched by the fully qualified `scope > name`, so a declaration inside `describe` never lends its budget to a same-named test in another scope.
+- **Do not raise `WARN_RATIO`.** The move to vitest made the heaviest tests materially slower (vite transform cost: `coding-agent builtin resources > loads builtin pi package resources` went 622 ms → ~10 s), and the slowest unit test now sits just under the 40 % warn line. A loaded or Windows runner may start warning. That is the gate working as designed — make the test faster or justify a structural explicit timeout.
+
+### Load sensitivity
+
+vitest runs test *files* in parallel by default, and this repository deliberately sets no
+`pool`, `maxWorkers`, `poolOptions`, or `fileParallelism` — pi sets none either. A test that
+only passes on an idle machine is a bug in that test. Fix it where it lives: give the real
+work headroom and derive the assertion from a named constant (see `STALLED_ATTEMPT_CAP_MS` in
+`test/unit/subagents-attempt-watchdog-helpers.ts`). Do not skip it, do not serialize the
+suite, and do not shard — `test/ci/test-workflow-topology.test.ts` forbids
+`--parallel|--shard|--concurrent|--max-concurrency` for exactly this reason.
 
 ### Hook name compatibility
 
-Bun's `bun:test` exports `beforeAll`/`afterAll` (not `before`/`after`). Use `beforeAll`/`afterAll` for once-per-suite setup/teardown and `beforeEach`/`afterEach` for per-test hooks.
-
-### AI Agent Integration
-
-When using Bun’s test runner with AI coding assistants, you can enable quieter output to improve readability and reduce context noise. This feature minimizes test output verbosity while preserving essential failure information.
-​
-**Environment Variables**
-
-Set any of the following environment variables to enable AI-friendly output:
-`CLAUDECODE=1` - For Claude Code
-`REPL_ID=1` - For Replit
-`AGENT=1` - Generic AI agent flag
+Use `beforeAll`/`afterAll` for once-per-suite setup/teardown and `beforeEach`/`afterEach` for
+per-test hooks. `before`/`after` are not exported.
 
 ### Code Quality
 
-- Frequently run linters and type checks using `bun run typecheck` and `bun run lint` (both `tsc --noEmit`).
+- Frequently run `npm run check` (typecheck plus the shrinkwrap check). `npm run typecheck` is the typecheck alone.
 - Avoid `any` and `unknown` types.
 - Modularize code and avoid re-inventing the wheel. Use functionality of libraries and SDKs whenever possible.
 
@@ -205,7 +269,7 @@ Use these sections under `## [Unreleased]`:
 
 ## Versionless release bases & bumping
 
-`main` and supported workstream bases are versionless: every `packages/*/package.json` (plus `bun.lock` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on a release base.**
+`main` and supported workstream bases are versionless: every `packages/*/package.json` (plus `package-lock.json` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on a release base.**
 
 `scripts/bump-version.ts` is the low-level stamper that rewrites every versioned manifest. It is invoked by `scripts/cut-release.ts` inside a throwaway worktree at the exact remote base SHA to materialize the real version on the tagged release commit. You normally never run it directly against a release base; the only direct use is resetting the placeholder if it ever drifts:
 
@@ -215,7 +279,7 @@ bun run scripts/cut-release.ts 0.1.0 --base main
 bun run scripts/cut-release.ts 0.1.0-alpha.1 --base main
 
 # low-level: reset main back to the versionless placeholder
-bun run scripts/bump-version.ts 0.0.0 && bun install
+bun run scripts/bump-version.ts 0.0.0 && npm install --package-lock-only --ignore-scripts
 ```
 
 ## CI
@@ -240,8 +304,13 @@ Note: npm provenance publishing uses GitHub OIDC trusted publishing and must not
 <EXTREMELY_IMPORTANT>
 `@bastani/workflows` ships raw `.ts` files with no build step — do NOT introduce `dist/`, `tsconfig.build.json`, `outDir`, or any bundling.
 
-Never run `npm install`, `yarn install`, or `pnpm install` here. This is a Bun workspace: a
-competing lockfile desyncs `bun.lock` and bypasses the `minimumReleaseAge` supply-chain gate in
-`bunfig.toml`. Use `bun install`. See the Tech Stack table for where Node, vitest, and npm are
-used deliberately.
+Install with `npm ci --ignore-scripts`, and add dependencies with `npm install`. Never run
+`yarn install` or `pnpm install`, and do not bring back `bun install`: each writes a competing
+lockfile that `npm ci` neither reads nor verifies, and bypasses the `min-release-age` gate in
+the committed `.npmrc`. `package-lock.json` is the only lockfile, and it is also the input to
+the shrinkwrap published inside `@bastani/atomic`.
+
+Bun is still required, and still correct, for three things: compiling release binaries with
+`bun build --compile`, running `scripts/*.ts`, and running the Bun-hosted test fixtures. See
+the Tech Stack table for the full split.
 </EXTREMELY_IMPORTANT>

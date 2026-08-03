@@ -1,8 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
-	createAssistantMessageEventStream,
 	type Api,
 	type AssistantMessage,
+	createAssistantMessageEventStream,
 	type Model,
 	registerApiProvider,
 	unregisterApiProviders,
@@ -221,7 +221,12 @@ describe("branch summarization with archival compaction entries", () => {
 			streamFn: async (requestModel, _context, options) => {
 				observedSessionId = options?.sessionId;
 				const stream = createAssistantMessageEventStream();
-				stream.end({ ...assistantBlocks([{ type: "text", text: "again" }]), api: requestModel.api, provider: requestModel.provider, model: requestModel.id });
+				stream.end({
+					...assistantBlocks([{ type: "text", text: "again" }]),
+					api: requestModel.api,
+					provider: requestModel.provider,
+					model: requestModel.id,
+				});
 				return stream;
 			},
 		});

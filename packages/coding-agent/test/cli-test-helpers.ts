@@ -30,8 +30,14 @@ export function removeTempDirs(dirs: string[]): void {
 	for (const dir of dirs.splice(0)) {
 		let lastError: unknown;
 		for (let attempt = 0; attempt < 8; attempt++) {
-			try { rmSync(dir, { recursive: true, force: true }); lastError = undefined; break; }
-			catch (error) { lastError = error; sleepSync(50 * (attempt + 1)); }
+			try {
+				rmSync(dir, { recursive: true, force: true });
+				lastError = undefined;
+				break;
+			} catch (error) {
+				lastError = error;
+				sleepSync(50 * (attempt + 1));
+			}
 		}
 		if (lastError) throw lastError;
 	}
@@ -43,11 +49,23 @@ function killProcessTree(pid: number | undefined): void {
 		spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
 		return;
 	}
-	try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} }
+	try {
+		process.kill(-pid, "SIGKILL");
+	} catch {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {}
+	}
 }
 
-export async function runCliProcess(args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<CliProcessResult> {
-	let stdout = "", stderr = "", timedOut = false, settled = false;
+export async function runCliProcess(
+	args: string[],
+	options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
+): Promise<CliProcessResult> {
+	let stdout = "",
+		stderr = "",
+		timedOut = false,
+		settled = false;
 	const child = spawn(bunExecutable(), [cliPath, ...args], {
 		cwd: options.cwd,
 		env: options.env,
@@ -55,21 +73,35 @@ export async function runCliProcess(args: string[], options: { cwd: string; env?
 		detached: process.platform !== "win32",
 		windowsHide: true,
 	});
-	child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
-	child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+	child.stdout?.on("data", (chunk) => {
+		stdout += chunk.toString();
+	});
+	child.stderr?.on("data", (chunk) => {
+		stderr += chunk.toString();
+	});
 
 	return await new Promise((resolvePromise, reject) => {
-		const timeout = setTimeout(() => { timedOut = true; killProcessTree(child.pid); }, options.timeoutMs ?? defaultCliProcessTimeoutMs);
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			killProcessTree(child.pid);
+		}, options.timeoutMs ?? defaultCliProcessTimeoutMs);
 		const finish = (code: number | null, signal: NodeJS.Signals | null) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timeout);
-			setTimeout(() => {
-				child.stdout?.destroy(); child.stderr?.destroy();
-				resolvePromise({ stdout, stderr, code, signal, timedOut });
-			}, process.platform === "win32" ? 50 : 0);
+			setTimeout(
+				() => {
+					child.stdout?.destroy();
+					child.stderr?.destroy();
+					resolvePromise({ stdout, stderr, code, signal, timedOut });
+				},
+				process.platform === "win32" ? 50 : 0,
+			);
 		};
-		child.once("error", (error) => { clearTimeout(timeout); reject(error); });
+		child.once("error", (error) => {
+			clearTimeout(timeout);
+			reject(error);
+		});
 		child.once("exit", finish);
 		child.once("close", finish);
 	});

@@ -4,28 +4,21 @@ import { resolve } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import {
-	createBackupSnapshot,
-	createBranchedSessionState,
-	forkSessionFromFile,
-} from "./session-manager-archive.ts";
-import {
-	classifiedWorkflowMetadata,
-	validSessionWorkflowMetadata,
-} from "./session-manager-classification.ts";
+import { createBackupSnapshot, createBranchedSessionState, forkSessionFromFile } from "./session-manager-archive.ts";
+import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
 	createBranchSummaryEntry,
 	createCompactionEntry,
 	createCustomEntry,
 	createCustomMessageEntry,
 	createLabelEntry,
-	getEntriesWithoutHeader,
 	createMessageEntry,
 	createModelChangeEntry,
 	createSessionFilePath,
 	createSessionHeader,
 	createSessionInfoEntry,
 	createThinkingLevelChangeEntry,
+	getEntriesWithoutHeader,
 	getLatestSessionName,
 } from "./session-manager-entries.ts";
 import { buildSessionContext, buildSessionIndex, buildSessionTree, getBranchPath } from "./session-manager-history.ts";
@@ -244,9 +237,22 @@ export class SessionManager {
 		this._appendEntry(entry);
 		return entry.id;
 	}
-	appendCompaction(compactedText: string, firstKeptEntryId: string | null, tokensBefore: number, details: VerbatimCompactionDetails): string {
-		if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId)) throw new Error(`Entry ${firstKeptEntryId} not found`);
-		const entry = createCompactionEntry(compactedText, firstKeptEntryId, tokensBefore, details, this.byId, this.leafId);
+	appendCompaction(
+		compactedText: string,
+		firstKeptEntryId: string | null,
+		tokensBefore: number,
+		details: VerbatimCompactionDetails,
+	): string {
+		if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId))
+			throw new Error(`Entry ${firstKeptEntryId} not found`);
+		const entry = createCompactionEntry(
+			compactedText,
+			firstKeptEntryId,
+			tokensBefore,
+			details,
+			this.byId,
+			this.leafId,
+		);
 		this._appendEntry(entry);
 		return entry.id;
 	}
@@ -284,8 +290,19 @@ export class SessionManager {
 		details?: T,
 		excludeFromContext?: boolean,
 		protectedReconciliation?: { delivery: "steer" | "followUp" },
+		stageAdmissionKey?: string,
 	): string {
-		const entry = createCustomMessageEntry(customType, content, display, details, excludeFromContext, protectedReconciliation, this.byId, this.leafId);
+		const entry = createCustomMessageEntry(
+			customType,
+			content,
+			display,
+			details,
+			excludeFromContext,
+			protectedReconciliation,
+			this.byId,
+			this.leafId,
+			stageAdmissionKey,
+		);
 		this._appendEntry(entry);
 		return entry.id;
 	}
@@ -375,12 +392,25 @@ export class SessionManager {
 	}
 
 	/** Start a new branch with a summary of the abandoned path. */
-	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromHook?: boolean, usage?: import("@earendil-works/pi-ai/compat").Usage): string {
+	branchWithSummary(
+		branchFromId: string | null,
+		summary: string,
+		details?: unknown,
+		fromHook?: boolean,
+		usage?: import("@earendil-works/pi-ai/compat").Usage,
+	): string {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
 		this.leafId = branchFromId;
-		const entry: BranchSummaryEntry = createBranchSummaryEntry(branchFromId, summary, details, usage, fromHook, this.byId);
+		const entry: BranchSummaryEntry = createBranchSummaryEntry(
+			branchFromId,
+			summary,
+			details,
+			usage,
+			fromHook,
+			this.byId,
+		);
 		this._appendEntry(entry);
 		return entry.id;
 	}
@@ -428,18 +458,10 @@ export class SessionManager {
 	}
 
 	/** Continue the most recent session (skips internal workflow sessions unless `includeInternal: true`). */
-	static continueRecent(
-		cwd: string,
-		sessionDir?: string,
-		options?: { includeInternal?: boolean },
-	): SessionManager {
+	static continueRecent(cwd: string, sessionDir?: string, options?: { includeInternal?: boolean }): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
-		const mostRecent = findMostRecentSession(
-			dir,
-			filterCwd ? cwd : undefined,
-			options?.includeInternal === true,
-		);
+		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined, options?.includeInternal === true);
 		return new SessionManager(cwd, dir, mostRecent ?? undefined, true);
 	}
 

@@ -8,17 +8,20 @@
  * writes.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import {
-	createFallbackPlannerBorrower,
-	plannerAttemptKey,
-	type BorrowFallbackPlanner,
-	type FallbackPlannerContext,
-} from "../../packages/coding-agent/src/core/compaction/fallback-planner.js";
-import { planDeletedLineRanges, resolvePlannerRequest } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
+import { test } from "vitest";
 import type { PlannerAuth } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import {
+	type BorrowFallbackPlanner,
+	createFallbackPlannerBorrower,
+	type FallbackPlannerContext,
+	plannerAttemptKey,
+} from "../../packages/coding-agent/src/core/compaction/fallback-planner.js";
+import {
+	planDeletedLineRanges,
+	resolvePlannerRequest,
+} from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { PARAMETERS, region, registryOf, scriptedStream, testModel } from "./compaction-rung-support.js";
 
 const primary = testModel();

@@ -2,12 +2,12 @@ import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { getProjectConfigDirs } from "../config.ts";
 import type { GitSource } from "../utils/git.ts";
-import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";
+import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
+import { ensureGitIgnore, getGitDependencyInstallArgs, runNpmCommand } from "./package-manager-npm.ts";
 import { getBaseDirsForScope, getGitInstallPath, getGitInstallRoot } from "./package-manager-paths.ts";
 import { withProgress } from "./package-manager-progress.ts";
-import { ensureGitIgnore, getGitDependencyInstallArgs, runNpmCommand } from "./package-manager-npm.ts";
 import type { GitUpdateTargetInfo, PackageManagerContext, SourceScope } from "./package-manager-types.ts";
 
 function runGitProcess(
@@ -41,7 +41,7 @@ function isSafeGitRef(ref: string): boolean {
 	if (!ref || ref === "@" || ref.startsWith("-") || ref.endsWith(".") || ref.endsWith("/")) {
 		return false;
 	}
-	if (/[\x00-\x1f\x7f\s~^:?*\[\]\\]/u.test(ref)) {
+	if (/[\x00-\x1f\x7f\s~^:?*[\]\\]/u.test(ref)) {
 		return false;
 	}
 	if (ref.includes("..") || ref.includes("@{") || ref.includes("//")) {
@@ -73,11 +73,7 @@ export function getExistingGitInstallPath(
 	return undefined;
 }
 
-export async function installGit(
-	context: PackageManagerContext,
-	source: GitSource,
-	scope: SourceScope,
-): Promise<void> {
+export async function installGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
 	const targetDir = getGitInstallPath(context, source, scope);
 	if (existsSync(targetDir)) {
@@ -103,24 +99,29 @@ export async function installGit(
 	// that wrap process spawns. Capture the validated value in a local so the
 	// guard sanitizes exactly the binding handed to the spawn.
 	const cloneUrl = source.repo;
-	if (!/^[A-Za-z0-9._~:@\/%+-]+$/.test(cloneUrl)) {
+	if (!/^[A-Za-z0-9._~:@/%+-]+$/.test(cloneUrl)) {
 		throw new Error(`Refusing to clone repository with unsafe URL: ${cloneUrl}`);
 	}
-	await runGitProcess(context, "git", ["clone", "--", cloneUrl, targetDir]);
-	if (safeRef) {
-		await runGitProcess(context, "git", ["checkout", safeRef], { cwd: targetDir });
-	}
-	const packageJsonPath = join(targetDir, "package.json");
-	if (existsSync(packageJsonPath)) {
-		await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
+	try {
+		await runGitProcess(context, "git", ["clone", "--", cloneUrl, targetDir]);
+		if (safeRef) {
+			await runGitProcess(context, "git", ["checkout", safeRef], { cwd: targetDir });
+		}
+		const packageJsonPath = join(targetDir, "package.json");
+		if (existsSync(packageJsonPath)) {
+			await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
+		}
+	} catch (error) {
+		// A half-written clone would otherwise be treated as installed by the
+		// `existsSync(targetDir)` check above, so the next install silently skips
+		// the repair. Remove it, then drop the now-empty host/owner directories.
+		rmSync(targetDir, { recursive: true, force: true });
+		pruneEmptyGitParents(targetDir, gitRoot);
+		throw error;
 	}
 }
 
-export async function updateGit(
-	context: PackageManagerContext,
-	source: GitSource,
-	scope: SourceScope,
-): Promise<void> {
+export async function updateGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
 	const targetDir = getExistingGitInstallPath(context, source, scope) ?? getGitInstallPath(context, source, scope);
 	if (!existsSync(targetDir)) {
@@ -182,11 +183,7 @@ export async function refreshTemporaryGitSource(
 	} catch {}
 }
 
-export async function removeGit(
-	context: PackageManagerContext,
-	source: GitSource,
-	scope: SourceScope,
-): Promise<void> {
+export async function removeGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const targetDir = getGitInstallPath(context, source, scope);
 	if (!existsSync(targetDir)) return;
 	rmSync(targetDir, { recursive: true, force: true });
@@ -268,7 +265,9 @@ export async function getLocalGitUpdateTarget(
 			fetchArgs: ["fetch", "--prune", "--no-tags", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
 		};
 	} catch {
-		await runGitProcess(context, "git", ["remote", "set-head", "origin", "-a"], { cwd: installedPath }).catch(() => {});
+		await runGitProcess(context, "git", ["remote", "set-head", "origin", "-a"], { cwd: installedPath }).catch(
+			() => {},
+		);
 		const head = await captureGitProcess(context, "git", ["rev-parse", "origin/HEAD"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
@@ -282,7 +281,13 @@ export async function getLocalGitUpdateTarget(
 			return {
 				ref: "origin/HEAD",
 				head,
-				fetchArgs: ["fetch", "--prune", "--no-tags", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+				fetchArgs: [
+					"fetch",
+					"--prune",
+					"--no-tags",
+					"origin",
+					`+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+				],
 			};
 		}
 		return {
@@ -315,4 +320,3 @@ function runGitRemoteCommand(context: PackageManagerContext, installedPath: stri
 		env: { GIT_TERMINAL_PROMPT: "0" },
 	});
 }
-

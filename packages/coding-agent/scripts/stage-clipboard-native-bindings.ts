@@ -6,11 +6,15 @@ import { CLIPBOARD_NATIVE_TARGETS } from "./copy-clipboard-native-bindings.js";
 interface StageClipboardNativePackagesOptions {
 	readonly destination: string;
 	readonly version: string;
+	readonly packageNames?: readonly string[];
 	readonly bunExecutable?: string;
 }
 
-export function clipboardNativePackageSpecs(version: string): string[] {
-	return Object.values(CLIPBOARD_NATIVE_TARGETS).map((target) => `${target.packageName}@${version}`);
+export function clipboardNativePackageSpecs(
+	version: string,
+	packageNames: readonly string[] = Object.values(CLIPBOARD_NATIVE_TARGETS).map((target) => target.packageName),
+): string[] {
+	return packageNames.map((packageName) => `${packageName}@${version}`);
 }
 
 export function stageClipboardNativePackages(options: StageClipboardNativePackagesOptions): void {
@@ -25,6 +29,7 @@ export function stageClipboardNativePackages(options: StageClipboardNativePackag
 		join(destination, "package.json"),
 		`${JSON.stringify({ name: "atomic-clipboard-native-stage", private: true }, null, 2)}\n`,
 	);
+	const packageNames = options.packageNames ?? Object.values(CLIPBOARD_NATIVE_TARGETS).map((target) => target.packageName);
 	const result = spawnSync(
 		options.bunExecutable ?? "bun",
 		[
@@ -34,7 +39,7 @@ export function stageClipboardNativePackages(options: StageClipboardNativePackag
 			"*",
 			"--cpu",
 			"*",
-			...clipboardNativePackageSpecs(options.version),
+			...clipboardNativePackageSpecs(options.version, packageNames),
 		],
 		{
 			cwd: destination,

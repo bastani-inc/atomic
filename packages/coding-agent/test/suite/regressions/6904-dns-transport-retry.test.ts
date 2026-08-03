@@ -31,8 +31,9 @@ describe("issue #6904 DNS transport failure retry", () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 } } });
 		try {
 			const errorMessage = dnsErrors[0];
-			harness.setResponses(Array.from({ length: 4 }, () =>
-				fauxAssistantMessage("", { stopReason: "error", errorMessage })));
+			harness.setResponses(
+				Array.from({ length: 4 }, () => fauxAssistantMessage("", { stopReason: "error", errorMessage })),
+			);
 
 			await harness.session.prompt("test");
 

@@ -6,7 +6,7 @@ const TODO_PATH_ENV = `${APP_NAME.toUpperCase()}_TODO_PATH`;
 
 export function getTodosDir(cwd: string): string {
 	const overridePath = getEnvValue(TODO_PATH_ENV);
-	if (overridePath && overridePath.trim()) {
+	if (overridePath?.trim()) {
 		return path.resolve(cwd, overridePath.trim());
 	}
 	return path.resolve(cwd, TODO_DIR_NAME);
@@ -14,7 +14,7 @@ export function getTodosDir(cwd: string): string {
 
 export function getTodosDirLabel(cwd: string): string {
 	const overridePath = getEnvValue(TODO_PATH_ENV);
-	if (overridePath && overridePath.trim()) {
+	if (overridePath?.trim()) {
 		return path.resolve(cwd, overridePath.trim());
 	}
 	return TODO_DIR_NAME;

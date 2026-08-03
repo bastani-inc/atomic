@@ -38,7 +38,10 @@ export interface ImageSettings {
 	blockImages?: boolean; // default: false - when true, prevents all images from being sent to LLM providers
 }
 
-export interface SearchSettings { contextBefore?: number; contextAfter?: number }
+export interface SearchSettings {
+	contextBefore?: number;
+	contextAfter?: number;
+}
 export interface ThinkingBudgetsSettings {
 	minimal?: number;
 	low?: number;
@@ -62,7 +65,6 @@ export interface CodexFastModeSettings {
 export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
-
 
 /**
  * Package source for npm/git packages.

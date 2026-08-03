@@ -1,8 +1,8 @@
 import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import type { Args } from "./cli/args.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
-import type { ModelRuntime } from "./core/model-runtime.ts";
 import { resolveCliModel, type ScopedModel } from "./core/model-resolver.ts";
+import type { ModelRuntime } from "./core/model-runtime.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 
@@ -73,7 +73,6 @@ export function buildSessionOptions(
 	if (parsed.thinking) {
 		options.thinkingLevel = parsed.thinking;
 	}
-
 
 	// Scoped models for CTRL+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.

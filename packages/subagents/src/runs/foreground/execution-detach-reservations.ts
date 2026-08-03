@@ -6,17 +6,27 @@ interface Reservation {
 }
 
 function identity(event: IntercomDetachRoute): string | undefined {
-	if (typeof event.requestId !== "string" || event.requestId.length === 0
-		|| typeof event.messageId !== "string" || event.messageId.length === 0
-		|| typeof event.senderId !== "string" || event.senderId.length === 0
-		|| typeof event.runtimeGeneration !== "number") return undefined;
+	if (
+		typeof event.requestId !== "string" ||
+		event.requestId.length === 0 ||
+		typeof event.messageId !== "string" ||
+		event.messageId.length === 0 ||
+		typeof event.senderId !== "string" ||
+		event.senderId.length === 0 ||
+		typeof event.runtimeGeneration !== "number"
+	)
+		return undefined;
 	return `${event.requestId}\0${event.messageId}\0${event.senderId}\0${event.runtimeGeneration}`;
 }
 
 function sameRoute(left: IntercomDetachRoute, right: IntercomDetachRoute): boolean {
-	return left.requestId === right.requestId && left.messageId === right.messageId
-		&& left.senderId === right.senderId && left.runtimeGeneration === right.runtimeGeneration
-		&& left.childIntercomTarget === right.childIntercomTarget;
+	return (
+		left.requestId === right.requestId &&
+		left.messageId === right.messageId &&
+		left.senderId === right.senderId &&
+		left.runtimeGeneration === right.runtimeGeneration &&
+		left.childIntercomTarget === right.childIntercomTarget
+	);
 }
 
 export class IntercomDetachReservations {

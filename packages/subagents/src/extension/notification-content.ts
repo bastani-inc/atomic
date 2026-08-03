@@ -1,10 +1,6 @@
 import type { SubagentNotifyDetails } from "../runs/background/notify.ts";
 
-const HEADER_PREFIXES = [
-	["Background task completed: **", "completed"],
-	["Background task failed: **", "failed"],
-	["Background task paused: **", "paused"],
-] as const;
+const HEADER_STATUSES = ["completed", "failed", "paused"] as const;
 
 function isHeaderLineTerminator(character: string): boolean {
 	return character === "\r" || character === "\u2028" || character === "\u2029";
@@ -15,10 +11,19 @@ function isWhitespace(character: string | undefined): boolean {
 }
 
 function parseHeader(header: string): Pick<SubagentNotifyDetails, "agent" | "status" | "taskInfo"> | undefined {
-	const matchedPrefix = HEADER_PREFIXES.find(([prefix]) => header.startsWith(prefix));
-	if (!matchedPrefix) return undefined;
-	const [prefix, status] = matchedPrefix;
-	const suffix = header.slice(prefix.length);
+	let markerIndex = -1;
+	let status: SubagentNotifyDetails["status"] | undefined;
+	for (const candidateStatus of HEADER_STATUSES) {
+		const candidateMarker = ` ${candidateStatus}: **`;
+		const candidateIndex = header.indexOf(candidateMarker);
+		if (candidateIndex < 1 || (markerIndex >= 0 && candidateIndex >= markerIndex)) continue;
+		markerIndex = candidateIndex;
+		status = candidateStatus;
+	}
+	if (markerIndex < 1 || !status) return undefined;
+	const label = header.slice(0, markerIndex);
+	if (label !== label.trim() || [...label].some(isHeaderLineTerminator)) return undefined;
+	const suffix = header.slice(markerIndex + ` ${status}: **`.length);
 
 	if (suffix.endsWith("**")) {
 		const agent = suffix.slice(0, -2);

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-08-03
+
+### Removed
+
+- Removed the Cursor-specific HTTP/2 native transport, its generated N-API exports, transport-only dependencies, metadata, and attribution ([#1994](https://github.com/bastani-inc/atomic/issues/1994)).
+
 ## [0.9.11-alpha.6] - 2026-07-28
 
 ### Removed

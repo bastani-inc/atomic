@@ -1,8 +1,8 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
+import { test } from "vitest";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import type { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
+import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
 
 function createUI() {
 	return createRpcExtensionUIContext({
@@ -40,10 +40,7 @@ test("isolated extension UI exposes live footer status and cached git data", () 
 
 	assert.equal(ui.getFooterDataProvider(), provider);
 	ui.setStatus("mcp", "MCP: 1/1 servers connected (3 tools)");
-	assert.equal(
-		ui.getFooterDataProvider().getExtensionStatuses().get("mcp"),
-		"MCP: 1/1 servers connected (3 tools)",
-	);
+	assert.equal(ui.getFooterDataProvider().getExtensionStatuses().get("mcp"), "MCP: 1/1 servers connected (3 tools)");
 	// getGitBranch() may legitimately be null (no git binary, detached HEAD),
 	// so assert stability through the UI accessor instead of a non-null value:
 	// repeated reads return the provider's cached result deterministically.

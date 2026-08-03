@@ -1,24 +1,30 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getArtifactPaths } from "../../shared/artifacts.ts";
-import { detectSubagentError } from "../../shared/utils.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
-import { captureSingleOutputSnapshot, finalizeSingleOutput, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
-import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
+import type { ArtifactPaths, ModelAttempt } from "../../shared/types.ts";
+import { detectSubagentError } from "../../shared/utils.ts";
 import { outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
+import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
+import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import {
-	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
+	captureSingleOutputSnapshot,
+	finalizeSingleOutput,
+	formatSavedOutputReference,
+	resolveSingleOutput,
+	type SingleOutputSnapshot,
+} from "../shared/single-output.ts";
+import {
 	createStructuredOutputRuntime,
 	formatStructuredOutputCorrectionPrompt,
 	isStructuredOutputContractError,
 	latestStructuredOutputToolErrorFromMessages,
 	readStructuredOutput,
+	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
 } from "../shared/structured-output.ts";
-import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
-import type { ArtifactPaths, ModelAttempt } from "../../shared/types.ts";
+import { runPiStreaming } from "./subagent-runner-streaming.ts";
 import type { RunPiStreamingResult, SingleStepContext, SubagentStep } from "./subagent-runner-types.ts";
 import { emptyUsage, fastModeForStepAttempt } from "./subagent-runner-utils.ts";
-import { runPiStreaming } from "./subagent-runner-streaming.ts";
 
 export { outputEntryFromAsyncResult };
 
@@ -42,9 +48,14 @@ export async function runSingleStep(
 	structuredOutputPath?: string;
 	structuredOutputSchemaPath?: string;
 }> {
-	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
-		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
-		: undefined);
+	const effectiveStructuredOutput =
+		step.structuredOutput ??
+		(step.structuredOutputSchema
+			? createStructuredOutputRuntime(
+					step.structuredOutputSchema,
+					path.join(path.dirname(ctx.outputFile), "structured-output"),
+				)
+			: undefined);
 	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
 	let task = step.task.replace(placeholderRegex, () => ctx.previousOutput);
 	task = resolveOutputReferences(task, ctx.outputs ?? {});
@@ -71,11 +82,12 @@ export async function runSingleStep(
 	// and run one default-model attempt instead of silently exiting with no attempt.
 	// The filtered-to-empty case is surfaced as an error below.
 	const preSkippedAttempts = step.modelAttempts ?? [];
-	const candidates = step.modelCandidates !== undefined && (step.modelCandidates.length > 0 || preSkippedAttempts.length > 0)
-		? step.modelCandidates
-		: step.model
-			? [step.model]
-			: [undefined];
+	const candidates =
+		step.modelCandidates !== undefined && (step.modelCandidates.length > 0 || preSkippedAttempts.length > 0)
+			? step.modelCandidates
+			: step.model
+				? [step.model]
+				: [undefined];
 	const attemptedModels: string[] = [];
 	const modelAttempts: ModelAttempt[] = [...preSkippedAttempts];
 	const attemptNotes: string[] = modelAttempts
@@ -90,7 +102,11 @@ export async function runSingleStep(
 	for (let index = 0; index < candidates.length; index++) {
 		const candidate = candidates[index];
 		const attemptFastMode = fastModeForStepAttempt(step, candidate);
-		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking), fastMode: attemptFastMode ? true : undefined });
+		ctx.onAttemptStart?.({
+			model: candidate,
+			thinking: resolveEffectiveThinking(candidate, step.thinking),
+			fastMode: attemptFastMode ? true : undefined,
+		});
 		if (candidate) attemptedModels.push(candidate);
 		let nextTask = task;
 		let correctiveAttempts = 0;
@@ -100,7 +116,8 @@ export async function runSingleStep(
 			const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
 			if (effectiveStructuredOutput) {
 				try {
-					if (fs.existsSync(effectiveStructuredOutput.outputPath)) fs.unlinkSync(effectiveStructuredOutput.outputPath);
+					if (fs.existsSync(effectiveStructuredOutput.outputPath))
+						fs.unlinkSync(effectiveStructuredOutput.outputPath);
 				} catch {
 					// Missing/stale structured-output files are handled after the child exits.
 				}
@@ -160,17 +177,18 @@ export async function runSingleStep(
 				else structuredOutput = structured.value;
 			}
 			const structuredContractError = structuredError
-				? latestStructuredOutputToolErrorFromMessages(run.messages) ?? structuredError
+				? (latestStructuredOutputToolErrorFromMessages(run.messages) ?? structuredError)
 				: undefined;
 			const effectiveExitCode = structuredContractError
 				? 1
 				: hiddenError?.hasError
-				? (hiddenError.exitCode ?? 1)
-				: run.error && run.exitCode === 0
-					? 1
-					: run.exitCode;
-			const error = structuredContractError
-				?? (hiddenError?.hasError
+					? (hiddenError.exitCode ?? 1)
+					: run.error && run.exitCode === 0
+						? 1
+						: run.exitCode;
+			const error =
+				structuredContractError ??
+				(hiddenError?.hasError
 					? hiddenError.details
 						? `${hiddenError.errorType} failed (exit ${effectiveExitCode}): ${hiddenError.details}`
 						: `${hiddenError.errorType} failed with exit code ${effectiveExitCode}`
@@ -187,12 +205,18 @@ export async function runSingleStep(
 			modelAttempts.push(attempt);
 			finalFastMode = attemptFastMode;
 			finalOutputSnapshot = outputSnapshot;
-			finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
+			finalResult = {
+				...run,
+				exitCode: effectiveExitCode,
+				model: candidate ?? run.model,
+				error,
+				structuredOutput,
+			} as RunPiStreamingResult & { structuredOutput?: unknown };
 			if (attempt.success) break;
 			if (
-				effectiveStructuredOutput
-				&& isStructuredOutputContractError(structuredContractError)
-				&& correctiveAttempts < STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS
+				effectiveStructuredOutput &&
+				isStructuredOutputContractError(structuredContractError) &&
+				correctiveAttempts < STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS
 			) {
 				correctiveAttempts += 1;
 				nextTask = formatStructuredOutputCorrectionPrompt({
@@ -204,10 +228,10 @@ export async function runSingleStep(
 			}
 			const retrySignal = run.modelFailureSignal ?? error;
 			if (
-				structuredContractError === undefined
-				&& hiddenError?.hasError !== true
-				&& isRetryableModelFailure(retrySignal)
-				&& index < candidates.length - 1
+				structuredContractError === undefined &&
+				hiddenError?.hasError !== true &&
+				isRetryableModelFailure(retrySignal) &&
+				index < candidates.length - 1
 			) {
 				pendingAttemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
 				tryNextModel = true;
@@ -232,11 +256,14 @@ export async function runSingleStep(
 
 	const rawOutput = finalResult?.finalOutput ?? "";
 	const outputForPersistence = rawOutput;
-	const resolvedOutput = step.outputPath && finalResult?.exitCode === 0
-		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
-		: { fullOutput: outputForPersistence };
+	const resolvedOutput =
+		step.outputPath && finalResult?.exitCode === 0
+			? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
+			: { fullOutput: outputForPersistence };
 	const output = resolvedOutput.fullOutput;
-	const outputReference = resolvedOutput.savedPath ? formatSavedOutputReference(resolvedOutput.savedPath, output) : undefined;
+	const outputReference = resolvedOutput.savedPath
+		? formatSavedOutputReference(resolvedOutput.savedPath, output)
+		: undefined;
 	let outputForSummary = output;
 	if (attemptNotes.length > 0) {
 		outputForSummary = `${attemptNotes.join("\n")}\n\n${outputForSummary}`.trim();
@@ -261,18 +288,22 @@ export async function runSingleStep(
 		if (ctx.artifactConfig?.includeMetadata !== false) {
 			fs.writeFileSync(
 				artifactPaths.metadataPath,
-				JSON.stringify({
-					runId: ctx.id,
-					agent: step.agent,
-					task,
-					exitCode: effectiveFinalExitCode,
-					model: finalResult?.model,
-					...(finalFastMode ? { fastMode: true } : {}),
-					attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
-					modelAttempts,
-					skills: step.skills,
-					timestamp: Date.now(),
-				}, null, 2),
+				JSON.stringify(
+					{
+						runId: ctx.id,
+						agent: step.agent,
+						task,
+						exitCode: effectiveFinalExitCode,
+						model: finalResult?.model,
+						...(finalFastMode ? { fastMode: true } : {}),
+						attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
+						modelAttempts,
+						skills: step.skills,
+						timestamp: Date.now(),
+					},
+					null,
+					2,
+				),
 				"utf-8",
 			);
 		}
@@ -291,7 +322,8 @@ export async function runSingleStep(
 		modelAttempts,
 		artifactPaths,
 		interrupted: finalResult?.interrupted,
-		structuredOutput: (finalResult as (RunPiStreamingResult & { structuredOutput?: unknown }) | undefined)?.structuredOutput,
+		structuredOutput: (finalResult as (RunPiStreamingResult & { structuredOutput?: unknown }) | undefined)
+			?.structuredOutput,
 		structuredOutputPath: effectiveStructuredOutput?.outputPath,
 		structuredOutputSchemaPath: effectiveStructuredOutput?.schemaPath,
 	};

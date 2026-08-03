@@ -1,0 +1,45 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.6/schema.json",
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"style": {
+				"noNonNullAssertion": "off",
+				"useConst": "error",
+				"useNodejsImportProtocol": "off"
+			},
+			"suspicious": {
+				"noExplicitAny": "off",
+				"noControlCharactersInRegex": "off",
+				"noEmptyInterface": "off"
+			}
+		}
+	},
+	"formatter": {
+		"enabled": true,
+		"formatWithErrors": false,
+		"indentStyle": "tab",
+		"indentWidth": 3,
+		"lineWidth": 120
+	},
+	"files": {
+		"includes": [
+			"packages/*/src/**/*.ts",
+			"packages/*/test/**/*.ts",
+			"packages/coding-agent/examples/**/*.ts",
+			"test/**/*.ts",
+			"scripts/**/*.ts",
+			"scripts/**/*.mjs",
+			"!**/node_modules/**/*",
+			"!**/dist/**/*",
+			"!**/binaries/**/*",
+			"!**/*.generated.ts",
+			"!**/models.generated.ts",
+			"!packages/workflows/skills/**/*",
+			"!packages/coding-agent/test/fixtures/**/*",
+			"!test/unit/fixtures/**/*",
+			"!test/fixtures/**/*"
+		]
+	}
+}

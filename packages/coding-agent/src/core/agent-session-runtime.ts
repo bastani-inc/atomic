@@ -1,11 +1,12 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { modelsAreEqual, type Api, type Model } from "@earendil-works/pi-ai/compat";
+import { type Api, type Model, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 import { prepareProtectedStreamingCustomMessagesForDisposal } from "./agent-session-persistent-custom-messages.ts";
+import { type AtomicOAuthLoginCallbacks, loginRuntimeOAuthProvider } from "./agent-session-runtime-auth.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
 	ProjectTrustContext,
@@ -14,12 +15,11 @@ import type {
 	SessionStartEvent,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import type { ModelFallbackReason } from "./model-resolver-types.ts";
+import type { AuthStatus } from "./provider-composer.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
-import type { AuthStatus } from "./provider-composer.ts";
-import { loginRuntimeOAuthProvider, type AtomicOAuthLoginCallbacks } from "./agent-session-runtime-auth.ts";
-import type { ModelFallbackReason } from "./model-resolver-types.ts";
 
 /**
  * Result returned by runtime creation.
@@ -89,12 +89,12 @@ export class AgentSessionRuntime {
 	private rebindSession?: (session: AgentSession) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
 
-	declare private _session: AgentSession;
-	declare private _services: AgentSessionServices;
-	declare private readonly createRuntime: CreateAgentSessionRuntimeFactory;
-	declare private _diagnostics: AgentSessionRuntimeDiagnostic[];
-	declare private _modelFallbackMessage?: string;
-	declare private _modelFallbackReason?: ModelFallbackReason;
+	private declare _session: AgentSession;
+	private declare _services: AgentSessionServices;
+	private declare readonly createRuntime: CreateAgentSessionRuntimeFactory;
+	private declare _diagnostics: AgentSessionRuntimeDiagnostic[];
+	private declare _modelFallbackMessage?: string;
+	private declare _modelFallbackReason?: ModelFallbackReason;
 
 	constructor(
 		_session: AgentSession,
@@ -152,21 +152,28 @@ export class AgentSessionRuntime {
 		if (selectedModel && !modelsAreEqual(previousModel, selectedModel)) this.resolveModelFallback();
 	}
 
-	async loginOAuthProvider(provider: string, callbacks: AtomicOAuthLoginCallbacks): Promise<{ modelsRefreshed: boolean }> {
+	async loginOAuthProvider(
+		provider: string,
+		callbacks: AtomicOAuthLoginCallbacks,
+	): Promise<{ modelsRefreshed: boolean }> {
 		await loginRuntimeOAuthProvider(this.session, provider, callbacks);
-		return { modelsRefreshed: false };
+		return { modelsRefreshed: true };
 	}
 
 	async logoutProvider(provider: string): Promise<LogoutProviderResult> {
 		const registry = this.session.modelRuntime;
 		await registry.logout(provider);
-		await registry.refresh({ allowNetwork: false });
+		const availableIds = new Set(registry.getAvailableSnapshot().map((model) => `${model.provider}\0${model.id}`));
+		const scopedModels = this.session.scopedModels.filter(({ model }) =>
+			availableIds.has(`${model.provider}\0${model.id}`),
+		);
+		this.session.setScopedModels([...scopedModels]);
 		this.session.refreshCurrentModelFromRegistry();
 		return {
 			provider,
 			authStatus: registry.getProviderAuthStatus(provider),
 			models: [...registry.getAvailableSnapshot()],
-			scopedModels: [...this.session.scopedModels],
+			scopedModels: [...scopedModels],
 		};
 	}
 
@@ -221,14 +228,28 @@ export class AgentSessionRuntime {
 	}
 
 	private disposeCurrentSession(): void {
-		prepareProtectedStreamingCustomMessagesForDisposal(
-			this.session as unknown as AgentSessionInternalSurface,
-		);
+		prepareProtectedStreamingCustomMessagesForDisposal(this.session as unknown as AgentSessionInternalSurface);
 		this.beforeSessionInvalidate?.();
 		this.session.dispose();
 	}
 
+	/**
+	 * Settle an active response before the session it belongs to is replaced, so the
+	 * aborted turn (including its tool results) is persisted to the outgoing session
+	 * rather than stranded.
+	 *
+	 * Overridable because the isolated engine must not re-enter its cooperative
+	 * abort wait here: the child engine settles its own turn before it reports the
+	 * replacement, and the host facade's `abort()` is an unbounded round trip that
+	 * would hang teardown on an unresponsive or dead engine.
+	 */
+	protected async settleActiveResponseBeforeTeardown(): Promise<void> {
+		if (!this.session.isStreaming) return;
+		await this.session.abort();
+	}
+
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
+		await this.settleActiveResponseBeforeTeardown();
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason,

@@ -6,12 +6,12 @@
  * the credential-free fresh rung.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { test } from "vitest";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
-import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import type { PlannerAuth } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { preparation, registryOf, runRequest, scriptedStream, testModel } from "./compaction-rung-support.js";
 
 const primary = testModel();
@@ -61,7 +61,7 @@ test("a rejected primary auth resolver is normalized, not propagated", async () 
 		runRequest({
 			streamFn: stream.streamFn,
 			resolveAuth: async (model) => {
-				if (model.id === "planner-a") throw new Error("No API key found for provider \"primary\"");
+				if (model.id === "planner-a") throw new Error('No API key found for provider "primary"');
 				return { apiKey: "backup-key" };
 			},
 			fallback: fallbackContext(),
@@ -94,11 +94,12 @@ test("no model has auth under recoverable: the honest auth error, no fresh bound
 	const stream = scriptedStream({ default: [{ text: "1,10\n" }] });
 	const { resolveAuth } = authExcept("planner-a", "planner-b");
 	await assert.rejects(
-		() => runVerbatimCompaction(
-			preparation(),
-			primary,
-			runRequest({ streamFn: stream.streamFn, resolveAuth, fallback: fallbackContext() }),
-		),
+		() =>
+			runVerbatimCompaction(
+				preparation(),
+				primary,
+				runRequest({ streamFn: stream.streamFn, resolveAuth, fallback: fallbackContext() }),
+			),
 		(error: unknown) => {
 			assert.ok(error instanceof RangePlanError);
 			assert.equal(error.message, "Compaction provider authentication is unavailable");
@@ -114,15 +115,18 @@ test("no model has auth under recoverable: the honest auth error, no fresh bound
 test("a rejected primary auth message survives recoverable exhaustion", async () => {
 	const stream = scriptedStream({ default: [{ text: "1,10\n" }] });
 	await assert.rejects(
-		() => runVerbatimCompaction(
-			preparation(),
-			primary,
-			runRequest({
-				streamFn: stream.streamFn,
-				resolveAuth: async () => { throw new Error("Authentication failed for \"primary\""); },
-				fallback: fallbackContext(),
-			}),
-		),
+		() =>
+			runVerbatimCompaction(
+				preparation(),
+				primary,
+				runRequest({
+					streamFn: stream.streamFn,
+					resolveAuth: async () => {
+						throw new Error('Authentication failed for "primary"');
+					},
+					fallback: fallbackContext(),
+				}),
+			),
 		/Authentication failed for "primary"/,
 	);
 	assert.equal(stream.calls.length, 0);
@@ -134,15 +138,16 @@ test("the credential-less primary is not retried as a fallback candidate", async
 	const stream = scriptedStream({ default: [{ text: "1,10\n" }] });
 	const { resolveAuth, seen } = authExcept("planner-a");
 	await assert.rejects(
-		() => runVerbatimCompaction(
-			preparation(),
-			primary,
-			runRequest({
-				streamFn: stream.streamFn,
-				resolveAuth,
-				fallback: { ...fallbackContext(), fallbackModels: ["primary/planner-a"] },
-			}),
-		),
+		() =>
+			runVerbatimCompaction(
+				preparation(),
+				primary,
+				runRequest({
+					streamFn: stream.streamFn,
+					resolveAuth,
+					fallback: { ...fallbackContext(), fallbackModels: ["primary/planner-a"] },
+				}),
+			),
 		/Compaction provider authentication is unavailable/,
 	);
 	assert.deepEqual(seen, ["primary/planner-a"]);

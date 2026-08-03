@@ -26,7 +26,9 @@ export function resolveSingleOutputPath(
 	if (typeof output !== "string" || !output || output === "false" || output === "true") return undefined;
 	if (path.isAbsolute(output)) return output;
 	const baseCwd = requestedCwd
-		? (path.isAbsolute(requestedCwd) ? requestedCwd : path.resolve(runtimeCwd, requestedCwd))
+		? path.isAbsolute(requestedCwd)
+			? requestedCwd
+			: path.resolve(runtimeCwd, requestedCwd)
 		: runtimeCwd;
 	return path.resolve(baseCwd, output);
 }
@@ -66,7 +68,11 @@ export function formatSavedOutputReference(savedPath: string, fullOutput: string
 	};
 }
 
-export function validateFileOnlyOutputMode(outputMode: OutputMode | undefined, outputPath: string | undefined, context: string): string | undefined {
+export function validateFileOnlyOutputMode(
+	outputMode: OutputMode | undefined,
+	outputPath: string | undefined,
+	context: string,
+): string | undefined {
 	if (outputMode === "file-only" && !outputPath) {
 		return `${context} sets outputMode: "file-only" but does not configure an output file. Set output to a path or use outputMode: "inline".`;
 	}
@@ -108,11 +114,10 @@ export function resolveSingleOutput(
 	let changedSinceStart = false;
 	try {
 		const stat = fs.statSync(outputPath);
-		changedSinceStart = !beforeRun?.exists
-			|| stat.mtimeMs !== beforeRun.mtimeMs
-			|| stat.size !== beforeRun.size;
+		changedSinceStart = !beforeRun?.exists || stat.mtimeMs !== beforeRun.mtimeMs || stat.size !== beforeRun.size;
 	} catch (error) {
-		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+		const code =
+			error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
 		if (code !== "ENOENT" && code !== "ENOTDIR") {
 			return {
 				fullOutput: fallbackOutput,

@@ -1,23 +1,23 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { normalizeSkillInput } from "../../agents/skills.ts";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import { buildChainSummary } from "../../shared/formatters.ts";
 import {
 	buildChainInstructions,
 	removeChainDir,
 	resolveStepBehavior,
-	suppressProgressForReadOnlyTask,
 	type SequentialStep,
 	type StepOverrides,
+	suppressProgressForReadOnlyTask,
 } from "../../shared/settings.ts";
-import { getSingleResultOutput, resolveChildCwd } from "../../shared/utils.ts";
-import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveChildMaxSubagentDepth } from "../../shared/types.ts";
 import { workflowSessionMetadataFromContext } from "../../shared/types-depth.ts";
+import { getSingleResultOutput, resolveChildCwd } from "../../shared/utils.ts";
 import { outputEntryFromResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { recordRun } from "../shared/run-history.ts";
-import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
@@ -38,7 +38,9 @@ export async function runSequentialChainStep(input: {
 		return {
 			content: [{ type: "text", text: `Unknown agent: ${seqStep.agent}` }],
 			isError: true,
-			details: buildChainExecutionDetails(context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex })),
+			details: buildChainExecutionDetails(
+				context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex }),
+			),
 		};
 	}
 
@@ -73,13 +75,25 @@ export async function runSequentialChainStep(input: {
 	stepTask = prefix + stepTask + suffix;
 
 	const effectiveModel =
-		(seqStep.model ? resolveModelCandidate(seqStep.model, context.availableModels, context.ctx.model?.provider) : null)
-		?? resolveModelCandidate(agentConfig.model, context.availableModels, context.ctx.model?.provider);
-	const outputPath = typeof behavior.output === "string"
-		? (path.isAbsolute(behavior.output) ? behavior.output : path.join(context.chainDir, behavior.output))
-		: undefined;
-	const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Chain step ${stepIndex + 1} (${seqStep.agent})`);
-	if (validationError) return buildChainExecutionErrorResult(validationError, context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex }));
+		(seqStep.model
+			? resolveModelCandidate(seqStep.model, context.availableModels, context.ctx.model?.provider)
+			: null) ?? resolveModelCandidate(agentConfig.model, context.availableModels, context.ctx.model?.provider);
+	const outputPath =
+		typeof behavior.output === "string"
+			? path.isAbsolute(behavior.output)
+				? behavior.output
+				: path.join(context.chainDir, behavior.output)
+			: undefined;
+	const validationError = validateFileOnlyOutputMode(
+		behavior.outputMode,
+		outputPath,
+		`Chain step ${stepIndex + 1} (${seqStep.agent})`,
+	);
+	if (validationError)
+		return buildChainExecutionErrorResult(
+			validationError,
+			context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex }),
+		);
 
 	const maxSubagentDepth = resolveChildMaxSubagentDepth(context.params.maxSubagentDepth, agentConfig.maxSubagentDepth);
 	const interruptController = new AbortController();
@@ -137,47 +151,49 @@ export async function runSequentialChainStep(input: {
 		preferredModelProvider: context.ctx.model?.provider,
 		skills: behavior.skills === false ? [] : behavior.skills,
 		structuredOutput: structuredRuntime,
-		onUpdate: context.onUpdate ? (update) => {
-			const stepResults = update.details?.results || [];
-			const stepProgress = update.details?.progress || [];
-			if (context.foregroundControl && stepProgress.length > 0) {
-				const current = stepProgress[0];
-				context.foregroundControl.currentAgent = seqStep.agent;
-				context.foregroundControl.currentIndex = flatIndex;
-				context.foregroundControl.currentActivityState = current?.activityState;
-				context.foregroundControl.lastActivityAt = current?.lastActivityAt;
-				context.foregroundControl.currentTool = current?.currentTool;
-				context.foregroundControl.currentToolStartedAt = current?.currentToolStartedAt;
-				context.foregroundControl.currentPath = current?.currentPath;
-				context.foregroundControl.turnCount = current?.turnCount;
-				context.foregroundControl.tokens = current?.tokens;
-				context.foregroundControl.toolCount = current?.toolCount;
-				context.foregroundControl.updatedAt = Date.now();
-			}
-			context.onUpdate?.({
-				...update,
-				details: {
-					mode: "chain",
-					results: state.results.concat(stepResults),
-					progress: state.allProgress.concat(stepProgress),
-					controlEvents: update.details?.controlEvents,
-					chainAgents: context.chainAgents,
-					totalSteps: context.totalSteps,
-					currentStepIndex: stepIndex,
-					outputs: state.outputs,
-					workflowGraph: buildWorkflowGraphSnapshot({
-						runId: context.runId,
-						mode: "chain",
-						steps: context.chainSteps,
-						results: state.results.concat(stepResults),
-						currentStepIndex: stepIndex,
-						currentFlatIndex: flatIndex,
-						dynamicChildren: state.dynamicChildren,
-						dynamicGroupStatuses: state.dynamicGroupStatuses,
-					}),
-				},
-			});
-		} : undefined,
+		onUpdate: context.onUpdate
+			? (update) => {
+					const stepResults = update.details?.results || [];
+					const stepProgress = update.details?.progress || [];
+					if (context.foregroundControl && stepProgress.length > 0) {
+						const current = stepProgress[0];
+						context.foregroundControl.currentAgent = seqStep.agent;
+						context.foregroundControl.currentIndex = flatIndex;
+						context.foregroundControl.currentActivityState = current?.activityState;
+						context.foregroundControl.lastActivityAt = current?.lastActivityAt;
+						context.foregroundControl.currentTool = current?.currentTool;
+						context.foregroundControl.currentToolStartedAt = current?.currentToolStartedAt;
+						context.foregroundControl.currentPath = current?.currentPath;
+						context.foregroundControl.turnCount = current?.turnCount;
+						context.foregroundControl.tokens = current?.tokens;
+						context.foregroundControl.toolCount = current?.toolCount;
+						context.foregroundControl.updatedAt = Date.now();
+					}
+					context.onUpdate?.({
+						...update,
+						details: {
+							mode: "chain",
+							results: state.results.concat(stepResults),
+							progress: state.allProgress.concat(stepProgress),
+							controlEvents: update.details?.controlEvents,
+							chainAgents: context.chainAgents,
+							totalSteps: context.totalSteps,
+							currentStepIndex: stepIndex,
+							outputs: state.outputs,
+							workflowGraph: buildWorkflowGraphSnapshot({
+								runId: context.runId,
+								mode: "chain",
+								steps: context.chainSteps,
+								results: state.results.concat(stepResults),
+								currentStepIndex: stepIndex,
+								currentFlatIndex: flatIndex,
+								dynamicChildren: state.dynamicChildren,
+								dynamicGroupStatuses: state.dynamicGroupStatuses,
+							}),
+						},
+					});
+				}
+			: undefined,
 	});
 	if (context.foregroundControl?.currentIndex === flatIndex) {
 		context.foregroundControl.interrupt = undefined;
@@ -192,14 +208,28 @@ export async function runSequentialChainStep(input: {
 
 	if (result.interrupted) {
 		return {
-			content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${result.agent}). Waiting for explicit next action.` }],
-			details: buildChainExecutionDetails(context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex - 1 })),
+			content: [
+				{
+					type: "text",
+					text: `Chain paused after interrupt at step ${stepIndex + 1} (${result.agent}). Waiting for explicit next action.`,
+				},
+			],
+			details: buildChainExecutionDetails(
+				context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex - 1 }),
+			),
 		};
 	}
 	if (result.detached) {
 		return {
-			content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${result.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
-			details: buildChainExecutionDetails(context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex - 1 })),
+			content: [
+				{
+					type: "text",
+					text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${result.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`,
+				},
+			],
+			details: buildChainExecutionDetails(
+				context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex - 1 }),
+			),
 		};
 	}
 	if (result.exitCode !== 0) {
@@ -209,20 +239,25 @@ export async function runSequentialChainStep(input: {
 		});
 		return {
 			content: [{ type: "text", text: summary }],
-			details: buildChainExecutionDetails(context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex - 1 })),
+			details: buildChainExecutionDetails(
+				context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex - 1 }),
+			),
 			isError: true,
 		};
 	}
 
 	if (behavior.output) {
 		try {
-			const expectedPath = path.isAbsolute(behavior.output) ? behavior.output : path.join(context.chainDir, behavior.output);
+			const expectedPath = path.isAbsolute(behavior.output)
+				? behavior.output
+				: path.join(context.chainDir, behavior.output);
 			if (!fs.existsSync(expectedPath)) {
 				const dirFiles = fs.readdirSync(context.chainDir);
 				const mdFiles = dirFiles.filter((file) => file.endsWith(".md") && file !== "progress.md");
-				const warning = mdFiles.length > 0
-					? `Agent wrote to different file(s): ${mdFiles.join(", ")} instead of ${behavior.output}`
-					: `Agent did not create expected output file: ${behavior.output}`;
+				const warning =
+					mdFiles.length > 0
+						? `Agent wrote to different file(s): ${mdFiles.join(", ")} instead of ${behavior.output}`
+						: `Agent did not create expected output file: ${behavior.output}`;
 				result.error = result.error ? `${result.error}\n${warning}` : warning;
 			}
 		} catch {

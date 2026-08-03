@@ -1,9 +1,4 @@
-import {
-	CustomEditor,
-	type ExtensionAPI,
-	type ExtensionContext,
-	type KeybindingsManager,
-} from "@bastani/atomic";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@bastani/atomic";
 import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 

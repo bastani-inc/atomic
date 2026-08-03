@@ -258,7 +258,10 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		const projectOverridesChat = projectCodexFastMode?.chat !== undefined;
 		const projectOverridesWorkflow = projectCodexFastMode?.workflow !== undefined;
 		let projectModified = false;
-		if ((settings.chat !== undefined && projectOverridesChat) || (settings.workflow !== undefined && projectOverridesWorkflow)) {
+		if (
+			(settings.chat !== undefined && projectOverridesChat) ||
+			(settings.workflow !== undefined && projectOverridesWorkflow)
+		) {
 			state.projectSettings.codexFastMode = { ...(projectCodexFastMode ?? {}) };
 			if (settings.chat !== undefined && projectOverridesChat) {
 				state.projectSettings.codexFastMode.chat = settings.chat;

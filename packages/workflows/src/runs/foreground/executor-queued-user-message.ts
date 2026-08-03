@@ -1,29 +1,29 @@
 import type { StageSessionEvent } from "./stage-runner-types.js";
 
 interface QueueSnapshot {
-  readonly steering: readonly string[];
-  readonly followUp: readonly string[];
+	readonly steering: readonly string[];
+	readonly followUp: readonly string[];
 }
 
 function removedMessages(before: readonly string[], after: readonly string[]): string[] {
-  const remaining = [...after];
-  const removed: string[] = [];
-  for (const message of before) {
-    const index = remaining.indexOf(message);
-    if (index === -1) removed.push(message);
-    else remaining.splice(index, 1);
-  }
-  return removed;
+	const remaining = [...after];
+	const removed: string[] = [];
+	for (const message of before) {
+		const index = remaining.indexOf(message);
+		if (index === -1) removed.push(message);
+		else remaining.splice(index, 1);
+	}
+	return removed;
 }
 
 function userMessageText(event: StageSessionEvent): string | undefined {
-  if (event.type !== "message_start" || event.message.role !== "user") return undefined;
-  const { content } = event.message;
-  if (typeof content === "string") return content;
-  return content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
+	if (event.type !== "message_start" || event.message.role !== "user") return undefined;
+	const { content } = event.message;
+	if (typeof content === "string") return content;
+	return content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
 }
 
 /**
@@ -39,37 +39,37 @@ function userMessageText(event: StageSessionEvent): string | undefined {
  * prompts.
  */
 export function createQueuedUserMessageConsumptionWatcher(
-  armContinuation: () => void,
+	armContinuation: () => void,
 ): (event: StageSessionEvent) => void {
-  let snapshot: QueueSnapshot = { steering: [], followUp: [] };
-  let consumptionCandidates: string[] = [];
-  let userMessageSeenInAgentRun = false;
+	let snapshot: QueueSnapshot = { steering: [], followUp: [] };
+	let consumptionCandidates: string[] = [];
+	let userMessageSeenInAgentRun = false;
 
-  return (event): void => {
-    if (event.type === "queue_update") {
-      consumptionCandidates.push(
-        ...removedMessages(snapshot.steering, event.steering),
-        ...removedMessages(snapshot.followUp, event.followUp),
-      );
-      snapshot = { steering: [...event.steering], followUp: [...event.followUp] };
-      return;
-    }
-    if (event.type === "agent_start") {
-      consumptionCandidates = [];
-      userMessageSeenInAgentRun = false;
-      return;
-    }
-    if (event.type === "agent_end") {
-      consumptionCandidates = [];
-      userMessageSeenInAgentRun = false;
-      return;
-    }
+	return (event): void => {
+		if (event.type === "queue_update") {
+			consumptionCandidates.push(
+				...removedMessages(snapshot.steering, event.steering),
+				...removedMessages(snapshot.followUp, event.followUp),
+			);
+			snapshot = { steering: [...event.steering], followUp: [...event.followUp] };
+			return;
+		}
+		if (event.type === "agent_start") {
+			consumptionCandidates = [];
+			userMessageSeenInAgentRun = false;
+			return;
+		}
+		if (event.type === "agent_end") {
+			consumptionCandidates = [];
+			userMessageSeenInAgentRun = false;
+			return;
+		}
 
-    const text = userMessageText(event);
-    if (text === undefined) return;
-    const candidateIndex = consumptionCandidates.indexOf(text);
-    if (userMessageSeenInAgentRun || candidateIndex !== -1) armContinuation();
-    if (candidateIndex !== -1) consumptionCandidates.splice(candidateIndex, 1);
-    userMessageSeenInAgentRun = true;
-  };
+		const text = userMessageText(event);
+		if (text === undefined) return;
+		const candidateIndex = consumptionCandidates.indexOf(text);
+		if (userMessageSeenInAgentRun || candidateIndex !== -1) armContinuation();
+		if (candidateIndex !== -1) consumptionCandidates.splice(candidateIndex, 1);
+		userMessageSeenInAgentRun = true;
+	};
 }

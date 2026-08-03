@@ -1,4 +1,4 @@
-import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { type Component, Text, type TUI } from "@earendil-works/pi-tui";
 import { STARTUP_ASSEMBLY_GAPS, STARTUP_FRAME_MS } from "./atomic-banner.ts";
 
 export interface StartupAnimationState {

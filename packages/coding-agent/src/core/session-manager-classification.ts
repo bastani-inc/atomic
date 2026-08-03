@@ -11,9 +11,9 @@ export function validSessionWorkflowMetadata(value: unknown): SessionWorkflowMet
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const metadata = value as Record<string, unknown>;
 	if (
-		!isNonEmptyString(metadata.runId)
-		|| !isNonEmptyString(metadata.stageId)
-		|| !isNonEmptyString(metadata.stageName)
+		!isNonEmptyString(metadata.runId) ||
+		!isNonEmptyString(metadata.stageId) ||
+		!isNonEmptyString(metadata.stageName)
 	) {
 		return undefined;
 	}

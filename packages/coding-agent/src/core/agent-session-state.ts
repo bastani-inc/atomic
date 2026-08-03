@@ -1,7 +1,7 @@
 import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import type { ToolDefinition, ToolInfo } from "./extensions/index.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import type { ToolDefinition, ToolInfo } from "./extensions/index.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 
 export function getActiveToolNames(this: AgentSession): string[] {
@@ -24,7 +24,6 @@ export function getAllTools(this: AgentSession): ToolInfo[] {
 		sourceInfo,
 	}));
 }
-
 
 export function getToolDefinition(this: AgentSession, name: string): ToolDefinition | undefined {
 	return this._toolDefinitions.get(name)?.definition;
@@ -56,7 +55,10 @@ export function setActiveToolsByName(this: AgentSession, toolNames: string[]): v
 
 /** Whether compaction or branch summarization is currently running */
 
-export function setScopedModels(this: AgentSession, scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>): void {
+export function setScopedModels(
+	this: AgentSession,
+	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>,
+): void {
 	this._scopedModels = scopedModels;
 }
 
@@ -70,7 +72,6 @@ export function _normalizePromptSnippet(this: AgentSession, text: string | undef
 		.trim();
 	return oneLine.length > 0 ? oneLine : undefined;
 }
-
 
 export function _normalizePromptGuidelines(this: AgentSession, guidelines: string[] | undefined): string[] {
 	if (!guidelines || guidelines.length === 0) {
@@ -86,7 +87,6 @@ export function _normalizePromptGuidelines(this: AgentSession, guidelines: strin
 	}
 	return Array.from(unique);
 }
-
 
 export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): string {
 	const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
@@ -106,8 +106,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): s
 
 	const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 	const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
-	const appendSystemPrompt =
-		loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
+	const appendSystemPrompt = loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 	const loadedSkills = this._resourceLoader.getSkills().skills;
 	const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
@@ -126,7 +125,6 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): s
 	};
 	return buildSystemPrompt(this._baseSystemPromptOptions);
 }
-
 
 export function _refreshBaseSystemPromptFromActiveTools(this: AgentSession): void {
 	this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());

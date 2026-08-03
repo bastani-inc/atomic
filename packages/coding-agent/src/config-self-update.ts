@@ -183,7 +183,12 @@ function readCommandOutput(
 	return undefined;
 }
 
-function getGlobalPackageRoots(runtime: SelfUpdateRuntime, method: InstallMethod, _packageName: string, npmCommand?: string[]): string[] {
+function getGlobalPackageRoots(
+	runtime: SelfUpdateRuntime,
+	method: InstallMethod,
+	_packageName: string,
+	npmCommand?: string[],
+): string[] {
 	switch (method) {
 		case "npm": {
 			const configured = !!npmCommand?.length;
@@ -281,7 +286,12 @@ function isSelfUpdatePathWritable(runtime: SelfUpdateRuntime): boolean {
 	}
 }
 
-function isManagedByGlobalPackageManager(runtime: SelfUpdateRuntime, method: InstallMethod, packageName: string, npmCommand?: string[]): boolean {
+function isManagedByGlobalPackageManager(
+	runtime: SelfUpdateRuntime,
+	method: InstallMethod,
+	packageName: string,
+	npmCommand?: string[],
+): boolean {
 	const packageDirs = [runtime.getPackageDir(), getEntrypointPackageDir()].filter((dir): dir is string => !!dir);
 	const packageDirCandidates = packageDirs.flatMap((dir) => getPathComparisonCandidates(dir));
 	return getGlobalPackageRoots(runtime, method, packageName, npmCommand).some((root) => {
@@ -300,8 +310,19 @@ export function getSelfUpdateCommandForRuntime(
 ): SelfUpdateCommand | undefined {
 	const method = detectInstallMethodForRuntime(runtime);
 	const target = normalizeSelfUpdateTarget(updateTarget);
-	const command = getSelfUpdateCommandForMethod(runtime, method, packageName, target.packageName, npmCommand, target.installSpec);
-	if (!command || !isManagedByGlobalPackageManager(runtime, method, packageName, npmCommand) || !isSelfUpdatePathWritable(runtime)) {
+	const command = getSelfUpdateCommandForMethod(
+		runtime,
+		method,
+		packageName,
+		target.packageName,
+		npmCommand,
+		target.installSpec,
+	);
+	if (
+		!command ||
+		!isManagedByGlobalPackageManager(runtime, method, packageName, npmCommand) ||
+		!isSelfUpdatePathWritable(runtime)
+	) {
 		return undefined;
 	}
 	return command;
@@ -318,9 +339,19 @@ export function getSelfUpdateUnavailableInstructionForRuntime(
 		return `Download from: https://github.com/bastani-inc/atomic/releases/latest`;
 	}
 	const target = normalizeSelfUpdateTarget(updateTarget);
-	const command = getSelfUpdateCommandForMethod(runtime, method, packageName, target.packageName, npmCommand, target.installSpec);
+	const command = getSelfUpdateCommandForMethod(
+		runtime,
+		method,
+		packageName,
+		target.packageName,
+		npmCommand,
+		target.installSpec,
+	);
 	if (command) {
-		if (isManagedByGlobalPackageManager(runtime, method, packageName, npmCommand) && !isSelfUpdatePathWritable(runtime)) {
+		if (
+			isManagedByGlobalPackageManager(runtime, method, packageName, npmCommand) &&
+			!isSelfUpdatePathWritable(runtime)
+		) {
 			return `This installation is managed by a global ${method} install, but the install path is not writable. Update it yourself with: ${command.display}`;
 		}
 		return `This installation is not managed by a global ${method} install. Update it with the package manager, wrapper, or source checkout that provides it.`;
@@ -336,4 +367,3 @@ export function getUpdateInstructionForRuntime(runtime: SelfUpdateRuntime, packa
 	}
 	return getSelfUpdateUnavailableInstructionForRuntime(runtime, packageName);
 }
-

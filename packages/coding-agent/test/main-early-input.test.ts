@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyEarlyInputChunk, startEarlyInputCapture, type EarlyInputState } from "../src/main-early-input.ts";
+import { applyEarlyInputChunk, type EarlyInputState, startEarlyInputCapture } from "../src/main-early-input.ts";
 
 class FakeStdin {
 	isTTY = true;
@@ -45,7 +45,10 @@ class FakeProcess {
 		this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
 	}
 	off(event: FakeProcessEvent, listener: FakeProcessListener): void {
-		this.listeners.set(event, (this.listeners.get(event) ?? []).filter((candidate) => candidate !== listener));
+		this.listeners.set(
+			event,
+			(this.listeners.get(event) ?? []).filter((candidate) => candidate !== listener),
+		);
 	}
 	removeListener(event: FakeProcessEvent, listener: FakeProcessListener): void {
 		this.off(event, listener);

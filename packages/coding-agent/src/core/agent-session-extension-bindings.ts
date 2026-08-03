@@ -1,12 +1,12 @@
 import { basename, dirname } from "node:path";
 import { resetApiProviders } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";
-import type { ResourceExtensionPaths } from "./resource-loader.ts";
-import type { PathMetadata } from "./package-manager.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { recoverProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
+import type { PathMetadata } from "./package-manager.ts";
+import type { ResourceExtensionPaths } from "./resource-loader.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 
 export async function bindExtensions(this: AgentSession, bindings: ExtensionBindings): Promise<void> {
@@ -34,16 +34,12 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	}
 }
 
-
 export async function extendResourcesFromExtensions(this: AgentSession, reason: "startup" | "reload"): Promise<void> {
 	if (!this._extensionRunner.hasHandlers("resources_discover")) {
 		return;
 	}
 
-	const { skillPaths, promptPaths, themePaths } = await this._extensionRunner.emitResourcesDiscover(
-		this._cwd,
-		reason,
-	);
+	const { skillPaths, promptPaths, themePaths } = await this._extensionRunner.emitResourcesDiscover(this._cwd, reason);
 
 	if (skillPaths.length === 0 && promptPaths.length === 0 && themePaths.length === 0) {
 		return;
@@ -60,20 +56,25 @@ export async function extendResourcesFromExtensions(this: AgentSession, reason: 
 	this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 }
 
-
-export function buildExtensionResourcePaths(this: AgentSession, entries: Array<{ path: string; extensionPath: string }>): Array<{
+export function buildExtensionResourcePaths(
+	this: AgentSession,
+	entries: Array<{ path: string; extensionPath: string }>,
+): Array<{
 	path: string;
 	metadata: PathMetadata;
 }> {
 	return entries.map((entry) => {
 		const extensions = this._resourceLoader?.getExtensions().extensions ?? [];
-		const extension = extensions.find((candidate) =>
-			candidate.path === entry.extensionPath
-			|| candidate.resolvedPath === entry.extensionPath
-			|| candidate.sourceInfo.path === entry.extensionPath);
+		const extension = extensions.find(
+			(candidate) =>
+				candidate.path === entry.extensionPath ||
+				candidate.resolvedPath === entry.extensionPath ||
+				candidate.sourceInfo.path === entry.extensionPath,
+		);
 		const sourceInfo = extension?.sourceInfo;
 		const source = sourceInfo?.source ?? this.getExtensionSourceLabel(entry.extensionPath);
-		const baseDir = sourceInfo?.baseDir ?? (entry.extensionPath.startsWith("<") ? undefined : dirname(entry.extensionPath));
+		const baseDir =
+			sourceInfo?.baseDir ?? (entry.extensionPath.startsWith("<") ? undefined : dirname(entry.extensionPath));
 		return {
 			path: entry.path,
 			metadata: {
@@ -87,7 +88,6 @@ export function buildExtensionResourcePaths(this: AgentSession, entries: Array<{
 	});
 }
 
-
 export function getExtensionSourceLabel(this: AgentSession, extensionPath: string): string {
 	if (extensionPath.startsWith("<")) {
 		return `extension:${extensionPath.replace(/[<>]/g, "")}`;
@@ -96,7 +96,6 @@ export function getExtensionSourceLabel(this: AgentSession, extensionPath: strin
 	const name = base.replace(/\.(ts|js)$/, "");
 	return `extension:${name}`;
 }
-
 
 export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRunner): void {
 	runner.setUIContext(this._extensionUIContext, this._extensionMode);
@@ -107,7 +106,6 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 		? runner.onError(this._extensionErrorListener)
 		: undefined;
 }
-
 
 export function refreshCurrentModelFromRegistry(this: AgentSession): void {
 	this._refreshCurrentModelFromRegistry();
@@ -131,7 +129,6 @@ export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
 	this._refreshBaseSystemPromptFromActiveTools();
 	this._emit({ type: "model_changed", model: refreshedModel, previousModel, source: "restore" });
 }
-
 
 export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner): void {
 	const getCommands = (): SlashCommandInfo[] => {
@@ -221,6 +218,11 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 		},
 		{
 			getModel: () => this.model,
+			// Read through the public accessor, not `_scopedModels`: in the isolated
+			// engine the host-side facade session has `scopedModels` redefined by
+			// RemoteModelCatalog to the engine's catalogue, and the private field it
+			// shadows is never refreshed.
+			getScopedModels: () => this.scopedModels,
 			getThinkingLevel: () => this.thinkingLevel,
 			isIdle: () => !this.isStreaming,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
@@ -235,7 +237,9 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 				void (async () => {
 					try {
 						const result = await this.compact({
-							...(options?.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
+							...(options?.compression_ratio === undefined
+								? {}
+								: { compression_ratio: options.compression_ratio }),
 							...(options?.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 							...(options?.query === undefined ? {} : { query: options.query }),
 						});
@@ -262,7 +266,6 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 		},
 	);
 }
-
 
 export async function reload(this: AgentSession, options?: AgentSessionReloadOptions): Promise<void> {
 	const reason = options?.reason ?? "reload";

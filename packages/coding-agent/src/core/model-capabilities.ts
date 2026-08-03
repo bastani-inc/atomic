@@ -6,15 +6,17 @@ export interface GrammarToolCapabilityAlias {
 }
 
 /** Pi provider compatibility metadata plus Atomic's public constrained-sampling fields. */
-export type AtomicProviderCompat = NonNullable<Model<Api>["compat"]> & GrammarToolCapabilityAlias & {
-	supportsStrictTools?: boolean;
-	supportsStrictMode?: boolean;
-	supportsOpenAIGrammarTools?: boolean;
-};
+export type AtomicProviderCompat = NonNullable<Model<Api>["compat"]> &
+	GrammarToolCapabilityAlias & {
+		supportsStrictTools?: boolean;
+		supportsStrictMode?: boolean;
+		supportsOpenAIGrammarTools?: boolean;
+	};
 
-type GrammarCompatible = NonNullable<Model<Api>["compat"]> & GrammarToolCapabilityAlias & {
-	supportsOpenAIGrammarTools?: boolean;
-};
+type GrammarCompatible = NonNullable<Model<Api>["compat"]> &
+	GrammarToolCapabilityAlias & {
+		supportsOpenAIGrammarTools?: boolean;
+	};
 
 /**
  * Keep Atomic's documented capability alias synchronized with pi-ai's canonical
@@ -28,10 +30,7 @@ export function normalizeGrammarToolCapability(
 	const grammarCompat = compat as GrammarCompatible;
 	const supported = grammarCompat.supportsOpenAIGrammarTools ?? grammarCompat.supportsGrammarTools;
 	if (supported === undefined) return compat as AtomicProviderCompat;
-	if (
-		grammarCompat.supportsOpenAIGrammarTools === supported &&
-		grammarCompat.supportsGrammarTools === supported
-	) {
+	if (grammarCompat.supportsOpenAIGrammarTools === supported && grammarCompat.supportsGrammarTools === supported) {
 		return compat as AtomicProviderCompat;
 	}
 	return {

@@ -1,23 +1,18 @@
-import type { ExtensionContext } from "@bastani/atomic";
-import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import * as path from "node:path";
-import { MAX_WIDGET_JOBS, WIDGET_KEY, type AsyncJobState } from "../shared/types.ts";
-import { getTermWidth, runningPulseGlyph, truncLine, type Theme } from "./render-layout.ts";
-import { themeBold } from "./render-status-progress.ts";
+import type { ExtensionContext } from "@bastani/atomic";
+import { type Component, Container, Text } from "@earendil-works/pi-tui";
+import { type AsyncJobState, MAX_WIDGET_JOBS, WIDGET_KEY } from "../shared/types.ts";
+import { widgetActivity, widgetJobName, widgetStats, widgetStatusGlyph } from "./render-event-formatting.ts";
+import { getTermWidth, runningPulseGlyph, type Theme, truncLine } from "./render-layout.ts";
 import { advanceResultPulseFrame } from "./render-result-animation.ts";
 import { widgetRenderKey } from "./render-stable-output.ts";
+import { themeBold } from "./render-status-progress.ts";
 import {
 	buildSingleWidgetLines,
 	compactSingleWidgetLines,
 	fitWidgetLineBudget,
 	widgetParallelAgentDetails,
 } from "./render-widget-graph.ts";
-import {
-	widgetActivity,
-	widgetJobName,
-	widgetStats,
-	widgetStatusGlyph,
-} from "./render-event-formatting.ts";
 
 class LiveWidgetComponent implements Component {
 	private readonly container = new Container();
@@ -37,11 +32,18 @@ class LiveWidgetComponent implements Component {
 		const pulseFrame = this.getPulseFrame();
 		const lines = this.buildLines(jobs, width, expanded, now, pulseFrame);
 		this.container.clear();
-		for (const line of fitWidgetLineBudget(lines, this.theme, width, expanded)) this.container.addChild(new Text(line, 1, 0));
+		for (const line of fitWidgetLineBudget(lines, this.theme, width, expanded))
+			this.container.addChild(new Text(line, 1, 0));
 		return this.container.render(width);
 	}
 
-	private buildLines(jobs: AsyncJobState[], width: number, expanded: boolean, now: number, pulseFrame: number | undefined): string[] {
+	private buildLines(
+		jobs: AsyncJobState[],
+		width: number,
+		expanded: boolean,
+		now: number,
+		pulseFrame: number | undefined,
+	): string[] {
 		if (expanded) return buildWidgetLines(jobs, this.theme, width, true, now, pulseFrame);
 		if (jobs.length === 1) return compactSingleWidgetLines(jobs[0]!, this.theme, width, now, pulseFrame);
 		return buildWidgetLines(jobs, this.theme, width, false, now, pulseFrame);
@@ -52,7 +54,12 @@ class LiveWidgetComponent implements Component {
 	}
 }
 
-function buildWidgetComponent(getJobs: () => AsyncJobState[], getExpanded: () => boolean, getNow: () => number, getPulseFrame: () => number | undefined): (_tui: unknown, theme: Theme) => Component {
+function buildWidgetComponent(
+	getJobs: () => AsyncJobState[],
+	getExpanded: () => boolean,
+	getNow: () => number,
+	getPulseFrame: () => number | undefined,
+): (_tui: unknown, theme: Theme) => Component {
 	return (_tui, theme) => new LiveWidgetComponent(getJobs, theme, getExpanded, getNow, getPulseFrame);
 }
 
@@ -144,9 +151,7 @@ function getWidgetOwnerKey(ctx: ExtensionContext): string {
 	try {
 		const sessionFile = ctx.sessionManager.getSessionFile?.();
 		if (sessionFile) {
-			const resolvedSessionFile = resolvedCwd
-				? path.resolve(resolvedCwd, sessionFile)
-				: path.resolve(sessionFile);
+			const resolvedSessionFile = resolvedCwd ? path.resolve(resolvedCwd, sessionFile) : path.resolve(sessionFile);
 			sessionOwner = `sessionFile:${resolvedSessionFile}`;
 		}
 	} catch {
@@ -240,7 +245,14 @@ export function stopWidgetAnimation(ownerCtx?: ExtensionContext, owner: object =
 	releaseMountedWidget(state, owner);
 }
 
-export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false, now: number = Date.now(), pulseFrame?: number): string[] {
+export function buildWidgetLines(
+	jobs: AsyncJobState[],
+	theme: Theme,
+	width = getTermWidth(),
+	expanded = false,
+	now: number = Date.now(),
+	pulseFrame?: number,
+): string[] {
 	if (jobs.length === 0) return [];
 	if (jobs.length === 1) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded, now, pulseFrame);
 	const running = jobs.filter((job) => job.status === "running");
@@ -250,7 +262,12 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 	const lines: string[] = [];
 	const hasActive = running.length > 0 || queued.length > 0;
 	const headerGlyph = running.length > 0 ? runningPulseGlyph(pulseFrame) : hasActive ? "●" : "○";
-	lines.push(truncLine(`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}`, width));
+	lines.push(
+		truncLine(
+			`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}`,
+			width,
+		),
+	);
 
 	const items: string[][] = [];
 	let hiddenRunning = 0;
@@ -259,7 +276,10 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 	let slots = MAX_WIDGET_JOBS;
 
 	for (const job of running) {
-		if (slots <= 0) { hiddenRunning++; continue; }
+		if (slots <= 0) {
+			hiddenRunning++;
+			continue;
+		}
 		const stats = widgetStats(job, theme);
 		items.push([
 			`${widgetStatusGlyph(job, theme, pulseFrame)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
@@ -276,7 +296,10 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 	}
 
 	for (const job of finished) {
-		if (slots <= 0) { hiddenFinished++; continue; }
+		if (slots <= 0) {
+			hiddenFinished++;
+			continue;
+		}
 		const stats = widgetStats(job, theme);
 		items.push([
 			`${widgetStatusGlyph(job, theme, pulseFrame)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
@@ -344,12 +367,16 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[], owner
 	if (!state.mounted) {
 		const surface = getSurfaceState(requestedSurfaceKey);
 		if (surface.activeOwner && surface.activeOwner !== owner) return;
-		ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(
-			() => state.latestJobs,
-			() => getExpanded(state),
-			() => state.frameNow,
-			() => state.pulseFrame,
-		), { placement: "belowEditor" });
+		ctx.ui.setWidget(
+			WIDGET_KEY,
+			buildWidgetComponent(
+				() => state.latestJobs,
+				() => getExpanded(state),
+				() => state.frameNow,
+				() => state.pulseFrame,
+			),
+			{ placement: "belowEditor" },
+		);
 		state.mountedCtx = ctx;
 		state.mountedOwnerKey = ownerKey;
 		state.surfaceKey = requestedSurfaceKey;

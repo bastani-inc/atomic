@@ -26,23 +26,49 @@ export function formatAsyncJobError(error: unknown): string {
 }
 function deleteJobOutput(job: ManagedBashJob): void {
 	if (!job.fullOutputPath) return;
-	try { rmSync(job.fullOutputPath, { force: true }); } catch { /* best-effort temp cleanup */ }
+	try {
+		rmSync(job.fullOutputPath, { force: true });
+	} catch {
+		/* best-effort temp cleanup */
+	}
 }
 
 function cleanupManagedBashJobs(now = Date.now()): void {
-	for (const [jobId, job] of managedBashJobs) if (job.status !== "running" && job.endedAt !== undefined && now - job.endedAt > COMPLETED_JOB_TTL_MS) { deleteJobOutput(job); managedBashJobs.delete(jobId); }
+	for (const [jobId, job] of managedBashJobs)
+		if (job.status !== "running" && job.endedAt !== undefined && now - job.endedAt > COMPLETED_JOB_TTL_MS) {
+			deleteJobOutput(job);
+			managedBashJobs.delete(jobId);
+		}
 	while (managedBashJobs.size > MAX_MANAGED_BASH_JOBS) {
-		const oldest = [...managedBashJobs.values()].sort((a, b) => (a.endedAt ?? a.startedAt) - (b.endedAt ?? b.startedAt))[0];
+		const oldest = [...managedBashJobs.values()].sort(
+			(a, b) => (a.endedAt ?? a.startedAt) - (b.endedAt ?? b.startedAt),
+		)[0];
 		if (!oldest) break;
-		if (oldest.status === "running") oldest.abortController?.abort(); else deleteJobOutput(oldest);
+		if (oldest.status === "running") oldest.abortController?.abort();
+		else deleteJobOutput(oldest);
 		managedBashJobs.delete(oldest.jobId);
 	}
 }
 
-export function createManagedBashJob(command: string, cwd: string, timeoutSeconds?: number, requestedTimeoutSeconds?: number): ManagedBashJob {
+export function createManagedBashJob(
+	command: string,
+	cwd: string,
+	timeoutSeconds?: number,
+	requestedTimeoutSeconds?: number,
+): ManagedBashJob {
 	cleanupManagedBashJobs();
 	const jobId = `bash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-	const job: ManagedBashJob = { jobId, command, cwd, status: "running", output: "", startedAt: Date.now(), timeoutSeconds, requestedTimeoutSeconds, abortController: new AbortController() };
+	const job: ManagedBashJob = {
+		jobId,
+		command,
+		cwd,
+		status: "running",
+		output: "",
+		startedAt: Date.now(),
+		timeoutSeconds,
+		requestedTimeoutSeconds,
+		abortController: new AbortController(),
+	};
 	managedBashJobs.set(jobId, job);
 	cleanupManagedBashJobs();
 	return job;

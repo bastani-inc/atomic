@@ -18,16 +18,16 @@
  * normalizeWorkflowName("  My Workflow  ")         // "my-workflow"
  */
 export function normalizeWorkflowName(name: string): string {
-  if (!name || typeof name !== "string") {
-    throw new TypeError("normalizeWorkflowName: name must be a non-empty string");
-  }
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_]+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-|-$/g, "");
+	if (!name || typeof name !== "string") {
+		throw new TypeError("normalizeWorkflowName: name must be a non-empty string");
+	}
+	return name
+		.trim()
+		.toLowerCase()
+		.replace(/[\s_]+/g, "-")
+		.replace(/[^a-z0-9-]/g, "")
+		.replace(/-{2,}/g, "-")
+		.replace(/^-|-$/g, "");
 }
 
 /**
@@ -35,5 +35,5 @@ export function normalizeWorkflowName(name: string): string {
  * (i.e. their normalized forms are identical).
  */
 export function workflowNamesEqual(a: string, b: string): boolean {
-  return normalizeWorkflowName(a) === normalizeWorkflowName(b);
+	return normalizeWorkflowName(a) === normalizeWorkflowName(b);
 }

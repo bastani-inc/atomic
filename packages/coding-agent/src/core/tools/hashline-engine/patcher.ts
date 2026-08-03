@@ -132,7 +132,7 @@ export class PreparedSection {
 }
 
 function hasAnchorScopedEdit(edits: readonly Edit[]): boolean {
-	return edits.some(edit => {
+	return edits.some((edit) => {
 		if (edit.kind === "delete") return true;
 		// A `replace block N:` edit anchors to concrete content on line N.
 		if (edit.kind === "block") return true;
@@ -230,8 +230,8 @@ export class Patcher {
 				// A mid-batch write failure leaves earlier sections on disk with no
 				// rollback; report exactly which sections landed so the caller can
 				// re-issue only the missing ones instead of double-applying.
-				const written = prepared.slice(0, index).map(entry => entry.section.path);
-				const notWritten = prepared.slice(index + 1).map(entry => entry.section.path);
+				const written = prepared.slice(0, index).map((entry) => entry.section.path);
+				const notWritten = prepared.slice(index + 1).map((entry) => entry.section.path);
 				const message = error instanceof Error ? error.message : String(error);
 				throw new Error(
 					`Failed to write ${prepared[index].section.path}: ${message}` +
@@ -394,7 +394,8 @@ export class Patcher {
 		const expected = exists ? section.fileHash : undefined;
 		const expectedSnapshot = expected === undefined ? null : this.snapshots.byHash(canonicalPath, expected);
 		const liveHashMatches = expected !== undefined && computeFileHash(normalized) === expected;
-		const liveSnapshot = expected === undefined ? null : this.snapshots.byHashAndText(canonicalPath, expected, normalized);
+		const liveSnapshot =
+			expected === undefined ? null : this.snapshots.byHashAndText(canonicalPath, expected, normalized);
 		const liveMatches = liveHashMatches && liveSnapshot !== null;
 		if (liveHashMatches && !liveMatches) {
 			throw this.#mismatchError(section, canonicalPath, normalized, expected, expectedSnapshot !== null);
@@ -413,15 +414,14 @@ export class Patcher {
 		const resolveWarnings: string[] = [];
 		let resolved: readonly Edit[] = edits;
 		if (hasBlockEdit(edits)) {
-			const baseText =
-				expected === undefined || liveMatches ? normalized : expectedSnapshot?.text;
+			const baseText = expected === undefined || liveMatches ? normalized : expectedSnapshot?.text;
 			if (baseText === undefined) {
 				throw this.#mismatchError(section, canonicalPath, normalized, expected ?? "", false);
 			}
 			resolved = resolveBlockEdits(edits, baseText, section.path, this.blockResolver, {
 				onUnresolved: "throw",
-				onResolved: resolution => blockResolutions.push(resolution),
-				onWarning: warning => resolveWarnings.push(warning),
+				onResolved: (resolution) => blockResolutions.push(resolution),
+				onWarning: (warning) => resolveWarnings.push(warning),
 			});
 		}
 		const withResolveWarnings = (result: ApplyResult): ApplyResult =>

@@ -8,7 +8,13 @@ import {
 import { parseJsonFileContent } from "../utils/json.ts";
 import { deepMergeSettings } from "./settings-merge.ts";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
-import type { Settings, SettingsError, SettingsManagerCreateOptions, SettingsScope, SettingsStorage } from "./settings-types.ts";
+import type {
+	Settings,
+	SettingsError,
+	SettingsManagerCreateOptions,
+	SettingsScope,
+	SettingsStorage,
+} from "./settings-types.ts";
 
 export class SettingsManager {
 	private storage: SettingsStorage;
@@ -66,7 +72,8 @@ export class SettingsManager {
 		options: SettingsManagerCreateOptions = {},
 	): SettingsManager {
 		const storage = new FileSettingsStorage(cwd, agentDir, {
-			globalReadPaths: agentDir === getAgentDir() ? getAgentConfigPaths("settings.json") : [join(agentDir, "settings.json")],
+			globalReadPaths:
+				agentDir === getAgentDir() ? getAgentConfigPaths("settings.json") : [join(agentDir, "settings.json")],
 			projectReadPaths: getProjectConfigPaths(cwd, "settings.json"),
 		});
 		return SettingsManager.fromStorage(storage, options);

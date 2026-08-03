@@ -1,10 +1,20 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { convertToLlm, createBranchSummaryMessage, createCustomMessage, messageIsLlmVisible, messageStartsLlmUserTurn } from "../messages.js";
+import {
+	convertToLlm,
+	createBranchSummaryMessage,
+	createCustomMessage,
+	messageIsLlmVisible,
+	messageStartsLlmUserTurn,
+} from "../messages.js";
 import { normalizeDerivedSessionEntries } from "../session-entry-normalization.js";
 import { buildSessionContext } from "../session-manager-history.js";
 import type { CompactionEntry, SessionEntry } from "../session-manager-types.js";
-import { estimateContextTokens, estimateTokens, type CompactionSettings } from "./compaction.js";
-import { normalizeCompactionParameters, normalizeCompactionQuery, COMPACTION_AUTO_QUERY } from "./compaction-parameters.js";
+import { type CompactionSettings, estimateContextTokens, estimateTokens } from "./compaction.js";
+import {
+	COMPACTION_AUTO_QUERY,
+	normalizeCompactionParameters,
+	normalizeCompactionQuery,
+} from "./compaction-parameters.js";
 import {
 	MIN_COMPACTABLE_REGION_LINES,
 	VERBATIM_COMPACTION_STRATEGY,
@@ -24,14 +34,23 @@ const keptTailTokensByPreparation = new WeakMap<VerbatimCompactionPreparation, n
 
 /** Return the independently estimated cost of the protected tail. */
 export function getKeptTailTokenEstimate(preparation: VerbatimCompactionPreparation): number {
-	return keptTailTokensByPreparation.get(preparation)
-		?? Math.max(0, preparation.tokensBefore - preparation.region.tokenEstimate);
+	return (
+		keptTailTokensByPreparation.get(preparation) ??
+		Math.max(0, preparation.tokensBefore - preparation.region.tokenEstimate)
+	);
 }
 
 function messageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	if (entry.type === "message") return entry.message;
 	if (entry.type === "custom_message") {
-		return createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp, entry.excludeFromContext);
+		return createCustomMessage(
+			entry.customType,
+			entry.content,
+			entry.display,
+			entry.details,
+			entry.timestamp,
+			entry.excludeFromContext,
+		);
 	}
 	if (entry.type === "branch_summary" && typeof entry.summary === "string") {
 		return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
@@ -59,7 +78,11 @@ function messageText(message: AgentMessage): string {
 	const converted = convertToLlm([message]);
 	if (converted.length === 0) return "";
 	return converted
-		.flatMap((item) => typeof item.content === "string" ? [item.content] : item.content.filter((block) => block.type === "text").map((block) => block.text))
+		.flatMap((item) =>
+			typeof item.content === "string"
+				? [item.content]
+				: item.content.filter((block) => block.type === "text").map((block) => block.text),
+		)
 		.join("\n");
 }
 
@@ -74,7 +97,9 @@ export function autoDetectCompactionQuery(entries: readonly SessionEntry[]): str
 	return COMPACTION_AUTO_QUERY;
 }
 
-function latestActiveBoundary(entries: SessionEntry[]): { entry: CompactionEntry<VerbatimCompactionDetails>; index: number } | undefined {
+function latestActiveBoundary(
+	entries: SessionEntry[],
+): { entry: CompactionEntry<VerbatimCompactionDetails>; index: number } | undefined {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
 		if (activeBoundary(entry)) return { entry, index };
@@ -111,9 +136,10 @@ export function prepareCompactionBoundary(
 	const previous = latestActiveBoundary(entries);
 	let regionStart = 0;
 	if (previous) {
-		const keptIndex = previous.entry.firstKeptEntryId === null
-			? -1
-			: entries.findIndex((entry) => entry.id === previous.entry.firstKeptEntryId);
+		const keptIndex =
+			previous.entry.firstKeptEntryId === null
+				? -1
+				: entries.findIndex((entry) => entry.id === previous.entry.firstKeptEntryId);
 		regionStart = keptIndex >= 0 ? keptIndex : previous.index + 1;
 	}
 
@@ -124,7 +150,9 @@ export function prepareCompactionBoundary(
 	const tailMessages = visible.slice(tailStart);
 
 	const serialized = serializeConversationForCompaction(convertToLlm(regionMessages.map((item) => item.message)));
-	const regionText = [previous?.entry.summary, serialized].filter((text): text is string => typeof text === "string" && text.length > 0).join("\n");
+	const regionText = [previous?.entry.summary, serialized]
+		.filter((text): text is string => typeof text === "string" && text.length > 0)
+		.join("\n");
 	const region = createNumberedRegion(regionText);
 	if (!control.allowSmallRegion && region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 
@@ -137,6 +165,9 @@ export function prepareCompactionBoundary(
 		parameters,
 		settings,
 	};
-	keptTailTokensByPreparation.set(preparation, tailMessages.reduce((sum, item) => sum + estimateTokens(item.message), 0));
+	keptTailTokensByPreparation.set(
+		preparation,
+		tailMessages.reduce((sum, item) => sum + estimateTokens(item.message), 0),
+	);
 	return preparation;
 }

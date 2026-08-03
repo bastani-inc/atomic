@@ -1,6 +1,10 @@
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
-import { getModelSearchText, getModelSelectorSearchText, type ModelSearchItem } from "../src/modes/interactive/model-search.ts";
+import {
+	getModelSearchText,
+	getModelSelectorSearchText,
+	type ModelSearchItem,
+} from "../src/modes/interactive/model-search.ts";
 
 describe("model search text", () => {
 	test("autocomplete keeps bare model IDs first for inherited slash-separated fuzzy queries", () => {

@@ -1,13 +1,13 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@bastani/atomic";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import {
+	type Details,
 	SLASH_SUBAGENT_CANCEL_EVENT,
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
 	SLASH_SUBAGENT_STARTED_EVENT,
 	SLASH_SUBAGENT_UPDATE_EVENT,
-	type Details,
 } from "../shared/types.ts";
 
 interface SlashSubagentRequest {
@@ -30,7 +30,7 @@ export interface SlashSubagentUpdate {
 }
 
 interface EventBus {
-	on(event: string, handler: (data: unknown) => void): (() => void) | void;
+	on(event: string, handler: (data: unknown) => void): (() => void) | undefined;
 	emit(event: string, data: unknown): void;
 }
 

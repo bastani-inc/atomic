@@ -1,25 +1,23 @@
 import type { KeyId } from "@earendil-works/pi-tui";
-import { runCallback } from "../../core/callback-activity.ts";
-import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { runCallback } from "../../core/callback-activity.ts";
+import { KeybindingsManager } from "../../core/keybindings.ts";
+import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
+import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
+import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
+import { rejectUnsupportedProviderPrompt } from "./rpc-model-fallback-prompt.ts";
+import { type ProviderLoginInput, RpcProviderAuth } from "./rpc-provider-auth.ts";
 import {
 	createRpcErrorResponse,
 	createRpcSuccessResponse,
 	formatRpcErrorMessage,
 	type RpcOutput,
 } from "./rpc-responses.ts";
-import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
-import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
-import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
-import { rejectUnsupportedProviderPrompt } from "./rpc-model-fallback-prompt.ts";
-import { RpcProviderAuth, type ProviderLoginInput } from "./rpc-provider-auth.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
 export type ManagedRpcCommandHandler = RpcCommandHandler & { disposeActiveBash(): Promise<void> };
-
-
 
 interface RpcCommandHandlerOptions {
 	runtimeHost: AgentSessionRuntime;
@@ -112,6 +110,7 @@ export function createRpcCommandHandler({
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
+					compactionReason: session.compactionReason,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					sessionFile: session.sessionFile,
@@ -127,9 +126,15 @@ export function createRpcCommandHandler({
 			}
 			case "set_model": {
 				const models = await session.modelRuntime.getAvailableSnapshot();
-				const model = models.find((candidate) => candidate.provider === command.provider && candidate.id === command.modelId);
+				const model = models.find(
+					(candidate) => candidate.provider === command.provider && candidate.id === command.modelId,
+				);
 				if (!model) {
-					return createRpcErrorResponse(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
+					return createRpcErrorResponse(
+						id,
+						"set_model",
+						`Model not found: ${command.provider}/${command.modelId}`,
+					);
 				}
 				await session.setModel(model);
 				runtimeHost.resolveModelFallback();
@@ -152,9 +157,10 @@ export function createRpcCommandHandler({
 			}
 
 			case "login_provider": {
-				const result = command.authType === "oauth"
-					? await providerAuth.loginOAuth(session, command.provider, command.loginId)
-					: await providerAuth.login(session, command.provider, command.loginId);
+				const result =
+					command.authType === "oauth"
+						? await providerAuth.loginOAuth(session, command.provider, command.loginId)
+						: await providerAuth.login(session, command.provider, command.loginId);
 				return createRpcSuccessResponse(id, "login_provider", result);
 			}
 
@@ -174,15 +180,30 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "logout_provider", result);
 			}
 			case "refresh_models": {
-				await session.modelRuntime.reloadCredentials();
 				const controller = command.timeoutMs === undefined ? undefined : new AbortController();
-				const timeout = controller ? setTimeout(() => controller.abort(), command.timeoutMs) : undefined;
+				const timedOut = Symbol("model refresh timed out");
+				let timeout: ReturnType<typeof setTimeout> | undefined;
+				const timeoutResult =
+					controller && command.timeoutMs !== undefined
+						? new Promise<typeof timedOut>((resolve) => {
+								timeout = setTimeout(() => {
+									controller.abort();
+									resolve(timedOut);
+								}, command.timeoutMs);
+							})
+						: undefined;
 				try {
-					const result = await session.modelRuntime.refresh({
-						allowNetwork: command.allowNetwork,
-						force: command.force,
-						signal: controller?.signal,
-					});
+					const refresh = (async () => {
+						await session.modelRuntime.reloadCredentials({ refreshAvailability: false });
+						if (controller?.signal.aborted) return { aborted: true, errors: new Map<string, Error>() };
+						return session.modelRuntime.refresh({
+							allowNetwork: command.allowNetwork,
+							force: command.force,
+							signal: controller?.signal,
+						});
+					})();
+					const outcome = timeoutResult ? await Promise.race([refresh, timeoutResult]) : await refresh;
+					const result = outcome === timedOut ? { aborted: true, errors: new Map<string, Error>() } : outcome;
 					return createRpcSuccessResponse(id, "refresh_models", {
 						aborted: result.aborted,
 						errors: [...result.errors].map(([provider, error]) => ({ provider, message: error.message })),
@@ -228,13 +249,17 @@ export function createRpcCommandHandler({
 			}
 
 			case "set_auto_compaction":
-				session.setAutoCompactionEnabled(command.enabled); return createRpcSuccessResponse(id, "set_auto_compaction");
+				session.setAutoCompactionEnabled(command.enabled);
+				return createRpcSuccessResponse(id, "set_auto_compaction");
 			case "abort_compaction":
-				session.abortCompaction(); return createRpcSuccessResponse(id, "abort_compaction");
+				session.abortCompaction();
+				return createRpcSuccessResponse(id, "abort_compaction");
 			case "set_auto_retry":
-				session.setAutoRetryEnabled(command.enabled); return createRpcSuccessResponse(id, "set_auto_retry");
+				session.setAutoRetryEnabled(command.enabled);
+				return createRpcSuccessResponse(id, "set_auto_retry");
 			case "abort_retry":
-				session.abortRetry(); return createRpcSuccessResponse(id, "abort_retry");
+				session.abortRetry();
+				return createRpcSuccessResponse(id, "abort_retry");
 
 			case "clear_queue": {
 				return createRpcSuccessResponse(id, "clear_queue", session.clearQueue());
@@ -243,43 +268,67 @@ export function createRpcCommandHandler({
 				session.pauseQueuedMessages();
 				return createRpcSuccessResponse(id, "pause_queued_messages");
 			case "resume_queued_messages":
-				return createRpcSuccessResponse(id, "resume_queued_messages", { released: await session.resumeQueuedMessages() });
+				return createRpcSuccessResponse(id, "resume_queued_messages", {
+					released: await session.resumeQueuedMessages(),
+				});
 			case "bash": {
-				const result = await bashOwners.run({
-					id,
-					session,
-					command: command.command,
-					excludeFromContext: command.excludeFromContext,
-					isCurrent: () => getSession() === session,
-				}, (onUpdate) => session.executeBash(command.command, onUpdate, {
-					excludeFromContext: command.excludeFromContext,
-					id,
-					emitEvent: false,
-					recordResult: false,
-				}));
+				const result = await bashOwners.run(
+					{
+						id,
+						session,
+						command: command.command,
+						excludeFromContext: command.excludeFromContext,
+						isCurrent: () => getSession() === session,
+					},
+					// A `bash` command is still a user-initiated shell request, so it must
+					// reach `user_bash` handlers (sandboxes, remote shells) exactly like the
+					// `user_bash` command does. Ownership, streaming correlation, and result
+					// recording stay with the owning request either way.
+					async (onUpdate) => {
+						const intercepted = await session.extensionRunner.emitUserBash({
+							type: "user_bash",
+							command: command.command,
+							excludeFromContext: command.excludeFromContext === true,
+							cwd: session.sessionManager.getCwd(),
+						});
+						if (intercepted?.result) return intercepted.result;
+						return session.executeBash(command.command, onUpdate, {
+							excludeFromContext: command.excludeFromContext,
+							id,
+							operations: intercepted?.operations,
+							emitEvent: false,
+							recordResult: false,
+						});
+					},
+				);
 				return createRpcSuccessResponse(id, "bash", result);
 			}
 			case "user_bash": {
-				const result = await bashOwners.run({
-					id,
-					session,
-					command: command.command,
-					excludeFromContext: command.excludeFromContext,
-					isCurrent: () => getSession() === session,
-				}, async (onUpdate) => {
-					const intercepted = await session.extensionRunner.emitUserBash({
-						type: "user_bash", command: command.command, excludeFromContext: command.excludeFromContext === true,
-						cwd: session.sessionManager.getCwd(),
-					});
-					if (intercepted?.result) return intercepted.result;
-					return session.executeBash(command.command, onUpdate, {
-						excludeFromContext: command.excludeFromContext,
+				const result = await bashOwners.run(
+					{
 						id,
-						operations: intercepted?.operations,
-						emitEvent: false,
-						recordResult: false,
-					});
-				});
+						session,
+						command: command.command,
+						excludeFromContext: command.excludeFromContext,
+						isCurrent: () => getSession() === session,
+					},
+					async (onUpdate) => {
+						const intercepted = await session.extensionRunner.emitUserBash({
+							type: "user_bash",
+							command: command.command,
+							excludeFromContext: command.excludeFromContext === true,
+							cwd: session.sessionManager.getCwd(),
+						});
+						if (intercepted?.result) return intercepted.result;
+						return session.executeBash(command.command, onUpdate, {
+							excludeFromContext: command.excludeFromContext,
+							id,
+							operations: intercepted?.operations,
+							emitEvent: false,
+							recordResult: false,
+						});
+					},
+				);
 				return createRpcSuccessResponse(id, "user_bash", result);
 			}
 			case "abort_bash":
@@ -398,9 +447,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "invoke_shortcut": {
-				const shortcut = session.extensionRunner
-					.getShortcuts(getShortcutBindings())
-					.get(command.key as KeyId);
+				const shortcut = session.extensionRunner.getShortcuts(getShortcutBindings()).get(command.key as KeyId);
 				if (!shortcut) return createRpcErrorResponse(id, "invoke_shortcut", `Shortcut not found: ${command.key}`);
 				await runCallback(
 					{ kind: "extension.hook", name: `shortcut:${command.key}`, sourcePath: shortcut.extensionPath },
@@ -422,7 +469,11 @@ export function createRpcCommandHandler({
 					return createRpcSuccessResponse(id, "get_command_completions", { completions: null });
 				}
 				const completions = await runCallback(
-					{ kind: "extension.hook", name: `command-completions:${command.commandName}`, sourcePath: registeredCommand.sourceInfo.path },
+					{
+						kind: "extension.hook",
+						name: `command-completions:${command.commandName}`,
+						sourcePath: registeredCommand.sourceInfo.path,
+					},
 					() => getArgumentCompletions(command.argumentPrefix),
 				);
 				return createRpcSuccessResponse(id, "get_command_completions", { completions });

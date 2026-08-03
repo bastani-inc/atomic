@@ -63,7 +63,12 @@ export function isParallelGroup(step: RunnerStep): step is ParallelStepGroup {
 }
 
 export function isDynamicRunnerGroup(step: RunnerStep): step is DynamicRunnerGroup {
-	return "expand" in step && "collect" in step && "parallel" in step && !Array.isArray((step as { parallel?: unknown }).parallel);
+	return (
+		"expand" in step &&
+		"collect" in step &&
+		"parallel" in step &&
+		!Array.isArray((step as { parallel?: unknown }).parallel)
+	);
 }
 
 export function flattenSteps(steps: RunnerStep[]): RunnerSubagentStep[] {
@@ -72,7 +77,6 @@ export function flattenSteps(steps: RunnerStep[]): RunnerSubagentStep[] {
 		if (isParallelGroup(step)) {
 			for (const task of step.parallel) flat.push(task);
 		} else if (isDynamicRunnerGroup(step)) {
-			continue;
 		} else {
 			flat.push(step);
 		}
@@ -96,9 +100,7 @@ export async function mapConcurrent<T, R>(
 		}
 	}
 
-	await Promise.all(
-		Array.from({ length: Math.min(safeLimit, items.length) }, (_, wi) => worker(wi)),
-	);
+	await Promise.all(Array.from({ length: Math.min(safeLimit, items.length) }, (_, wi) => worker(wi)));
 	return results;
 }
 
@@ -117,8 +119,7 @@ export interface ParallelTaskResult {
 
 export function aggregateParallelOutputs(
 	results: ParallelTaskResult[],
-	headerFormat: (index: number, agent: string) => string = (i, agent) =>
-		`=== Parallel Task ${i + 1} (${agent}) ===`,
+	headerFormat: (index: number, agent: string) => string = (i, agent) => `=== Parallel Task ${i + 1} (${agent}) ===`,
 ): string {
 	return results
 		.map((r, i) => {
@@ -135,7 +136,7 @@ export function aggregateParallelOutputs(
 								? `EMPTY OUTPUT (expected output file missing: ${r.outputTargetPath})`
 								: !hasOutput && !r.outputTargetPath
 									? "EMPTY OUTPUT (no textual response returned)"
-							: "";
+									: "";
 			const body = status ? (hasOutput ? `${status}\n${r.output}` : status) : r.output;
 			return `${header}\n${body}`;
 		})

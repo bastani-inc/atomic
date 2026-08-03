@@ -292,7 +292,9 @@ export async function openMcpSetup(
           resolve({ configChanged });
         });
       },
-      { overlay: true, overlayOptions: { anchor: "center", width: 92 } },
+      // handlesCtrlC: the setup panel binds Ctrl+C for its own cancel/cleanup,
+      // so the host must forward the key instead of closing the panel itself.
+      { overlay: true, handlesCtrlC: true, overlayOptions: { anchor: "center", width: 92 } },
     );
   });
 }
@@ -369,7 +371,8 @@ export async function openMcpPanel(
           resolve();
         }, { noticeLines });
       },
-      { overlay: true, overlayOptions: { anchor: "center", width: 82 } },
+      // handlesCtrlC: the panel binds Ctrl+C for its own cancel/cleanup.
+      { overlay: true, handlesCtrlC: true, overlayOptions: { anchor: "center", width: 82 } },
     );
   });
 
@@ -412,7 +415,8 @@ export async function openMcpAuthPanel(
           noticeLines: ["Select OAuth MCP Server. Enter/CTRL+A Authenticate."],
         });
       },
-      { overlay: true, overlayOptions: { anchor: "center", width: 82 } },
+      // handlesCtrlC: the panel binds Ctrl+C for its own cancel/cleanup.
+      { overlay: true, handlesCtrlC: true, overlayOptions: { anchor: "center", width: 82 } },
     );
   });
 

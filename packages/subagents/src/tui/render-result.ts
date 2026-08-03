@@ -1,15 +1,25 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getMarkdownTheme, keyHintIfBound } from "@bastani/atomic";
-import { Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui";
-import type { AgentProgress, AsyncJobStep, Details } from "../shared/types.ts";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.ts";
+import type { AgentProgress, AsyncJobStep, Details } from "../shared/types.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
-import { getTermWidth, truncLine, type Theme } from "./render-layout.ts";
-import { advanceResultPulseFrame, clearResultAnimationTimer, type ResultAnimationContext } from "./render-result-animation.ts";
-import { renderMultiCompact, renderSingleCompact } from "./render-result-compact.ts";
-import { buildChainRenderEntries, buildMultiProgressLabel, resultRowLabel, workflowGraphHasStatus, type ChainRenderEntry } from "./render-chain-graph.ts";
-import { subagentResultRenderKey } from "./render-stable-output.ts";
+import {
+	buildChainRenderEntries,
+	buildMultiProgressLabel,
+	type ChainRenderEntry,
+	resultRowLabel,
+	workflowGraphHasStatus,
+} from "./render-chain-graph.ts";
 import { modelThinkingBadge, widgetStepStatus } from "./render-event-formatting.ts";
+import { getTermWidth, type Theme, truncLine } from "./render-layout.ts";
+import {
+	advanceResultPulseFrame,
+	clearResultAnimationTimer,
+	type ResultAnimationContext,
+} from "./render-result-animation.ts";
+import { renderMultiCompact, renderSingleCompact } from "./render-result-compact.ts";
+import { subagentResultRenderKey } from "./render-stable-output.ts";
 import {
 	buildLiveStatusLine,
 	displayProgressDurationMs,
@@ -45,11 +55,15 @@ export function renderLiveSubagentResult(
 	// Never schedule timer-driven re-renders for scrollback content; clear any
 	// stale timer a previous version may have installed for this render slot.
 	clearResultAnimationTimer(context);
-	return renderSubagentResult(result, {
-		...options,
-		now: context.state.subagentResultSnapshotNow,
-		pulseFrame: context.state.subagentResultPulseFrame,
-	}, theme);
+	return renderSubagentResult(
+		result,
+		{
+			...options,
+			now: context.state.subagentResultSnapshotNow,
+			pulseFrame: context.state.subagentResultPulseFrame,
+		},
+		theme,
+	);
 }
 
 /**
@@ -65,10 +79,12 @@ export function renderSubagentResult(
 		const contextPrefix = d.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
 		const container = new Container();
 		container.addChild(new Text(`${contextPrefix}${theme.fg("success", "launched")} · async run ${d.asyncId}`, 0, 0));
-		container.addChild(new Text(theme.fg("dim", "completion pending; the detached result will be delivered when it finishes"), 0, 0));
+		container.addChild(
+			new Text(theme.fg("dim", "completion pending; the detached result will be delivered when it finishes"), 0, 0),
+		);
 		return container;
 	}
-	if (!d || !d.results.length) {
+	if (!d?.results.length) {
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
@@ -92,25 +108,24 @@ export function renderSubagentResult(
 		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 		const output = r.truncation?.text || getSingleResultOutput(r);
 
-		const progressInfo = isRunning && r.progress
-			? ` | ${r.progress.toolCount} tools, ${formatTokens(r.progress.tokens)} tok, ${formatDuration(displayProgressDurationMs(r.progress, options.now))}`
-			: r.progressSummary
-				? ` | ${r.progressSummary.toolCount} tools, ${formatTokens(r.progressSummary.tokens)} tok, ${formatDuration(r.progressSummary.durationMs)}`
-				: "";
+		const progressInfo =
+			isRunning && r.progress
+				? ` | ${r.progress.toolCount} tools, ${formatTokens(r.progress.tokens)} tok, ${formatDuration(displayProgressDurationMs(r.progress, options.now))}`
+				: r.progressSummary
+					? ` | ${r.progressSummary.toolCount} tools, ${formatTokens(r.progressSummary.tokens)} tok, ${formatDuration(r.progressSummary.durationMs)}`
+					: "";
 
 		const w = getTermWidth() - 4;
-		const fit = (text: string) => expanded ? text : truncLine(text, w);
+		const fit = (text: string) => (expanded ? text : truncLine(text, w));
 		const toolCallLines = getToolCallLines(r, expanded);
 		const c = new Container();
-		c.addChild(new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${contextBadge}${progressInfo}`), 0, 0));
+		c.addChild(
+			new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${contextBadge}${progressInfo}`), 0, 0),
+		);
 		c.addChild(new Spacer(1));
 		const taskMaxLen = Math.max(20, w - 8);
-		const taskPreview = expanded || r.task.length <= taskMaxLen
-			? r.task
-			: `${r.task.slice(0, taskMaxLen)}...`;
-		c.addChild(
-			new Text(fit(theme.fg("dim", `Task: ${taskPreview}`)), 0, 0),
-		);
+		const taskPreview = expanded || r.task.length <= taskMaxLen ? r.task : `${r.task.slice(0, taskMaxLen)}...`;
+		c.addChild(new Text(fit(theme.fg("dim", `Task: ${taskPreview}`)), 0, 0));
 		c.addChild(new Spacer(1));
 
 		if (isRunning && r.progress) {
@@ -131,16 +146,21 @@ export function renderSubagentResult(
 			if (r.progress.recentTools?.length) {
 				for (const t of r.progress.recentTools.slice(-3)) {
 					const maxArgsLen = Math.max(40, w - 24);
-					const argsPreview = expanded || t.args.length <= maxArgsLen
-						? t.args
-						: `${t.args.slice(0, maxArgsLen)}...`;
+					const argsPreview =
+						expanded || t.args.length <= maxArgsLen ? t.args : `${t.args.slice(0, maxArgsLen)}...`;
 					c.addChild(new Text(fit(theme.fg("dim", `${t.tool}: ${argsPreview}`)), 0, 0));
 				}
 			}
 			for (const line of (r.progress.recentOutput ?? []).slice(-5)) {
 				c.addChild(new Text(fit(theme.fg("dim", `  ${line}`)), 0, 0));
 			}
-			if (toolLine || liveStatusLine || r.progress.recentTools?.length || r.progress.recentOutput?.length || r.artifactPaths) {
+			if (
+				toolLine ||
+				liveStatusLine ||
+				r.progress.recentTools?.length ||
+				r.progress.recentOutput?.length ||
+				r.artifactPaths
+			) {
 				c.addChild(new Spacer(1));
 			}
 		}
@@ -177,14 +197,18 @@ export function renderSubagentResult(
 
 	if (!expanded) return renderMultiCompact(d, theme, options.now, options.pulseFrame);
 
-	const hasRunning = d.progress?.some((p) => p.status === "running")
-		|| d.results.some((r) => r.progress?.status === "running")
-		|| workflowGraphHasStatus(d, ["running"]);
-	const ok = d.results.filter((r) => r.progress?.status === "completed" || (r.exitCode === 0 && r.progress?.status !== "running")).length;
-	const hasEmptyWithoutTarget = d.results.some((r) =>
-		r.exitCode === 0
-		&& r.progress?.status !== "running"
-		&& hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
+	const hasRunning =
+		d.progress?.some((p) => p.status === "running") ||
+		d.results.some((r) => r.progress?.status === "running") ||
+		workflowGraphHasStatus(d, ["running"]);
+	const ok = d.results.filter(
+		(r) => r.progress?.status === "completed" || (r.exitCode === 0 && r.progress?.status !== "running"),
+	).length;
+	const hasEmptyWithoutTarget = d.results.some(
+		(r) =>
+			r.exitCode === 0 &&
+			r.progress?.status !== "running" &&
+			hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
 	const hasWorkflowFailure = workflowGraphHasStatus(d, ["failed"]);
 	const hasWorkflowPause = workflowGraphHasStatus(d, ["paused", "detached"]);
@@ -209,9 +233,7 @@ export function renderSubagentResult(
 					acc.toolCount += prog.toolCount;
 					acc.tokens += prog.tokens;
 					acc.durationMs =
-						d.mode === "chain"
-							? acc.durationMs + prog.durationMs
-							: Math.max(acc.durationMs, prog.durationMs);
+						d.mode === "chain" ? acc.durationMs + prog.durationMs : Math.max(acc.durationMs, prog.durationMs);
 				}
 				return acc;
 			},
@@ -228,36 +250,40 @@ export function renderSubagentResult(
 	const multiLabel = buildMultiProgressLabel(d, hasRunning);
 	const itemTitle = multiLabel.itemTitle;
 
-	const chainVis = d.chainAgents?.length && !multiLabel.hasParallelInChain
-		? d.chainAgents
-				.map((agent, i) => {
-					const result = d.results[i];
-					const isFailed = result && result.exitCode !== 0 && result.progress?.status !== "running";
-					const isComplete = result && result.exitCode === 0 && result.progress?.status !== "running";
-					const isEmptyWithoutTarget = Boolean(result)
-						&& Boolean(isComplete)
-						&& hasEmptyTextOutputWithoutOutputTarget(result.task, getSingleResultOutput(result));
-					const isCurrent = i === (d.currentStepIndex ?? d.results.length);
-					const stepIcon = isFailed
-						? theme.fg("error", "failed")
-						: isEmptyWithoutTarget
-							? theme.fg("warning", "warning")
-							: isComplete
-								? theme.fg("success", "done")
-								: isCurrent && hasRunning
-									? theme.fg("warning", "running")
-									: theme.fg("dim", "pending");
-					return `${stepIcon} ${agent}`;
-				})
-				.join(theme.fg("dim", " → "))
-		: null;
+	const chainVis =
+		d.chainAgents?.length && !multiLabel.hasParallelInChain
+			? d.chainAgents
+					.map((agent, i) => {
+						const result = d.results[i];
+						const isFailed = result && result.exitCode !== 0 && result.progress?.status !== "running";
+						const isComplete = result && result.exitCode === 0 && result.progress?.status !== "running";
+						const isEmptyWithoutTarget =
+							Boolean(result) &&
+							Boolean(isComplete) &&
+							hasEmptyTextOutputWithoutOutputTarget(result.task, getSingleResultOutput(result));
+						const isCurrent = i === (d.currentStepIndex ?? d.results.length);
+						const stepIcon = isFailed
+							? theme.fg("error", "failed")
+							: isEmptyWithoutTarget
+								? theme.fg("warning", "warning")
+								: isComplete
+									? theme.fg("success", "done")
+									: isCurrent && hasRunning
+										? theme.fg("warning", "running")
+										: theme.fg("dim", "pending");
+						return `${stepIcon} ${agent}`;
+					})
+					.join(theme.fg("dim", " → "))
+			: null;
 
 	const w = getTermWidth() - 4;
-	const fit = (text: string) => expanded ? text : truncLine(text, w);
+	const fit = (text: string) => (expanded ? text : truncLine(text, w));
 	const c = new Container();
 	c.addChild(
 		new Text(
-			fit(`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))}${contextBadge} · ${multiLabel.headerLabel}${summaryStr}`),
+			fit(
+				`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))}${contextBadge} · ${multiLabel.headerLabel}${summaryStr}`,
+			),
 			0,
 			0,
 		),
@@ -268,14 +294,27 @@ export function renderSubagentResult(
 
 	const useResultsDirectly = multiLabel.hasParallelInChain || !d.chainAgents?.length;
 	const displayStart = multiLabel.showActiveGroupOnly ? multiLabel.groupStartIndex : 0;
-	const displayEnd = multiLabel.showActiveGroupOnly ? multiLabel.groupEndIndex : (useResultsDirectly ? d.results.length : d.chainAgents!.length);
+	const displayEnd = multiLabel.showActiveGroupOnly
+		? multiLabel.groupEndIndex
+		: useResultsDirectly
+			? d.results.length
+			: d.chainAgents!.length;
 	const chainEntries = buildChainRenderEntries(d, multiLabel);
-	const renderEntries = chainEntries ?? Array.from({ length: displayEnd - displayStart }, (_, offset): ChainRenderEntry => {
-		const i = displayStart + offset;
-		const r = d.results[i];
-		const rowNumber = multiLabel.showActiveGroupOnly ? (i - multiLabel.groupStartIndex + 1) : (i + 1);
-		return { kind: "result", resultIndex: i, rowNumber, agentName: useResultsDirectly ? (r?.agent || `step-${rowNumber}`) : (d.chainAgents![i] || r?.agent || `step-${rowNumber}`) };
-	});
+	const renderEntries =
+		chainEntries ??
+		Array.from({ length: displayEnd - displayStart }, (_, offset): ChainRenderEntry => {
+			const i = displayStart + offset;
+			const r = d.results[i];
+			const rowNumber = multiLabel.showActiveGroupOnly ? i - multiLabel.groupStartIndex + 1 : i + 1;
+			return {
+				kind: "result",
+				resultIndex: i,
+				rowNumber,
+				agentName: useResultsDirectly
+					? r?.agent || `step-${rowNumber}`
+					: d.chainAgents![i] || r?.agent || `step-${rowNumber}`,
+			};
+		});
 
 	c.addChild(new Spacer(1));
 
@@ -283,7 +322,9 @@ export function renderSubagentResult(
 		if (entry.kind === "placeholder") {
 			const statusLabel = widgetStepStatus(entry.status as AsyncJobStep["status"], theme);
 			c.addChild(new Text(fit(`  ${statusLabel} ${entry.stepLabel}: ${theme.bold(entry.agentName)}`), 0, 0));
-			c.addChild(new Text(theme.fg(entry.status === "failed" ? "error" : "dim", `    status: ${entry.status}`), 0, 0));
+			c.addChild(
+				new Text(theme.fg(entry.status === "failed" ? "error" : "dim", `    status: ${entry.status}`), 0, 0),
+			);
 			if (entry.error) c.addChild(new Text(theme.fg("error", `    error: ${entry.error}`), 0, 0));
 			c.addChild(new Spacer(1));
 			continue;
@@ -301,8 +342,9 @@ export function renderSubagentResult(
 			continue;
 		}
 
-		const progressFromArray = d.progress?.find((p) => p.index === i)
-			|| d.progress?.find((p) => p.agent === r.agent && p.status === "running");
+		const progressFromArray =
+			d.progress?.find((p) => p.index === i) ||
+			d.progress?.find((p) => p.agent === r.agent && p.status === "running");
 		const rProg = (r.progress || progressFromArray || r.progressSummary) as AgentProgress | undefined;
 		const rRunning = rProg?.status === "running";
 		const stepNumber = typeof rProg?.index === "number" ? rProg.index + 1 : i + 1;
@@ -315,7 +357,9 @@ export function renderSubagentResult(
 				: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
 					? theme.fg("warning", "warning")
 					: theme.fg("success", "done");
-		const stats = rProg ? ` | ${rProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(rProg, options.now))}` : "";
+		const stats = rProg
+			? ` | ${rProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(rProg, options.now))}`
+			: "";
 		const modelDisplay = modelThinkingBadge(theme, r.model, undefined, r.fastMode);
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
 		const stepHeader = rRunning
@@ -325,9 +369,7 @@ export function renderSubagentResult(
 		c.addChild(new Text(fit(stepHeader), 0, 0));
 
 		const taskMaxLen = Math.max(20, w - 12);
-		const taskPreview = expanded || r.task.length <= taskMaxLen
-			? r.task
-			: `${r.task.slice(0, taskMaxLen)}...`;
+		const taskPreview = expanded || r.task.length <= taskMaxLen ? r.task : `${r.task.slice(0, taskMaxLen)}...`;
 		c.addChild(new Text(fit(theme.fg("dim", `    task: ${taskPreview}`)), 0, 0));
 
 		const outputTarget = extractOutputTarget(r.task);
@@ -361,14 +403,15 @@ export function renderSubagentResult(
 			const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
 			if (expandHint) c.addChild(new Text(fit(theme.fg("accent", `    Press ${expandHint}`)), 0, 0));
 			if (r.artifactPaths) {
-				c.addChild(new Text(fit(theme.fg("dim", `    artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0));
+				c.addChild(
+					new Text(fit(theme.fg("dim", `    artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0),
+				);
 			}
 			if (rProg.recentTools?.length) {
 				for (const t of rProg.recentTools.slice(-3)) {
 					const maxArgsLen = Math.max(40, w - 30);
-					const argsPreview = expanded || t.args.length <= maxArgsLen
-						? t.args
-						: `${t.args.slice(0, maxArgsLen)}...`;
+					const argsPreview =
+						expanded || t.args.length <= maxArgsLen ? t.args : `${t.args.slice(0, maxArgsLen)}...`;
 					c.addChild(new Text(fit(theme.fg("dim", `      ${t.tool}: ${argsPreview}`)), 0, 0));
 				}
 			}

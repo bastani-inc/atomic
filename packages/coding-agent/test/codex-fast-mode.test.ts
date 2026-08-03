@@ -1,8 +1,8 @@
 import {
-	createAssistantMessageEventStream,
 	type Api,
 	type AssistantMessageEventStream,
 	type Context,
+	createAssistantMessageEventStream,
 	type Model,
 	type OpenAICodexResponsesOptions,
 	type OpenAIResponsesOptions,
@@ -14,9 +14,9 @@ import {
 	type CodexFastModeStreamers,
 	getCodexFastModeScope,
 	hasSupportedCodexFastModeModel,
+	isCodexFastModeCandidateModelId,
 	isCodexFastModeEnabledForScope,
 	isCodexFastModeEnabledForSession,
-	isCodexFastModeCandidateModelId,
 	isCodexFastModeSupportedProvider,
 	shouldApplyCodexFastModeForScope,
 	streamWithCodexFastMode,
@@ -117,8 +117,12 @@ describe("codex fast mode helpers", () => {
 		expect(isCodexFastModeEnabledForSession({ chat: true, workflow: false }, undefined)).toBe(true);
 		expect(isCodexFastModeEnabledForSession({ chat: true, workflow: false }, workflowContext)).toBe(false);
 		expect(isCodexFastModeEnabledForSession({ chat: false, workflow: true }, workflowContext)).toBe(true);
-		expect(shouldApplyCodexFastModeForScope(providerModel("openai"), { chat: false, workflow: true }, "workflow")).toBe(true);
-		expect(shouldApplyCodexFastModeForScope(providerModel("github-copilot"), { chat: false, workflow: true }, "workflow")).toBe(false);
+		expect(
+			shouldApplyCodexFastModeForScope(providerModel("openai"), { chat: false, workflow: true }, "workflow"),
+		).toBe(true);
+		expect(
+			shouldApplyCodexFastModeForScope(providerModel("github-copilot"), { chat: false, workflow: true }, "workflow"),
+		).toBe(false);
 	});
 
 	it("adds serviceTier to stream options only when enabled", () => {
@@ -171,10 +175,7 @@ describe("codex fast mode helpers", () => {
 	it("uses native OpenAI Codex Responses streaming when fast mode is active", () => {
 		const calls: CapturedStreamCall[] = [];
 		const streamers = makeStreamers(calls);
-		const options = withCodexFastModeStreamOptions(
-			{ apiKey: "key", reasoning: "xhigh", transport: "sse" },
-			true,
-		);
+		const options = withCodexFastModeStreamOptions({ apiKey: "key", reasoning: "xhigh", transport: "sse" }, true);
 
 		streamWithCodexFastMode(
 			fullModel({

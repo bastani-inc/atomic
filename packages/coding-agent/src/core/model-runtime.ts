@@ -25,35 +25,40 @@ import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
+import { POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS } from "./model-refresh-timeout.ts";
+import {
+	addRuntimeApiKeyProvider,
+	addStoredCredentialProvider,
+	createEmptyModelRuntimeSnapshot,
+	createModelRuntimeSnapshot,
+	getSnapshotProviderAuthStatus,
+	type ModelRuntimeSnapshot,
+	removeStoredCredentialProvider,
+	replaceStoredCredentialProviders,
+	updateSnapshotModels,
+} from "./model-runtime-snapshot.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
+import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import {
 	type AuthStatus,
+	type CompatibilityRequestConfig,
 	composeModelProvider,
 	configuredRequestAuthStatus,
-	type CompatibilityRequestConfig,
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
-import { isOfflineModeEnabled } from "./package-manager-env.ts";
-import { collectOAuthProviderMetadata } from "./oauth-provider-metadata.ts";
-import { OAuthLoginTransactionError } from "./oauth-login.ts";
-import {
-	addRuntimeApiKeyProvider,
-	createEmptyModelRuntimeSnapshot,
-	createModelRuntimeSnapshot,
-	getSnapshotProviderAuthStatus,
-	type ModelRuntimeSnapshot,
-	updateSnapshotModels,
-} from "./model-runtime-snapshot.ts";
+
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
-import type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
-import { ModelRuntimeStreaming } from "./model-runtime-streaming.ts";
-import { canRestoreUnknownModel as canRestoreUnknownModelProvider } from "./model-runtime-restoration.ts";
+
 import { mergeConfiguredAuthHeaders } from "./model-runtime-auth.ts";
 import { configureBuiltinProviders } from "./model-runtime-providers.ts";
+import { canRestoreUnknownModel as canRestoreUnknownModelProvider } from "./model-runtime-restoration.ts";
+import { ModelRuntimeStreaming } from "./model-runtime-streaming.ts";
+import type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
@@ -68,6 +73,8 @@ export class ModelRuntime implements Models {
 	private readonly modelNetworkEnabled: boolean;
 	private config: ModelConfig;
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
+	private snapshotGeneration = 0;
+	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
 	private availabilityRefresh: Promise<void> | undefined;
 	private availabilityError: string | undefined;
 	private constructor(
@@ -169,9 +176,10 @@ export class ModelRuntime implements Models {
 		this.updateModelSnapshot();
 	}
 	private updateModelSnapshot(): void {
+		this.snapshotGeneration += 1;
 		this.snapshot = updateSnapshotModels(this.snapshot, [...this.models.getModels()]);
 	}
-	private async runAvailabilityRefresh(): Promise<void> {
+	private async runAvailabilityRefresh(generation: number): Promise<void> {
 		const providers = this.models.getProviders();
 		const [available, checks, credentials] = await Promise.all([
 			this.models.getAvailable(),
@@ -185,18 +193,21 @@ export class ModelRuntime implements Models {
 			),
 			this.credentials.list(),
 		]);
-		this.snapshot = createModelRuntimeSnapshot(
-			[...this.models.getModels()],
-			[...available],
-			checks,
-			credentials,
-		);
-		this.availabilityError = undefined;
+		// Credential and provider mutations publish their own snapshot immediately.
+		// A refresh started before that mutation must not overwrite newer state when
+		// a slower machine eventually lets it finish.
+		if (generation === this.snapshotGeneration) {
+			this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
+			this.availabilityError = undefined;
+		}
 	}
 	private queueAvailabilityRefresh(after: Promise<void> | undefined): Promise<void> {
-		const refresh = (after ?? Promise.resolve()).catch(() => {}).then(() => this.runAvailabilityRefresh());
+		const generation = this.snapshotGeneration;
+		const refresh = (after ?? Promise.resolve()).catch(() => {}).then(() => this.runAvailabilityRefresh(generation));
 		const recorded = refresh.catch((error) => {
-			this.availabilityError = error instanceof Error ? error.message : String(error);
+			if (generation === this.snapshotGeneration) {
+				this.availabilityError = error instanceof Error ? error.message : String(error);
+			}
 			throw error;
 		});
 		const tracked = recorded.finally(() => {
@@ -279,7 +290,9 @@ export class ModelRuntime implements Models {
 	getRegisteredNativeProvider(providerId: string): Provider | undefined {
 		return this.nativeExtensionProviders.get(providerId);
 	}
-	getOAuthProviderMetadata() { return collectOAuthProviderMetadata(this.getProviders(), this.extensionProviders); }
+	getOAuthProviderMetadata() {
+		return collectOAuthProviderMetadata(this.getProviders(), this.extensionProviders);
+	}
 	/** @internal Compatibility fallback for ModelRegistry when provider auth is unconfigured. */
 	getCompatibilityRequestConfig(model: Model<Api>): CompatibilityRequestConfig {
 		return resolveCompatibilityRequestConfig(
@@ -315,8 +328,15 @@ export class ModelRuntime implements Models {
 		);
 	}
 	/** Reload credentials changed by the authoritative isolated engine and update auth status snapshots. */
-	async reloadCredentials(): Promise<void> {
+	async reloadCredentials(options: { refreshAvailability?: boolean } = {}): Promise<void> {
 		await this.credentials.reload();
+		if (options.refreshAvailability === false) {
+			const credentials = await this.credentials.list();
+			for (const credential of credentials) this.externalProviderAuthStatuses.delete(credential.providerId);
+			this.snapshotGeneration += 1;
+			this.snapshot = replaceStoredCredentialProviders(this.snapshot, credentials);
+			return;
+		}
 		await this.forceRefreshAvailability();
 	}
 
@@ -348,15 +368,25 @@ export class ModelRuntime implements Models {
 	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
-		return getSnapshotProviderAuthStatus(
+		const localStatus = getSnapshotProviderAuthStatus(
 			this.snapshot,
 			providerId,
 			this.credentials.hasRuntimeApiKey(providerId),
-			configuredRequestAuthStatus(
-				this.config.getProvider(providerId),
-				this.extensionProviders.get(providerId),
-			),
+			configuredRequestAuthStatus(this.config.getProvider(providerId), this.extensionProviders.get(providerId)),
 		);
+		if (localStatus.source === "stored" || localStatus.source === "runtime") return localStatus;
+		return this.externalProviderAuthStatuses.get(providerId) ?? localStatus;
+	}
+
+	/** Apply authoritative auth state returned by an isolated engine mutation. */
+	applyExternalProviderAuthStatus(providerId: string, status: AuthStatus): void {
+		this.snapshotGeneration += 1;
+		const remainingAuth =
+			status.configured && status.source === "environment"
+				? ({ type: "api_key", source: status.label ?? "environment" } as const)
+				: undefined;
+		this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth);
+		this.externalProviderAuthStatuses.set(providerId, status);
 	}
 
 	stream<TApi extends Api>(
@@ -385,19 +415,43 @@ export class ModelRuntime implements Models {
 
 	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
 		const credential = await this.models.login(providerId, type, interaction);
-		try {
-			await this.refresh({ allowNetwork: this.modelNetworkEnabled });
-		} catch (error) {
-			throw new OAuthLoginTransactionError(error);
-		}
+		// Credential acquisition and persistence are the login transaction. Publish
+		// the provider against the current snapshot immediately; catalog restoration,
+		// ambient availability checks, and networking belong to /model's bounded
+		// background refresh and must never keep a successful login dialog open.
+		this.updateModelSnapshot();
+		this.externalProviderAuthStatuses.delete(providerId);
+		this.snapshot = addStoredCredentialProvider(this.snapshot, providerId, credential.type);
 		return credential;
 	}
 
 	async logout(providerId: string): Promise<void> {
 		await this.models.logout(providerId);
-		// Reset credential-dependent compatibility projections before the unconfigured provider is skipped by refresh.
+		// Reset credential-dependent compatibility projections, then publish the
+		// persisted deletion without waiting for model stores or remote catalogs.
 		this.recomposeProvider(providerId);
-		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+		this.updateModelSnapshot();
+		this.externalProviderAuthStatuses.delete(providerId);
+		this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId);
+		const logoutGeneration = this.snapshotGeneration;
+
+		// Environment/runtime auth can remain after stored auth is removed. The
+		// probe is normally synchronous, but its deadline is authoritative because
+		// extension checks are third-party code and need not honor cancellation.
+		let timeout: number | undefined;
+		try {
+			const remainingAuth = await Promise.race([
+				this.checkAuth(providerId).catch(() => undefined),
+				new Promise<undefined>((resolve) => {
+					timeout = setTimeout(resolve, POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS);
+				}),
+			]);
+			if (logoutGeneration === this.snapshotGeneration && !this.snapshot.storedProviders.has(providerId)) {
+				this.snapshot = removeStoredCredentialProvider(this.snapshot, providerId, remainingAuth);
+			}
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
 	}
 
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {

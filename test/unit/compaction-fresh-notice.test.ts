@@ -2,12 +2,12 @@
  * RFC §5.4 — the fresh rung is loud, borrowed planning stays quiet.
  */
 
-import { beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { CompactionBoundaryMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/compaction-boundary-message.js";
+import { beforeAll, test } from "vitest";
 import type { VerbatimCompactionStats } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { CompactionBoundaryMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/compaction-boundary-message.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
 beforeAll(() => initTheme("dark"));
 

@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import type { SubagentRunMode } from "../../shared/types.ts";
 import { PI_CODING_AGENT_PACKAGE, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
 import { formatDuration } from "./subagent-runner-utils.ts";
-import type { SubagentRunMode } from "../../shared/types.ts";
 
 function resolvePiPackageRootFallback(): string {
 	const root = resolveInstalledPiPackageRoot();
@@ -12,7 +12,11 @@ function resolvePiPackageRootFallback(): string {
 	throw new Error(`Could not resolve ${PI_CODING_AGENT_PACKAGE} package root`);
 }
 
-export async function exportSessionHtml(sessionFile: string, outputDir: string, piPackageRoot?: string): Promise<string> {
+export async function exportSessionHtml(
+	sessionFile: string,
+	outputDir: string,
+	piPackageRoot?: string,
+): Promise<string> {
 	const pkgRoot = piPackageRoot ?? resolvePiPackageRootFallback();
 	const exportModulePath = path.join(pkgRoot, "dist", "core", "export-html", "index.js");
 	const moduleUrl = pathToFileURL(exportModulePath).href;

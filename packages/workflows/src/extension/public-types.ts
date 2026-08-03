@@ -1,10 +1,7 @@
-import type {
-  CreateAgentSessionOptions,
-  DefaultResourceLoaderInheritanceSnapshot,
-} from "@bastani/atomic";
+import type { CreateAgentSessionOptions, DefaultResourceLoaderInheritanceSnapshot } from "@bastani/atomic";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import type { SessionManager } from "../shared/persistence-restore.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
+import type { SessionManager } from "../shared/persistence-restore.js";
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
 import type { WorkflowInputValues } from "../shared/types.js";
 import type { WidgetFactory } from "../tui/store-widget-installer.js";
@@ -14,241 +11,222 @@ import type { PiUISurface } from "./wiring.js";
 export type PiTheme = Record<string, string>;
 
 export interface PiRenderContext {
-  state?: {
-    runId?: string;
-    stages?: unknown[];
-  };
-  invalidate?: () => void;
+	state?: {
+		runId?: string;
+		stages?: unknown[];
+	};
+	invalidate?: () => void;
 }
 
 export interface PiRenderResultOpts extends RenderResultOpts {}
 
 export interface PiRenderComponent {
-  render(width: number): string[];
-  invalidate?: () => void;
-  includes(searchString: string): boolean;
+	render(width: number): string[];
+	invalidate?: () => void;
+	includes(searchString: string): boolean;
 }
 
 export interface PiMessageRenderComponent {
-  render(width: number): string[];
-  invalidate?: () => void;
+	render(width: number): string[];
+	invalidate?: () => void;
 }
 
 export interface PiMessageRenderOptions {
-  expanded: boolean;
+	expanded: boolean;
 }
 
 export type PiMessageRendererResult = string | PiMessageRenderComponent | null | undefined;
 export type PiMessageRenderer = (
-  payload: unknown,
-  options?: PiMessageRenderOptions,
-  theme?: unknown,
+	payload: unknown,
+	options?: PiMessageRenderOptions,
+	theme?: unknown,
 ) => PiMessageRendererResult;
 
 export interface PiArgumentCompletion {
-  value: string;
-  label: string;
-  description?: string;
+	value: string;
+	label: string;
+	description?: string;
 }
 
 export type PiArgumentCompletionResult = PiArgumentCompletion[] | null;
 
 export interface PiCommandOptions {
-  description: string;
-  handler: (args: string, ctx: PiCommandContext) => Promise<void> | void;
-  getArgumentCompletions?: (partial: string) => PiArgumentCompletionResult | Promise<PiArgumentCompletionResult>;
+	description: string;
+	handler: (args: string, ctx: PiCommandContext) => Promise<void> | void;
+	getArgumentCompletions?: (partial: string) => PiArgumentCompletionResult | Promise<PiArgumentCompletionResult>;
 }
 
 export type PiRuntimeModel = Model<Api>;
 
 export interface PiRuntimeModelRegistry {
-  getAvailable(): PiRuntimeModel[];
+	getAvailable(): PiRuntimeModel[];
 }
 
 export interface PiModelContext {
-  readonly model?: PiRuntimeModel;
-  readonly modelRegistry?: PiRuntimeModelRegistry;
+	readonly model?: PiRuntimeModel;
+	readonly modelRegistry?: PiRuntimeModelRegistry;
 }
 
 export interface PiCommandContext extends PiModelContext {
-  ui: {
-    notify: (message: string, type?: "info" | "warning" | "error") => void;
-  } & PiUISurface;
-  hasUI?: boolean;
+	ui: {
+		notify: (message: string, type?: "info" | "warning" | "error") => void;
+	} & PiUISurface;
+	hasUI?: boolean;
 }
 
 export interface PiFlagNamedOpts {
-  description: string;
-  type?: "string" | "boolean";
-  default?: unknown;
+	description: string;
+	type?: "string" | "boolean";
+	default?: unknown;
 }
 
 export interface PiAgentToolResult<TDetails> {
-  content: Array<
-    { type: "text"; text: string } | { type: "image"; [key: string]: unknown }
-  >;
-  details: TDetails;
-  terminate?: boolean;
+	content: Array<{ type: "text"; text: string } | { type: "image"; [key: string]: unknown }>;
+	details: TDetails;
+	terminate?: boolean;
 }
 
 export interface PiToolOpts<TArgs, TDetails> {
-  name: string;
-  label: string;
-  description: string;
-  parameters: unknown;
-  promptGuidelines?: string[];
-  renderShell?: "default" | "self";
-  execute: (
-    toolCallId: string,
-    params: TArgs,
-    signal: AbortSignal | undefined,
-    onUpdate: ((partial: PiAgentToolResult<TDetails>) => void) | undefined,
-    ctx: PiExecuteContext,
-  ) => Promise<PiAgentToolResult<TDetails>>;
-  renderCall?: (
-    args: TArgs,
-    theme: PiTheme,
-    context: PiRenderContext,
-  ) => PiRenderComponent | string;
-  renderResult?: (
-    result: PiAgentToolResult<TDetails>,
-    opts: PiRenderResultOpts,
-    theme: PiTheme,
-    context: PiRenderContext,
-  ) => PiRenderComponent | string;
+	name: string;
+	label: string;
+	description: string;
+	parameters: unknown;
+	promptGuidelines?: string[];
+	renderShell?: "default" | "self";
+	execute: (
+		toolCallId: string,
+		params: TArgs,
+		signal: AbortSignal | undefined,
+		onUpdate: ((partial: PiAgentToolResult<TDetails>) => void) | undefined,
+		ctx: PiExecuteContext,
+	) => Promise<PiAgentToolResult<TDetails>>;
+	renderCall?: (args: TArgs, theme: PiTheme, context: PiRenderContext) => PiRenderComponent | string;
+	renderResult?: (
+		result: PiAgentToolResult<TDetails>,
+		opts: PiRenderResultOpts,
+		theme: PiTheme,
+		context: PiRenderContext,
+	) => PiRenderComponent | string;
 }
 
 export interface PiExecuteContext extends PiModelContext {
-  sessionId?: string;
-  ui?: PiUISurface;
-  hasUI?: boolean;
-  orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
-  sessionManager?: SessionManager & {
-    getSessionFile?: () => string | undefined;
-  };
-  [key: string]: unknown;
+	sessionId?: string;
+	ui?: PiUISurface;
+	hasUI?: boolean;
+	orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
+	sessionManager?: SessionManager & {
+		getSessionFile?: () => string | undefined;
+	};
+	[key: string]: unknown;
 }
 
 export interface WorkflowResourceInfo {
-  readonly path: string;
-  readonly enabled: boolean;
-  readonly metadata?: {
-    readonly source?: string;
-    readonly scope?: string;
-    readonly origin?: string;
-    readonly baseDir?: string;
-  };
+	readonly path: string;
+	readonly enabled: boolean;
+	readonly metadata?: {
+		readonly source?: string;
+		readonly scope?: string;
+		readonly origin?: string;
+		readonly baseDir?: string;
+	};
 }
 
 type StageLateMessageRouter = NonNullable<
-  NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["lateMessageRouter"]
+	NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["lateMessageRouter"]
 >;
 
 export interface ExtensionAPI {
-  registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
-  registerCommand?: (name: string, options: PiCommandOptions) => void;
-  registerMessageRenderer?: (
-    event: string,
-    renderer: PiMessageRenderer,
-  ) => void;
-  sendMessage?: StageLateMessageRouter["routeMessage"];
-  sendMessages?: StageLateMessageRouter["routeMessages"];
-  registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
-  getWorkflowResources?: () => readonly WorkflowResourceInfo[];
-  refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
-  getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
-  registerShortcut?: (
-    key: string,
-    opts: {
-      description: string;
-      handler: (ctx?: PiCommandContext) => void | Promise<void>;
-    },
-  ) => void;
-  getActiveTools?: () => string[];
-  setActiveTools?: (toolNames: string[]) => void;
-  setSessionName?: (name: string) => void | Promise<void>;
-  events?: {
-    emit?: (event: string, payload: Record<string, unknown>) => void;
-    on?: (event: string, handler: (payload: unknown) => void) => void;
-  };
-  exec?: (
-    command: string,
-    args: string[],
-    opts?: { signal?: AbortSignal; timeout?: number },
-  ) => Promise<{
-    stdout: string;
-    stderr: string;
-    code: number;
-    killed: boolean;
-  }>;
-  createAgentSession?: (
-    options?: CreateAgentSessionOptions,
-  ) => Promise<{ session: StageSessionRuntime }>;
-  disableAsyncDiscovery?: boolean;
-  appendEntry?: (
-    type: string,
-    payload: Record<string, unknown>,
-  ) => string | undefined;
-  setLabel?: (entryId: string, label: string) => void;
-  appendCustomMessageEntry?: (
-    content: string,
-    meta?: Record<string, unknown>,
-  ) => string | undefined;
-  on?: (
-    event: string,
-    handler: (
-      event?: unknown,
-      ctx?: PiCommandContext & {
-        sessionManager?: SessionManager;
-        hasUI?: boolean;
-      },
-    ) => void | object | Promise<void | object>,
-  ) => void;
-  sessionManager?: SessionManager;
-  ui?: {
-    setWidget?: (
-      key: string,
-      factory: WidgetFactory | undefined,
-      opts?: { placement?: string },
-    ) => void;
-    custom?: PiUISurface["custom"];
-  } & PiUISurface;
-  [key: string]: unknown;
+	registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
+	registerCommand?: (name: string, options: PiCommandOptions) => void;
+	registerMessageRenderer?: (event: string, renderer: PiMessageRenderer) => void;
+	sendMessage?: StageLateMessageRouter["routeMessage"];
+	sendMessages?: StageLateMessageRouter["routeMessages"];
+	registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
+	getWorkflowResources?: () => readonly WorkflowResourceInfo[];
+	refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
+	getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
+	registerShortcut?: (
+		key: string,
+		opts: {
+			description: string;
+			handler: (ctx?: PiCommandContext) => void | Promise<void>;
+		},
+	) => void;
+	getActiveTools?: () => string[];
+	setActiveTools?: (toolNames: string[]) => void;
+	setSessionName?: (name: string) => void | Promise<void>;
+	events?: {
+		emit?: (event: string, payload: Record<string, unknown>) => void;
+		on?: (event: string, handler: (payload: unknown) => void) => void;
+	};
+	exec?: (
+		command: string,
+		args: string[],
+		opts?: { signal?: AbortSignal; timeout?: number },
+	) => Promise<{
+		stdout: string;
+		stderr: string;
+		code: number;
+		killed: boolean;
+	}>;
+	createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<{ session: StageSessionRuntime }>;
+	disableAsyncDiscovery?: boolean;
+	appendEntry?: (type: string, payload: Record<string, unknown>) => string | undefined;
+	setLabel?: (entryId: string, label: string) => void;
+	appendCustomMessageEntry?: (content: string, meta?: Record<string, unknown>) => string | undefined;
+	on?: (
+		event: string,
+		handler: (
+			event?: unknown,
+			ctx?: PiCommandContext & {
+				sessionManager?: SessionManager;
+				hasUI?: boolean;
+			},
+			// `unknown`: a handler may return a result object, a promise of one, or
+			// nothing at all. The host narrows what it actually consumes.
+		) => unknown,
+	) => void;
+	sessionManager?: SessionManager;
+	ui?: {
+		setWidget?: (key: string, factory: WidgetFactory | undefined, opts?: { placement?: string }) => void;
+		custom?: PiUISurface["custom"];
+	} & PiUISurface;
+	[key: string]: unknown;
 }
 
 export interface WorkflowToolArgs {
-  workflow?: string;
-  inputs?: WorkflowInputValues;
-  action?:
-    | "models"
-    | "run"
-    | "list"
-    | "get"
-    | "status"
-    | "stages"
-    | "stage"
-    | "transcript"
-    | "send"
-    | "pause"
-    | "interrupt"
-    | "quit"
-    | "resume"
-    | "reload"
-    | "inputs";
-  runId?: string;
-  all?: boolean;
-  stageId?: string;
-  message?: string;
-  statusFilter?: StageStatus | RunStatus | "all";
-  format?: "text" | "json";
-  limit?: number;
-  tail?: number;
-  includeToolOutput?: boolean;
-  text?: string;
-  response?: unknown;
-  delivery?: "auto" | "answer" | "prompt" | "steer" | "followUp" | "resume";
-  promptId?: string;
-  reason?: string;
+	workflow?: string;
+	inputs?: WorkflowInputValues;
+	action?:
+		| "models"
+		| "run"
+		| "list"
+		| "get"
+		| "status"
+		| "stages"
+		| "stage"
+		| "transcript"
+		| "send"
+		| "pause"
+		| "interrupt"
+		| "quit"
+		| "resume"
+		| "reload"
+		| "inputs";
+	runId?: string;
+	all?: boolean;
+	stageId?: string;
+	message?: string;
+	statusFilter?: StageStatus | RunStatus | "all";
+	format?: "text" | "json";
+	limit?: number;
+	tail?: number;
+	includeToolOutput?: boolean;
+	text?: string;
+	response?: unknown;
+	delivery?: "auto" | "answer" | "prompt" | "steer" | "followUp" | "resume";
+	promptId?: string;
+	reason?: string;
 }
 
 export type WorkflowExecuteToolResult = PiAgentToolResult<WorkflowToolResult>;

@@ -1,482 +1,487 @@
-import { describe, test } from "bun:test";
+import { join, sep } from "node:path";
+import { describe, test } from "vitest";
 import { setThemeInstance, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
-import {
-    assert,
-    createStore,
-    makeFakeKeybindings,
-    StageChatView,
-    deriveGraphTheme,
-    makeHandle,
-    setupRun,
-    flush,
-    fakeFooterAgentSession,
-    stripAnsi,
-    RETURN_HINT_TEXT,
-    expectRightAlignedReturnHint,
-    assistantTextMessage,
-    type StageControlHandle,
-} from "./stage-chat-view-helpers.js";
-import { join, sep } from "node:path";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
+import {
+	assert,
+	assistantTextMessage,
+	createStore,
+	deriveGraphTheme,
+	expectRightAlignedReturnHint,
+	fakeFooterAgentSession,
+	flush,
+	makeFakeKeybindings,
+	makeHandle,
+	RETURN_HINT_TEXT,
+	StageChatView,
+	type StageControlHandle,
+	setupRun,
+	stripAnsi,
+} from "./stage-chat-view-helpers.js";
 
 function renderLifecycleOrigin(view: StageChatView, width: number): string[] {
-    return view.render(width).map(stripAnsi);
+	return view.render(width).map(stripAnsi);
 }
 
 describe("StageChatView", () => {
-    test("failed resume keeps the local paused state", async () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "paused");
-        const { handle } = makeHandle(undefined, [], "paused");
-        Object.assign(handle, {
-            async resume() {
-                throw new Error("resume failed");
-            },
-        });
-        const view = new StageChatView({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle,
-            onDetach: () => {},
-            onClose: () => {},
-        });
+	test("failed resume keeps the local paused state", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "paused");
+		const { handle } = makeHandle(undefined, [], "paused");
+		Object.assign(handle, {
+			async resume() {
+				throw new Error("resume failed");
+			},
+		});
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
 
-        for (const ch of "go on") view.handleInput(ch);
-        view.handleInput("\r");
-        await flush();
-        await flush();
+		for (const ch of "go on") view.handleInput(ch);
+		view.handleInput("\r");
+		await flush();
+		await flush();
 
-        assert.equal(view._isLocalPaused, true);
-        view.dispose();
-    });
+		assert.equal(view._isLocalPaused, true);
+		view.dispose();
+	});
 
-    test("idle attached stage renders no welcome panel and keeps a cursor in the editor", () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "pending");
-        const { handle } = makeHandle();
-        const view = new StageChatView({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle,
-            onDetach: () => {},
-            onClose: () => {},
-        });
-        const rendered = view.render(96).join("\n");
-        const visibleLines = rendered.split("\n").map(stripAnsi);
-        assert.doesNotMatch(rendered, /Attached to/);
-        assert.doesNotMatch(rendered, /This stage is idle/);
-        assert.doesNotMatch(rendered, /type a message to start this stage/i);
-        assert.match(rendered, /❯/);
-        assert.match(rendered, /\x1b\[7m \x1b\[0m/);
-        const hintIndex = expectRightAlignedReturnHint(visibleLines, 96);
-        assert.ok(
-            hintIndex > visibleLines.findIndex((line) => line.includes("❯")),
-            "expected orchestrator hint below the chat box",
-        );
-        view.dispose();
-    });
+	test("idle attached stage renders no welcome panel and keeps a cursor in the editor", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "pending");
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+		const rendered = view.render(96).join("\n");
+		const visibleLines = rendered.split("\n").map(stripAnsi);
+		assert.doesNotMatch(rendered, /Attached to/);
+		assert.doesNotMatch(rendered, /This stage is idle/);
+		assert.doesNotMatch(rendered, /type a message to start this stage/i);
+		assert.match(rendered, /❯/);
+		assert.match(rendered, /\x1b\[7m \x1b\[0m/);
+		const hintIndex = expectRightAlignedReturnHint(visibleLines, 96);
+		assert.ok(
+			hintIndex > visibleLines.findIndex((line) => line.includes("❯")),
+			"expected orchestrator hint below the chat box",
+		);
+		view.dispose();
+	});
 
-    test("live pi editor path renders an empty composer without placeholder text", () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "pending");
-        const { handle } = makeHandle();
-        const view = new StageChatView({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle,
-            onDetach: () => {},
-            onClose: () => {},
-            piTui: {
-                requestRender: () => {},
-                terminal: { rows: 40, columns: 96 },
-            } as never,
-            piKeybindings: makeFakeKeybindings(),
-        });
-        const emptyRendered = view.render(96).join("\n");
-        assert.match(emptyRendered, /❯/);
-        assert.doesNotMatch(
-            emptyRendered,
-            /type a message to start this stage/i,
-        );
-        for (const ch of "hello") view.handleInput(ch);
-        const rendered = view.render(96).join("\n");
-        assert.match(rendered, /hello/);
-        assert.doesNotMatch(rendered, /type a message to start this stage/i);
-        view.dispose();
-    });
+	test("live pi editor path renders an empty composer without placeholder text", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "pending");
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTui: {
+				requestRender: () => {},
+				terminal: { rows: 40, columns: 96 },
+			} as never,
+			piKeybindings: makeFakeKeybindings(),
+		});
+		const emptyRendered = view.render(96).join("\n");
+		assert.match(emptyRendered, /❯/);
+		assert.doesNotMatch(emptyRendered, /type a message to start this stage/i);
+		for (const ch of "hello") view.handleInput(ch);
+		const rendered = view.render(96).join("\n");
+		assert.match(rendered, /hello/);
+		assert.doesNotMatch(rendered, /type a message to start this stage/i);
+		view.dispose();
+	});
 
-    test("renders pi-style spacing between a full transcript and the streaming loader", () => {
-        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
-        delete process.env.ATOMIC_REDUCED_MOTION;
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "running");
-        const messages = Array.from({ length: 30 }, (_, i) =>
-            assistantTextMessage(`msg-${i}`),
-        );
-        const { handle } = makeHandle(
-            {
-                promptCalls: [],
-                steerCalls: [],
-                followUpCalls: [],
-                pauseCalls: 0,
-                resumeCalls: [],
-                isStreaming: true,
-            },
-            messages,
-        );
-        const view = new StageChatView({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle,
-            onDetach: () => {},
-            onClose: () => {},
-        });
+	test("renders pi-style spacing between a full transcript and the streaming loader", () => {
+		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+		delete process.env.ATOMIC_REDUCED_MOTION;
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const messages = Array.from({ length: 30 }, (_, i) => assistantTextMessage(`msg-${i}`));
+		const { handle } = makeHandle(
+			{
+				promptCalls: [],
+				steerCalls: [],
+				followUpCalls: [],
+				pauseCalls: 0,
+				resumeCalls: [],
+				isStreaming: true,
+			},
+			messages,
+		);
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
 
-        try {
-            const lines = renderLifecycleOrigin(view, 96);
-            const workingIndex = lines.findIndex((line) => line.includes("Working..."));
-            assert.ok(workingIndex > 4, "expected Atomic working icon after transcript");
-            const previousContent = lines
-                .slice(0, workingIndex - 1)
-                .findLast((line) => line.trim() !== "");
-            assert.match(previousContent ?? "", /msg-\d+/);
-            assert.equal(lines[workingIndex - 1]?.trim(), "");
-            assert.equal(lines[workingIndex]?.trimEnd(), " ∀ Working...");
-            assert.deepEqual(lines[workingIndex]?.match(/∀/g), ["∀"]);
-            assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
-        } finally {
-            view.dispose();
-            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
-            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
-        }
-    });
+		try {
+			const lines = renderLifecycleOrigin(view, 96);
+			const workingIndex = lines.findIndex((line) => line.includes("Working..."));
+			assert.ok(workingIndex > 4, "expected Atomic working icon after transcript");
+			const previousContent = lines.slice(0, workingIndex - 1).findLast((line) => line.trim() !== "");
+			assert.match(previousContent ?? "", /msg-\d+/);
+			assert.equal(lines[workingIndex - 1]?.trim(), "");
+			assert.equal(lines[workingIndex]?.trimEnd(), " ∀ Working...");
+			assert.deepEqual(lines[workingIndex]?.match(/∀/g), ["∀"]);
+			assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
+		} finally {
+			view.dispose();
+			if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+			else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+		}
+	});
 
-    test("64-column Atomic working mark keeps its label and composer in bounds", () => {
-        const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
-        delete process.env.ATOMIC_REDUCED_MOTION;
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "running");
-        const { handle } = makeHandle({
-            promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: true,
-        });
-        const view = new StageChatView({
-            store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a",
-            workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {},
-        });
-        try {
-            const lines = renderLifecycleOrigin(view, 64);
-            assert.equal(lines.every((line) => line.length <= 64), true);
-            const working = lines.find((line) => line.includes("Working..."));
-            assert.equal(working?.trimEnd(), " ∀ Working...");
-            assert.deepEqual(working?.match(/∀/g), ["∀"]);
-            assert.equal(lines.some((line) => line.includes("❯")), true);
-            assert.equal(lines.some((line) => line.includes("ctrl+x")), true);
-        } finally {
-            view.dispose();
-            if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
-            else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
-        }
-    });
+	test("64-column Atomic working mark keeps its label and composer in bounds", () => {
+		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+		delete process.env.ATOMIC_REDUCED_MOTION;
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const { handle } = makeHandle({
+			promptCalls: [],
+			steerCalls: [],
+			followUpCalls: [],
+			pauseCalls: 0,
+			resumeCalls: [],
+			isStreaming: true,
+		});
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+		try {
+			const lines = renderLifecycleOrigin(view, 64);
+			assert.equal(
+				lines.every((line) => line.length <= 64),
+				true,
+			);
+			const working = lines.find((line) => line.includes("Working..."));
+			assert.equal(working?.trimEnd(), " ∀ Working...");
+			assert.deepEqual(working?.match(/∀/g), ["∀"]);
+			assert.equal(
+				lines.some((line) => line.includes("❯")),
+				true,
+			);
+			assert.equal(
+				lines.some((line) => line.includes("ctrl+x")),
+				true,
+			);
+		} finally {
+			view.dispose();
+			if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+			else process.env.ATOMIC_REDUCED_MOTION = previousReducedMotion;
+		}
+	});
 
-    test("mounted stage working identity follows live host theme changes", () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "running");
-        const { handle } = makeHandle({
-            promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: true,
-        });
-        const view = new StageChatView({
-            store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a",
-            workflowName: "test-wf", handle, onDetach: () => {}, onClose: () => {}, piTheme: theme,
-        });
-        const workingColor = (): string | undefined => {
-            const line = view.render(64).find((candidate) => candidate.includes("Working...")) ?? "";
-            const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m∀/.exec(line);
-            return match ? match.slice(1).join(",") : undefined;
-        };
-        try {
-            setThemeInstance(loadTheme("catppuccin-mocha", "truecolor"));
-            assert.equal(workingColor(), "112,117,159");
-            setThemeInstance(loadTheme("light", "truecolor"));
-            assert.notEqual(workingColor(), "112,117,159");
-        } finally {
-            view.dispose();
-            setThemeInstance(loadTheme("dark", "truecolor"));
-        }
-    });
+	test("mounted stage working identity follows live host theme changes", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const { handle } = makeHandle({
+			promptCalls: [],
+			steerCalls: [],
+			followUpCalls: [],
+			pauseCalls: 0,
+			resumeCalls: [],
+			isStreaming: true,
+		});
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+			piTheme: theme,
+		});
+		const workingColor = (): string | undefined => {
+			const line = view.render(64).find((candidate) => candidate.includes("Working...")) ?? "";
+			const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m∀/.exec(line);
+			return match ? match.slice(1).join(",") : undefined;
+		};
+		try {
+			setThemeInstance(loadTheme("catppuccin-mocha", "truecolor"));
+			assert.equal(workingColor(), "112,117,159");
+			setThemeInstance(loadTheme("light", "truecolor"));
+			assert.notEqual(workingColor(), "112,117,159");
+		} finally {
+			view.dispose();
+			setThemeInstance(loadTheme("dark", "truecolor"));
+		}
+	});
 
-    test("attached live sessions render the usage ribbon, orchestrator hint, and coding-agent footer", () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "running");
-        const { handle } = makeHandle({
-            promptCalls: [],
-            steerCalls: [],
-            followUpCalls: [],
-            pauseCalls: 0,
-            resumeCalls: [],
-            isStreaming: true,
-        });
-        const handleWithSession: StageControlHandle = {
-            ...handle,
-            agentSession: fakeFooterAgentSession(true),
-        };
-        const view = new StageChatView({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle: handleWithSession,
-            footerData: {
-                getGitBranch: () => "main",
-                getExtensionStatuses: () => new Map(),
-                getAvailableProviderCount: () => 2,
-                onBranchChange: () => () => {},
-            },
-            onDetach: () => {},
-            onClose: () => {},
-        });
-        const lines = view.render(120).map(stripAnsi);
-        const rendered = lines.join("\n");
-        assert.match(rendered, /\$0\.123/);
-        assert.match(rendered, /23\.4%\/200k/);
-        assert.match(rendered, /Working\.\.\./);
-        assert.doesNotMatch(rendered, /╌/);
+	test("attached live sessions render the usage ribbon, orchestrator hint, and coding-agent footer", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const { handle } = makeHandle({
+			promptCalls: [],
+			steerCalls: [],
+			followUpCalls: [],
+			pauseCalls: 0,
+			resumeCalls: [],
+			isStreaming: true,
+		});
+		const handleWithSession: StageControlHandle = {
+			...handle,
+			agentSession: fakeFooterAgentSession(true),
+		};
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle: handleWithSession,
+			footerData: {
+				getGitBranch: () => "main",
+				getExtensionStatuses: () => new Map(),
+				getAvailableProviderCount: () => 2,
+				onBranchChange: () => () => {},
+			},
+			onDetach: () => {},
+			onClose: () => {},
+		});
+		const lines = view.render(120).map(stripAnsi);
+		const rendered = lines.join("\n");
+		assert.match(rendered, /\$0\.123/);
+		assert.match(rendered, /23\.4%\/200k/);
+		assert.match(rendered, /Working\.\.\./);
+		assert.doesNotMatch(rendered, /╌/);
 
-        const workingIndex = lines.findIndex((line) => line.includes("Working..."));
-        const usageIndex = lines.findIndex((line) => line.includes("$0.123"));
-        const promptIndex = lines.findIndex((line) => line.includes("❯"));
-        const hintIndex = expectRightAlignedReturnHint(lines, 120);
-        const identityIndex = lines.findIndex((line) =>
-            line.includes("esc to interrupt"),
-        );
-        const commandsIndex = lines.findIndex((line) =>
-            line.includes("esc pause"),
-        );
-        assert.ok(workingIndex >= 0, "expected working spinner line");
-        assert.ok(
-            usageIndex > workingIndex,
-            "expected usage below working line",
-        );
-        assert.ok(
-            promptIndex > usageIndex,
-            "expected composer below usage line",
-        );
-        assert.ok(
-            hintIndex > promptIndex,
-            "expected orchestrator hint below the chat box",
-        );
-        assert.equal(identityIndex, hintIndex);
-        assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
-        assert.equal(commandsIndex, -1);
-        assert.doesNotMatch(lines[identityIndex] ?? "", /steer|follow-up/);
-        assert.doesNotMatch(
-            rendered,
-            /pageup\/pagedown|follow-up|steer/,
-        );
-        view.dispose();
-    });
+		const workingIndex = lines.findIndex((line) => line.includes("Working..."));
+		const usageIndex = lines.findIndex((line) => line.includes("$0.123"));
+		const promptIndex = lines.findIndex((line) => line.includes("❯"));
+		const hintIndex = expectRightAlignedReturnHint(lines, 120);
+		const identityIndex = lines.findIndex((line) => line.includes("esc to interrupt"));
+		const commandsIndex = lines.findIndex((line) => line.includes("esc pause"));
+		assert.ok(workingIndex >= 0, "expected working spinner line");
+		assert.ok(usageIndex > workingIndex, "expected usage below working line");
+		assert.ok(promptIndex > usageIndex, "expected composer below usage line");
+		assert.ok(hintIndex > promptIndex, "expected orchestrator hint below the chat box");
+		assert.equal(identityIndex, hintIndex);
+		assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
+		assert.equal(commandsIndex, -1);
+		assert.doesNotMatch(lines[identityIndex] ?? "", /steer|follow-up/);
+		assert.doesNotMatch(rendered, /pageup\/pagedown|follow-up|steer/);
+		view.dispose();
+	});
 
-    test("idle footer shows themed cwd, branch, and live MCP extension status", () => {
-        // Match production replaceHome() exactly: HOME on POSIX, USERPROFILE on
-        // Windows. Build the cwd and expectation with native separators so the
-        // test passes on both platforms.
-        const home = process.env.HOME || process.env.USERPROFILE;
-        assert.ok(home, "test requires HOME or USERPROFILE for main-footer parity");
-        const cwd = join(home, "Documents", "projects", "atomic");
-        const shortCwd = ["~", "Documents", "projects", "atomic"].join(sep);
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "running");
-        const agentSession = fakeFooterAgentSession(false);
-        Object.assign(agentSession.sessionManager, {
-            getCwd: () => cwd,
-        });
-        const { handle } = makeHandle(undefined, [], "running", agentSession);
-        const statuses = new Map([
-            ["mcp", "MCP: 1/1 servers connected (3 tools)"],
-        ]);
-        let branch = "main";
-        let branchChanged: (() => void) | undefined;
-        let renderRequests = 0;
-        let unsubscribed = false;
-        const graphTheme = deriveGraphTheme({
-            dim: "#654321",
-            textMuted: "#123456",
-        });
-        const view = new StageChatView({
-            store,
-            graphTheme,
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle,
-            footerData: {
-                getGitBranch: () => branch,
-                getExtensionStatuses: () => statuses,
-                getAvailableProviderCount: () => 2,
-                onBranchChange: (listener) => {
-                    branchChanged = listener;
-                    return () => {
-                        unsubscribed = true;
-                    };
-                },
-            },
-            requestRender: () => {
-                renderRequests += 1;
-            },
-            onDetach: () => {},
-            onClose: () => {},
-        });
+	test("idle footer shows themed cwd, branch, and live MCP extension status", () => {
+		// Match production replaceHome() exactly: HOME on POSIX, USERPROFILE on
+		// Windows. Build the cwd and expectation with native separators so the
+		// test passes on both platforms.
+		const home = process.env.HOME || process.env.USERPROFILE;
+		assert.ok(home, "test requires HOME or USERPROFILE for main-footer parity");
+		const cwd = join(home, "Documents", "projects", "atomic");
+		const shortCwd = ["~", "Documents", "projects", "atomic"].join(sep);
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const agentSession = fakeFooterAgentSession(false);
+		Object.assign(agentSession.sessionManager, {
+			getCwd: () => cwd,
+		});
+		const { handle } = makeHandle(undefined, [], "running", agentSession);
+		const statuses = new Map([["mcp", "MCP: 1/1 servers connected (3 tools)"]]);
+		let branch = "main";
+		let branchChanged: (() => void) | undefined;
+		let renderRequests = 0;
+		let unsubscribed = false;
+		const graphTheme = deriveGraphTheme({
+			dim: "#654321",
+			textMuted: "#123456",
+		});
+		const view = new StageChatView({
+			store,
+			graphTheme,
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			footerData: {
+				getGitBranch: () => branch,
+				getExtensionStatuses: () => statuses,
+				getAvailableProviderCount: () => 2,
+				onBranchChange: (listener) => {
+					branchChanged = listener;
+					return () => {
+						unsubscribed = true;
+					};
+				},
+			},
+			requestRender: () => {
+				renderRequests += 1;
+			},
+			onDetach: () => {},
+			onClose: () => {},
+		});
 
-        const initialRaw = view.render(120).join("\n");
-        const initial = stripAnsi(initialRaw);
-        assert.ok(initial.includes(`${shortCwd} (main)`), "expected home-shortened cwd and branch");
-        assert.match(initial, /MCP: 1\/1 servers connected \(3 tools\)/);
-        assert.ok(
-            initialRaw.includes(`${hexToAnsi(graphTheme.textMuted)}${shortCwd} (main)`),
-            "cwd and branch should use the workflow chat's muted text theme",
-        );
+		const initialRaw = view.render(120).join("\n");
+		const initial = stripAnsi(initialRaw);
+		assert.ok(initial.includes(`${shortCwd} (main)`), "expected home-shortened cwd and branch");
+		assert.match(initial, /MCP: 1\/1 servers connected \(3 tools\)/);
+		assert.ok(
+			initialRaw.includes(`${hexToAnsi(graphTheme.textMuted)}${shortCwd} (main)`),
+			"cwd and branch should use the workflow chat's muted text theme",
+		);
 
-        branch = "feature/footer-parity";
-        statuses.set("mcp", "MCP: 0/1 servers");
-        branchChanged?.();
-        assert.equal(renderRequests, 1);
-        const updated = view.render(120).map(stripAnsi).join("\n");
-        assert.ok(updated.includes(`${shortCwd} (feature/footer-parity)`), "expected updated branch after invalidation");
-        assert.match(updated, /MCP: 0\/1 servers/);
-        assert.doesNotMatch(updated, /MCP: 1\/1 servers connected/);
+		branch = "feature/footer-parity";
+		statuses.set("mcp", "MCP: 0/1 servers");
+		branchChanged?.();
+		assert.equal(renderRequests, 1);
+		const updated = view.render(120).map(stripAnsi).join("\n");
+		assert.ok(updated.includes(`${shortCwd} (feature/footer-parity)`), "expected updated branch after invalidation");
+		assert.match(updated, /MCP: 0\/1 servers/);
+		assert.doesNotMatch(updated, /MCP: 1\/1 servers connected/);
 
-        view.dispose();
-        assert.equal(unsubscribed, true);
-    });
+		view.dispose();
+		assert.equal(unsubscribed, true);
+	});
 
-    test("footer keeps model context and Ctrl+X hierarchy hint on one line", () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "running");
-        const { handle } = makeHandle();
-        const handleWithSession: StageControlHandle = {
-            ...handle,
-            agentSession: fakeFooterAgentSession(false),
-        };
-        const view = new StageChatView({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle: handleWithSession,
-            footerData: {
-                getGitBranch: () => "main",
-                getExtensionStatuses: () => new Map(),
-                getAvailableProviderCount: () => 2,
-                onBranchChange: () => () => {},
-            },
-            onDetach: () => {},
-            onClose: () => {},
-        });
+	test("footer keeps model context and Ctrl+X hierarchy hint on one line", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const { handle } = makeHandle();
+		const handleWithSession: StageControlHandle = {
+			...handle,
+			agentSession: fakeFooterAgentSession(false),
+		};
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle: handleWithSession,
+			footerData: {
+				getGitBranch: () => "main",
+				getExtensionStatuses: () => new Map(),
+				getAvailableProviderCount: () => 2,
+				onBranchChange: () => () => {},
+			},
+			onDetach: () => {},
+			onClose: () => {},
+		});
 
-        const lines = view.render(120).map(stripAnsi);
-        const hintIndex = expectRightAlignedReturnHint(lines, 120);
-        assert.match(
-            lines[hintIndex] ?? "",
-            /\(openai-codex\) gpt-5\.5 high .*ctrl\+x return to graph/,
-        );
-        assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
-        view.dispose();
-    });
+		const lines = view.render(120).map(stripAnsi);
+		const hintIndex = expectRightAlignedReturnHint(lines, 120);
+		assert.match(lines[hintIndex] ?? "", /\(openai-codex\) gpt-5\.5 high .*ctrl\+x return to graph/);
+		assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
+		view.dispose();
+	});
 
-    test("40-column live footer separates model context from the compact hierarchy hint", () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a", "running");
-        const agentSession = fakeFooterAgentSession(false);
-        Object.assign(agentSession.state.model!, {
-            id: "claude-sonnet-4",
-            provider: "anthropic",
-        });
-        const { handle } = makeHandle(undefined, [], "running", agentSession);
-        const view = new StageChatView({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle,
-            footerData: {
-                getGitBranch: () => "main",
-                getExtensionStatuses: () => new Map(),
-                getAvailableProviderCount: () => 2,
-                onBranchChange: () => () => {},
-            },
-            onDetach: () => {},
-            onClose: () => {},
-        });
+	test("40-column live footer separates model context from the compact hierarchy hint", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const agentSession = fakeFooterAgentSession(false);
+		Object.assign(agentSession.state.model!, {
+			id: "claude-sonnet-4",
+			provider: "anthropic",
+		});
+		const { handle } = makeHandle(undefined, [], "running", agentSession);
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			footerData: {
+				getGitBranch: () => "main",
+				getExtensionStatuses: () => new Map(),
+				getAvailableProviderCount: () => 2,
+				onBranchChange: () => () => {},
+			},
+			onDetach: () => {},
+			onClose: () => {},
+		});
 
-        const footer = view.render(40).map(stripAnsi)
-            .find((line) => line.includes("ctrl+x graph"));
-        assert.match(footer ?? "", /\sctrl\+x graph · ctrl\+t off$/);
-        assert.equal(footer?.length, 40);
-        assert.doesNotMatch(footer ?? "", /clactrl\+x/);
-        view.dispose();
-    });
+		const footer = view
+			.render(40)
+			.map(stripAnsi)
+			.find((line) => line.includes("ctrl+x graph"));
+		assert.match(footer ?? "", /\sctrl\+x graph · ctrl\+t off$/);
+		assert.equal(footer?.length, 40);
+		assert.doesNotMatch(footer ?? "", /clactrl\+x/);
+		view.dispose();
+	});
 
-    test("Enter after Escape pause resumes with the typed message", async () => {
-        const store = createStore();
-        setupRun(store, "run-1", "stage-a");
-        const { handle, state } = makeHandle({
-            promptCalls: [],
-            steerCalls: [],
-            followUpCalls: [],
-            pauseCalls: 0,
-            resumeCalls: [],
-            isStreaming: true,
-        });
-        const originalPause = handle.pause.bind(handle);
-        const originalResume = handle.resume.bind(handle);
-        Object.assign(handle, {
-            async pause() {
-                await originalPause();
-                store.recordStagePaused("run-1", "stage-a");
-            },
-            async resume(message?: string) {
-                await originalResume(message);
-                store.recordStageResumed("run-1", "stage-a");
-            },
-        });
-        const view = new StageChatView({
-            store,
-            graphTheme: deriveGraphTheme({}),
-            runId: "run-1",
-            stageId: "stage-a",
-            workflowName: "test-wf",
-            handle,
-            onDetach: () => {},
-            onClose: () => {},
-        });
-        view.handleInput("\x1b");
-        await flush();
-        await flush();
-        assert.equal(state.pauseCalls, 1);
-        assert.equal(store.runs()[0]?.stages[0]?.status, "paused");
-        for (const ch of "go on") view.handleInput(ch);
-        view.handleInput("\r");
-        await flush();
-        await flush();
-        assert.deepEqual(state.resumeCalls, ["go on"]);
-        assert.deepEqual(state.steerCalls, []);
-        assert.equal(store.runs()[0]?.stages[0]?.status, "running");
-        view.dispose();
-    });
-
+	test("Enter after Escape pause resumes with the typed message", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const { handle, state } = makeHandle({
+			promptCalls: [],
+			steerCalls: [],
+			followUpCalls: [],
+			pauseCalls: 0,
+			resumeCalls: [],
+			isStreaming: true,
+		});
+		const originalPause = handle.pause.bind(handle);
+		const originalResume = handle.resume.bind(handle);
+		Object.assign(handle, {
+			async pause() {
+				await originalPause();
+				store.recordStagePaused("run-1", "stage-a");
+			},
+			async resume(message?: string) {
+				await originalResume(message);
+				store.recordStageResumed("run-1", "stage-a");
+			},
+		});
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+		view.handleInput("\x1b");
+		await flush();
+		await flush();
+		assert.equal(state.pauseCalls, 1);
+		assert.equal(store.runs()[0]?.stages[0]?.status, "paused");
+		for (const ch of "go on") view.handleInput(ch);
+		view.handleInput("\r");
+		await flush();
+		await flush();
+		assert.deepEqual(state.resumeCalls, ["go on"]);
+		assert.deepEqual(state.steerCalls, []);
+		assert.equal(store.runs()[0]?.stages[0]?.status, "running");
+		view.dispose();
+	});
 });

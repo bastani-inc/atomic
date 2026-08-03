@@ -41,10 +41,12 @@ export function setCallbackActivityReporter(next: CallbackActivityReporter | und
 	reporter = next;
 }
 
-function beginActivity(descriptor: CallbackActivityDescriptor): {
-	activity: CallbackActivity;
-	reporter: CallbackActivityReporter;
-} | undefined {
+function beginActivity(descriptor: CallbackActivityDescriptor):
+	| {
+			activity: CallbackActivity;
+			reporter: CallbackActivityReporter;
+	  }
+	| undefined {
 	const activeReporter = reporter;
 	if (!activeReporter) return undefined;
 	const activity: CallbackActivity = {
@@ -66,7 +68,10 @@ export function runSynchronousCallback<T>(descriptor: CallbackActivityDescriptor
 	}
 }
 
-export async function runCallback<T>(descriptor: CallbackActivityDescriptor, callback: () => T | Promise<T>): Promise<T> {
+export async function runCallback<T>(
+	descriptor: CallbackActivityDescriptor,
+	callback: () => T | Promise<T>,
+): Promise<T> {
 	const active = beginActivity(descriptor);
 	if (!active) return callback();
 	try {

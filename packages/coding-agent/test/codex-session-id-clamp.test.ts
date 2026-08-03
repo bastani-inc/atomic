@@ -45,7 +45,12 @@ describe("Pi v0.80.10 Codex session inheritance", () => {
 					type: "response.completed",
 					response: {
 						status: "completed",
-						usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, input_tokens_details: { cached_tokens: 0 } },
+						usage: {
+							input_tokens: 1,
+							output_tokens: 1,
+							total_tokens: 2,
+							input_tokens_details: { cached_tokens: 0 },
+						},
 					},
 				};
 				return new Response(`data: ${JSON.stringify(response)}\n\ndata: [DONE]\n\n`, {

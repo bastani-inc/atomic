@@ -1,9 +1,11 @@
+import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, test } from "vitest";
+import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { createHarnessWithExtensions, type Harness } from "./test-harness.ts";
 
-type AutoCompactionRunner = {
+type AutoCompactionRunner = AgentSession & {
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
 };
 
@@ -14,7 +16,14 @@ function assistant(text: string, timestamp: number): AssistantMessage {
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
-		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp,
 	};
@@ -23,7 +32,11 @@ function assistant(text: string, timestamp: number): AssistantMessage {
 function seedTranscript(harness: Harness): void {
 	const now = Date.now();
 	for (let turn = 0; turn < 5; turn++) {
-		harness.sessionManager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: `task ${turn}\nline a\nline b`,
+			timestamp: now + turn * 2,
+		});
 		harness.sessionManager.appendMessage(assistant(`answer ${turn}\nline c\nline d`, now + turn * 2 + 1));
 	}
 	harness.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
@@ -37,8 +50,12 @@ function boundaryCount(harness: Harness): number {
 function createGate() {
 	let signalStarted!: () => void;
 	let release!: () => void;
-	const started = new Promise<void>((resolve) => { signalStarted = resolve; });
-	const released = new Promise<void>((resolve) => { release = resolve; });
+	const started = new Promise<void>((resolve) => {
+		signalStarted = resolve;
+	});
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	const calls: string[] = [];
 	const factory: ExtensionFactory = (pi) => {
 		pi.on("session_before_compact", async (event) => {
@@ -50,10 +67,30 @@ function createGate() {
 	};
 	return { factory, started, release: () => release(), calls };
 }
+/** Extension whose tree-navigation hook blocks until the test releases it. */
+function createTreeGate() {
+	let signalStarted!: () => void;
+	let release!: () => void;
+	const started = new Promise<void>((resolve) => {
+		signalStarted = resolve;
+	});
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const factory: ExtensionFactory = (pi) => {
+		pi.on("session_before_tree", async () => {
+			signalStarted();
+			await released;
+		});
+	};
+	return { factory, started, release: () => release() };
+}
 
 describe("manual compaction re-entrancy", () => {
 	const harnesses: Harness[] = [];
-	afterEach(() => { for (const harness of harnesses.splice(0)) harness.cleanup(); });
+	afterEach(() => {
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+	});
 
 	async function createHarness(factory: ExtensionFactory): Promise<Harness> {
 		const harness = await createHarnessWithExtensions({ extensionFactories: [factory] });
@@ -85,11 +122,15 @@ describe("manual compaction re-entrancy", () => {
 
 	it("does not overwrite the live abort controller, so abortCompaction() cancels both callers", async () => {
 		let signalStarted!: () => void;
-		const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+		const started = new Promise<void>((resolve) => {
+			signalStarted = resolve;
+		});
 		const abortable: ExtensionFactory = (pi) => {
 			pi.on("session_before_compact", async (event) => {
 				signalStarted();
-				await new Promise<void>((resolve) => event.signal.addEventListener("abort", () => resolve(), { once: true }));
+				await new Promise<void>((resolve) =>
+					event.signal.addEventListener("abort", () => resolve(), { once: true }),
+				);
 				return { cancel: true };
 			});
 		};
@@ -114,7 +155,7 @@ describe("manual compaction re-entrancy", () => {
 		const gate = createGate();
 		const harness = await createHarness(gate.factory);
 
-		const auto = (harness.session as unknown as AutoCompactionRunner)._runAutoCompaction("threshold", false);
+		const auto = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
 		await gate.started;
 		expect(harness.session.isCompacting).toBe(true);
 
@@ -151,7 +192,7 @@ describe("manual compaction re-entrancy", () => {
 			);
 		});
 
-		const auto = (harness.session as unknown as AutoCompactionRunner)._runAutoCompaction("threshold", false);
+		const auto = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
 		await gate.started;
 		expect(manualOutcome).toBeDefined();
 
@@ -187,5 +228,68 @@ describe("manual compaction re-entrancy", () => {
 		expect(gate.calls).toEqual(["manual", "manual"]);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(2);
 		expect(boundaryCount(harness)).toBe(2);
+	});
+	test("records and clears the active reason for manual and automatic compaction", async () => {
+		const manualGate = createGate();
+		const manualHarness = await createHarness(manualGate.factory);
+		const manual = manualHarness.session.compact({ preserve_recent: 2 });
+		await manualGate.started;
+		assert.equal(manualHarness.session.compactionReason, "manual");
+		manualGate.release();
+		await manual;
+		assert.equal(manualHarness.session.compactionReason, undefined);
+
+		const automaticGate = createGate();
+		const automaticHarness = await createHarness(automaticGate.factory);
+		const automatic = (automaticHarness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
+		await automaticGate.started;
+		assert.equal(automaticHarness.session.compactionReason, "threshold");
+		automaticGate.release();
+		await automatic;
+		assert.equal(automaticHarness.session.compactionReason, undefined);
+	});
+	test("records and clears the active reason during branch navigation", async () => {
+		const treeGate = createTreeGate();
+		const harness = await createHarness(treeGate.factory);
+		const targetId = harness.sessionManager.getTree()[0]?.entry.id;
+		assert.ok(targetId);
+
+		const navigation = harness.session.navigateTree(targetId, { summarize: false });
+		await treeGate.started;
+		assert.equal(harness.session.compactionReason, "branchSummary");
+		treeGate.release();
+		const result = await navigation;
+
+		assert.equal(result.cancelled, false);
+		assert.equal(harness.session.compactionReason, undefined);
+	});
+	test("preserves an outer automatic reason across overlapping branch navigation", async () => {
+		const compactionGate = createGate();
+		const treeGate = createTreeGate();
+		const harness = await createHarnessWithExtensions({
+			extensionFactories: [compactionGate.factory, treeGate.factory],
+		});
+		harnesses.push(harness);
+		await harness.session.bindExtensions({});
+		seedTranscript(harness);
+
+		const automatic = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
+		await compactionGate.started;
+		assert.equal(harness.session.compactionReason, "threshold");
+
+		const targetId = harness.sessionManager.getTree()[0]?.entry.id;
+		assert.ok(targetId);
+		const navigation = harness.session.navigateTree(targetId, { summarize: false });
+		await treeGate.started;
+		assert.equal(harness.session.compactionReason, "threshold");
+
+		treeGate.release();
+		const result = await navigation;
+		assert.equal(result.cancelled, false);
+		assert.equal(harness.session.compactionReason, "threshold");
+
+		compactionGate.release();
+		await automatic;
+		assert.equal(harness.session.compactionReason, undefined);
 	});
 });

@@ -37,7 +37,10 @@ function stableStringify(value: unknown): string {
 	}
 	if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
 	const object = value as Record<string, unknown>;
-	return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(object[key])}`).join(",")}}`;
+	return `{${Object.keys(object)
+		.sort()
+		.map((key) => `${JSON.stringify(key)}:${stableStringify(object[key])}`)
+		.join(",")}}`;
 }
 
 /** Stable identity for every value exposed through local or Intercom completion delivery. */
@@ -45,15 +48,25 @@ export function buildCompletionSignature(delivery: Record<string, unknown>): str
 	return createHash("sha256").update(stableStringify(delivery)).digest("hex");
 }
 
-export function sanitizeNestedResultChildren(value: unknown, resultPath: string, label: string): NestedRunSummary[] | undefined {
+export function sanitizeNestedResultChildren(
+	value: unknown,
+	resultPath: string,
+	label: string,
+): NestedRunSummary[] | undefined {
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value)) {
-		console.error(`Ignoring invalid nested children in subagent result file '${resultPath}' at ${label}: expected an array.`);
+		console.error(
+			`Ignoring invalid nested children in subagent result file '${resultPath}' at ${label}: expected an array.`,
+		);
 		return undefined;
 	}
-	const children = value.map((child) => sanitizeSummary(child)).filter((child): child is NestedRunSummary => Boolean(child));
+	const children = value
+		.map((child) => sanitizeSummary(child))
+		.filter((child): child is NestedRunSummary => Boolean(child));
 	if (children.length !== value.length) {
-		console.error(`Ignoring ${value.length - children.length} invalid nested child record(s) in subagent result file '${resultPath}' at ${label}.`);
+		console.error(
+			`Ignoring ${value.length - children.length} invalid nested child record(s) in subagent result file '${resultPath}' at ${label}.`,
+		);
 	}
 	return children.length ? children : undefined;
 }

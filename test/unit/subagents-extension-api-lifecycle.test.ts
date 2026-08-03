@@ -1,16 +1,20 @@
-import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@bastani/atomic";
-import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
+import { afterEach, describe, test } from "vitest";
 import { beginApiLifecycle } from "../../packages/subagents/src/extension/api-lifecycle.js";
+import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import registerSubagentNotify from "../../packages/subagents/src/runs/background/notify.js";
 import { createResultWatcher } from "../../packages/subagents/src/runs/background/result-watcher.js";
-import { buildSlashInitialResult, getSlashRenderableSnapshot } from "../../packages/subagents/src/slash/slash-live-state.js";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT, type SubagentState } from "../../packages/subagents/src/shared/types.js";
+import {
+	buildSlashInitialResult,
+	getSlashRenderableSnapshot,
+} from "../../packages/subagents/src/slash/slash-live-state.js";
+import { sleep } from "../helpers/runtime.js";
 
 class TestEventBus {
 	private readonly handlers = new Map<string, Set<(payload: object) => void>>();
@@ -100,7 +104,6 @@ afterEach(() => {
 	for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-
 test("full extension wiring keeps parent handlers alive across stage shutdown and reload", () => {
 	const priorChild = process.env[SUBAGENT_CHILD_ENV];
 	const priorFanout = process.env[SUBAGENT_FANOUT_CHILD_ENV];
@@ -113,12 +116,20 @@ test("full extension wiring keeps parent handlers alive across stage shutdown an
 		registerSubagentExtension(stage.pi);
 		assert.equal(parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 2, "parent owns tracker and notify handlers");
 		assert.equal(stage.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 2, "stage owns independent handlers");
-		const parentSlash = buildSlashInitialResult("shared-request", { agent: "worker", task: "parent task" }, parent.pi);
+		const parentSlash = buildSlashInitialResult(
+			"shared-request",
+			{ agent: "worker", task: "parent task" },
+			parent.pi,
+		);
 		buildSlashInitialResult("shared-request", { agent: "worker", task: "stage task" }, stage.pi);
 
 		stage.shutdownHandlers[0]?.();
 		assert.equal(stage.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 0);
-		assert.equal(parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 2, "stage shutdown must preserve parent handlers");
+		assert.equal(
+			parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT),
+			2,
+			"stage shutdown must preserve parent handlers",
+		);
 		assert.equal(
 			getSlashRenderableSnapshot(parentSlash, parent.pi).result.details.results[0]?.task,
 			"parent task",
@@ -126,9 +137,17 @@ test("full extension wiring keeps parent handlers alive across stage shutdown an
 		);
 
 		registerSubagentExtension(parent.pi);
-		assert.equal(parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 2, "same-API reload replaces rather than duplicates handlers");
+		assert.equal(
+			parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT),
+			2,
+			"same-API reload replaces rather than duplicates handlers",
+		);
 		parent.shutdownHandlers[0]?.();
-		assert.equal(parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 2, "stale shutdown cannot tear down the replacement");
+		assert.equal(
+			parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT),
+			2,
+			"stale shutdown cannot tear down the replacement",
+		);
 		parent.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 			id: "full-extension-result",
 			agent: "worker",
@@ -160,11 +179,22 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 		const parentWatcher = createResultWatcher(parent.pi, makeState("parent-session"), parentRoot, 60_000, {
 			safeWatch: (_watchPath, listener) => {
 				parentWatchListener = listener;
-				return { close: () => { parentWatcherClosed = true; }, unref: () => {} } as fs.FSWatcher;
+				return {
+					close: () => {
+						parentWatcherClosed = true;
+					},
+					unref: () => {},
+				} as fs.FSWatcher;
 			},
 		});
 		const stageWatcher = createResultWatcher(stage.pi, makeState("stage-session"), stageRoot, 60_000, {
-			safeWatch: () => ({ close: () => { stageWatcherClosed = true; }, unref: () => {} }) as fs.FSWatcher,
+			safeWatch: () =>
+				({
+					close: () => {
+						stageWatcherClosed = true;
+					},
+					unref: () => {},
+				}) as fs.FSWatcher,
 		});
 		const parentLifecycle = beginApiLifecycle(parent.pi);
 		const stageLifecycle = beginApiLifecycle(stage.pi);
@@ -172,8 +202,14 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 		const stageNotifyCleanup = registerSubagentNotify(stage.pi);
 		parentWatcher.startResultWatcher();
 		stageWatcher.startResultWatcher();
-		parentLifecycle.setCleanup(() => { parentWatcher.stopResultWatcher(); parentNotifyCleanup(); });
-		stageLifecycle.setCleanup(() => { stageWatcher.stopResultWatcher(); stageNotifyCleanup(); });
+		parentLifecycle.setCleanup(() => {
+			parentWatcher.stopResultWatcher();
+			parentNotifyCleanup();
+		});
+		stageLifecycle.setCleanup(() => {
+			stageWatcher.stopResultWatcher();
+			stageNotifyCleanup();
+		});
 
 		stageLifecycle.dispose();
 		assert.equal(stageWatcherClosed, true);
@@ -181,18 +217,21 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 		assert.equal(parent.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 1);
 
 		const resultFile = "parent-result.json";
-		fs.writeFileSync(path.join(parentRoot, resultFile), JSON.stringify({
-			id: "parent-run-lifecycle",
-			sessionId: "parent-session",
-			agent: "worker",
-			success: true,
-			summary: "implemented the fix",
-			timestamp: Date.now(),
-		}));
+		fs.writeFileSync(
+			path.join(parentRoot, resultFile),
+			JSON.stringify({
+				id: "parent-run-lifecycle",
+				sessionId: "parent-session",
+				agent: "worker",
+				success: true,
+				summary: "implemented the fix",
+				timestamp: Date.now(),
+			}),
+		);
 		parentWatchListener?.("rename", ".parent-result.json.atomic-write-123.tmp");
 		parentWatchListener?.("change", null);
 		parentWatchListener?.("rename", ".parent-result.json.atomic-write-123.tmp");
-		await Bun.sleep(150);
+		await sleep(150);
 
 		assert.equal(parent.messages.length, 1);
 		assert.equal(parent.messages[0]?.customType, "subagent-notify");
@@ -213,23 +252,25 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 		const notifyCleanup = registerSubagentNotify(api.pi);
 		watcher.startResultWatcher();
 		const resultPath = path.join(root, "stopped-result.json");
-		fs.writeFileSync(resultPath, JSON.stringify({
-			id: "stopped-result",
-			sessionId: "stopped-session",
-			agent: "worker",
-			success: true,
-			summary: "must remain pending",
-			timestamp: Date.now(),
-		}));
+		fs.writeFileSync(
+			resultPath,
+			JSON.stringify({
+				id: "stopped-result",
+				sessionId: "stopped-session",
+				agent: "worker",
+				success: true,
+				summary: "must remain pending",
+				timestamp: Date.now(),
+			}),
+		);
 		listener?.("rename", ".stopped-result.json.atomic-write.tmp");
 		watcher.stopResultWatcher();
-		await Bun.sleep(100);
+		await sleep(100);
 
 		assert.equal(api.messages.length, 0);
 		assert.equal(fs.existsSync(resultPath), true, "stopped watcher must not rescan or consume results");
 		notifyCleanup();
 	});
-
 
 	test("notification dedupe is reload-stable per API rather than process-global", () => {
 		const parent = makeApi();
@@ -281,7 +322,9 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 			Object.assign(api.pi, {
 				registerCommand: () => {},
 				registerMessageRenderer: () => {},
-				registerTool: () => { throw new Error("injected registerTool failure"); },
+				registerTool: () => {
+					throw new Error("injected registerTool failure");
+				},
 				on: () => {},
 			});
 			assert.throws(() => registerSubagentExtension(api.pi), /injected registerTool failure/);
@@ -299,11 +342,15 @@ describe("subagent ExtensionAPI lifecycle ownership", () => {
 		let firstCleanups = 0;
 		let secondCleanups = 0;
 		const firstLifecycle = beginApiLifecycle(api.pi);
-		firstLifecycle.setCleanup(() => { firstCleanups++; });
+		firstLifecycle.setCleanup(() => {
+			firstCleanups++;
+		});
 		const firstNotifyCleanup = registerSubagentNotify(api.pi);
 
 		const secondLifecycle = beginApiLifecycle(api.pi);
-		secondLifecycle.setCleanup(() => { secondCleanups++; });
+		secondLifecycle.setCleanup(() => {
+			secondCleanups++;
+		});
 		const secondNotifyCleanup = registerSubagentNotify(api.pi);
 		assert.equal(firstCleanups, 1, "replacement cleans only the previous same-API runtime");
 		assert.equal(api.events.count(SUBAGENT_ASYNC_COMPLETE_EVENT), 1);

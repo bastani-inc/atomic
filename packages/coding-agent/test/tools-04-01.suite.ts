@@ -1,29 +1,20 @@
-import { applyPatch } from "diff";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
-import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
-import {
-	createEditTool,
-	createFindTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
-} from "../src/index.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
+import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
-const readTool = createReadTool(process.cwd());
-const writeTool = createWriteTool(process.cwd());
-const editTool = createEditTool(process.cwd());
+const _readTool = createReadTool(process.cwd());
+const _writeTool = createWriteTool(process.cwd());
+const _editTool = createEditTool(process.cwd());
 const bashTool = createBashTool(process.cwd());
-const grepTool = createGrepTool(process.cwd());
-const findTool = createFindTool(process.cwd());
-const lsTool = createLsTool(process.cwd());
+const _grepTool = createGrepTool(process.cwd());
+const _findTool = createFindTool(process.cwd());
+const _lsTool = createLsTool(process.cwd());
 
 // Helper to extract text from content blocks
 function getTextOutput(result: any): string {
@@ -35,7 +26,7 @@ function getTextOutput(result: any): string {
 	);
 }
 
-function shellQuoteForTest(value: string): string {
+function _shellQuoteForTest(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -138,7 +129,11 @@ describe("Coding Agent Tools", () => {
 		it("should decode and sanitize async output chunks", async () => {
 			const euro = Buffer.from("\u001b[31m€\u001b[0m\r\n", "utf-8");
 			const operations: BashOperations = {
-				exec: async (_command, _cwd, { onData }) => { onData(euro.subarray(0, 5)); onData(euro.subarray(5)); return { exitCode: 0 }; },
+				exec: async (_command, _cwd, { onData }) => {
+					onData(euro.subarray(0, 5));
+					onData(euro.subarray(5));
+					return { exitCode: 0 };
+				},
 			};
 			const bash = createBashTool(testDir, { operations, asyncEnabled: true });
 			const started = await bash.execute("async-utf-start", { command: "utf", async: true });

@@ -1,8 +1,8 @@
-import { beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { beforeEach, test } from "vitest";
 import factory, { type ExtensionAPI } from "../../packages/workflows/src/extension/index.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
@@ -11,292 +11,332 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 type SessionBeforeSwitchHandler = (event?: unknown, ctx?: unknown) => unknown;
 
 function workflowRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
-  return {
-    id: "run-1",
-    name: "Test workflow",
-    inputs: {},
-    status: "running",
-    stages: [],
-    startedAt: Date.now(),
-    ...overrides,
-  };
+	return {
+		id: "run-1",
+		name: "Test workflow",
+		inputs: {},
+		status: "running",
+		stages: [],
+		startedAt: Date.now(),
+		...overrides,
+	};
 }
 
 function captureHandlers(): Map<string, SessionBeforeSwitchHandler> {
-  const handlers = new Map<string, SessionBeforeSwitchHandler>();
-  const pi: ExtensionAPI = {
-    registerTool: () => undefined,
-    registerCommand: () => undefined,
-    registerMessageRenderer: () => undefined,
-    registerFlag: () => undefined,
-    registerShortcut: () => undefined,
-    on: (event, handler) => {
-      handlers.set(event, handler as SessionBeforeSwitchHandler);
-    },
-    disableAsyncDiscovery: true,
-  };
-  factory(pi);
-  return handlers;
+	const handlers = new Map<string, SessionBeforeSwitchHandler>();
+	const pi: ExtensionAPI = {
+		registerTool: () => undefined,
+		registerCommand: () => undefined,
+		registerMessageRenderer: () => undefined,
+		registerFlag: () => undefined,
+		registerShortcut: () => undefined,
+		on: (event, handler) => {
+			handlers.set(event, handler as SessionBeforeSwitchHandler);
+		},
+		disableAsyncDiscovery: true,
+	};
+	factory(pi);
+	return handlers;
 }
 
 function captureHandlersWithActiveTools(activeTools: readonly string[]): {
-  handlers: Map<string, SessionBeforeSwitchHandler>;
-  setCalls: string[][];
+	handlers: Map<string, SessionBeforeSwitchHandler>;
+	setCalls: string[][];
 } {
-  const handlers = new Map<string, SessionBeforeSwitchHandler>();
-  const setCalls: string[][] = [];
-  let current = [...activeTools];
-  const pi: ExtensionAPI = {
-    registerTool: () => undefined,
-    registerCommand: () => undefined,
-    registerMessageRenderer: () => undefined,
-    registerFlag: () => undefined,
-    registerShortcut: () => undefined,
-    getActiveTools: () => [...current],
-    setActiveTools: (names: string[]) => {
-      current = [...names];
-      setCalls.push([...names]);
-    },
-    on: (event, handler) => {
-      handlers.set(event, handler as SessionBeforeSwitchHandler);
-    },
-    disableAsyncDiscovery: true,
-  };
-  factory(pi);
-  return { handlers, setCalls };
+	const handlers = new Map<string, SessionBeforeSwitchHandler>();
+	const setCalls: string[][] = [];
+	let current = [...activeTools];
+	const pi: ExtensionAPI = {
+		registerTool: () => undefined,
+		registerCommand: () => undefined,
+		registerMessageRenderer: () => undefined,
+		registerFlag: () => undefined,
+		registerShortcut: () => undefined,
+		getActiveTools: () => [...current],
+		setActiveTools: (names: string[]) => {
+			current = [...names];
+			setCalls.push([...names]);
+		},
+		on: (event, handler) => {
+			handlers.set(event, handler as SessionBeforeSwitchHandler);
+		},
+		disableAsyncDiscovery: true,
+	};
+	factory(pi);
+	return { handlers, setCalls };
 }
 
 function getSessionBeforeSwitchHandler(): SessionBeforeSwitchHandler {
-  const handler = captureHandlers().get("session_before_switch");
-  if (handler === undefined) {
-    assert.fail("session_before_switch handler was not registered");
-  }
-  return handler;
+	const handler = captureHandlers().get("session_before_switch");
+	if (handler === undefined) {
+		assert.fail("session_before_switch handler was not registered");
+	}
+	return handler;
 }
 
 async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.equal(predicate(), true);
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(predicate(), true);
 }
 
 beforeEach(() => {
-  stageControlRegistry.clear();
-  store.clear();
+	stageControlRegistry.clear();
+	store.clear();
 });
 
 test("extension factory is a function", () => {
-  assert.equal(typeof factory, "function");
+	assert.equal(typeof factory, "function");
 });
 
 test("extension factory runs without error (no-op)", () => {
-  // Phase A: factory accepts any API object and does nothing.
-  assert.doesNotThrow(() => factory({}));
+	// Phase A: factory accepts any API object and does nothing.
+	assert.doesNotThrow(() => factory({}));
 });
 
 test("session_before_switch prompts for /new and /resume when workflows are in flight", async () => {
-  for (const reason of ["new", "resume"] as const) {
-    store.clear();
-    try {
-      store.recordRunStart(workflowRun());
-      const handler = getSessionBeforeSwitchHandler();
+	for (const reason of ["new", "resume"] as const) {
+		store.clear();
+		try {
+			store.recordRunStart(workflowRun());
+			const handler = getSessionBeforeSwitchHandler();
 
-      const prompts: Array<{ title: string; message?: string }> = [];
-      const result = await handler({ reason }, {
-        ui: {
-          confirm: async (title: string, message?: string) => {
-            prompts.push({ title, message });
-            return true;
-          },
-        },
-      });
+			const prompts: Array<{ title: string; message?: string }> = [];
+			const result = await handler(
+				{ reason },
+				{
+					ui: {
+						confirm: async (title: string, message?: string) => {
+							prompts.push({ title, message });
+							return true;
+						},
+					},
+				},
+			);
 
-      assert.equal(result, undefined);
-      assert.equal(prompts.length, 1);
-      const promptText = `${prompts[0]?.title}\n${prompts[0]?.message}`;
-      assert.match(promptText, reason === "new" ? /new session/i : /resume another session/i);
-      assert.match(promptText, /stop|kill/i);
-      assert.match(promptText, /1 in-flight workflow/i);
-      assert.doesNotMatch(promptText, /1 in-flight workflows/i);
-      assert.match(promptText, /clear workflow history tied to (the )?current session/i);
-      assert.equal(store.runs().length, 1);
-      assert.equal(store.runs()[0]?.endedAt, undefined);
-    } finally {
-      store.clear();
-    }
-  }
+			assert.equal(result, undefined);
+			assert.equal(prompts.length, 1);
+			const promptText = `${prompts[0]?.title}\n${prompts[0]?.message}`;
+			assert.match(promptText, reason === "new" ? /new session/i : /resume another session/i);
+			assert.match(promptText, /stop|kill/i);
+			assert.match(promptText, /1 in-flight workflow/i);
+			assert.doesNotMatch(promptText, /1 in-flight workflows/i);
+			assert.match(promptText, /clear workflow history tied to (the )?current session/i);
+			assert.equal(store.runs().length, 1);
+			assert.equal(store.runs()[0]?.endedAt, undefined);
+		} finally {
+			store.clear();
+		}
+	}
 });
 
 test("session_before_switch renders plural in-flight workflow counts", async () => {
-  store.recordRunStart(workflowRun({ id: "run-1" }));
-  store.recordRunStart(workflowRun({ id: "run-2" }));
-  const handler = getSessionBeforeSwitchHandler();
+	store.recordRunStart(workflowRun({ id: "run-1" }));
+	store.recordRunStart(workflowRun({ id: "run-2" }));
+	const handler = getSessionBeforeSwitchHandler();
 
-  const prompts: Array<{ title: string; message?: string }> = [];
-  const result = await handler({ reason: "new" }, {
-    ui: {
-      confirm: async (title: string, message?: string) => {
-        prompts.push({ title, message });
-        return true;
-      },
-    },
-  });
+	const prompts: Array<{ title: string; message?: string }> = [];
+	const result = await handler(
+		{ reason: "new" },
+		{
+			ui: {
+				confirm: async (title: string, message?: string) => {
+					prompts.push({ title, message });
+					return true;
+				},
+			},
+		},
+	);
 
-  assert.equal(result, undefined);
-  assert.equal(prompts.length, 1);
-  assert.match(prompts[0]?.title ?? "", /2 in-flight workflows/i);
-  assert.match(prompts[0]?.message ?? "", /2 in-flight workflows/i);
+	assert.equal(result, undefined);
+	assert.equal(prompts.length, 1);
+	assert.match(prompts[0]?.title ?? "", /2 in-flight workflows/i);
+	assert.match(prompts[0]?.message ?? "", /2 in-flight workflows/i);
 });
 
 test("session_before_switch fails open when confirm throws", async () => {
-  store.recordRunStart(workflowRun());
-  const handler = getSessionBeforeSwitchHandler();
+	store.recordRunStart(workflowRun());
+	const handler = getSessionBeforeSwitchHandler();
 
-  const result = await handler({ reason: "new" }, {
-    ui: {
-      confirm: async () => {
-        throw new Error("confirm unavailable");
-      },
-    },
-  });
+	const result = await handler(
+		{ reason: "new" },
+		{
+			ui: {
+				confirm: async () => {
+					throw new Error("confirm unavailable");
+				},
+			},
+		},
+	);
 
-  assert.equal(result, undefined);
-  assert.equal(store.runs().length, 1);
-  assert.equal(store.runs()[0]?.endedAt, undefined);
+	assert.equal(result, undefined);
+	assert.equal(store.runs().length, 1);
+	assert.equal(store.runs()[0]?.endedAt, undefined);
 });
 
 test("session_before_switch cancels /new and /resume when warning is declined", async () => {
-  for (const reason of ["new", "resume"] as const) {
-    store.clear();
-    try {
-      store.recordRunStart(workflowRun());
-      const handler = getSessionBeforeSwitchHandler();
-      const notifications: Array<{ message: string; type?: string }> = [];
+	for (const reason of ["new", "resume"] as const) {
+		store.clear();
+		try {
+			store.recordRunStart(workflowRun());
+			const handler = getSessionBeforeSwitchHandler();
+			const notifications: Array<{ message: string; type?: string }> = [];
 
-      const result = await handler({ reason }, {
-        ui: {
-          confirm: async () => false,
-          notify: (message: string, type?: string) => notifications.push({ message, type }),
-        },
-      });
+			const result = await handler(
+				{ reason },
+				{
+					ui: {
+						confirm: async () => false,
+						notify: (message: string, type?: string) => notifications.push({ message, type }),
+					},
+				},
+			);
 
-      assert.deepEqual(result, { cancel: true });
-      assert.equal(store.runs().length, 1);
-      assert.equal(store.runs()[0]?.endedAt, undefined);
-      assert.equal(notifications.at(-1)?.type, "info");
-      assert.match(notifications.at(-1)?.message ?? "", reason === "new" ? /New session cancelled/i : /Resume cancelled/i);
-    } finally {
-      store.clear();
-    }
-  }
+			assert.deepEqual(result, { cancel: true });
+			assert.equal(store.runs().length, 1);
+			assert.equal(store.runs()[0]?.endedAt, undefined);
+			assert.equal(notifications.at(-1)?.type, "info");
+			assert.match(
+				notifications.at(-1)?.message ?? "",
+				reason === "new" ? /New session cancelled/i : /Resume cancelled/i,
+			);
+		} finally {
+			store.clear();
+		}
+	}
 });
 
 test("session_before_switch does not prompt without in-flight workflows", async () => {
-  store.clear();
-  try {
-    store.recordRunStart(workflowRun({ id: "done", status: "running" }));
-    store.recordRunEnd("done", "completed", {});
-    const handler = getSessionBeforeSwitchHandler();
-    let confirmCalls = 0;
+	store.clear();
+	try {
+		store.recordRunStart(workflowRun({ id: "done", status: "running" }));
+		store.recordRunEnd("done", "completed", {});
+		const handler = getSessionBeforeSwitchHandler();
+		let confirmCalls = 0;
 
-    assert.equal(
-      await handler({ reason: "new" }, { ui: { confirm: async () => { confirmCalls += 1; return false; } } }),
-      undefined,
-    );
-    assert.equal(confirmCalls, 0);
-  } finally {
-    store.clear();
-  }
+		assert.equal(
+			await handler(
+				{ reason: "new" },
+				{
+					ui: {
+						confirm: async () => {
+							confirmCalls += 1;
+							return false;
+						},
+					},
+				},
+			),
+			undefined,
+		);
+		assert.equal(confirmCalls, 0);
+	} finally {
+		store.clear();
+	}
 });
 
 test("session_before_switch does not prompt for unrelated switch reasons", async () => {
-  store.clear();
-  try {
-    store.recordRunStart(workflowRun());
-    const handler = getSessionBeforeSwitchHandler();
-    let confirmCalls = 0;
+	store.clear();
+	try {
+		store.recordRunStart(workflowRun());
+		const handler = getSessionBeforeSwitchHandler();
+		let confirmCalls = 0;
 
-    assert.equal(
-      await handler({ reason: "fork" }, { ui: { confirm: async () => { confirmCalls += 1; return false; } } }),
-      undefined,
-    );
-    assert.equal(confirmCalls, 0);
-  } finally {
-    store.clear();
-  }
+		assert.equal(
+			await handler(
+				{ reason: "fork" },
+				{
+					ui: {
+						confirm: async () => {
+							confirmCalls += 1;
+							return false;
+						},
+					},
+				},
+			),
+			undefined,
+		);
+		assert.equal(confirmCalls, 0);
+	} finally {
+		store.clear();
+	}
 });
 
 test("session_before_switch does not prompt without confirm UI", async () => {
-  store.clear();
-  try {
-    store.recordRunStart(workflowRun());
-    const handler = getSessionBeforeSwitchHandler();
+	store.clear();
+	try {
+		store.recordRunStart(workflowRun());
+		const handler = getSessionBeforeSwitchHandler();
 
-    assert.equal(await handler({ reason: "new" }, { ui: {} }), undefined);
-    assert.equal(store.runs().length, 1);
-  } finally {
-    store.clear();
-  }
+		assert.equal(await handler({ reason: "new" }, { ui: {} }), undefined);
+		assert.equal(store.runs().length, 1);
+	} finally {
+		store.clear();
+	}
 });
 
 test("session_start warns when discovered workflows fail validation", async () => {
-  const root = mkdtempSync(join(tmpdir(), "atomic-workflow-warning-"));
-  try {
-    const workflowDir = join(root, "workflows");
-    mkdirSync(workflowDir, { recursive: true });
-    const workflowPath = join(workflowDir, "invalid-shape.js");
-    writeFileSync(
-      workflowPath,
-      [
-        "export default {",
-        "  name: 'Invalid Workflow',",
-        "  normalizedName: 'invalid-workflow',",
-        "  description: 'invalid because it is missing the workflow sentinel',",
-        "  inputs: {},",
-        "  run: async () => ({ ok: true }),",
-        "};",
-      ].join("\n"),
-      "utf-8",
-    );
+	const root = mkdtempSync(join(tmpdir(), "atomic-workflow-warning-"));
+	try {
+		const workflowDir = join(root, "workflows");
+		mkdirSync(workflowDir, { recursive: true });
+		const workflowPath = join(workflowDir, "invalid-shape.js");
+		writeFileSync(
+			workflowPath,
+			[
+				"export default {",
+				"  name: 'Invalid Workflow',",
+				"  normalizedName: 'invalid-workflow',",
+				"  description: 'invalid because it is missing the workflow sentinel',",
+				"  inputs: {},",
+				"  run: async () => ({ ok: true }),",
+				"};",
+			].join("\n"),
+			"utf-8",
+		);
 
-    const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void> | void>();
-    const notifications: Array<{ message: string; type?: string }> = [];
-    const pi: ExtensionAPI = {
-      registerTool: () => undefined,
-      registerCommand: () => undefined,
-      registerMessageRenderer: () => undefined,
-      registerFlag: () => undefined,
-      registerShortcut: () => undefined,
-      getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
-      on: (event, handler) => {
-        handlers.set(event, handler as (event: unknown, ctx: unknown) => Promise<void> | void);
-      },
-    };
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void> | void>();
+		const notifications: Array<{ message: string; type?: string }> = [];
+		const pi: ExtensionAPI = {
+			registerTool: () => undefined,
+			registerCommand: () => undefined,
+			registerMessageRenderer: () => undefined,
+			registerFlag: () => undefined,
+			registerShortcut: () => undefined,
+			getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
+			on: (event, handler) => {
+				handlers.set(event, handler as (event: unknown, ctx: unknown) => Promise<void> | void);
+			},
+		};
 
-    factory(pi);
-    const sessionStart = handlers.get("session_start");
-    assert.notEqual(sessionStart, undefined);
+		factory(pi);
+		const sessionStart = handlers.get("session_start");
+		assert.notEqual(sessionStart, undefined);
 
-    await sessionStart?.({}, {
-      ui: {
-        notify: (message: string, type?: "info" | "warning" | "error") => {
-          notifications.push({ message, type });
-        },
-      },
-    });
+		await sessionStart?.(
+			{},
+			{
+				ui: {
+					notify: (message: string, type?: "info" | "warning" | "error") => {
+						notifications.push({ message, type });
+					},
+				},
+			},
+		);
 
-    await waitForCondition(() => notifications.some((entry) => entry.message.includes("Workflow discovery diagnostics")));
-    const warning = notifications.find((entry) => entry.message.includes("Workflow discovery diagnostics"));
-    assert.notEqual(warning, undefined);
-    assert.equal(warning?.type, "warning");
-    assert.match(warning!.message, /invalid-shape\.js/);
-    assert.match(warning!.message, /missing or incorrect __piWorkflow sentinel/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+		await waitForCondition(() =>
+			notifications.some((entry) => entry.message.includes("Workflow discovery diagnostics")),
+		);
+		const warning = notifications.find((entry) => entry.message.includes("Workflow discovery diagnostics"));
+		assert.notEqual(warning, undefined);
+		assert.equal(warning?.type, "warning");
+		assert.match(warning!.message, /invalid-shape\.js/);
+		assert.match(warning!.message, /missing or incorrect __piWorkflow sentinel/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 }, 15_000);
 
 // ---------------------------------------------------------------------------
@@ -305,174 +345,195 @@ test("session_start warns when discovered workflows fail validation", async () =
 // ---------------------------------------------------------------------------
 
 test("session_shutdown quit disposes retained completed stage handles", async () => {
-  let disposed = 0;
-  stageControlRegistry.register({
-    runId: "run-1",
-    stageId: "stage-1",
-    stageName: "completed-stage",
-    status: "completed",
-    sessionId: "session-1",
-    sessionFile: undefined,
-    isStreaming: false,
-    messages: [],
-    async ensureAttached() {},
-    async prompt() {},
-    async steer() {},
-    async followUp() {},
-    async pause() {},
-    async resume() {},
-    subscribe() {
-      return () => {};
-    },
-    dispose() {
-      disposed += 1;
-    },
-  });
-  stageControlRegistry.detachControl("run-1", "stage-1");
+	let disposed = 0;
+	stageControlRegistry.register({
+		runId: "run-1",
+		stageId: "stage-1",
+		stageName: "completed-stage",
+		status: "completed",
+		sessionId: "session-1",
+		sessionFile: undefined,
+		isStreaming: false,
+		messages: [],
+		async ensureAttached() {},
+		async prompt() {},
+		async steer() {},
+		async followUp() {},
+		async pause() {},
+		async resume() {},
+		subscribe() {
+			return () => {};
+		},
+		dispose() {
+			disposed += 1;
+		},
+	});
+	stageControlRegistry.detachControl("run-1", "stage-1");
 
-  const handlers = captureHandlers();
-  const sessionShutdown = handlers.get("session_shutdown");
-  assert.notEqual(sessionShutdown, undefined);
+	const handlers = captureHandlers();
+	const sessionShutdown = handlers.get("session_shutdown");
+	assert.notEqual(sessionShutdown, undefined);
 
-  await sessionShutdown?.({ reason: "quit" });
+	await sessionShutdown?.({ reason: "quit" });
 
-  assert.equal(disposed, 1);
-  assert.equal(stageControlRegistry.get("run-1", "stage-1"), undefined);
+	assert.equal(disposed, 1);
+	assert.equal(stageControlRegistry.get("run-1", "stage-1"), undefined);
 });
 
 test("session_shutdown quit settles rejected and late pause acknowledgements before clearing controls", async () => {
-  let disposed = 0;
-  const pauseAcknowledged = Promise.withResolvers<void>();
-  store.recordRunStart(workflowRun({
-    id: "quit-run",
-    stages: [{
-      id: "stage-quit",
-      name: "live-stage",
-      status: "running",
-      parentIds: [],
-      startedAt: Date.now(),
-      toolEvents: [],
-    }],
-  }));
-  store.recordRunStart(workflowRun({
-    id: "reject-run",
-    stages: [{
-      id: "stage-reject",
-      name: "reject-stage",
-      status: "running",
-      parentIds: [],
-      startedAt: Date.now(),
-      toolEvents: [],
-    }],
-  }));
-  stageControlRegistry.register({
-    runId: "quit-run",
-    stageId: "stage-quit",
-    stageName: "live-stage",
-    status: "running",
-    sessionId: "session-quit",
-    sessionFile: "/tmp/session-quit.jsonl",
-    isStreaming: true,
-    messages: [],
-    async ensureAttached() {},
-    async prompt() {},
-    async steer() {},
-    async followUp() {},
-    async pause() { await pauseAcknowledged.promise; },
-    async resume() {},
-    subscribe() { return () => {}; },
-    dispose() { disposed += 1; },
-  });
+	let disposed = 0;
+	const pauseAcknowledged = Promise.withResolvers<void>();
+	store.recordRunStart(
+		workflowRun({
+			id: "quit-run",
+			stages: [
+				{
+					id: "stage-quit",
+					name: "live-stage",
+					status: "running",
+					parentIds: [],
+					startedAt: Date.now(),
+					toolEvents: [],
+				},
+			],
+		}),
+	);
+	store.recordRunStart(
+		workflowRun({
+			id: "reject-run",
+			stages: [
+				{
+					id: "stage-reject",
+					name: "reject-stage",
+					status: "running",
+					parentIds: [],
+					startedAt: Date.now(),
+					toolEvents: [],
+				},
+			],
+		}),
+	);
+	stageControlRegistry.register({
+		runId: "quit-run",
+		stageId: "stage-quit",
+		stageName: "live-stage",
+		status: "running",
+		sessionId: "session-quit",
+		sessionFile: "/tmp/session-quit.jsonl",
+		isStreaming: true,
+		messages: [],
+		async ensureAttached() {},
+		async prompt() {},
+		async steer() {},
+		async followUp() {},
+		async pause() {
+			await pauseAcknowledged.promise;
+		},
+		async resume() {},
+		subscribe() {
+			return () => {};
+		},
+		dispose() {
+			disposed += 1;
+		},
+	});
 
-  stageControlRegistry.register({
-    runId: "reject-run",
-    stageId: "stage-reject",
-    stageName: "reject-stage",
-    status: "running",
-    sessionId: "session-reject",
-    sessionFile: "/tmp/session-reject.jsonl",
-    isStreaming: true,
-    messages: [],
-    async ensureAttached() {},
-    async prompt() {},
-    async steer() {},
-    async followUp() {},
-    async pause() { throw new Error("shutdown pause rejected"); },
-    async resume() {},
-    subscribe() { return () => {}; },
-    dispose() { disposed += 1; },
-  });
+	stageControlRegistry.register({
+		runId: "reject-run",
+		stageId: "stage-reject",
+		stageName: "reject-stage",
+		status: "running",
+		sessionId: "session-reject",
+		sessionFile: "/tmp/session-reject.jsonl",
+		isStreaming: true,
+		messages: [],
+		async ensureAttached() {},
+		async prompt() {},
+		async steer() {},
+		async followUp() {},
+		async pause() {
+			throw new Error("shutdown pause rejected");
+		},
+		async resume() {},
+		subscribe() {
+			return () => {};
+		},
+		dispose() {
+			disposed += 1;
+		},
+	});
 
-  const handlers = captureHandlers();
-  const sessionShutdown = handlers.get("session_shutdown");
-  assert.notEqual(sessionShutdown, undefined);
+	const handlers = captureHandlers();
+	const sessionShutdown = handlers.get("session_shutdown");
+	assert.notEqual(sessionShutdown, undefined);
 
-  let shutdownSettled = false;
-  const shutdown = Promise.resolve(sessionShutdown?.({ reason: "quit" }))
-    .finally(() => { shutdownSettled = true; });
-  await Promise.resolve();
-  await Promise.resolve();
-  const settledBeforeLateAcknowledgement = shutdownSettled;
-  const controlsPresentBeforeLateAcknowledgement = stageControlRegistry.get("quit-run", "stage-quit") !== undefined;
-  pauseAcknowledged.resolve();
-  let shutdownFailure: unknown;
-  try {
-    await shutdown;
-  } catch (error) {
-    shutdownFailure = error;
-  }
+	let shutdownSettled = false;
+	const shutdown = Promise.resolve(sessionShutdown?.({ reason: "quit" })).finally(() => {
+		shutdownSettled = true;
+	});
+	await Promise.resolve();
+	await Promise.resolve();
+	const settledBeforeLateAcknowledgement = shutdownSettled;
+	const controlsPresentBeforeLateAcknowledgement = stageControlRegistry.get("quit-run", "stage-quit") !== undefined;
+	pauseAcknowledged.resolve();
+	let shutdownFailure: unknown;
+	try {
+		await shutdown;
+	} catch (error) {
+		shutdownFailure = error;
+	}
 
-  assert.equal(settledBeforeLateAcknowledgement, false);
-  assert.equal(controlsPresentBeforeLateAcknowledgement, true);
-  assert.equal(shutdownFailure, undefined);
+	assert.equal(settledBeforeLateAcknowledgement, false);
+	assert.equal(controlsPresentBeforeLateAcknowledgement, true);
+	assert.equal(shutdownFailure, undefined);
 
-  const run = store.runs().find((candidate) => candidate.id === "quit-run");
-  assert.equal(run?.endedAt, undefined);
-  assert.equal(run?.status, "paused");
-  assert.equal(run?.exitReason, "quit");
-  assert.equal(run?.resumable, true);
-  assert.equal(store.runs().find((candidate) => candidate.id === "reject-run")?.status, "running");
-  assert.equal(disposed, 2);
+	const run = store.runs().find((candidate) => candidate.id === "quit-run");
+	assert.equal(run?.endedAt, undefined);
+	assert.equal(run?.status, "paused");
+	assert.equal(run?.exitReason, "quit");
+	assert.equal(run?.resumable, true);
+	assert.equal(store.runs().find((candidate) => candidate.id === "reject-run")?.status, "running");
+	assert.equal(disposed, 2);
 });
 
 test("session_start removes ask_user_question but keeps workflow in non-interactive sessions", async () => {
-  const { handlers, setCalls } = captureHandlersWithActiveTools([
-    "read",
-    "bash",
-    "workflow",
-    "ask_user_question",
-    "todo",
-  ]);
-  const sessionStart = handlers.get("session_start");
-  assert.notEqual(sessionStart, undefined);
+	const { handlers, setCalls } = captureHandlersWithActiveTools([
+		"read",
+		"bash",
+		"workflow",
+		"ask_user_question",
+		"todo",
+	]);
+	const sessionStart = handlers.get("session_start");
+	assert.notEqual(sessionStart, undefined);
 
-  await sessionStart?.({ reason: "startup" }, { hasUI: false });
+	await sessionStart?.({ reason: "startup" }, { hasUI: false });
 
-  assert.deepEqual(setCalls, [["read", "bash", "workflow", "todo"]]);
+	assert.deepEqual(setCalls, [["read", "bash", "workflow", "todo"]]);
 });
 
 test("session_start leaves active tools unchanged when a UI is available", async () => {
-  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "workflow", "ask_user_question"]);
-  const sessionStart = handlers.get("session_start");
+	const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "workflow", "ask_user_question"]);
+	const sessionStart = handlers.get("session_start");
 
-  await sessionStart?.({ reason: "startup" }, { hasUI: true });
+	await sessionStart?.({ reason: "startup" }, { hasUI: true });
 
-  assert.deepEqual(setCalls, []);
+	assert.deepEqual(setCalls, []);
 });
 
 test("session_start leaves the active tool set untouched when ask_user_question is already absent", async () => {
-  const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "bash", "workflow"]);
-  const sessionStart = handlers.get("session_start");
+	const { handlers, setCalls } = captureHandlersWithActiveTools(["read", "bash", "workflow"]);
+	const sessionStart = handlers.get("session_start");
 
-  await sessionStart?.({ reason: "startup" }, { hasUI: false });
+	await sessionStart?.({ reason: "startup" }, { hasUI: false });
 
-  assert.deepEqual(setCalls, []);
+	assert.deepEqual(setCalls, []);
 });
 
 test("session_start does not throw on hosts without the active-tools API", async () => {
-  const handlers = captureHandlers();
-  const sessionStart = handlers.get("session_start");
-  assert.notEqual(sessionStart, undefined);
+	const handlers = captureHandlers();
+	const sessionStart = handlers.get("session_start");
+	assert.notEqual(sessionStart, undefined);
 
-  await assert.doesNotReject(Promise.resolve(sessionStart?.({ reason: "startup" }, { hasUI: false })));
+	await assert.doesNotReject(Promise.resolve(sessionStart?.({ reason: "startup" }, { hasUI: false })));
 });

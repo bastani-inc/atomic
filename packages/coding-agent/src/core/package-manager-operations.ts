@@ -1,12 +1,18 @@
 import { existsSync } from "node:fs";
 import { runWithConcurrency } from "./package-manager-command.ts";
 import { GIT_UPDATE_CONCURRENCY, UPDATE_CHECK_CONCURRENCY } from "./package-manager-constants.ts";
-import { getExistingGitInstallPath, gitHasAvailableUpdate, installGit, removeGit, updateGit } from "./package-manager-git.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import {
+	getExistingGitInstallPath,
+	gitHasAvailableUpdate,
+	installGit,
+	removeGit,
+	updateGit,
+} from "./package-manager-git.ts";
+import {
 	getInstalledNpmVersion,
-	getManagedNpmInstallPath,
 	getLatestNpmVersion,
+	getManagedNpmInstallPath,
 	getNpmInstallPath,
 	installNpm,
 	installNpmBatch,
@@ -185,7 +191,11 @@ async function shouldUpdateNpmSource(
 	const installedVersion = existsSync(installedPath) ? getInstalledNpmVersion(installedPath) : undefined;
 	if (!installedVersion) return true;
 	try {
-		const targetVersion = await getLatestNpmVersion(context, source.version ? source.spec : source.name, source.range);
+		const targetVersion = await getLatestNpmVersion(
+			context,
+			source.version ? source.spec : source.name,
+			source.range,
+		);
 		return targetVersion !== installedVersion;
 	} catch {
 		return true;

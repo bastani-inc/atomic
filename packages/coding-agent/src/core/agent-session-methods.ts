@@ -1,9 +1,35 @@
-import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type {
+	Agent,
+	AgentEvent,
+	AgentMessage,
+	AgentState,
+	AgentTool,
+	ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
+import type {
+	AgentSessionEvent,
+	AgentSessionEventListener,
+	AgentSessionReloadOptions,
+	ClearQueueOptions,
+	DrainedAgentQueues,
+	ExtensionBindings,
+	InterruptQueueHold,
+	ModelCycleResult,
+	PromptOptions,
+	SessionStats,
+	ToolDefinitionEntry,
+} from "./agent-session-types.ts";
+import type { AsyncJobManager } from "./async/job-manager.js";
 import type { BashResult } from "./bash-executor.ts";
-import type { CompactionUrgency, PlannerAuth, VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
+import type {
+	CompactionUrgency,
+	PlannerAuth,
+	VerbatimCompactionParameters,
+	VerbatimCompactionResult,
+} from "./compaction/index.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -13,33 +39,21 @@ import type {
 	ExtensionUIContext,
 	OrchestrationContext,
 	ReplacedSessionContext,
+	SendMessageOptions,
+	SendMessagesOptions,
 	SessionStartEvent,
 	ToolDefinition,
 	ToolInfo,
 } from "./extensions/index.ts";
-import type { PathMetadata } from "./package-manager.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, SessionManager } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
-import type { AsyncJobManager } from "./async/job-manager.js";
 import type { BashOperations } from "./tools/bash.ts";
-import type {
-	AgentSessionEvent,
-	AgentSessionEventListener,
-	AgentSessionReloadOptions,
-	DrainedAgentQueues,
-	ExtensionBindings,
-	InterruptQueueHold,
-	ModelCycleResult,
-	PromptOptions,
-	SessionStats,
-	ToolDefinitionEntry,
-} from "./agent-session-types.ts";
-import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 
 export interface VerbatimCompactionApplyOptions {
 	/** Per-model planner credentials; a borrowed fallback uses its own, never the session model's. */
@@ -97,6 +111,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly systemPrompt: string;
 	readonly retryAttempt: number;
 	readonly isCompacting: boolean;
+	readonly compactionReason?: import("./agent-session-types.ts").CompactionReason;
 	readonly messages: AgentMessage[];
 	readonly steeringMode: "all" | "one-at-a-time";
 	readonly followUpMode: "all" | "one-at-a-time";
@@ -115,7 +130,9 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly extensionRunner: ExtensionRunner;
 
 	_handleAgentEvent(event: AgentEvent): Promise<void> | void;
-	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey?: string; headers?: ProviderHeaders; baseUrl?: string }>;
+	_getRequiredRequestAuth(
+		model: Model<Api>,
+	): Promise<{ apiKey?: string; headers?: ProviderHeaders; baseUrl?: string }>;
 	_installAgentToolHooks(): void;
 	_installAgentNextTurnRefresh(): void;
 	_emit(event: AgentSessionEvent): void;
@@ -180,15 +197,23 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_queueAgentMessage(message: AgentMessage, delivery: "steer" | "followUp"): void;
 	_drainQueuedAgentMessages(): DrainedAgentQueues;
 	_restoreQueuedAgentMessages(queues: DrainedAgentQueues): void;
-	clearQueue(): { steering: string[]; followUp: string[] };
+	clearQueue(options?: ClearQueueOptions): { steering: string[]; followUp: string[] };
 	getSteeringMessages(): readonly string[];
 	getFollowUpMessages(): readonly string[];
 	abort(): Promise<void>;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
 
-	_emitModelChanged(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore" | "fallback"): void;
-	_emitModelSelect(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore" | "fallback"): Promise<void>;
+	_emitModelChanged(
+		nextModel: Model<Api>,
+		previousModel: Model<Api> | undefined,
+		source: "set" | "cycle" | "restore" | "fallback",
+	): void;
+	_emitModelSelect(
+		nextModel: Model<Api>,
+		previousModel: Model<Api> | undefined,
+		source: "set" | "cycle" | "restore" | "fallback",
+	): Promise<void>;
 	setModel(model: Model<Api>): Promise<void>;
 	cycleModel(direction?: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
 	_cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
@@ -236,13 +261,31 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	waitForRetry(): Promise<void>;
 	setAutoRetryEnabled(enabled: boolean): void;
 
-	executeBash(command: string, onChunk?: (chunk: string, channel: "stdout" | "stderr") => void, options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations; pty?: boolean; emitEvent?: boolean; recordResult?: boolean }): Promise<BashResult>;
-	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean; persist?: boolean; defer?: boolean }): void;
+	executeBash(
+		command: string,
+		onChunk?: (chunk: string, channel: "stdout" | "stderr") => void,
+		options?: {
+			excludeFromContext?: boolean;
+			id?: string;
+			operations?: BashOperations;
+			pty?: boolean;
+			emitEvent?: boolean;
+			recordResult?: boolean;
+		},
+	): Promise<BashResult>;
+	recordBashResult(
+		command: string,
+		result: BashResult,
+		options?: { excludeFromContext?: boolean; persist?: boolean; defer?: boolean },
+	): void;
 	abortBash(id?: string): void;
 	_flushPendingBashMessages(): void;
 
 	setSessionName(name: string): void;
-	navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
+	navigateTree(
+		targetId: string,
+		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
+	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
 	getUserMessagesForForking(): Array<{ entryId: string; text: string }>;
 	_extractUserMessageText(content: string | Array<{ type: string; text?: string }>): string;
 
@@ -258,82 +301,85 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	hasExtensionHandlers(eventType: string): boolean;
 }
 
-export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurface,
-	| "orchestrationContext"
-	| "modelRuntime"
-	| "state"
-	| "model"
-	| "thinkingLevel"
-	| "isStreaming"
-	| "systemPrompt"
-	| "retryAttempt"
-	| "isCompacting"
-	| "messages"
-	| "steeringMode"
-	| "followUpMode"
-	| "sessionFile"
-	| "sessionId"
-	| "sessionName"
-	| "scopedModels"
-	| "promptTemplates"
-	| "pendingMessageCount"
-	| "resourceLoader"
-	| "autoCompactionEnabled"
-	| "isRetrying"
-	| "autoRetryEnabled"
-	| "isBashRunning"
-	| "hasPendingBashMessages"
-	| "extensionRunner"
-	| "queuedMessagesPaused"
-	| "pauseQueuedMessages"
-	| "resumeQueuedMessages"
-	| "subscribe"
-	| "dispose"
-	| "getActiveToolNames"
-	| "getAllTools"
-	| "getToolDefinition"
-	| "setActiveToolsByName"
-	| "setScopedModels"
-	| "prompt"
-	| "steer"
-	| "followUp"
-	| "sendCustomMessage"
-	| "sendUserMessage"
-	| "clearQueue"
-	| "getSteeringMessages"
-	| "getFollowUpMessages"
-	| "abort"
-	| "setModel"
-	| "cycleModel"
-	| "setThinkingLevel"
-	| "cycleThinkingLevel"
-	| "getAvailableThinkingLevels"
-	| "supportsThinking"
-	| "setSteeringMode"
-	| "setFollowUpMode"
-	| "compact"
-	| "abortCompaction"
-	| "abortBranchSummary"
-	| "setAutoCompactionEnabled"
-	| "bindExtensions"
-	| "refreshCurrentModelFromRegistry"
-	| "reload"
-	| "abortRetry"
-	| "setAutoRetryEnabled"
-	| "executeBash"
-	| "recordBashResult"
-	| "abortBash"
-	| "setSessionName"
-	| "navigateTree"
-	| "getUserMessagesForForking"
-	| "getSessionStats"
-	| "getContextUsage"
-	| "exportToHtml"
-	| "exportToJsonl"
-	| "getLastAssistantText"
-	| "createReplacedSessionContext"
-	| "hasExtensionHandlers"
-> {
+export interface AgentSessionPublicSurface
+	extends Pick<
+		AgentSessionMethodSurface,
+		| "orchestrationContext"
+		| "modelRuntime"
+		| "state"
+		| "model"
+		| "thinkingLevel"
+		| "isStreaming"
+		| "systemPrompt"
+		| "retryAttempt"
+		| "isCompacting"
+		| "compactionReason"
+		| "messages"
+		| "steeringMode"
+		| "followUpMode"
+		| "sessionFile"
+		| "sessionId"
+		| "sessionName"
+		| "scopedModels"
+		| "promptTemplates"
+		| "pendingMessageCount"
+		| "resourceLoader"
+		| "autoCompactionEnabled"
+		| "isRetrying"
+		| "autoRetryEnabled"
+		| "isBashRunning"
+		| "hasPendingBashMessages"
+		| "extensionRunner"
+		| "queuedMessagesPaused"
+		| "pauseQueuedMessages"
+		| "resumeQueuedMessages"
+		| "subscribe"
+		| "dispose"
+		| "getActiveToolNames"
+		| "getAllTools"
+		| "getToolDefinition"
+		| "setActiveToolsByName"
+		| "setScopedModels"
+		| "prompt"
+		| "steer"
+		| "followUp"
+		| "sendCustomMessage"
+		| "sendUserMessage"
+		| "clearQueue"
+		| "getSteeringMessages"
+		| "getFollowUpMessages"
+		| "abort"
+		| "setModel"
+		| "cycleModel"
+		| "setThinkingLevel"
+		| "cycleThinkingLevel"
+		| "getAvailableThinkingLevels"
+		| "supportsThinking"
+		| "setSteeringMode"
+		| "setFollowUpMode"
+		| "compact"
+		| "abortCompaction"
+		| "abortBranchSummary"
+		| "setAutoCompactionEnabled"
+		| "bindExtensions"
+		| "refreshCurrentModelFromRegistry"
+		| "reload"
+		| "abortRetry"
+		| "setAutoRetryEnabled"
+		| "executeBash"
+		| "recordBashResult"
+		| "abortBash"
+		| "setSessionName"
+		| "navigateTree"
+		| "getUserMessagesForForking"
+		| "getSessionStats"
+		| "getContextUsage"
+		| "exportToHtml"
+		| "exportToJsonl"
+		| "getLastAssistantText"
+		| "createReplacedSessionContext"
+		| "hasExtensionHandlers"
+	> {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settingsManager: SettingsManager;
@@ -372,6 +418,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_compactionAbortController: AbortController | undefined;
 	_manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined;
 	_autoCompactionAbortController: AbortController | undefined;
+	_compactionReason: import("./agent-session-types.ts").CompactionReason | undefined;
 	_overflowRecoveryAttempted: boolean;
 	_branchSummaryAbortController: AbortController | undefined;
 	_retryAbortController: AbortController | undefined;
@@ -412,4 +459,3 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_asyncJobManagerSessionId: symbol;
 	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 }
-

@@ -6,13 +6,20 @@
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir } from "../config.ts";
-import { FileAuthStorageBackend, InMemoryAuthStorageBackend, type AuthStorageBackend } from "./auth-storage-backends.ts";
+import {
+	type AuthStorageBackend,
+	FileAuthStorageBackend,
+	InMemoryAuthStorageBackend,
+} from "./auth-storage-backends.ts";
 import { resolveConfigValue } from "./resolve-config-value.ts";
 
-export { FileAuthStorageBackend, InMemoryAuthStorageBackend, type AuthStorageBackend } from "./auth-storage-backends.ts";
+export {
+	type AuthStorageBackend,
+	FileAuthStorageBackend,
+	InMemoryAuthStorageBackend,
+} from "./auth-storage-backends.ts";
 
 export type AuthStorageData = Record<string, Credential>;
-
 
 export class AuthStorage implements CredentialStore {
 	private data: AuthStorageData = {};
@@ -24,9 +31,8 @@ export class AuthStorage implements CredentialStore {
 	}
 
 	static create(authPath?: string | string[]): AuthStorage {
-		const paths = authPath === undefined
-			? getAgentConfigPaths("auth.json")
-			: Array.isArray(authPath) ? authPath : [authPath];
+		const paths =
+			authPath === undefined ? getAgentConfigPaths("auth.json") : Array.isArray(authPath) ? authPath : [authPath];
 		return new AuthStorage(new FileAuthStorageBackend(paths[0] ?? join(getAgentDir(), "auth.json"), paths));
 	}
 
@@ -115,14 +121,12 @@ export class AuthStorage implements CredentialStore {
 	async list(): Promise<readonly CredentialInfo[]> {
 		return Object.entries(this.data).map(([providerId, credential]) => ({ providerId, type: credential.type }));
 	}
-
 }
 
 /** Read one persisted provider credential using Atomic's layered auth.json paths. */
 export function readStoredCredential(providerId: string, authPath?: string | string[]): Credential | undefined {
-	const paths = authPath === undefined
-		? getAgentConfigPaths("auth.json")
-		: Array.isArray(authPath) ? authPath : [authPath];
+	const paths =
+		authPath === undefined ? getAgentConfigPaths("auth.json") : Array.isArray(authPath) ? authPath : [authPath];
 	const storage = new FileAuthStorageBackend(paths[0] ?? join(getAgentDir(), "auth.json"), paths);
 	try {
 		let credential: Credential | undefined;

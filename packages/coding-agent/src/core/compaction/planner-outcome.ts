@@ -48,7 +48,9 @@ export type TerminalPlannerOutcome = Extract<
 >;
 
 /** Whether this outcome produced validated deletion ranges. */
-export function isPlannerSuccess(outcome: PlannerOutcome): outcome is Extract<PlannerOutcome, { kind: "ranked" | "recovered" }> {
+export function isPlannerSuccess(
+	outcome: PlannerOutcome,
+): outcome is Extract<PlannerOutcome, { kind: "ranked" | "recovered" }> {
 	return outcome.kind === "ranked" || outcome.kind === "recovered";
 }
 

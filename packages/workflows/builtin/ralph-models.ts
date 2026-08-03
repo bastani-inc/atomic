@@ -48,10 +48,10 @@ export const promptEngineerModelConfig = {
 };
 
 export const researchModelConfig = {
-    model: "openai-codex/gpt-5.6-sol:medium",
+    model: "openai-codex/gpt-5.6-luna:max",
     fallbackModels: [
-      "github-copilot/gpt-5.6-sol:medium",
-      "openai/gpt-5.6-sol:medium",
+      "github-copilot/gpt-5.6-luna:max",
+      "openai/gpt-5.6-luna:max",
       "anthropic/claude-opus-5:low",
       "github-copilot/claude-opus-5:low",
       "anthropic/claude-fable-5:low",
@@ -64,7 +64,7 @@ export const researchModelConfig = {
       "xai/grok-4.5:high",
       "zai/glm-5.2:high",
       "zai-coding-cn/glm-5.2:high",
-      "openrouter/openai/gpt-5.6-sol:medium",
+      "openrouter/openai/gpt-5.6-luna:max",
       "openrouter/anthropic/claude-opus-5:low",
       "openrouter/openai/gpt-5.5:medium",
       "openrouter/anthropic/claude-fable-5:low",

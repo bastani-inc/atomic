@@ -1,9 +1,9 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KeyId } from "@earendil-works/pi-tui";
+import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import type { ExtensionShortcut } from "../../packages/coding-agent/src/core/extensions/index.ts";
@@ -14,7 +14,7 @@ function writeExpandBinding(agentDir: string, binding: string): void {
 	writeFileSync(join(agentDir, "keybindings.json"), JSON.stringify({ "app.tools.expand": binding }));
 }
 
-test.serial("headless shortcut RPC uses one fallback manager from services.agentDir", async () => {
+test.sequential("headless shortcut RPC uses one fallback manager from services.agentDir", async () => {
 	const serviceAgentDir = mkdtempSync(join(tmpdir(), "atomic-rpc-service-agent-dir-"));
 	const ambientAgentDir = mkdtempSync(join(tmpdir(), "atomic-rpc-ambient-agent-dir-"));
 	const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -24,22 +24,34 @@ test.serial("headless shortcut RPC uses one fallback manager from services.agent
 		writeExpandBinding(ambientAgentDir, "ctrl+y");
 		process.env.ATOMIC_CODING_AGENT_DIR = ambientAgentDir;
 		const shortcuts = new Map<KeyId, ExtensionShortcut>([
-			["ctrl+x" as KeyId, {
-				shortcut: "ctrl+x" as KeyId,
-				description: "x shortcut",
-				extensionPath: "fixture.ts",
-				handler: () => { invoked.push("ctrl+x"); },
-			}],
-			["ctrl+y" as KeyId, {
-				shortcut: "ctrl+y" as KeyId,
-				description: "y shortcut",
-				extensionPath: "fixture.ts",
-				handler: () => { invoked.push("ctrl+y"); },
-			}],
+			[
+				"ctrl+x" as KeyId,
+				{
+					shortcut: "ctrl+x" as KeyId,
+					description: "x shortcut",
+					extensionPath: "fixture.ts",
+					handler: () => {
+						invoked.push("ctrl+x");
+					},
+				},
+			],
+			[
+				"ctrl+y" as KeyId,
+				{
+					shortcut: "ctrl+y" as KeyId,
+					description: "y shortcut",
+					extensionPath: "fixture.ts",
+					handler: () => {
+						invoked.push("ctrl+y");
+					},
+				},
+			],
 		]);
 		const getShortcuts = (bindings: KeybindingsConfig): Map<KeyId, ExtensionShortcut> => {
 			const configured = bindings["app.tools.expand"];
-			const reserved = new Set(Array.isArray(configured) ? configured : configured === undefined ? [] : [configured]);
+			const reserved = new Set(
+				Array.isArray(configured) ? configured : configured === undefined ? [] : [configured],
+			);
 			return new Map([...shortcuts].filter(([key]) => !reserved.has(key)));
 		};
 		const session = {

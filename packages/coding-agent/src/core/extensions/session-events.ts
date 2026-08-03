@@ -1,4 +1,8 @@
-import type { VerbatimCompactionDetails, VerbatimCompactionPreparation, VerbatimCompactionResult } from "../compaction/index.ts";
+import type {
+	VerbatimCompactionDetails,
+	VerbatimCompactionPreparation,
+	VerbatimCompactionResult,
+} from "../compaction/index.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session-manager.ts";
 
 // ============================================================================

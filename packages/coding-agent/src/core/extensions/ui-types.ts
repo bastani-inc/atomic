@@ -240,6 +240,15 @@ export interface ExtensionUIContext {
 			overlay?: boolean;
 			/** Keep host inline custom UI pending in the background while this overlay is visible. */
 			deferInlineCustomUiFocus?: boolean;
+			/**
+			 * Declare that this component binds Ctrl+C itself (cancel, skip, close).
+			 * The host then forwards the first Ctrl+C to it instead of closing it.
+			 *
+			 * Leave it unset unless the component really handles the key: the host
+			 * closes an undeclared component on the first Ctrl+C so a component that
+			 * never resolves can never trap the keyboard.
+			 */
+			handlesCtrlC?: boolean;
 			/** AbortSignal to programmatically dismiss the custom UI. */
 			signal?: AbortSignal;
 			/** Overlay positioning/sizing options. Can be static or a function for dynamic updates. */
@@ -277,8 +286,13 @@ export interface ExtensionUIContext {
 	/** Get the current text from the core input editor. */
 	getEditorText(): string;
 
-	/** Show a multi-line editor for text editing. */
-	editor(title: string, prefill?: string): Promise<string | undefined>;
+	/**
+	 * Show a multi-line editor for text editing.
+	 *
+	 * `opts.signal` lets a host cancel the mount it owns — the isolated engine
+	 * bridge uses it to close dialogs belonging to a dead engine generation.
+	 */
+	editor(title: string, prefill?: string, opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
 
 	/** Stack additional autocomplete behavior on top of the built-in provider. */
 	addAutocompleteProvider(factory: AutocompleteProviderFactory): void;

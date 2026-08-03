@@ -8,7 +8,7 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent` and `@bastani/at
 Pull request / selected branch push
 └─ test.yml (four concurrent work jobs + one result gate)
    ├─ suites (Linux, Windows): build package -> unit -> integration
-   ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest
+   ├─ agent-suite (Linux, Windows): native bindings -> coding-agent vitest (Node, then Bun)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, Mintlify, contracts
    └─ test (2 legs): result gate carrying both required contexts
@@ -16,9 +16,9 @@ Pull request / selected branch push
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
 └─ publish.yml
    ├─ integrity: tag package version = tag and tag commit subject = `Release <tag>`
-   ├─ native-artifacts: six-platform NAPI matrix
-   ├─ linux-binary-smoke + windows-binary-smoke
-   ├─ build: shrinkwrap/package validation, six archives, eight npm tarballs,
+   ├─ native-artifacts: eight-platform NAPI matrix
+   ├─ linux-binary-smoke + windows-binary-smoke + alpine-binary-smoke
+   ├─ build: shrinkwrap/package validation, eight archives, ten npm tarballs,
    │  release notes, and SHA256SUMS
    ├─ stage-github-release: create a verified draft and refuse to change a
    │  published release
@@ -41,7 +41,7 @@ The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, a
 | Job | Platforms | Chain | Linux | Windows |
 | --- | --- | --- | ---: | ---: |
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
-| `agent-suite` | both | build native bindings -> coding-agent vitest | 126 s | 232 s |
+| `agent-suite` | both | build native bindings -> coding-agent vitest (Node), then its Bun-hosted SQLite selector project | 126 s | 232 s |
 | `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s |
 | `static-checks` | Linux only | typecheck, docs links, Mintlify, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
@@ -82,9 +82,10 @@ The structural result still stands and is what matters for the next decision: wa
 Steps stay in one job only when one consumes another's build output. Nothing is passed between jobs as an artifact, because rebuilding in parallel is cheaper in wall clock than serializing on an upload/download pair.
 
 - `test/unit/pi-0.82.1-artifacts.test.ts` gates its assertions on `packages/coding-agent/dist` and degrades to `test.skip` with a warning when the build has not run, so the unit suite must stay behind the package build. Moving it into a build-less job would lose coverage without failing anything.
-- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node 24 and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`, so `suites` is the only job that installs Node.
-- `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `bun run --cwd packages/natives build`.
+- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`, so `suites` is the only job that installs Node.
+- `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `npm run build --workspace=@bastani/atomic-natives`.
 - `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. `suites` and `static-checks` need no Rust at all.
+- `agent-suite` runs the coding-agent package in one step; its SQLite selectors resolve `node:sqlite` under Node and fall back to `bun:sqlite` under Bun.
 
 No suite uses `--parallel`, `--shard`, `--concurrent`, or `--max-concurrency`. `--parallel` implies `--isolate`, and 20 files in `test/unit` import 108 sibling `*.test.ts` files, so a fresh module registry per file re-executes those tests: 5407 executions against 4426 distinct tests, with the duplicates scored twice by the duration guard, once under contention. `--shard` is deterministic and roughly 1.85x faster locally, but it buys no wall clock while Windows `agent-suite` is the critical path. If a further cut is wanted, shard vitest first, then unit; that is worth roughly 70 s for a 60 % increase in runner count.
 
@@ -155,16 +156,18 @@ The native job always rebuilds and uploads one artifact for each shipped `@basta
 
 | Platform | Runner | Explicit rustup target |
 | --- | --- | --- |
-| Linux x64 | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-unknown-linux-gnu` |
-| Linux arm64 | `blacksmith-4vcpu-ubuntu-2404-arm` | `aarch64-unknown-linux-gnu` |
+| Linux x64 (GNU) | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-unknown-linux-gnu` |
+| Linux arm64 (GNU) | `blacksmith-4vcpu-ubuntu-2404-arm` | `aarch64-unknown-linux-gnu` |
+| Linux x64 (musl) | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-unknown-linux-musl` |
+| Linux arm64 (musl) | `blacksmith-4vcpu-ubuntu-2404-arm` | `aarch64-unknown-linux-musl` |
 | macOS x64 | `macos-26-intel` | `x86_64-apple-darwin` |
 | macOS arm64 | `blacksmith-6vcpu-macos-26` | `aarch64-apple-darwin` |
 | Windows x64 | `blacksmith-4vcpu-ubuntu-2404` | `x86_64-pc-windows-msvc` |
 | Windows arm64 | `blacksmith-4vcpu-ubuntu-2404` | `aarch64-pc-windows-msvc` |
 
-The old publisher built both Linux GNU bindings directly on Ubuntu 24.04, so its shipped cdylibs could acquire that runner's newer glibc symbol floor. The new pipeline fixes that portability bug: workflow-level `GLIBC_FLOOR=2.17` leaves rustup on each bare Linux target but passes `x86_64-unknown-linux-gnu.2.17` or `aarch64-unknown-linux-gnu.2.17` to `packages/natives/scripts/build-native.ts`. That script invokes cargo-zigbuild and copies the cdylib from Cargo's bare-target output directory, explicitly handling the bare-vs-glibc-suffixed target split. Windows targets use LLVM and cargo-xwin. Darwin x64 and arm64 build on real Intel and Apple Silicon macOS runners. The matrix has `fail-fast: false`, names artifacts with platform and architecture, and never downloads native artifacts from another run.
+The old publisher built both Linux GNU bindings directly on Ubuntu 24.04, so its shipped cdylibs could acquire that runner's newer glibc symbol floor. The new pipeline fixes that portability bug: workflow-level `GLIBC_FLOOR=2.17` leaves rustup on each bare Linux target but passes `x86_64-unknown-linux-gnu.2.17` or `aarch64-unknown-linux-gnu.2.17` to `packages/natives/scripts/build-native.ts`. Only GNU Linux targets receive that suffix; musl targets stay bare and use NAPI-RS's `--cross-compile` path. That script invokes cargo-zigbuild for GNU builds and copies the cdylib from Cargo's bare-target output directory, explicitly handling the bare-vs-glibc-suffixed target split. Windows targets use LLVM and cargo-xwin. Darwin x64 and arm64 build on real Intel and Apple Silicon macOS runners. The matrix has `fail-fast: false`, names artifacts with distinct platform/libc slugs, and never downloads native artifacts from another run.
 
-The build job downloads the six same-run bindings, generates the six platform npm packages, and populates the root native package's exact-version optional dependencies without publishing during preparation.
+The build job downloads the eight same-run bindings, generates the eight platform npm packages, and populates the root native package's exact-version optional dependencies without publishing during preparation.
 
 ### Dependency-fetch bounds in the native matrix
 
@@ -294,17 +297,19 @@ pins are supply-chain hygiene, not a fix for this incident.
 
 Linux and Windows x64 each run `scripts/build-binaries.sh` for their platform, extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
 
+The `alpine-binary-smoke` job downloads the x64 musl binding, builds `atomic-linux-x64-musl.tar.gz`, and runs it in an `alpine:3.22` Docker container. The container installs `libgcc` and `libstdc++`, runs `--version` and the clean-cwd `--no-session` smoke, and rejects extension-load failures. A separate `node:22-alpine` container directly requires the extracted native package and checks its search exports. This currently exercises the x64 archive; the native matrix builds and publishes both musl architectures.
+
 ### Release payload
 
 After native and smoke jobs pass, `build`:
 
-1. Installs with `bun install --frozen-lockfile` and runs `bun run check:shrinkwrap`.
+1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
 2. Generates native platform package directories and the native root manifest.
-3. Runs `scripts/build-binaries.sh --skip-install` for all six archives.
-4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, six native modules, and six exact-version native optional dependencies.
-5. Packs exactly eight npm tarballs.
+3. Runs `scripts/build-binaries.sh --skip-install` for all eight archives.
+4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
+5. Packs exactly ten npm tarballs.
 6. Extracts release notes from `packages/coding-agent/CHANGELOG.md`.
-7. Creates `SHA256SUMS` for the six binary archives.
+7. Creates `SHA256SUMS` for the eight binary archives.
 8. Uploads the npm tarballs and GitHub Release assets as one same-run artifact.
 
 GitHub Release assets are:
@@ -313,6 +318,8 @@ GitHub Release assets are:
 - `atomic-darwin-x64.tar.gz`
 - `atomic-linux-x64.tar.gz`
 - `atomic-linux-arm64.tar.gz`
+- `atomic-linux-x64-musl.tar.gz`
+- `atomic-linux-arm64-musl.tar.gz`
 - `atomic-windows-x64.zip`
 - `atomic-windows-arm64.zip`
 - `SHA256SUMS`
@@ -325,16 +332,18 @@ After npm succeeds, `publish-github-release` changes the draft to public and set
 
 ## npm publication
 
-The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all eight package names:
+The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all ten package names:
 
 1. `@bastani/atomic-natives-darwin-arm64`
 2. `@bastani/atomic-natives-darwin-x64`
 3. `@bastani/atomic-natives-linux-arm64-gnu`
-4. `@bastani/atomic-natives-linux-x64-gnu`
-5. `@bastani/atomic-natives-win32-arm64-msvc`
-6. `@bastani/atomic-natives-win32-x64-msvc`
-7. `@bastani/atomic-natives`
-8. `@bastani/atomic`
+4. `@bastani/atomic-natives-linux-arm64-musl`
+5. `@bastani/atomic-natives-linux-x64-gnu`
+6. `@bastani/atomic-natives-linux-x64-musl`
+7. `@bastani/atomic-natives-win32-arm64-msvc`
+8. `@bastani/atomic-natives-win32-x64-msvc`
+9. `@bastani/atomic-natives`
+10. `@bastani/atomic`
 
 That order publishes native leaves first, then the native root, then the coding agent. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
 
@@ -357,4 +366,4 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 3. From a clean checkout, run `bun run scripts/cut-release.ts <version> --base <base> --push`.
 4. Inspect the single `Publish <version>` push run. Do not start a duplicate manual run during normal publication.
 5. If recovery is required, manually dispatch `publish.yml` with the original `tag`; set `source_ref` to the exact recovery ref whose package version still matches that tag.
-6. Confirm all eight npm packages and the public GitHub Release exist with the expected dist-tag and assets.
+6. Confirm all ten npm packages and the public GitHub Release exist with the expected dist-tag and assets.

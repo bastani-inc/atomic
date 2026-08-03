@@ -6,7 +6,13 @@ type CompactGuardContext = {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
 	editor: { addToHistory?: (text: string) => void; setText: (text: string) => void; getText: () => string };
 	ui: { requestRender: () => void };
-	session: { isCompacting: boolean; isStreaming: boolean; isBashRunning: boolean; compact: () => Promise<unknown>; prompt: (text: string) => Promise<void> };
+	session: {
+		isCompacting: boolean;
+		isStreaming: boolean;
+		isBashRunning: boolean;
+		compact: () => Promise<unknown>;
+		prompt: (text: string) => Promise<void>;
+	};
 	sessionManager: { getEntries: () => Array<{ type: string }> };
 	statusContainer: { clear: () => void };
 	loadingAnimation: undefined;

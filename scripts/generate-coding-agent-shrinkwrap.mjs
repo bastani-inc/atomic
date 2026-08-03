@@ -150,6 +150,8 @@ function platformDescriptorFromNapiTarget(packageJson, target) {
 		"aarch64-apple-darwin": { suffix: "darwin-arm64", os: ["darwin"], cpu: ["arm64"] },
 		"x86_64-unknown-linux-gnu": { suffix: "linux-x64-gnu", os: ["linux"], cpu: ["x64"], libc: ["glibc"] },
 		"aarch64-unknown-linux-gnu": { suffix: "linux-arm64-gnu", os: ["linux"], cpu: ["arm64"], libc: ["glibc"] },
+		"x86_64-unknown-linux-musl": { suffix: "linux-x64-musl", os: ["linux"], cpu: ["x64"], libc: ["musl"] },
+		"aarch64-unknown-linux-musl": { suffix: "linux-arm64-musl", os: ["linux"], cpu: ["arm64"], libc: ["musl"] },
 	};
 	const mapping = mappings[target];
 	if (!mapping) {
@@ -191,7 +193,9 @@ function buildInternalPackageEntries(workspaces) {
 		const mainEntry = copyPackageJsonEntry(packageJson, { includeName: false });
 		mainEntry.resolved = registryTarballUrl(name, packageJson.version);
 		mainEntry.optionalDependencies = sortedObject(
-			Object.fromEntries([...optionalPackages].map(([packageName, descriptor]) => [packageName, descriptor.version])),
+			Object.fromEntries(
+				[...optionalPackages].map(([packageName, descriptor]) => [packageName, descriptor.version]),
+			),
 		);
 		entries.set(name, sortedPackageEntry(mainEntry));
 
@@ -338,7 +342,8 @@ function validateShrinkwrap(shrinkwrap, internalNames) {
 	for (const [lockPath, entry] of Object.entries(shrinkwrap.packages)) {
 		for (const dependencyName of Object.keys(packageDependencies(entry))) {
 			const dependencyIncluded = [...includedPaths].some(
-				(candidate) => candidate === `node_modules/${dependencyName}` || candidate.endsWith(`/node_modules/${dependencyName}`),
+				(candidate) =>
+					candidate === `node_modules/${dependencyName}` || candidate.endsWith(`/node_modules/${dependencyName}`),
 			);
 			if (!dependencyIncluded) {
 				errors.push(`${lockPath || "root"} dependency ${dependencyName} is missing`);
@@ -346,7 +351,9 @@ function validateShrinkwrap(shrinkwrap, internalNames) {
 		}
 	}
 
-	const platformPackageCount = Object.values(shrinkwrap.packages).filter((entry) => entry.os || entry.cpu || entry.libc).length;
+	const platformPackageCount = Object.values(shrinkwrap.packages).filter(
+		(entry) => entry.os || entry.cpu || entry.libc,
+	).length;
 	if (platformPackageCount === 0) {
 		errors.push("no platform-specific optional dependency entries found");
 	}
@@ -411,20 +418,22 @@ async function main() {
 	if (checkOnly) {
 		if (!existsSync(shrinkwrapPath)) {
 			console.error("packages/coding-agent/npm-shrinkwrap.json is missing.");
-			console.error("Run: bun run shrinkwrap:coding-agent");
+			console.error("Run: npm run shrinkwrap:coding-agent");
 			process.exit(1);
 		}
 		const current = readFileSync(shrinkwrapPath, "utf8");
 		if (current !== content) {
 			console.error("packages/coding-agent/npm-shrinkwrap.json is out of date.");
-			console.error("Run: bun run shrinkwrap:coding-agent");
+			console.error("Run: npm run shrinkwrap:coding-agent");
 			process.exit(1);
 		}
 		console.log("packages/coding-agent/npm-shrinkwrap.json is up to date.");
 	} else {
 		writeFileSync(shrinkwrapPath, content);
 		const packageCount = Object.keys(shrinkwrap.packages).length - 1;
-		const platformPackageCount = Object.values(shrinkwrap.packages).filter((entry) => entry.os || entry.cpu || entry.libc).length;
+		const platformPackageCount = Object.values(shrinkwrap.packages).filter(
+			(entry) => entry.os || entry.cpu || entry.libc,
+		).length;
 		console.log(
 			`Wrote packages/coding-agent/npm-shrinkwrap.json (${packageCount} packages, ${platformPackageCount} platform-specific).`,
 		);

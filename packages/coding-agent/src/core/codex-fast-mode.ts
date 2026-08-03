@@ -1,16 +1,16 @@
 import {
-	clampThinkingLevel,
 	type Api,
 	type AssistantMessageEventStream,
 	type Context,
+	clampThinkingLevel,
 	type Model,
 	type OpenAICodexResponsesOptions,
-	streamOpenAICodexResponses,
-	streamOpenAIResponses,
-	streamSimple,
 	type OpenAIResponsesOptions,
 	type SimpleStreamOptions,
 	type StreamOptions,
+	streamOpenAICodexResponses,
+	streamOpenAIResponses,
+	streamSimple,
 	type ThinkingLevel,
 } from "@earendil-works/pi-ai/compat";
 import type { OrchestrationContext } from "./extensions/index.ts";
@@ -29,11 +29,7 @@ export interface CodexFastModeStreamOptions extends SimpleStreamOptions {
 }
 
 export interface CodexFastModeStreamers {
-	streamSimple: (
-		model: Model<Api>,
-		context: Context,
-		options?: SimpleStreamOptions,
-	) => AssistantMessageEventStream;
+	streamSimple: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	streamOpenAIResponses: (
 		model: Model<"openai-responses">,
 		context: Context,
@@ -136,9 +132,7 @@ export function shouldUseNativeCodexFastMode(
 	);
 }
 
-function buildCodexFastModeBaseProviderOptions(
-	options: CodexFastModeStreamOptions | undefined,
-): StreamOptions {
+function buildCodexFastModeBaseProviderOptions(options: CodexFastModeStreamOptions | undefined): StreamOptions {
 	return {
 		temperature: options?.temperature,
 		maxTokens: options?.maxTokens,

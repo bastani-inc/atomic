@@ -23,7 +23,8 @@ function hasTrackedPathComponent(repo: string, relativePath: string): boolean {
 function copyUntrackedFile(mainRoot: string, worktreeRoot: string, relativePath: string): boolean {
 	const source = path.join(mainRoot, relativePath);
 	const destination = path.join(worktreeRoot, relativePath);
-	if (!fs.existsSync(source) || fs.existsSync(destination) || hasTrackedPathComponent(worktreeRoot, relativePath)) return false;
+	if (!fs.existsSync(source) || fs.existsSync(destination) || hasTrackedPathComponent(worktreeRoot, relativePath))
+		return false;
 	fs.mkdirSync(path.dirname(destination), { recursive: true });
 	fs.copyFileSync(source, destination);
 	return true;
@@ -31,8 +32,12 @@ function copyUntrackedFile(mainRoot: string, worktreeRoot: string, relativePath:
 
 function propagateLocalSettings(mainRoot: string, worktreeRoot: string): string[] {
 	const copied: string[] = [];
-	if (copyUntrackedFile(mainRoot, worktreeRoot, ".atomic/settings.local.json")) copied.push(".atomic/settings.local.json");
-	if (!tracked(mainRoot, ".atomic/settings.json") && copyUntrackedFile(mainRoot, worktreeRoot, ".atomic/settings.json")) {
+	if (copyUntrackedFile(mainRoot, worktreeRoot, ".atomic/settings.local.json"))
+		copied.push(".atomic/settings.local.json");
+	if (
+		!tracked(mainRoot, ".atomic/settings.json") &&
+		copyUntrackedFile(mainRoot, worktreeRoot, ".atomic/settings.json")
+	) {
 		copied.push(".atomic/settings.json");
 	}
 	return copied;
@@ -47,7 +52,8 @@ function populatedHooksDirectory(mainRoot: string): string | undefined {
 	}
 	const hooks = path.join(mainRoot, ".git", "hooks");
 	try {
-		const populated = fs.readdirSync(hooks, { withFileTypes: true })
+		const populated = fs
+			.readdirSync(hooks, { withFileTypes: true })
 			.some((entry) => entry.isFile() && !entry.name.endsWith(".sample"));
 		return populated ? hooks : undefined;
 	} catch {
@@ -85,7 +91,8 @@ function symlinkConfiguredDirectories(
 		if (relativePath === undefined || synthetic.includes(relativePath)) continue;
 		const source = path.join(mainRoot, relativePath);
 		const destination = path.join(worktreeRoot, relativePath);
-		if (!fs.existsSync(source) || fs.existsSync(destination) || hasTrackedPathComponent(worktreeRoot, relativePath)) continue;
+		if (!fs.existsSync(source) || fs.existsSync(destination) || hasTrackedPathComponent(worktreeRoot, relativePath))
+			continue;
 		fs.mkdirSync(path.dirname(destination), { recursive: true });
 		try {
 			fs.symlinkSync(source, destination, process.platform === "win32" ? "junction" : undefined);

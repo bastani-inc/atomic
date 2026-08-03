@@ -1,119 +1,118 @@
 /**
- * Duration-headroom guard for Bun test suites.
+ * Duration-headroom guard for the repository's vitest suites.
  *
  * A fixed per-test timeout cannot detect drift: a test that creeps from 30 % to
  * 95 % of its budget looks identical to a healthy one until a slow runner tips
  * it over and the suite flakes. Only the *ratio* of duration to budget carries
- * that signal, so this module reads the durations Bun already prints, resolves
- * each test's effective timeout, and reports the tests closest to their budget.
+ * that signal, so this module reads vitest's JSON reporter, resolves each test's
+ * effective timeout, and reports the tests closest to their budget.
  *
- * Timeout resolution mirrors Bun's own precedence: an explicit third argument on
- * the declaration wins, otherwise the suite-wide `--timeout` applies. When no
- * explicit `--timeout` can be resolved from the command the gate stays disabled
- * and only the duration table is emitted -- a suite that never declared a budget
- * must not be judged against one it did not choose.
+ * Timeout resolution mirrors vitest's own precedence: an explicit third argument
+ * on the declaration wins, otherwise the project's resolved `testTimeout`
+ * applies. When no budget can be resolved from the command the gate stays
+ * disabled and only the duration table is emitted -- a suite that never declared
+ * a budget must not be judged against one it did not choose.
+ *
+ * It previously scraped Bun's human-readable `(pass) name [Nms]` stdout. That
+ * scored 4288 of 4417 unit tests: 127 passing tests print no duration at all,
+ * and 67 files' tests were attributed to the wrong file because Bun files
+ * barrel-re-exported tests under the importing header. The JSON reporter emits a
+ * record per test with its own file, so the gate now covers the whole suite and
+ * `blind` finally means what it says.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, isAbsolute, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** Emit a warning once a test consumes this share of its effective timeout. */
 export const WARN_RATIO = 0.4;
 /** Fail the step once a test consumes this share of its effective timeout. */
 export const FAIL_RATIO = 0.7;
-/** Bun's built-in per-test timeout, used only for reporting an unset budget. */
-export const BUN_DEFAULT_TIMEOUT_MS = 5000;
+/** vitest's built-in per-test timeout, used only for reporting an unset budget. */
+export const VITEST_DEFAULT_TIMEOUT_MS = 5000;
 
 export interface DurationSample {
-  file: string;
-  name: string;
-  fullName: string;
-  status: "pass" | "fail";
-  durationMs: number;
+	file: string;
+	name: string;
+	fullName: string;
+	status: "pass" | "fail";
+	durationMs: number;
 }
 
 export interface BudgetedSample extends DurationSample {
-  timeoutMs: number;
-  ratio: number;
-  explicit: boolean;
+	timeoutMs: number;
+	ratio: number;
+	explicit: boolean;
 }
 
 export interface DurationGuardReport {
-  enabled: boolean;
-  defaultTimeoutMs: number | undefined;
-  ranTests: number;
-  blind: boolean;
-  samples: BudgetedSample[];
-  warnings: BudgetedSample[];
-  failures: BudgetedSample[];
+	enabled: boolean;
+	defaultTimeoutMs: number | undefined;
+	ranTests: number;
+	blind: boolean;
+	samples: BudgetedSample[];
+	warnings: BudgetedSample[];
+	failures: BudgetedSample[];
 }
 
-const ANSI = /\u001b\[[0-9;]*m/g;
-const FILE_HEADER = /^(\S.*\.(?:test|spec)\.[cm]?[jt]sx?):$/u;
-const RESULT_LINE = /^\((pass|fail)\)\s+(.+?)\s+\[([0-9]+(?:\.[0-9]+)?)ms\]$/u;
-/**
- * On GitHub Actions Bun folds each file's results into a log group, so the
- * header arrives as `::group::path/to/x.test.ts:`. Left in place the marker
- * becomes part of the path, the source file never resolves, and every explicit
- * per-test timeout silently degrades to the suite default -- in the one
- * environment this guard exists to protect. The rendered `##[group]` form is
- * accepted too so a downloaded step log parses like the live stream.
- */
-const GROUP_PREFIX = /^(?:::group::|##\[group\])/u;
-/** Bun's suite footer. It is printed even when per-test records are not. */
-const RAN_TESTS = /^Ran\s+([0-9]+)\s+tests?\s+across\b/mu;
+/** The subset of vitest's JSON reporter this guard reads. */
+interface VitestAssertion {
+	ancestorTitles?: string[];
+	title?: string;
+	fullName?: string;
+	status?: string;
+	duration?: number | null;
+}
 
-/**
- * Tests Bun reported running, from its footer. Used to tell "nothing ran" from
- * "tests ran but printed no durations": the second means the guard is blind and
- * must say so rather than report a clean sheet.
- */
-export function ranTestCount(output: string): number {
-  const match = RAN_TESTS.exec(output.replace(ANSI, ""));
-  return match?.[1] === undefined ? 0 : Number(match[1]);
+interface VitestFileResult {
+	name?: string;
+	assertionResults?: VitestAssertion[];
+}
+
+interface VitestReport {
+	numTotalTests?: number;
+	testResults?: VitestFileResult[];
 }
 
 /**
- * Bun silences its per-test records -- and with them every duration this guard
- * scores -- when any of these is set, leaving only the aggregate footer. They
- * are a presentation choice for interactive agent sessions; a CI log is not
- * one, so the wrapper drops them from the suite it spawns.
+ * Every completed test in a vitest JSON report, as a duration sample.
+ *
+ * Skipped and pending tests are excluded: they carry no duration and scoring a
+ * zero against a budget would dilute the table with rows that cannot drift.
+ * They still count towards `ranTests`, which is what distinguishes "nothing to
+ * measure" from "the harness produced no measurements".
  */
-export const QUIET_REPORTER_ENV = ["CLAUDECODE", "REPL_ID", "AGENT"] as const;
-
-/** Copy `env` without the variables that suppress Bun's per-test records. */
-export function perTestReportingEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const copy: NodeJS.ProcessEnv = { ...env };
-  for (const key of QUIET_REPORTER_ENV) delete copy[key];
-  return copy;
+export function parseVitestReport(json: string, rootDir: string = process.cwd()): DurationSample[] {
+	const report = JSON.parse(json) as VitestReport;
+	const samples: DurationSample[] = [];
+	for (const result of report.testResults ?? []) {
+		const absolute = result.name ?? "";
+		const file = (isAbsolute(absolute) ? relative(rootDir, absolute) : absolute).replaceAll("\\", "/");
+		for (const assertion of result.assertionResults ?? []) {
+			if (assertion.status !== "passed" && assertion.status !== "failed") continue;
+			const title = assertion.title ?? "";
+			const scopes = assertion.ancestorTitles ?? [];
+			// vitest's `fullName` joins the scope path with a space; the explicit
+			// per-test budgets below are keyed by the `scope > name` form, so the
+			// path is rebuilt rather than trusted.
+			const fullName = [...scopes, title].filter((part) => part !== "").join(" > ");
+			samples.push({
+				file,
+				name: title,
+				fullName,
+				status: assertion.status === "passed" ? "pass" : "fail",
+				durationMs: assertion.duration ?? 0,
+			});
+		}
+	}
+	return samples;
 }
 
-/**
- * Extract every `(pass|fail) name [Nms]` sample, attributing each to the test
- * file header Bun prints above its group. This is the same grammar used to mine
- * duration corpora from raw CI logs, so it is known to hold on both platforms.
- */
-export function parseTestDurations(output: string): DurationSample[] {
-  const samples: DurationSample[] = [];
-  let file = "";
-  for (const rawLine of output.split(/\r?\n/)) {
-    const line = rawLine.replace(ANSI, "").trim();
-    const header = FILE_HEADER.exec(line.replace(GROUP_PREFIX, ""));
-    if (header?.[1]) {
-      file = header[1].replaceAll("\\", "/");
-      continue;
-    }
-    const result = RESULT_LINE.exec(line);
-    if (!result) continue;
-    const [, status, fullName, duration] = result;
-    samples.push({
-      file,
-      name: (fullName as string).split(" > ").at(-1) ?? (fullName as string),
-      fullName: fullName as string,
-      status: status as "pass" | "fail",
-      durationMs: Number(duration),
-    });
-  }
-  return samples;
+/** Tests vitest reported, whether or not each produced a duration. */
+export function reportedTestCount(json: string): number {
+	const report = JSON.parse(json) as VitestReport;
+	if (typeof report.numTotalTests === "number") return report.numTotalTests;
+	return (report.testResults ?? []).reduce((total, result) => total + (result.assertionResults?.length ?? 0), 0);
 }
 
 const DECLARATION_HEAD = "(?:\\.(?:only|skip|todo|failing|serial|concurrent))*\\s*\\(";
@@ -124,12 +123,15 @@ const CALL_END = /^(\s*)\)\s*;?\s*$/u;
 const NAME_LITERAL = /^\s*(["'`])((?:\\.|(?!\1).)*)\1/u;
 
 function numericConstants(lines: string[]): Map<string, number> {
-  const constants = new Map<string, number>();
-  for (const line of lines) {
-    const match = /^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*number\s*)?=\s*([0-9][0-9_]*)\s*;?\s*$/u.exec(line);
-    if (match?.[1] && match[2]) constants.set(match[1], Number(match[2].replaceAll("_", "")));
-  }
-  return constants;
+	const constants = new Map<string, number>();
+	for (const line of lines) {
+		const match =
+			/^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*number\s*)?=\s*([0-9][0-9_]*)\s*;?\s*$/u.exec(
+				line,
+			);
+		if (match?.[1] && match[2]) constants.set(match[1], Number(match[2].replaceAll("_", "")));
+	}
+	return constants;
 }
 
 /**
@@ -138,42 +140,43 @@ function numericConstants(lines: string[]): Map<string, number> {
  * input able to re-open the escape it was meant to neutralise.
  */
 function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 /** `test`, `it`, and any local alias bound to them (e.g. `const runTest = ... test.skip`). */
 function declarationPattern(lines: string[]): RegExp {
-  const names = new Set(["test", "it"]);
-  for (const line of lines) {
-    const match = /^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=[^;]*\b(?:test|it)\b/u.exec(line);
-    if (match?.[1]) names.add(match[1]);
-  }
-  const alternation = [...names].map(escapeRegExp).join("|");
-  return new RegExp(`^(\\s*)(?:${alternation})${DECLARATION_HEAD}`, "u");
+	const names = new Set(["test", "it"]);
+	for (const line of lines) {
+		const match = /^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=[^;]*\b(?:test|it)\b/u.exec(line);
+		if (match?.[1]) names.add(match[1]);
+	}
+	const alternation = [...names].map(escapeRegExp).join("|");
+	return new RegExp(`^(\\s*)(?:${alternation})${DECLARATION_HEAD}`, "u");
 }
 
 function previousMeaningfulIndex(lines: string[], index: number): number {
-  for (let back = index - 1; back >= 0; back--) if ((lines[back] as string).trim() !== "") return back;
-  return -1;
+	for (let back = index - 1; back >= 0; back--) if ((lines[back] as string).trim() !== "") return back;
+	return -1;
 }
 
 /**
  * Reconstruct the `describe` path enclosing a declaration, outermost first, by
- * walking outwards through strictly shallower `describe(` openers. Bun reports a
- * test as `scope > name`, so without the path two same-named tests in different
- * scopes would collapse onto one budget and be scored against each other's.
+ * walking outwards through strictly shallower `describe(` openers. A test is
+ * reported as `scope > name`, so without the path two same-named tests in
+ * different scopes would collapse onto one budget and be scored against each
+ * other's.
  */
 function describeScopes(lines: string[], index: number, indent: string): string[] {
-  const scopes: string[] = [];
-  let inner = indent;
-  for (let back = index - 1; back >= 0 && inner.length > 0; back--) {
-    const opener = DESCRIBE.exec(lines[back] as string);
-    if (!opener || (opener[1] as string).length >= inner.length) continue;
-    const name = NAME_LITERAL.exec((lines[back] as string).slice((opener[0] as string).length))?.[2];
-    if (name) scopes.unshift(name);
-    inner = opener[1] as string;
-  }
-  return scopes;
+	const scopes: string[] = [];
+	let inner = indent;
+	for (let back = index - 1; back >= 0 && inner.length > 0; back--) {
+		const opener = DESCRIBE.exec(lines[back] as string);
+		if (!opener || (opener[1] as string).length >= inner.length) continue;
+		const name = NAME_LITERAL.exec((lines[back] as string).slice((opener[0] as string).length))?.[2];
+		if (name) scopes.unshift(name);
+		inner = opener[1] as string;
+	}
+	return scopes;
 }
 
 /**
@@ -183,27 +186,27 @@ function describeScopes(lines: string[], index: number, indent: string): string[
  * Returns the raw token plus the indentation of the call's own closing line.
  */
 function timeoutTail(lines: string[], index: number): { raw: string; indent: string } | undefined {
-  const line = lines[index] as string;
-  const closer = CLOSER.exec(line);
-  if (closer?.[1] !== undefined && closer[2]) return { raw: closer[2], indent: closer[1] };
-  const callEnd = CALL_END.exec(line);
-  if (!callEnd) return undefined;
-  const valueIndex = previousMeaningfulIndex(lines, index);
-  if (valueIndex === -1) return undefined;
-  const value = TRAILING_VALUE.exec(lines[valueIndex] as string);
-  if (!value?.[1]) return undefined;
-  const bodyIndex = previousMeaningfulIndex(lines, valueIndex);
-  if (bodyIndex === -1 || !/^\s*\},?\s*$/u.test(lines[bodyIndex] as string)) return undefined;
-  return { raw: value[1], indent: callEnd[1] as string };
+	const line = lines[index] as string;
+	const closer = CLOSER.exec(line);
+	if (closer?.[1] !== undefined && closer[2]) return { raw: closer[2], indent: closer[1] };
+	const callEnd = CALL_END.exec(line);
+	if (!callEnd) return undefined;
+	const valueIndex = previousMeaningfulIndex(lines, index);
+	if (valueIndex === -1) return undefined;
+	const value = TRAILING_VALUE.exec(lines[valueIndex] as string);
+	if (!value?.[1]) return undefined;
+	const bodyIndex = previousMeaningfulIndex(lines, valueIndex);
+	if (bodyIndex === -1 || !/^\s*\},?\s*$/u.test(lines[bodyIndex] as string)) return undefined;
+	return { raw: value[1], indent: callEnd[1] as string };
 }
 
 /**
  * Map each declared test to its explicit timeout argument, keyed by the fully
- * qualified `scope > name` Bun reports it under.
+ * qualified `scope > name` it is reported under.
  *
  * The key is always qualified. Recording a scoped declaration under its bare
  * terminal name too would lend that budget to a same-named test in a sibling
- * scope that declared none, scoring it against a timeout Bun never gave it.
+ * scope that declared none, scoring it against a timeout it never had.
  *
  * The scan is line-based rather than AST-based on purpose: it must never throw
  * on syntax it does not model, and an unresolved declaration degrades to the
@@ -212,164 +215,224 @@ function timeoutTail(lines: string[], index: number): { raw: string; indent: str
  * `}, <number>)` of a nested callback such as `setTimeout` or a poll helper.
  */
 export function declaredTimeouts(source: string): Map<string, number> {
-  const lines = source.split(/\r?\n/);
-  const constants = numericConstants(lines);
-  const declaration = declarationPattern(lines);
-  const declared = new Map<string, number>();
-  const record = (name: string, value: number): void => {
-    const previous = declared.get(name);
-    declared.set(name, previous === undefined ? value : Math.min(previous, value));
-  };
-  for (let index = 0; index < lines.length; index++) {
-    const tail = timeoutTail(lines, index);
-    if (!tail) continue;
-    const value = /^[0-9]/u.test(tail.raw) ? Number(tail.raw.replaceAll("_", "")) : constants.get(tail.raw);
-    if (value === undefined || !Number.isFinite(value)) continue;
-    for (let back = index; back >= 0; back--) {
-      const candidate = lines[back] as string;
-      const opener = declaration.exec(candidate);
-      if (!opener || opener[1] !== tail.indent) continue;
-      const head = lines.slice(back, back + 3).join(" ").slice((opener[0] as string).length);
-      const name = NAME_LITERAL.exec(head)?.[2];
-      if (name) record([...describeScopes(lines, back, tail.indent), name].join(" > "), value);
-      break;
-    }
-  }
-  return declared;
+	const lines = source.split(/\r?\n/);
+	const constants = numericConstants(lines);
+	const declaration = declarationPattern(lines);
+	const declared = new Map<string, number>();
+	const record = (name: string, value: number): void => {
+		const previous = declared.get(name);
+		declared.set(name, previous === undefined ? value : Math.min(previous, value));
+	};
+	for (let index = 0; index < lines.length; index++) {
+		const tail = timeoutTail(lines, index);
+		if (!tail) continue;
+		const value = /^[0-9]/u.test(tail.raw) ? Number(tail.raw.replaceAll("_", "")) : constants.get(tail.raw);
+		if (value === undefined || !Number.isFinite(value)) continue;
+		for (let back = index; back >= 0; back--) {
+			const candidate = lines[back] as string;
+			const opener = declaration.exec(candidate);
+			if (!opener || opener[1] !== tail.indent) continue;
+			const head = lines
+				.slice(back, back + 3)
+				.join(" ")
+				.slice((opener[0] as string).length);
+			const name = NAME_LITERAL.exec(head)?.[2];
+			if (name) record([...describeScopes(lines, back, tail.indent), name].join(" > "), value);
+			break;
+		}
+	}
+	return declared;
 }
 
 /**
- * Look a sample's explicit budget up by the qualified name Bun printed. There
- * is deliberately no bare-name fallback: a declaration this scan could not
- * qualify degrades to the suite default rather than borrowing the budget of a
- * same-named test declared elsewhere in the file.
+ * Look a sample's explicit budget up by its qualified name. There is
+ * deliberately no bare-name fallback: a declaration this scan could not qualify
+ * degrades to the suite default rather than borrowing the budget of a same-named
+ * test declared elsewhere in the file.
  */
 function timeoutIndex(rootDir: string): (file: string, fullName: string) => number | undefined {
-  const cache = new Map<string, Map<string, number>>();
-  return (file, fullName) => {
-    if (!file) return undefined;
-    let declared = cache.get(file);
-    if (!declared) {
-      const path = resolve(rootDir, file);
-      declared = existsSync(path) ? declaredTimeouts(readFileSync(path, "utf8")) : new Map<string, number>();
-      cache.set(file, declared);
-    }
-    return declared.get(fullName);
-  };
+	const cache = new Map<string, Map<string, number>>();
+	return (file, fullName) => {
+		if (!file) return undefined;
+		let declared = cache.get(file);
+		if (!declared) {
+			const path = resolve(rootDir, file);
+			declared = existsSync(path) ? declaredTimeouts(readFileSync(path, "utf8")) : new Map<string, number>();
+			cache.set(file, declared);
+		}
+		return declared.get(fullName);
+	};
+}
+
+/** Minimal shape of a resolved vitest config, enough to find a project's budget. */
+interface VitestConfigShape {
+	test?: { name?: string; testTimeout?: number; projects?: VitestConfigShape[] };
+}
+
+// Windows resolves executables through PATHEXT, which is conventionally
+// uppercase (`.EXE;.CMD`), and its filesystems match names case-insensitively.
+// The binary checks must match the same way, or a resolved `bun.EXE` head is
+// not recognised as the runtime and the gate silently disables on Windows.
+const NPM_BINARY = /^(?:npm|npx)(?:\.cmd|\.exe)?$/iu;
+const VITEST_BINARY = /^vitest(?:\.cmd|\.exe)?$/iu;
+const BUN_BINARY = /^bunx?(?:\.exe)?$/iu;
+
+function flag(args: string[], name: string): string | undefined {
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index] as string;
+		if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+		if (arg === name && args[index + 1]) return args[index + 1];
+	}
+	return undefined;
+}
+
+/** Resolve `npm run [--workspace=X] <script>` to its manifest directory and name. */
+function scriptInvocation(command: string[]): { cwd: string; name: string } | undefined {
+	if (!NPM_BINARY.test(basename(command[0] ?? ""))) return undefined;
+	const rest = command.slice(1);
+	if (rest[0] !== "run") return undefined;
+	const workspace = flag(rest, "--workspace") ?? flag(rest, "-w");
+	const name = rest.slice(1).find((arg) => !arg.startsWith("-") && arg !== workspace);
+	if (!name) return undefined;
+	// Workspace names are resolved through the root manifest's `workspaces` glob
+	// only in the one shape this repository uses.
+	const cwd =
+		workspace === undefined
+			? "."
+			: workspace.startsWith("@bastani/")
+				? `packages/${workspace === "@bastani/atomic" ? "coding-agent" : workspace.slice("@bastani/".length)}`
+				: workspace;
+	return { cwd, name };
+}
+
+async function readConfiguredTimeout(
+	rootDir: string,
+	cwd: string,
+	project: string | undefined,
+): Promise<number | undefined> {
+	for (const candidate of ["vitest.config.ts", "vitest.config.mts", "vitest.config.js"]) {
+		const path = resolve(rootDir, cwd, candidate);
+		if (!existsSync(path)) continue;
+		const module = (await import(pathToFileURL(path).href)) as { default?: VitestConfigShape };
+		const config = module.default;
+		if (!config?.test) return undefined;
+		const projects = config.test.projects ?? [];
+		if (project !== undefined) {
+			const match = projects.find((entry) => entry.test?.name === project);
+			return match?.test?.testTimeout ?? config.test.testTimeout;
+		}
+		// No `--project`: every project must agree, or the suite has no single
+		// budget to score against and the gate stays off rather than picking one.
+		if (projects.length > 0) {
+			const budgets = new Set(projects.map((entry) => entry.test?.testTimeout));
+			return budgets.size === 1 ? [...budgets][0] : undefined;
+		}
+		return config.test.testTimeout;
+	}
+	return undefined;
 }
 
 /**
- * Resolve the suite-wide `--timeout` a command actually runs with, following one
- * `bun run <script>` indirection into package.json. Returns undefined when the
- * command declares no budget, which disables the gate rather than inventing one.
+ * Resolve the per-test budget a command actually runs with, following one
+ * `npm run <script>` indirection into package.json and then into the vitest
+ * config that script selects. Returns undefined when the command declares no
+ * budget, which disables the gate rather than inventing one.
  *
- * Only a Bun *test* invocation is read for a budget. `--timeout` means something
- * else to every other runner -- and to Bun's own non-test subcommands -- so
- * accepting it from `bunx vitest --timeout 10000` or `bun script.ts --timeout
- * 10000` would score unrelated output against a budget Bun never applied.
+ * Only a vitest invocation is read for a budget, whichever runtime hosts it: a
+ * leading `bun`/`bunx` (with its own flags, and an optional `run`/`x`) is the
+ * runtime, not the command. A command that is not vitest has no `testTimeout`,
+ * and scoring its output against one would report drift against a ceiling
+ * nothing enforces.
  */
-export function resolveDefaultTimeoutMs(command: string[], rootDir: string): number | undefined {
-  if (!isBunInvocation(command)) return undefined;
-  const script = scriptInvocation(command);
-  if (!script) return subcommand(command) === "test" ? timeoutFromArgs(command) : undefined;
-  const manifestPath = resolve(rootDir, script.cwd, "package.json");
-  if (!existsSync(manifestPath)) return undefined;
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { scripts?: Record<string, string> };
-  const args = manifest.scripts?.[script.name]?.split(/\s+/u);
-  if (!args || !isBunInvocation(args) || subcommand(args) !== "test") return undefined;
-  return timeoutFromArgs(args);
-}
-
-const BUN_BINARY = /^bunx?(?:\.exe)?$/u;
-
-function isBunInvocation(args: string[]): boolean {
-  const binary = args[0];
-  return binary !== undefined && BUN_BINARY.test(basename(binary));
-}
-
-/** First non-flag argument after the binary, i.e. `test` in `bun --bun test x`. */
-function subcommand(args: string[]): string | undefined {
-  return args.slice(1).find((arg) => !arg.startsWith("-"));
-}
-
-/** Resolve `bun run [--cwd <dir>] [--bun] <script>` to its manifest directory and name. */
-function scriptInvocation(command: string[]): { cwd: string; name: string } | undefined {
-  const runIndex = command.indexOf("run");
-  if (runIndex === -1 || subcommand(command) !== "run") return undefined;
-  let cwd = ".";
-  for (let index = runIndex + 1; index < command.length; index++) {
-    const part = command[index] as string;
-    if (part === "--cwd" && command[index + 1]) {
-      cwd = command[++index] as string;
-      continue;
-    }
-    if (part.startsWith("-")) continue;
-    return { cwd, name: part };
-  }
-  return undefined;
-}
-
-function timeoutFromArgs(args: string[]): number | undefined {
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index] as string;
-    if (arg.startsWith("--timeout=")) return Number(arg.slice("--timeout=".length));
-    if (arg === "--timeout" && args[index + 1]) return Number(args[index + 1]);
-  }
-  return undefined;
+export async function resolveDefaultTimeoutMs(
+	command: string[],
+	rootDir: string = process.cwd(),
+): Promise<number | undefined> {
+	let args = command;
+	let cwd = ".";
+	const script = scriptInvocation(command);
+	if (script) {
+		const manifestPath = resolve(rootDir, script.cwd, "package.json");
+		if (!existsSync(manifestPath)) return undefined;
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { scripts?: Record<string, string> };
+		const line = manifest.scripts?.[script.name];
+		if (!line) return undefined;
+		args = line.split(/\s+/u).filter((part) => part !== "");
+		cwd = script.cwd;
+	}
+	let head = args[0] ?? "";
+	if (NPM_BINARY.test(basename(head)) && basename(head).startsWith("npx")) {
+		args = args.slice(1).filter((arg) => arg !== "--no-install" && arg !== "-y");
+		head = args[0] ?? "";
+	}
+	// `bun --bun vitest ...` is still a vitest invocation, and the one the
+	// Bun runtime a suite may be launched with. Dropping the runtime
+	// prefix keeps the gate on for it; without this the guard would read `bun`,
+	// find no budget, and silently stop scoring the suite that needs Bun most.
+	//
+	// Only the runtime's *own* leading flags are dropped. Filtering every `-`
+	// argument would also swallow the `--project` that selects the budget, and
+	// the gate would then average whichever projects happened to agree.
+	if (BUN_BINARY.test(basename(head))) {
+		args = args.slice(1);
+		while (args[0]?.startsWith("-")) args = args.slice(1);
+		if (args[0] === "run" || args[0] === "x") args = args.slice(1);
+		head = args[0] ?? "";
+	}
+	if (!VITEST_BINARY.test(basename(head))) return undefined;
+	return readConfiguredTimeout(rootDir, cwd, flag(args.slice(1), "--project"));
 }
 
 /** Join durations to budgets and classify each sample against the two ratios. */
 export function evaluateDurations(
-  output: string,
-  command: string[],
-  rootDir: string = process.cwd(),
+	reportJson: string,
+	defaultTimeoutMs: number | undefined,
+	rootDir: string = process.cwd(),
 ): DurationGuardReport {
-  const defaultTimeoutMs = resolveDefaultTimeoutMs(command, rootDir);
-  const lookup = timeoutIndex(rootDir);
-  const samples: BudgetedSample[] = [];
-  for (const sample of parseTestDurations(output)) {
-    const explicitTimeout = lookup(sample.file, sample.fullName);
-    const timeoutMs = explicitTimeout ?? defaultTimeoutMs ?? BUN_DEFAULT_TIMEOUT_MS;
-    samples.push({
-      ...sample,
-      timeoutMs,
-      explicit: explicitTimeout !== undefined,
-      ratio: timeoutMs > 0 ? sample.durationMs / timeoutMs : 0,
-    });
-  }
-  samples.sort((left, right) => right.ratio - left.ratio);
-  const enabled = defaultTimeoutMs !== undefined;
-  const failures = enabled ? samples.filter((sample) => sample.ratio >= FAIL_RATIO) : [];
-  const warnings = enabled
-    ? samples.filter((sample) => sample.ratio >= WARN_RATIO && sample.ratio < FAIL_RATIO)
-    : [];
-  // A suite that ran tests yet yielded no durations has not been measured. An
-  // empty sample set is otherwise indistinguishable from a healthy run, which
-  // is exactly how a silently disabled gate survives.
-  const ranTests = ranTestCount(output);
-  const blind = enabled && ranTests > 0 && samples.length === 0;
-  return { enabled, defaultTimeoutMs, ranTests, blind, samples, warnings, failures };
+	const lookup = timeoutIndex(rootDir);
+	const samples: BudgetedSample[] = [];
+	for (const sample of parseVitestReport(reportJson, rootDir)) {
+		const explicitTimeout = lookup(sample.file, sample.fullName);
+		const timeoutMs = explicitTimeout ?? defaultTimeoutMs ?? VITEST_DEFAULT_TIMEOUT_MS;
+		samples.push({
+			...sample,
+			timeoutMs,
+			explicit: explicitTimeout !== undefined,
+			ratio: timeoutMs > 0 ? sample.durationMs / timeoutMs : 0,
+		});
+	}
+	samples.sort((left, right) => right.ratio - left.ratio);
+	const enabled = defaultTimeoutMs !== undefined;
+	const failures = enabled ? samples.filter((sample) => sample.ratio >= FAIL_RATIO) : [];
+	const warnings = enabled ? samples.filter((sample) => sample.ratio >= WARN_RATIO && sample.ratio < FAIL_RATIO) : [];
+	// A suite that ran tests yet yielded no durations has not been measured. An
+	// empty sample set is otherwise indistinguishable from a healthy run, which
+	// is exactly how a silently disabled gate survives. Under the JSON reporter
+	// this can only mean the harness broke: it emits a record per test.
+	const ranTests = reportedTestCount(reportJson);
+	const blind = enabled && ranTests > 0 && samples.length === 0;
+	return { enabled, defaultTimeoutMs, ranTests, blind, samples, warnings, failures };
 }
 
 function row(sample: BudgetedSample): string {
-  const cell = (value: string): string => value.replaceAll("|", "\\|");
-  const percent = `${(sample.ratio * 100).toFixed(1)} %`;
-  const budget = `${sample.timeoutMs} ms${sample.explicit ? " (explicit)" : ""}`;
-  return `| ${percent} | ${sample.durationMs.toFixed(2)} ms | ${budget} | ${cell(sample.file)} | ${cell(sample.fullName)} |`;
+	const cell = (value: string): string => value.replaceAll("|", "\\|");
+	const percent = `${(sample.ratio * 100).toFixed(1)} %`;
+	const budget = `${sample.timeoutMs} ms${sample.explicit ? " (explicit)" : ""}`;
+	return `| ${percent} | ${sample.durationMs.toFixed(2)} ms | ${budget} | ${cell(sample.file)} | ${cell(sample.fullName)} |`;
 }
 
 /** Render the slowest samples as a Markdown table for artifacts and summaries. */
 export function renderDurationTable(report: DurationGuardReport, limit = 40): string {
-  const header = [
-    `Default per-test timeout: ${report.defaultTimeoutMs === undefined ? "not declared (gate disabled)" : `${report.defaultTimeoutMs} ms`}`,
-    `Warn at ${WARN_RATIO * 100} % of budget, fail at ${FAIL_RATIO * 100} %. Samples: ${report.samples.length} of ${report.ranTests} test(s) run.`,
-    "",
-    "| Budget used | Duration | Timeout | File | Test |",
-    "|---|---|---|---|---|",
-  ];
-  const rows = report.samples.slice(0, limit).map(row);
-  const empty = report.blind
-    ? "| n/a | n/a | n/a | n/a | tests ran but printed no per-test durations |"
-    : "| n/a | n/a | n/a | n/a | no duration samples parsed |";
-  return [...header, ...(rows.length > 0 ? rows : [empty])].join("\n");
+	const header = [
+		`Default per-test timeout: ${report.defaultTimeoutMs === undefined ? "not declared (gate disabled)" : `${report.defaultTimeoutMs} ms`}`,
+		`Warn at ${WARN_RATIO * 100} % of budget, fail at ${FAIL_RATIO * 100} %. Samples: ${report.samples.length} of ${report.ranTests} test(s) run.`,
+		"",
+		"| Budget used | Duration | Timeout | File | Test |",
+		"|---|---|---|---|---|",
+	];
+	const rows = report.samples.slice(0, limit).map(row);
+	const empty = report.blind
+		? "| n/a | n/a | n/a | n/a | tests ran but the reporter emitted no durations |"
+		: "| n/a | n/a | n/a | n/a | no duration samples parsed |";
+	return [...header, ...(rows.length > 0 ? rows : [empty])].join("\n");
 }

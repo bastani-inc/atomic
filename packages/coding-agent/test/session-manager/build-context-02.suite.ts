@@ -38,7 +38,7 @@ function msg(id: string, parentId: string | null, role: "user" | "assistant", te
 	});
 }
 
-function compaction(id: string, parentId: string | null, summary: string, firstKeptEntryId: string): CompactionEntry {
+function _compaction(id: string, parentId: string | null, summary: string, firstKeptEntryId: string): CompactionEntry {
 	return {
 		type: "compaction",
 		id,
@@ -50,8 +50,7 @@ function compaction(id: string, parentId: string | null, summary: string, firstK
 	};
 }
 
-
-function toolResultMessage(toolCallId: string, text: string): ToolResultMessage {
+function _toolResultMessage(toolCallId: string, text: string): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
@@ -62,7 +61,7 @@ function toolResultMessage(toolCallId: string, text: string): ToolResultMessage 
 	};
 }
 
-function assistantToolCallMessage(toolCallId: string): AssistantMessage {
+function _assistantToolCallMessage(toolCallId: string): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: "old.ts" } }],
@@ -82,16 +81,15 @@ function assistantToolCallMessage(toolCallId: string): AssistantMessage {
 	};
 }
 
-function branchSummary(id: string, parentId: string | null, summary: string, fromId: string): BranchSummaryEntry {
+function _branchSummary(id: string, parentId: string | null, summary: string, fromId: string): BranchSummaryEntry {
 	return { type: "branch_summary", id, parentId, timestamp: "2025-01-01T00:00:00Z", summary, fromId };
 }
 
-function thinkingLevel(id: string, parentId: string | null, level: string): ThinkingLevelChangeEntry {
+function _thinkingLevel(id: string, parentId: string | null, level: string): ThinkingLevelChangeEntry {
 	return { type: "thinking_level_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", thinkingLevel: level };
 }
 
-
-function modelChange(id: string, parentId: string | null, provider: string, modelId: string): ModelChangeEntry {
+function _modelChange(id: string, parentId: string | null, provider: string, modelId: string): ModelChangeEntry {
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
 }
 describe("buildSessionContext", () => {
@@ -110,5 +108,5 @@ describe("buildSessionContext", () => {
 			// Should only get the orphan since parent chain is broken
 			expect(ctx.messages).toHaveLength(1);
 		});
-});
+	});
 });

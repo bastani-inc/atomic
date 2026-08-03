@@ -13,10 +13,10 @@
  * Uses temp directories created per test to exercise discoverWorkflows().
  */
 
-import { afterEach, beforeEach } from "bun:test";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Temp dir management
@@ -25,11 +25,11 @@ import { tmpdir } from "node:os";
 export let tmpRoot: string;
 
 beforeEach(async () => {
-  tmpRoot = await mkdtemp(join(tmpdir(), "pi-wf-test-"));
+	tmpRoot = await mkdtemp(join(tmpdir(), "pi-wf-test-"));
 });
 
 afterEach(async () => {
-  await rm(tmpRoot, { recursive: true, force: true });
+	await rm(tmpRoot, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ afterEach(async () => {
 
 /** Canonical valid workflow JS source (default export). */
 export function validDefaultExportSrc(name: string, normalizedName: string): string {
-  return `
+	return `
 import { workflow } from "@bastani/workflows";
 const wf = workflow({
   name: ${JSON.stringify(normalizedName)},
@@ -54,7 +54,7 @@ export default wf;
 
 /** Valid workflow JS source as named export. */
 export function validNamedExportSrc(name: string, normalizedName: string, exportName = "workflow"): string {
-  return `
+	return `
 import { workflow as defineWorkflow } from "@bastani/workflows";
 export const ${exportName} = defineWorkflow({
   name: ${JSON.stringify(normalizedName)},
@@ -69,12 +69,12 @@ if (${exportName}.normalizedName !== ${JSON.stringify(normalizedName)}) throw ne
 
 /** File with both a valid default export AND a valid named export. */
 export function validDefaultAndNamedExportSrc(
-  defaultName: string,
-  defaultNorm: string,
-  namedName: string,
-  namedNorm: string,
+	defaultName: string,
+	defaultNorm: string,
+	namedName: string,
+	namedNorm: string,
 ): string {
-  return `
+	return `
 import { workflow } from "@bastani/workflows";
 const first = workflow({
   name: ${JSON.stringify(defaultNorm)},
@@ -99,19 +99,18 @@ if (second.normalizedName !== ${JSON.stringify(namedNorm)}) throw new Error("une
 
 /** Create a directory structure: <tmpRoot>/cwd/.atomic/workflows/<file> */
 export async function createProjectWorkflowFile(filename: string, content: string): Promise<string> {
-  const dir = join(tmpRoot, "cwd", ".atomic", "workflows");
-  await mkdir(dir, { recursive: true });
-  const filePath = join(dir, filename);
-  await writeFile(filePath, content, "utf8");
-  return filePath;
+	const dir = join(tmpRoot, "cwd", ".atomic", "workflows");
+	await mkdir(dir, { recursive: true });
+	const filePath = join(dir, filename);
+	await writeFile(filePath, content, "utf8");
+	return filePath;
 }
 
 /** Create a directory structure: <tmpRoot>/home/.atomic/agent/workflows/<file> */
 export async function createUserGlobalWorkflowFile(filename: string, content: string): Promise<string> {
-  const dir = join(tmpRoot, "home", ".atomic", "agent", "workflows");
-  await mkdir(dir, { recursive: true });
-  const filePath = join(dir, filename);
-  await writeFile(filePath, content, "utf8");
-  return filePath;
+	const dir = join(tmpRoot, "home", ".atomic", "agent", "workflows");
+	await mkdir(dir, { recursive: true });
+	const filePath = join(dir, filename);
+	await writeFile(filePath, content, "utf8");
+	return filePath;
 }
-

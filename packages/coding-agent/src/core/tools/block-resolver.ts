@@ -22,11 +22,17 @@ function stripNonCode(line: string): string {
 	for (let i = 0; i < line.length; i++) {
 		const ch = line[i]!;
 		if (quote) {
-			if (ch === "\\") { i++; continue; }
+			if (ch === "\\") {
+				i++;
+				continue;
+			}
 			if (ch === quote) quote = "";
 			continue;
 		}
-		if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
+		if (ch === '"' || ch === "'" || ch === "`") {
+			quote = ch;
+			continue;
+		}
 		if (ch === "/" && line[i + 1] === "/") break;
 		if (ch === "#") break;
 		out += ch;
@@ -45,7 +51,10 @@ function heuristicResolve(request: BlockResolverRequest): BlockSpan | null {
 		for (let i = startIndex; i < lines.length; i++) {
 			for (const ch of stripNonCode(lines[i]!)) {
 				if (ch === "{") balance++;
-				else if (ch === "}") { balance--; if (balance === 0) return { start: request.line, end: i + 1 }; }
+				else if (ch === "}") {
+					balance--;
+					if (balance === 0) return { start: request.line, end: i + 1 };
+				}
 			}
 		}
 		return null;

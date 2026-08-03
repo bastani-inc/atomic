@@ -14,7 +14,9 @@ describe("AgentSession custom-message batch admission", () => {
 
 	it("keeps a protected streaming batch contiguous, ordered, and durable", async () => {
 		let releaseTool: (() => void) | undefined;
-		const toolRelease = new Promise<void>((resolve) => { releaseTool = resolve; });
+		const toolRelease = new Promise<void>((resolve) => {
+			releaseTool = resolve;
+		});
 		const waitTool: AgentTool = {
 			name: "wait",
 			label: "Wait",
@@ -42,11 +44,14 @@ describe("AgentSession custom-message batch admission", () => {
 		const promptPromise = harness.session.prompt("start");
 		await waitForToolStart;
 
-		await harness.session.sendCustomMessages([
-			{ customType: "batch-a1", content: "A1", display: true },
-			{ customType: "batch-a2", content: "A2", display: true },
-			{ customType: "batch-terminal", content: "terminal", display: true },
-		], { triggerTurn: true, persistWhenStreaming: true });
+		await harness.session.sendCustomMessages(
+			[
+				{ customType: "batch-a1", content: "A1", display: true },
+				{ customType: "batch-a2", content: "A2", display: true },
+				{ customType: "batch-terminal", content: "terminal", display: true },
+			],
+			{ triggerTurn: true, persistWhenStreaming: true },
+		);
 		await harness.session.sendCustomMessage({ customType: "unrelated-b", content: "B", display: true });
 		releaseTool?.();
 		await promptPromise;
@@ -55,7 +60,8 @@ describe("AgentSession custom-message batch admission", () => {
 			.filter((message) => message.role === "custom" && message.display !== false)
 			.map((message) => message.customType);
 		expect(customTypes).toEqual(["batch-a1", "batch-a2", "batch-terminal", "unrelated-b"]);
-		const durableTypes = harness.sessionManager.getEntries()
+		const durableTypes = harness.sessionManager
+			.getEntries()
 			.filter((entry) => entry.type === "custom_message")
 			.map((entry) => entry.customType);
 		expect(durableTypes).toEqual([

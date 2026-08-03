@@ -6,13 +6,16 @@
  * `maxTokens` key at all, and reasoning is inherited without per-attempt variation.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { test } from "vitest";
 import { generateBranchSummary } from "../../packages/coding-agent/src/core/compaction/branch-summarization.js";
-import { planDeletedLineRanges, resolvePlannerRequest } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import type { PlannerBudget } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
-import { PARAMETERS, borrowed, region, scriptedStream, testModel } from "./compaction-rung-support.js";
+import {
+	planDeletedLineRanges,
+	resolvePlannerRequest,
+} from "../../packages/coding-agent/src/core/compaction/range-planner.js";
+import { borrowed, PARAMETERS, region, scriptedStream, testModel } from "./compaction-rung-support.js";
 
 test("resolvePlannerRequest never produces an output cap", () => {
 	const budget = resolvePlannerRequest(testModel(), "high");
@@ -55,13 +58,9 @@ test("resolvePlannerRequest is identical on every attempt for a given model", ()
 
 test("the planner request object owns no maxTokens key", async () => {
 	const stream = scriptedStream({ default: [{ text: "1,10\n" }] });
-	const outcome = await planDeletedLineRanges(
-		region(),
-		PARAMETERS,
-		borrowed(testModel(), "high"),
-		30,
-		{ streamFn: stream.streamFn },
-	);
+	const outcome = await planDeletedLineRanges(region(), PARAMETERS, borrowed(testModel(), "high"), 30, {
+		streamFn: stream.streamFn,
+	});
 	assert.equal(outcome.kind, "ranked");
 	assert.equal(stream.calls.length, 1);
 	assert.equal("maxTokens" in stream.calls[0].options, false);
@@ -83,7 +82,11 @@ test("branch summarization omits maxTokens and inherits the session reasoning le
 			type: "message" as const,
 			parentId: null,
 			timestamp: new Date().toISOString(),
-			message: { role: "user" as const, content: [{ type: "text" as const, text: "hello there" }], timestamp: Date.now() },
+			message: {
+				role: "user" as const,
+				content: [{ type: "text" as const, text: "hello there" }],
+				timestamp: Date.now(),
+			},
 		},
 	];
 	const result = await generateBranchSummary(entries as never, {

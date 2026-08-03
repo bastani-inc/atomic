@@ -12,7 +12,7 @@ let nextRemoteRendererId = 0;
 function jsonValue(value: unknown): JsonValue {
 	if (value === undefined) return null;
 	const encoded = JSON.stringify(value);
-	return encoded === undefined ? null : JSON.parse(encoded) as JsonValue;
+	return encoded === undefined ? null : (JSON.parse(encoded) as JsonValue);
 }
 
 abstract class RemoteRenderer implements Component {
@@ -29,10 +29,7 @@ abstract class RemoteRenderer implements Component {
 	protected readonly runtime: IsolatedInteractiveRuntime;
 	private readonly requestRender: () => void;
 
-	constructor(
-		runtime: IsolatedInteractiveRuntime,
-		requestRender: () => void,
-	) {
+	constructor(runtime: IsolatedInteractiveRuntime, requestRender: () => void) {
 		this.runtime = runtime;
 		this.requestRender = requestRender;
 		this.unsubscribe = runtime.onEngineMessage((message) => {
@@ -61,7 +58,9 @@ abstract class RemoteRenderer implements Component {
 		return this.frameClamp.clamp(this.lines, width);
 	}
 
-	invalidate(): void { this.markDirty(); }
+	invalidate(): void {
+		this.markDirty();
+	}
 
 	dispose(): void {
 		if (this.disposed) return;
@@ -77,7 +76,9 @@ abstract class RemoteRenderer implements Component {
 
 	protected abstract command(requestId: number, width: number): InteractiveEngineCommand;
 
-	private markDirty(): void { this.dirty = true; }
+	private markDirty(): void {
+		this.dirty = true;
+	}
 }
 
 export class RemoteToolExecutionComponent extends RemoteRenderer {
@@ -108,17 +109,35 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 	}
 
-	updateArgs(args: unknown): void { this.args = args; this.changed(); }
-	markExecutionStarted(): void { this.executionStarted = true; this.changed(); }
-	setArgsComplete(): void { this.argsComplete = true; this.changed(); }
+	updateArgs(args: unknown): void {
+		this.args = args;
+		this.changed();
+	}
+	markExecutionStarted(): void {
+		this.executionStarted = true;
+		this.changed();
+	}
+	setArgsComplete(): void {
+		this.argsComplete = true;
+		this.changed();
+	}
 	updateResult(result: RenderableToolResult, isPartial = false): void {
 		this.result = result;
 		this.isPartial = isPartial;
 		this.changed();
 	}
-	setExpanded(expanded: boolean): void { this.expanded = expanded; this.changed(); }
-	setShowImages(show: boolean): void { this.showImages = show; this.changed(); }
-	setImageWidthCells(width: number): void { this.imageWidthCells = Math.max(1, Math.floor(width)); this.changed(); }
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+		this.changed();
+	}
+	setShowImages(show: boolean): void {
+		this.showImages = show;
+		this.changed();
+	}
+	setImageWidthCells(width: number): void {
+		this.imageWidthCells = Math.max(1, Math.floor(width));
+		this.changed();
+	}
 
 	protected command(requestId: number, width: number): InteractiveEngineCommand {
 		return {
@@ -129,7 +148,7 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 			toolName: this.toolName,
 			toolCallId: this.toolCallId,
 			args: jsonValue(this.args),
-			result: this.result ? jsonValue(this.result) as JsonObject : undefined,
+			result: this.result ? (jsonValue(this.result) as JsonObject) : undefined,
 			executionStarted: this.executionStarted,
 			argsComplete: this.argsComplete,
 			isPartial: this.isPartial,
@@ -155,8 +174,14 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 		this.outputPad = outputPad;
 	}
 
-	setExpanded(expanded: boolean): void { this.expanded = expanded; this.changed(); }
-	setOutputPad(outputPad: number): void { this.outputPad = outputPad; this.changed(); }
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+		this.changed();
+	}
+	setOutputPad(outputPad: number): void {
+		this.outputPad = outputPad;
+		this.changed();
+	}
 
 	protected command(requestId: number, width: number): InteractiveEngineCommand {
 		return {

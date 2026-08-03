@@ -1,10 +1,10 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
-import type { ExtensionContext, ToolDefinition } from "../src/index.ts";
 import { getAllTools } from "../src/core/agent-session-state.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createToolDefinitionFromAgentTool, wrapToolDefinition } from "../src/core/tools/tool-definition-wrapper.ts";
+import type { ExtensionContext, ToolDefinition } from "../src/index.ts";
 
 const parameters = Type.Object({ value: Type.Number() });
 const result = (value: number) => ({ content: [{ type: "text" as const, text: String(value) }], details: { value } });
@@ -36,7 +36,9 @@ describe("tool definition wrappers", () => {
 		const tool = wrapToolDefinition(definition, () => context);
 		expect(tool.parameters).toBe(parameters);
 		expect(tool.prepareArguments?.({ value: "4" })).toEqual({ value: 4 });
-		const output = await tool.execute("call-1", { value: 4 }, undefined, (update) => updates.push(update.details.value));
+		const output = await tool.execute("call-1", { value: 4 }, undefined, (update) =>
+			updates.push(update.details.value),
+		);
 		expect(output.details.value).toBe(8);
 		expect(updates).toEqual([4]);
 	});
@@ -114,9 +116,10 @@ describe("tool definition wrappers", () => {
 			origin: "top-level" as const,
 			configurationOrigin: "atomic" as const,
 		};
-		const inspect = (definition: ToolDefinition) => getAllTools.call({
-			_toolDefinitions: new Map([[definition.name, { definition, sourceInfo }]]),
-		} as never)[0]!;
+		const inspect = (definition: ToolDefinition) =>
+			getAllTools.call({
+				_toolDefinitions: new Map([[definition.name, { definition, sourceInfo }]]),
+			} as never)[0]!;
 		const base: ToolDefinition = {
 			name: "inspect",
 			label: "Inspect",

@@ -74,7 +74,14 @@ function scanForTruncationMarker(filePath: string): boolean {
 }
 
 function hydrationFromStat(stat: fs.Stats, state: TelemetryState): TelemetryHydration {
-	return { dev: Number(stat.dev), ino: Number(stat.ino), size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ...state };
+	return {
+		dev: Number(stat.dev),
+		ino: Number(stat.ino),
+		size: stat.size,
+		mtimeMs: stat.mtimeMs,
+		ctimeMs: stat.ctimeMs,
+		...state,
+	};
 }
 
 function existingTelemetryState(filePath: string, seed?: TelemetryState): TelemetryState {
@@ -96,11 +103,16 @@ function existingTelemetryState(filePath: string, seed?: TelemetryState): Teleme
 function cacheSettledWriter(writer: SharedEventWriter): void {
 	try {
 		const stat = fs.statSync(writer.filePath);
-		cacheHydration(writer.key, hydrationFromStat(stat, {
-			telemetryBytes: Math.max(stat.size, writer.telemetryBytes),
-			telemetryTruncated: writer.telemetryTruncated,
-		}));
-	} catch { hydrationCache.delete(writer.key); }
+		cacheHydration(
+			writer.key,
+			hydrationFromStat(stat, {
+				telemetryBytes: Math.max(stat.size, writer.telemetryBytes),
+				telemetryTruncated: writer.telemetryTruncated,
+			}),
+		);
+	} catch {
+		hydrationCache.delete(writer.key);
+	}
 }
 
 export function resetEventWriterHydrationCacheForTests(): void {
@@ -205,7 +217,12 @@ function createDeferredLease(
 	};
 }
 
-function createWriter(filePath: string, key: string, createWriteStream: StreamFactory, seed?: TelemetryState): SharedEventWriter | undefined {
+function createWriter(
+	filePath: string,
+	key: string,
+	createWriteStream: StreamFactory,
+	seed?: TelemetryState,
+): SharedEventWriter | undefined {
 	let stream: JsonlWriteStream;
 	try {
 		stream = createWriteStream(filePath);
@@ -213,11 +230,22 @@ function createWriter(filePath: string, key: string, createWriteStream: StreamFa
 		return undefined;
 	}
 	let resolveSettled = () => {};
-	const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+	const settled = new Promise<void>((resolve) => {
+		resolveSettled = resolve;
+	});
 	const writer: SharedEventWriter = {
-		stream, sources: new Set(), refs: 0, backpressured: false,
+		stream,
+		sources: new Set(),
+		refs: 0,
+		backpressured: false,
 		...existingTelemetryState(filePath, seed),
-		closed: false, failed: false, filePath, key, closingLines: [], settled, resolveSettled,
+		closed: false,
+		failed: false,
+		filePath,
+		key,
+		closingLines: [],
+		settled,
+		resolveSettled,
 	};
 	stream.on?.("error", () => failWriter(writer));
 	writers.set(key, writer);
@@ -257,13 +285,20 @@ function acquireEventWriterInternal(
 			if (closePromise) return closePromise;
 			writer!.sources.delete(source);
 			writer!.refs -= 1;
-			if (writer!.refs > 0 || writer!.failed) return closePromise = Promise.resolve();
+			if (writer!.refs > 0 || writer!.failed) {
+				closePromise = Promise.resolve();
+				return closePromise;
+			}
 			writer!.closed = true;
 			try {
 				writer!.stream.end(() => {
 					if (!writer!.failed) {
 						for (const line of writer!.closingLines) {
-							try { fs.appendFileSync(writer!.filePath, line); } catch { /* telemetry failure is non-fatal */ }
+							try {
+								fs.appendFileSync(writer!.filePath, line);
+							} catch {
+								/* telemetry failure is non-fatal */
+							}
 						}
 						settleWriter(writer!);
 					}
@@ -271,7 +306,8 @@ function acquireEventWriterInternal(
 			} catch {
 				failWriter(writer!);
 			}
-			return closePromise = writer!.settled;
+			closePromise = writer!.settled;
+			return closePromise;
 		},
 	};
 }

@@ -1,12 +1,20 @@
-import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import { existsSync } from "node:fs";
+import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../modes/interactive/components/extension-selector.ts";
-import { FirstTimeSetupComponent, type FirstTimeSetupResult } from "../modes/interactive/components/first-time-setup.ts";
-import { detectTerminalBackgroundTheme, initTheme, setTheme, type TerminalTheme } from "../modes/interactive/theme/theme.ts";
+import {
+	FirstTimeSetupComponent,
+	type FirstTimeSetupResult,
+} from "../modes/interactive/components/first-time-setup.ts";
+import {
+	detectTerminalBackgroundTheme,
+	initTheme,
+	setTheme,
+	type TerminalTheme,
+} from "../modes/interactive/theme/theme.ts";
 
 function createStartupTui(settingsManager: SettingsManager): TUI {
 	initTheme(settingsManager.getTheme());
@@ -57,9 +65,16 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 			setTheme(detectedTheme);
 			const setup = new FirstTimeSetupComponent({
 				detectedTheme,
-				onThemePreview: (name) => { setTheme(name); ui.requestRender(); },
-				onSubmit: (result) => { void finish(result); },
-				onCancel: () => { void finish(undefined); },
+				onThemePreview: (name) => {
+					setTheme(name);
+					ui.requestRender();
+				},
+				onSubmit: (result) => {
+					void finish(result);
+				},
+				onCancel: () => {
+					void finish(undefined);
+				},
 			});
 			ui.addChild(setup);
 			ui.setFocus(setup);

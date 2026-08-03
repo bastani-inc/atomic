@@ -13,10 +13,14 @@
  * host `SessionPickerHostController` through an in-process message pump (no
  * spawned process).
  */
-import { afterAll, beforeAll, describe, test } from "bun:test";
+
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
-import type { ExtensionUIContext, HostSessionPickerRow } from "../../packages/coding-agent/src/core/extensions/index.ts";
+import { afterAll, beforeAll, describe, test } from "vitest";
+import type {
+	ExtensionUIContext,
+	HostSessionPickerRow,
+} from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { SessionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -24,13 +28,14 @@ import { EngineSessionPickerService } from "../../packages/coding-agent/src/mode
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
 	INTERACTIVE_ENGINE_PROTOCOL_VERSION,
+	type InteractiveEngineCommand,
+	type InteractiveEngineMessage,
 	parseInteractiveEngineCommand,
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
-	type InteractiveEngineCommand,
-	type InteractiveEngineMessage,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { SessionPickerHostController } from "../../packages/coding-agent/src/modes/interactive-engine/session-picker-host.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";
@@ -66,6 +71,8 @@ function makeBridge(): Bridge {
 	});
 
 	const runtime = {
+		// Engine death is not exercised here; the controllers only need the subscription.
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			engineListeners.push(listener);
 			return () => {};
@@ -80,7 +87,12 @@ function makeBridge(): Bridge {
 		requestRender: () => {},
 		setWidget: () => {},
 		custom: (
-			factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => SessionSelectorComponent,
+			factory: (
+				tui: unknown,
+				theme: unknown,
+				keys: unknown,
+				done: (result: unknown) => void,
+			) => SessionSelectorComponent,
 		) =>
 			new Promise((resolve) => {
 				const mount: HostMount = { component: undefined as unknown as SessionSelectorComponent, resolved: false };
@@ -133,7 +145,7 @@ function renderText(bridge: Bridge, width = 120): string {
 }
 
 async function flush(times = 6): Promise<void> {
-	for (let index = 0; index < times; index += 1) await Bun.sleep(0);
+	for (let index = 0; index < times; index += 1) await sleep(0);
 }
 
 describe("engine_session_picker protocol", () => {
@@ -152,7 +164,9 @@ describe("engine_session_picker protocol", () => {
 
 	test("rejects malformed rows, colors, and missing fields", () => {
 		const reject = (payload: Record<string, unknown>) =>
-			parseInteractiveEngineMessage(JSON.stringify({ type: "engine_session_picker_open", componentId: "p1", ...payload }));
+			parseInteractiveEngineMessage(
+				JSON.stringify({ type: "engine_session_picker_open", componentId: "p1", ...payload }),
+			);
 		assert.equal(reject({ sessions: "rows" }), undefined);
 		assert.equal(reject({ sessions: [{ ...row("a"), modifiedAt: "soon" }] }), undefined);
 		assert.equal(reject({ sessions: [{ ...row("a"), messageColor: "rainbow" }] }), undefined);
@@ -172,7 +186,10 @@ describe("engine_session_picker protocol", () => {
 		] as const) {
 			assert.deepEqual(parseInteractiveEngineCommand(serializeInteractiveEngineFrame(command)), command);
 		}
-		assert.equal(parseInteractiveEngineCommand(JSON.stringify({ type: "engine_session_picker_select", componentId: "p1" })), undefined);
+		assert.equal(
+			parseInteractiveEngineCommand(JSON.stringify({ type: "engine_session_picker_select", componentId: "p1" })),
+			undefined,
+		);
 		assert.equal(parseInteractiveEngineCommand(JSON.stringify({ type: "engine_session_picker_cancel" })), undefined);
 	});
 });

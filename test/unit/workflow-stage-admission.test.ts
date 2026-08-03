@@ -1,18 +1,28 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { describe, test } from "vitest";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 
 describe("WorkflowStageAdmissionBoundary", () => {
 	test("admission before close is delivered to the stage and drained before close resolves", async () => {
 		const events: string[] = [];
-		const boundary = new WorkflowStageAdmissionBoundary(async () => { events.push("drained"); });
+		const boundary = new WorkflowStageAdmissionBoundary(async () => {
+			events.push("drained");
+		});
 		const delivery = Promise.withResolvers<void>();
-		const admitted = boundary.admit("message-1", async () => {
-			events.push("stage");
-			await delivery.promise;
-		}, () => { events.push("external"); });
+		const admitted = boundary.admit(
+			"message-1",
+			async () => {
+				events.push("stage");
+				await delivery.promise;
+			},
+			() => {
+				events.push("external");
+			},
+		);
 		let closed = false;
-		const close = boundary.close().then(() => { closed = true; });
+		const close = boundary.close().then(() => {
+			closed = true;
+		});
 
 		await Promise.resolve();
 		assert.equal(admitted.decision, "admitted");
@@ -26,7 +36,9 @@ describe("WorkflowStageAdmissionBoundary", () => {
 
 	test("concurrent close calls share one drain", async () => {
 		let drains = 0;
-		const boundary = new WorkflowStageAdmissionBoundary(async () => { drains += 1; });
+		const boundary = new WorkflowStageAdmissionBoundary(async () => {
+			drains += 1;
+		});
 
 		await Promise.all([boundary.close(), boundary.close()]);
 		assert.equal(drains, 1);
@@ -36,7 +48,15 @@ describe("WorkflowStageAdmissionBoundary", () => {
 		const boundary = new WorkflowStageAdmissionBoundary();
 		await boundary.close();
 		const events: string[] = [];
-		const result = boundary.admit("message-1", () => { events.push("stage"); }, () => { events.push("external"); });
+		const result = boundary.admit(
+			"message-1",
+			() => {
+				events.push("stage");
+			},
+			() => {
+				events.push("external");
+			},
+		);
 		await result.completion;
 
 		assert.equal(result.decision, "late");
@@ -62,8 +82,21 @@ describe("WorkflowStageAdmissionBoundary", () => {
 		await boundary.close();
 		const route = Promise.withResolvers<void>();
 		let attempts = 0;
-		const first = boundary.admit("completion-1", () => {}, () => { attempts += 1; return route.promise; });
-		const duplicate = boundary.admit("completion-1", () => {}, () => { attempts += 1; });
+		const first = boundary.admit(
+			"completion-1",
+			() => {},
+			() => {
+				attempts += 1;
+				return route.promise;
+			},
+		);
+		const duplicate = boundary.admit(
+			"completion-1",
+			() => {},
+			() => {
+				attempts += 1;
+			},
+		);
 
 		assert.equal(duplicate.decision, "duplicate");
 		route.reject(new Error("temporary route failure"));
@@ -75,12 +108,22 @@ describe("WorkflowStageAdmissionBoundary", () => {
 	test("a synchronous reentrant duplicate joins the installed owner", async () => {
 		const boundary = new WorkflowStageAdmissionBoundary();
 		const decisions: string[] = [];
-		const owner = boundary.admit("message-1", async () => {
-			await Promise.resolve();
-			const duplicate = boundary.admit("message-1", () => { decisions.push("duplicate-delivered"); }, () => {});
-			decisions.push(duplicate.decision);
-			return duplicate.completion;
-		}, () => {});
+		const owner = boundary.admit(
+			"message-1",
+			async () => {
+				await Promise.resolve();
+				const duplicate = boundary.admit(
+					"message-1",
+					() => {
+						decisions.push("duplicate-delivered");
+					},
+					() => {},
+				);
+				decisions.push(duplicate.decision);
+				return duplicate.completion;
+			},
+			() => {},
+		);
 
 		await owner.completion;
 		assert.deepEqual(decisions, ["duplicate"]);
@@ -90,11 +133,18 @@ describe("WorkflowStageAdmissionBoundary", () => {
 		const boundary = new WorkflowStageAdmissionBoundary();
 		const producer = Promise.withResolvers<void>();
 		const events: string[] = [];
-		const eventualDelivery = producer.promise.then(() => boundary.admit(
-			"completion-1",
-			() => { events.push("stage"); },
-			() => { events.push("external"); },
-		).completion);
+		const eventualDelivery = producer.promise.then(
+			() =>
+				boundary.admit(
+					"completion-1",
+					() => {
+						events.push("stage");
+					},
+					() => {
+						events.push("external");
+					},
+				).completion,
+		);
 
 		await boundary.close();
 		assert.deepEqual(events, []);
@@ -106,9 +156,25 @@ describe("WorkflowStageAdmissionBoundary", () => {
 	test("a stable key is delivered exactly once across the close boundary", async () => {
 		const boundary = new WorkflowStageAdmissionBoundary();
 		const events: string[] = [];
-		await boundary.admit("message-1", () => { events.push("stage"); }, () => { events.push("external"); }).completion;
+		await boundary.admit(
+			"message-1",
+			() => {
+				events.push("stage");
+			},
+			() => {
+				events.push("external");
+			},
+		).completion;
 		await boundary.close();
-		const duplicate = boundary.admit("message-1", () => { events.push("stage"); }, () => { events.push("external"); });
+		const duplicate = boundary.admit(
+			"message-1",
+			() => {
+				events.push("stage");
+			},
+			() => {
+				events.push("external");
+			},
+		);
 		await duplicate.completion;
 
 		assert.equal(duplicate.decision, "duplicate");

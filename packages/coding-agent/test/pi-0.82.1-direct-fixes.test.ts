@@ -1,17 +1,23 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentHarness, createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-agent-core";
+import {
+	AgentHarness,
+	createBashTool,
+	createEditTool,
+	createReadTool,
+	createWriteTool,
+} from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MessageRenderOptions, MessageRenderer } from "../src/core/extensions/types.ts";
+import type { MessageRenderer, MessageRenderOptions } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
 import { loadProjectContextFiles } from "../src/core/resource-loader-context-files.ts";
 import { CustomMessageComponent } from "../src/modes/interactive/components/custom-message.ts";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import type { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import type { InteractiveEngineCommand } from "../src/modes/interactive-engine/protocol.ts";
 import { RemoteCustomMessageComponent } from "../src/modes/interactive-engine/remote-renderer.ts";
-import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-resource-paths.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -86,12 +92,11 @@ describe("Pi 0.82.1 remaining direct coding-agent parity", () => {
 		for (const [relativePath, expected] of Object.entries(sources)) {
 			const source = readFileSync(join(import.meta.dirname, "../src", relativePath), "utf8");
 			expect(source, relativePath).toContain(expected);
-			for (const constructor of source.match(/new TUI\([\s\S]*?\);/g) ?? []) {
-				expect(constructor, `${relativePath}: ${constructor}`).toContain(expected);
+			for (const constructorCall of source.match(/new TUI\([\s\S]*?\);/g) ?? []) {
+				expect(constructorCall, `${relativePath}: ${constructorCall}`).toContain(expected);
 			}
 		}
 	});
-
 
 	it("preserves sibling npm extension topology relative to the declaring package", () => {
 		const primary = "/tmp/project/.atomic/npm/node_modules/primary-package";

@@ -70,8 +70,11 @@ You can submit messages while the agent is still working:
 
 - **Enter** queues a steering message, delivered after the current assistant turn finishes executing its tool calls.
 - **ALT+Enter** queues a follow-up message, delivered after the agent finishes all work.
-- **Escape** or **Ctrl+C** aborts active/queued work and pauses queued messages in place. They remain queued, in their original per-queue order, until you submit the next ordinary chat message; that submission resumes the chat and makes each queued item eligible once. After the abort settles, a later idle Ctrl+C clears the editor without releasing the hold, and a second quick idle press exits.
-- **ALT+Up** explicitly retrieves queued messages back to the editor without resuming them. Even when retrieval empties the queue, the pause remains active until the next ordinary submission.
+- **Escape** aborts active/queued work and restores queued steering/follow-up messages to the editor. The session remains paused until you submit the next ordinary chat message; that submission releases any held queue before starting the new turn. A later Escape while the queue is paused restores any newly queued steering/follow-up text without releasing the pause.
+- **Ctrl+C** aborts active/queued work and pauses queued messages in place. They remain queued, in their original per-queue order, until you submit the next ordinary chat message; that submission resumes the chat and makes each queued item eligible once. After the abort settles, a later idle Ctrl+C clears the editor without releasing the hold, and a second quick idle press exits.
+- **ALT+Up** explicitly retrieves queued messages back to the editor without aborting active work or resuming a paused session. Even when retrieval empties the queue, the pause remains active until the next ordinary submission.
+
+Both abort routes are cooperative: they ask the agent to stop and wait for it — Escape waits as long as the agent needs — and never terminate the engine that runs your tools. Ctrl+C additionally acts as an escape hatch: it always reaches Atomic when an extension's custom UI has taken over the screen — closing that UI if it does not handle the key itself — and it replaces the engine when it stops answering entirely, including a replacement that hangs before it finishes starting or one that failed to start. A message that could not be sent comes back to the editor rather than being lost: exactly as you typed it, with pasted content intact, placed above anything you typed while the send was pending and separated by a blank line, together with anything still queued behind it in the order you entered it. Atomic does not also show a red error for it. See [Keybindings](/keybindings#application).
 
 On Windows Terminal, ALT+Enter is fullscreen by default. Remap it as described in [Terminal setup](/terminal-setup) if you want Atomic to receive the shortcut.
 
@@ -170,6 +173,38 @@ atomic config                      # Enable/disable package resources
 These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/quickstart#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust.
 
 See [Atomic Packages](/packages) for package sources and security notes.
+
+### Credential Commands
+
+```bash
+atomic auth print-api-key --model <model> [--provider <p>]
+atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
+```
+
+Print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+
+`--model` is required. There is no ambient "current model", so the command cannot emit a credential you did not name. When several configured providers offer the model, pass `--provider` to choose one. `--provider` and `--model` are the only options either subcommand accepts: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
+
+`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. Any other subcommand exits `1` and names the two valid ones. Help never uses stdout, so stdout from this command family is a credential or empty.
+
+`print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error — an API key has no expiry. A failed refresh leaves your stored credential untouched.
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Credential written to stdout, one trailing newline |
+| `1` | Usage error |
+| `2` | No credential configured for that model/provider |
+| `3` | Several configured providers match — pass `--provider` |
+| `4` | That credential kind is unsupported for the provider |
+| `5` | OAuth refresh failed; the stored credential is unchanged |
+| `6` | The provider cannot mint a token that lives as long as `--min-expiry` |
+| `7` | The provider's OAuth credential could not be used — no claim is made about the stored credential |
+| `8` | The credential could not be written; nothing was emitted |
+| `9` | Only part of the credential was written; discard the output |
+
+Exit `5` is reported only for a refresh that itself failed, which happens before anything is persisted; that is the only exit that promises your stored credential is untouched. Any other OAuth failure exits `7` and makes no such promise.
+
+Stdout is empty on every non-zero exit but one. Once the credential reaches stdout the command has succeeded: if the stream then fails to drain — a reader that closed the pipe, for example — that is reported on stderr and the exit code stays `0`, because a non-zero exit here would contradict the bytes the caller already holds. The exception is exit `9`, which reports that only part of the credential was written before the stream failed; those bytes cannot be recalled, so stdout is not empty, and the output is a fragment to discard rather than a credential to use. See [Security](/security#credential-export) before wiring this into a script.
 
 ### Modes
 

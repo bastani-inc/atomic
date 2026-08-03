@@ -2,14 +2,46 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 
 export function installAgentSessionAccessors(prototype: AgentSession): void {
 	Object.defineProperties(prototype, {
-		orchestrationContext: { get() { return this._orchestrationContext; } },
-		modelRuntime: { get() { return this._modelRuntime; } },
-		state: { get() { return this.agent.state; } },
-		model: { get() { return this.agent.state.model; } },
-		thinkingLevel: { get() { return this.agent.state.thinkingLevel; } },
-		isStreaming: { get() { return this.agent.state.isStreaming; } },
-		systemPrompt: { get() { return this.agent.state.systemPrompt; } },
-		retryAttempt: { get() { return this._retryAttempt; } },
+		orchestrationContext: {
+			get() {
+				return this._orchestrationContext;
+			},
+		},
+		modelRuntime: {
+			get() {
+				return this._modelRuntime;
+			},
+		},
+		state: {
+			get() {
+				return this.agent.state;
+			},
+		},
+		model: {
+			get() {
+				return this.agent.state.model;
+			},
+		},
+		thinkingLevel: {
+			get() {
+				return this.agent.state.thinkingLevel;
+			},
+		},
+		isStreaming: {
+			get() {
+				return this.agent.state.isStreaming;
+			},
+		},
+		systemPrompt: {
+			get() {
+				return this.agent.state.systemPrompt;
+			},
+		},
+		retryAttempt: {
+			get() {
+				return this._retryAttempt;
+			},
+		},
 		isCompacting: {
 			get() {
 				return (
@@ -19,22 +51,95 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				);
 			},
 		},
-		messages: { get() { return this.agent.state.messages; } },
-		steeringMode: { get() { return this.agent.steeringMode; } },
-		followUpMode: { get() { return this.agent.followUpMode; } },
-		sessionFile: { get() { return this.sessionManager.getSessionFile(); } },
-		sessionId: { get() { return this.sessionManager.getSessionId(); } },
-		sessionName: { get() { return this.sessionManager.getSessionName(); } },
-		scopedModels: { get() { return this._scopedModels; } },
-		promptTemplates: { get() { return this._resourceLoader.getPrompts().prompts; } },
-		pendingMessageCount: { get() { return this._steeringMessages.length + this._followUpMessages.length; } },
-		queuedMessagesPaused: { get() { return this._queuedMessagesPaused; } },
-		resourceLoader: { get() { return this._resourceLoader; } },
-		autoCompactionEnabled: { get() { return this.settingsManager.getCompactionEnabled(); } },
-		isRetrying: { get() { return this._retryPromise !== undefined; } },
-		autoRetryEnabled: { get() { return this.settingsManager.getRetryEnabled(); } },
-		isBashRunning: { get() { return this._bashAbortControllers.size > 0; } },
-		hasPendingBashMessages: { get() { return this._pendingBashMessages.length > 0; } },
-		extensionRunner: { get() { return this._extensionRunner; } },
+		compactionReason: {
+			get() {
+				return this._compactionReason;
+			},
+		},
+		messages: {
+			get() {
+				return this.agent.state.messages;
+			},
+		},
+		steeringMode: {
+			get() {
+				return this.agent.steeringMode;
+			},
+		},
+		followUpMode: {
+			get() {
+				return this.agent.followUpMode;
+			},
+		},
+		sessionFile: {
+			get() {
+				return this.sessionManager.getSessionFile();
+			},
+		},
+		sessionId: {
+			get() {
+				return this.sessionManager.getSessionId();
+			},
+		},
+		sessionName: {
+			get() {
+				return this.sessionManager.getSessionName();
+			},
+		},
+		scopedModels: {
+			get() {
+				return this._scopedModels;
+			},
+		},
+		promptTemplates: {
+			get() {
+				return this._resourceLoader.getPrompts().prompts;
+			},
+		},
+		pendingMessageCount: {
+			get() {
+				return this._steeringMessages.length + this._followUpMessages.length;
+			},
+		},
+		queuedMessagesPaused: {
+			get() {
+				return this._queuedMessagesPaused;
+			},
+		},
+		resourceLoader: {
+			get() {
+				return this._resourceLoader;
+			},
+		},
+		autoCompactionEnabled: {
+			get() {
+				return this.settingsManager.getCompactionEnabled();
+			},
+		},
+		isRetrying: {
+			get() {
+				return this._retryPromise !== undefined;
+			},
+		},
+		autoRetryEnabled: {
+			get() {
+				return this.settingsManager.getRetryEnabled();
+			},
+		},
+		isBashRunning: {
+			get() {
+				return this._bashAbortControllers.size > 0;
+			},
+		},
+		hasPendingBashMessages: {
+			get() {
+				return this._pendingBashMessages.length > 0;
+			},
+		},
+		extensionRunner: {
+			get() {
+				return this._extensionRunner;
+			},
+		},
 	});
 }

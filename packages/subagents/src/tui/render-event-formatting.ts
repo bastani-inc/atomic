@@ -1,11 +1,23 @@
 import * as path from "node:path";
-import { MAX_SUBAGENT_NESTING_DEPTH, type AsyncJobState, type AsyncJobStep, type NestedRunSummary, type NestedStepSummary } from "../shared/types.ts";
 import { flatToLogicalStepIndex } from "../runs/background/parallel-groups.ts";
-import { formatDuration, formatModelThinking, shortenPath } from "../shared/formatters.ts";
 import { formatNestedAggregate } from "../runs/shared/nested-render.ts";
+import { formatDuration, formatModelThinking, shortenPath } from "../shared/formatters.ts";
 import { formatAgentRunningLabel } from "../shared/status-format.ts";
-import { buildLiveStatusLine, formatCurrentToolLine, formatTokenStat, formatToolUseStat, statJoin } from "./render-status-progress.ts";
-import { runningGlyph, runningPulseGlyph, truncLine, type Theme } from "./render-layout.ts";
+import {
+	type AsyncJobState,
+	type AsyncJobStep,
+	MAX_SUBAGENT_NESTING_DEPTH,
+	type NestedRunSummary,
+	type NestedStepSummary,
+} from "../shared/types.ts";
+import { runningGlyph, runningPulseGlyph, type Theme, truncLine } from "./render-layout.ts";
+import {
+	buildLiveStatusLine,
+	formatCurrentToolLine,
+	formatTokenStat,
+	formatToolUseStat,
+	statJoin,
+} from "./render-status-progress.ts";
 
 export function formatWidgetAgents(agents: string[]): string {
 	const distinct = [...new Set(agents)];
@@ -24,7 +36,8 @@ export function widgetJobName(job: AsyncJobState): string {
 
 export function widgetActivity(job: AsyncJobState): string {
 	const facts: string[] = [];
-	if (job.currentTool && job.currentToolStartedAt !== undefined && job.updatedAt !== undefined) facts.push(`${job.currentTool} ${formatDuration(Math.max(0, job.updatedAt - job.currentToolStartedAt))}`);
+	if (job.currentTool && job.currentToolStartedAt !== undefined && job.updatedAt !== undefined)
+		facts.push(`${job.currentTool} ${formatDuration(Math.max(0, job.updatedAt - job.currentToolStartedAt))}`);
 	else if (job.currentTool) facts.push(job.currentTool);
 	if (job.currentPath) facts.push(shortenPath(job.currentPath));
 	if (job.turnCount !== undefined) facts.push(`${job.turnCount} turns`);
@@ -39,7 +52,6 @@ export function widgetActivity(job: AsyncJobState): string {
 	if (job.status === "failed") return "Failed";
 	return "Done";
 }
-
 
 export function widgetStatusGlyph(job: AsyncJobState, theme: Theme, pulseFrame?: number): string {
 	if (job.status === "running") return theme.fg("accent", runningPulseGlyph(pulseFrame));
@@ -75,7 +87,8 @@ export function widgetStepStatus(status: AsyncJobStep["status"], theme: Theme): 
 
 export function widgetStepActivity(step: NonNullable<AsyncJobState["steps"]>[number], snapshotNow?: number): string {
 	const facts: string[] = [];
-	if (step.currentTool && step.currentToolStartedAt !== undefined && snapshotNow !== undefined) facts.push(`${step.currentTool} ${formatDuration(Math.max(0, snapshotNow - step.currentToolStartedAt))}`);
+	if (step.currentTool && step.currentToolStartedAt !== undefined && snapshotNow !== undefined)
+		facts.push(`${step.currentTool} ${formatDuration(Math.max(0, snapshotNow - step.currentToolStartedAt))}`);
 	else if (step.currentTool) facts.push(step.currentTool);
 	if (step.currentPath) facts.push(shortenPath(step.currentPath));
 	if (step.turnCount !== undefined) facts.push(`${step.turnCount} turns`);
@@ -89,7 +102,7 @@ export function widgetStepActivity(step: NonNullable<AsyncJobState["steps"]>[num
 
 export function widgetStats(job: AsyncJobState, theme: Theme): string {
 	const parts: string[] = [];
-	const stepsTotal = job.stepsTotal ?? (job.agents?.length ?? 1);
+	const stepsTotal = job.stepsTotal ?? job.agents?.length ?? 1;
 	if (job.activeParallelGroup) {
 		const running = job.runningSteps ?? (job.status === "running" ? 1 : 0);
 		const done = job.completedSteps ?? (job.status === "complete" ? stepsTotal : 0);
@@ -97,9 +110,12 @@ export function widgetStats(job: AsyncJobState, theme: Theme): string {
 			if (job.status === "running" && running > 0) parts.push(formatAgentRunningLabel(running));
 			if (stepsTotal > 0) parts.push(`${done}/${stepsTotal} done`);
 		} else {
-			const activeGroup = job.currentStep !== undefined
-				? job.parallelGroups?.find((group) => job.currentStep! >= group.start && job.currentStep! < group.start + group.count)
-				: job.parallelGroups?.find((group) => group.start === 0);
+			const activeGroup =
+				job.currentStep !== undefined
+					? job.parallelGroups?.find(
+							(group) => job.currentStep! >= group.start && job.currentStep! < group.start + group.count,
+						)
+					: job.parallelGroups?.find((group) => group.start === 0);
 			const logicalStep = activeGroup?.stepIndex ?? job.currentStep ?? 0;
 			const total = job.chainStepCount ?? stepsTotal;
 			const groupParts = [`${done}/${stepsTotal} done`];
@@ -118,7 +134,8 @@ export function widgetStats(job: AsyncJobState, theme: Theme): string {
 	}
 	if (job.toolCount !== undefined) parts.push(formatToolUseStat(job.toolCount));
 	if (job.totalTokens?.total) parts.push(formatTokenStat(job.totalTokens.total));
-	if (job.startedAt !== undefined && job.updatedAt !== undefined) parts.push(formatDuration(Math.max(0, job.updatedAt - job.startedAt)));
+	if (job.startedAt !== undefined && job.updatedAt !== undefined)
+		parts.push(formatDuration(Math.max(0, job.updatedAt - job.startedAt)));
 	return statJoin(theme, parts);
 }
 
@@ -136,7 +153,12 @@ export function modelThinkingBadge(theme: Theme, model?: string, thinking?: stri
 	return label ? theme.fg("dim", ` (${label})`) : "";
 }
 
-export function widgetStepActivityLine(step: NonNullable<AsyncJobState["steps"]>[number], width: number, expanded: boolean, snapshotNow?: number): string {
+export function widgetStepActivityLine(
+	step: NonNullable<AsyncJobState["steps"]>[number],
+	width: number,
+	expanded: boolean,
+	snapshotNow?: number,
+): string {
 	const toolLine = formatCurrentToolLine(step, width, expanded, snapshotNow);
 	if (toolLine) return toolLine;
 	const activity = buildLiveStatusLine(step, snapshotNow);
@@ -145,7 +167,10 @@ export function widgetStepActivityLine(step: NonNullable<AsyncJobState["steps"]>
 	return "";
 }
 
-export function widgetOutputPath(job: AsyncJobState, step: NonNullable<AsyncJobState["steps"]>[number]): string | undefined {
+export function widgetOutputPath(
+	job: AsyncJobState,
+	step: NonNullable<AsyncJobState["steps"]>[number],
+): string | undefined {
 	if (typeof step.index !== "number") return undefined;
 	return path.join(job.asyncDir, `output-${step.index}.log`);
 }
@@ -156,7 +181,11 @@ export function nestedRunName(run: NestedRunSummary): string {
 	return run.id;
 }
 
-export function nestedStatusGlyph(state: NestedRunSummary["state"] | NestedStepSummary["status"], theme: Theme, pulseFrame?: number): string {
+export function nestedStatusGlyph(
+	state: NestedRunSummary["state"] | NestedStepSummary["status"],
+	theme: Theme,
+	pulseFrame?: number,
+): string {
 	if (state === "running") return theme.fg("accent", runningPulseGlyph(pulseFrame));
 	if (state === "complete" || state === "completed") return theme.fg("success", "✓");
 	if (state === "failed") return theme.fg("error", "✗");
@@ -164,10 +193,23 @@ export function nestedStatusGlyph(state: NestedRunSummary["state"] | NestedStepS
 	return theme.fg("muted", "◦");
 }
 
-
-export function nestedActivity(input: Pick<NestedRunSummary | NestedStepSummary, "activityState" | "lastActivityAt" | "currentTool" | "currentToolStartedAt" | "currentPath" | "turnCount" | "toolCount">, state: NestedRunSummary["state"] | NestedStepSummary["status"], snapshotNow?: number): string {
+export function nestedActivity(
+	input: Pick<
+		NestedRunSummary | NestedStepSummary,
+		| "activityState"
+		| "lastActivityAt"
+		| "currentTool"
+		| "currentToolStartedAt"
+		| "currentPath"
+		| "turnCount"
+		| "toolCount"
+	>,
+	state: NestedRunSummary["state"] | NestedStepSummary["status"],
+	snapshotNow?: number,
+): string {
 	const facts: string[] = [];
-	if (input.currentTool && input.currentToolStartedAt !== undefined && snapshotNow !== undefined) facts.push(`${input.currentTool} ${formatDuration(Math.max(0, snapshotNow - input.currentToolStartedAt))}`);
+	if (input.currentTool && input.currentToolStartedAt !== undefined && snapshotNow !== undefined)
+		facts.push(`${input.currentTool} ${formatDuration(Math.max(0, snapshotNow - input.currentToolStartedAt))}`);
 	else if (input.currentTool) facts.push(input.currentTool);
 	if (input.currentPath) facts.push(shortenPath(input.currentPath));
 	if (input.turnCount !== undefined) facts.push(`${input.turnCount} turns`);
@@ -183,7 +225,15 @@ export function nestedActivity(input: Pick<NestedRunSummary | NestedStepSummary,
 	return "Done";
 }
 
-export function formatNestedWidgetLines(children: NestedRunSummary[] | undefined, theme: Theme, width: number, expanded: boolean, snapshotNow?: number, lineBudget = expanded ? 12 : 1, now?: number): string[] {
+export function formatNestedWidgetLines(
+	children: NestedRunSummary[] | undefined,
+	theme: Theme,
+	width: number,
+	expanded: boolean,
+	snapshotNow?: number,
+	lineBudget = expanded ? 12 : 1,
+	now?: number,
+): string[] {
 	if (!children?.length || lineBudget <= 0) return [];
 	if (!expanded) {
 		const aggregate = formatNestedAggregate(children);
@@ -207,15 +257,28 @@ export function formatNestedWidgetLines(children: NestedRunSummary[] | undefined
 			}
 			const activity = nestedActivity(child, child.state, snapshotNow ?? child.lastUpdate);
 			const error = child.error ? ` · ${child.error}` : "";
-			lines.push(theme.fg("dim", `${prefix}↳ ${nestedStatusGlyph(child.state, theme, now)} ${nestedRunName(child)} · ${child.state} · ${activity}${error}`));
+			lines.push(
+				theme.fg(
+					"dim",
+					`${prefix}↳ ${nestedStatusGlyph(child.state, theme, now)} ${nestedRunName(child)} · ${child.state} · ${activity}${error}`,
+				),
+			);
 			if (depth === maxDepth) {
-				const aggregate = formatNestedAggregate([...(child.steps?.flatMap((step) => step.children ?? []) ?? []), ...(child.children ?? [])]);
+				const aggregate = formatNestedAggregate([
+					...(child.steps?.flatMap((step) => step.children ?? []) ?? []),
+					...(child.children ?? []),
+				]);
 				if (aggregate && lines.length < lineBudget) lines.push(theme.fg("dim", `${prefix}  ↳ ${aggregate}`));
 				continue;
 			}
 			for (const step of child.steps ?? []) {
 				if (lines.length >= lineBudget) return;
-				lines.push(theme.fg("dim", `${prefix}  ↳ ${nestedStatusGlyph(step.status, theme, now)} ${step.agent} · ${step.status} · ${nestedActivity(step, step.status, snapshotNow ?? child.lastUpdate)}`));
+				lines.push(
+					theme.fg(
+						"dim",
+						`${prefix}  ↳ ${nestedStatusGlyph(step.status, theme, now)} ${step.agent} · ${step.status} · ${nestedActivity(step, step.status, snapshotNow ?? child.lastUpdate)}`,
+					),
+				);
 				append(step.children, depth + 1, `${prefix}    `);
 			}
 			append(child.children, depth + 1, `${prefix}  `);

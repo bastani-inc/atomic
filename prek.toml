@@ -18,6 +18,18 @@ repo = "local"
 hooks = [
   { id = "cargo-fmt", name = "cargo fmt --check", entry = "cargo fmt --check", language = "system", pass_filenames = false, files = "(^Cargo\\.toml$|^Cargo\\.lock$|^crates/.*\\.rs$|^rustfmt\\.toml$)" },
   { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy --workspace --all-targets -- -D warnings", language = "system", pass_filenames = false, files = "(^Cargo\\.toml$|^Cargo\\.lock$|^crates/.*\\.rs$)" },
-  { id = "bun-lint", name = "bun run lint", entry = "bun run lint", language = "system", pass_filenames = false },
-  { id = "bun-test-unit", name = "bun run test:unit", entry = "bun run test:unit", language = "system", pass_filenames = false },
+  # Auto-fix formatting and safe lint issues on staged files before `check` verifies them.
+  # prek fails the hook when files are modified; re-stage and retry. `check` still runs the
+  # same verify-only command as CI, so hook/CI parity is preserved.
+  { id = "format", name = "biome check --write", entry = "npx --no-install biome check --write --no-errors-on-unmatched", language = "system", files = "\\.(ts|mjs)$" },
+  # Renamed off the `bun-` prefix with the toolchain: these run under npm now.
+  { id = "check", name = "npm run check", entry = "npm run check", language = "system", pass_filenames = false },
+  { id = "test-unit", name = "npm run test:unit", entry = "npm run test:unit", language = "system", pass_filenames = false },
+  # Push-only. CI runs all three suites, so a hook that stops at test:unit lets an
+  # integration or contract failure reach CI by default — which is exactly how a
+  # Windows-only line-ending bug and a broken integration fixture both got pushed.
+  # They are cheap next to test:unit (~12 s and ~15 s against ~85 s) but there is no
+  # reason to pay them on every commit, so they gate the push instead.
+  { id = "test-integration", name = "npm run test:integration", entry = "npm run test:integration", language = "system", pass_filenames = false, stages = ["pre-push"] },
+  { id = "test-ci-contracts", name = "npm run test:ci-contracts", entry = "npm run test:ci-contracts", language = "system", pass_filenames = false, stages = ["pre-push"] },
 ]

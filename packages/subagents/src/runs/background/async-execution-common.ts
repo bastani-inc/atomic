@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { createRequire } from "node:module";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_NAME } from "@bastani/atomic";
+import { getAsyncConfigPath, type SubagentRunMode, TEMP_ROOT_DIR } from "../../shared/types.ts";
 import { formatPiSpawnError, resolvePiPackageRoot, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
-import { getAsyncConfigPath, TEMP_ROOT_DIR, type SubagentRunMode } from "../../shared/types.ts";
+import { buildSubagentSpawnEnv } from "../shared/spawn-env.ts";
 import type { AsyncExecutionResult, AsyncSpawnResult } from "./async-execution-types.ts";
 
 const require = createRequire(import.meta.url);
@@ -18,9 +19,7 @@ function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefi
 		bin?: string | Record<string, string>;
 	};
 	const binField = pkg.bin;
-	const binPath = typeof binField === "string"
-		? binField
-		: binField?.jiti ?? Object.values(binField ?? {})[0];
+	const binPath = typeof binField === "string" ? binField : (binField?.jiti ?? Object.values(binField ?? {})[0]);
 	const candidates = [binPath, "lib/jiti-cli.mjs"].filter((candidate): candidate is string => Boolean(candidate));
 	for (const candidate of candidates) {
 		const cliPath = path.resolve(packageRoot, candidate);
@@ -32,15 +31,16 @@ function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefi
 function resolveJitiCliPath(): string | undefined {
 	const candidates: Array<() => string | undefined> = [
 		() => require.resolve("jiti/package.json"),
-		() => piPackageRoot
-			? createRequire(path.join(piPackageRoot, "package.json")).resolve("jiti/package.json")
-			: undefined,
+		() =>
+			piPackageRoot
+				? createRequire(path.join(piPackageRoot, "package.json")).resolve("jiti/package.json")
+				: undefined,
 		() => {
 			if (!process.argv[1]) return undefined;
 			const piEntry = fs.realpathSync(process.argv[1]);
 			return createRequire(piEntry).resolve("jiti/package.json");
 		},
-		() => piPackageRoot ? path.join(piPackageRoot, "node_modules", "jiti", "package.json") : undefined,
+		() => (piPackageRoot ? path.join(piPackageRoot, "node_modules", "jiti", "package.json") : undefined),
 	];
 	for (const candidate of candidates) {
 		try {
@@ -64,7 +64,7 @@ export function formatAsyncStartedMessage(headline: string): string {
 		"",
 		"The async run is detached. Do not run sleep timers or polling loops just to wait for it.",
 		"If you have independent work, continue that work. If you have nothing else to do until the async result arrives, end your turn now.",
-		"Use subagent({ action: \"status\", id: \"...\" }) when you need the current status/result, or to inspect a blocked/stale run. Do not poll just to wait.",
+		'Use subagent({ action: "status", id: "..." }) when you need the current status/result, or to inspect a blocked/stale run. Do not poll just to wait.',
 	].join("\n");
 }
 
@@ -85,17 +85,14 @@ export function writeAsyncRunnerConfig(cfg: object, suffix: string): string {
 	return cfgPath;
 }
 
-export function spawnRunner(
-	cfg: object,
-	suffix: string,
-	cwd: string,
-	env?: Record<string, string>,
-): AsyncSpawnResult {
+export function spawnRunner(cfg: object, suffix: string, cwd: string, env?: Record<string, string>): AsyncSpawnResult {
 	const cwdValidation = validatePiSpawnCwd(cwd);
 	if (!cwdValidation.ok) return { error: cwdValidation.error };
 
 	if (!jitiCliPath) {
-		return { error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed" };
+		return {
+			error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed",
+		};
 	}
 
 	const cfgPath = writeAsyncRunnerConfig(cfg, suffix);
@@ -106,7 +103,7 @@ export function spawnRunner(
 	try {
 		proc = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
-			env: { ...process.env, ...env },
+			env: buildSubagentSpawnEnv(process.env, env),
 			detached: true,
 			stdio: "ignore",
 			windowsHide: true,

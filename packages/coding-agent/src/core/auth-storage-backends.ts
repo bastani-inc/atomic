@@ -11,6 +11,13 @@ export type LockResult<T> = {
 };
 
 const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
+const AUTH_DELETE_LOCK_RETRY_OPTIONS = {
+	retries: 5,
+	factor: 2,
+	minTimeout: 100,
+	maxTimeout: 2_000,
+	randomize: true,
+} as const;
 
 export interface AuthStorageBackend {
 	/**
@@ -34,13 +41,10 @@ export interface AuthStorageBackend {
 }
 
 export class FileAuthStorageBackend implements AuthStorageBackend {
-	declare private authPath: string;
-	declare private readPaths: string[];
+	private declare authPath: string;
+	private declare readPaths: string[];
 
-	constructor(
-		authPath: string = join(getAgentDir(), "auth.json"),
-		readPaths: string[] = [authPath],
-	) {
+	constructor(authPath: string = join(getAgentDir(), "auth.json"), readPaths: string[] = [authPath]) {
 		this.authPath = normalizePath(authPath);
 		this.readPaths = readPaths.map((readPath) => normalizePath(readPath));
 	}
@@ -108,10 +112,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	 */
 	private writeAtomic(content: string, path = this.authPath): void {
 		const dir = dirname(path);
-		const tempPath = join(
-			dir,
-			`.${`auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`}.tmp`,
-		);
+		const tempPath = join(dir, `.${`auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`}.tmp`);
 		try {
 			writeFileSync(tempPath, content, AUTH_FILE_WRITE_OPTIONS);
 			chmodSync(tempPath, 0o600);
@@ -152,11 +153,17 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		const releases: Array<() => Promise<void>> = [];
 		try {
 			for (const path of paths) {
-				releases.push(await lockfile.lock(path, {
-					realpath: false,
-					retries: { retries: 10, factor: 2, minTimeout: 100, maxTimeout: 10000, randomize: true },
-					stale: 30000,
-				}));
+				releases.push(
+					await lockfile.lock(path, {
+						realpath: false,
+						// Keep layered-file deletion below the logout RPC's 30-second
+						// deadline even if every auth path is actively locked. A caller
+						// then receives the actionable lock error instead of an abandoned
+						// request that poisons the engine's ordinary command lane.
+						retries: AUTH_DELETE_LOCK_RETRY_OPTIONS,
+						stale: 30000,
+					}),
+				);
 			}
 			for (const path of paths) {
 				const data = JSON.parse(readFileSync(path, "utf-8")) as AuthStorageData;
@@ -283,4 +290,3 @@ export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 }
-

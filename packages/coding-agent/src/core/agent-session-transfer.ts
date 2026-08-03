@@ -1,8 +1,11 @@
+import {
+	forwardWorkflowStageDeliveries,
+	resolveWorkflowStageDeliveryTarget,
+} from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
-import { forwardWorkflowStageDeliveries, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { transferProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { composePauseAbortBoundaries } from "./agent-session-queue-pause.ts";
+import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
 
 /** Atomically retire one stage session and prepend all of its delivery ownership to the replacement. */
 export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: object): void {
@@ -42,16 +45,12 @@ export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: ob
 		// Existing source and replacement deliveries may already be running. Future
 		// interrupts and resume must wait for both settlement chains without making
 		// the forwarded source callback wait on a chain that contains itself.
-		next._interruptDeliveryQueue = Promise.all([
-			sourceInterruptQueue,
-			targetInterruptQueue,
-		]).then(() => undefined).catch(() => undefined);
+		next._interruptDeliveryQueue = Promise.all([sourceInterruptQueue, targetInterruptQueue])
+			.then(() => undefined)
+			.catch(() => undefined);
 	}
 	next._activeInterruptQueueHold = undefined;
-	const transferredAbortBoundary = composePauseAbortBoundaries([
-		sourceAbortBoundary,
-		targetAbortBoundary,
-	]);
+	const transferredAbortBoundary = composePauseAbortBoundaries([sourceAbortBoundary, targetAbortBoundary]);
 	next._queuedMessagesPauseAbortBoundary = transferredAbortBoundary;
 	if (transferredAbortBoundary !== undefined) void transferredAbortBoundary.catch(() => {});
 	const remainsPaused = sourcePaused || targetPaused;

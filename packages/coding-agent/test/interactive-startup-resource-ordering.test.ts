@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { test } from "vitest";
+import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
 import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.ts";
-import { createShowLoadedResourcesThis } from "./interactive-mode-status-resources-helpers.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import {
+	releaseStartupChatOutput,
+	StartupChatContainer,
+} from "../src/modes/interactive/interactive-startup-chat-container.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { attachInteractiveEngineHost } from "../src/modes/interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../src/modes/rpc/rpc-types.ts";
-import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
-import { StartupChatContainer, releaseStartupChatOutput } from "../src/modes/interactive/interactive-startup-chat-container.ts";
+import { createShowLoadedResourcesThis } from "./interactive-mode-status-resources-helpers.ts";
 
 initTheme("dark");
 
@@ -27,7 +30,8 @@ function createOrderingMode(): InteractiveMode {
 }
 
 function normalizeStartupOutput(container: Container, width = 220): string {
-	return container.render(width)
+	return container
+		.render(width)
 		.join("\n")
 		.replace(/\u001b\[[0-9;]*m/g, "")
 		.replace(/\\/g, "/")
@@ -137,10 +141,7 @@ function configureDeferredMode(mode: InteractiveMode): void {
 	});
 }
 
-async function renderNoticeBeforeDisclosure(
-	startupPath: "eager" | "deferred",
-	notice: StartupNotice,
-): Promise<string> {
+async function renderNoticeBeforeDisclosure(startupPath: "eager" | "deferred", notice: StartupNotice): Promise<string> {
 	const mode = createOrderingMode();
 	mode.attachStartupNoticesContainer();
 	Object.assign(mode, {
@@ -263,10 +264,13 @@ test("isolated interactive-engine notify lands below RESOURCES", async () => {
 	mode.resourceDisclosureContainer.addChild(new Text("RESOURCES", 0, 0));
 	releaseStartupChatOutput(mode);
 	const ui = InteractiveMode.prototype.createExtensionUIContext.call(mode) as ExtensionUIContext;
-	let extensionUiHandler: ((request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse | undefined>) | undefined;
+	let extensionUiHandler:
+		| ((request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse | undefined>)
+		| undefined;
 	const runtime = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;
 	Object.assign(runtime, {
 		onDiagnostic: () => () => {},
+		onGenerationEnded: () => () => {},
 		onEngineMessage: () => () => {},
 		setExtensionUIHandler: (handler: typeof extensionUiHandler) => {
 			extensionUiHandler = handler;

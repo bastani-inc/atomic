@@ -28,12 +28,11 @@ import {
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { createInMemoryModelRegistry, createModelRegistry } from "./model-runtime-test-utils.ts";
+import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 type Transport = "sse" | "websocket" | "websocket-cached" | "auto";
 

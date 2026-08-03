@@ -43,7 +43,10 @@ export default function (pi: ExtensionAPI) {
 		description: "Trigger compaction immediately",
 		handler: async (args, ctx) => {
 			if (args.trim() && ctx.hasUI) {
-				ctx.ui.notify("/trigger-compact ignores arguments; Verbatim Compaction uses a fixed deletion planner", "warning");
+				ctx.ui.notify(
+					"/trigger-compact ignores arguments; Verbatim Compaction uses a fixed deletion planner",
+					"warning",
+				);
 			}
 			triggerCompaction(ctx);
 		},

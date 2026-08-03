@@ -1,8 +1,8 @@
-import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { afterEach, describe, test } from "vitest";
 import { inspectSubagentStatus } from "../../packages/subagents/src/runs/background/run-status.js";
 import type { AsyncStatus } from "../../packages/subagents/src/shared/types.js";
 
@@ -38,13 +38,15 @@ describe("subagent async status fast-mode labels (issue #1153)", () => {
 			startedAt: 1_000,
 			lastUpdate: 2_000,
 			currentStep: 0,
-			steps: [{
-				agent: "worker",
-				status: "running",
-				model: "openai/gpt-5.1-codex",
-				thinking: "medium",
-				fastMode: true,
-			}],
+			steps: [
+				{
+					agent: "worker",
+					status: "running",
+					model: "openai/gpt-5.1-codex",
+					thinking: "medium",
+					fastMode: true,
+				},
+			],
 		});
 
 		const result = inspectSubagentStatus({ action: "status" }, { asyncDirRoot: asyncRoot, resultsDir });
@@ -64,16 +66,21 @@ describe("subagent async status fast-mode labels (issue #1153)", () => {
 			startedAt: 1_000,
 			lastUpdate: 2_000,
 			currentStep: 0,
-			steps: [{
-				agent: "worker",
-				status: "running",
-				model: "openai/gpt-5.1-codex",
-				thinking: "medium",
-				fastMode: true,
-			}],
+			steps: [
+				{
+					agent: "worker",
+					status: "running",
+					model: "openai/gpt-5.1-codex",
+					thinking: "medium",
+					fastMode: true,
+				},
+			],
 		});
 
-		const result = inspectSubagentStatus({ action: "status", dir: asyncDir }, { asyncDirRoot: asyncRoot, resultsDir });
+		const result = inspectSubagentStatus(
+			{ action: "status", dir: asyncDir },
+			{ asyncDirRoot: asyncRoot, resultsDir },
+		);
 		const firstContent = result.content[0];
 		const text = firstContent?.type === "text" ? firstContent.text : "";
 

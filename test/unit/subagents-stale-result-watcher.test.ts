@@ -1,10 +1,10 @@
-import { afterEach, test } from "bun:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createResultWatcher as createRawResultWatcher } from "../../packages/subagents/src/runs/background/result-watcher.js";
+import { afterEach, test } from "vitest";
 import { listResultClaims } from "../../packages/subagents/src/runs/background/result-file-claims.js";
+import { createResultWatcher as createRawResultWatcher } from "../../packages/subagents/src/runs/background/result-watcher.js";
 import { reconcileAsyncRun } from "../../packages/subagents/src/runs/background/stale-run-reconciler.js";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
@@ -13,20 +13,37 @@ import {
 	type SubagentState,
 } from "../../packages/subagents/src/shared/types.js";
 
-function createResultWatcher(...args: Parameters<typeof createRawResultWatcher>): ReturnType<typeof createRawResultWatcher> {
+function createResultWatcher(
+	...args: Parameters<typeof createRawResultWatcher>
+): ReturnType<typeof createRawResultWatcher> {
 	const [pi, state, resultsDir, ttl, deps = {}] = args;
-	return createRawResultWatcher(pi, state, resultsDir, ttl, { allowedStatusRoots: [path.dirname(resultsDir)], ...deps });
+	return createRawResultWatcher(pi, state, resultsDir, ttl, {
+		allowedStatusRoots: [path.dirname(resultsDir)],
+		...deps,
+	});
 }
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+	for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
 
 function state(sessionId: string): SubagentState {
 	return {
-		baseCwd: "", currentSessionId: sessionId, asyncJobs: new Map(), subagentInProgress: false,
-		foregroundRuns: new Map(), foregroundControls: new Map(), lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(), cleanupTimers: new Map(), lastUiContext: null,
-		poller: null, completionSeen: new Map(), watcher: null, watcherRestartTimer: null,
+		baseCwd: "",
+		currentSessionId: sessionId,
+		asyncJobs: new Map(),
+		subagentInProgress: false,
+		foregroundRuns: new Map(),
+		foregroundControls: new Map(),
+		lastForegroundControlId: null,
+		pendingForegroundControlNotices: new Map(),
+		cleanupTimers: new Map(),
+		lastUiContext: null,
+		poller: null,
+		completionSeen: new Map(),
+		watcher: null,
+		watcherRestartTimer: null,
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 }
@@ -35,21 +52,30 @@ function acknowledgeCompletion(payload: object, delivered = true): void {
 	(payload as { acknowledge?: (delivered: boolean) => void }).acknowledge?.(delivered);
 }
 
-function makeWatcher(resultsDir: string, sessionId: string, options: {
-	statusRecheckBaseMs?: number; statusRecheckMaxMs?: number; intercomTimeoutMs?: number | false; deliveryRetryBaseMs?: number;
-	timers?: ReturnType<typeof manualTimers>["timers"];
-} = {}) {
+function makeWatcher(
+	resultsDir: string,
+	sessionId: string,
+	options: {
+		statusRecheckBaseMs?: number;
+		statusRecheckMaxMs?: number;
+		intercomTimeoutMs?: number | false;
+		deliveryRetryBaseMs?: number;
+		timers?: ReturnType<typeof manualTimers>["timers"];
+	} = {},
+) {
 	const delivered: object[] = [];
 	const events = {
 		on: () => () => {},
 		emit(event: string, payload: object) {
-			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) { delivered.push(payload); acknowledgeCompletion(payload); }
+			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) {
+				delivered.push(payload);
+				acknowledgeCompletion(payload);
+			}
 		},
 	};
 	const watcher = createResultWatcher({ events }, state(sessionId), resultsDir, 60_000, options);
 	return { watcher, delivered };
 }
-
 
 function manualTimers() {
 	type Timer = { callback: () => void; delay: number; cleared: boolean; unref(): void };
@@ -59,7 +85,9 @@ function manualTimers() {
 		queue.push(timer);
 		return timer;
 	}) as unknown as typeof setTimeout;
-	const clearTimer = ((timer: Timer) => { timer.cleared = true; }) as never;
+	const clearTimer = ((timer: Timer) => {
+		timer.cleared = true;
+	}) as never;
 	const run = async (delay: number) => {
 		const index = queue.findIndex((timer) => !timer.cleared && timer.delay === delay);
 		assert.notEqual(index, -1, `expected pending ${delay}ms timer`);
@@ -67,7 +95,12 @@ function manualTimers() {
 		for (let i = 0; i < 12; i += 1) await Promise.resolve();
 	};
 	return {
-		timers: { setTimeout: setTimer, clearTimeout: clearTimer, setInterval: setTimer as typeof setInterval, clearInterval: clearTimer },
+		timers: {
+			setTimeout: setTimer,
+			clearTimeout: clearTimer,
+			setInterval: setTimer as typeof setInterval,
+			clearInterval: clearTimer,
+		},
 		run,
 		delays: () => queue.filter((timer) => !timer.cleared).map((timer) => timer.delay),
 	};
@@ -82,7 +115,10 @@ test("modern results wait for terminal status, then deliver exactly once; legacy
 	fs.mkdirSync(asyncDir, { recursive: true });
 	const resultPath = path.join(resultsDir, "modern.json");
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "modern", state: "running" }));
-	fs.writeFileSync(resultPath, JSON.stringify({ id: "modern", sessionId: "session", agent: "worker", success: true, summary: "done", asyncDir }));
+	fs.writeFileSync(
+		resultPath,
+		JSON.stringify({ id: "modern", sessionId: "session", agent: "worker", success: true, summary: "done", asyncDir }),
+	);
 	const manual = manualTimers();
 	const { watcher, delivered } = makeWatcher(resultsDir, "session", { timers: manual.timers });
 	watcher.primeExistingResults();
@@ -98,8 +134,14 @@ test("modern results wait for terminal status, then deliver exactly once; legacy
 	for (const terminalState of ["failed", "paused"]) {
 		const terminalAsyncDir = path.join(root, terminalState);
 		fs.mkdirSync(terminalAsyncDir);
-		fs.writeFileSync(path.join(terminalAsyncDir, "status.json"), JSON.stringify({ runId: terminalState, state: terminalState }));
-		fs.writeFileSync(path.join(resultsDir, `${terminalState}.json`), JSON.stringify({ id: terminalState, sessionId: "session", asyncDir: terminalAsyncDir }));
+		fs.writeFileSync(
+			path.join(terminalAsyncDir, "status.json"),
+			JSON.stringify({ runId: terminalState, state: terminalState }),
+		);
+		fs.writeFileSync(
+			path.join(resultsDir, `${terminalState}.json`),
+			JSON.stringify({ id: terminalState, sessionId: "session", asyncDir: terminalAsyncDir }),
+		);
 	}
 	watcher.primeExistingResults();
 	await manual.run(0);
@@ -107,7 +149,10 @@ test("modern results wait for terminal status, then deliver exactly once; legacy
 	assert.equal(delivered.length, 3, "all terminal modern states deliver");
 
 	const legacyPath = path.join(resultsDir, "legacy.json");
-	fs.writeFileSync(legacyPath, JSON.stringify({ id: "legacy", sessionId: "session", agent: "worker", success: true, summary: "legacy" }));
+	fs.writeFileSync(
+		legacyPath,
+		JSON.stringify({ id: "legacy", sessionId: "session", agent: "worker", success: true, summary: "legacy" }),
+	);
 	watcher.primeExistingResults();
 	await manual.run(0);
 	assert.equal(delivered.length, 4);
@@ -160,9 +205,16 @@ test("pending modern result remains deliverable after more than the former retry
 	fs.mkdirSync(resultsDir, { recursive: true });
 	fs.mkdirSync(asyncDir, { recursive: true });
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "late", state: "running" }));
-	fs.writeFileSync(path.join(resultsDir, "result.json"), JSON.stringify({ id: "late", sessionId: "session", asyncDir }));
+	fs.writeFileSync(
+		path.join(resultsDir, "result.json"),
+		JSON.stringify({ id: "late", sessionId: "session", asyncDir }),
+	);
 	const manual = manualTimers();
-	const { watcher, delivered } = makeWatcher(resultsDir, "session", { statusRecheckBaseMs: 1, statusRecheckMaxMs: 1, timers: manual.timers });
+	const { watcher, delivered } = makeWatcher(resultsDir, "session", {
+		statusRecheckBaseMs: 1,
+		statusRecheckMaxMs: 1,
+		timers: manual.timers,
+	});
 	watcher.primeExistingResults();
 	await manual.run(0);
 	for (let attempt = 0; attempt < 101; attempt += 1) {
@@ -184,10 +236,19 @@ test("stale repair exposes terminal status at the observable result publication 
 	const resultsDir = path.join(root, "results");
 	fs.mkdirSync(asyncDir, { recursive: true });
 	fs.mkdirSync(resultsDir, { recursive: true });
-	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-		runId: "stale", sessionId: "session", mode: "single", state: "running", startedAt: 1, lastUpdate: 1, pid: 999999,
-		steps: [{ agent: "worker", status: "running" }],
-	}));
+	fs.writeFileSync(
+		path.join(asyncDir, "status.json"),
+		JSON.stringify({
+			runId: "stale",
+			sessionId: "session",
+			mode: "single",
+			state: "running",
+			startedAt: 1,
+			lastUpdate: 1,
+			pid: 999999,
+			steps: [{ agent: "worker", status: "running" }],
+		}),
+	);
 	let statusAtDelivery: string | undefined;
 	const events = {
 		on: () => () => {},
@@ -200,7 +261,15 @@ test("stale repair exposes terminal status at the observable result publication 
 	};
 	const manual = manualTimers();
 	const watcher = createResultWatcher({ events }, state("session"), resultsDir, 60_000, { timers: manual.timers });
-	const repaired = reconcileAsyncRun(asyncDir, { resultsDir, now: () => 100, kill: () => { const error = new Error("dead") as NodeJS.ErrnoException; error.code = "ESRCH"; throw error; } });
+	const repaired = reconcileAsyncRun(asyncDir, {
+		resultsDir,
+		now: () => 100,
+		kill: () => {
+			const error = new Error("dead") as NodeJS.ErrnoException;
+			error.code = "ESRCH";
+			throw error;
+		},
+	});
 	assert.equal(repaired.repaired, true);
 	watcher.primeExistingResults();
 	await manual.run(0);
@@ -218,7 +287,10 @@ test("concurrent result notifications do not unlink or double-deliver an in-flig
 	fs.mkdirSync(asyncDir, { recursive: true });
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "run", state: "complete" }));
 	const resultPath = path.join(resultsDir, "result.json");
-	fs.writeFileSync(resultPath, JSON.stringify({ id: "run", sessionId: "session", asyncDir, intercomTarget: "parent", summary: "done" }));
+	fs.writeFileSync(
+		resultPath,
+		JSON.stringify({ id: "run", sessionId: "session", asyncDir, intercomTarget: "parent", summary: "done" }),
+	);
 	const listeners = new Map<string, Set<(data: object) => void>>();
 	let intercomDeliveries = 0;
 	let completions = 0;
@@ -235,14 +307,21 @@ test("concurrent result notifications do not unlink or double-deliver an in-flig
 				intercomDeliveries += 1;
 				const requestId = (payload as { requestId: string }).requestId;
 				acknowledgeIntercom = () => {
-					for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? []) listener({ requestId, delivered: true });
+					for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? [])
+						listener({ requestId, delivered: true });
 				};
 			}
-			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) { completions += 1; acknowledgeCompletion(payload); }
+			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) {
+				completions += 1;
+				acknowledgeCompletion(payload);
+			}
 		},
 	};
 	const manual = manualTimers();
-	const watcher = createResultWatcher({ events }, state("session"), resultsDir, 60_000, { timers: manual.timers, intercomTimeoutMs: false });
+	const watcher = createResultWatcher({ events }, state("session"), resultsDir, 60_000, {
+		timers: manual.timers,
+		intercomTimeoutMs: false,
+	});
 	watcher.primeExistingResults();
 	await manual.run(0);
 	watcher.primeExistingResults();
@@ -267,7 +346,10 @@ test("failed intercom acknowledgement remains retryable and is delivered once af
 	fs.mkdirSync(asyncDir, { recursive: true });
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "retry", state: "complete" }));
 	const resultPath = path.join(resultsDir, "result.json");
-	fs.writeFileSync(resultPath, JSON.stringify({ id: "retry", sessionId: "session", asyncDir, intercomTarget: "parent" }));
+	fs.writeFileSync(
+		resultPath,
+		JSON.stringify({ id: "retry", sessionId: "session", asyncDir, intercomTarget: "parent" }),
+	);
 	const listeners = new Map<string, Set<(data: object) => void>>();
 	let attempts = 0;
 	let completions = 0;
@@ -286,7 +368,10 @@ test("failed intercom acknowledgement remains retryable and is delivered once af
 					listener({ requestId, delivered: attempts > 1 });
 				}
 			}
-			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) { completions += 1; acknowledgeCompletion(payload); }
+			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) {
+				completions += 1;
+				acknowledgeCompletion(payload);
+			}
 		},
 	};
 	const manual = manualTimers();
@@ -307,23 +392,30 @@ test("failed intercom acknowledgement remains retryable and is delivered once af
 	watcher.stopResultWatcher();
 });
 
-
-
 test("definitive delivery failures use exponential backoff instead of status polling cadence", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-result-backoff-"));
 	roots.push(root);
 	const resultsDir = path.join(root, "results");
 	fs.mkdirSync(resultsDir, { recursive: true });
-	fs.writeFileSync(path.join(resultsDir, "result.json"), JSON.stringify({ id: "backoff-run", sessionId: "session", intercomTarget: "missing" }));
+	fs.writeFileSync(
+		path.join(resultsDir, "result.json"),
+		JSON.stringify({ id: "backoff-run", sessionId: "session", intercomTarget: "missing" }),
+	);
 	const listeners = new Map<string, Set<(data: object) => void>>();
 	let attempts = 0;
 	const events = {
-		on(event: string, listener: (data: object) => void) { const set = listeners.get(event) ?? new Set(); set.add(listener); listeners.set(event, set); return () => set.delete(listener); },
+		on(event: string, listener: (data: object) => void) {
+			const set = listeners.get(event) ?? new Set();
+			set.add(listener);
+			listeners.set(event, set);
+			return () => set.delete(listener);
+		},
 		emit(event: string, payload: object) {
 			if (event !== SUBAGENT_RESULT_INTERCOM_EVENT) return;
 			attempts += 1;
 			const requestId = (payload as { requestId: string }).requestId;
-			for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? []) listener({ requestId, delivered: false });
+			for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? [])
+				listener({ requestId, delivered: false });
 		},
 	};
 	const manual = manualTimers();
@@ -351,7 +443,10 @@ test("alias files and replacement watchers share one claim through an acknowledg
 	fs.mkdirSync(asyncDir, { recursive: true });
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: "same-run", state: "complete" }));
 	for (const file of ["one.json", "alias.json"]) {
-		fs.writeFileSync(path.join(resultsDir, file), JSON.stringify({ id: "same-run", sessionId: "session", asyncDir, intercomTarget: "parent" }));
+		fs.writeFileSync(
+			path.join(resultsDir, file),
+			JSON.stringify({ id: "same-run", sessionId: "session", asyncDir, intercomTarget: "parent" }),
+		);
 	}
 	const listeners = new Map<string, Set<(data: object) => void>>();
 	let sends = 0;
@@ -360,25 +455,43 @@ test("alias files and replacement watchers share one claim through an acknowledg
 	let deferredAck: (() => void) | undefined;
 	const events = {
 		on(event: string, listener: (data: object) => void) {
-			const set = listeners.get(event) ?? new Set(); set.add(listener); listeners.set(event, set); return () => set.delete(listener);
+			const set = listeners.get(event) ?? new Set();
+			set.add(listener);
+			listeners.set(event, set);
+			return () => set.delete(listener);
 		},
 		emit(event: string, payload: object) {
 			if (event === SUBAGENT_RESULT_INTERCOM_EVENT) {
 				sends += 1;
 				const requestId = (payload as { requestId: string }).requestId;
 				if (forwarded++ === 0) {
-					deferredAck = () => { for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? []) listener({ requestId, delivered: true }); };
+					deferredAck = () => {
+						for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? [])
+							listener({ requestId, delivered: true });
+					};
 				} else {
-					for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? []) listener({ requestId, delivered: true });
+					for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? [])
+						listener({ requestId, delivered: true });
 					forwarded -= 1;
 				}
 			}
-			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) { completions += 1; acknowledgeCompletion(payload); }
+			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) {
+				completions += 1;
+				acknowledgeCompletion(payload);
+			}
 		},
 	};
 	const manual = manualTimers();
-	const first = createResultWatcher({ events }, state("session"), resultsDir, 60_000, { intercomTimeoutMs: false, deliveryRetryBaseMs: 10, timers: manual.timers });
-	const replacement = createResultWatcher({ events }, state("session"), resultsDir, 60_000, { intercomTimeoutMs: false, deliveryRetryBaseMs: 10, timers: manual.timers });
+	const first = createResultWatcher({ events }, state("session"), resultsDir, 60_000, {
+		intercomTimeoutMs: false,
+		deliveryRetryBaseMs: 10,
+		timers: manual.timers,
+	});
+	const replacement = createResultWatcher({ events }, state("session"), resultsDir, 60_000, {
+		intercomTimeoutMs: false,
+		deliveryRetryBaseMs: 10,
+		timers: manual.timers,
+	});
 	first.primeExistingResults();
 	await manual.run(0);
 	await manual.run(0);
@@ -397,11 +510,14 @@ test("alias files and replacement watchers share one claim through an acknowledg
 	assert.equal(sends, 1, "the acknowledged Intercom phase is preserved when the replacement finishes local delivery");
 	assert.equal(forwarded, 1, "the broker forwards the stable message id only once");
 	assert.equal(completions, 1);
-	assert.equal(listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT)?.size ?? 0, 0, "the pending acknowledgement listener must be released after settlement");
+	assert.equal(
+		listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT)?.size ?? 0,
+		0,
+		"the pending acknowledgement listener must be released after settlement",
+	);
 	assert.deepEqual(fs.readdirSync(resultsDir), []);
 	replacement.stopResultWatcher();
 });
-
 
 test("pending status polling stops when result ownership changes", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-result-owner-change-"));
@@ -412,12 +528,17 @@ test("pending status polling stops when result ownership changes", async () => {
 	fs.mkdirSync(asyncDir, { recursive: true });
 	const statusPath = path.join(asyncDir, "status.json");
 	fs.writeFileSync(statusPath, JSON.stringify({ runId: "owner", state: "running" }));
-	fs.writeFileSync(path.join(resultsDir, "result.json"), JSON.stringify({ id: "owner", sessionId: "session-a", asyncDir }));
+	fs.writeFileSync(
+		path.join(resultsDir, "result.json"),
+		JSON.stringify({ id: "owner", sessionId: "session-a", asyncDir }),
+	);
 	let statusReads = 0;
-	const countedReadFileSync = ((filePath: fs.PathOrFileDescriptor, options?: Parameters<typeof fs.readFileSync>[1]) => {
+	const countedReadFileSync = ((
+		filePath: fs.PathOrFileDescriptor,
+		options?: Parameters<typeof fs.readFileSync>[1],
+	) => {
 		if (filePath === statusPath) statusReads += 1;
 		return fs.readFileSync(filePath, options);
-
 	}) as typeof fs.readFileSync;
 	const fsApi = {
 		existsSync: fs.existsSync,
@@ -452,22 +573,39 @@ test("stopped watcher does not finalize a delayed acknowledged result", async ()
 	const resultsDir = path.join(root, "results");
 	fs.mkdirSync(resultsDir, { recursive: true });
 	const resultPath = path.join(resultsDir, "result.json");
-	fs.writeFileSync(resultPath, JSON.stringify({ id: "stopped-after-wait", sessionId: "session", intercomTarget: "parent" }));
+	fs.writeFileSync(
+		resultPath,
+		JSON.stringify({ id: "stopped-after-wait", sessionId: "session", intercomTarget: "parent" }),
+	);
 	const listeners = new Map<string, Set<(data: object) => void>>();
 	let completions = 0;
 	let deferredAck: (() => void) | undefined;
 	const events = {
-		on(event: string, listener: (data: object) => void) { const set = listeners.get(event) ?? new Set(); set.add(listener); listeners.set(event, set); return () => set.delete(listener); },
+		on(event: string, listener: (data: object) => void) {
+			const set = listeners.get(event) ?? new Set();
+			set.add(listener);
+			listeners.set(event, set);
+			return () => set.delete(listener);
+		},
 		emit(event: string, payload: object) {
 			if (event === SUBAGENT_RESULT_INTERCOM_EVENT) {
 				const requestId = (payload as { requestId: string }).requestId;
-				deferredAck = () => { for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? []) listener({ requestId, delivered: true }); };
+				deferredAck = () => {
+					for (const listener of listeners.get(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT) ?? [])
+						listener({ requestId, delivered: true });
+				};
 			}
-			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) { completions += 1; acknowledgeCompletion(payload); }
+			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) {
+				completions += 1;
+				acknowledgeCompletion(payload);
+			}
 		},
 	};
 	const manual = manualTimers();
-	const watcher = createResultWatcher({ events }, state("session"), resultsDir, 60_000, { timers: manual.timers, intercomTimeoutMs: false });
+	const watcher = createResultWatcher({ events }, state("session"), resultsDir, 60_000, {
+		timers: manual.timers,
+		intercomTimeoutMs: false,
+	});
 	watcher.primeExistingResults();
 	await manual.run(0);
 	watcher.stopResultWatcher();
@@ -476,5 +614,9 @@ test("stopped watcher does not finalize a delayed acknowledged result", async ()
 	for (let index = 0; index < 12; index += 1) await Promise.resolve();
 	assert.equal(completions, 0);
 	assert.equal(fs.existsSync(resultPath), false, "the public path moves into a durable claim before delivery");
-	assert.equal(listResultClaims(resultsDir).length, 1, "stopping the watcher must retain its claim for replacement recovery");
+	assert.equal(
+		listResultClaims(resultsDir).length,
+		1,
+		"stopping the watcher must retain its claim for replacement recovery",
+	);
 });

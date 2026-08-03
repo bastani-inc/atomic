@@ -1,15 +1,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { buildChainSummary } from "../../shared/formatters.ts";
 import {
 	aggregateParallelOutputs,
 	createParallelDirs,
-	resolveParallelBehaviors,
-	suppressProgressForReadOnlyTask,
 	type ParallelStep,
 	type ParallelTaskResult,
+	resolveParallelBehaviors,
+	suppressProgressForReadOnlyTask,
 } from "../../shared/settings.ts";
 import { getSingleResultOutput, resolveChildCwd } from "../../shared/utils.ts";
-import { buildChainSummary } from "../../shared/formatters.ts";
+import { outputEntryFromResult } from "../shared/chain-outputs.ts";
+import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -17,10 +19,12 @@ import {
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.ts";
-import { outputEntryFromResult } from "../shared/chain-outputs.ts";
-import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildChainExecutionDetails, buildChainExecutionErrorResult } from "./chain-execution-details.ts";
-import { appendParallelWorktreeSummary, ensureParallelProgressFile, runParallelChainTasks } from "./chain-execution-parallel-runner.ts";
+import {
+	appendParallelWorktreeSummary,
+	ensureParallelProgressFile,
+	runParallelChainTasks,
+} from "./chain-execution-parallel-runner.ts";
 import type { ChainExecutionMutableState, ChainExecutionResult, ChainRuntimeContext } from "./chain-execution-types.ts";
 import { createDetachedCleanupBarrier } from "./detached-cleanup-barrier.ts";
 
@@ -52,7 +56,10 @@ export async function runStaticParallelChainStep(input: {
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			return buildChainExecutionErrorResult(message, context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex }));
+			return buildChainExecutionErrorResult(
+				message,
+				context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex }),
+			);
 		}
 	}
 
@@ -61,19 +68,47 @@ export async function runStaticParallelChainStep(input: {
 		const parallelBaseIndex = state.globalTaskIndex;
 		const detachedCleanup = createDetachedCleanupBarrier(() => {
 			if (!worktreeSetup) return;
-			appendParallelWorktreeSummary("", worktreeSetup, path.join(context.chainDir, "worktree-diffs", `step-${stepIndex}`), agentNames);
+			appendParallelWorktreeSummary(
+				"",
+				worktreeSetup,
+				path.join(context.chainDir, "worktree-diffs", `step-${stepIndex}`),
+				agentNames,
+			);
 			cleanupWorktrees(worktreeSetup);
 		});
-		const parallelBehaviors = resolveParallelBehaviors(step.parallel, context.agents, stepIndex, context.chainSkills)
-			.map((behavior, taskIndex) => suppressProgressForReadOnlyTask(behavior, parallelTemplates[taskIndex] ?? step.parallel[taskIndex]?.task, context.originalTask));
+		const parallelBehaviors = resolveParallelBehaviors(
+			step.parallel,
+			context.agents,
+			stepIndex,
+			context.chainSkills,
+		).map((behavior, taskIndex) =>
+			suppressProgressForReadOnlyTask(
+				behavior,
+				parallelTemplates[taskIndex] ?? step.parallel[taskIndex]?.task,
+				context.originalTask,
+			),
+		);
 		for (let taskIndex = 0; taskIndex < step.parallel.length; taskIndex++) {
 			const behavior = parallelBehaviors[taskIndex]!;
-			const outputPath = typeof behavior.output === "string"
-				? (path.isAbsolute(behavior.output) ? behavior.output : path.join(context.chainDir, behavior.output))
-				: undefined;
-			const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Parallel chain step ${stepIndex + 1} task ${taskIndex + 1} (${step.parallel[taskIndex]!.agent})`);
+			const outputPath =
+				typeof behavior.output === "string"
+					? path.isAbsolute(behavior.output)
+						? behavior.output
+						: path.join(context.chainDir, behavior.output)
+					: undefined;
+			const validationError = validateFileOnlyOutputMode(
+				behavior.outputMode,
+				outputPath,
+				`Parallel chain step ${stepIndex + 1} task ${taskIndex + 1} (${step.parallel[taskIndex]!.agent})`,
+			);
 			if (validationError) {
-				return buildChainExecutionErrorResult(validationError, context.makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: state.globalTaskIndex + taskIndex }));
+				return buildChainExecutionErrorResult(
+					validationError,
+					context.makeDetailsInput({
+						currentStepIndex: stepIndex,
+						currentFlatIndex: state.globalTaskIndex + taskIndex,
+					}),
+				);
 			}
 		}
 		state.progressCreated = ensureParallelProgressFile(context.chainDir, state.progressCreated, parallelBehaviors);
@@ -130,7 +165,7 @@ export async function runStaticParallelChainStep(input: {
 			},
 		});
 		worktreeCleanupDeferred = detachedCleanup.defer(
-			parallelResults.flatMap((result, index) => result.detached ? [parallelBaseIndex + index] : []),
+			parallelResults.flatMap((result, index) => (result.detached ? [parallelBaseIndex + index] : [])),
 		);
 		state.globalTaskIndex += step.parallel.length;
 		for (const result of parallelResults) {
@@ -143,37 +178,60 @@ export async function runStaticParallelChainStep(input: {
 		const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
 		if (interrupted) {
 			return {
-				content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` }],
-				details: buildChainExecutionDetails(context.makeDetailsInput({
-					currentStepIndex: stepIndex,
-					currentFlatIndex: state.globalTaskIndex - step.parallel.length + interruptedIndexInStep,
-				})),
+				content: [
+					{
+						type: "text",
+						text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.`,
+					},
+				],
+				details: buildChainExecutionDetails(
+					context.makeDetailsInput({
+						currentStepIndex: stepIndex,
+						currentFlatIndex: state.globalTaskIndex - step.parallel.length + interruptedIndexInStep,
+					}),
+				),
 			};
 		}
 		const detachedIndexInStep = parallelResults.findIndex((result) => result.detached);
 		const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
 		if (detached) {
 			return {
-				content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
-				details: buildChainExecutionDetails(context.makeDetailsInput({
-					currentStepIndex: stepIndex,
-					currentFlatIndex: state.globalTaskIndex - step.parallel.length + detachedIndexInStep,
-				})),
+				content: [
+					{
+						type: "text",
+						text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`,
+					},
+				],
+				details: buildChainExecutionDetails(
+					context.makeDetailsInput({
+						currentStepIndex: stepIndex,
+						currentFlatIndex: state.globalTaskIndex - step.parallel.length + detachedIndexInStep,
+					}),
+				),
 			};
 		}
 
-		const failures = parallelResults.map((result, originalIndex) => ({ ...result, originalIndex })).filter((result) => result.exitCode !== 0 && result.exitCode !== -1);
+		const failures = parallelResults
+			.map((result, originalIndex) => ({ ...result, originalIndex }))
+			.filter((result) => result.exitCode !== 0 && result.exitCode !== -1);
 		if (failures.length > 0) {
-			const failureSummary = failures.map((failure) => `- Task ${failure.originalIndex + 1} (${failure.agent}): ${failure.error || "failed"}`).join("\n");
+			const failureSummary = failures
+				.map((failure) => `- Task ${failure.originalIndex + 1} (${failure.agent}): ${failure.error || "failed"}`)
+				.join("\n");
 			const errorMsg = `Parallel step ${stepIndex + 1} failed:\n${failureSummary}`;
-			const summary = buildChainSummary(context.chainSteps, state.results, context.chainDir, "failed", { index: stepIndex, error: errorMsg });
+			const summary = buildChainSummary(context.chainSteps, state.results, context.chainDir, "failed", {
+				index: stepIndex,
+				error: errorMsg,
+			});
 			return {
 				content: [{ type: "text", text: summary }],
 				isError: true,
-				details: buildChainExecutionDetails(context.makeDetailsInput({
-					currentStepIndex: stepIndex,
-					currentFlatIndex: state.globalTaskIndex - step.parallel.length + failures[0]!.originalIndex,
-				})),
+				details: buildChainExecutionDetails(
+					context.makeDetailsInput({
+						currentStepIndex: stepIndex,
+						currentFlatIndex: state.globalTaskIndex - step.parallel.length + failures[0]!.originalIndex,
+					}),
+				),
 			};
 		}
 
@@ -183,9 +241,12 @@ export async function runStaticParallelChainStep(input: {
 		}
 		const taskResults: ParallelTaskResult[] = parallelResults.map((result, index) => {
 			const outputTarget = parallelBehaviors[index]?.output;
-			const outputTargetPath = typeof outputTarget === "string"
-				? (path.isAbsolute(outputTarget) ? outputTarget : path.join(context.chainDir, outputTarget))
-				: undefined;
+			const outputTargetPath =
+				typeof outputTarget === "string"
+					? path.isAbsolute(outputTarget)
+						? outputTarget
+						: path.join(context.chainDir, outputTarget)
+					: undefined;
 			return {
 				agent: result.agent,
 				taskIndex: index,
@@ -197,7 +258,12 @@ export async function runStaticParallelChainStep(input: {
 			};
 		});
 		state.prev = aggregateParallelOutputs(taskResults);
-		state.prev = appendParallelWorktreeSummary(state.prev, worktreeSetup, path.join(context.chainDir, "worktree-diffs", `step-${stepIndex}`), agentNames);
+		state.prev = appendParallelWorktreeSummary(
+			state.prev,
+			worktreeSetup,
+			path.join(context.chainDir, "worktree-diffs", `step-${stepIndex}`),
+			agentNames,
+		);
 		return undefined;
 	} finally {
 		if (worktreeSetup && !worktreeCleanupDeferred) cleanupWorktrees(worktreeSetup);

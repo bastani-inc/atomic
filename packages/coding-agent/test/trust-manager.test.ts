@@ -2,7 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getProjectTrustPath, hasProjectConfigDir, hasProjectTrustInputs, hasTrustRequiringProjectResources, ProjectTrustStore, TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES } from "../src/core/trust-manager.ts";
+import {
+	getProjectTrustPath,
+	hasProjectConfigDir,
+	hasProjectTrustInputs,
+	hasTrustRequiringProjectResources,
+	ProjectTrustStore,
+	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
+} from "../src/core/trust-manager.ts";
 
 const tempDirs: string[] = [];
 

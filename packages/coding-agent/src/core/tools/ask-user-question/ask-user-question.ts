@@ -97,16 +97,19 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			// no-op rather than throwing.
 			ctx.ui.setWorkingVisible?.(false);
 			try {
-				const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
-					const session = new QuestionnaireSession({
-						tui,
-						theme,
-						params: typed,
-						itemsByTab,
-						done,
-					});
-					return session.component;
-				}, { signal });
+				const result = await ctx.ui.custom<QuestionnaireResult>(
+					(tui, theme, _kb, done) => {
+						const session = new QuestionnaireSession({
+							tui,
+							theme,
+							params: typed,
+							itemsByTab,
+							done,
+						});
+						return session.component;
+					},
+					{ signal },
+				);
 
 				return buildQuestionnaireResponse(result, typed);
 			} finally {

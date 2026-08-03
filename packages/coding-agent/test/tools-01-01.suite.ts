@@ -1,29 +1,19 @@
-import { applyPatch } from "diff";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { executeBashWithOperations } from "../src/core/bash-executor.ts";
-import { type BashOperations, createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
-import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
-import {
-	createEditTool,
-	createFindTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
-} from "../src/index.ts";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createBashTool } from "../src/core/tools/bash.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import * as shellModule from "../src/utils/shell.ts";
+import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
 
 const readTool = createReadTool(process.cwd());
-const writeTool = createWriteTool(process.cwd());
-const editTool = createEditTool(process.cwd());
-const bashTool = createBashTool(process.cwd());
-const grepTool = createGrepTool(process.cwd());
-const findTool = createFindTool(process.cwd());
-const lsTool = createLsTool(process.cwd());
+const _writeTool = createWriteTool(process.cwd());
+const _editTool = createEditTool(process.cwd());
+const _bashTool = createBashTool(process.cwd());
+const _grepTool = createGrepTool(process.cwd());
+const _findTool = createFindTool(process.cwd());
+const _lsTool = createLsTool(process.cwd());
 
 // Helper to extract text from content blocks
 function getTextOutput(result: any): string {
@@ -64,7 +54,7 @@ describe("Coding Agent Tools", () => {
 			expect(getTextOutput(result)).toMatch(/\[.*test\.txt#[0-9A-F]{4}\]\n1:Hello, world!\n2:Line 2\n3:Line 3/);
 			// No truncation message since file fits within limits
 			expect(getTextOutput(result)).not.toContain("Continue with path selector");
-		expect(result.details?.meta?.source).toBe(testFile);
+			expect(result.details?.meta?.source).toBe(testFile);
 		});
 		it("should handle non-existent files", async () => {
 			const testFile = join(testDir, "nonexistent.txt");
@@ -112,7 +102,7 @@ describe("Coding Agent Tools", () => {
 
 			expect(output).not.toContain("File read blocked");
 			expect(result.details?.oversizedRead).toBeUndefined();
-		expect(result.details?.meta?.source).toBe(testFile);
+			expect(result.details?.meta?.source).toBe(testFile);
 			expect(output).toMatch(/^\[.*threshold-allowed\.txt#[0-9A-F]{4}\]\n1:/);
 			expect(output).toContain(content);
 		});
@@ -207,31 +197,32 @@ describe("Coding Agent Tools", () => {
 			const testFile = join(testDir, "oversized.ts");
 			writeFileSync(testFile, `const value = "${"x".repeat(50_001)}";`);
 			const toolDefinition = createReadToolDefinition(testDir);
-			const result = await toolDefinition.execute("test-call-render-oversized", { path: testFile }, undefined, undefined, {} as any);
+			const result = await toolDefinition.execute(
+				"test-call-render-oversized",
+				{ path: testFile },
+				undefined,
+				undefined,
+				{} as any,
+			);
 			const markerTheme = {
 				fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
 				bold: (text: string) => text,
 			} as any;
 
-			const component = toolDefinition.renderResult?.(
-				result,
-				{ expanded: false, isPartial: false },
-				markerTheme,
-				{
-					args: { path: testFile },
-					toolCallId: "test-call-render-oversized",
-					invalidate: () => {},
-					lastComponent: undefined,
-					state: undefined,
-					cwd: testDir,
-					executionStarted: true,
-					argsComplete: true,
-					isPartial: false,
-					expanded: false,
-					showImages: false,
-					isError: false,
-				} as any,
-			);
+			const component = toolDefinition.renderResult?.(result, { expanded: false, isPartial: false }, markerTheme, {
+				args: { path: testFile },
+				toolCallId: "test-call-render-oversized",
+				invalidate: () => {},
+				lastComponent: undefined,
+				state: undefined,
+				cwd: testDir,
+				executionStarted: true,
+				argsComplete: true,
+				isPartial: false,
+				expanded: false,
+				showImages: false,
+				isError: false,
+			} as any);
 			const rendered = component?.render(200).join("\n") ?? "";
 
 			expect(rendered).toContain("<toolOutput>File read blocked");
@@ -250,12 +241,16 @@ describe("Coding Agent Tools", () => {
 			const counted = getTextOutput(await readTool.execute("test-call-selector-plus", { path: `${testFile}:3+1` }));
 			expect(counted).toContain("3:three");
 			expect(counted).toContain("4:four");
-			const outOfRange = getTextOutput(await readTool.execute("test-call-selector-oob", { path: `${testFile}:5-5` }));
+			const outOfRange = getTextOutput(
+				await readTool.execute("test-call-selector-oob", { path: `${testFile}:5-5` }),
+			);
 			expect(outOfRange).toContain("Requested line 5 is beyond end of file");
 			const open = getTextOutput(await readTool.execute("test-call-selector-open", { path: `${testFile}:2` }));
 			expect(open).toContain("2:two");
 			expect(open).toContain("4:four");
-			const comma = getTextOutput(await readTool.execute("test-call-selector-comma", { path: `${testFile}:2-2,4-4` }));
+			const comma = getTextOutput(
+				await readTool.execute("test-call-selector-comma", { path: `${testFile}:2-2,4-4` }),
+			);
 			expect(comma).toContain("1:one");
 			expect(comma).toContain("2:two");
 			expect(comma).toContain("3:three");

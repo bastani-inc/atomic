@@ -67,7 +67,9 @@ describe("lax message content normalization", () => {
 
 		await harness.session.prompt("hello");
 
-		const custom = harness.session.messages.find((message) => message.role === "custom" && message.customType === "lax");
+		const custom = harness.session.messages.find(
+			(message) => message.role === "custom" && message.customType === "lax",
+		);
 		expect(custom?.content).toEqual([]);
 	});
 
@@ -80,7 +82,9 @@ describe("lax message content normalization", () => {
 			{ excludeFromContext: true },
 		);
 
-		const custom = harness.session.messages.find((message) => message.role === "custom" && message.customType === "lax");
+		const custom = harness.session.messages.find(
+			(message) => message.role === "custom" && message.customType === "lax",
+		);
 		expect(custom?.content).toEqual([]);
 		expect(custom && "excludeFromContext" in custom ? custom.excludeFromContext : undefined).toBe(true);
 	});

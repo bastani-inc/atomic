@@ -1,6 +1,6 @@
+import type { Details } from "../../shared/types.ts";
 import { compactForegroundDetails } from "../../shared/utils.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
-import type { Details } from "../../shared/types.ts";
 import type { ChainExecutionDetailsInput, ChainExecutionResult } from "./chain-execution-types.ts";
 
 export function buildChainExecutionDetails(input: ChainExecutionDetailsInput): Details {
@@ -26,7 +26,10 @@ export function buildChainExecutionDetails(input: ChainExecutionDetailsInput): D
 	});
 }
 
-export function buildChainExecutionErrorResult(message: string, input: ChainExecutionDetailsInput): ChainExecutionResult {
+export function buildChainExecutionErrorResult(
+	message: string,
+	input: ChainExecutionDetailsInput,
+): ChainExecutionResult {
 	return {
 		content: [{ type: "text", text: message }],
 		isError: true,

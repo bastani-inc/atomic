@@ -5,17 +5,17 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import { createExtensionRuntime, discoverAndLoadExtensions, loadExtensions } from "../../src/core/extensions/loader.ts";
-import { ExtensionRunner, emitProjectTrustEvent } from "../../src/core/extensions/runner.ts";
+import { discoverAndLoadExtensions } from "../../src/core/extensions/loader.ts";
+import { ExtensionRunner } from "../../src/core/extensions/runner.ts";
 import type {
 	ExtensionActions,
 	ExtensionContextActions,
 	ExtensionUIContext,
 	ProviderConfig,
 } from "../../src/core/extensions/types.ts";
-import { KeybindingsManager, type KeyId } from "../../src/core/keybindings.ts";
+import { KeybindingsManager } from "../../src/core/keybindings.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
@@ -25,7 +25,7 @@ describe("ExtensionRunner", () => {
 	let extensionsDir: string;
 	let sessionManager: SessionManager;
 	let modelRegistry: ModelRegistry;
-	const defaultKeybindings = new KeybindingsManager().getEffectiveConfig();
+	const _defaultKeybindings = new KeybindingsManager().getEffectiveConfig();
 
 	beforeEach(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-runner-test-"));
@@ -40,7 +40,7 @@ describe("ExtensionRunner", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	const providerModelConfig: ProviderConfig = {
+	const _providerModelConfig: ProviderConfig = {
 		baseUrl: "https://provider.test/v1",
 		apiKey: "provider-test-key",
 		api: "openai-completions",
@@ -87,7 +87,7 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
-		describe("command collection", () => {
+	describe("command collection", () => {
 		it("collects commands from multiple extensions", async () => {
 			const cmdCode = (name: string) => `
 				export default function(pi) {
@@ -223,5 +223,4 @@ describe("ExtensionRunner", () => {
 			expect(ctx.hasUI).toBe(true);
 		});
 	});
-
 });

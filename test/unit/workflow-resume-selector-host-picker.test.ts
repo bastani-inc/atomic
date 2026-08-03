@@ -10,22 +10,23 @@
  * actionable error. Row building/sorting is covered by
  * workflow-resume-selector.test.ts.
  */
-import { afterAll, beforeAll, describe, test } from "bun:test";
+
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { afterAll, beforeAll, describe, test } from "vitest";
+import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import type { SessionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineSessionPickerService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-session-picker.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
-	parseInteractiveEngineMessage,
-	serializeInteractiveEngineFrame,
 	type InteractiveEngineCommand,
 	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
+	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { SessionPickerHostController } from "../../packages/coding-agent/src/modes/interactive-engine/session-picker-host.ts";
-import type { SessionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
-import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import type { DurableWorkflowDeleteOutcome } from "../../packages/workflows/src/durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import type {
@@ -46,11 +47,7 @@ async function flush(times = 6): Promise<void> {
 	}
 }
 
-function entry(
-	id: string,
-	status: ResumableWorkflowEntry["status"],
-	updatedAt = 200,
-): ResumableWorkflowEntry {
+function entry(id: string, status: ResumableWorkflowEntry["status"], updatedAt = 200): ResumableWorkflowEntry {
 	return {
 		workflowId: id,
 		name: `${status}-workflow`,
@@ -99,7 +96,9 @@ function makeFakeHostPicker(): FakeHostPicker {
 			opens.push(request);
 			onDelete = request.onDelete;
 			return {
-				result: new Promise<string | undefined>((resolve) => { resolveResult = resolve; }),
+				result: new Promise<string | undefined>((resolve) => {
+					resolveResult = resolve;
+				}),
 				update: (sessions) => updates.push(sessions),
 				error: (message) => errors.push(message),
 				close: () => resolveResult?.(undefined),
@@ -107,7 +106,9 @@ function makeFakeHostPicker(): FakeHostPicker {
 		},
 		select: (path) => resolveResult?.(path),
 		cancel: () => resolveResult?.(undefined),
-		deleteRow: async (path) => { await onDelete?.(path); },
+		deleteRow: async (path) => {
+			await onDelete?.(path);
+		},
 	};
 }
 
@@ -129,7 +130,11 @@ describe("workflow resume selector host-picker path", () => {
 		);
 
 		assert.equal(picker.opens.length, 1, "picker opened exactly once");
-		assert.deepEqual(picker.opens[0]!.sessions.map((row) => row.id), ["live-a"], "live rows seed the open");
+		assert.deepEqual(
+			picker.opens[0]!.sessions.map((row) => row.id),
+			["live-a"],
+			"live rows seed the open",
+		);
 		assert.equal(picker.opens[0]!.showRenameHint, false);
 
 		await flush();
@@ -145,11 +150,10 @@ describe("workflow resume selector host-picker path", () => {
 
 	test("cancel resolves close and still returns the hydrated catalog", async () => {
 		const picker = makeFakeHostPicker();
-		const promise = openWorkflowResumeSelector(
-			{ hostSessionPicker: picker.hostSessionPicker },
-			[],
-			async () => ({ durable: [entry("durable-a", "paused")], completed: [] }),
-		);
+		const promise = openWorkflowResumeSelector({ hostSessionPicker: picker.hostSessionPicker }, [], async () => ({
+			durable: [entry("durable-a", "paused")],
+			completed: [],
+		}));
 		await flush();
 
 		picker.cancel();
@@ -192,7 +196,9 @@ describe("workflow resume selector host-picker path", () => {
 				refreshIntervalMs: 0,
 				watch: (change) => {
 					onChange = change;
-					return () => { unsubscribed += 1; };
+					return () => {
+						unsubscribed += 1;
+					};
 				},
 				refresh: async () => {
 					refreshCalls += 1;
@@ -212,7 +218,11 @@ describe("workflow resume selector host-picker path", () => {
 		assert.equal(refreshCalls, 1, "debounced watch refresh ran once");
 		assert.ok(picker.updates.length > updatesAfterHydrate, "refresh pushed a row update");
 		const latest = picker.updates.at(-1)!;
-		assert.deepEqual(latest.map((row) => row.id), ["d-now-paused"], "stale live row dropped, transitioned row appears");
+		assert.deepEqual(
+			latest.map((row) => row.id),
+			["d-now-paused"],
+			"stale live row dropped, transitioned row appears",
+		);
 
 		picker.cancel();
 		await promise;
@@ -246,7 +256,10 @@ describe("workflow resume selector host-picker path", () => {
 		await flush();
 
 		assert.ok(refreshCalls >= 2, `interval refresh ran (${refreshCalls})`);
-		assert.deepEqual(picker.updates.at(-1)!.map((row) => row.id), ["d-from-poll"]);
+		assert.deepEqual(
+			picker.updates.at(-1)!.map((row) => row.id),
+			["d-from-poll"],
+		);
 
 		picker.cancel();
 		await promise;
@@ -310,7 +323,11 @@ describe("workflow resume selector host-picker path", () => {
 		await picker.deleteRow("workflow-durable:durable-a");
 		assert.deepEqual(deleted, ["durable-a"]);
 		assert.equal(picker.updates.length, updatesBefore + 1, "successful delete replies with an update");
-		assert.deepEqual(picker.updates.at(-1)!.map((row) => row.id), ["live-a"], "deleted row removed from the update");
+		assert.deepEqual(
+			picker.updates.at(-1)!.map((row) => row.id),
+			["live-a"],
+			"deleted row removed from the update",
+		);
 
 		picker.cancel();
 		await promise;
@@ -348,17 +365,17 @@ describe("workflow resume selector host-picker path", () => {
 	test("rejects with one actionable error when the capability is absent (no fallback)", async () => {
 		let hydrateCalls = 0;
 		await assert.rejects(
-			openWorkflowResumeSelector(
-				{},
-				[pausedLiveRun()],
-				async () => {
-					hydrateCalls += 1;
-					return { durable: [], completed: [] };
-				},
-			),
+			openWorkflowResumeSelector({}, [pausedLiveRun()], async () => {
+				hydrateCalls += 1;
+				return { durable: [], completed: [] };
+			}),
 			(error: Error) => {
 				assert.equal(error.message, WORKFLOW_RESUME_PICKER_UNAVAILABLE);
-				assert.match(error.message, /\/workflow resume <id>/, "error tells the user the direct-resume escape hatch");
+				assert.match(
+					error.message,
+					/\/workflow resume <id>/,
+					"error tells the user the direct-resume escape hatch",
+				);
 				return true;
 			},
 		);
@@ -371,7 +388,10 @@ describe("workflow resume selector host-picker path", () => {
 		const promise = openWorkflowResumeSelector(
 			{ hostSessionPicker: picker.hostSessionPicker },
 			[pausedLiveRun("live-a", 100)],
-			() => new Promise<WorkflowResumeCatalogRows>((resolve) => { resolveHydrate = resolve; }),
+			() =>
+				new Promise<WorkflowResumeCatalogRows>((resolve) => {
+					resolveHydrate = resolve;
+				}),
 		);
 		await flush();
 
@@ -417,6 +437,8 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 		});
 
 		const runtime = {
+			// Engine death is not exercised here; the controllers only need the subscription.
+			onGenerationEnded: () => () => {},
 			onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 				engineListeners.push(listener);
 				return () => {};
@@ -431,7 +453,12 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 			requestRender: () => {},
 			setWidget: () => {},
 			custom: (
-				factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => SessionSelectorComponent,
+				factory: (
+					tui: unknown,
+					theme: unknown,
+					keys: unknown,
+					done: (result: unknown) => void,
+				) => SessionSelectorComponent,
 			) =>
 				new Promise((resolve) => {
 					component = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, {}, {}, resolve);

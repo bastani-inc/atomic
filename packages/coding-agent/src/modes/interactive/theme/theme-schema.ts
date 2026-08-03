@@ -72,14 +72,16 @@ export const ThemeJsonSchema = Type.Object({
 		// Bash Mode (1 color)
 		bashMode: ColorValueSchema,
 	}),
-	workingIndicator: Type.Optional(Type.Object({
-		dark: Type.Optional(ColorValueSchema),
-		lift: Type.Optional(ColorValueSchema),
-		muted: Type.Optional(ColorValueSchema),
-		accent: Type.Optional(ColorValueSchema),
-		bright: Type.Optional(ColorValueSchema),
-		peak: Type.Optional(ColorValueSchema),
-	})),
+	workingIndicator: Type.Optional(
+		Type.Object({
+			dark: Type.Optional(ColorValueSchema),
+			lift: Type.Optional(ColorValueSchema),
+			muted: Type.Optional(ColorValueSchema),
+			accent: Type.Optional(ColorValueSchema),
+			bright: Type.Optional(ColorValueSchema),
+			peak: Type.Optional(ColorValueSchema),
+		}),
+	),
 	export: Type.Optional(
 		Type.Object({
 			pageBg: Type.Optional(ColorValueSchema),

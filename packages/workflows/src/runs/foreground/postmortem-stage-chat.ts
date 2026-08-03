@@ -25,39 +25,37 @@
  *   - src/runs/foreground/stage-control-registry.ts (get-or-create ownership)
  *   - src/shared/session-transcript.ts (retained-session validation)
  */
-import type { StageSnapshot } from "../../shared/store-types.js";
+
 import { isReopenableSessionTranscript } from "../../shared/session-transcript.js";
-import { createStageContext, type StageAdapters } from "./stage-runner.js";
-import {
-  type AgentSessionEventListener,
-  type DetachedStageHandleLease,
-  type StageControlHandle,
-  type StageControlRegistry,
+import type { StageSnapshot } from "../../shared/store-types.js";
+import type {
+	AgentSessionEventListener,
+	DetachedStageHandleLease,
+	StageControlHandle,
+	StageControlRegistry,
 } from "./stage-control-registry.js";
+import { StageQueuedUserMessageBuffer } from "./stage-queued-user-messages.js";
+import { createStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageUserMessagePreparation } from "./stage-runner-types.js";
 
 /** Why a terminal stage could not be revived as an interactive post-mortem chat. */
-export type PostMortemUnavailableReason =
-  | "no_adapter"
-  | "not_terminal"
-  | "no_session"
-  | "invalid_session";
+export type PostMortemUnavailableReason = "no_adapter" | "not_terminal" | "no_session" | "invalid_session";
 
 export type EnsurePostMortemStageHandleResult =
-  | { readonly ok: true; readonly handle: StageControlHandle }
-  | { readonly ok: false; readonly reason: PostMortemUnavailableReason };
+	| { readonly ok: true; readonly handle: StageControlHandle }
+	| { readonly ok: false; readonly reason: PostMortemUnavailableReason };
 
 export type AcquirePostMortemStageHandleResult =
-  | { readonly ok: true; readonly lease: DetachedStageHandleLease }
-  | { readonly ok: false; readonly reason: PostMortemUnavailableReason };
+	| { readonly ok: true; readonly lease: DetachedStageHandleLease }
+	| { readonly ok: false; readonly reason: PostMortemUnavailableReason };
 
 export interface PostMortemStageChatDeps {
-  readonly registry: StageControlRegistry;
-  readonly adapters?: StageAdapters;
-  /** Working directory used when reopening the retained session. */
-  readonly cwd?: string;
-  /** Default stage session directory to restore after a host restart. */
-  readonly defaultSessionDir?: string;
+	readonly registry: StageControlRegistry;
+	readonly adapters?: StageAdapters;
+	/** Working directory used when reopening the retained session. */
+	readonly cwd?: string;
+	/** Default stage session directory to restore after a host restart. */
+	readonly defaultSessionDir?: string;
 }
 
 /** Terminal statuses whose retained agent session may be reopened for follow-up. */
@@ -69,9 +67,11 @@ const TERMINAL_POSTMORTEM_STATUSES = new Set<StageSnapshot["status"]>(["complete
  * their own agent session are excluded because they have no `sessionFile`.
  */
 export function isPostMortemEligibleStage(stage: StageSnapshot): boolean {
-  return TERMINAL_POSTMORTEM_STATUSES.has(stage.status)
-    && typeof stage.sessionFile === "string"
-    && stage.sessionFile.length > 0;
+	return (
+		TERMINAL_POSTMORTEM_STATUSES.has(stage.status) &&
+		typeof stage.sessionFile === "string" &&
+		stage.sessionFile.length > 0
+	);
 }
 
 /**
@@ -83,50 +83,50 @@ export function isPostMortemEligibleStage(stage: StageSnapshot): boolean {
  * unavailable reason so callers can preserve the read-only transcript.
  */
 export function ensurePostMortemStageHandle(
-  runId: string,
-  stage: StageSnapshot,
-  deps: PostMortemStageChatDeps,
+	runId: string,
+	stage: StageSnapshot,
+	deps: PostMortemStageChatDeps,
 ): EnsurePostMortemStageHandleResult {
-  if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
-  const existing = deps.registry.claim(runId, stage.id);
-  if (existing !== undefined && existing.isDisposed !== true) {
-    return { ok: true, handle: existing };
-  }
-  if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
-  const sessionFile = stage.sessionFile;
-  if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
-  if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
+	if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
+	const existing = deps.registry.claim(runId, stage.id);
+	if (existing !== undefined && existing.isDisposed !== true) {
+		return { ok: true, handle: existing };
+	}
+	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
+	const sessionFile = stage.sessionFile;
+	if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
+	if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
 
-  const adapters = deps.adapters;
-  const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
-    createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
-  );
-  return { ok: true, handle };
+	const adapters = deps.adapters;
+	const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
+		createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
+	);
+	return { ok: true, handle };
 }
 
 /** Acquire a tentative detached handle for programmatic message admission. */
 export function acquirePostMortemStageHandle(
-  runId: string,
-  stage: StageSnapshot,
-  deps: PostMortemStageChatDeps,
+	runId: string,
+	stage: StageSnapshot,
+	deps: PostMortemStageChatDeps,
 ): AcquirePostMortemStageHandleResult {
-  if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
-  const existing = deps.registry.peek(runId, stage.id);
-  if (existing !== undefined && existing.isDisposed !== true) {
-    return {
-      ok: true,
-      lease: deps.registry.acquireDetached(runId, stage.id, () => existing),
-    };
-  }
-  if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
-  const sessionFile = stage.sessionFile;
-  if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
-  if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
-  const adapters = deps.adapters;
-  const lease = deps.registry.acquireDetached(runId, stage.id, () =>
-    createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir)
-  );
-  return { ok: true, lease };
+	if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
+	const existing = deps.registry.peek(runId, stage.id);
+	if (existing !== undefined && existing.isDisposed !== true) {
+		return {
+			ok: true,
+			lease: deps.registry.acquireDetached(runId, stage.id, () => existing),
+		};
+	}
+	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
+	const sessionFile = stage.sessionFile;
+	if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
+	if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
+	const adapters = deps.adapters;
+	const lease = deps.registry.acquireDetached(runId, stage.id, () =>
+		createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
+	);
+	return { ok: true, lease };
 }
 
 /**
@@ -135,84 +135,111 @@ export function acquirePostMortemStageHandle(
  * workflow. Pause/resume of workflow execution is rejected.
  */
 export function createPostMortemStageHandle(
-  runId: string,
-  stage: Pick<StageSnapshot, "id" | "name" | "sessionId">,
-  sessionFile: string,
-  adapters: StageAdapters,
-  cwd: string | undefined,
-  defaultSessionDir: string | undefined,
+	runId: string,
+	stage: Pick<StageSnapshot, "id" | "name" | "sessionId">,
+	sessionFile: string,
+	adapters: StageAdapters,
+	cwd: string | undefined,
+	defaultSessionDir: string | undefined,
 ): StageControlHandle {
-  const context = createStageContext({
-    runId,
-    stageId: stage.id,
-    stageName: stage.name,
-    adapters,
-    stageOptions: {
-      resumeFromSessionFile: sessionFile,
-      ...(cwd !== undefined ? { cwd } : {}),
-    },
-    ...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
-  });
-  let disposed = false;
-  const throwIfClosed = (): void => {
-    if (disposed) throw new Error(`Post-mortem stage chat "${stage.name}" is closed.`);
-  };
-  const messagePreparation = (): StageUserMessagePreparation => ({
-    ...(context.__sessionMeta().sessionFile === undefined ? { sessionFile } : {}),
-    beforePreparation: throwIfClosed,
-  });
-  const ensureAttached = async (): Promise<void> => {
-    throwIfClosed();
-    const sessionFileToRestore = messagePreparation().sessionFile;
-    if (sessionFileToRestore !== undefined) {
-      await context.__ensureSessionFromFile(sessionFileToRestore);
-    }
-  };
-  return {
-    runId,
-    stageId: stage.id,
-    stageName: stage.name,
-    status: "completed",
-    get sessionId() { return context.__sessionMeta().sessionId ?? stage.sessionId; },
-    get sessionFile() { return context.__sessionMeta().sessionFile ?? sessionFile; },
-    get isStreaming() { return context.isStreaming; },
-    get isDisposed() { return disposed; },
-    get messages() { return context.messages; },
-    get agentSession() { return context.__agentSession(); },
-    async ensureAttached() { await ensureAttached(); },
-    async sendUserMessage(text, options, beforeDelivery) {
-      throwIfClosed();
-      const preparation = messagePreparation();
-      const admitDelivery = (): void => {
-        throwIfClosed();
-        beforeDelivery?.();
-      };
-      return context.__sendUserMessage(text, options, admitDelivery, preparation);
-    },
-    async prompt(text: string) {
-      await ensureAttached();
-      await context.prompt(text);
-    },
-    async steer(text: string) {
-      await ensureAttached();
-      await context.steer(text);
-    },
-    async followUp(text: string) {
-      await ensureAttached();
-      await context.followUp(text);
-    },
-    async pause() {
-      throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
-    },
-    async resume() {
-      throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
-    },
-    subscribe(listener: AgentSessionEventListener) { return context.subscribe(listener); },
-    subscribeDeliveryActivity(listener) { return context.__subscribeDeliveryActivity(listener); },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      await context.__dispose();
-    },
-  };
+	const context = createStageContext({
+		runId,
+		stageId: stage.id,
+		stageName: stage.name,
+		adapters,
+		stageOptions: {
+			resumeFromSessionFile: sessionFile,
+			...(cwd !== undefined ? { cwd } : {}),
+		},
+		...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
+	});
+	let disposed = false;
+	const throwIfClosed = (): void => {
+		if (disposed) throw new Error(`Post-mortem stage chat "${stage.name}" is closed.`);
+	};
+	const messagePreparation = (): StageUserMessagePreparation => ({
+		...(context.__sessionMeta().sessionFile === undefined ? { sessionFile } : {}),
+		beforePreparation: throwIfClosed,
+	});
+	const ensureAttached = async (): Promise<void> => {
+		throwIfClosed();
+		const sessionFileToRestore = messagePreparation().sessionFile;
+		if (sessionFileToRestore !== undefined) {
+			await context.__ensureSessionFromFile(sessionFileToRestore);
+		}
+	};
+	// Same runtime queue projection the live handle keeps, so a retained-session
+	// chat rehydrates its pending rows on reattach too.
+	const queuedUserMessages = new StageQueuedUserMessageBuffer();
+	const unsubscribeQueuedUserMessages = context.subscribe((event) => queuedUserMessages.record(event));
+	return {
+		runId,
+		stageId: stage.id,
+		stageName: stage.name,
+		status: "completed",
+		get sessionId() {
+			return context.__sessionMeta().sessionId ?? stage.sessionId;
+		},
+		get sessionFile() {
+			return context.__sessionMeta().sessionFile ?? sessionFile;
+		},
+		get isStreaming() {
+			return context.isStreaming;
+		},
+		get isDisposed() {
+			return disposed;
+		},
+		get messages() {
+			return context.messages;
+		},
+		get agentSession() {
+			return context.__agentSession();
+		},
+		queuedUserMessages() {
+			return queuedUserMessages.snapshot();
+		},
+		async ensureAttached() {
+			await ensureAttached();
+		},
+		async sendUserMessage(text, options, beforeDelivery) {
+			throwIfClosed();
+			const preparation = messagePreparation();
+			const admitDelivery = (): void => {
+				throwIfClosed();
+				beforeDelivery?.();
+			};
+			return context.__sendUserMessage(text, options, admitDelivery, preparation);
+		},
+		async prompt(text: string) {
+			await ensureAttached();
+			await context.prompt(text);
+		},
+		async steer(text: string) {
+			await ensureAttached();
+			await context.steer(text);
+		},
+		async followUp(text: string) {
+			await ensureAttached();
+			await context.followUp(text);
+		},
+		async pause() {
+			throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
+		},
+		async resume() {
+			throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
+		},
+		subscribe(listener: AgentSessionEventListener) {
+			return context.subscribe(listener);
+		},
+		subscribeDeliveryActivity(listener) {
+			return context.__subscribeDeliveryActivity(listener);
+		},
+		async dispose() {
+			if (disposed) return;
+			disposed = true;
+			unsubscribeQueuedUserMessages();
+			queuedUserMessages.clear();
+			await context.__dispose();
+		},
+	};
 }

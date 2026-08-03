@@ -1,142 +1,126 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { inspectRun } from "../runs/background/status.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
-import type { ExtensionRuntime } from "./runtime.js";
-import type { WorkflowToolResult } from "./render-result.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
+import type { WorkflowToolResult } from "./render-result.js";
+import type { ExtensionRuntime } from "./runtime.js";
+import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import type { WorkflowReloadReport } from "./workflow-reload-report.js";
+import { buildWorkflowStatusListing } from "./workflow-status-summary.js";
+import { isWorkflowStageToolContext, resolveRunId, topLevelExpandedSnapshots } from "./workflow-targets.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
-  workflowInterruptAction,
-  workflowQuitAction,
-  workflowPauseAction,
-  workflowReloadAction,
-  workflowResumeAction,
+	workflowInterruptAction,
+	workflowPauseAction,
+	workflowQuitAction,
+	workflowReloadAction,
+	workflowResumeAction,
 } from "./workflow-tool-control.js";
-import {
-  workflowStageResult,
-  workflowStagesResult,
-  workflowTranscriptResult,
-} from "./workflow-tool-inspection.js";
-import { workflowSendAction, type WorkflowSendDeps } from "./workflow-tool-send.js";
-import { buildWorkflowStatusListing } from "./workflow-status-summary.js";
-import {
-  ambiguousRunMessage,
-  isWorkflowStageToolContext,
-  resolveRunIdPrefix,
-  topLevelExpandedSnapshots,
-} from "./workflow-targets.js";
-import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
-import type { WorkflowReloadReport } from "./workflow-reload-report.js";
+import { workflowStageResult, workflowStagesResult, workflowTranscriptResult } from "./workflow-tool-inspection.js";
+import { type WorkflowSendDeps, workflowSendAction } from "./workflow-tool-send.js";
 
 export function makeExecuteWorkflowTool(
-  runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
-  reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void,
-  ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
-  sendDeps: WorkflowSendDeps = {},
+	runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
+	reloadWorkflowResources: () => Promise<WorkflowReloadReport | undefined> | undefined,
+	ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
+	sendDeps: WorkflowSendDeps = {},
 ): (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult> {
-  return async function executeWorkflowTool(
-    args: WorkflowToolArgs,
-    ctx: PiExecuteContext,
-  ): Promise<WorkflowToolResult> {
-    const action = args.action ?? "run";
-    const runId = args.runId ?? "";
-    if (isWorkflowStageToolContext(ctx)) {
-      return {
-        action: "run",
-        runId,
-        status: "failed",
-        error: "workflows cannot invoke workflows from workflow stages",
-        stages: [],
-      };
-    }
-    const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
-    const getRuntime = (): ExtensionRuntime => typeof runtime === "function" ? runtime(ctx) : runtime;
-    const ensureWorkflowResourcesVisible = async (): Promise<void> => {
-      try {
-        await ensureWorkflowResourcesLoaded();
-      } catch (error) {
-        ctx.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
-      }
-    };
+	return async function executeWorkflowTool(
+		args: WorkflowToolArgs,
+		ctx: PiExecuteContext,
+	): Promise<WorkflowToolResult> {
+		const action = args.action ?? "run";
+		const runId = args.runId ?? "";
+		if (isWorkflowStageToolContext(ctx)) {
+			return {
+				action: "run",
+				runId,
+				status: "failed",
+				error: "workflows cannot invoke workflows from workflow stages",
+				stages: [],
+			};
+		}
+		const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
+		const getRuntime = (): ExtensionRuntime => (typeof runtime === "function" ? runtime(ctx) : runtime);
+		const ensureWorkflowResourcesVisible = async (): Promise<void> => {
+			try {
+				await ensureWorkflowResourcesLoaded();
+			} catch (error) {
+				ctx.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
+			}
+		};
 
-    switch (action) {
-      case "get":
-        await ensureWorkflowResourcesVisible();
-        return workflowGetResult(getRuntime(), args);
-      case "models": {
-        const available = ctx.modelRegistry?.getAvailable() ?? [];
-        const current = ctx.model;
-        const models = available.map((m) => ({
-          provider: m.provider,
-          id: m.id,
-          fullId: `${m.provider}/${m.id}`,
-          isCurrent: current !== undefined && m.provider === current.provider && m.id === current.id,
-          availableThinkingLevels: getSupportedThinkingLevels(m),
-        }));
-        return { action: "models", models };
-      }
-      case "list":
-      case "inputs": {
-        await ensureWorkflowResourcesVisible();
-        return getRuntime().dispatch(args, { policy });
-      }
-      case "run": {
-        await ensureWorkflowResourcesVisible();
-        return getRuntime().dispatch(args, { policy });
-      }
-      case "status": {
-        const target = args.runId;
-        if (target !== undefined) {
-          const resolved = resolveRunIdPrefix(target);
-          if (resolved.kind === "ambiguous") {
-            return {
-              action: "statusDetail",
-              runId: target,
-              error: ambiguousRunMessage(target, resolved.matches),
-            };
-          }
-          if (resolved.kind === "not_found") {
-            return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
-          }
-          const result = inspectRun(resolved.runId);
-          return result.ok
-            ? { action: "statusDetail", runId: result.runId, detail: result.detail }
-            : { action: "statusDetail", runId: target, error: `run not found: ${target}` };
-        }
-        const listing = buildWorkflowStatusListing(
-          topLevelExpandedSnapshots(),
-          args.statusFilter ?? "all",
-        );
-        return {
-          action: "status",
-          filter: listing.filter,
-          runs: listing.runs,
-          snapshots: listing.snapshots,
-        };
-      }
-      case "stages":
-        return workflowStagesResult(args);
-      case "stage":
-        return workflowStageResult(args);
-      case "transcript":
-        return workflowTranscriptResult(args);
-      case "send":
-        return workflowSendAction(args, sendDeps);
-      case "pause":
-        return workflowPauseAction(args);
-      case "reload":
-        return workflowReloadAction(args, { reloadWorkflowResources });
-      case "quit":
-        return workflowQuitAction(args);
-      case "interrupt":
-        return workflowInterruptAction(args);
-      case "resume":
-        return workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded });
-      default: {
-        const _exhaustive: never = action;
-        throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);
-      }
-    }
-  };
+		switch (action) {
+			case "get":
+				await ensureWorkflowResourcesVisible();
+				return workflowGetResult(getRuntime(), args);
+			case "models": {
+				const available = ctx.modelRegistry?.getAvailable() ?? [];
+				const current = ctx.model;
+				const models = available.map((m) => ({
+					provider: m.provider,
+					id: m.id,
+					fullId: `${m.provider}/${m.id}`,
+					isCurrent: current !== undefined && m.provider === current.provider && m.id === current.id,
+					availableThinkingLevels: getSupportedThinkingLevels(m),
+				}));
+				return { action: "models", models };
+			}
+			case "list":
+			case "inputs": {
+				await ensureWorkflowResourcesVisible();
+				return getRuntime().dispatch(args, { policy });
+			}
+			case "run": {
+				await ensureWorkflowResourcesVisible();
+				return getRuntime().dispatch(args, { policy });
+			}
+			case "status": {
+				const target = args.runId;
+				if (target !== undefined) {
+					const resolved = resolveRunId(target);
+					if (resolved.kind === "malformed") {
+						return { action: "statusDetail", runId: target, error: resolved.message };
+					}
+					if (resolved.kind === "not_found") {
+						return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
+					}
+					const result = inspectRun(resolved.runId);
+					return result.ok
+						? { action: "statusDetail", runId: result.runId, detail: result.detail }
+						: { action: "statusDetail", runId: target, error: `run not found: ${target}` };
+				}
+				const listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), args.statusFilter ?? "all");
+				return {
+					action: "status",
+					filter: listing.filter,
+					runs: listing.runs,
+					snapshots: listing.snapshots,
+				};
+			}
+			case "stages":
+				return workflowStagesResult(args);
+			case "stage":
+				return workflowStageResult(args);
+			case "transcript":
+				return workflowTranscriptResult(args);
+			case "send":
+				return workflowSendAction(args, sendDeps);
+			case "pause":
+				return workflowPauseAction(args);
+			case "reload":
+				return workflowReloadAction(args, { reloadWorkflowResources });
+			case "quit":
+				return workflowQuitAction(args);
+			case "interrupt":
+				return workflowInterruptAction(args);
+			case "resume":
+				return workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded });
+			default: {
+				const _exhaustive: never = action;
+				throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);
+			}
+		}
+	};
 }

@@ -1,74 +1,66 @@
 import type { AgentSession } from "@bastani/atomic";
-import type {
-  StageSessionCreateResult,
-  StageSessionRuntime,
-} from "./stage-runner-types.js";
+import type { StageSessionCreateResult, StageSessionRuntime } from "./stage-runner-types.js";
 
 type StageSessionExtensionRunner = {
-  hasHandlers(eventType: string): boolean;
-  emit(event: { readonly type: "session_shutdown"; readonly reason: "quit" }): Promise<unknown>;
+	hasHandlers(eventType: string): boolean;
+	emit(event: { readonly type: "session_shutdown"; readonly reason: "quit" }): Promise<unknown>;
 };
 
-function stageSessionExtensionRunner(
-  current: StageSessionRuntime,
-): StageSessionExtensionRunner | undefined {
-  const runner = (current as StageSessionRuntime & { extensionRunner?: StageSessionExtensionRunner })
-    .extensionRunner;
-  if (runner && typeof runner.hasHandlers === "function" && typeof runner.emit === "function") {
-    return runner;
-  }
-  return undefined;
+function stageSessionExtensionRunner(current: StageSessionRuntime): StageSessionExtensionRunner | undefined {
+	const runner = (current as StageSessionRuntime & { extensionRunner?: StageSessionExtensionRunner }).extensionRunner;
+	if (runner && typeof runner.hasHandlers === "function" && typeof runner.emit === "function") {
+		return runner;
+	}
+	return undefined;
 }
 
 export async function disposeStageSession(current: StageSessionRuntime | undefined): Promise<void> {
-  if (!current) return;
-  const runner = stageSessionExtensionRunner(current);
-  if (runner?.hasHandlers("session_shutdown")) {
-    try {
-      await runner.emit({ type: "session_shutdown", reason: "quit" });
-    } catch (error) {
-      console.error("atomic-workflows: stage session_shutdown handler failed", error);
-    }
-  }
-  await current.dispose();
+	if (!current) return;
+	const runner = stageSessionExtensionRunner(current);
+	if (runner?.hasHandlers("session_shutdown")) {
+		try {
+			await runner.emit({ type: "session_shutdown", reason: "quit" });
+		} catch (error) {
+			console.error("atomic-workflows: stage session_shutdown handler failed", error);
+		}
+	}
+	await current.dispose();
 }
 
 export function asAgentSession(activeSession: StageSessionRuntime | undefined): AgentSession | undefined {
-  if (!activeSession) return undefined;
-  const candidate = activeSession as StageSessionRuntime & Partial<Pick<AgentSession, "state" | "sessionManager" | "modelRuntime" | "getContextUsage">>;
-  if (
-    candidate.state !== undefined &&
-    candidate.sessionManager !== undefined &&
-    candidate.modelRuntime !== undefined &&
-    typeof candidate.getContextUsage === "function"
-  ) {
-    return candidate as AgentSession;
-  }
-  return undefined;
+	if (!activeSession) return undefined;
+	const candidate = activeSession as StageSessionRuntime &
+		Partial<Pick<AgentSession, "state" | "sessionManager" | "modelRuntime" | "getContextUsage">>;
+	if (
+		candidate.state !== undefined &&
+		candidate.sessionManager !== undefined &&
+		candidate.modelRuntime !== undefined &&
+		typeof candidate.getContextUsage === "function"
+	) {
+		return candidate as AgentSession;
+	}
+	return undefined;
 }
 
 export function normalizeSessionCreateResult(
-  created: StageSessionRuntime | StageSessionCreateResult,
+	created: StageSessionRuntime | StageSessionCreateResult,
 ): StageSessionCreateResult {
-  if ("session" in created) return created;
-  return { session: created };
+	if ("session" in created) return created;
+	return { session: created };
 }
 
 export function attachCreatedStageSession<T>(
-  created: StageSessionRuntime | StageSessionCreateResult,
-  disposed: boolean,
-  stageName: string,
-  attach: (result: StageSessionCreateResult) => T,
+	created: StageSessionRuntime | StageSessionCreateResult,
+	disposed: boolean,
+	stageName: string,
+	attach: (result: StageSessionCreateResult) => T,
 ): T | Promise<never> {
-  const result = normalizeSessionCreateResult(created);
-  if (!disposed) return attach(result);
-  return rejectDisposedCreatedSession(result, stageName);
+	const result = normalizeSessionCreateResult(created);
+	if (!disposed) return attach(result);
+	return rejectDisposedCreatedSession(result, stageName);
 }
 
-async function rejectDisposedCreatedSession(
-  result: StageSessionCreateResult,
-  stageName: string,
-): Promise<never> {
-  await disposeStageSession(result.session);
-  throw new Error(`atomic-workflows: stage "${stageName}" session has been disposed`);
+async function rejectDisposedCreatedSession(result: StageSessionCreateResult, stageName: string): Promise<never> {
+	await disposeStageSession(result.session);
+	throw new Error(`atomic-workflows: stage "${stageName}" session has been disposed`);
 }

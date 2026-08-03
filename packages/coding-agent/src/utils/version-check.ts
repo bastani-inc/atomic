@@ -1,5 +1,5 @@
 import { compare, valid } from "semver";
-import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, PACKAGE_NAME, getEnvValue } from "../config.ts";
+import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, getEnvValue, PACKAGE_NAME } from "../config.ts";
 
 const LATEST_VERSION_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
@@ -40,9 +40,7 @@ export function isNewerPackageVersion(candidateVersion: string, currentVersion: 
 	return candidateVersion.trim() !== currentVersion.trim();
 }
 
-export async function getLatestPiRelease(
-	options: { timeoutMs?: number } = {},
-): Promise<LatestPiRelease | undefined> {
+export async function getLatestPiRelease(options: { timeoutMs?: number } = {}): Promise<LatestPiRelease | undefined> {
 	if (getEnvValue(ENV_OFFLINE)) return undefined;
 
 	const response = await fetch(LATEST_VERSION_URL, {
@@ -60,9 +58,7 @@ export async function getLatestPiRelease(
 	return { version: data.version.trim(), packageName, ...(note ? { note } : {}) };
 }
 
-export async function getLatestPiVersion(
-	options: { timeoutMs?: number } = {},
-): Promise<string | undefined> {
+export async function getLatestPiVersion(options: { timeoutMs?: number } = {}): Promise<string | undefined> {
 	return (await getLatestPiRelease(options))?.version;
 }
 

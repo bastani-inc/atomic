@@ -92,7 +92,10 @@ export class Theme {
 			this.bgColors.set(key, bgAnsi(value, mode));
 		}
 		this.workingIndicatorColors = new Map();
-		for (const [key, value] of Object.entries(options.workingIndicator ?? {}) as [WorkingIndicatorTone, string | number][]) {
+		for (const [key, value] of Object.entries(options.workingIndicator ?? {}) as [
+			WorkingIndicatorTone,
+			string | number,
+		][]) {
 			this.workingIndicatorColors.set(key, fgAnsi(value, mode));
 		}
 	}
@@ -149,7 +152,9 @@ export class Theme {
 		return this.mode;
 	}
 
-	getThinkingBorderColor(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"): (str: string) => string {
+	getThinkingBorderColor(
+		level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+	): (str: string) => string {
 		// Map thinking levels to dedicated theme colors
 		switch (level) {
 			case "off":

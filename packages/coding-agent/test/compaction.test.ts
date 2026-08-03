@@ -1,5 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	type CompactionSettings,
@@ -21,8 +23,6 @@ import {
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "../src/core/session-manager.ts";
-import { readFileSync } from "fs";
-import { join } from "path";
 
 // ============================================================================
 // Test fixtures
@@ -311,7 +311,11 @@ describe("estimateContextTokens", () => {
 
 	it("preserves the API discriminator for normalized cached usage", () => {
 		const usage = createMockUsage(7_907, 7, 7_936, 0);
-		const message = { ...createAssistantMessage("response", usage), api: "openai-codex-responses" as const, provider: "openai-codex" };
+		const message = {
+			...createAssistantMessage("response", usage),
+			api: "openai-codex-responses" as const,
+			provider: "openai-codex",
+		};
 		const result = estimateContextTokens([createUserMessage("hello"), message]);
 		expect(result.tokens).toBe(15_850);
 		expect(shouldCompact(result.tokens, 20_000, { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 5_000 })).toBe(true);
@@ -357,7 +361,9 @@ describe("estimateContextTokens", () => {
 			trailingTokens: heuristicTokens,
 			lastUsageIndex: null,
 		});
-		expect(shouldCompact(result.tokens, 100_000, { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 10_000 })).toBe(false);
+		expect(shouldCompact(result.tokens, 100_000, { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 10_000 })).toBe(
+			false,
+		);
 	});
 });
 
@@ -454,15 +460,27 @@ describe("buildSessionContext", () => {
 
 		const loaded = buildSessionContext(entries);
 
-		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
-			(block) => block.type === "text" && block.text === "WHOLE_ENTRY_DELETED",
-		))).toBeDefined();
-		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
-			(block) => block.type === "text" && block.text === "RETAINED_BLOCK",
-		))).toBeDefined();
-		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
-			(block) => block.type === "text" && block.text === "DELETED_BLOCK",
-		))).toBeDefined();
+		expect(
+			loaded.messages.find(
+				(message) =>
+					message.role === "assistant" &&
+					message.content.some((block) => block.type === "text" && block.text === "WHOLE_ENTRY_DELETED"),
+			),
+		).toBeDefined();
+		expect(
+			loaded.messages.find(
+				(message) =>
+					message.role === "assistant" &&
+					message.content.some((block) => block.type === "text" && block.text === "RETAINED_BLOCK"),
+			),
+		).toBeDefined();
+		expect(
+			loaded.messages.find(
+				(message) =>
+					message.role === "assistant" &&
+					message.content.some((block) => block.type === "text" && block.text === "DELETED_BLOCK"),
+			),
+		).toBeDefined();
 	});
 });
 
@@ -489,7 +507,7 @@ describe("Large session fixture", () => {
 
 	it("DEFAULT_COMPACTION_SETTINGS has no keepRecentTokens", () => {
 		// Verify the metrics-only settings shape does not include legacy keepRecentTokens
-		expect((DEFAULT_COMPACTION_SETTINGS as Record<string, unknown>)["keepRecentTokens"]).toBeUndefined();
+		expect((DEFAULT_COMPACTION_SETTINGS as Record<string, unknown>).keepRecentTokens).toBeUndefined();
 		expect(DEFAULT_COMPACTION_SETTINGS.enabled).toBe(true);
 		expect(DEFAULT_COMPACTION_SETTINGS.reserveTokens).toBeGreaterThan(0);
 	});

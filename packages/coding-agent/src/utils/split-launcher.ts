@@ -24,10 +24,7 @@ import { fileURLToPath } from "node:url";
  * scattered ad-hoc guards.
  */
 export function isSplitLauncherRuntime(): boolean {
-	return (
-		process.env.ATOMIC_CODING_AGENT === "true" &&
-		/(?:^|[\\/])atomic(?:\.exe)?$/i.test(process.execPath)
-	);
+	return process.env.ATOMIC_CODING_AGENT === "true" && /(?:^|[\\/])atomic(?:\.exe)?$/i.test(process.execPath);
 }
 
 /** Directory containing the launcher executable and its sidecar bundle/assets. */

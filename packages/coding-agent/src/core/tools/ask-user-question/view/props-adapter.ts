@@ -67,12 +67,10 @@ export class QuestionnairePropsAdapter {
 
 		const liveInlineValue = this.inlineInput.getValue();
 		const inputBuffer =
-			state.customDraftByTab.get(state.currentTab) ??
-			(state.inlineInputOwner === "other" ? liveInlineValue : "");
+			state.customDraftByTab.get(state.currentTab) ?? (state.inlineInputOwner === "other" ? liveInlineValue : "");
 		const inputCaret = state.customCaretByTab.get(state.currentTab) ?? inputBuffer.length;
 		const chatInputBuffer =
-			state.chatDraftByTab.get(state.currentTab) ??
-			(state.inlineInputOwner === "chat" ? liveInlineValue : "");
+			state.chatDraftByTab.get(state.currentTab) ?? (state.inlineInputOwner === "chat" ? liveInlineValue : "");
 		const chatInputCaret = state.chatCaretByTab.get(state.currentTab) ?? chatInputBuffer.length;
 		const ctx: BindingContext = {
 			questions: this.questions,

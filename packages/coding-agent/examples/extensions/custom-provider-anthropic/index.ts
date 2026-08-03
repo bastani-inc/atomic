@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ContentBlockParam, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/messages.js";
+import type { ExtensionAPI } from "@bastani/atomic";
 import {
 	type Api,
 	type AssistantMessage,
@@ -20,7 +21,7 @@ import {
 	type ToolCall,
 	type ToolResultMessage,
 } from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI } from "@bastani/atomic";
+
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
@@ -108,7 +109,18 @@ async function refreshAnthropicToken(credentials: OAuthCredentials): Promise<OAu
 		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
 	};
 }
-const claudeCodeTools = ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "AskUserQuestion", "TodoWrite", "WebFetch", "WebSearch"];
+const claudeCodeTools = [
+	"Read",
+	"Write",
+	"Edit",
+	"Bash",
+	"Grep",
+	"Glob",
+	"AskUserQuestion",
+	"TodoWrite",
+	"WebFetch",
+	"WebSearch",
+];
 const ccToolLookup = new Map(claudeCodeTools.map((t) => [t.toLowerCase(), t]));
 const toClaudeCodeName = (name: string) => ccToolLookup.get(name.toLowerCase()) ?? name;
 const fromClaudeCodeName = (name: string, tools?: Tool[]) => {

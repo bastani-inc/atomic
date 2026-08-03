@@ -23,4 +23,3 @@ export function mergeResourcePaths(cwd: string, primary: string[], additional: s
 
 	return merged;
 }
-

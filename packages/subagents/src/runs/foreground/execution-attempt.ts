@@ -2,15 +2,18 @@ import { spawn } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agents.ts";
-import { type AgentProgress, type RunSyncOptions, type SingleResult, getSubagentDepthEnv } from "../../shared/types.ts";
-import { extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
+import { resolveSubagentModelFastMode } from "../../shared/fast-mode.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
-import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
-import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
-import { assistantStopReason, isAssistantFailureStopReason, shouldStartSubagentFinalDrain } from "../shared/final-drain.ts";
-import { modelFailureMessage } from "../shared/model-fallback.ts";
+import { type AgentProgress, getSubagentDepthEnv, type RunSyncOptions, type SingleResult } from "../../shared/types.ts";
+import { extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
 import { createAttemptWatchdog } from "../shared/attempt-watchdog.ts";
+import {
+	assistantStopReason,
+	isAssistantFailureStopReason,
+	shouldStartSubagentFinalDrain,
+} from "../shared/final-drain.ts";
 import {
 	createMutatingFailureState,
 	didMutatingToolFail,
@@ -21,13 +24,21 @@ import {
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
 } from "../shared/long-running-guard.ts";
-import { resolveSubagentModelFastMode } from "../../shared/fast-mode.ts";
-import { appendRecentOutput, emptyUsage, modelFailureSignalByResult, snapshotProgress, snapshotResult } from "./execution-utils.ts";
+import { modelFailureMessage } from "../shared/model-fallback.ts";
+import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
+import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
+import { buildSubagentSpawnEnv } from "../shared/spawn-env.ts";
 import { createAttemptControlRuntime } from "./execution-attempt-control.ts";
 import { finalizeSingleAttempt } from "./execution-attempt-finalize.ts";
-import { registerExecutionIntercomDetach } from "./execution-intercom-detach.ts";
 import type { RunSingleAttemptShared } from "./execution-attempt-types.ts";
-import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
+import { registerExecutionIntercomDetach } from "./execution-intercom-detach.ts";
+import {
+	appendRecentOutput,
+	emptyUsage,
+	modelFailureSignalByResult,
+	snapshotProgress,
+	snapshotResult,
+} from "./execution-utils.ts";
 export async function runSingleAttempt(
 	runtimeCwd: string,
 	agent: AgentConfig,
@@ -44,10 +55,15 @@ export async function runSingleAttempt(
 		settings: shared.fastModeSettings,
 		scope: shared.fastModeScope,
 	});
-	const supervisorAuthorization = options.orchestratorIntercomTarget && options.intercomSessionName
-		? await requestSupervisorAuthorization(options.intercomEvents, options.intercomSessionName)
-		: undefined;
-	const { args, env: sharedEnv, tempDir } = buildPiArgs({
+	const supervisorAuthorization =
+		options.orchestratorIntercomTarget && options.intercomSessionName
+			? await requestSupervisorAuthorization(options.intercomEvents, options.intercomSessionName)
+			: undefined;
+	const {
+		args,
+		env: sharedEnv,
+		tempDir,
+	} = buildPiArgs({
 		baseArgs: ["--mode", "json", "-p"],
 		task,
 		sessionEnabled: shared.sessionEnabled,
@@ -116,19 +132,26 @@ export async function runSingleAttempt(
 	};
 	result.progress = progress;
 	const controlRuntime = createAttemptControlRuntime({ options, agent, result, progress, startTime });
-	const spawnEnv = {
-		...process.env,
-		...sharedEnv,
-		...getSubagentDepthEnv(options.maxSubagentDepth, {
+	const spawnEnv = buildSubagentSpawnEnv(
+		process.env,
+		sharedEnv,
+		getSubagentDepthEnv(options.maxSubagentDepth, {
 			workflowStageSubagentGuard: options.workflowStageSubagentGuard,
 		}),
-	};
+	);
 	const cwdValidation = validatePiSpawnCwd(runCwd);
 	if (!cwdValidation.ok) {
 		cleanupTempDir(tempDir);
 		result.error = cwdValidation.error;
 		return finalizeSingleAttempt({
-			result, progress, exitCode: 1, interruptedByControl, allControlEvents: controlRuntime.allControlEvents, options, shared, startTime,
+			result,
+			progress,
+			exitCode: 1,
+			interruptedByControl,
+			allControlEvents: controlRuntime.allControlEvents,
+			options,
+			shared,
+			startTime,
 		});
 	}
 	const exitCode = await new Promise<number>((resolve) => {
@@ -156,7 +179,11 @@ export async function runSingleAttempt(
 			result.detachedReason = "intercom coordination";
 			progress.status = "detached";
 			progress.durationMs = Date.now() - startTime;
-			result.progressSummary = { toolCount: progress.toolCount, tokens: progress.tokens, durationMs: progress.durationMs };
+			result.progressSummary = {
+				toolCount: progress.toolCount,
+				tokens: progress.tokens,
+				durationMs: progress.durationMs,
+			};
 			// Settle foreground supervision while retaining process lifecycle ownership.
 			finish(-2, true);
 		};
@@ -185,7 +212,9 @@ export async function runSingleAttempt(
 				if (!termSent) return;
 				forcedTerminationSignal = true;
 				if (!cleanTerminalAssistantStopReceived && !assistantError) {
-					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
+					result.error =
+						result.error ??
+						`Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
 					if (processClosed) return;
@@ -255,7 +284,10 @@ export async function runSingleAttempt(
 			controlRuntime.updateActivityState(now);
 
 			if (evt.type === "tool_execution_start") {
-				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args) ? evt.args as Record<string, unknown> : {};
+				const toolArgs =
+					evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
+						? (evt.args as Record<string, unknown>)
+						: {};
 				// Broker delivery is the authoritative detach trigger; tool-start observation
 				// is intentionally not required because the broker event may arrive first.
 				progress.toolCount++;
@@ -263,13 +295,22 @@ export async function runSingleAttempt(
 				progress.currentToolArgs = extractToolArgsPreview(toolArgs);
 				progress.currentToolStartedAt = now;
 				progress.currentPath = resolveCurrentPath(evt.toolName, toolArgs);
-				pendingToolResult = { tool: evt.toolName ?? "tool", path: progress.currentPath, mutates: isMutatingTool(evt.toolName, toolArgs), startedAt: now };
+				pendingToolResult = {
+					tool: evt.toolName ?? "tool",
+					path: progress.currentPath,
+					mutates: isMutatingTool(evt.toolName, toolArgs),
+					startedAt: now,
+				};
 				fireUpdate();
 			}
 
 			if (evt.type === "tool_execution_end") {
 				if (progress.currentTool) {
-					progress.recentTools.push({ tool: progress.currentTool, args: progress.currentToolArgs || "", endMs: now });
+					progress.recentTools.push({
+						tool: progress.currentTool,
+						args: progress.currentToolArgs || "",
+						endMs: now,
+					});
 				}
 				progress.currentTool = undefined;
 				progress.currentToolArgs = undefined;
@@ -324,19 +365,35 @@ export async function runSingleAttempt(
 				const toolSnapshot = pendingToolResult;
 				pendingToolResult = undefined;
 				if (toolSnapshot?.mutates && didMutatingToolFail(resultText)) {
-					recordMutatingFailure(mutatingFailures, {
-						tool: toolSnapshot.tool,
-						path: toolSnapshot.path,
-						error: resultText.split("\n").find((row) => row.trim())?.trim().slice(0, 180) ?? "mutating tool failed",
-						ts: now,
-					}, mutatingFailureWindowMs);
-					if (shouldEscalateMutatingFailures(mutatingFailures, controlRuntime.config.failedToolAttemptsBeforeAttention)) {
+					recordMutatingFailure(
+						mutatingFailures,
+						{
+							tool: toolSnapshot.tool,
+							path: toolSnapshot.path,
+							error:
+								resultText
+									.split("\n")
+									.find((row) => row.trim())
+									?.trim()
+									.slice(0, 180) ?? "mutating tool failed",
+							ts: now,
+						},
+						mutatingFailureWindowMs,
+					);
+					if (
+						shouldEscalateMutatingFailures(
+							mutatingFailures,
+							controlRuntime.config.failedToolAttemptsBeforeAttention,
+						)
+					) {
 						controlRuntime.emitNeedsAttention(now, {
 							message: `${agent.name} needs attention after repeated mutating tool failures`,
 							reason: "tool_failures",
 							currentTool: toolSnapshot.tool,
 							currentPath: toolSnapshot.path,
-							currentToolDurationMs: toolSnapshot.startedAt ? Math.max(0, now - toolSnapshot.startedAt) : undefined,
+							currentToolDurationMs: toolSnapshot.startedAt
+								? Math.max(0, now - toolSnapshot.startedAt)
+								: undefined,
 							recentFailureSummary: summarizeRecentMutatingFailures(mutatingFailures),
 						});
 					}
@@ -396,8 +453,10 @@ export async function runSingleAttempt(
 			clearFinalDrainTimers();
 			clearStdioGuard();
 			attemptWatchdog.clear();
-			removeAbortListener?.(); removeAbortListener = undefined;
-			removeInterruptListener?.(); removeInterruptListener = undefined;
+			removeAbortListener?.();
+			removeAbortListener = undefined;
+			removeInterruptListener?.();
+			removeInterruptListener = undefined;
 			cleanupIntercomDetach();
 			void jsonlWriter.close().catch(() => undefined);
 			cleanupTempDir(tempDir);
@@ -406,17 +465,31 @@ export async function runSingleAttempt(
 			if (assistantFailureSignal !== undefined && result.error === assistantError) {
 				modelFailureSignalByResult.set(result, assistantFailureSignal);
 			}
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !result.error;
-			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) result.error = stderrBuf.trim();
-			const finalCode = forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
+			const forcedDrainAfterFinalSuccess =
+				forcedTerminationSignal && cleanTerminalAssistantStopReceived && !result.error;
+			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess)
+				result.error = stderrBuf.trim();
+			const finalCode = forcedDrainAfterFinalSuccess
+				? 0
+				: forcedTerminationSignal || signal
+					? (code ?? 1)
+					: (code ?? 0);
 			if (detached) {
 				processClosed = true;
 				const recovered: SingleResult = { ...result, detached: undefined, detachedReason: undefined };
 				const recoveredProgress = recovered.progress ? { ...recovered.progress } : progress;
-				options.onDetachedExit?.(finalizeSingleAttempt({
-					result: recovered, progress: recoveredProgress, exitCode: finalCode, interruptedByControl,
-					allControlEvents: controlRuntime.allControlEvents, options: { ...options, onUpdate: undefined }, shared, startTime,
-				}));
+				options.onDetachedExit?.(
+					finalizeSingleAttempt({
+						result: recovered,
+						progress: recoveredProgress,
+						exitCode: finalCode,
+						interruptedByControl,
+						allControlEvents: controlRuntime.allControlEvents,
+						options: { ...options, onUpdate: undefined },
+						shared,
+						startTime,
+					}),
+				);
 				return;
 			}
 			processClosed = true;
@@ -437,7 +510,9 @@ export async function runSingleAttempt(
 			const kill = () => {
 				if (childExited) return;
 				trySignalChild(proc, "SIGTERM");
-				setTimeout(() => { if (!childExited) trySignalChild(proc, "SIGKILL"); }, 3000).unref?.();
+				setTimeout(() => {
+					if (!childExited) trySignalChild(proc, "SIGKILL");
+				}, 3000).unref?.();
 			};
 			if (options.signal.aborted) kill();
 			else {

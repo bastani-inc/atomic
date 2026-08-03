@@ -5,10 +5,12 @@ import type { GitSource } from "../utils/git.ts";
 import { resolvePath as resolveAbsolutePath } from "../utils/paths.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
 import { getCommandEnv } from "./package-manager-env.ts";
-import { getLocalGitUpdateTarget as getLocalGitUpdateTargetFromContext } from "./package-manager-git.ts";
 import {
-	getGitInstallPath as getGitInstallPathFromContext,
-} from "./package-manager-paths.ts";
+	getLocalGitUpdateTarget as getLocalGitUpdateTargetFromContext,
+	gitHasAvailableUpdate as gitHasAvailableUpdateFromContext,
+	refreshTemporaryGitSource as refreshTemporaryGitSourceFromContext,
+	updateGit as updateGitFromContext,
+} from "./package-manager-git.ts";
 import {
 	getGlobalNpmRoot as getGlobalNpmRootFromContext,
 	getLatestNpmVersion as getLatestNpmVersionFromContext,
@@ -20,6 +22,7 @@ import {
 	remove as removeFromContext,
 	update as updateFromContext,
 } from "./package-manager-operations.ts";
+import { getGitInstallPath as getGitInstallPathFromContext } from "./package-manager-paths.ts";
 import {
 	resolveExtensionSources as resolveExtensionSourcesFromContext,
 	resolvePackages,
@@ -34,11 +37,6 @@ import {
 	getPackageIdentity as getPackageIdentityFromContext,
 	parseSource as parsePackageSource,
 } from "./package-manager-source.ts";
-import {
-	gitHasAvailableUpdate as gitHasAvailableUpdateFromContext,
-	refreshTemporaryGitSource as refreshTemporaryGitSourceFromContext,
-	updateGit as updateGitFromContext,
-} from "./package-manager-git.ts";
 import type {
 	ConfiguredPackage,
 	GitUpdateTargetInfo,
@@ -66,8 +64,8 @@ export type {
 	ProgressEvent,
 	ResolvedPaths,
 	ResolvedResource,
-	ResourceConfigurationOrigin,
 	ResolveExtensionSourcesOptions,
+	ResourceConfigurationOrigin,
 } from "./package-manager-types.ts";
 
 export class DefaultPackageManager implements PackageManager {

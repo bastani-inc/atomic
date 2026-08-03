@@ -1,11 +1,11 @@
-import { Container, getKeybindings, setKeybindings, Text } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { Container, getKeybindings, setKeybindings, Text } from "@earendil-works/pi-tui";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
 import { createVerbatimCompactionMessage, VERBATIM_COMPACTION_PREFIX } from "../src/core/messages.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
 import { CompactionBoundaryMessageComponent } from "../src/modes/interactive/components/compaction-boundary-message.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
@@ -236,7 +236,14 @@ describe("InteractiveMode compaction events", () => {
 	it("does not render a boundary for aborted or failed compaction", async () => {
 		for (const event of [
 			{ type: "compaction_end", reason: "manual", result, aborted: true, willRetry: false },
-			{ type: "compaction_end", reason: "overflow", result, aborted: false, willRetry: false, errorMessage: "failed" },
+			{
+				type: "compaction_end",
+				reason: "overflow",
+				result,
+				aborted: false,
+				willRetry: false,
+				errorMessage: "failed",
+			},
 		] satisfies CompactionEndEvent[]) {
 			const { mode, chatContainer } = makeMode([]);
 
@@ -394,14 +401,34 @@ describe("InteractiveMode compaction events", () => {
 		const random = vi.spyOn(Math, "random").mockReturnValue(0);
 		try {
 			const { mode } = makeMode([]);
-			const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (this: object, event: object) => Promise<void>;
+			const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+				this: object,
+				event: object,
+			) => Promise<void>;
 			const send = async (event: object): Promise<void> => handleEvent.call(mode, event);
 			await send({ type: "turn_start" });
 			expect(mode.workingMessage).toBe("Schlepping...");
 			await send({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: undefined });
-			await send({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "src/a.ts" } });
-			await send({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: { content: [] }, isError: false });
-			await send({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: [] }, isError: false });
+			await send({
+				type: "tool_execution_start",
+				toolCallId: "write-1",
+				toolName: "write",
+				args: { path: "src/a.ts" },
+			});
+			await send({
+				type: "tool_execution_end",
+				toolCallId: "write-1",
+				toolName: "write",
+				result: { content: [] },
+				isError: false,
+			});
+			await send({
+				type: "tool_execution_end",
+				toolCallId: "read-1",
+				toolName: "read",
+				result: { content: [] },
+				isError: false,
+			});
 			expect(mode.workingMessage).toBe("Schlepping...");
 			await send({ type: "turn_end" });
 			expect(mode.workingMessage).toBeUndefined();
@@ -414,7 +441,10 @@ describe("InteractiveMode compaction events", () => {
 		const { mode, chatContainer } = makeMode([]);
 		mode.hideThinkingBlock = true;
 		(mode as { hiddenThinkingLabel?: string }).hiddenThinkingLabel = undefined;
-		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (this: object, event: object) => Promise<void>;
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: object,
+			event: object,
+		) => Promise<void>;
 		await handleEvent.call(mode, {
 			type: "message_start",
 			message: {
@@ -423,7 +453,14 @@ describe("InteractiveMode compaction events", () => {
 				api: "anthropic-messages",
 				provider: "test",
 				model: "test",
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
 				stopReason: "stop",
 				timestamp: 1,
 			},
@@ -449,7 +486,10 @@ describe("compaction boundary component", () => {
 
 		component.setExpanded(true);
 		const expandedRaw = component.render(200).join("\n");
-		const expanded = stripVTControlCharacters(expandedRaw).split("\n").map((line) => line.trimEnd()).join("\n");
+		const expanded = stripVTControlCharacters(expandedRaw)
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.join("\n");
 		expect(expanded).toContain("✻ Context compacted");
 		expect(expanded).toContain("Compacted from 100 tokens");
 		expect(expanded).toContain("[User]: retained\n (filtered 1 lines)");

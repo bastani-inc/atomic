@@ -43,12 +43,9 @@ describe("mergeProviderAttributionHeaders — ProviderHeaders null preservation"
 	});
 
 	it("forwards a null header value verbatim instead of collapsing it", () => {
-		const merged = mergeProviderAttributionHeaders(
-			createGenericModel(),
-			settingsManager,
-			undefined,
-			{ "User-Agent": null } satisfies ProviderHeaders,
-		);
+		const merged = mergeProviderAttributionHeaders(createGenericModel(), settingsManager, undefined, {
+			"User-Agent": null,
+		} satisfies ProviderHeaders);
 
 		// null must be preserved so pi-ai can suppress its own default User-Agent;
 		// it must NOT become undefined or be dropped from the object.
@@ -58,12 +55,10 @@ describe("mergeProviderAttributionHeaders — ProviderHeaders null preservation"
 	});
 
 	it("does not collapse null to undefined when mixed with string values", () => {
-		const merged = mergeProviderAttributionHeaders(
-			createGenericModel(),
-			settingsManager,
-			undefined,
-			{ "X-Keep": "yes", "X-Suppress": null } satisfies ProviderHeaders,
-		);
+		const merged = mergeProviderAttributionHeaders(createGenericModel(), settingsManager, undefined, {
+			"X-Keep": "yes",
+			"X-Suppress": null,
+		} satisfies ProviderHeaders);
 
 		expect(merged?.["X-Keep"]).toBe("yes");
 		expect(merged?.["X-Suppress"]).toBeNull();
@@ -71,17 +66,14 @@ describe("mergeProviderAttributionHeaders — ProviderHeaders null preservation"
 	});
 
 	it("preserves null even when it is the only header (result is non-empty)", () => {
-		const merged = mergeProviderAttributionHeaders(
-			createGenericModel(),
-			settingsManager,
-			undefined,
-			{ "Authorization": null } satisfies ProviderHeaders,
-		);
+		const merged = mergeProviderAttributionHeaders(createGenericModel(), settingsManager, undefined, {
+			Authorization: null,
+		} satisfies ProviderHeaders);
 
 		// A lone null is a real suppression directive; the merged object must be
 		// returned (not collapsed to undefined) so pi-ai receives it.
 		expect(merged).toBeDefined();
-		expect(merged?.["Authorization"]).toBeNull();
+		expect(merged?.Authorization).toBeNull();
 	});
 
 	it("lets a later null override an earlier string value for the same (case-insensitive) header", () => {

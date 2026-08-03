@@ -1,7 +1,7 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { Type, type Static } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
+import { type Static, Type } from "typebox";
+import { describe, test } from "vitest";
 import intercom from "../../packages/intercom/index.js";
 
 type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => void | Promise<void>;
@@ -22,10 +22,14 @@ function fixture(options: { child?: boolean; childSessionName?: string; authoriz
 			current.push(handler);
 			handlers.set(name, current);
 		},
-		registerTool(tool: ToolDefinition) { tools.set(tool.name, tool); },
+		registerTool(tool: ToolDefinition) {
+			tools.set(tool.name, tool);
+		},
 		registerCommand() {},
 		registerShortcut() {},
-		setSessionName(name: string) { sessionNames.push(name); },
+		setSessionName(name: string) {
+			sessionNames.push(name);
+		},
 		events: {
 			on(name: string, handler: (payload: unknown) => void) {
 				const current = eventHandlers.get(name) ?? [];
@@ -46,16 +50,18 @@ function fixture(options: { child?: boolean; childSessionName?: string; authoriz
 			sequence.push("heavy-loaded");
 			return {
 				default(heavyPi: ExtensionAPI) {
-					heavyPi.on("session_start", () => { sequence.push("session-start-replayed"); });
+					heavyPi.on("session_start", () => {
+						sequence.push("session-start-replayed");
+					});
 					heavyPi.events.on("subagent:supervisor-authorization", (payload) => {
 						const request = payload as { childName: string; completion?: Promise<object> };
 						request.completion = options.authorizationReject
 							? Promise.reject(new Error("authorization rejected"))
 							: Promise.resolve({
-								capability: "capability-1",
-								supervisorSessionId: "supervisor-id",
-								childName: request.childName,
-							});
+									capability: "capability-1",
+									supervisorSessionId: "supervisor-id",
+									childName: request.childName,
+								});
 					});
 					for (const name of ["intercom", "contact_supervisor"] as const) {
 						heavyPi.registerTool({
@@ -89,7 +95,16 @@ function fixture(options: { child?: boolean; childSessionName?: string; authoriz
 	function emitEvent(name: string, payload: unknown): void {
 		for (const handler of eventHandlers.get(name) ?? []) handler(payload);
 	}
-	return { sequence, sessionNames, get imports() { return imports; }, emit, emitEvent, executeTool };
+	return {
+		sequence,
+		sessionNames,
+		get imports() {
+			return imports;
+		},
+		emit,
+		emitEvent,
+		executeTool,
+	};
 }
 
 describe("lightweight intercom tool-driven connection", () => {
@@ -132,7 +147,9 @@ describe("lightweight intercom tool-driven connection", () => {
 		current.emitEvent("subagent:supervisor-authorization", request);
 		assert.ok(request.completion, "the lightweight listener must claim synchronously");
 		assert.deepEqual(await request.completion, {
-			capability: "capability-1", supervisorSessionId: "supervisor-id", childName: "child-1",
+			capability: "capability-1",
+			supervisorSessionId: "supervisor-id",
+			childName: "child-1",
 		});
 		assert.equal(current.imports, 1);
 	});

@@ -3,10 +3,10 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 /**
  * Structural tool-pairing guard for provider-bound context.
  *
- * `repairOrphanToolResults` already collapses the recoverable half of this
- * invariant at conversion time: an orphaned `tool_result`, and a second
- * `tool_result` for a `tool_use` id that was already answered. Neither needs to
- * reach the provider.
+ * `repairOrphanToolResults` already collapses the recoverable forms of this
+ * invariant at conversion time: orphaned or duplicate `tool_result` blocks and
+ * tool calls interrupted before their result was persisted. None need to reach
+ * the provider.
  *
  * A `tool_use` id announced by more than one assistant message is a different
  * problem. It means the transcript itself carries the same assistant turn twice,
@@ -39,8 +39,8 @@ export function assertToolPairingInvariant(messages: readonly AgentMessage[]): v
 	if (duplicates.length === 0) return;
 	const plural = duplicates.length > 1;
 	throw new Error(
-		`Context is structurally invalid for the provider: tool call ${plural ? "ids" : "id"} `
-			+ `${duplicates.join(", ")} ${plural ? "appear" : "appears"} in more than one assistant message. `
-			+ "The request was not sent.",
+		`Context is structurally invalid for the provider: tool call ${plural ? "ids" : "id"} ` +
+			`${duplicates.join(", ")} ${plural ? "appear" : "appears"} in more than one assistant message. ` +
+			"The request was not sent.",
 	);
 }

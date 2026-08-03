@@ -43,10 +43,7 @@ export function createModelRuntimeSnapshot(
 	};
 }
 
-export function updateSnapshotModels(
-	snapshot: ModelRuntimeSnapshot,
-	all: readonly Model<Api>[],
-): ModelRuntimeSnapshot {
+export function updateSnapshotModels(snapshot: ModelRuntimeSnapshot, all: readonly Model<Api>[]): ModelRuntimeSnapshot {
 	return {
 		...snapshot,
 		all,
@@ -54,16 +51,86 @@ export function updateSnapshotModels(
 	};
 }
 
-export function addRuntimeApiKeyProvider(
-	snapshot: ModelRuntimeSnapshot,
-	providerId: string,
-): ModelRuntimeSnapshot {
+export function addRuntimeApiKeyProvider(snapshot: ModelRuntimeSnapshot, providerId: string): ModelRuntimeSnapshot {
 	const configuredProviders = new Set(snapshot.configuredProviders).add(providerId);
 	return {
 		...snapshot,
 		auth: new Map(snapshot.auth).set(providerId, { type: "api_key", source: "runtime API key" }),
 		configuredProviders,
 		storedProviders: new Set(snapshot.storedProviders).add(providerId),
+		available: snapshot.all.filter((model) => configuredProviders.has(model.provider)),
+	};
+}
+
+export function addStoredCredentialProvider(
+	snapshot: ModelRuntimeSnapshot,
+	providerId: string,
+	type: CredentialInfo["type"],
+): ModelRuntimeSnapshot {
+	const configuredProviders = new Set(snapshot.configuredProviders).add(providerId);
+	return {
+		...snapshot,
+		auth: new Map(snapshot.auth).set(providerId, {
+			type,
+			source: type === "oauth" ? "OAuth" : "Stored API key",
+		}),
+		configuredProviders,
+		storedProviders: new Set(snapshot.storedProviders).add(providerId),
+		storedCredentialTypes: new Map(snapshot.storedCredentialTypes).set(providerId, type),
+		available: snapshot.all.filter((model) => configuredProviders.has(model.provider)),
+	};
+}
+
+export function replaceStoredCredentialProviders(
+	snapshot: ModelRuntimeSnapshot,
+	credentials: readonly CredentialInfo[],
+): ModelRuntimeSnapshot {
+	const auth = new Map(snapshot.auth);
+	const configuredProviders = new Set(snapshot.configuredProviders);
+	for (const providerId of snapshot.storedProviders) {
+		auth.delete(providerId);
+		configuredProviders.delete(providerId);
+	}
+	for (const credential of credentials) {
+		auth.set(credential.providerId, {
+			type: credential.type,
+			source: credential.type === "oauth" ? "OAuth" : "Stored API key",
+		});
+		configuredProviders.add(credential.providerId);
+	}
+	return {
+		...snapshot,
+		auth,
+		configuredProviders,
+		storedProviders: new Set(credentials.map((entry) => entry.providerId)),
+		storedCredentialTypes: new Map(credentials.map((entry) => [entry.providerId, entry.type])),
+		available: snapshot.all.filter((model) => configuredProviders.has(model.provider)),
+	};
+}
+
+export function removeStoredCredentialProvider(
+	snapshot: ModelRuntimeSnapshot,
+	providerId: string,
+	remainingAuth?: AuthCheck,
+): ModelRuntimeSnapshot {
+	const auth = new Map(snapshot.auth);
+	const configuredProviders = new Set(snapshot.configuredProviders);
+	const storedProviders = new Set(snapshot.storedProviders);
+	const storedCredentialTypes = new Map(snapshot.storedCredentialTypes);
+	auth.delete(providerId);
+	configuredProviders.delete(providerId);
+	storedProviders.delete(providerId);
+	storedCredentialTypes.delete(providerId);
+	if (remainingAuth) {
+		auth.set(providerId, remainingAuth);
+		configuredProviders.add(providerId);
+	}
+	return {
+		...snapshot,
+		auth,
+		configuredProviders,
+		storedProviders,
+		storedCredentialTypes,
 		available: snapshot.all.filter((model) => configuredProviders.has(model.provider)),
 	};
 }

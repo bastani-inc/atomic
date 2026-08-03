@@ -1,7 +1,7 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { calculateCost, type Api, type Model, type Usage } from "@earendil-works/pi-ai";
+import { type Api, calculateCost, type Model, type Usage } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
+import { describe, test } from "vitest";
 
 function requireModel(provider: "openai" | "openai-codex", id: string): Model<Api> {
 	const model = getModels(provider).find((candidate) => candidate.id === id);
@@ -45,8 +45,14 @@ describe("pi-ai 0.81.1 runtime compatibility", () => {
 		const codexModels = getModels("openai-codex");
 		const azureModels = getModels("azure-openai-responses");
 
-		assert.equal(openAiModels.some((model) => model.id === "gpt-5.6"), false);
-		assert.equal(azureModels.some((model) => model.id === "gpt-5.6"), false);
+		assert.equal(
+			openAiModels.some((model) => model.id === "gpt-5.6"),
+			false,
+		);
+		assert.equal(
+			azureModels.some((model) => model.id === "gpt-5.6"),
+			false,
+		);
 		for (const id of variants) {
 			assert.equal(requireModel("openai", id).contextWindow, 272_000);
 			assert.equal(requireModel("openai-codex", id).contextWindow, 272_000);

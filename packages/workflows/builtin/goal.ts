@@ -47,7 +47,7 @@ export default workflow({
     goal_id: Type.Optional(Type.String({ description: "Per-run goal identifier stored in the ledger." })),
     objective: Type.Optional(Type.String({ description: "Raw goal objective used by the run." })),
     acceptance_criteria: Type.Optional(Type.String({ description: "Immutable acceptance criteria used by the run." })),
-    ledger_path: Type.Optional(Type.String({ description: "OS-temp path to goal-ledger.json with receipts, reviewer decisions, blockers, and lifecycle events." })),
+    ledger_path: Type.Optional(Type.String({ description: "Durable run-scoped path to goal-ledger.json with receipts, reviewer decisions, blockers, and lifecycle events." })),
     turns_completed: Type.Optional(Type.Number({ description: "Orchestrator/review turns completed." })),
     iterations_completed: Type.Optional(Type.Number({ description: "Orchestrator/review turns completed, retained for status summaries." })),
     receipts: Type.Optional(Type.Array(Type.Object({

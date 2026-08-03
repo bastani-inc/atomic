@@ -1,17 +1,13 @@
 import type { KeyId } from "@earendil-works/pi-tui";
-import { resolvePath } from "../utils/paths.ts";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
-import { startTimingSpan, endTimingSpan } from "./timings.ts";
+import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
-import {
-	loadExtensionFromFactory,
-	loadExtensionsCached,
-	type WorkflowResourceProvider,
-} from "./extensions/loader.ts";
+import { loadExtensionFromFactory, loadExtensionsCached, type WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
-import { resourceInternals } from "./resource-loader-internals.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
+import { resourceInternals } from "./resource-loader-internals.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "./resource-loader-types.ts";
+import { endTimingSpan, startTimingSpan } from "./timings.ts";
 
 function resolveExtensionLoadPath(loader: DefaultResourceLoader, path: string): string {
 	return resolvePath(path, resourceInternals(loader).cwd, { normalizeUnicodeSpaces: true });
@@ -171,26 +167,34 @@ function removeInheritedRegistrations<K extends string, V>(
 }
 
 function installRegistrationPolicy(extensionsResult: LoadExtensionsResult): void {
-	const flagOwners = extensionsResult.runtime.flagOwners ??= new Map();
-	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins ??= new Map();
+	extensionsResult.runtime.flagOwners ??= new Map();
+	const flagOwners = extensionsResult.runtime.flagOwners;
+	extensionsResult.runtime.flagOwnerOrigins ??= new Map();
+	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins;
 	extensionsResult.runtime.canRegisterResource = (extension, resourceType, name) => {
 		if (resourceType === "prompt") return true;
 		if (extension.sourceInfo.configurationOrigin === "inherited-pi") {
-			const bundledOwner = extensionsResult.extensions.find((candidate) =>
-				candidate.sourceInfo.configurationOrigin === "bundled"
-				&& hasActiveOrPendingRegistration(extensionsResult.runtime, candidate, resourceType, name));
+			const bundledOwner = extensionsResult.extensions.find(
+				(candidate) =>
+					candidate.sourceInfo.configurationOrigin === "bundled" &&
+					hasActiveOrPendingRegistration(extensionsResult.runtime, candidate, resourceType, name),
+			);
 			if (!bundledOwner) return true;
 			recordOverlap(extensionsResult, resourceType, name, bundledOwner, extension);
 			return false;
 		}
 		const isBundled = extension.sourceInfo.configurationOrigin === "bundled";
 		for (const inherited of extensionsResult.extensions) {
-			if (inherited.sourceInfo.configurationOrigin !== "inherited-pi"
-				|| !hasActiveOrPendingRegistration(extensionsResult.runtime, inherited, resourceType, name)) continue;
+			if (
+				inherited.sourceInfo.configurationOrigin !== "inherited-pi" ||
+				!hasActiveOrPendingRegistration(extensionsResult.runtime, inherited, resourceType, name)
+			)
+				continue;
 			if (resourceType === "flag" && flagOwners.get(name) === inherited.path) {
 				flagOwners.delete(name);
 				flagOwnerOrigins.delete(name);
-				if (!extensionsResult.runtime.explicitFlagNames?.has(name)) extensionsResult.runtime.flagValues.delete(name);
+				if (!extensionsResult.runtime.explicitFlagNames?.has(name))
+					extensionsResult.runtime.flagValues.delete(name);
 			}
 			deleteRegistration(extensionsResult.runtime, inherited, resourceType, name);
 			if (isBundled) recordOverlap(extensionsResult, resourceType, name, extension, inherited);
@@ -205,16 +209,26 @@ function hasActiveOrPendingRegistration(
 	resourceType: Exclude<OverlappingResourceType, "prompt">,
 	name: string,
 ): boolean {
-	return hasRegistration(extension, resourceType, name)
-		|| runtime.hasPendingResourceRegistration?.(extension, resourceType, name) === true;
+	return (
+		hasRegistration(extension, resourceType, name) ||
+		runtime.hasPendingResourceRegistration?.(extension, resourceType, name) === true
+	);
 }
 
-function hasRegistration(extension: Extension, resourceType: Exclude<OverlappingResourceType, "prompt">, name: string): boolean {
+function hasRegistration(
+	extension: Extension,
+	resourceType: Exclude<OverlappingResourceType, "prompt">,
+	name: string,
+): boolean {
 	switch (resourceType) {
-		case "tool": return extension.tools.has(name);
-		case "command": return extension.commands.has(name);
-		case "flag": return extension.flags.has(name);
-		case "shortcut": return extension.shortcuts.has(name as KeyId);
+		case "tool":
+			return extension.tools.has(name);
+		case "command":
+			return extension.commands.has(name);
+		case "flag":
+			return extension.flags.has(name);
+		case "shortcut":
+			return extension.shortcuts.has(name as KeyId);
 	}
 }
 
@@ -226,10 +240,18 @@ function deleteRegistration(
 ): void {
 	runtime.deletePendingResourceRegistration?.(extension, resourceType, name);
 	switch (resourceType) {
-		case "tool": extension.tools.delete(name); break;
-		case "command": extension.commands.delete(name); break;
-		case "flag": extension.flags.delete(name); break;
-		case "shortcut": extension.shortcuts.delete(name as KeyId); break;
+		case "tool":
+			extension.tools.delete(name);
+			break;
+		case "command":
+			extension.commands.delete(name);
+			break;
+		case "flag":
+			extension.flags.delete(name);
+			break;
+		case "shortcut":
+			extension.shortcuts.delete(name as KeyId);
+			break;
 	}
 }
 
@@ -240,15 +262,26 @@ function recordOverlap(
 	bundled: Extension,
 	inherited: Extension,
 ): void {
-	const overlaps = extensionsResult.overlaps ??= [];
-	if (overlaps.some((overlap) => overlap.resourceType === resourceType && overlap.name === name && overlap.inherited.path === inherited.sourceInfo.path)) return;
+	extensionsResult.overlaps ??= [];
+	const overlaps = extensionsResult.overlaps;
+	if (
+		overlaps.some(
+			(overlap) =>
+				overlap.resourceType === resourceType &&
+				overlap.name === name &&
+				overlap.inherited.path === inherited.sourceInfo.path,
+		)
+	)
+		return;
 	overlaps.push({ resourceType, name, bundled: bundled.sourceInfo, inherited: inherited.sourceInfo });
 }
 
 function rebuildFlagDefaults(extensionsResult: LoadExtensionsResult): void {
 	extensionsResult.runtime.flagValues.clear();
-	const flagOwners = extensionsResult.runtime.flagOwners ??= new Map();
-	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins ??= new Map();
+	extensionsResult.runtime.flagOwners ??= new Map();
+	const flagOwners = extensionsResult.runtime.flagOwners;
+	extensionsResult.runtime.flagOwnerOrigins ??= new Map();
+	const flagOwnerOrigins = extensionsResult.runtime.flagOwnerOrigins;
 	flagOwners.clear();
 	flagOwnerOrigins.clear();
 	for (const extension of extensionsResult.extensions) {
@@ -257,8 +290,11 @@ function rebuildFlagDefaults(extensionsResult: LoadExtensionsResult): void {
 				flagOwners.set(name, extension.path);
 				flagOwnerOrigins.set(name, extension.sourceInfo.configurationOrigin);
 			}
-			if (flagOwnerOrigins.get(name) === extension.sourceInfo.configurationOrigin
-				&& flag.default !== undefined && !extensionsResult.runtime.flagValues.has(name)) {
+			if (
+				flagOwnerOrigins.get(name) === extension.sourceInfo.configurationOrigin &&
+				flag.default !== undefined &&
+				!extensionsResult.runtime.flagValues.has(name)
+			) {
 				extensionsResult.runtime.flagValues.set(name, flag.default);
 			}
 		}

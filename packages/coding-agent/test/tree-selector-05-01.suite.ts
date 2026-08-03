@@ -1,5 +1,4 @@
-import { stripVTControlCharacters } from "node:util";
-import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type {
@@ -59,7 +58,7 @@ function assistantMessage(id: string, parentId: string | null, text: string): Se
 }
 
 // Helper to create a tool-call-only assistant message (filtered out in default mode)
-function toolCallOnlyAssistant(id: string, parentId: string | null): SessionMessageEntry {
+function _toolCallOnlyAssistant(id: string, parentId: string | null): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
@@ -86,7 +85,7 @@ function toolCallOnlyAssistant(id: string, parentId: string | null): SessionMess
 }
 
 // Helper to create a model_change entry
-function modelChange(id: string, parentId: string | null): ModelChangeEntry {
+function _modelChange(id: string, parentId: string | null): ModelChangeEntry {
 	return {
 		type: "model_change",
 		id,

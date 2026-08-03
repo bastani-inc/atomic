@@ -35,11 +35,7 @@ export function serializeTodoListForAgent(todos: TodoFrontMatter[]): string {
 	);
 }
 
-function renderAssignmentSuffix(
-	theme: Theme,
-	todo: TodoFrontMatter,
-	currentSessionId?: string,
-): string {
+function renderAssignmentSuffix(theme: Theme, todo: TodoFrontMatter, currentSessionId?: string): string {
 	if (!todo.assigned_to_session) return "";
 	const isCurrent = todo.assigned_to_session === currentSessionId;
 	const color = isCurrent ? "success" : "dim";
@@ -47,11 +43,7 @@ function renderAssignmentSuffix(
 	return theme.fg(color, ` (assigned: ${todo.assigned_to_session}${suffix})`);
 }
 
-function renderTodoHeading(
-	theme: Theme,
-	todo: TodoFrontMatter,
-	currentSessionId?: string,
-): string {
+function renderTodoHeading(theme: Theme, todo: TodoFrontMatter, currentSessionId?: string): string {
 	const closed = isTodoClosed(getTodoStatus(todo));
 	const titleColor = closed ? "dim" : "text";
 	const tagText = todo.tags.length ? theme.fg("dim", ` [${todo.tags.join(", ")}]`) : "";
@@ -65,12 +57,7 @@ function renderTodoHeading(
 	);
 }
 
-function renderTodoList(
-	theme: Theme,
-	todos: TodoFrontMatter[],
-	expanded: boolean,
-	currentSessionId?: string,
-): string {
+function renderTodoList(theme: Theme, todos: TodoFrontMatter[], expanded: boolean, currentSessionId?: string): string {
 	if (!todos.length) return theme.fg("dim", "No todos");
 
 	const { assignedTodos, openTodos, closedTodos } = splitTodosByAssignment(todos);
@@ -154,10 +141,10 @@ export function renderTodoCall(args: TodoToolParams, theme: Theme): Text {
 	const title = typeof args.title === "string" ? args.title : "";
 	let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", action);
 	if (normalizedId) {
-		text += " " + theme.fg("accent", formatTodoId(normalizedId));
+		text += ` ${theme.fg("accent", formatTodoId(normalizedId))}`;
 	}
 	if (title) {
-		text += " " + theme.fg("dim", `"${title}"`);
+		text += ` ${theme.fg("dim", `"${title}"`)}`;
 	}
 	return new Text(text, 0, 0);
 }

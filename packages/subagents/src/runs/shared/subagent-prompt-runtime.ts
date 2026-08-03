@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
-import { createStructuredOutputTool, getEnvValue, type ExtensionAPI } from "@bastani/atomic";
+import { createStructuredOutputTool, type ExtensionAPI, getEnvValue } from "@bastani/atomic";
+import type { JsonSchemaObject } from "../../shared/types.ts";
 import {
 	SUBAGENT_FANOUT_CHILD_ENV,
 	SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV,
@@ -7,7 +8,6 @@ import {
 	SUBAGENT_INTERCOM_SESSION_NAME_ENV,
 } from "./pi-args.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
-import type { JsonSchemaObject } from "../../shared/types.ts";
 
 export { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "./pi-args.ts";
 
@@ -76,7 +76,9 @@ export function stripInheritedSkills(prompt: string): string {
 export function stripSubagentOrchestrationSkill(prompt: string): string {
 	return prompt
 		.replace(/\n{0,2}<skill\s+name=["']subagent["'][^>]*>[\s\S]*?<\/skill>\n{0,2}/g, "\n\n")
-		.replace(/[ \t]*<skill>\s*[\s\S]*?<\/skill>\s*/g, (block) => SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN.test(block) ? "" : block);
+		.replace(/[ \t]*<skill>\s*[\s\S]*?<\/skill>\s*/g, (block) =>
+			SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN.test(block) ? "" : block,
+		);
 }
 
 function stripChildBoundaryInstructions(prompt: string): string {
@@ -106,9 +108,9 @@ export function rewriteSubagentPrompt(
 
 function isParentOnlySubagentMessage(message: unknown): boolean {
 	const m = message as { role?: string; customType?: string };
-	return m?.role === "custom"
-		&& typeof m.customType === "string"
-		&& PARENT_ONLY_CUSTOM_MESSAGE_TYPES.has(m.customType);
+	return (
+		m?.role === "custom" && typeof m.customType === "string" && PARENT_ONLY_CUSTOM_MESSAGE_TYPES.has(m.customType)
+	);
 }
 
 function isSubagentToolResultMessage(message: unknown): boolean {
@@ -135,7 +137,10 @@ export function stripParentOnlySubagentMessages(messages: unknown[]): unknown[] 
 	let changed = false;
 	const filtered: unknown[] = [];
 	for (const message of messages) {
-		if (isParentOnlySubagentMessage(message) || (!preserveCurrentFanoutToolHistory && isSubagentToolResultMessage(message))) {
+		if (
+			isParentOnlySubagentMessage(message) ||
+			(!preserveCurrentFanoutToolHistory && isSubagentToolResultMessage(message))
+		) {
 			changed = true;
 			continue;
 		}
@@ -155,10 +160,12 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	const structuredSchemaPath = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	if (structuredOutputPath && structuredSchemaPath) {
 		const schema = JSON.parse(fs.readFileSync(structuredSchemaPath, "utf-8")) as JsonSchemaObject;
-		pi.registerTool(createStructuredOutputTool({
-			schema,
-			output: { outputPath: structuredOutputPath },
-		}));
+		pi.registerTool(
+			createStructuredOutputTool({
+				schema,
+				output: { outputPath: structuredOutputPath },
+			}),
+		);
 	}
 
 	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: unknown) => unknown) => void;

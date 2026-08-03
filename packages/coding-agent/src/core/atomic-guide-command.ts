@@ -3,8 +3,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog.ts";
 
 export const ATOMIC_GUIDE_COMMAND_NAME = "atomic";
-export const ATOMIC_GUIDE_COMMAND_DESCRIPTION =
-  "Atomic onboarding and help guide";
+export const ATOMIC_GUIDE_COMMAND_DESCRIPTION = "Atomic onboarding and help guide";
 
 const OVERVIEW = `# Atomic overview
 
@@ -226,40 +225,40 @@ Where to next:
 \`/atomic overview\` — quick refresh`;
 
 const GUIDE_SECTIONS = [
-  {
-    name: "overview",
-    aliases: [],
-    label: "overview",
-    description: "30-second overview",
-    render: () => OVERVIEW,
-  },
-  {
-    name: "workflows",
-    aliases: ["workflow"],
-    label: "workflows",
-    description: "Workflow primer",
-    render: () => WORKFLOWS,
-  },
-  {
-    name: "example",
-    aliases: ["examples"],
-    label: "example",
-    description: "Practical first workflow",
-    render: () => EXAMPLE,
-  },
-  {
-    name: "whats-new",
-    aliases: ["what's new", "whats new", "news", "updates", "changelog"],
-    label: "what's new",
-    description: "Recent release notes",
-    render: readLatestStableChangelog,
-  },
+	{
+		name: "overview",
+		aliases: [],
+		label: "overview",
+		description: "30-second overview",
+		render: () => OVERVIEW,
+	},
+	{
+		name: "workflows",
+		aliases: ["workflow"],
+		label: "workflows",
+		description: "Workflow primer",
+		render: () => WORKFLOWS,
+	},
+	{
+		name: "example",
+		aliases: ["examples"],
+		label: "example",
+		description: "Practical first workflow",
+		render: () => EXAMPLE,
+	},
+	{
+		name: "whats-new",
+		aliases: ["what's new", "whats new", "news", "updates", "changelog"],
+		label: "what's new",
+		description: "Recent release notes",
+		render: readLatestStableChangelog,
+	},
 ] as const satisfies readonly {
-  readonly name: string;
-  readonly aliases: readonly string[];
-  readonly label: string;
-  readonly description: string;
-  readonly render: (cwd: string) => string;
+	readonly name: string;
+	readonly aliases: readonly string[];
+	readonly label: string;
+	readonly description: string;
+	readonly render: (cwd: string) => string;
 }[];
 
 type AtomicGuideSection = (typeof GUIDE_SECTIONS)[number];
@@ -269,116 +268,94 @@ export type AtomicGuideHelpChoice = AtomicGuideSection["label"];
 
 export type AtomicGuideMode = "help" | AtomicGuideSectionName;
 
-export const ATOMIC_GUIDE_HELP_CHOICES: readonly AtomicGuideHelpChoice[] =
-  GUIDE_SECTIONS.map((section) => section.label);
+export const ATOMIC_GUIDE_HELP_CHOICES: readonly AtomicGuideHelpChoice[] = GUIDE_SECTIONS.map(
+	(section) => section.label,
+);
 
-const GUIDE_SECTIONS_BY_NAME = new Map<
-  AtomicGuideSectionName,
-  AtomicGuideSection
->(GUIDE_SECTIONS.map((section) => [section.name, section]));
+const GUIDE_SECTIONS_BY_NAME = new Map<AtomicGuideSectionName, AtomicGuideSection>(
+	GUIDE_SECTIONS.map((section) => [section.name, section]),
+);
 const GUIDE_SECTIONS_BY_LABEL = new Map<string, AtomicGuideSection>(
-  GUIDE_SECTIONS.map((section) => [section.label, section]),
+	GUIDE_SECTIONS.map((section) => [section.label, section]),
 );
 const GUIDE_SECTIONS_BY_INPUT = new Map<string, AtomicGuideSection>(
-  GUIDE_SECTIONS.flatMap((section) =>
-    [section.name, section.label, ...section.aliases].map(
-      (input) => [input, section] as const,
-    ),
-  ),
+	GUIDE_SECTIONS.flatMap((section) =>
+		[section.name, section.label, ...section.aliases].map((input) => [input, section] as const),
+	),
 );
 
-export function isAtomicGuideHelpChoice(
-  choice: string,
-): choice is AtomicGuideHelpChoice {
-  return GUIDE_SECTIONS_BY_LABEL.has(choice);
+export function isAtomicGuideHelpChoice(choice: string): choice is AtomicGuideHelpChoice {
+	return GUIDE_SECTIONS_BY_LABEL.has(choice);
 }
 
 const ATOMIC_GUIDE_TRAILING_PUNCTUATION = "?!.,;:";
 
 function stripTrailingAtomicGuidePunctuation(value: string): string {
-  let end = value.length;
-  while (
-    end > 0 &&
-    ATOMIC_GUIDE_TRAILING_PUNCTUATION.includes(value.charAt(end - 1))
-  ) {
-    end--;
-  }
-  return value.slice(0, end);
+	let end = value.length;
+	while (end > 0 && ATOMIC_GUIDE_TRAILING_PUNCTUATION.includes(value.charAt(end - 1))) {
+		end--;
+	}
+	return value.slice(0, end);
 }
 
-function getGuideSectionForChoice(
-  choice: string,
-): AtomicGuideSection | undefined {
-  return GUIDE_SECTIONS_BY_LABEL.get(choice);
+function getGuideSectionForChoice(choice: string): AtomicGuideSection | undefined {
+	return GUIDE_SECTIONS_BY_LABEL.get(choice);
 }
 
-function getGuideSectionForMode(
-  mode: AtomicGuideSectionName,
-): AtomicGuideSection {
-  const section = GUIDE_SECTIONS_BY_NAME.get(mode);
-  if (!section) throw new Error(`Unknown Atomic guide section: ${mode}`);
-  return section;
+function getGuideSectionForMode(mode: AtomicGuideSectionName): AtomicGuideSection {
+	const section = GUIDE_SECTIONS_BY_NAME.get(mode);
+	if (!section) throw new Error(`Unknown Atomic guide section: ${mode}`);
+	return section;
 }
 
 function getAtomicGuideHelpMenu(): string {
-  const sectionHelp = GUIDE_SECTIONS.map(
-    (section) => `- \`${section.label}\` — run \`/atomic ${section.label}\``,
-  ).join("\n");
-  return `# Atomic\n\nSelect where to start:\n\n${sectionHelp}`;
+	const sectionHelp = GUIDE_SECTIONS.map(
+		(section) => `- \`${section.label}\` — run \`/atomic ${section.label}\``,
+	).join("\n");
+	return `# Atomic\n\nSelect where to start:\n\n${sectionHelp}`;
 }
 
 export function normalizeAtomicGuideMode(args: string): AtomicGuideMode {
-  const normalized = stripTrailingAtomicGuidePunctuation(
-    args.trim().toLowerCase(),
-  );
-  if (!normalized) return "help";
+	const normalized = stripTrailingAtomicGuidePunctuation(args.trim().toLowerCase());
+	if (!normalized) return "help";
 
-  return GUIDE_SECTIONS_BY_INPUT.get(normalized)?.name ?? "help";
+	return GUIDE_SECTIONS_BY_INPUT.get(normalized)?.name ?? "help";
 }
 
-export function getAtomicGuideArgumentCompletions(
-  prefix: string,
-): AutocompleteItem[] | null {
-  const query = prefix.trim().toLowerCase();
-  const items = GUIDE_SECTIONS.map((section) => ({
-    value: section.label,
-    label: section.label,
-    description: section.description,
-  }));
-  const filtered = query
-    ? items.filter(
-        (item) => item.value.startsWith(query) || item.label.startsWith(query),
-      )
-    : items;
-  return filtered.length > 0 ? filtered : null;
+export function getAtomicGuideArgumentCompletions(prefix: string): AutocompleteItem[] | null {
+	const query = prefix.trim().toLowerCase();
+	const items = GUIDE_SECTIONS.map((section) => ({
+		value: section.label,
+		label: section.label,
+		description: section.description,
+	}));
+	const filtered = query
+		? items.filter((item) => item.value.startsWith(query) || item.label.startsWith(query))
+		: items;
+	return filtered.length > 0 ? filtered : null;
 }
 
 function readLatestStableChangelog(cwd: string): string {
-  const changelogPath = getChangelogPath();
-  const stableSections = parseChangelog(changelogPath)
-    .filter((entry) => entry.prerelease === null)
-    .slice(0, 3)
-    .map((entry) => entry.content.trim())
-    .filter(Boolean);
+	const changelogPath = getChangelogPath();
+	const stableSections = parseChangelog(changelogPath)
+		.filter((entry) => entry.prerelease === null)
+		.slice(0, 3)
+		.map((entry) => entry.content.trim())
+		.filter(Boolean);
 
-  if (stableSections.length === 0) {
-    return `# What's new\n\nNo stable release sections were found. Try \`/changelog\` for the interactive changelog viewer.\n\n─────────────────────────────────────────────────────────────────\n\nWhere to next:\n\n\`/atomic example\` — see a practical first workflow\n\`/atomic overview\` — quick refresh`;
-  }
+	if (stableSections.length === 0) {
+		return `# What's new\n\nNo stable release sections were found. Try \`/changelog\` for the interactive changelog viewer.\n\n─────────────────────────────────────────────────────────────────\n\nWhere to next:\n\n\`/atomic example\` — see a practical first workflow\n\`/atomic overview\` — quick refresh`;
+	}
 
-  const relativePath = path.relative(cwd, changelogPath) || changelogPath;
-  return `# What's new\n\n${stableSections.join("\n\n")}\n\nSource: \`${relativePath}\`\n\n─────────────────────────────────────────────────────────────────\n\nWhere to next:\n\n\`/atomic example\` — see a practical first workflow\n\`/atomic overview\` — quick refresh`;
+	const relativePath = path.relative(cwd, changelogPath) || changelogPath;
+	return `# What's new\n\n${stableSections.join("\n\n")}\n\nSource: \`${relativePath}\`\n\n─────────────────────────────────────────────────────────────────\n\nWhere to next:\n\n\`/atomic example\` — see a practical first workflow\n\`/atomic overview\` — quick refresh`;
 }
 
-export function getAtomicGuideMessage(
-  mode: AtomicGuideMode,
-  cwd: string,
-): string {
-  if (mode === "help") return getAtomicGuideHelpMenu();
-  return getGuideSectionForMode(mode).render(cwd);
+export function getAtomicGuideMessage(mode: AtomicGuideMode, cwd: string): string {
+	if (mode === "help") return getAtomicGuideHelpMenu();
+	return getGuideSectionForMode(mode).render(cwd);
 }
 
-export function atomicGuideModeForChoice(
-  choice: AtomicGuideHelpChoice,
-): AtomicGuideMode {
-  return getGuideSectionForChoice(choice)?.name ?? "help";
+export function atomicGuideModeForChoice(choice: AtomicGuideHelpChoice): AtomicGuideMode {
+	return getGuideSectionForChoice(choice)?.name ?? "help";
 }

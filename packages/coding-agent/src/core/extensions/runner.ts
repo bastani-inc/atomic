@@ -9,15 +9,20 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { runResourceRegistrationBatch } from "./loader-runtime.ts";
 import {
 	createExtensionCommandContext,
 	createExtensionContext,
 	type ExtensionCommandContextSource,
 } from "./runner-context.ts";
-import { runResourceRegistrationBatch } from "./loader-runtime.ts";
 import {
+	type BeforeAgentStartCombinedResult,
+	type ResourcesDiscoverCombinedResult,
+	type RunnerEmitEvent,
+	type RunnerEmitResult,
 	runBeforeAgentStartHandlers,
 	runBeforeProviderRequestHandlers,
 	runContextHandlers,
@@ -28,10 +33,6 @@ import {
 	runToolCallHandlers,
 	runToolResultHandlers,
 	runUserBashHandlers,
-	type BeforeAgentStartCombinedResult,
-	type ResourcesDiscoverCombinedResult,
-	type RunnerEmitEvent,
-	type RunnerEmitResult,
 } from "./runner-events.ts";
 import type {
 	ExtensionErrorListener,
@@ -124,6 +125,7 @@ export class ExtensionRunner {
 	private orchestrationContext: OrchestrationContext | undefined;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<Api> | undefined = () => undefined;
+	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
 	private isProjectTrustedFn: () => boolean = () => true;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
@@ -188,6 +190,7 @@ export class ExtensionRunner {
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
+		this.getScopedModels = contextActions.getScopedModels;
 		this.isIdleFn = contextActions.isIdle;
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
 		this.getSignalFn = contextActions.getSignal;
@@ -203,9 +206,15 @@ export class ExtensionRunner {
 		for (const registration of this.runtime.pendingProviderRegistrations) {
 			try {
 				if ("provider" in registration) {
-					(providerActions?.registerProvider ?? ((provider: Provider) => this.modelRegistry.registerProvider(provider)))(registration.provider);
+					(
+						providerActions?.registerProvider ??
+						((provider: Provider) => this.modelRegistry.registerProvider(provider))
+					)(registration.provider);
 				} else {
-					(providerActions?.registerProvider ?? ((name: string, config?: ProviderConfig) => this.modelRegistry.registerProvider(name, config!)))(registration.name, registration.config);
+					(
+						providerActions?.registerProvider ??
+						((name: string, config?: ProviderConfig) => this.modelRegistry.registerProvider(name, config!))
+					)(registration.name, registration.config);
 				}
 			} catch (error) {
 				this.emitError({
@@ -289,7 +298,8 @@ export class ExtensionRunner {
 
 	setFlagValue(name: string, value: boolean | string): void {
 		this.runtime.flagValues.set(name, value);
-		(this.runtime.explicitFlagNames ??= new Set()).add(name);
+		this.runtime.explicitFlagNames ??= new Set();
+		this.runtime.explicitFlagNames.add(name);
 	}
 
 	getFlagValues(): Map<string, boolean | string> {
@@ -387,7 +397,9 @@ export class ExtensionRunner {
 			getCwd: () => this.cwd,
 			getSessionManager: () => this.sessionManager,
 			getModelRegistry: () => this.modelRegistry,
-			getModel: () => this.getModel(), getThinkingLevel: () => this.runtime.getThinkingLevel(),
+			getModel: () => this.getModel(),
+			getScopedModels: () => this.getScopedModels(),
+			getThinkingLevel: () => this.runtime.getThinkingLevel(),
 			getOrchestrationContext: () => this.orchestrationContext,
 			isIdle: () => this.isIdleFn(),
 			isProjectTrusted: () => this.isProjectTrustedFn(),
@@ -408,40 +420,48 @@ export class ExtensionRunner {
 		};
 	}
 
-
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 		return runResourceRegistrationBatch(this.runtime, () =>
-			runGenericHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)));
+			runGenericHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)),
+		);
 	}
 
 	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {
 		return runResourceRegistrationBatch(this.runtime, () =>
-			runMessageEndHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)));
+			runMessageEndHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)),
+		);
 	}
 
 	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
 		return runResourceRegistrationBatch(this.runtime, () =>
-			runToolResultHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)));
+			runToolResultHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)),
+		);
 	}
 
 	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
-		return runResourceRegistrationBatch(this.runtime, () => runToolCallHandlers(this.extensions, this.createContext(), event));
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runToolCallHandlers(this.extensions, this.createContext(), event),
+		);
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
 		return runResourceRegistrationBatch(this.runtime, () =>
-			runUserBashHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)));
+			runUserBashHandlers(this.extensions, this.createContext(), event, (error) => this.emitError(error)),
+		);
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
 		return runResourceRegistrationBatch(this.runtime, () =>
-			runContextHandlers(this.extensions, this.createContext(), messages, (error) => this.emitError(error)));
+			runContextHandlers(this.extensions, this.createContext(), messages, (error) => this.emitError(error)),
+		);
 	}
 
 	emitBeforeProviderRequest(payload: unknown): Promise<unknown> {
 		return runResourceRegistrationBatch(this.runtime, () =>
 			runBeforeProviderRequestHandlers(this.extensions, this.createContext(), payload, (error) =>
-				this.emitError(error)));
+				this.emitError(error),
+			),
+		);
 	}
 
 	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
@@ -451,7 +471,12 @@ export class ExtensionRunner {
 					try {
 						await handler({ type: "before_provider_headers", headers }, this.createContext());
 					} catch (error) {
-						this.emitError({ extensionPath: extension.path, event: "before_provider_headers", error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined });
+						this.emitError({
+							extensionPath: extension.path,
+							event: "before_provider_headers",
+							error: error instanceof Error ? error.message : String(error),
+							stack: error instanceof Error ? error.stack : undefined,
+						});
 					}
 				}
 			}
@@ -465,16 +490,18 @@ export class ExtensionRunner {
 		systemPrompt: string,
 		systemPromptOptions: BuildSystemPromptOptions,
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
-		return runResourceRegistrationBatch(this.runtime, () => runBeforeAgentStartHandlers(
-			this.extensions,
-			this.createContext(),
-			() => this.assertActive(),
-			prompt,
-			images,
-			systemPrompt,
-			systemPromptOptions,
-			(error) => this.emitError(error),
-		));
+		return runResourceRegistrationBatch(this.runtime, () =>
+			runBeforeAgentStartHandlers(
+				this.extensions,
+				this.createContext(),
+				() => this.assertActive(),
+				prompt,
+				images,
+				systemPrompt,
+				systemPromptOptions,
+				(error) => this.emitError(error),
+			),
+		);
 	}
 
 	emitResourcesDiscover(
@@ -483,7 +510,9 @@ export class ExtensionRunner {
 	): Promise<ResourcesDiscoverCombinedResult> {
 		return runResourceRegistrationBatch(this.runtime, () =>
 			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, (error) =>
-				this.emitError(error)));
+				this.emitError(error),
+			),
+		);
 	}
 
 	/** Emit input event. Transforms chain, "handled" short-circuits. */
@@ -495,6 +524,8 @@ export class ExtensionRunner {
 	): Promise<InputEventResult> {
 		return runResourceRegistrationBatch(this.runtime, () =>
 			runInputHandlers(this.extensions, this.createContext(), text, images, source, streamingBehavior, (error) =>
-				this.emitError(error)));
+				this.emitError(error),
+			),
+		);
 	}
 }

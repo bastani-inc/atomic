@@ -6,6 +6,32 @@ export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 600_000;
 const originalGlobalFetch = globalThis.fetch;
 let installedGlobalFetch: typeof globalThis.fetch | undefined;
 
+/**
+ * Install the npm Undici web globals in both Node and Bun.
+ *
+ * Bun's ESM interop exposes Undici's individual exports but omits the CommonJS
+ * `install` helper. Optional-calling that helper therefore left Bun's native
+ * fetch active even though the configured dispatcher belonged to npm Undici.
+ */
+function installUndiciGlobals(): void {
+	if (typeof undici.install === "function") {
+		undici.install();
+		return;
+	}
+	Object.assign(globalThis, {
+		fetch: undici.fetch,
+		Headers: undici.Headers,
+		Response: undici.Response,
+		Request: undici.Request,
+		FormData: undici.FormData,
+		WebSocket: undici.WebSocket,
+		CloseEvent: undici.CloseEvent,
+		ErrorEvent: undici.ErrorEvent,
+		MessageEvent: undici.MessageEvent,
+		EventSource: undici.EventSource,
+	});
+}
+
 export const HTTP_IDLE_TIMEOUT_CHOICES = [
 	{ label: "30 sec", timeoutMs: 30_000 },
 	{ label: "1 min", timeoutMs: 60_000 },
@@ -41,7 +67,9 @@ export function applyHttpProxySettings(httpProxy: string | undefined): void {
 	process.env.HTTPS_PROXY ??= proxy;
 }
 
-export function createHttpDispatcherOptions(timeoutMs: number): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {
+export function createHttpDispatcherOptions(
+	timeoutMs: number,
+): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {
 	return {
 		allowH2: false,
 		// Undici defaults to a 10s connect timeout; disable it so slow
@@ -109,11 +137,12 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 	// otherwise behave differently from the configured dispatcher used by SDKs.
 	// If a caller replaced fetch after module load, preserve that deliberate
 	// override.
-	const shouldInstallGlobals = installedGlobalFetch === undefined
-		? globalThis.fetch === originalGlobalFetch
-		: globalThis.fetch === installedGlobalFetch;
+	const shouldInstallGlobals =
+		installedGlobalFetch === undefined
+			? globalThis.fetch === originalGlobalFetch
+			: globalThis.fetch === installedGlobalFetch;
 	if (shouldInstallGlobals) {
-		undici.install?.();
+		installUndiciGlobals();
 		installedGlobalFetch = globalThis.fetch;
 	}
 }

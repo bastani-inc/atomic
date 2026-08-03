@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Api, type Model } from "@earendil-works/pi-ai/compat";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+
 describe("InteractiveMode.createExtensionUIContext addAutocompleteProvider", () => {
 	test("stores wrapper factories and rebuilds autocomplete immediately", () => {
 		const wrapper: AutocompleteProviderFactory = (current) => current;
@@ -117,7 +118,7 @@ describe("InteractiveMode submit routing", () => {
 		await submit("/exit now");
 
 		expect(fakeThis.shutdown).not.toHaveBeenCalled();
-		expect(onInput).toHaveBeenCalledWith("/exit now");
+		expect(onInput).toHaveBeenCalledWith({ text: "/exit now", draft: "/exit now" });
 		expect(fakeThis.editor.addToHistory).toHaveBeenCalledWith("/exit now");
 	});
 });
@@ -201,9 +202,7 @@ describe("InteractiveMode /fast autocomplete", () => {
 	});
 
 	test("shows /fast when an OpenAI Codex scoped model is available", async () => {
-		const labels = await slashLabels(
-			createProvider([createModel("github-copilot")], [createModel("openai-codex")]),
-		);
+		const labels = await slashLabels(createProvider([createModel("github-copilot")], [createModel("openai-codex")]));
 
 		expect(labels).toContain("fast");
 	});
@@ -385,7 +384,6 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 		]);
 	});
 });
-
 
 describe("InteractiveMode deferred workflow autocomplete", () => {
 	function createDeferredWorkflowProvider(): AutocompleteProvider {

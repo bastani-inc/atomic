@@ -1,4 +1,4 @@
-import { getModel, type Api, type Model } from "@earendil-works/pi-ai/compat";
+import { type Api, getModel, type Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import type { AtomicProviderCompat } from "../src/core/model-capabilities.ts";
 import { RpcClientApi, type RpcCommandBody } from "../src/modes/rpc/rpc-client-api.ts";
@@ -20,7 +20,7 @@ class CatalogClient extends RpcClientApi {
 			success: true,
 			data: { models: this.models, scopedModels: [], customAuthProviders: [] },
 		};
-		return Promise.resolve(this.serialize ? JSON.parse(JSON.stringify(response)) as RpcResponse : response);
+		return Promise.resolve(this.serialize ? (JSON.parse(JSON.stringify(response)) as RpcResponse) : response);
 	}
 
 	protected data<T>(response: RpcResponse): T {

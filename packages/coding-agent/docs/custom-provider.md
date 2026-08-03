@@ -314,13 +314,13 @@ Existing extension OAuth definitions keep their `login`, `refreshToken`, `getApi
 
 In isolated interactive mode, extension code and executable OAuth methods remain in the engine process. Atomic transports only the JSON-safe provider description (`id`, `name`, `loginLabel`, and `usesCallbackServer`) to the terminal process; it never serializes provider functions or acquired credentials and does not load the extension a second time in the frontend. `loginLabel` replaces the login dialog title, while `usesCallbackServer: true` exposes a redirect-URL paste field that races the browser callback. The engine executes the provider's login closure and correlates browser URLs, device codes, progress/info messages, prompts, selections, and manual-code callbacks with the originating login.
 
-After acquisition, the engine owns serialized credential persistence, model/current-model refresh, rollback on failure, and logout. The frontend applies the returned catalog only after the engine transaction succeeds. Escape or Ctrl+C cancels only the matching login and leaves the prior credential/catalog intact. Built-in OAuth and direct, non-isolated extension OAuth use the same persistence and cancellation semantics; later provider registrations continue to override earlier registrations by ID.
+After acquisition, the engine owns serialized credential persistence and logout. It publishes the authenticated provider against its already-loaded snapshot as soon as persistence succeeds; dynamic catalog and ambient-availability refreshes run separately under the model selector's deadline and never extend the login transaction. Logout similarly publishes stored-credential removal without invoking `refreshModels`; Atomic gives the provider's local remaining-auth probe a short deadline so extension code cannot keep the dialog open. The frontend applies the returned snapshot only after the engine transaction succeeds. Escape or Ctrl+C cancels only the matching login and leaves the prior credential/catalog intact. Built-in OAuth and direct, non-isolated extension OAuth use the same persistence and cancellation semantics; later provider registrations continue to override earlier registrations by ID.
 
-Intentional cancellation is quiet, including native `AbortError`, an aborted signal or its exact reason, nested abort causes, and the legacy exact `Login cancelled` error. Provider denial, timeout, network/protocol errors, malformed responses, token exchange failures, storage failures, and post-login refresh failures remain visible.
+Intentional cancellation is quiet, including native `AbortError`, an aborted signal or its exact reason, nested abort causes, and the legacy exact `Login cancelled` error. Provider denial, timeout, network/protocol errors, malformed responses, token exchange failures, and storage failures remain visible. Catalog-refresh failures are reported by `/model` while cached models remain selectable; they do not turn a persisted login into a failed transaction.
 
 ## Dynamic model catalog refresh
 
-Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the asynchronous model refresh used by the model picker and authentication flows:
+Providers whose catalogs change at runtime can add `refreshModels`. Atomic calls it during the model picker's bounded asynchronous refresh, independently of authentication completion:
 
 ```typescript
 pi.registerProvider("corporate-ai", {
@@ -419,7 +419,7 @@ function streamMyProvider(
         totalTokens: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
-      stopReason: "stop",
+      stopReason: "pending",
       timestamp: Date.now(),
     };
 
@@ -428,12 +428,20 @@ function streamMyProvider(
       stream.push({ type: "start", partial: output });
 
       // Make API request and process response...
-      // Push content events as they arrive...
+      // Push content events as they arrive, and set output.stopReason from the
+      // terminal event. A reason your provider sends that you do not map must
+      // become an error, not a silent "stop".
+      if (output.stopReason === "pending") {
+        throw new Error("Provider stream ended without a stop reason");
+      }
+      if (output.stopReason === "error" || output.stopReason === "aborted") {
+        throw new Error(output.errorMessage || "An unknown error occurred");
+      }
 
       // Push done event
       stream.push({
         type: "done",
-        reason: output.stopReason as "stop" | "length" | "toolUse",
+        reason: output.stopReason,
         message: output
       });
       stream.end();
@@ -469,6 +477,21 @@ Push events via `stream.push()` in this order:
 3. `{ type: "done", reason, message }` or `{ type: "error", reason, error }` - Stream ended
 
 The `partial` field in each event contains the current `AssistantMessage` state. Update `output.content` as you receive data, then include `output` as the `partial`.
+
+### Stop Reasons
+
+`StopReason` is `"pending" | "stop" | "length" | "toolUse" | "error" | "aborted"`.
+
+Start the partial message at `"pending"`. It is the reason every in-flight message carries, and it says the terminal event has not arrived yet — it is not a default standing in for `"stop"`. Set the real reason when the provider says the turn ended, then push `done` with it.
+
+Two checks belong immediately before `done`:
+
+- a stream that reached the end while still `"pending"` never received a terminal event, so raise rather than report a stop that did not happen;
+- `"error"` and `"aborted"` are failures, so raise them with `output.errorMessage` and let the `catch` push an `error` event.
+
+`done` accepts only `"stop"`, `"length"`, and `"toolUse"`, which is exactly what those two checks leave, so the `as "stop" | "length" | "toolUse"` cast older implementations used is no longer needed.
+
+Map each raw reason your provider can send onto one of the five terminal values, and **raise on one you do not recognise** rather than falling back to `"stop"`. This is what the built-in providers do: an unmapped reason becomes a provider error naming the raw value, so a new truncation or safety signal is visible instead of arriving as a turn that looks like it finished normally. The optional `rawStopReason` field on `AssistantMessage` is where the provider's own string belongs when you want to keep it.
 
 ### Content Blocks
 

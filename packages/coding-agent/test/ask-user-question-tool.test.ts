@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createAskUserQuestionToolDefinition } from "../src/core/tools/ask-user-question/index.ts";
 import type { ExtensionUIContext } from "../src/core/extensions/types.ts";
+import { createAskUserQuestionToolDefinition } from "../src/core/tools/ask-user-question/index.ts";
 
 const QUESTION_PARAMS = {
 	questions: [
@@ -38,22 +38,17 @@ describe("ask_user_question tool", () => {
 					return Promise.resolve({ answers: [], cancelled: true } as T);
 				}
 				return new Promise<T>((_resolve, reject) => {
-					capturedSignal?.addEventListener(
-						"abort",
-						() => reject(capturedSignal?.reason ?? new Error("aborted")),
-						{ once: true },
-					);
+					capturedSignal?.addEventListener("abort", () => reject(capturedSignal?.reason ?? new Error("aborted")), {
+						once: true,
+					});
 				});
 			},
 		} as Pick<ExtensionUIContext, "custom" | "setWorkingVisible">;
 
-		const execution = tool.execute(
-			"ask-1",
-			QUESTION_PARAMS,
-			controller.signal,
-			() => undefined,
-			{ hasUI: true, ui } as Parameters<typeof tool.execute>[4],
-		);
+		const execution = tool.execute("ask-1", QUESTION_PARAMS, controller.signal, () => undefined, {
+			hasUI: true,
+			ui,
+		} as Parameters<typeof tool.execute>[4]);
 
 		await waitFor(() => capturedSignal !== undefined);
 		expect(capturedSignal).toBe(controller.signal);
@@ -76,13 +71,10 @@ describe("ask_user_question tool", () => {
 			},
 		} as Pick<ExtensionUIContext, "custom" | "setWorkingVisible">;
 
-		await tool.execute(
-			"ask-loader",
-			QUESTION_PARAMS,
-			new AbortController().signal,
-			() => undefined,
-			{ hasUI: true, ui } as Parameters<typeof tool.execute>[4],
-		);
+		await tool.execute("ask-loader", QUESTION_PARAMS, new AbortController().signal, () => undefined, {
+			hasUI: true,
+			ui,
+		} as Parameters<typeof tool.execute>[4]);
 
 		// Loader is hidden before the dialog mounts and restored once it closes.
 		expect(events).toEqual(["working:off", "custom", "working:on"]);
@@ -101,13 +93,10 @@ describe("ask_user_question tool", () => {
 		} as Pick<ExtensionUIContext, "custom" | "setWorkingVisible">;
 
 		await expect(
-			tool.execute(
-				"ask-loader-reject",
-				QUESTION_PARAMS,
-				new AbortController().signal,
-				() => undefined,
-				{ hasUI: true, ui } as Parameters<typeof tool.execute>[4],
-			),
+			tool.execute("ask-loader-reject", QUESTION_PARAMS, new AbortController().signal, () => undefined, {
+				hasUI: true,
+				ui,
+			} as Parameters<typeof tool.execute>[4]),
 		).rejects.toBe(failure);
 
 		// The `finally` restores the loader even on the failure/abort path.

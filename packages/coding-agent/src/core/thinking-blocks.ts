@@ -10,7 +10,9 @@ export function contentArrayHasAssistantThinkingBlock(content: readonly unknown[
 }
 
 export function messageHasAssistantThinkingContentBlock(message: { role?: unknown; content?: unknown }): boolean {
-	return message.role === "assistant" &&
+	return (
+		message.role === "assistant" &&
 		Array.isArray(message.content) &&
-		contentArrayHasAssistantThinkingBlock(message.content);
+		contentArrayHasAssistantThinkingBlock(message.content)
+	);
 }

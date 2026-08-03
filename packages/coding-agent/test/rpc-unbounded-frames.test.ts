@@ -61,7 +61,9 @@ describe("unbounded RPC records", () => {
 
 	test("accepts coalesced render frames larger than 1 MiB", async () => {
 		let resolveChunk!: (chunk: Buffer) => void;
-		const chunkWritten = new Promise<Buffer>((resolve) => { resolveChunk = resolve; });
+		const chunkWritten = new Promise<Buffer>((resolve) => {
+			resolveChunk = resolve;
+		});
 		const stream = new Writable({
 			write(chunk: Buffer, _encoding, callback) {
 				resolveChunk(Buffer.from(chunk));

@@ -4,11 +4,11 @@
  * is `SuccessDiagnostic` written to `<session>-compaction-success-<ts>.json`.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { test } from "vitest";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import type { SuccessDiagnostic } from "../../packages/coding-agent/src/core/compaction/range-planner-diagnostics.js";
 import { preparation, registryOf, runRequest, scriptedStream, testModel } from "./compaction-rung-support.js";
@@ -18,7 +18,9 @@ const fallback = testModel({ provider: "backup", id: "planner-b", baseUrl: "http
 const posixMode = process.platform === "win32" ? test.skip : test;
 
 function sidecars(directory: string, marker: string): string[] {
-	return readdirSync(directory).filter((name) => name.includes(marker)).map((name) => join(directory, name));
+	return readdirSync(directory)
+		.filter((name) => name.includes(marker))
+		.map((name) => join(directory, name));
 }
 
 async function rescuedRun(sessionFilePath: string) {

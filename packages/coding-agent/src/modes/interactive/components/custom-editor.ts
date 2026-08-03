@@ -1,5 +1,14 @@
-import { CURSOR_MARKER, Editor, type EditorOptions, type EditorTheme, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	CURSOR_MARKER,
+	Editor,
+	type EditorOptions,
+	type EditorTheme,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
+import { isPhysicalEscape } from "../interactive-key-identity.ts";
 import { theme } from "../theme/theme.ts";
 
 export interface CustomEditorOptions extends EditorOptions {
@@ -111,6 +120,23 @@ export class CustomEditor extends Editor {
 		this.actionHandlers.set(action, handler);
 	}
 
+	/**
+	 * Buffer captured immediately before the base editor consumed an input event.
+	 *
+	 * pi-tui's `submitValue()` expands paste markers, trims, and clears the editor
+	 * before it calls `onSubmit`, so the callback argument can never be the text
+	 * the user actually had. Atomic needs the pre-trim buffer to put an unaccepted
+	 * submission back exactly as typed, and 0.82.1 exposes no pre-trim hook.
+	 */
+	private submittedDraftSnapshot: string | undefined;
+
+	/** Consume the buffer captured for the submission currently being dispatched. */
+	takeSubmittedDraft(): string | undefined {
+		const draft = this.submittedDraftSnapshot;
+		this.submittedDraftSnapshot = undefined;
+		return draft;
+	}
+
 	handleInput(data: string): void {
 		// Check extension-registered shortcuts first
 		if (this.onExtensionShortcut?.(data)) {
@@ -125,8 +151,10 @@ export class CustomEditor extends Editor {
 
 		// Check app keybindings first
 
-		// Escape/interrupt - only if autocomplete is NOT active
-		if (this.keybindings.matches(data, "app.interrupt")) {
+		// Escape/interrupt - only if autocomplete is NOT active. Physical Escape is
+		// matched directly so a remapped `app.interrupt`/`app.clear` can never route
+		// it into a clear, terminate, or engine-restart handler.
+		if (isPhysicalEscape(data) || this.keybindings.matches(data, "app.interrupt")) {
 			if (!this.isShowingAutocomplete()) {
 				// Use dynamic onEscape if set, otherwise registered handler
 				const handler = this.onEscape ?? this.actionHandlers.get("app.interrupt");
@@ -158,7 +186,13 @@ export class CustomEditor extends Editor {
 			}
 		}
 
-		// Pass to parent for editor handling
-		super.handleInput(data);
+		// Snapshot the live buffer for the same synchronous dispatch that may submit
+		// it, then drop it again so an ordinary keystroke cannot leave stale state.
+		this.submittedDraftSnapshot = this.getExpandedText();
+		try {
+			super.handleInput(data);
+		} finally {
+			this.submittedDraftSnapshot = undefined;
+		}
 	}
 }

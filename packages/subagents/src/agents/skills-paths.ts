@@ -19,9 +19,10 @@ function readOptionalJsonFile(filePath: string, label: string): unknown {
 	try {
 		return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 	} catch (error) {
-		const code = typeof error === "object" && error !== null && "code" in error
-			? (error as { code?: unknown }).code
-			: undefined;
+		const code =
+			typeof error === "object" && error !== null && "code" in error
+				? (error as { code?: unknown }).code
+				: undefined;
 		if (code === "ENOENT") return null;
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to read ${label} '${filePath}': ${message}`, {
@@ -39,7 +40,11 @@ function readJsonFileBestEffort(filePath: string): unknown {
 	}
 }
 
-function extractSkillPathsFromPackageRoot(packageRoot: string, source: SkillSource, bestEffort = false): SkillSearchPath[] {
+function extractSkillPathsFromPackageRoot(
+	packageRoot: string,
+	source: SkillSource,
+	bestEffort = false,
+): SkillSearchPath[] {
 	const packageJsonPath = path.join(packageRoot, "package.json");
 	const pkg = bestEffort
 		? readJsonFileBestEffort(packageJsonPath)
@@ -79,7 +84,10 @@ function getGlobalNpmRoot(): string | null {
 
 function collectInstalledPackageSkillPaths(cwd: string): SkillSearchPath[] {
 	const dirs: SkillSearchPath[] = [
-		...getProjectConfigDirs(cwd).map((configDir) => ({ path: path.join(configDir, "npm", "node_modules"), source: "project-package" as const })),
+		...getProjectConfigDirs(cwd).map((configDir) => ({
+			path: path.join(configDir, "npm", "node_modules"),
+			source: "project-package" as const,
+		})),
 		...getAgentConfigPaths("npm", "node_modules").map((dir) => ({ path: dir, source: "user-package" as const })),
 	];
 
@@ -131,8 +139,16 @@ function collectInstalledPackageSkillPaths(cwd: string): SkillSearchPath[] {
 function collectSettingsSkillPaths(cwd: string): SkillSearchPath[] {
 	const results: SkillSearchPath[] = [];
 	const settingsFiles = [
-		...getProjectConfigDirs(cwd).map((configDir) => ({ file: path.join(configDir, "settings.json"), base: configDir, source: "project-settings" as const })),
-		...getAgentConfigPaths("settings.json").map((file) => ({ file, base: path.dirname(file), source: "user-settings" as const })),
+		...getProjectConfigDirs(cwd).map((configDir) => ({
+			file: path.join(configDir, "settings.json"),
+			base: configDir,
+			source: "project-settings" as const,
+		})),
+		...getAgentConfigPaths("settings.json").map((file) => ({
+			file,
+			base: path.dirname(file),
+			source: "user-settings" as const,
+		})),
 	];
 
 	for (const { file, base, source } of settingsFiles) {
@@ -156,9 +172,11 @@ function collectSettingsSkillPaths(cwd: string): SkillSearchPath[] {
 }
 
 function isSafePackagePath(value: string): boolean {
-	return value.length > 0
-		&& !path.isAbsolute(value)
-		&& value.split(/[\\/]/).every((part) => part.length > 0 && part !== "." && part !== "..");
+	return (
+		value.length > 0 &&
+		!path.isAbsolute(value) &&
+		value.split(/[\\/]/).every((part) => part.length > 0 && part !== "." && part !== "..")
+	);
 }
 
 function parseNpmPackageName(source: string): string | undefined {
@@ -201,8 +219,15 @@ function parseGitPackagePath(source: string): { host: string; repoPath: string }
 		repoPath = spec.slice(slashIndex + 1);
 	}
 
-	const normalizedPath = stripGitRef(repoPath).replace(/\.git$/, "").replace(/^\/+/, "");
-	if (!host || !isSafePackagePath(host) || !isSafePackagePath(normalizedPath) || normalizedPath.split(/[\\/]/).length < 2) {
+	const normalizedPath = stripGitRef(repoPath)
+		.replace(/\.git$/, "")
+		.replace(/^\/+/, "");
+	if (
+		!host ||
+		!isSafePackagePath(host) ||
+		!isSafePackagePath(normalizedPath) ||
+		normalizedPath.split(/[\\/]/).length < 2
+	) {
 		return undefined;
 	}
 	return { host, repoPath: normalizedPath };
@@ -231,8 +256,16 @@ function resolveSettingsPackageRoot(source: string, baseDir: string): string | u
 
 function collectSettingsPackageSkillPaths(cwd: string): SkillSearchPath[] {
 	const settingsFiles = [
-		...getProjectConfigDirs(cwd).map((configDir) => ({ file: path.join(configDir, "settings.json"), base: configDir, source: "project-package" as const })),
-		...getAgentConfigPaths("settings.json").map((file) => ({ file, base: path.dirname(file), source: "user-package" as const })),
+		...getProjectConfigDirs(cwd).map((configDir) => ({
+			file: path.join(configDir, "settings.json"),
+			base: configDir,
+			source: "project-package" as const,
+		})),
+		...getAgentConfigPaths("settings.json").map((file) => ({
+			file,
+			base: path.dirname(file),
+			source: "user-package" as const,
+		})),
 	];
 	const results: SkillSearchPath[] = [];
 
@@ -243,11 +276,14 @@ function collectSettingsPackageSkillPaths(cwd: string): SkillSearchPath[] {
 		if (!Array.isArray(packages)) continue;
 
 		for (const entry of packages) {
-			const packageSource = typeof entry === "string"
-				? entry
-				: typeof entry === "object" && entry !== null && typeof (entry as { source?: unknown }).source === "string"
-					? (entry as { source: string }).source
-					: undefined;
+			const packageSource =
+				typeof entry === "string"
+					? entry
+					: typeof entry === "object" &&
+							entry !== null &&
+							typeof (entry as { source?: unknown }).source === "string"
+						? (entry as { source: string }).source
+						: undefined;
 			if (!packageSource) continue;
 
 			const packageRoot = resolveSettingsPackageRoot(packageSource, base);
@@ -262,7 +298,7 @@ function collectSettingsPackageSkillPaths(cwd: string): SkillSearchPath[] {
 function collectBuiltinPackageSkillPaths(): SkillSearchPath[] {
 	try {
 		return getBuiltinPackagePaths().flatMap((packageRoot) =>
-			extractSkillPathsFromPackageRoot(packageRoot, "builtin", true)
+			extractSkillPathsFromPackageRoot(packageRoot, "builtin", true),
 		);
 	} catch {
 		// Builtin package discovery is additive; keep project/user/settings skill resolution working if unavailable.
@@ -272,7 +308,10 @@ function collectBuiltinPackageSkillPaths(): SkillSearchPath[] {
 
 export function buildSkillPaths(cwd: string): SkillSearchPath[] {
 	const skillPaths: SkillSearchPath[] = [
-		...getProjectConfigDirs(cwd).map((configDir) => ({ path: path.join(configDir, "skills"), source: "project" as const })),
+		...getProjectConfigDirs(cwd).map((configDir) => ({
+			path: path.join(configDir, "skills"),
+			source: "project" as const,
+		})),
 		{ path: path.join(cwd, ".agents", "skills"), source: "project" },
 		...getAgentConfigPaths("skills").map((dir) => ({ path: dir, source: "user" as const })),
 		{ path: path.join(os.homedir(), ".agents", "skills"), source: "user" },
@@ -306,11 +345,13 @@ export function inferSkillSource(filePath: string, cwd: string, sourceHint?: Ski
 	const userAgentsRoot = path.resolve(os.homedir(), ".agents");
 
 	if (projectPackagesRoots.some((root) => isWithinPath(filePath, root))) return "project-package";
-	if (projectSkillsRoots.some((root) => isWithinPath(filePath, root)) || isWithinPath(filePath, projectAgentsRoot)) return "project";
+	if (projectSkillsRoots.some((root) => isWithinPath(filePath, root)) || isWithinPath(filePath, projectAgentsRoot))
+		return "project";
 	if (projectConfigRoots.some((root) => isWithinPath(filePath, root))) return "project-settings";
 
 	if (userPackagesRoots.some((root) => isWithinPath(filePath, root))) return "user-package";
-	if (userSkillsRoots.some((root) => isWithinPath(filePath, root)) || isWithinPath(filePath, userAgentsRoot)) return "user";
+	if (userSkillsRoots.some((root) => isWithinPath(filePath, root)) || isWithinPath(filePath, userAgentsRoot))
+		return "user";
 	if (userAgentRoots.some((root) => isWithinPath(filePath, root))) return "user-settings";
 
 	const globalRoot = getGlobalNpmRoot();
@@ -318,7 +359,6 @@ export function inferSkillSource(filePath: string, cwd: string, sourceHint?: Ski
 
 	return "unknown";
 }
-
 
 export function clearSkillPathDiscoveryCache(): void {
 	cachedGlobalNpmRoot = null;

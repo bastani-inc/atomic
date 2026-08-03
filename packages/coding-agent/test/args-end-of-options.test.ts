@@ -30,16 +30,7 @@ describe("parseArgs -- end-of-options terminator", () => {
 	});
 
 	test("consumes the terminator, parses preceding options, and preserves every following argument", () => {
-		const result = parseArgs([
-			"--print",
-			"--mode",
-			"json",
-			"--",
-			"first",
-			"--provider",
-			"@context.md",
-			"first",
-		]);
+		const result = parseArgs(["--print", "--mode", "json", "--", "first", "--provider", "@context.md", "first"]);
 
 		expect(result.print).toBe(true);
 		expect(result.mode).toBe("json");
@@ -60,10 +51,7 @@ describe("insertForcedOptionsBeforeTerminator", () => {
 	});
 
 	test("inserts forced options before the terminator so they still parse as options", () => {
-		const args = insertForcedOptionsBeforeTerminator(
-			["--print", "--", "- leading-dash prompt"],
-			["--mode", "rpc"],
-		);
+		const args = insertForcedOptionsBeforeTerminator(["--print", "--", "- leading-dash prompt"], ["--mode", "rpc"]);
 
 		expect(args).toEqual(["--print", "--mode", "rpc", "--", "- leading-dash prompt"]);
 		const result = parseArgs(args);

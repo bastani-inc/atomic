@@ -1,53 +1,16 @@
-import { EventEmitter } from "node:events";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
-import { PassThrough } from "node:stream";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONFIG_DIR_NAME } from "../src/config.ts";
-import { DefaultPackageManager, type ProgressEvent, type ResolvedResource } from "../src/core/package-manager.ts";
+import { DefaultPackageManager, type ResolvedResource } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { shouldUseWindowsShell } from "../src/utils/child-process.ts";
 
 function normalizeForMatch(value: string): string {
 	return value.replace(/\\/g, "/");
 }
 
-function pathEndsWith(actualPath: string, suffix: string): boolean {
+function _pathEndsWith(actualPath: string, suffix: string): boolean {
 	return normalizeForMatch(actualPath).endsWith(normalizeForMatch(suffix));
-}
-
-class MockSpawnedProcess extends EventEmitter {
-	stdout = new PassThrough();
-	stderr = new PassThrough();
-
-	kill(): boolean {
-		this.emit("close", null, "SIGTERM");
-		return true;
-	}
-}
-
-interface ParsedNpmSourceForTest {
-	type: "npm";
-	spec: string;
-	name: string;
-	version?: string;
-	range?: string;
-	pinned: boolean;
-}
-
-type ParsedSourceForTest = ParsedNpmSourceForTest | { type: "git" | "local" };
-
-interface PackageManagerInternals {
-	runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void>;
-	runCommandSync(command: string, args: string[]): string;
-	runCommandCapture(
-		command: string,
-		args: string[],
-		options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
-	): Promise<string>;
-	parseSource(source: string): ParsedSourceForTest;
-	getLocalGitUpdateTarget(installedPath: string): Promise<{ ref: string; head: string; fetchArgs: string[] }>;
 }
 
 // Helper to check if a resource is enabled

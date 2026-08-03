@@ -8,18 +8,18 @@
  * chose the same path and the second write replaced the first.
  */
 
-import { afterEach, beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, beforeEach, test } from "vitest";
 import { planDeletedLineRanges } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import {
 	writeDiagnosticSidecar,
 	writeRecoveryDiagnosticSidecar,
 	writeSuccessDiagnosticSidecar,
 } from "../../packages/coding-agent/src/core/compaction/range-planner-diagnostics.js";
-import { PARAMETERS, borrowed, region, scriptedStream, testModel } from "./compaction-rung-support.js";
+import { borrowed, PARAMETERS, region, scriptedStream, testModel } from "./compaction-rung-support.js";
 
 const posixMode = process.platform === "win32" ? test.skip : test;
 
@@ -36,11 +36,16 @@ afterEach(() => {
 });
 
 function sidecars(marker: string): string[] {
-	return readdirSync(directory).filter((name) => name.includes(marker)).map((name) => join(directory, name));
+	return readdirSync(directory)
+		.filter((name) => name.includes(marker))
+		.map((name) => join(directory, name));
 }
 
 function payload(path: string): { failureCategory?: string; model?: { provider: string; id: string } } {
-	return JSON.parse(readFileSync(path, "utf-8")) as { failureCategory?: string; model?: { provider: string; id: string } };
+	return JSON.parse(readFileSync(path, "utf-8")) as {
+		failureCategory?: string;
+		model?: { provider: string; id: string };
+	};
 }
 
 async function planFailure(entry: { errorMessage?: string; throws?: string }) {

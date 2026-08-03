@@ -1,14 +1,14 @@
-import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, type Context } from "@earendil-works/pi-ai/compat";
+import { type Context, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
+import { afterEach, describe, test } from "vitest";
 import type { AgentSessionInternalSurface } from "../../packages/coding-agent/src/core/agent-session-methods.js";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
+import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import {
@@ -17,6 +17,7 @@ import {
 	type WorkflowLifecycleNoticeDetails,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { sleep } from "../helpers/runtime.js";
 import { assertWorkflowToolOrdering, lifecycleConfig } from "./workflow-lifecycle-parent-reconciliation-support.js";
 
 describe("workflow lifecycle parent reconciliation admission boundaries", () => {
@@ -67,61 +68,78 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 				if (cardAtAdmission?.role !== "custom") throw new Error("missing lifecycle card at admission");
 				assert.equal(cardAtAdmission.display, true);
 				assert.equal(cardAtAdmission.content, sentNotice?.content, "raw lifecycle content must not be rewritten");
-				assert.equal(cardAtAdmission.details, sentNotice?.details, "the visible card keeps the exact details object");
+				assert.equal(
+					cardAtAdmission.details,
+					sentNotice?.details,
+					"the visible card keeps the exact details object",
+				);
 				const details = cardAtAdmission.details as WorkflowLifecycleNoticeDetails;
 				assert.equal("error" in details, false, "omitted optional lifecycle fields stay omitted");
 				assert.equal("stageId" in details, false);
-				const persistedAtAdmission = sessionManager.getEntries().filter(
-					(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-				);
+				const persistedAtAdmission = sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE);
 				assert.equal(persistedAtAdmission.length, 1, "send admission must include one durable lifecycle card");
 				const sessionFile = sessionManager.getSessionFile();
 				assert.ok(sessionFile);
 				const reopenedAtAdmission = SessionManager.open(sessionFile, sessionDir, process.cwd());
 				assert.equal(
-					reopenedAtAdmission.getEntries().filter(
-						(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-					).length,
+					reopenedAtAdmission
+						.getEntries()
+						.filter(
+							(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+						).length,
 					1,
 					"the admission receipt must be physically reopenable before the tool result exists",
 				);
 				admissionObserved = true;
 				return {
-					content: [{ type: "text", text: "Workflow tool-pending started in background (run-tool-pending). Status: running" }],
+					content: [
+						{
+							type: "text",
+							text: "Workflow tool-pending started in background (run-tool-pending). Status: running",
+						},
+					],
 					details: { action: "run", runId: "run-tool-pending", status: "running" },
 				};
 			},
 		};
 		harness = await createHarness({ tools: [workflowTool], sessionManager });
 		harnesses.push(harness);
-		unsubscriptions.push(harness.session.subscribe((event) => {
-			if (
-				!queuedDisposalAttempted &&
-				event.type === "message_start" &&
-				event.message.role === "custom" &&
-				event.message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE
-			) {
-				queuedDisposalAttempted = true;
-				try {
-					harness.session.dispose();
-				} catch (error) {
-					queuedDisposalError = error instanceof Error ? error : new Error(String(error));
+		unsubscriptions.push(
+			harness.session.subscribe((event) => {
+				if (
+					!queuedDisposalAttempted &&
+					event.type === "message_start" &&
+					event.message.role === "custom" &&
+					event.message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE
+				) {
+					queuedDisposalAttempted = true;
+					try {
+						harness.session.dispose();
+					} catch (error) {
+						queuedDisposalError = error instanceof Error ? error : new Error(String(error));
+					}
 				}
-			}
-		}));
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => {
-				sentNotice = message;
-				delivery = harness.session.sendCustomMessage(message, options);
-				return delivery;
-			},
-		}));
+			}),
+		);
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => {
+					sentNotice = message;
+					delivery = harness.session.sendCustomMessage(message, options);
+					return delivery;
+				},
+			}),
+		);
 		let providerContext: Context | undefined;
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-tool-pending" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-tool-pending" }), {
+				stopReason: "toolUse",
+			}),
 			(context) => {
 				providerContext = context;
 				return fauxAssistantMessage("tool-pending completed successfully.");
@@ -141,8 +159,13 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		assert.equal(terminalUserMessages.length, 1, `provider context: ${JSON.stringify(providerContext.messages)}`);
 		const sessionFile = sessionManager.getSessionFile();
 		assert.ok(sessionFile);
-		const rawEntries = readFileSync(sessionFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-		const rawCards = rawEntries.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE);
+		const rawEntries = readFileSync(sessionFile, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		const rawCards = rawEntries.filter(
+			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+		);
 		assert.equal(rawCards.length, 1);
 		assert.equal(rawCards[0]?.content, sentNotice?.content);
 		assert.deepEqual(rawCards[0]?.details, sentNotice?.details);
@@ -152,7 +175,8 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		assertWorkflowToolOrdering({ messages: reopenedMessages });
 		assert.equal(
 			reopenedMessages.filter(
-				(message) => message.role === "user" && getMessageText(message).includes('Workflow "tool-pending" completed'),
+				(message) =>
+					message.role === "user" && getMessageText(message).includes('Workflow "tool-pending" completed'),
 			).length,
 			1,
 		);
@@ -160,7 +184,14 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 
 	test("a terminal notice between completed tool turns joins the next provider step", async () => {
 		const store = createStore();
-		store.recordRunStart({ id: "run-between-tools", name: "between-tools", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-between-tools",
+			name: "between-tools",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
 		const workflowTool: AgentTool = {
 			name: "workflow",
 			label: "Workflow",
@@ -173,22 +204,28 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		};
 		const harness = await createHarness({ tools: [workflowTool] });
 		harnesses.push(harness);
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+			}),
+		);
 		let terminalized = false;
-		unsubscriptions.push(harness.session.agent.subscribe((event) => {
-			if (!terminalized && event.type === "turn_end") {
-				terminalized = true;
-				assert.equal(store.recordRunEnd("run-between-tools", "completed", {}), true);
-			}
-		}));
+		unsubscriptions.push(
+			harness.session.agent.subscribe((event) => {
+				if (!terminalized && event.type === "turn_end") {
+					terminalized = true;
+					assert.equal(store.recordRunEnd("run-between-tools", "completed", {}), true);
+				}
+			}),
+		);
 		let providerContext: Context | undefined;
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-between-tools" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-between-tools" }), {
+				stopReason: "toolUse",
+			}),
 			(context) => {
 				providerContext = context;
 				return fauxAssistantMessage("between-tools completed.");
@@ -202,7 +239,8 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		assertWorkflowToolOrdering(providerContext);
 		assert.equal(
 			providerContext.messages.filter(
-				(message) => message.role === "user" && getMessageText(message).includes('Workflow "between-tools" completed'),
+				(message) =>
+					message.role === "user" && getMessageText(message).includes('Workflow "between-tools" completed'),
 			).length,
 			1,
 		);
@@ -214,20 +252,24 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		const harness = await createHarness();
 		harnesses.push(harness);
 		let delivery: Promise<void> | undefined;
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage(message, options) {
-				delivery = harness.session.sendCustomMessage(message, options);
-				return delivery;
-			},
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage(message, options) {
+					delivery = harness.session.sendCustomMessage(message, options);
+					return delivery;
+				},
+			}),
+		);
 		let providerContext: Context | undefined;
-		harness.setResponses([(context) => {
-			providerContext = context;
-			return fauxAssistantMessage("I saw idle complete.");
-		}]);
+		harness.setResponses([
+			(context) => {
+				providerContext = context;
+				return fauxAssistantMessage("I saw idle complete.");
+			},
+		]);
 
 		assert.equal(store.recordRunEnd("run-idle", "completed", {}), true);
 		await delivery;
@@ -241,18 +283,32 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			).length,
 			1,
 		);
-		assert.equal(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		).length, 1);
-		assert.equal(harness.sessionManager.getEntries().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		).length, 1);
+		assert.equal(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+			).length,
+			1,
+		);
+		assert.equal(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE)
+				.length,
+			1,
+		);
 	});
 
 	test("prompt startup failure retries the hidden correction without duplicating its durable card", async () => {
 		const runId = "run-prompt-start-retry";
 		const store = createStore();
-		store.recordRunStart({ id: runId, name: "prompt-start-retry", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "prompt-start-retry",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const promptSession = harness.session as unknown as AgentSessionInternalSurface;
@@ -265,45 +321,74 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		};
 		const providerStarted = Promise.withResolvers<void>();
 		let providerContext: Context | undefined;
-		harness.setResponses([(context) => {
-			providerContext = context;
-			providerStarted.resolve();
-			return fauxAssistantMessage("Recovered the failed workflow after prompt startup retry.");
-		}]);
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
-		}));
+		harness.setResponses([
+			(context) => {
+				providerContext = context;
+				providerStarted.resolve();
+				return fauxAssistantMessage("Recovered the failed workflow after prompt startup retry.");
+			},
+		]);
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+			}),
+		);
 
 		assert.equal(store.recordRunEnd(runId, "failed", undefined, "durable tool rejected"), true);
 		await Promise.race([
 			providerStarted.promise,
-			Bun.sleep(1_000).then(() => { throw new Error("hidden reconciliation retry did not start"); }),
+			sleep(1_000).then(() => {
+				throw new Error("hidden reconciliation retry did not start");
+			}),
 		]);
 		await harness.session.agent.waitForIdle();
 
 		assert.equal(promptStarts, 1, "the failed prompt must not restart lifecycle card delivery");
 		assert.equal(harness.faux.state.callCount, 1, "the queued hidden correction must retry once");
-		assert.equal(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		).length, 1, "prompt retry must reuse the physically persisted lifecycle card");
-		assert.equal(harness.sessionManager.getEntries().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		).length, 1);
-		assert.equal(harness.sessionManager.getEntries().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
-		).length, 1);
+		assert.equal(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+			).length,
+			1,
+			"prompt retry must reuse the physically persisted lifecycle card",
+		);
+		assert.equal(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE)
+				.length,
+			1,
+		);
+		assert.equal(
+			harness.sessionManager
+				.getEntries()
+				.filter(
+					(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+				).length,
+			1,
+		);
 		assert.ok(providerContext);
-		assert.equal(providerContext.messages.filter(
-			(message) => message.role === "user" && getMessageText(message).includes(`failed (run ${runId}`),
-		).length, 1);
+		assert.equal(
+			providerContext.messages.filter(
+				(message) => message.role === "user" && getMessageText(message).includes(`failed (run ${runId}`),
+			).length,
+			1,
+		);
 	});
 
 	test("a paced ordinary abort stops the stale turn but completes one correcting lifecycle response", async () => {
 		const store = createStore();
-		store.recordRunStart({ id: "run-abort-survival", name: "abort-survival", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: "run-abort-survival",
+			name: "abort-survival",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
 		const workflowTool: AgentTool = {
 			name: "workflow",
 			label: "Workflow",
@@ -319,24 +404,35 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 			fauxProvider: { tokensPerSecond: 100, tokenSize: { min: 1, max: 1 } },
 		});
 		harnesses.push(harness);
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+			}),
+		);
 		let terminalized = false;
 		let abortPromise: Promise<void> | undefined;
 		let reconciliationContext: Context | undefined;
-		unsubscriptions.push(harness.session.subscribe((event) => {
-			if (!terminalized && harness.faux.state.callCount === 2 && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-				terminalized = true;
-				assert.equal(store.recordRunEnd("run-abort-survival", "completed", {}), true);
-				abortPromise = harness.session.abort();
-			}
-		}));
+		unsubscriptions.push(
+			harness.session.subscribe((event) => {
+				if (
+					!terminalized &&
+					harness.faux.state.callCount === 2 &&
+					event.type === "message_update" &&
+					event.assistantMessageEvent.type === "text_delta"
+				) {
+					terminalized = true;
+					assert.equal(store.recordRunEnd("run-abort-survival", "completed", {}), true);
+					abortPromise = harness.session.abort();
+				}
+			}),
+		);
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-abort-survival" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("workflow", {}, { id: "workflow-call-abort-survival" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("This stale answer is long enough to be aborted after its first streaming delta."),
 			(context) => {
 				reconciliationContext = context;
@@ -352,20 +448,33 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		const assistants = harness.session.messages.filter((message) => message.role === "assistant");
 		const stale = assistants.find((message) => getMessageText(message).startsWith("This"));
 		assert.equal(stale?.role, "assistant");
-		if (stale?.role === "assistant") assert.equal(stale.stopReason, "aborted", "the paced stale turn must be the aborted request");
+		if (stale?.role === "assistant")
+			assert.equal(stale.stopReason, "aborted", "the paced stale turn must be the aborted request");
 		const correcting = assistants.find((message) => getMessageText(message).includes("terminal notice survived"));
 		assert.equal(correcting?.role, "assistant");
-		if (correcting?.role === "assistant") assert.equal(correcting.stopReason, "stop", "the correcting response must complete");
+		if (correcting?.role === "assistant")
+			assert.equal(correcting.stopReason, "stop", "the correcting response must complete");
 		assert.ok(reconciliationContext);
-		assert.equal(reconciliationContext.messages.filter(
-			(message) => message.role === "user" && getMessageText(message).includes('Workflow "abort-survival" completed'),
-		).length, 1);
-		assert.equal(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		).length, 1);
-		assert.equal(harness.sessionManager.getEntries().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		).length, 1);
+		assert.equal(
+			reconciliationContext.messages.filter(
+				(message) =>
+					message.role === "user" && getMessageText(message).includes('Workflow "abort-survival" completed'),
+			).length,
+			1,
+		);
+		assert.equal(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
+			).length,
+			1,
+		);
+		assert.equal(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE)
+				.length,
+			1,
+		);
 	});
 
 	test("restores one queued hidden correction after a crash between card admission and consumption", async () => {
@@ -378,35 +487,46 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		harnesses.push(original);
 		original.session.pauseQueuedMessages();
 		const store = createStore();
-		store.recordRunStart({ id: runId, name: "crash-reconciliation", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		store.recordRunStart({
+			id: runId,
+			name: "crash-reconciliation",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
 		let delivery: Promise<void> | undefined;
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store,
-			config: lifecycleConfig,
-			seedExisting: false,
-			sendMessage(message, options) {
-				delivery = original.session.sendCustomMessage(message, options);
-				return delivery;
-			},
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store,
+				config: lifecycleConfig,
+				seedExisting: false,
+				sendMessage(message, options) {
+					delivery = original.session.sendCustomMessage(message, options);
+					return delivery;
+				},
+			}),
+		);
 
 		assert.equal(store.recordRunEnd(runId, "failed", undefined, "commit hook rejected docs"), true);
 		await delivery;
 		const sessionFile = sessionManager.getSessionFile();
 		assert.ok(sessionFile);
-		const persistedCards = sessionManager.getBranch().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		);
+		const persistedCards = sessionManager
+			.getBranch()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE);
 		assert.equal(persistedCards.length, 1);
 		assert.deepEqual(
-			(persistedCards[0] as { protectedReconciliation?: { delivery?: string } } | undefined)?.protectedReconciliation,
+			(persistedCards[0] as { protectedReconciliation?: { delivery?: string } } | undefined)
+				?.protectedReconciliation,
 			{ delivery: "steer" },
 			"the durable card must atomically carry its recoverable hidden-turn intent",
 		);
 
 		// Simulate process loss: discard native queue/protection without a graceful flush.
-		(original.session as typeof original.session & { _protectedStreamingCustomMessages: object[] })
-			._protectedStreamingCustomMessages = [];
+		(
+			original.session as typeof original.session & { _protectedStreamingCustomMessages: object[] }
+		)._protectedStreamingCustomMessages = [];
 		original.session.clearQueue();
 
 		const reopened = SessionManager.open(sessionFile, sessionDir, process.cwd());
@@ -415,18 +535,29 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		restored.session.pauseQueuedMessages();
 		harnesses.push(restored);
 		let correctionContext: Context | undefined;
-		restored.setResponses([(context) => {
-			correctionContext = context;
-			return fauxAssistantMessage("Recovered the failed workflow after restart.");
-		}]);
+		restored.setResponses([
+			(context) => {
+				correctionContext = context;
+				return fauxAssistantMessage("Recovered the failed workflow after restart.");
+			},
+		]);
 		const restoredStore = createStore();
-		restoredStore.recordRunStart({ id: runId, name: "crash-reconciliation", inputs: {}, status: "running", stages: [], startedAt: 1 });
+		restoredStore.recordRunStart({
+			id: runId,
+			name: "crash-reconciliation",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
 		restoredStore.recordRunEnd(runId, "failed", undefined, "commit hook rejected docs");
-		unsubscriptions.push(installWorkflowLifecycleNotifications({
-			store: restoredStore,
-			config: lifecycleConfig,
-			sendMessage: (message, options) => restored.session.sendCustomMessage(message, options),
-		}));
+		unsubscriptions.push(
+			installWorkflowLifecycleNotifications({
+				store: restoredStore,
+				config: lifecycleConfig,
+				sendMessage: (message, options) => restored.session.sendCustomMessage(message, options),
+			}),
+		);
 		await restored.session.bindExtensions({});
 		await restored.session.bindExtensions({});
 		const restoredInternals = restored.session as typeof restored.session & {
@@ -444,15 +575,29 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 
 		assert.equal(restored.faux.state.callCount, 1);
 		assert.ok(correctionContext);
-		assert.equal(correctionContext.messages.filter(
-			(message) => message.role === "user" && getMessageText(message).includes(`failed (run ${runId}`),
-		).length, 1);
-		assert.equal(reopened.getBranch().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE,
-		).length, 1, "restore must not duplicate the visible lifecycle card");
-		assert.equal(reopened.getBranch().filter(
-			(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
-		).length, 1, "the recovered correction must resolve its durable intent once");
+		assert.equal(
+			correctionContext.messages.filter(
+				(message) => message.role === "user" && getMessageText(message).includes(`failed (run ${runId}`),
+			).length,
+			1,
+		);
+		assert.equal(
+			reopened
+				.getBranch()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE)
+				.length,
+			1,
+			"restore must not duplicate the visible lifecycle card",
+		);
+		assert.equal(
+			reopened
+				.getBranch()
+				.filter(
+					(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
+				).length,
+			1,
+			"the recovered correction must resolve its durable intent once",
+		);
 
 		const reopenedAgain = SessionManager.open(sessionFile, sessionDir, process.cwd());
 		const later = await createHarness({ sessionManager: reopenedAgain });
@@ -460,7 +605,7 @@ describe("workflow lifecycle parent reconciliation admission boundaries", () => 
 		harnesses.push(later);
 		later.setResponses([() => fauxAssistantMessage("unexpected duplicate correction")]);
 		await later.session.bindExtensions({});
-		await Bun.sleep(0);
+		await sleep(0);
 		assert.equal(later.faux.state.callCount, 0, "a later restore must not repeat the resolved correction");
 	});
 });

@@ -9,11 +9,11 @@
  * the follow-up request.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
-import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { MIN_COMPACTABLE_REGION_LINES } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { preparation, region, runRequest, scriptedStream, testModel } from "../unit/compaction-rung-support.js";
 
 const smallRegion = () => region(MIN_COMPACTABLE_REGION_LINES - 1);
@@ -50,11 +50,12 @@ test("a load-bearing small region drops an oversized protected tail", async () =
 test("a recoverable small region is refused, never cleared", async () => {
 	const stream = scriptedStream({ default: [{ text: "1,5\n" }] });
 	await assert.rejects(
-		() => runVerbatimCompaction(
-			preparation({ region: smallRegion() }),
-			testModel(),
-			runRequest({ streamFn: stream.streamFn }),
-		),
+		() =>
+			runVerbatimCompaction(
+				preparation({ region: smallRegion() }),
+				testModel(),
+				runRequest({ streamFn: stream.streamFn }),
+			),
 		(error: unknown) => {
 			assert.ok(error instanceof RangePlanError);
 			return true;

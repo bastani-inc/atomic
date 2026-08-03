@@ -1,15 +1,22 @@
+import { MAX_SUBAGENT_NESTING_DEPTH, type SubagentToolResult } from "../shared/types.ts";
+import type { ManagementContext, ManagementScope } from "./agent-management.ts";
 import type { AgentConfig, AgentScope, ChainConfig, ChainStepConfig } from "./agents.ts";
 import { discoverAgentsAll, parsePackageName } from "./agents.ts";
 import { discoverAvailableSkills } from "./skills.ts";
-import { MAX_SUBAGENT_NESTING_DEPTH, type SubagentToolResult } from "../shared/types.ts";
-import type { ManagementContext, ManagementScope } from "./agent-management.ts";
 
 export function result(text: string, isError = false): SubagentToolResult {
 	return { content: [{ type: "text", text }], isError, details: { mode: "management", results: [] } };
 }
 
 export function parseCsv(value: string): string[] {
-	return [...new Set(value.split(",").map((v) => v.trim()).filter(Boolean))];
+	return [
+		...new Set(
+			value
+				.split(",")
+				.map((v) => v.trim())
+				.filter(Boolean),
+		),
+	];
 }
 
 export function configObject(config: unknown): { value?: Record<string, unknown>; error?: string } {
@@ -27,7 +34,7 @@ export function configObject(config: unknown): { value?: Record<string, unknown>
 }
 
 export function hasKey(obj: Record<string, unknown>, key: string): boolean {
-	return Object.prototype.hasOwnProperty.call(obj, key);
+	return Object.hasOwn(obj, key);
 }
 
 export function asDisambiguationScope(scope: unknown): ManagementScope | undefined {
@@ -42,7 +49,13 @@ export function normalizeListScope(scope: unknown): AgentScope | undefined {
 }
 
 export function sanitizeName(name: string): string {
-	return name.toLowerCase().trim().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+	return name
+		.toLowerCase()
+		.trim()
+		.replace(/\s+/g, "-")
+		.replace(/[^a-z0-9-]/g, "")
+		.replace(/-+/g, "-")
+		.replace(/^-+|-+$/g, "");
 }
 
 export function parsePackageConfig(value: unknown): { packageName?: string; error?: string } {
@@ -71,8 +84,8 @@ export function findAgents(name: string, cwd: string, scope: AgentScope = "both"
 export function findChains(name: string, cwd: string, scope: AgentScope = "both"): ChainConfig[] {
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
-	return discoverAgentsAll(cwd).chains
-		.filter((c) => (scope === "both" || c.source === scope) && (c.name === raw || c.name === sanitized))
+	return discoverAgentsAll(cwd)
+		.chains.filter((c) => (scope === "both" || c.source === scope) && (c.name === raw || c.name === sanitized))
 		.sort((a, b) => a.source.localeCompare(b.source));
 }
 
@@ -108,9 +121,7 @@ export function chainStepAgentNames(step: ChainStepConfig): string[] {
 export function unknownChainAgents(cwd: string, steps: ChainStepConfig[]): string[] {
 	const d = discoverAgentsAll(cwd);
 	const known = new Set(allAgents(d).map((a) => a.name));
-	const unknown = steps
-		.flatMap((step) => chainStepAgentNames(step))
-		.filter((agent) => !known.has(agent));
+	const unknown = steps.flatMap((step) => chainStepAgentNames(step)).filter((agent) => !known.has(agent));
 	return [...new Set(unknown)].sort((a, b) => a.localeCompare(b));
 }
 
@@ -120,12 +131,18 @@ export function chainStepWarnings(ctx: ManagementContext, steps: ChainStepConfig
 	for (let i = 0; i < steps.length; i++) {
 		const s = steps[i]!;
 		if (s.model) {
-			const found = ctx.modelRegistry.getAvailable().some((m) => `${m.provider}/${m.id}` === s.model || m.id === s.model);
-			if (!found) warnings.push(`Warning: step ${i + 1} (${s.agent}): model '${s.model}' is not in the current model registry.`);
+			const found = ctx.modelRegistry
+				.getAvailable()
+				.some((m) => `${m.provider}/${m.id}` === s.model || m.id === s.model);
+			if (!found)
+				warnings.push(
+					`Warning: step ${i + 1} (${s.agent}): model '${s.model}' is not in the current model registry.`,
+				);
 		}
 		if (Array.isArray(s.skills) && s.skills.length > 0) {
 			const missing = s.skills.filter((sk) => !available.has(sk));
-			if (missing.length) warnings.push(`Warning: step ${i + 1} (${s.agent}): skills not found: ${missing.join(", ")}.`);
+			if (missing.length)
+				warnings.push(`Warning: step ${i + 1} (${s.agent}): skills not found: ${missing.join(", ")}.`);
 		}
 	}
 	return warnings;
@@ -137,11 +154,16 @@ export function modelWarning(ctx: ManagementContext, model: string | undefined):
 	return found ? undefined : `Warning: model '${model}' is not in the current model registry.`;
 }
 
-export function fallbackModelsWarning(ctx: ManagementContext, fallbackModels: string[] | undefined): string | undefined {
+export function fallbackModelsWarning(
+	ctx: ManagementContext,
+	fallbackModels: string[] | undefined,
+): string | undefined {
 	if (!fallbackModels || fallbackModels.length === 0) return undefined;
 	const available = new Set(ctx.modelRegistry.getAvailable().flatMap((m) => [`${m.provider}/${m.id}`, m.id]));
 	const missing = fallbackModels.filter((model) => !available.has(model));
-	return missing.length ? `Warning: fallback models not in the current model registry: ${missing.join(", ")}.` : undefined;
+	return missing.length
+		? `Warning: fallback models not in the current model registry: ${missing.join(", ")}.`
+		: undefined;
 }
 
 export function skillsWarning(cwd: string, skills: string[] | undefined): string | undefined {
@@ -157,9 +179,11 @@ export function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?
 	const steps: ChainStepConfig[] = [];
 	for (let i = 0; i < raw.length; i++) {
 		const item = raw[i];
-		if (!item || typeof item !== "object" || Array.isArray(item)) return { error: `config.steps[${i}] must be an object.` };
+		if (!item || typeof item !== "object" || Array.isArray(item))
+			return { error: `config.steps[${i}] must be an object.` };
 		const s = item as Record<string, unknown>;
-		if (typeof s.agent !== "string" || !s.agent.trim()) return { error: `config.steps[${i}].agent must be a non-empty string.` };
+		if (typeof s.agent !== "string" || !s.agent.trim())
+			return { error: `config.steps[${i}].agent must be a non-empty string.` };
 		const step: ChainStepConfig = { agent: s.agent.trim(), task: typeof s.task === "string" ? s.task : "" };
 		if (hasKey(s, "phase")) {
 			if (typeof s.phase === "string") step.phase = s.phase;
@@ -188,7 +212,11 @@ export function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?
 		}
 		if (hasKey(s, "reads")) {
 			if (s.reads === false) step.reads = false;
-			else if (Array.isArray(s.reads)) step.reads = s.reads.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
+			else if (Array.isArray(s.reads))
+				step.reads = s.reads
+					.filter((v): v is string => typeof v === "string")
+					.map((v) => v.trim())
+					.filter(Boolean);
 			else return { error: `config.steps[${i}].reads must be an array or false.` };
 		}
 		if (hasKey(s, "model")) {
@@ -197,7 +225,11 @@ export function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?
 		}
 		if (hasKey(s, "skills")) {
 			if (s.skills === false) step.skills = false;
-			else if (Array.isArray(s.skills)) step.skills = s.skills.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
+			else if (Array.isArray(s.skills))
+				step.skills = s.skills
+					.filter((v): v is string => typeof v === "string")
+					.map((v) => v.trim())
+					.filter(Boolean);
 			else return { error: `config.steps[${i}].skills must be an array or false.` };
 		}
 		if (hasKey(s, "progress")) {
@@ -218,7 +250,10 @@ export function parseTools(raw: string): { tools?: string[]; mcpDirectTools?: st
 			if (direct) mcpDirectTools.push(direct);
 		} else tools.push(item);
 	}
-	return { tools: tools.length ? tools : undefined, mcpDirectTools: mcpDirectTools.length ? mcpDirectTools : undefined };
+	return {
+		tools: tools.length ? tools : undefined,
+		mcpDirectTools: mcpDirectTools.length ? mcpDirectTools : undefined,
+	};
 }
 
 export function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): string | undefined {
@@ -246,14 +281,21 @@ export function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknow
 		} else return "config.fallbackModels must be a comma-separated string, string array, or false when provided.";
 	}
 	if (hasKey(cfg, "tools")) {
-		if (cfg.tools === false || cfg.tools === "") { target.tools = undefined; target.mcpDirectTools = undefined; }
-		else if (typeof cfg.tools === "string") { const parsed = parseTools(cfg.tools); target.tools = parsed.tools; target.mcpDirectTools = parsed.mcpDirectTools; }
-		else return "config.tools must be a comma-separated string or false when provided.";
+		if (cfg.tools === false || cfg.tools === "") {
+			target.tools = undefined;
+			target.mcpDirectTools = undefined;
+		} else if (typeof cfg.tools === "string") {
+			const parsed = parseTools(cfg.tools);
+			target.tools = parsed.tools;
+			target.mcpDirectTools = parsed.mcpDirectTools;
+		} else return "config.tools must be a comma-separated string or false when provided.";
 	}
 	if (hasKey(cfg, "skills")) {
 		if (cfg.skills === false || cfg.skills === "") target.skills = undefined;
-		else if (typeof cfg.skills === "string") { const skills = parseCsv(cfg.skills); target.skills = skills.length ? skills : undefined; }
-		else return "config.skills must be a comma-separated string or false when provided.";
+		else if (typeof cfg.skills === "string") {
+			const skills = parseCsv(cfg.skills);
+			target.skills = skills.length ? skills : undefined;
+		} else return "config.skills must be a comma-separated string or false when provided.";
 	}
 	if (hasKey(cfg, "extensions")) {
 		if (cfg.extensions === false) target.extensions = undefined;
@@ -267,11 +309,13 @@ export function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknow
 		else return "config.thinking must be a string or false when provided.";
 	}
 	if (hasKey(cfg, "systemPromptMode")) {
-		if (cfg.systemPromptMode === "append" || cfg.systemPromptMode === "replace") target.systemPromptMode = cfg.systemPromptMode;
+		if (cfg.systemPromptMode === "append" || cfg.systemPromptMode === "replace")
+			target.systemPromptMode = cfg.systemPromptMode;
 		else return "config.systemPromptMode must be 'append' or 'replace' when provided.";
 	}
 	if (hasKey(cfg, "inheritProjectContext")) {
-		if (typeof cfg.inheritProjectContext !== "boolean") return "config.inheritProjectContext must be a boolean when provided.";
+		if (typeof cfg.inheritProjectContext !== "boolean")
+			return "config.inheritProjectContext must be a boolean when provided.";
 		target.inheritProjectContext = cfg.inheritProjectContext;
 	}
 	if (hasKey(cfg, "inheritSkills")) {
@@ -280,7 +324,8 @@ export function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknow
 	}
 	if (hasKey(cfg, "defaultContext")) {
 		if (cfg.defaultContext === false || cfg.defaultContext === "") target.defaultContext = undefined;
-		else if (cfg.defaultContext === "fresh" || cfg.defaultContext === "fork") target.defaultContext = cfg.defaultContext;
+		else if (cfg.defaultContext === "fresh" || cfg.defaultContext === "fork")
+			target.defaultContext = cfg.defaultContext;
 		else return "config.defaultContext must be 'fresh', 'fork', or false when provided.";
 	}
 	if (hasKey(cfg, "output")) {
@@ -301,10 +346,14 @@ export function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknow
 	}
 	if (hasKey(cfg, "maxSubagentDepth")) {
 		if (cfg.maxSubagentDepth === false || cfg.maxSubagentDepth === "") target.maxSubagentDepth = undefined;
-		else if (typeof cfg.maxSubagentDepth === "number" && Number.isInteger(cfg.maxSubagentDepth) && cfg.maxSubagentDepth >= 0) {
+		else if (
+			typeof cfg.maxSubagentDepth === "number" &&
+			Number.isInteger(cfg.maxSubagentDepth) &&
+			cfg.maxSubagentDepth >= 0
+		) {
 			target.maxSubagentDepth = Math.min(cfg.maxSubagentDepth, MAX_SUBAGENT_NESTING_DEPTH);
-		} else return `config.maxSubagentDepth must be an integer >= 0 or false when provided; values above ${MAX_SUBAGENT_NESTING_DEPTH} are clamped.`;
+		} else
+			return `config.maxSubagentDepth must be an integer >= 0 or false when provided; values above ${MAX_SUBAGENT_NESTING_DEPTH} are clamped.`;
 	}
 	return undefined;
 }
-

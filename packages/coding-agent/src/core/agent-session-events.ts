@@ -1,20 +1,42 @@
-import { disposeSessionAsyncJobManager } from "./async/session-manager.js";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { cleanupSessionResources } from "@earendil-works/pi-ai/compat";
-import { formatCodexProviderError } from "./codex-errors.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { customMessageExcludesContext, isSingleGenericAbortTextContent, replacementAbortContent, type AgentSessionEvent, type AgentSessionEventListener } from "./agent-session-types.ts";
-import type { MessageEndEvent, MessageStartEvent, MessageUpdateEvent, ToolExecutionEndEvent, ToolExecutionStartEvent, ToolExecutionUpdateEvent, TurnEndEvent, TurnStartEvent } from "./extensions/index.ts";
+import {
+	isProtectedStreamingCustomMessage,
+	markProtectedStreamingCustomMessageConsumed,
+	markProtectedStreamingCustomMessagePersistenceFailed,
+	persistProtectedStreamingCustomMessage,
+	prepareProtectedStreamingCustomMessagesForDisposal,
+	retryConsumedProtectedStreamingCustomMessages,
+} from "./agent-session-persistent-custom-messages.ts";
+import {
+	type AgentSessionEvent,
+	type AgentSessionEventListener,
+	customMessageExcludesContext,
+	isSingleGenericAbortTextContent,
+	replacementAbortContent,
+} from "./agent-session-types.ts";
+import { disposeSessionAsyncJobManager } from "./async/session-manager.js";
+import { formatCodexProviderError } from "./codex-errors.ts";
+import type {
+	MessageEndEvent,
+	MessageStartEvent,
+	MessageUpdateEvent,
+	ToolExecutionEndEvent,
+	ToolExecutionStartEvent,
+	ToolExecutionUpdateEvent,
+	TurnEndEvent,
+	TurnStartEvent,
+} from "./extensions/index.ts";
+import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
-import { isProtectedStreamingCustomMessage, markProtectedStreamingCustomMessageConsumed, markProtectedStreamingCustomMessagePersistenceFailed, persistProtectedStreamingCustomMessage, prepareProtectedStreamingCustomMessagesForDisposal, retryConsumedProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	for (const l of this._eventListeners) {
 		l(event);
 	}
 }
-
 
 export function _emitQueueUpdate(this: AgentSession): void {
 	this._emit({
@@ -33,9 +55,10 @@ export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promis
 	// _processAgentEvent, slow earlier queued events can delay agent_end processing
 	// and waitForRetry() can miss the in-flight retry.
 	this._createRetryPromiseForAgentEnd(event);
-	const awaitProtectedPersistence = event.type === "message_end" && event.message.role === "custom"
-		? markProtectedStreamingCustomMessageConsumed(this, event.message)
-		: false;
+	const awaitProtectedPersistence =
+		event.type === "message_end" && event.message.role === "custom"
+			? markProtectedStreamingCustomMessageConsumed(this, event.message)
+			: false;
 
 	const processing = this._agentEventQueue.then(
 		() => this._processAgentEvent(event),
@@ -50,7 +73,6 @@ export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promis
 	processing.catch(() => {});
 	if (awaitProtectedPersistence) return processing.catch(() => {});
 }
-
 
 export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentEvent): void {
 	if (event.type !== "agent_end" || this._retryPromise) {
@@ -67,7 +89,10 @@ export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentE
 		return;
 	}
 
-	const shouldRetry = this._isRetryableError(lastAssistant) || this._isEmptyCompletion(lastAssistant) || this._isSafetyRefusal(lastAssistant);
+	const shouldRetry =
+		this._isRetryableError(lastAssistant) ||
+		this._isEmptyCompletion(lastAssistant) ||
+		this._isSafetyRefusal(lastAssistant);
 	if (!shouldRetry) {
 		return;
 	}
@@ -77,8 +102,10 @@ export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentE
 	});
 }
 
-
-export function _findLastAssistantInMessages(this: AgentSession, messages: AgentMessage[]): AssistantMessage | undefined {
+export function _findLastAssistantInMessages(
+	this: AgentSession,
+	messages: AgentMessage[],
+): AssistantMessage | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i];
 		if (message.role === "assistant") {
@@ -88,12 +115,13 @@ export function _findLastAssistantInMessages(this: AgentSession, messages: Agent
 	return undefined;
 }
 
-
 export async function _processAgentEvent(this: AgentSession, event: AgentEvent): Promise<void> {
-	const protectedMessage = event.type === "message_end" && event.message.role === "custom"
-		&& isProtectedStreamingCustomMessage(this, event.message)
-		? event.message
-		: undefined;
+	const protectedMessage =
+		event.type === "message_end" &&
+		event.message.role === "custom" &&
+		isProtectedStreamingCustomMessage(this, event.message)
+			? event.message
+			: undefined;
 	// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 	// This ensures the UI sees the updated queue state
 	if (event.type === "message_start" && event.message.role === "user") {
@@ -141,6 +169,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	if (event.type === "message_end") {
 		// Check if this is a custom message from extensions
 		if (event.message.role === "custom") {
+			const admitted = event.message as StageAdmittedCustomMessage;
 			if (protectedMessage === undefined) {
 				this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
@@ -148,6 +177,8 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 					event.message.display,
 					event.message.details,
 					customMessageExcludesContext(event.message),
+					undefined,
+					admitted.stageAdmissionKey,
 				);
 			}
 		} else if (
@@ -170,7 +201,10 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			// "error". Otherwise such a turn that stops with reason "stop"/"length"
 			// would reset the retry counter on every attempt, causing unbounded
 			// retries instead of honoring maxRetries.
-			const assistantFailed = assistantMsg.stopReason === "error" || this._isEmptyCompletion(assistantMsg) || this._isSafetyRefusal(assistantMsg);
+			const assistantFailed =
+				assistantMsg.stopReason === "error" ||
+				this._isEmptyCompletion(assistantMsg) ||
+				this._isSafetyRefusal(assistantMsg);
 			if (!assistantFailed) {
 				this._fallbackAttemptedKeys.clear();
 				this._overflowRecoveryAttempted = false;
@@ -233,7 +267,6 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	}
 }
 
-
 export function _applyInterruptAbortMessage(this: AgentSession, event: AgentEvent): void {
 	const abortMessage = this._activeInterruptAbortMessage;
 	if (!abortMessage) return;
@@ -245,7 +278,11 @@ export function _applyInterruptAbortMessage(this: AgentSession, event: AgentEven
 
 	if (event.type !== "message_start" && event.type !== "message_end") return;
 
-	if (event.message.role === "toolResult" && event.message.isError && isSingleGenericAbortTextContent(event.message.content)) {
+	if (
+		event.message.role === "toolResult" &&
+		event.message.isError &&
+		isSingleGenericAbortTextContent(event.message.content)
+	) {
 		event.message.content = replacementAbortContent(abortMessage);
 		return;
 	}
@@ -257,7 +294,6 @@ export function _applyInterruptAbortMessage(this: AgentSession, event: AgentEven
 		}
 	}
 }
-
 
 export function _applyProviderErrorGuidance(this: AgentSession, event: AgentEvent): void {
 	if (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end") return;
@@ -301,7 +337,6 @@ export function _findLastAssistantMessage(this: AgentSession): AssistantMessage 
 	}
 	return undefined;
 }
-
 
 export function _replaceMessageInPlace(this: AgentSession, target: AgentMessage, replacement: AgentMessage): void {
 	// Agent-core stores the finalized message object in its state before emitting message_end.

@@ -8,8 +8,14 @@ describe("SettingsManager bash interceptor settings", () => {
 	const agentDir = join(testDir, "agent");
 	const projectDir = join(testDir, "project");
 
-	beforeEach(() => { rmSync(testDir, { recursive: true, force: true }); mkdirSync(agentDir, { recursive: true }); mkdirSync(join(projectDir, ".pi"), { recursive: true }); });
-	afterEach(() => { rmSync(testDir, { recursive: true, force: true }); });
+	beforeEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	});
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
 
 	it("defaults off and can be enabled from settings", async () => {
 		const settingsPath = join(agentDir, "settings.json");

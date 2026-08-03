@@ -34,11 +34,27 @@ afterEach(() => {
 describe("unbound expandable message hints", () => {
 	test("skill, branch, and compaction headers omit unavailable parentheticals", () => {
 		setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
-		const skill = new SkillInvocationMessageComponent({ name: "tmux", location: "/tmp/tmux/SKILL.md", content: "skill body" });
-		const branch = new BranchSummaryMessageComponent({ role: "branchSummary", summary: "branch body", fromId: "entry-1" });
+		const skill = new SkillInvocationMessageComponent({
+			name: "tmux",
+			location: "/tmp/tmux/SKILL.md",
+			content: "skill body",
+		});
+		const branch = new BranchSummaryMessageComponent({
+			role: "branchSummary",
+			summary: "branch body",
+			fromId: "entry-1",
+		});
 		const compaction = new CompactionBoundaryMessageComponent({
 			text: "compacted body",
-			stats: { linesBefore: 10, linesDeleted: 5, linesKept: 5, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
+			stats: {
+				linesBefore: 10,
+				linesDeleted: 5,
+				linesKept: 5,
+				rangeCount: 1,
+				tokensBefore: 100,
+				tokensAfter: 50,
+				percentReduction: 50,
+			},
 			rung: "planned",
 		});
 
@@ -60,13 +76,24 @@ describe("unbound expandable message hints", () => {
 		expect(collapsedBash).toContain("line 25");
 		noExpandAffordance(collapsedBash);
 
-		const todo = renderTodoResult({
-			content: [{ type: "text", text: "todo" }],
-			details: {
-				action: "get",
-				todo: { id: "abcdef12", title: "Investigate", tags: [], status: "open", created_at: "2026-07-17", body: "details" },
+		const todo = renderTodoResult(
+			{
+				content: [{ type: "text", text: "todo" }],
+				details: {
+					action: "get",
+					todo: {
+						id: "abcdef12",
+						title: "Investigate",
+						tags: [],
+						status: "open",
+						created_at: "2026-07-17",
+						body: "details",
+					},
+				},
 			},
-		}, { expanded: false, isPartial: false }, theme);
+			{ expanded: false, isPartial: false },
+			theme,
+		);
 		const collapsedTodo = stripAnsi(todo.render(120).join("\n"));
 		expect(collapsedTodo).toContain("Investigate");
 		noExpandAffordance(collapsedTodo);

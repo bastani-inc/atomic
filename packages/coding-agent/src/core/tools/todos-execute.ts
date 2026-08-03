@@ -1,13 +1,9 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { existsSync } from "node:fs";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "../extensions/types.ts";
-import {
-	clearAssignmentIfClosed,
-	formatTodoId,
-	splitTodosByAssignment,
-	validateTodoId,
-} from "./todos-model.ts";
-import { deleteTodo, claimTodoAssignment, releaseTodoAssignment } from "./todos-mutations.ts";
+import { withTodoLock } from "./todos-locks.ts";
+import { clearAssignmentIfClosed, formatTodoId, splitTodosByAssignment, validateTodoId } from "./todos-model.ts";
+import { claimTodoAssignment, deleteTodo, releaseTodoAssignment } from "./todos-mutations.ts";
 import { getTodoPath, getTodosDir } from "./todos-paths.ts";
 import { serializeTodoForAgent, serializeTodoListForAgent } from "./todos-render.ts";
 import {
@@ -26,7 +22,6 @@ import {
 	type TodoToolDetails,
 	type TodoToolParams,
 } from "./todos-types.ts";
-import { withTodoLock } from "./todos-locks.ts";
 
 function todoActionResult(
 	action: TodoRecordAction,
@@ -43,10 +38,7 @@ function idRequiredResult(action: TodoRecordAction): AgentToolResult<TodoToolDet
 	return todoActionResult(action, "Error: id required", "id required");
 }
 
-function todoSuccessResult(
-	action: TodoRecordAction,
-	todo: TodoRecord,
-): AgentToolResult<TodoToolDetails> {
+function todoSuccessResult(action: TodoRecordAction, todo: TodoRecord): AgentToolResult<TodoToolDetails> {
 	return {
 		content: [{ type: "text", text: serializeTodoForAgent(todo) }],
 		details: { action, todo },
@@ -64,10 +56,7 @@ function todoListResult(
 	};
 }
 
-async function executeListAction(
-	todosDir: string,
-	ctx: ExtensionContext,
-): Promise<AgentToolResult<TodoToolDetails>> {
+async function executeListAction(todosDir: string, ctx: ExtensionContext): Promise<AgentToolResult<TodoToolDetails>> {
 	const todos = await listTodos(todosDir);
 	const { assignedTodos, openTodos } = splitTodosByAssignment(todos);
 	const listedTodos = [...assignedTodos, ...openTodos];
@@ -84,10 +73,7 @@ async function executeListAllAction(
 	return todoListResult("list-all", todos, currentSessionId);
 }
 
-async function executeGetAction(
-	todosDir: string,
-	params: TodoToolParams,
-): Promise<AgentToolResult<TodoToolDetails>> {
+async function executeGetAction(todosDir: string, params: TodoToolParams): Promise<AgentToolResult<TodoToolDetails>> {
 	if (!params.id) return idRequiredResult("get");
 	const validated = validateTodoId(params.id);
 	if ("error" in validated) {
@@ -191,7 +177,7 @@ async function executeAppendAction(
 	const result = await withTodoLock<TodoRecord>(todosDir, normalizedId, ctx, async () => {
 		const existing = await ensureTodoExists(filePath, normalizedId);
 		if (!existing) return { error: `Todo ${displayId} not found` };
-		if (!params.body || !params.body.trim()) {
+		if (!params.body?.trim()) {
 			return existing;
 		}
 		return appendTodoBody(filePath, existing, params.body);

@@ -13,10 +13,12 @@
  * These tests pin the invariant: whatever frames have (or have not) arrived,
  * a remote component's render(width) never returns a line wider than width.
  */
-import { test } from "bun:test";
+
 import assert from "node:assert/strict";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
+import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
+import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type {
 	InteractiveEngineCommand,
@@ -28,7 +30,6 @@ import {
 	RemoteCustomMessageComponent,
 	RemoteToolExecutionComponent,
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-renderer.ts";
-import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.ts";
 
 const WIDE = 112;
 const NARROW = 83;
@@ -44,6 +45,8 @@ function makeFakeRuntime(): FakeRuntime {
 	const listeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	const commands: InteractiveEngineCommand[] = [];
 	const runtime = {
+		// Engine death is not exercised here; the controllers only need the subscription.
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			listeners.push(listener);
 			return () => {};
@@ -87,7 +90,14 @@ function assertMaxWidth(lines: string[], width: number, label: string): void {
 
 test("stale tool-card frame is clamped when re-rendered at a smaller width", () => {
 	const fake = makeFakeRuntime();
-	const component = new RemoteToolExecutionComponent("bash", "call_1", { command: "seq 1 40" }, {}, fake.runtime, () => {});
+	const component = new RemoteToolExecutionComponent(
+		"bash",
+		"call_1",
+		{ command: "seq 1 40" },
+		{},
+		fake.runtime,
+		() => {},
+	);
 
 	// Initial render at the wide terminal requests + applies a wide frame.
 	component.render(WIDE);
@@ -104,7 +114,10 @@ test("stale tool-card frame is clamped when re-rendered at a smaller width", () 
 
 	// The resize still requests a re-render from the engine at the new width.
 	const last = fake.commands.at(-1);
-	assert.ok(last?.type === "engine_tool_render" && last.width === NARROW, "no engine re-render requested at the new width");
+	assert.ok(
+		last?.type === "engine_tool_render" && last.width === NARROW,
+		"no engine re-render requested at the new width",
+	);
 
 	// Once the properly wrapped frame arrives, it is returned unmodified.
 	fake.emit({ type: "engine_custom_frame", componentId, requestId: 2, lines: frameLines(NARROW) });

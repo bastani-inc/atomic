@@ -7,12 +7,13 @@
  * real Copilot GPT many-record truncation; prompt snapshots/examples; silent success;
  * private sidecar; validation integration.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
+
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
-import { parseRangeRecords, recoverTruncatedRecords } from "../src/core/compaction/truncated-range-recovery.ts";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
 import {
 	buildRangePlannerPrompt,
 	MALFORMED_OUTPUT_MESSAGE,
@@ -20,32 +21,65 @@ import {
 	planDeletedLineRanges,
 	RangePlanError,
 } from "../src/core/compaction/range-planner.ts";
-import { planner } from "./compaction-planner-fixtures.ts";
 import type { RecoveryDiagnostic } from "../src/core/compaction/range-planner-diagnostics.ts";
-import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
+import { parseRangeRecords, recoverTruncatedRecords } from "../src/core/compaction/truncated-range-recovery.ts";
+import { planner } from "./compaction-planner-fixtures.ts";
 
 const testPosixFileMode = process.platform === "win32" ? it.skip : it;
 
 const mockUsage: Usage = {
-	input: 8000, output: 4096, cacheRead: 0, cacheWrite: 0, totalTokens: 12096,
+	input: 8000,
+	output: 4096,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 12096,
 	cost: { input: 0.02, output: 0.06, cacheRead: 0, cacheWrite: 0, total: 0.08 },
 };
 
 function mdl(): Model<Api> {
-	return { provider: "copilot", id: "gpt-4o", api: "openai-responses", contextWindow: 128_000, maxTokens: 16384, reasoning: false, baseUrl: "https://api.openai.com" } as Model<Api>;
+	return {
+		provider: "copilot",
+		id: "gpt-4o",
+		api: "openai-responses",
+		contextWindow: 128_000,
+		maxTokens: 16384,
+		reasoning: false,
+		baseUrl: "https://api.openai.com",
+	} as Model<Api>;
 }
 
 function resp(text: string | string[], stopReason = "length"): AssistantMessage {
 	const blocks = (Array.isArray(text) ? text : [text]).map((value) => ({ type: "text" as const, text: value }));
-	return { role: "assistant", content: blocks, api: "openai-responses", provider: "copilot", model: "gpt-4o", usage: mockUsage, stopReason, timestamp: Date.now() } as AssistantMessage;
+	return {
+		role: "assistant",
+		content: blocks,
+		api: "openai-responses",
+		provider: "copilot",
+		model: "gpt-4o",
+		usage: mockUsage,
+		stopReason,
+		timestamp: Date.now(),
+	} as AssistantMessage;
 }
 
 function region(lineCount = 100): NumberedRegion {
-	return { __brand: "NumberedRegion", lines: Array.from({ length: lineCount }, (_, i) => `${i + 1}→ line ${i + 1}`), headerLineNumbers: new Set<number>(), priorMarkerNs: new Map<number, number>(), protectedLineNumbers: new Set<number>([1, 2, 3]), tokenEstimate: lineCount * 10 } as NumberedRegion;
+	return {
+		__brand: "NumberedRegion",
+		lines: Array.from({ length: lineCount }, (_, i) => `${i + 1}→ line ${i + 1}`),
+		headerLineNumbers: new Set<number>(),
+		priorMarkerNs: new Map<number, number>(),
+		protectedLineNumbers: new Set<number>([1, 2, 3]),
+		tokenEstimate: lineCount * 10,
+	} as NumberedRegion;
 }
 
 function stream(text: string | string[], stopReason: string) {
-	return async () => ({ result: async () => resp(text, stopReason), events: async function* () { yield { type: "done" as const, reason: stopReason as "stop" | "length", message: resp(text, stopReason) }; } });
+	return async () => ({
+		result: async () => resp(text, stopReason),
+		events: async function* () {
+			yield { type: "done" as const, reason: stopReason as "stop" | "length", message: resp(text, stopReason) };
+		},
+	});
 }
 
 const params: VerbatimCompactionParameters = { compression_ratio: 0.5, preserve_recent: 2, query: "test" };
@@ -66,9 +100,14 @@ function recoveryFiles(dir: string): string[] {
  * Legacy ranges-or-throw adapter over the typed planner outcome, so these
  * recovery/validation assertions keep their original shape.
  */
-async function plan(text: string | string[], stopReason: string, opts?: { lineCount?: number; sessionFilePath?: string; apiKey?: string }) {
+async function plan(
+	text: string | string[],
+	stopReason: string,
+	opts?: { lineCount?: number; sessionFilePath?: string; apiKey?: string },
+) {
 	const outcome = await planDeletedLineRanges(
-		region(opts?.lineCount ?? 100), params,
+		region(opts?.lineCount ?? 100),
+		params,
 		planner(mdl(), undefined, { apiKey: opts?.apiKey ?? "key" }),
 		50,
 		{ streamFn: stream(text, stopReason) as never, sessionFilePath: opts?.sessionFilePath },
@@ -78,17 +117,30 @@ async function plan(text: string | string[], stopReason: string, opts?: { lineCo
 		const message = outcome.category === "malformed_output" ? MALFORMED_OUTPUT_MESSAGE : NO_USABLE_RANGES_MESSAGE;
 		throw new RangePlanError(message, 1, outcome.excerpt, false, outcome.diagnosticPath, outcome);
 	}
-	throw new RangePlanError(`planner outcome ${outcome.kind}`, 1, "", outcome.kind === "overflowed", outcome.diagnosticPath, outcome);
+	throw new RangePlanError(
+		`planner outcome ${outcome.kind}`,
+		1,
+		"",
+		outcome.kind === "overflowed",
+		outcome.diagnosticPath,
+		outcome,
+	);
 }
 
 // 1. Complete output with/without terminal newline
 describe("parseRangeRecords: complete output", () => {
 	it("parses records with terminal newline", () => {
-		expect(parseRangeRecords("5,10\n20,30\n")).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(parseRangeRecords("5,10\n20,30\n")).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 	});
 
 	it("parses records without terminal newline (normal completion)", () => {
-		expect(parseRangeRecords("5,10\n20,30")).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(parseRangeRecords("5,10\n20,30")).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 	});
 
 	it("parses single record with newline", () => {
@@ -114,33 +166,48 @@ describe("recoverTruncatedRecords: truncation positions", () => {
 		// "5,10\n20,30\n" + EOF fragment "40"
 		const result = recoverTruncatedRecords("5,10\n20,30\n40");
 		expect(result).toBeDefined();
-		expect(result!.ranges).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(result!.ranges).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 		expect(result!.recoveredCount).toBe(2);
 	});
 
 	it("recovers when truncated mid-first integer", () => {
 		const result = recoverTruncatedRecords("5,10\n20,30\n12");
 		expect(result).toBeDefined();
-		expect(result!.ranges).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(result!.ranges).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 	});
 
 	it("recovers when truncated after comma", () => {
 		const result = recoverTruncatedRecords("5,10\n20,30\n40,");
 		expect(result).toBeDefined();
-		expect(result!.ranges).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(result!.ranges).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 	});
 
 	it("recovers when truncated mid-second integer", () => {
 		const result = recoverTruncatedRecords("5,10\n20,30\n40,5");
 		expect(result).toBeDefined();
-		expect(result!.ranges).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(result!.ranges).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 	});
 
 	it("NEVER accepts complete-looking unterminated final record on length stop", () => {
 		// "300,30" could have intended "300,305" — must be discarded
 		const result = recoverTruncatedRecords("5,10\n20,30\n300,30");
 		expect(result).toBeDefined();
-		expect(result!.ranges).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(result!.ranges).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 		// Only the newline-terminated records are accepted
 		expect(result!.recoveredCount).toBe(2);
 	});
@@ -191,15 +258,21 @@ describe("recoverTruncatedRecords: invalid middle line rejection", () => {
 describe("planDeletedLineRanges: non-length malformed output", () => {
 	it("does not recover when stopReason is 'stop' even with valid-looking truncated text", async () => {
 		let error: RangePlanError | undefined;
-		try { await plan("5,10\n20,30\n40,", "stop"); }
-		catch (e) { error = e as RangePlanError; }
+		try {
+			await plan("5,10\n20,30\n40,", "stop");
+		} catch (e) {
+			error = e as RangePlanError;
+		}
 		expect(error).toBeInstanceOf(RangePlanError);
 		expect(error!.message).toContain("malformed output");
 	});
 
 	it("recovers when stopReason is 'length'", async () => {
 		const result = await plan("5,10\n20,30\n40,", "length");
-		expect(result).toEqual([{ start: 5, end: 10 }, { start: 20, end: 30 }]);
+		expect(result).toEqual([
+			{ start: 5, end: 10 },
+			{ start: 20, end: 30 },
+		]);
 	});
 
 	it("discards a complete-looking unterminated pair on a length stop", async () => {
@@ -243,8 +316,12 @@ describe("planDeletedLineRanges: priority order", () => {
 describe("truncated recovery: validation integration", () => {
 	it("all-protected recovered ranges produce RangePlanError", async () => {
 		let error: RangePlanError | undefined;
-		try { await plan("1,3\n", "length"); } // lines 1-3 are protected
-		catch (e) { error = e as RangePlanError; }
+		try {
+			await plan("1,3\n", "length");
+		} catch (e) {
+			// lines 1-3 are protected
+			error = e as RangePlanError;
+		}
 		// With only one complete line that's all protected, recovery may succeed
 		// but validation produces zero usable ranges → falls through to error
 		// Actually: on "length" stop, "1,3\n" has last newline at index 3,
@@ -264,7 +341,10 @@ describe("truncated recovery: validation integration", () => {
 	it("out-of-bounds ranges are clamped through validation", async () => {
 		// The region is 50 lines, so 40,60 comes back clamped to the region bound.
 		const result = await plan("10,20\n40,60\n", "length", { lineCount: 50 });
-		expect(result).toEqual([{ start: 10, end: 20 }, { start: 40, end: 50 }]);
+		expect(result).toEqual([
+			{ start: 10, end: 20 },
+			{ start: 40, end: 50 },
+		]);
 	});
 });
 
@@ -286,8 +366,12 @@ describe("truncated recovery: silent success", () => {
 // 8. Private sidecar permissions, content, no surfaced path
 describe("truncated recovery: private diagnostic sidecar", () => {
 	let testDir: string;
-	beforeEach(() => { testDir = tmpDir(); });
-	afterEach(() => { rmSync(testDir, { recursive: true, force: true }); });
+	beforeEach(() => {
+		testDir = tmpDir();
+	});
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
 
 	testPosixFileMode("writes recovery sidecar with 0600 permissions", async () => {
 		const sf = join(testDir, "session.jsonl");
@@ -340,7 +424,7 @@ describe("truncated recovery: private diagnostic sidecar", () => {
 describe("truncated recovery: real-world Copilot GPT shape", () => {
 	it("recovers large number of records from Copilot-style truncated response", () => {
 		const records = Array.from({ length: 50 }, (_, i) => `${i * 10 + 5},${i * 10 + 9}`);
-		const text = records.join("\n") + "\n505,";
+		const text = `${records.join("\n")}\n505,`;
 		const result = recoverTruncatedRecords(text);
 		expect(result).toBeDefined();
 		expect(result!.recoveredCount).toBe(50);
@@ -350,7 +434,7 @@ describe("truncated recovery: real-world Copilot GPT shape", () => {
 
 	it("end-to-end: Copilot GPT truncated response flows through planner", async () => {
 		const records = Array.from({ length: 15 }, (_, i) => `${i * 12 + 5},${i * 12 + 10}`);
-		const truncatedText = records.join("\n") + "\n185,";
+		const truncatedText = `${records.join("\n")}\n185,`;
 		const result = await plan(truncatedText, "length", { lineCount: 200 });
 		expect(result.length).toBe(15);
 		expect(result[0]).toEqual({ start: 5, end: 10 });
@@ -359,7 +443,10 @@ describe("truncated recovery: real-world Copilot GPT shape", () => {
 
 	it("newline-terminated output with stopReason 'length' uses recovery", async () => {
 		const result = await plan("10,20\n30,40\n", "length");
-		expect(result).toEqual([{ start: 10, end: 20 }, { start: 30, end: 40 }]);
+		expect(result).toEqual([
+			{ start: 10, end: 20 },
+			{ start: 30, end: 40 },
+		]);
 	});
 });
 

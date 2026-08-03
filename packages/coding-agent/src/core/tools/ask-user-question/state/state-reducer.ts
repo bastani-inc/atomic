@@ -1,7 +1,7 @@
 import type { QuestionAnswer, QuestionData, QuestionnaireResult } from "../tool/types.ts";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
-import type { QuestionnaireAction } from "./key-router.ts";
 import { readInlineCaret, resolveInlineDraftValue, withInlineDraft } from "./inline-input.ts";
+import type { QuestionnaireAction } from "./key-router.ts";
 import { ROW_INTENT_META } from "./row-intent.ts";
 import { computeFocusedOptionHasPreview } from "./selectors/derivations.ts";
 import type { InlineInputOwner, QuestionnaireState } from "./state.ts";

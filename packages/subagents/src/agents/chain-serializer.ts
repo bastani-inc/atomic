@@ -1,8 +1,8 @@
-import type { ChainConfig, ChainStepConfig } from "./agents.ts";
-import { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
-import { parseFrontmatter } from "./frontmatter.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../runs/shared/chain-outputs.ts";
 import type { ChainStep } from "../shared/settings.ts";
+import type { ChainConfig, ChainStepConfig } from "./agents.ts";
+import { parseFrontmatter } from "./frontmatter.ts";
+import { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
 
 const REMOVED_CHAIN_CONFIG_FIELDS = new Set(["acceptance"]);
 
@@ -177,10 +177,14 @@ export function parseJsonChain(content: string, source: "user" | "project", file
 	try {
 		validateChainOutputBindings(chainSteps as ChainStep[], { maxItems: Number.MAX_SAFE_INTEGER });
 	} catch (error) {
-		if (error instanceof ChainOutputValidationError) throw new Error(`Invalid JSON chain '${filePath}': ${error.message}`);
+		if (error instanceof ChainOutputValidationError)
+			throw new Error(`Invalid JSON chain '${filePath}': ${error.message}`);
 		throw error;
 	}
-	const parsedPackage = parsePackageName(typeof input.package === "string" ? input.package : undefined, `Chain '${input.name}' package`);
+	const parsedPackage = parsePackageName(
+		typeof input.package === "string" ? input.package : undefined,
+		`Chain '${input.name}' package`,
+	);
 	if (parsedPackage.error) throw new Error(parsedPackage.error);
 	const extraFields: Record<string, string> = {};
 	for (const [key, value] of Object.entries(input)) {

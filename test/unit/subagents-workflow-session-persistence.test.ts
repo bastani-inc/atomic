@@ -3,12 +3,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, test } from "bun:test";
-import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
+import { describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
-import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
+import { bunExecutable } from "../helpers/runtime.js";
 
 const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
 
@@ -33,7 +33,11 @@ function assistantMessage(text: string) {
 		provider: "openai",
 		model: "gpt-5.4",
 		usage: {
-			input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop" as const,
@@ -82,6 +86,40 @@ async function withChildCli(fn: (root: string, scriptPath: string) => Promise<vo
 	}
 }
 
+/**
+ * Run the foreground executor inside a Bun child and return its exit status.
+ *
+ * `resolvePiCliScript` accepts a `.ts` entry only when the runtime is Bun, so
+ * under vitest's Node worker the stub CLI below is rejected and the executor
+ * falls through to the real installed `atomic` -- which then makes a live
+ * provider call. Running the executor in a Bun child keeps the stub in play and
+ * the suite hermetic, which is what the background case in this file already
+ * does.
+ */
+function runForegroundInBun(root: string, options: Record<string, unknown>, agent: AgentConfig, task: string): void {
+	const driverPath = join(root, "foreground-driver.ts");
+	const executionPath = join(process.cwd(), "packages/subagents/src/runs/foreground/execution.ts");
+	writeFileSync(
+		driverPath,
+		`
+		import { runSync } from ${JSON.stringify(executionPath)};
+		const [agent, task, options] = JSON.parse(process.argv[2]);
+		const result = await runSync(${JSON.stringify(root)}, [agent], task, options.taskText ?? task, options);
+		if (result.exitCode !== 0) {
+			console.error(result.error ?? "foreground executor failed");
+			process.exit(1);
+		}
+		`,
+		"utf8",
+	);
+	const proc = spawnSync(bunExecutable(), [driverPath, JSON.stringify([agent, task, options])], {
+		cwd: root,
+		encoding: "utf8",
+		env: process.env,
+	});
+	assert.equal(proc.status, 0, `${proc.stdout}\n${proc.stderr}`);
+}
+
 function readHeader(path: string): Record<string, unknown> {
 	return JSON.parse(readFileSync(path, "utf8").split("\n")[0]!) as Record<string, unknown>;
 }
@@ -91,17 +129,21 @@ describe("workflow subagent persisted session classification", () => {
 		await withChildCli(async (root, scriptPath) => {
 			const sessionDir = join(root, "custom-sessions");
 			const sessionFile = join(sessionDir, "fresh.jsonl");
-			const result = await runSync(root, [agentConfig()], "fake-worker", "Do work", {
-				cwd: root,
-				runId: "foreground-fresh",
-				sessionDir,
-				sessionFile,
-				piArgv1: scriptPath,
-				workflowStageSubagentGuard: true,
-				workflowSessionMetadata: workflow,
-			});
+			runForegroundInBun(
+				root,
+				{
+					cwd: root,
+					runId: "foreground-fresh",
+					sessionDir,
+					sessionFile,
+					piArgv1: scriptPath,
+					workflowStageSubagentGuard: true,
+					workflowSessionMetadata: workflow,
+				},
+				agentConfig(),
+				"fake-worker",
+			);
 
-			assert.equal(result.exitCode, 0, result.error);
 			assert.deepEqual(readHeader(sessionFile).workflow, workflow);
 			assert.equal(readHeader(sessionFile).internal, true);
 			assert.deepEqual(await SessionManager.list(root, sessionDir), []);
@@ -119,16 +161,20 @@ describe("workflow subagent persisted session classification", () => {
 			const forkFile = createForkContextResolver(parent, "fork").sessionFileForIndex(0);
 			assert.ok(forkFile);
 
-			const result = await runSync(root, [agentConfig()], "fake-worker", "Continue fork", {
-				cwd: root,
-				runId: "foreground-fork",
-				sessionFile: forkFile,
-				piArgv1: scriptPath,
-				workflowStageSubagentGuard: true,
-				workflowSessionMetadata: workflow,
-			});
+			runForegroundInBun(
+				root,
+				{
+					cwd: root,
+					runId: "foreground-fork",
+					sessionFile: forkFile,
+					piArgv1: scriptPath,
+					workflowStageSubagentGuard: true,
+					taskText: "Continue fork",
+				},
+				agentConfig(),
+				"fake-worker",
+			);
 
-			assert.equal(result.exitCode, 0, result.error);
 			assert.equal(readHeader(forkFile).internal, true);
 			assert.deepEqual(readHeader(forkFile).workflow, workflow);
 			assert.deepEqual(await SessionManager.list(root, sessionDir), []);
@@ -141,18 +187,34 @@ describe("workflow subagent persisted session classification", () => {
 			const sessionDir = join(root, "background-sessions");
 			const resultPath = join(root, "result.json");
 			const configPath = join(root, "runner-config.json");
-			writeFileSync(configPath, JSON.stringify({
-				id: "background-workflow-child",
-				steps: [{
-					agent: "fake-worker", task: "Do work", cwd: root,
-					systemPrompt: "Finish immediately.", systemPromptMode: "replace",
-					inheritProjectContext: false, inheritSkills: false,
-				}],
-				resultPath, cwd: root, placeholder: "{previous}", asyncDir, sessionDir,
-				piArgv1: scriptPath, resultMode: "single", workflowStageSubagentGuard: true,
-			}), "utf8");
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					id: "background-workflow-child",
+					steps: [
+						{
+							agent: "fake-worker",
+							task: "Do work",
+							cwd: root,
+							systemPrompt: "Finish immediately.",
+							systemPromptMode: "replace",
+							inheritProjectContext: false,
+							inheritSkills: false,
+						},
+					],
+					resultPath,
+					cwd: root,
+					placeholder: "{previous}",
+					asyncDir,
+					sessionDir,
+					piArgv1: scriptPath,
+					resultMode: "single",
+					workflowStageSubagentGuard: true,
+				}),
+				"utf8",
+			);
 			const runnerPath = join(process.cwd(), "packages/subagents/src/runs/background/subagent-runner.ts");
-			const proc = spawnSync(process.execPath, [runnerPath, configPath], {
+			const proc = spawnSync(bunExecutable(), [runnerPath, configPath], {
 				cwd: process.cwd(),
 				encoding: "utf8",
 				env: { ...process.env, [WORKFLOW_SESSION_METADATA_ENV]: JSON.stringify(workflow) },

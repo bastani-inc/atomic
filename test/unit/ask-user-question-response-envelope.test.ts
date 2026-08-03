@@ -1,5 +1,5 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { describe, test } from "vitest";
 import {
 	CHAT_CONTINUATION_MESSAGE,
 	chatAnswerIntent,
@@ -10,9 +10,9 @@ import {
 	hasChatAnswer,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/tool/response-envelope.ts";
 import {
-	SENTINEL_LABELS,
-	type QuestionParams,
 	type QuestionnaireResult,
+	type QuestionParams,
+	SENTINEL_LABELS,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/tool/types.ts";
 
 const params: QuestionParams = {

@@ -124,7 +124,11 @@ describe("createAgentSession codex fast mode", () => {
 		const model = createModel(options.provider, api);
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify(options.provider, async () => ({ type: "api_key", key: "test-api-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: join(agentDir, "models.json"),
+			allowModelNetwork: false,
+		});
 		const settingsManager = SettingsManager.inMemory({ codexFastMode: options.settings });
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedOptions: SimpleStreamOptions | undefined;
@@ -157,7 +161,9 @@ describe("createAgentSession codex fast mode", () => {
 		} finally {
 			session.dispose();
 			modelRuntime.unregisterProvider(options.provider);
-			registeredProviders = registeredProviders.filter((entry) => entry.registry !== modelRuntime || entry.provider !== options.provider);
+			registeredProviders = registeredProviders.filter(
+				(entry) => entry.registry !== modelRuntime || entry.provider !== options.provider,
+			);
 		}
 	}
 
@@ -177,7 +183,11 @@ describe("createAgentSession codex fast mode", () => {
 		const model = createModel("openai", "openai-responses");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-api-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: join(agentDir, "models.json"),
+			allowModelNetwork: false,
+		});
 		const settingsManager = SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } });
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedOptions: SimpleStreamOptions | undefined;
@@ -279,7 +289,11 @@ describe("createAgentSession codex fast mode", () => {
 		const model = createModel("openai", "openai-responses");
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-api-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: join(agentDir, "models.json"), allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: join(agentDir, "models.json"),
+			allowModelNetwork: false,
+		});
 		const settingsManager = SettingsManager.inMemory({ codexFastMode: { chat: true, workflow: false } });
 		const sessionManager = SessionManager.inMemory(cwd);
 		let capturedPayload: Record<string, unknown> | undefined;

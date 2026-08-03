@@ -2,12 +2,22 @@ import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RetryCallbacks, RetryPolicy } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
+import type {
+	BorrowedPlanner,
+	CompactedTranscript,
+	CompactionPlannerModel,
+	CompactionUrgency,
+	PlannerAuth,
+	RawLineRange,
+	VerbatimCompactionPreparation,
+} from "./compaction-types.js";
+import { MIN_COMPACTABLE_REGION_LINES } from "./compaction-types.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
 import {
-	createFallbackPlannerBorrower,
-	plannerAttemptKey,
 	type BorrowFallbackPlanner,
+	createFallbackPlannerBorrower,
 	type FallbackPlannerContext,
+	plannerAttemptKey,
 } from "./fallback-planner.js";
 import type { TerminalPlannerOutcome } from "./planner-outcome.js";
 import {
@@ -19,16 +29,6 @@ import {
 } from "./range-planner.js";
 import { writeSuccessDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import { nextTrimOffset, rebaseTrimmedRanges, trimRegionHead } from "./region-trimming.js";
-import type {
-	BorrowedPlanner,
-	CompactedTranscript,
-	CompactionPlannerModel,
-	CompactionUrgency,
-	PlannerAuth,
-	RawLineRange,
-	VerbatimCompactionPreparation,
-} from "./compaction-types.js";
-import { MIN_COMPACTABLE_REGION_LINES } from "./compaction-types.js";
 
 export interface CompactionPlanOptions {
 	streamFn: StreamFn;
@@ -93,9 +93,8 @@ function withWholeContextStats(
 	keptTail: boolean,
 ): CompactedTranscript {
 	const tokensAfter = result.stats.tokensAfter + (keptTail ? getKeptTailTokenEstimate(preparation) : 0);
-	const percentReduction = preparation.tokensBefore === 0
-		? 0
-		: Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10;
+	const percentReduction =
+		preparation.tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10;
 	return {
 		...result,
 		stats: { ...result.stats, tokensBefore: preparation.tokensBefore, tokensAfter, percentReduction },
@@ -116,10 +115,7 @@ function buildFreshTranscript(preparation: VerbatimCompactionPreparation): Compa
 	return reconstructCompactedTranscript(region, validateDeletedRanges(whole, region));
 }
 
-function buildFreshContextWindow(
-	preparation: VerbatimCompactionPreparation,
-	hardInputLimit: number,
-): FreshWindowBuild {
+function buildFreshContextWindow(preparation: VerbatimCompactionPreparation, hardInputLimit: number): FreshWindowBuild {
 	const limit = Number.isFinite(hardInputLimit) && hardInputLimit > 0 ? hardInputLimit : Number.POSITIVE_INFINITY;
 	// The rule is "tail under the limit ⇒ tail kept", so the comparison is the
 	// tail alone. Explicit protected lines are a hard floor that survives either
@@ -146,9 +142,7 @@ function buildFreshContextWindow(
  * nothing else. Whether the `preserve_recent` tail survives is a persistence
  * concern and travels on `CompactionRungResult.keptTail`, not on this door.
  */
-export function startNewContextWindow(
-	preparation: VerbatimCompactionPreparation,
-): CompactedTranscript {
+export function startNewContextWindow(preparation: VerbatimCompactionPreparation): CompactedTranscript {
 	return buildFreshTranscript(preparation);
 }
 
@@ -271,10 +265,7 @@ async function resolvePlannerAuth(
 	}
 }
 
-function freshResult(
-	preparation: VerbatimCompactionPreparation,
-	hardInputLimit: number,
-): CompactionRungResult {
+function freshResult(preparation: VerbatimCompactionPreparation, hardInputLimit: number): CompactionRungResult {
 	const fresh = buildFreshContextWindow(preparation, hardInputLimit);
 	return {
 		...withWholeContextStats(fresh.transcript, preparation, fresh.keptTail),

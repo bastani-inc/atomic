@@ -8,7 +8,12 @@ import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 
 function getTextOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
-	return result.content?.filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n") ?? "";
+	return (
+		result.content
+			?.filter((c) => c.type === "text")
+			.map((c) => c.text ?? "")
+			.join("\n") ?? ""
+	);
 }
 
 function tagFrom(output: string): string {
@@ -39,7 +44,9 @@ describe("Coding Agent Tools", () => {
 			writeFileSync(testFile, originalContent);
 
 			const tag = tagFrom(getTextOutput(await read.execute("read", { path: "edit-test.txt" })));
-			const result = await edit.execute("edit", { input: `[edit-test.txt#${tag}]\nreplace 1..1:\n+Hello, testing!` });
+			const result = await edit.execute("edit", {
+				input: `[edit-test.txt#${tag}]\nreplace 1..1:\n+Hello, testing!`,
+			});
 
 			expect(getTextOutput(result)).toContain("[edit-test.txt#");
 			expect(readFileSync(testFile, "utf-8")).toBe("Hello, testing!\n");
@@ -51,7 +58,9 @@ describe("Coding Agent Tools", () => {
 
 		it("rejects path plus edits input", async () => {
 			const edit = createEditToolDefinition(testDir);
-			await expect(edit.execute("path-edits", { path: "x.txt", edits: [] } as never)).rejects.toThrow(/hashline script/);
+			await expect(edit.execute("path-edits", { path: "x.txt", edits: [] } as never)).rejects.toThrow(
+				/hashline script/,
+			);
 		});
 
 		it("rejects stale tags without modifying the file", async () => {
@@ -63,7 +72,9 @@ describe("Coding Agent Tools", () => {
 			const tag = tagFrom(getTextOutput(await read.execute("read", { path: "stale.txt" })));
 			writeFileSync(testFile, "changed outside\n");
 
-			await expect(edit.execute("edit", { input: `[stale.txt#${tag}]\nreplace 1..1:\n+two` })).rejects.toThrow(/file changed between read and edit/);
+			await expect(edit.execute("edit", { input: `[stale.txt#${tag}]\nreplace 1..1:\n+two` })).rejects.toThrow(
+				/file changed between read and edit/,
+			);
 			expect(readFileSync(testFile, "utf-8")).toBe("changed outside\n");
 		});
 
@@ -73,7 +84,9 @@ describe("Coding Agent Tools", () => {
 			const missingPath = join(testDir, "missing.txt");
 			const tag = store.record(missingPath, testDir, "hello\n").tag;
 
-			await expect(edit.execute("missing", { input: `[missing.txt#${tag}]\nreplace 1..1:\n+world` })).rejects.toThrow("Could not edit file: missing.txt. Error code: ENOENT.");
+			await expect(
+				edit.execute("missing", { input: `[missing.txt#${tag}]\nreplace 1..1:\n+world` }),
+			).rejects.toThrow("Could not edit file: missing.txt. Error code: ENOENT.");
 		});
 
 		it("surfaces EACCES for unreadable hashline targets", async () => {
@@ -85,7 +98,9 @@ describe("Coding Agent Tools", () => {
 			const tag = tagFrom(getTextOutput(await read.execute("read", { path: "readonly.txt" })));
 			chmodSync(testFile, 0o444);
 
-			await expect(edit.execute("readonly", { input: `[readonly.txt#${tag}]\nreplace 1..1:\n+world` })).rejects.toThrow(/Could not edit file: readonly.txt|EACCES|permission/i);
+			await expect(
+				edit.execute("readonly", { input: `[readonly.txt#${tag}]\nreplace 1..1:\n+world` }),
+			).rejects.toThrow(/Could not edit file: readonly.txt|EACCES|permission/i);
 		});
 	});
 });

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
-import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai/compat";
 import { stream as streamAnthropicMessages } from "@earendil-works/pi-ai/api/anthropic-messages";
+import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai/compat";
+import { describe, expect, it, vi } from "vitest";
 import { restoreAnthropicReplayThinkingBlocks } from "../src/core/anthropic-thinking-guard.ts";
 import { convertToLlm } from "../src/core/messages.ts";
 
@@ -219,7 +219,10 @@ describe("restoreAnthropicReplayThinkingBlocks", () => {
 					{ type: "tool_use", id: "toolu_turn", name: "read", input: { path: "a.ts" } },
 				],
 			},
-			{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_turn", content: "result", is_error: false }] },
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "toolu_turn", content: "result", is_error: false }],
+			},
 			{
 				role: "assistant",
 				content: [{ type: "redacted_thinking", data: "opaque-second-exact" }],
@@ -339,7 +342,9 @@ describe("restoreAnthropicReplayThinkingBlocks", () => {
 			assistantMessage([{ type: "thinking", thinking: "second exact", thinkingSignature: "sig-second" }]),
 		];
 		const payload = {
-			messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "sanitized", signature: "sig-first" }] }],
+			messages: [
+				{ role: "assistant", content: [{ type: "thinking", thinking: "sanitized", signature: "sig-first" }] },
+			],
 		};
 
 		const restored = restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, anthropicModel());

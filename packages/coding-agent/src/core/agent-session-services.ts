@@ -106,12 +106,14 @@ function applyExtensionFlagValues(
 		}
 		if (flag.type === "boolean") {
 			extensionsResult.runtime.flagValues.set(name, true);
-			(extensionsResult.runtime.explicitFlagNames ??= new Set()).add(name);
+			extensionsResult.runtime.explicitFlagNames ??= new Set();
+			extensionsResult.runtime.explicitFlagNames.add(name);
 			continue;
 		}
 		if (typeof value === "string") {
 			extensionsResult.runtime.flagValues.set(name, value);
-			(extensionsResult.runtime.explicitFlagNames ??= new Set()).add(name);
+			extensionsResult.runtime.explicitFlagNames ??= new Set();
+			extensionsResult.runtime.explicitFlagNames.add(name);
 			continue;
 		}
 		diagnostics.push({

@@ -2,8 +2,8 @@
   "name": "atomic-monorepo",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.14",
   "engines": {
+    "node": ">=22.19.0",
     "bun": ">=1.3.14"
   },
   "contributors": [
@@ -14,27 +14,43 @@
     "packages/*"
   ],
   "scripts": {
-    "prepare": "bun scripts/install-hooks.mjs",
-    "hooks:install": "bunx --bun --no-install prek install --prepare-hooks",
-    "hooks:run": "bunx --bun --no-install prek run --all-files",
-    "test": "bun run test:unit",
-    "test:unit": "bun test --timeout 30000 test/unit",
-    "test:integration": "bun test --timeout 30000 test/integration",
-    "test:ci-contracts": "bun test --timeout 30000 test/ci",
-    "test:all": "bun run test:unit && bun run test:integration",
+    "prepare": "node scripts/install-hooks.mjs",
+    "hooks:install": "npx --no-install prek install --prepare-hooks",
+    "hooks:run": "npx --no-install prek run --all-files",
+    "test": "npm run test:scripts && vitest --run && npm run test --workspaces --if-present",
+    "test:unit": "vitest --run --project unit",
+    "test:integration": "vitest --run --project integration",
+    "test:ci-contracts": "vitest --run --project ci",
+    "test:all": "npm run test:unit && npm run test:integration",
+    "test:scripts": "node --test \"scripts/*.test.mjs\"",
     "typecheck": "tsc --noEmit",
-    "check:shrinkwrap": "bun run scripts/generate-coding-agent-shrinkwrap.mjs --check",
-    "shrinkwrap:coding-agent": "bun run scripts/generate-coding-agent-shrinkwrap.mjs",
-    "lint": "tsc --noEmit"
+    "format": "biome format --write .",
+    "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap",
+    "lint": "npm run check",
+    "check:shrinkwrap": "node scripts/generate-coding-agent-shrinkwrap.mjs --check",
+    "shrinkwrap:coding-agent": "node scripts/generate-coding-agent-shrinkwrap.mjs"
   },
   "devDependencies": {
-    "@j178/prek": "0.4.10",
-    "@types/bun": "^1.3.14",
-    "typescript": "^7.0.2"
+    "@biomejs/biome": "2.5.6",
+    "@j178/prek": "0.4.11",
+    "@types/bun": "1.3.14",
+    "@types/tar-stream": "3.1.4",
+    "jszip": "3.10.1",
+    "superjson": "1.13.3",
+    "tar-stream": "3.2.0",
+    "tinyglobby": "0.2.17",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "yaml": "2.9.0"
   },
   "overrides": {
     "@types/node": "24.12.4",
     "protobufjs": "7.6.5",
-    "brace-expansion": "5.0.7"
+    "brace-expansion": "5.0.9",
+    "typebox": "1.3.7",
+    "semver": "7.8.0",
+    "@napi-rs/cli": {
+      "semver": "7.8.5"
+    }
   }
 }

@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getEnvValue, type ExtensionContext } from "@bastani/atomic";
-import { getArtifactsDir } from "../../shared/artifacts.ts";
-import { createForkContextResolver } from "../../shared/fork-context.ts";
-import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
+import { type ExtensionContext, getEnvValue } from "@bastani/atomic";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import {
 	applyIntercomBridgeToAgent,
@@ -12,6 +9,23 @@ import {
 	resolveIntercomSessionTarget,
 	resolveSubagentIntercomTarget,
 } from "../../intercom/intercom-bridge.ts";
+import { getArtifactsDir } from "../../shared/artifacts.ts";
+import { createForkContextResolver } from "../../shared/fork-context.ts";
+import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
+import {
+	buildReadInstruction,
+	isParallelStep as isSettingsParallelStep,
+	type SequentialStep,
+} from "../../shared/settings.ts";
+import {
+	type ArtifactConfig,
+	checkSubagentDepth,
+	DEFAULT_ARTIFACT_CONFIG,
+	resolveSubagentDepthPolicy,
+	type SubagentToolResult,
+	subagentDepthBlockedMessage,
+} from "../../shared/types.ts";
+import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import {
 	createNestedRoute,
 	resolveInheritedNestedRouteFromEnv,
@@ -20,17 +34,6 @@ import {
 } from "../shared/nested-events.ts";
 import { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../shared/pi-args.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
-import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
-import {
-	DEFAULT_ARTIFACT_CONFIG,
-	checkSubagentDepth,
-	resolveSubagentDepthPolicy,
-	subagentDepthBlockedMessage,
-	type ArtifactConfig,
-	type SubagentToolResult,
-} from "../../shared/types.ts";
-import { buildReadInstruction, isParallelStep as isSettingsParallelStep, type SequentialStep } from "../../shared/settings.ts";
-import type { ExecutionContextBuildResult, ExecutorDeps, ResolvedExecutorDeps, SubagentParamsLike } from "./subagent-executor-types.ts";
 import {
 	applyAgentDefaultContext,
 	normalizeRepeatedParallelCounts,
@@ -38,8 +41,17 @@ import {
 	validateExecutionInput,
 	withForkContext,
 } from "./subagent-executor-input.ts";
+import type {
+	ExecutionContextBuildResult,
+	ExecutorDeps,
+	ResolvedExecutorDeps,
+	SubagentParamsLike,
+} from "./subagent-executor-types.ts";
 
-export function checkDepthForExecution(ctx: ExtensionContext, deps: ResolvedExecutorDeps): SubagentToolResult | undefined {
+export function checkDepthForExecution(
+	ctx: ExtensionContext,
+	deps: ResolvedExecutorDeps,
+): SubagentToolResult | undefined {
 	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
 	const { blocked, depth, maxDepth, workflowStageGuard } = checkSubagentDepth(depthPolicy.maxSubagentDepth);
 	const workflowStageSubagentGuard = workflowStageGuard || depthPolicy.workflowStageSubagentGuard;
@@ -100,17 +112,12 @@ export function prepareExecutionContext(input: {
 	const hasChain = (effectiveParams.chain?.length ?? 0) > 0;
 	const hasTasks = (effectiveParams.tasks?.length ?? 0) > 0;
 	const hasSingle = !hasChain && !hasTasks && Boolean(effectiveParams.agent);
-	const validationError = validateExecutionInput(
-		effectiveParams,
-		agents,
-		hasChain,
-		hasTasks,
-		hasSingle,
-	);
+	const validationError = validateExecutionInput(effectiveParams, agents, hasChain, hasTasks, hasSingle);
 	if (validationError) return { error: validationError };
 	if (hasSingle) {
 		const readInstruction = buildReadInstruction(effectiveParams.reads, effectiveCwd);
-		if (readInstruction) effectiveParams = { ...effectiveParams, task: `${readInstruction}\n\n${effectiveParams.task ?? ""}` };
+		if (readInstruction)
+			effectiveParams = { ...effectiveParams, task: `${readInstruction}\n\n${effectiveParams.task ?? ""}` };
 	}
 
 	let sessionFileForIndex: (idx?: number) => string | undefined = () => undefined;
@@ -148,8 +155,7 @@ export function prepareExecutionContext(input: {
 			),
 		};
 	}
-	const sessionDirForIndex = (idx?: number) =>
-		path.join(sessionRoot, `run-${idx ?? 0}`);
+	const sessionDirForIndex = (idx?: number) => path.join(sessionRoot, `run-${idx ?? 0}`);
 	const childSessionFileForIndex = (idx?: number) =>
 		sessionFileForIndex(idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
@@ -181,43 +187,53 @@ export function prepareExecutionContext(input: {
 	const foregroundControl = effectiveAsync
 		? undefined
 		: {
-			runId,
-			mode: foregroundMode,
-			startedAt: Date.now(),
-			updatedAt: Date.now(),
-			currentAgent: undefined,
-			currentIndex: undefined,
-			currentActivityState: undefined,
-			nestedRoute,
-			interrupt: undefined,
-		};
+				runId,
+				mode: foregroundMode,
+				startedAt: Date.now(),
+				updatedAt: Date.now(),
+				currentAgent: undefined,
+				currentIndex: undefined,
+				currentActivityState: undefined,
+				nestedRoute,
+				interrupt: undefined,
+			};
 	if (foregroundControl) {
 		deps.state.foregroundControls.set(runId, foregroundControl);
 		deps.state.lastForegroundControlId = runId;
 	}
 
-	const writeNestedForegroundEvent = (type: "subagent.nested.started" | "subagent.nested.completed", result?: SubagentToolResult): void => {
+	const writeNestedForegroundEvent = (
+		type: "subagent.nested.started" | "subagent.nested.completed",
+		result?: SubagentToolResult,
+	): void => {
 		if (!inheritedNestedRoute || !nestedParentAddress) return;
 		const now = Date.now();
 		const details = result?.details;
-		const state = type === "subagent.nested.started"
-			? "running"
-			: result?.isError || details?.results.some((child) => child.exitCode !== 0)
-				? "failed"
-				: details?.results.some((child) => child.interrupted)
-					? "paused"
-					: "complete";
-		const errorText = result?.isError
-			? result.content.find((item) => item.type === "text")?.text
-			: undefined;
-		const agentsForSummary = hasTasks && effectiveParams.tasks
-			? effectiveParams.tasks.map((task) => task.agent)
-			: hasChain && effectiveParams.chain
-				? effectiveParams.chain.flatMap((step) => isSettingsParallelStep(step) ? step.parallel.map((task) => task.agent) : [(step as SequentialStep).agent])
-				: effectiveParams.agent ? [effectiveParams.agent] : [];
-		const leafIntercomTarget = intercomBridge.active && agentsForSummary[0]
-			? resolveSubagentIntercomTarget(runId, agentsForSummary[0], 0)
-			: undefined;
+		const state =
+			type === "subagent.nested.started"
+				? "running"
+				: result?.isError || details?.results.some((child) => child.exitCode !== 0)
+					? "failed"
+					: details?.results.some((child) => child.interrupted)
+						? "paused"
+						: "complete";
+		const errorText = result?.isError ? result.content.find((item) => item.type === "text")?.text : undefined;
+		const agentsForSummary =
+			hasTasks && effectiveParams.tasks
+				? effectiveParams.tasks.map((task) => task.agent)
+				: hasChain && effectiveParams.chain
+					? effectiveParams.chain.flatMap((step) =>
+							isSettingsParallelStep(step)
+								? step.parallel.map((task) => task.agent)
+								: [(step as SequentialStep).agent],
+						)
+					: effectiveParams.agent
+						? [effectiveParams.agent]
+						: [];
+		const leafIntercomTarget =
+			intercomBridge.active && agentsForSummary[0]
+				? resolveSubagentIntercomTarget(runId, agentsForSummary[0], 0)
+				: undefined;
 		try {
 			writeNestedEvent(inheritedNestedRoute, {
 				type,
@@ -242,12 +258,16 @@ export function prepareExecutionContext(input: {
 					...(state !== "running" ? { endedAt: now } : {}),
 					lastUpdate: now,
 					...(errorText ? { error: errorText } : {}),
-					...(details?.results.length ? { steps: details.results.map((child) => ({
-						agent: child.agent,
-						status: child.interrupted ? "paused" : child.exitCode === 0 ? "complete" : "failed",
-						...(child.sessionFile ? { sessionFile: child.sessionFile } : {}),
-						...(child.error ? { error: child.error } : {}),
-					})) } : {}),
+					...(details?.results.length
+						? {
+								steps: details.results.map((child) => ({
+									agent: child.agent,
+									status: child.interrupted ? "paused" : child.exitCode === 0 ? "complete" : "failed",
+									...(child.sessionFile ? { sessionFile: child.sessionFile } : {}),
+									...(child.error ? { error: child.error } : {}),
+								})),
+							}
+						: {}),
 				},
 			});
 		} catch (error) {
@@ -255,7 +275,20 @@ export function prepareExecutionContext(input: {
 		}
 	};
 
-	return { prepared: { effectiveParams, effectiveCwd, runId, hasChain, hasTasks, hasSingle, foregroundMode, execData, foregroundControl, writeNestedForegroundEvent } };
+	return {
+		prepared: {
+			effectiveParams,
+			effectiveCwd,
+			runId,
+			hasChain,
+			hasTasks,
+			hasSingle,
+			foregroundMode,
+			execData,
+			foregroundControl,
+			writeNestedForegroundEvent,
+		},
+	};
 }
 
 export type { ExecutorDeps };

@@ -1,4 +1,4 @@
-import { Container } from "@earendil-works/pi-tui";
+import type { Container } from "@earendil-works/pi-tui";
 import type { SourceInfo } from "../src/core/source-info.ts";
 
 export type ExtensionFixture = {

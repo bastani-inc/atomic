@@ -20,7 +20,6 @@
  */
 
 import path from "node:path";
-import { RealFSProvider, VM } from "@earendil-works/gondolin";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import {
 	type BashOperations,
@@ -43,6 +42,7 @@ import {
 	truncateLine,
 	type WriteOperations,
 } from "@bastani/atomic";
+import { RealFSProvider, VM } from "@earendil-works/gondolin";
 
 const GUEST_WORKSPACE = "/workspace";
 const DEFAULT_GREP_LIMIT = 100;

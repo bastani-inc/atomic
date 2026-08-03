@@ -1,6 +1,7 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { describe, test } from "vitest";
 import { admitWorkflowStageInbound } from "../../packages/intercom/workflow-stage-admission.js";
+import { sleep } from "../helpers/runtime.js";
 
 const stageContext = {
 	isIdle: () => true,
@@ -23,11 +24,7 @@ describe("Intercom workflow-stage admission", () => {
 
 		assert.ok(admitted);
 		await admitted;
-		assert.deepEqual(events, [
-			"structured_output:start",
-			"agent-session:queue-follow-up",
-			"structured_output:end",
-		]);
+		assert.deepEqual(events, ["structured_output:start", "agent-session:queue-follow-up", "structured_output:end"]);
 	});
 
 	test("a busy workflow stage admits before waiting for exact foreground-owner first refusal", async () => {
@@ -49,10 +46,7 @@ describe("Intercom workflow-stage admission", () => {
 		);
 
 		assert.ok(admitted);
-		assert.deepEqual(events, [
-			"agent-session:generation-admission",
-			"foreground-owner:probe",
-		]);
+		assert.deepEqual(events, ["agent-session:generation-admission", "foreground-owner:probe"]);
 		firstRefusal.resolve();
 		await admitted;
 		assert.deepEqual(events, [
@@ -71,7 +65,10 @@ describe("Intercom workflow-stage admission", () => {
 				await admissionBarrier?.();
 				await admissionBarrier?.();
 			},
-			async () => { claims += 1; return "unclaimed"; },
+			async () => {
+				claims += 1;
+				return "unclaimed";
+			},
 		);
 
 		assert.ok(admitted);
@@ -112,12 +109,18 @@ describe("Intercom workflow-stage admission", () => {
 				delivered = true;
 			},
 			async () => "abandoned",
-			async () => { await failureReported.promise; },
+			async () => {
+				await failureReported.promise;
+			},
 		);
 
 		assert.ok(admitted);
-		void admitted.finally(() => { settled = true; }).catch(() => {});
-		await Bun.sleep(0);
+		void admitted
+			.finally(() => {
+				settled = true;
+			})
+			.catch(() => {});
+		await sleep(0);
 		assert.equal(settled, false, "correlated failure reporting remains inside admitted work");
 		failureReported.resolve();
 		await assert.rejects(admitted, /retired during foreground-owner admission/);
@@ -126,7 +129,9 @@ describe("Intercom workflow-stage admission", () => {
 
 	test("ordinary sessions retain Intercom's existing idle routing", () => {
 		let delivered = false;
-		const admitted = admitWorkflowStageInbound({}, () => { delivered = true; });
+		const admitted = admitWorkflowStageInbound({}, () => {
+			delivered = true;
+		});
 
 		assert.equal(admitted, false);
 		assert.equal(delivered, false);

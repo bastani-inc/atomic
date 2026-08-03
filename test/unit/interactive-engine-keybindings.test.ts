@@ -1,17 +1,21 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { formatKeyText } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts";
-import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { type Terminal, TUI } from "@earendil-works/pi-tui";
-import { parseInteractiveEngineMessage, type InteractiveEngineMessage } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
-import { attachInteractiveEngineKeybindingSync } from "../../packages/coding-agent/src/modes/interactive-engine/extension-ui-bridge.ts";
+import { test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
+import { formatKeyText } from "../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { attachInteractiveEngineKeybindingSync } from "../../packages/coding-agent/src/modes/interactive-engine/extension-ui-bridge.ts";
+import {
+	type InteractiveEngineMessage,
+	parseInteractiveEngineMessage,
+} from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
+import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
+import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 
 class FakeTerminal implements Terminal {
 	columns = 80;
@@ -33,16 +37,22 @@ class FakeTerminal implements Terminal {
 
 function createClient(agentDir: string, env: Record<string, string> = {}): RpcClient {
 	return new RpcClient({
-		cliPath: join(import.meta.dir, "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(import.meta.dir, "../.."),
-		runtimeExecutable: process.execPath,
+		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+		cwd: join(moduleDir(import.meta.url), "../.."),
+		runtimeExecutable: bunExecutable(),
 		provider: "isolation-fixture",
 		model: "blocking-model",
 		env: { ATOMIC_CODING_AGENT_DIR: agentDir, ...env },
 		args: [
-			"--no-session", "--no-extensions", "--extension",
-			join(import.meta.dir, "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve",
+			"--no-session",
+			"--no-extensions",
+			"--extension",
+			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
+			"--approve",
 		],
 		interactiveEngine: { onDiagnostic: () => {} },
 	});
@@ -85,8 +95,10 @@ function readSessionStartBindings(path: string): string[] {
 }
 
 function nextFrame(client: RpcClient, componentId: string, requestId: number) {
-	return nextMessage(client, "engine_custom_frame", (message) =>
-		message.componentId === componentId && message.requestId === requestId,
+	return nextMessage(
+		client,
+		"engine_custom_frame",
+		(message) => message.componentId === componentId && message.requestId === requestId,
 	);
 }
 
@@ -132,16 +144,21 @@ function writeExpandBinding(agentDir: string, binding: string | string[]): void 
 	writeFileSync(join(agentDir, "keybindings.json"), JSON.stringify({ "app.tools.expand": binding }));
 }
 
-
 test("host applies the committed engine payload without rereading a later filesystem value", () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybinding-payload-"));
 	try {
 		writeExpandBinding(tempDir, "ctrl+x");
 		const hostKeybindings = KeybindingsManager.create(tempDir);
 		let listener: ((message: InteractiveEngineMessage) => void) | undefined;
-		attachInteractiveEngineKeybindingSync({
-			onEngineMessage: (next) => { listener = next; return () => {}; },
-		}, hostKeybindings);
+		attachInteractiveEngineKeybindingSync(
+			{
+				onEngineMessage: (next) => {
+					listener = next;
+					return () => {};
+				},
+			},
+			hostKeybindings,
+		);
 		const committed = {
 			type: "engine_keybindings_reloaded",
 			state: {
@@ -158,16 +175,17 @@ test("host applies the committed engine payload without rereading a later filesy
 	}
 });
 
-
 test("keybinding state protocol preserves raw ordered arrays", () => {
-	const message = parseInteractiveEngineMessage(JSON.stringify({
-		type: "engine_keybindings_reloaded",
-		state: {
-			userBindings: { "app.tools.expand": ["", "ctrl+x", ""] },
-			effectiveBindings: { "app.tools.expand": ["", "ctrl+x", ""] },
-			shortcuts: [{ key: "ctrl+y", description: "fixture" }],
-		},
-	}));
+	const message = parseInteractiveEngineMessage(
+		JSON.stringify({
+			type: "engine_keybindings_reloaded",
+			state: {
+				userBindings: { "app.tools.expand": ["", "ctrl+x", ""] },
+				effectiveBindings: { "app.tools.expand": ["", "ctrl+x", ""] },
+				shortcuts: [{ key: "ctrl+y", description: "fixture" }],
+			},
+		}),
+	);
 	assert.equal(message?.type, "engine_keybindings_reloaded");
 	if (message?.type !== "engine_keybindings_reloaded") return;
 	assert.deepEqual(message.state.userBindings["app.tools.expand"], ["", "ctrl+x", ""]);
@@ -175,7 +193,7 @@ test("keybinding state protocol preserves raw ordered arrays", () => {
 	assert.deepEqual(message.state.shortcuts, [{ key: "ctrl+y", description: "fixture" }]);
 });
 
-test.serial("late host attachment receives the latest committed child state", async () => {
+test.sequential("late host attachment receives the latest committed child state", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-late-attach-"));
 	writeExpandBinding(tempDir, "ctrl+x");
 	const client = createClient(tempDir);
@@ -185,10 +203,13 @@ test.serial("late host attachment receives the latest committed child state", as
 		await client.waitForInteractiveEngineBound();
 		writeExpandBinding(tempDir, "ctrl+y");
 		await client.requestInternal<void>({ type: "reload" });
-		const detach = attachInteractiveEngineKeybindingSync({
-			onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
-			onKeybindingState: (listener) => client.onInteractiveEngineKeybindingState(listener),
-		}, hostKeybindings);
+		const detach = attachInteractiveEngineKeybindingSync(
+			{
+				onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
+				onKeybindingState: (listener) => client.onInteractiveEngineKeybindingState(listener),
+			},
+			hostKeybindings,
+		);
 		assert.deepEqual(hostKeybindings.getKeys("app.tools.expand"), ["ctrl+y"]);
 		detach();
 	} finally {
@@ -197,8 +218,7 @@ test.serial("late host attachment receives the latest committed child state", as
 	}
 });
 
-
-test.serial("isolated child renders Atomic's default expand key on collapsed skill reads", async () => {
+test.sequential("isolated child renders Atomic's default expand key on collapsed skill reads", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-"));
 	const client = createClient(tempDir);
 	try {
@@ -213,7 +233,7 @@ test.serial("isolated child renders Atomic's default expand key on collapsed ski
 	}
 });
 
-test.serial("isolated child renders the host-effective custom expand key and preserves expansion", async () => {
+test.sequential("isolated child renders the host-effective custom expand key and preserves expansion", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-remap-"));
 	writeExpandBinding(tempDir, "ctrl+x");
 	const hostKeybindings = KeybindingsManager.create(tempDir);
@@ -236,7 +256,7 @@ test.serial("isolated child renders the host-effective custom expand key and pre
 	}
 });
 
-test.serial("direct RPC reload updates one shared global and injected manager in place", async () => {
+test.sequential("direct RPC reload updates one shared global and injected manager in place", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-reload-"));
 	writeExpandBinding(tempDir, "ctrl+x");
 	const sessionStartFile = join(tempDir, "session-start-bindings.txt");
@@ -246,11 +266,16 @@ test.serial("direct RPC reload updates one shared global and injected manager in
 	});
 	const hostKeybindings = KeybindingsManager.create(tempDir);
 	const hostIdentity = hostKeybindings;
-	const detachHostSync = attachInteractiveEngineKeybindingSync({
-		onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
-	}, hostKeybindings);
+	const detachHostSync = attachInteractiveEngineKeybindingSync(
+		{
+			onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
+		},
+		hostKeybindings,
+	);
 	try {
-		const opened = nextMessage(client, "engine_custom_open", (message) => message.componentId.startsWith("remote_component_"));
+		const opened = nextMessage(client, "engine_custom_open", (message) =>
+			message.componentId.startsWith("remote_component_"),
+		);
 		await client.start();
 		await client.waitForInteractiveEngineBound();
 		const open = await opened;
@@ -289,7 +314,7 @@ test.serial("direct RPC reload updates one shared global and injected manager in
 	}
 });
 
-test.serial("extension command-context reload updates the existing shared manager", async () => {
+test.sequential("extension command-context reload updates the existing shared manager", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-context-reload-"));
 	writeExpandBinding(tempDir, "ctrl+x");
 	const sessionStartFile = join(tempDir, "session-start-bindings.txt");
@@ -303,12 +328,19 @@ test.serial("extension command-context reload updates the existing shared manage
 	initTheme("dark");
 	const editor = new CustomEditor(new TUI(new FakeTerminal()), getEditorTheme(), hostKeybindings);
 	let expandDispatches = 0;
-	editor.onAction("app.tools.expand", () => { expandDispatches++; });
-	const detachHostSync = attachInteractiveEngineKeybindingSync({
-		onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
-	}, hostKeybindings);
+	editor.onAction("app.tools.expand", () => {
+		expandDispatches++;
+	});
+	const detachHostSync = attachInteractiveEngineKeybindingSync(
+		{
+			onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
+		},
+		hostKeybindings,
+	);
 	try {
-		const opened = nextMessage(client, "engine_custom_open", (message) => message.componentId.startsWith("remote_component_"));
+		const opened = nextMessage(client, "engine_custom_open", (message) =>
+			message.componentId.startsWith("remote_component_"),
+		);
 		await client.start();
 		await client.waitForInteractiveEngineBound();
 		const open = await opened;

@@ -8,7 +8,7 @@ import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionHeader, SessionInfo, SessionListProgress } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
+import type { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -233,12 +233,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 		});
 		const { createSessionManager } = await import("../src/main-session.ts");
 
-		const session = await createSessionManager(
-			parseArgs(["--session", workflowPath]),
-			cwd,
-			dir,
-			settingsManager,
-		);
+		const session = await createSessionManager(parseArgs(["--session", workflowPath]), cwd, dir, settingsManager);
 		expect(session.getSessionFile()).toBe(workflowPath);
 		expect(session.getHeader()).toMatchObject({
 			internal: true,

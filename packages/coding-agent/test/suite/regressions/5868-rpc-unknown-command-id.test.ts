@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.ts";
 import { runRpcMode } from "../../../src/modes/rpc/rpc-mode.ts";
-import { createHarness, type Harness } from "../harness.ts";
 import { withNormalRpcEnvironment } from "../../normal-rpc-environment.ts";
+import { createHarness, type Harness } from "../harness.ts";
 
 // Regression for https://github.com/earendil-works/pi/issues/5868
 
@@ -87,28 +87,33 @@ describe("RPC unknown command responses (#5868)", () => {
 		rpcIo.lineHandler = undefined;
 	});
 
-	test.each(["foobar", "context_compact"])("preserves the request id and rejects removed/unknown command %s", async (command) => {
-		const listenerSnapshot = takeListenerSnapshot();
-		const harness = await createHarness();
+	test.each(["foobar", "context_compact"])(
+		"preserves the request id and rejects removed/unknown command %s",
+		async (command) => {
+			const listenerSnapshot = takeListenerSnapshot();
+			const harness = await createHarness();
 
-		try {
-			withNormalRpcEnvironment(() => { void runRpcMode(createRuntimeHost(harness)); });
-			await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
-
-			rpcIo.lineHandler?.(JSON.stringify({ id: "test", type: command }));
-
-			await vi.waitFor(() => {
-				expect(parseOutputLines()).toContainEqual({
-					id: "test",
-					type: "response",
-					command,
-					success: false,
-					error: `Unknown command: ${command}`,
+			try {
+				withNormalRpcEnvironment(() => {
+					void runRpcMode(createRuntimeHost(harness));
 				});
-			});
-		} finally {
-			harness.cleanup();
-			restoreListeners(listenerSnapshot);
-		}
-	});
+				await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
+
+				rpcIo.lineHandler?.(JSON.stringify({ id: "test", type: command }));
+
+				await vi.waitFor(() => {
+					expect(parseOutputLines()).toContainEqual({
+						id: "test",
+						type: "response",
+						command,
+						success: false,
+						error: `Unknown command: ${command}`,
+					});
+				});
+			} finally {
+				harness.cleanup();
+				restoreListeners(listenerSnapshot);
+			}
+		},
+	);
 });

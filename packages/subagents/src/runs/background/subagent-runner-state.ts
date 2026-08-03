@@ -1,11 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl } from "../../shared/artifacts.ts";
+import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import type { TokenUsage } from "../../shared/types.ts";
 import { extractTextFromContent, extractToolArgsPreview } from "../../shared/utils.ts";
-import { DEFAULT_CONTROL_CONFIG, buildControlEvent, claimControlNotification, deriveActivityState, formatControlIntercomMessage, formatControlNoticeMessage } from "../shared/subagent-control.ts";
-import { flattenSteps, isDynamicRunnerGroup, isParallelGroup } from "../shared/parallel-utils.ts";
-import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import {
 	createMutatingFailureState,
 	didMutatingToolFail,
@@ -17,13 +15,40 @@ import {
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
 } from "../shared/long-running-guard.ts";
-import type { TokenUsage } from "../../shared/types.ts";
-import type { ChildEvent, RunnerExecutionState, RunnerStatusPayload, RunnerStatusStep, SubagentRunConfig } from "./subagent-runner-types.ts";
+import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
+import { flattenSteps, isDynamicRunnerGroup, isParallelGroup } from "../shared/parallel-utils.ts";
+import {
+	buildControlEvent,
+	claimControlNotification,
+	DEFAULT_CONTROL_CONFIG,
+	deriveActivityState,
+	formatControlIntercomMessage,
+	formatControlNoticeMessage,
+} from "../shared/subagent-control.ts";
+import type {
+	ChildEvent,
+	RunnerExecutionState,
+	RunnerStatusPayload,
+	RunnerStatusStep,
+	SubagentRunConfig,
+} from "./subagent-runner-types.ts";
 import { appendRecentStepOutput, resetStepLiveDetail } from "./subagent-runner-utils.ts";
 
 const mutatingFailureWindowMs = 5 * 60_000;
 
-function initialStepStatus(step: { agent: string; phase?: string; label?: string; outputName?: string; structured?: boolean; sessionFile?: string; skills?: string[] | false; model?: string; thinking?: string; fastMode?: boolean; modelCandidates?: string[] }): RunnerStatusStep {
+function initialStepStatus(step: {
+	agent: string;
+	phase?: string;
+	label?: string;
+	outputName?: string;
+	structured?: boolean;
+	sessionFile?: string;
+	skills?: string[] | false;
+	model?: string;
+	thinking?: string;
+	fastMode?: boolean;
+	modelCandidates?: string[];
+}): RunnerStatusStep {
 	return {
 		agent: step.agent,
 		phase: step.phase,
@@ -36,14 +61,20 @@ function initialStepStatus(step: { agent: string; phase?: string; label?: string
 		model: step.model,
 		thinking: step.thinking,
 		...(step.fastMode ? { fastMode: true } : {}),
-		attemptedModels: step.modelCandidates && step.modelCandidates.length > 0 ? step.modelCandidates : step.model ? [step.model] : undefined,
+		attemptedModels:
+			step.modelCandidates && step.modelCandidates.length > 0
+				? step.modelCandidates
+				: step.model
+					? [step.model]
+					: undefined,
 		recentTools: [],
 		recentOutput: [],
 	};
 }
 
 export function createRunnerExecutionState(config: SubagentRunConfig): RunnerExecutionState {
-	const { id, steps, resultPath, cwd, placeholder, taskIndex, totalTasks, maxOutput, artifactsDir, artifactConfig } = config;
+	const { id, steps, resultPath, cwd, placeholder, taskIndex, totalTasks, maxOutput, artifactsDir, artifactConfig } =
+		config;
 	const overallStartTime = Date.now();
 	const shareEnabled = config.share === true;
 	const asyncDir = config.asyncDir;
@@ -79,9 +110,8 @@ export function createRunnerExecutionState(config: SubagentRunConfig): RunnerExe
 		}
 	}
 	const flatSteps = flattenSteps(steps);
-	const sessionEnabled = Boolean(config.sessionDir)
-		|| shareEnabled
-		|| flatSteps.some((step) => Boolean(step.sessionFile));
+	const sessionEnabled =
+		Boolean(config.sessionDir) || shareEnabled || flatSteps.some((step) => Boolean(step.sessionFile));
 	const statusPayload: RunnerStatusPayload = {
 		runId: id,
 		...(config.sessionId ? { sessionId: config.sessionId } : {}),
@@ -139,7 +169,10 @@ export function createRunnerExecutionState(config: SubagentRunConfig): RunnerExe
 	return state;
 }
 
-function emitNestedSelfEvent(state: RunnerExecutionState, type: "subagent.nested.updated" | "subagent.nested.completed"): void {
+function emitNestedSelfEvent(
+	state: RunnerExecutionState,
+	type: "subagent.nested.updated" | "subagent.nested.completed",
+): void {
 	const { config, statusPayload, asyncDir, id } = state;
 	if (!config.nestedRoute || !config.nestedSelf) return;
 	try {
@@ -167,7 +200,9 @@ function refreshWorkflowGraph(state: RunnerExecutionState): void {
 	const { config, statusPayload } = state;
 	if (!config.workflowGraph) return;
 	const graph = structuredClone(statusPayload.workflowGraph ?? config.workflowGraph);
-	const normalize = (status: RunnerStatusStep["status"]): "pending" | "running" | "completed" | "failed" | "paused" | "detached" => {
+	const normalize = (
+		status: RunnerStatusStep["status"],
+	): "pending" | "running" | "completed" | "failed" | "paused" | "detached" => {
 		if (status === "complete" || status === "completed") return "completed";
 		if (status === "running" || status === "failed" || status === "paused" || status === "pending") return status;
 		return "pending";
@@ -197,10 +232,20 @@ function refreshWorkflowGraph(state: RunnerExecutionState): void {
 export function writeStatusPayload(state: RunnerExecutionState): void {
 	refreshWorkflowGraph(state);
 	writeAtomicJson(state.statusPath, state.statusPayload);
-	emitNestedSelfEvent(state, state.statusPayload.state === "running" || state.statusPayload.state === "queued" ? "subagent.nested.updated" : "subagent.nested.completed");
+	emitNestedSelfEvent(
+		state,
+		state.statusPayload.state === "running" || state.statusPayload.state === "queued"
+			? "subagent.nested.updated"
+			: "subagent.nested.completed",
+	);
 }
 
-export function markDynamicGraphGroup(state: RunnerExecutionState, stepIndex: number, status: "completed" | "failed" | "running", error?: string): void {
+export function markDynamicGraphGroup(
+	state: RunnerExecutionState,
+	stepIndex: number,
+	status: "completed" | "failed" | "running",
+	error?: string,
+): void {
 	const groupNode = state.statusPayload.workflowGraph?.nodes.find((node) => node.id === `step-${stepIndex}`);
 	if (!groupNode) return;
 	groupNode.status = status;
@@ -214,7 +259,8 @@ function stepOutputActivityAt(state: RunnerExecutionState, index: number): numbe
 	try {
 		lastActivityAt = Math.max(lastActivityAt, fs.statSync(outputPath).mtimeMs);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`Failed to inspect async output file '${outputPath}':`, error);
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+			console.error(`Failed to inspect async output file '${outputPath}':`, error);
 	}
 	return lastActivityAt;
 }
@@ -223,25 +269,40 @@ function appendControlEvent(state: RunnerExecutionState, event: ReturnType<typeo
 	const { controlConfig, config, statusPayload, eventsPath } = state;
 	if (!controlConfig.enabled) return;
 	const childIntercomTarget = config.childIntercomTargets?.[event.index ?? statusPayload.currentStep];
-	const channels = event.type === "active_long_running"
-		? controlConfig.notifyChannels.filter((channel) => channel !== "intercom")
-		: controlConfig.notifyChannels;
-	if (channels.length === 0 || !claimControlNotification(controlConfig, event, state.emittedControlEventKeys, childIntercomTarget)) return;
-	appendJsonl(eventsPath, JSON.stringify({
-		type: "subagent.control",
-		event,
-		channels,
-		childIntercomTarget,
-		noticeText: formatControlNoticeMessage(event, childIntercomTarget),
-		...(config.controlIntercomTarget && channels.includes("intercom") ? {
-			intercom: { to: config.controlIntercomTarget, message: formatControlIntercomMessage(event, childIntercomTarget) },
-		} : {}),
-	}));
+	const channels =
+		event.type === "active_long_running"
+			? controlConfig.notifyChannels.filter((channel) => channel !== "intercom")
+			: controlConfig.notifyChannels;
+	if (
+		channels.length === 0 ||
+		!claimControlNotification(controlConfig, event, state.emittedControlEventKeys, childIntercomTarget)
+	)
+		return;
+	appendJsonl(
+		eventsPath,
+		JSON.stringify({
+			type: "subagent.control",
+			event,
+			channels,
+			childIntercomTarget,
+			noticeText: formatControlNoticeMessage(event, childIntercomTarget),
+			...(config.controlIntercomTarget && channels.includes("intercom")
+				? {
+						intercom: {
+							to: config.controlIntercomTarget,
+							message: formatControlIntercomMessage(event, childIntercomTarget),
+						},
+					}
+				: {}),
+		}),
+	);
 }
 
 function syncTopLevelCurrentTool(statusPayload: RunnerStatusPayload): void {
 	const activeStep = statusPayload.steps
-		.filter((step) => step.status === "running" && typeof step.currentTool === "string" && step.currentTool.length > 0)
+		.filter(
+			(step) => step.status === "running" && typeof step.currentTool === "string" && step.currentTool.length > 0,
+		)
 		.sort((left, right) => (right.currentToolStartedAt ?? 0) - (left.currentToolStartedAt ?? 0))[0];
 	statusPayload.currentTool = activeStep?.currentTool;
 	statusPayload.currentToolStartedAt = activeStep?.currentToolStartedAt;
@@ -252,23 +313,51 @@ function maybeEmitActiveLongRunning(state: RunnerExecutionState, flatIndex: numb
 	const { controlConfig, statusPayload, id } = state;
 	if (!controlConfig.enabled || state.activeLongRunningSteps.has(flatIndex)) return false;
 	const step = statusPayload.steps[flatIndex];
-	if (!step || step.status !== "running" || step.activityState === "needs_attention") return false;
-	const reason = nextLongRunningTrigger(controlConfig, { startedAt: step.startedAt ?? state.overallStartTime, now, turns: step.turnCount ?? 0, tokens: step.tokens?.total ?? 0 });
+	if (step?.status !== "running" || step.activityState === "needs_attention") return false;
+	const reason = nextLongRunningTrigger(controlConfig, {
+		startedAt: step.startedAt ?? state.overallStartTime,
+		now,
+		turns: step.turnCount ?? 0,
+		tokens: step.tokens?.total ?? 0,
+	});
 	if (!reason) return false;
 	state.activeLongRunningSteps.add(flatIndex);
 	const previous = step.activityState;
 	step.activityState = "active_long_running";
-	statusPayload.activityState = statusPayload.activityState === "needs_attention" ? "needs_attention" : "active_long_running";
-	appendControlEvent(state, buildControlEvent({
-		type: "active_long_running", from: previous, to: "active_long_running", runId: id, agent: step.agent, index: flatIndex, ts: now,
-		message: `${step.agent} is still active but long-running`, reason, turns: step.turnCount, tokens: step.tokens?.total, toolCount: step.toolCount,
-		currentTool: step.currentTool, currentToolDurationMs: step.currentToolStartedAt ? Math.max(0, now - step.currentToolStartedAt) : undefined,
-		currentPath: step.currentPath, elapsedMs: now - (step.startedAt ?? state.overallStartTime),
-	}));
+	statusPayload.activityState =
+		statusPayload.activityState === "needs_attention" ? "needs_attention" : "active_long_running";
+	appendControlEvent(
+		state,
+		buildControlEvent({
+			type: "active_long_running",
+			from: previous,
+			to: "active_long_running",
+			runId: id,
+			agent: step.agent,
+			index: flatIndex,
+			ts: now,
+			message: `${step.agent} is still active but long-running`,
+			reason,
+			turns: step.turnCount,
+			tokens: step.tokens?.total,
+			toolCount: step.toolCount,
+			currentTool: step.currentTool,
+			currentToolDurationMs: step.currentToolStartedAt ? Math.max(0, now - step.currentToolStartedAt) : undefined,
+			currentPath: step.currentPath,
+			elapsedMs: now - (step.startedAt ?? state.overallStartTime),
+		}),
+	);
 	return true;
 }
 
-export function updateStepModel(state: RunnerExecutionState, flatIndex: number, model: string | undefined, thinking: string | undefined, fastMode?: boolean, now = Date.now()): void {
+export function updateStepModel(
+	state: RunnerExecutionState,
+	flatIndex: number,
+	model: string | undefined,
+	thinking: string | undefined,
+	fastMode?: boolean,
+	now = Date.now(),
+): void {
 	const step = state.statusPayload.steps[flatIndex];
 	if (!step) return;
 	step.model = model;
@@ -311,12 +400,50 @@ export function updateStepFromChildEvent(state: RunnerExecutionState, flatIndex:
 		appendRecentStepOutput(step, resultText.split("\n").slice(-10));
 		if (toolSnapshot?.mutates && didMutatingToolFail(resultText)) {
 			const failureState = state.mutatingFailureStates[flatIndex]!;
-			recordMutatingFailure(failureState, { tool: toolSnapshot.tool, path: toolSnapshot.path, error: resultText.split("\n").find((line) => line.trim())?.trim().slice(0, 180) ?? "mutating tool failed", ts: now }, mutatingFailureWindowMs);
-			if (state.controlConfig.enabled && shouldEscalateMutatingFailures(failureState, state.controlConfig.failedToolAttemptsBeforeAttention) && step.activityState !== "needs_attention") {
+			recordMutatingFailure(
+				failureState,
+				{
+					tool: toolSnapshot.tool,
+					path: toolSnapshot.path,
+					error:
+						resultText
+							.split("\n")
+							.find((line) => line.trim())
+							?.trim()
+							.slice(0, 180) ?? "mutating tool failed",
+					ts: now,
+				},
+				mutatingFailureWindowMs,
+			);
+			if (
+				state.controlConfig.enabled &&
+				shouldEscalateMutatingFailures(failureState, state.controlConfig.failedToolAttemptsBeforeAttention) &&
+				step.activityState !== "needs_attention"
+			) {
 				const previous = step.activityState;
 				step.activityState = "needs_attention";
 				state.statusPayload.activityState = "needs_attention";
-				appendControlEvent(state, buildControlEvent({ type: "needs_attention", from: previous, to: "needs_attention", runId: state.id, agent: step.agent, index: flatIndex, ts: now, message: `${step.agent} needs attention after repeated mutating tool failures`, reason: "tool_failures", turns: step.turnCount, tokens: step.tokens?.total, toolCount: step.toolCount, currentTool: toolSnapshot.tool, currentToolDurationMs: toolSnapshot.startedAt ? Math.max(0, now - toolSnapshot.startedAt) : undefined, currentPath: toolSnapshot.path, recentFailureSummary: summarizeRecentMutatingFailures(failureState) }));
+				appendControlEvent(
+					state,
+					buildControlEvent({
+						type: "needs_attention",
+						from: previous,
+						to: "needs_attention",
+						runId: state.id,
+						agent: step.agent,
+						index: flatIndex,
+						ts: now,
+						message: `${step.agent} needs attention after repeated mutating tool failures`,
+						reason: "tool_failures",
+						turns: step.turnCount,
+						tokens: step.tokens?.total,
+						toolCount: step.toolCount,
+						currentTool: toolSnapshot.tool,
+						currentToolDurationMs: toolSnapshot.startedAt ? Math.max(0, now - toolSnapshot.startedAt) : undefined,
+						currentPath: toolSnapshot.path,
+						recentFailureSummary: summarizeRecentMutatingFailures(failureState),
+					}),
+				);
 			}
 		} else if (toolSnapshot?.mutates) {
 			resetMutatingFailureState(state.mutatingFailureStates[flatIndex]!);
@@ -330,10 +457,18 @@ export function updateStepFromChildEvent(state: RunnerExecutionState, flatIndex:
 			const output = usage.output ?? usage.outputTokens ?? 0;
 			const previousInput = step.tokens?.input ?? 0;
 			const previousOutput = step.tokens?.output ?? 0;
-			step.tokens = { input: previousInput + input, output: previousOutput + output, total: previousInput + previousOutput + input + output };
+			step.tokens = {
+				input: previousInput + input,
+				output: previousOutput + output,
+				total: previousInput + previousOutput + input + output,
+			};
 			const totalInput = state.statusPayload.totalTokens?.input ?? 0;
 			const totalOutput = state.statusPayload.totalTokens?.output ?? 0;
-			state.statusPayload.totalTokens = { input: totalInput + input, output: totalOutput + output, total: totalInput + totalOutput + input + output };
+			state.statusPayload.totalTokens = {
+				input: totalInput + input,
+				output: totalOutput + output,
+				total: totalInput + totalOutput + input + output,
+			};
 		}
 		state.statusPayload.turnCount = Math.max(state.statusPayload.turnCount ?? 0, step.turnCount);
 	}
@@ -358,12 +493,28 @@ export function updateRunnerActivityState(state: RunnerExecutionState, now: numb
 			step.lastActivityAt = lastActivityAt;
 			changed = true;
 		}
-		const idleState = deriveActivityState({ config: state.controlConfig, startedAt: step.startedAt ?? state.overallStartTime, lastActivityAt, now });
+		const idleState = deriveActivityState({
+			config: state.controlConfig,
+			startedAt: step.startedAt ?? state.overallStartTime,
+			lastActivityAt,
+			now,
+		});
 		if (idleState === "needs_attention") {
 			const previous = step.activityState;
 			step.activityState = "needs_attention";
 			if (previous !== "needs_attention") {
-				appendControlEvent(state, buildControlEvent({ from: previous, to: "needs_attention", runId: state.id, agent: step.agent, index, ts: now, lastActivityAt }));
+				appendControlEvent(
+					state,
+					buildControlEvent({
+						from: previous,
+						to: "needs_attention",
+						runId: state.id,
+						agent: step.agent,
+						index,
+						ts: now,
+						lastActivityAt,
+					}),
+				);
 				changed = true;
 			}
 		} else if (maybeEmitActiveLongRunning(state, index, now)) changed = true;

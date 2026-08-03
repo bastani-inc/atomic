@@ -15,11 +15,19 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
-
 const compactionMocks = vi.hoisted(() => ({
 	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
-		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
-		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 190_000, tokensAfter: 120_000, percentReduction: 36.8 },
+		text: "[User]: retained test context\n(filtered 1 lines)",
+		ranges: [{ start: 2, end: 2 }],
+		stats: {
+			linesBefore: 2,
+			linesDeleted: 1,
+			linesKept: 1,
+			rangeCount: 1,
+			tokensBefore: 190_000,
+			tokensAfter: 120_000,
+			percentReduction: 36.8,
+		},
 		rung: "planned" as const,
 		keptTail: true,
 	})),
@@ -28,22 +36,41 @@ const compactionMocks = vi.hoisted(() => ({
 vi.mock("../src/core/compaction/index.js", () => ({
 	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
 	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
-	calculateContextTokens: (usage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens?: number }) =>
-		usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+	calculateContextTokens: (usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		totalTokens?: number;
+	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
 	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
 	estimateContextTokens: compactionMocks.estimateContextTokens,
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	MIN_COMPACTABLE_REGION_LINES: 20,
-	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
-		firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
-		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 190_000,
-		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
-		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
-	}) : undefined,
-	shouldCompact: (contextTokens: number, contextWindow: number, settings: { enabled: boolean; reserveTokens: number }) =>
-		settings.enabled && contextTokens > contextWindow - settings.reserveTokens,
+	prepareCompactionBoundary: (entries: Array<{ id: string }>) =>
+		entries[0]
+			? {
+					firstKeptEntryId: entries[0].id,
+					region: {
+						__brand: "NumberedRegion",
+						lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)],
+						headerLineNumbers: new Set([1]),
+						priorMarkerNs: new Map(),
+						tokenEstimate: 10,
+					},
+					regionEntryIds: [entries[0].id],
+					keptTailMessageCount: 1,
+					tokensBefore: 190_000,
+					parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+					settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+				}
+			: undefined,
+	shouldCompact: (
+		contextTokens: number,
+		contextWindow: number,
+		settings: { enabled: boolean; reserveTokens: number },
+	) => settings.enabled && contextTokens > contextWindow - settings.reserveTokens,
 }));
 
 describe("AgentSession auto-compaction length-stop resume", () => {
@@ -54,7 +81,12 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 	beforeEach(async () => {
 		compactionMocks.runVerbatimCompaction.mockClear();
 		compactionMocks.estimateContextTokens.mockReset();
-		compactionMocks.estimateContextTokens.mockReturnValue({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null });
+		compactionMocks.estimateContextTokens.mockReturnValue({
+			tokens: 0,
+			usageTokens: 0,
+			trailingTokens: 0,
+			lastUsageIndex: null,
+		});
 		tempDir = join(tmpdir(), `pi-auto-compaction-length-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
@@ -62,11 +94,19 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, contextWindow: 200_000 };
 		const agent = new Agent({ initialState: { model, systemPrompt: "Test", tools: [] } });
 		sessionManager = SessionManager.inMemory();
-		sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "existing compactable context" }],
+			timestamp: Date.now(),
+		});
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -173,9 +213,16 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			assistant,
 		];
 		const runAutoCompactionSpy = vi
-			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
 			.mockResolvedValue();
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
@@ -191,9 +238,16 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			totalTokens: 190_000,
 		};
 		const runAutoCompactionSpy = vi
-			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
 			.mockResolvedValue();
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
@@ -215,9 +269,16 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			lastUsageIndex: 1,
 		});
 		const runAutoCompactionSpy = vi
-			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
 			.mockResolvedValue();
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
@@ -238,16 +299,29 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			trailingTokens: 0,
 			lastUsageIndex: 1,
 		});
-		(session as unknown as { _outputBudgetErrorContinuationAttempts: number })._outputBudgetErrorContinuationAttempts =
-			MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS;
+		(
+			session as unknown as { _outputBudgetErrorContinuationAttempts: number }
+		)._outputBudgetErrorContinuationAttempts = MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS;
 		const runAutoCompactionSpy = vi
-			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
 			.mockResolvedValue();
 		const emitted: Array<{ type: string; reason?: string; willRetry?: boolean; errorMessage?: string }> = [];
-		vi.spyOn(session as unknown as { _emit: (event: { type: string; reason?: string; willRetry?: boolean; errorMessage?: string }) => void }, "_emit").mockImplementation((event) => {
+		vi.spyOn(
+			session as unknown as {
+				_emit: (event: { type: string; reason?: string; willRetry?: boolean; errorMessage?: string }) => void;
+			},
+			"_emit",
+		).mockImplementation((event) => {
 			emitted.push(event);
 		});
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
@@ -279,9 +353,16 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			lastUsageIndex: 1,
 		});
 		const runAutoCompactionSpy = vi
-			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
 			.mockResolvedValue();
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
@@ -303,9 +384,16 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			lastUsageIndex: 1,
 		});
 		const runAutoCompactionSpy = vi
-			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
 			.mockResolvedValue();
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
@@ -329,9 +417,16 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			lastUsageIndex: 1,
 		});
 		const runAutoCompactionSpy = vi
-			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
 			.mockResolvedValue();
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
@@ -354,10 +449,15 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		});
 		const waitSpy = vi.spyOn(session, "waitForRetry").mockResolvedValue();
 		const drainSpy = vi
-			.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages")
+			.spyOn(
+				session as unknown as { _continueQueuedAgentMessages: () => Promise<void> },
+				"_continueQueuedAgentMessages",
+			)
 			.mockResolvedValue();
 		const runAutoCompaction = (
-			session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
 		)._runAutoCompaction.bind(session);
 
 		await runAutoCompaction("threshold", true);
@@ -383,10 +483,15 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		});
 		const waitSpy = vi.spyOn(session, "waitForRetry").mockResolvedValue();
 		const drainSpy = vi
-			.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages")
+			.spyOn(
+				session as unknown as { _continueQueuedAgentMessages: () => Promise<void> },
+				"_continueQueuedAgentMessages",
+			)
 			.mockResolvedValue();
 		const runAutoCompaction = (
-			session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
 		)._runAutoCompaction.bind(session);
 
 		await runAutoCompaction("threshold", true);
@@ -408,15 +513,25 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
 		const runAutoCompactionSpy = vi
-			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
 			.mockResolvedValue();
 		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
 			// The incomplete length-stopped assistant is dropped so the anchor is a user message.
 			expect(session.agent.state.messages.at(-1)?.role).toBe("user");
 		});
 		vi.spyOn(session, "waitForRetry").mockResolvedValue();
-		vi.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages").mockResolvedValue();
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		vi.spyOn(
+			session as unknown as { _continueQueuedAgentMessages: () => Promise<void> },
+			"_continueQueuedAgentMessages",
+		).mockResolvedValue();
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 		await vi.advanceTimersByTimeAsync(100);
@@ -436,7 +551,9 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			session as unknown as { _resumeAfterLengthTruncation: () => void },
 			"_resumeAfterLengthTruncation",
 		);
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
@@ -454,7 +571,9 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			"_resumeAfterLengthTruncation",
 		);
 		const checkCompaction = (
-			session as unknown as { _checkCompaction: (message: AssistantMessage, skipAbortedCheck: boolean) => Promise<void> }
+			session as unknown as {
+				_checkCompaction: (message: AssistantMessage, skipAbortedCheck: boolean) => Promise<void>;
+			}
 		)._checkCompaction.bind(session);
 
 		// skipAbortedCheck=false marks the pre-prompt path; a new user turn must not resume the old one.
@@ -469,10 +588,13 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
 			assistant,
 		];
-		(session as unknown as { _lengthContinuationAttempts: number })._lengthContinuationAttempts = MAX_LENGTH_CONTINUATION_ATTEMPTS;
+		(session as unknown as { _lengthContinuationAttempts: number })._lengthContinuationAttempts =
+			MAX_LENGTH_CONTINUATION_ATTEMPTS;
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		vi.spyOn(session, "waitForRetry").mockResolvedValue();
-		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 		await vi.advanceTimersByTimeAsync(100);

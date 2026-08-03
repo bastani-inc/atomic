@@ -2,9 +2,23 @@ import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import type { AgentConfig, AgentScope } from "../../agents/agents.ts";
 import type { IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import type { ModelInfo } from "../../shared/model-info.ts";
-import type { ArtifactConfig, ControlConfig, MaxOutputConfig, NestedRouteInfo, ResolvedControlConfig, SubagentState, SubagentToolResult, SUBAGENT_ACTIONS } from "../../shared/types.ts";
 import type { ChainStep } from "../../shared/settings.ts";
-import type { executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage, isAsyncAvailable } from "../background/async-execution.ts";
+import type {
+	ArtifactConfig,
+	ControlConfig,
+	MaxOutputConfig,
+	NestedRouteInfo,
+	ResolvedControlConfig,
+	SUBAGENT_ACTIONS,
+	SubagentState,
+	SubagentToolResult,
+} from "../../shared/types.ts";
+import type {
+	executeAsyncChain,
+	executeAsyncSingle,
+	formatAsyncStartedMessage,
+	isAsyncAvailable,
+} from "../background/async-execution.ts";
 import type { runSync } from "./execution.ts";
 
 export interface TaskParam {
@@ -111,7 +125,10 @@ export interface PreparedExecutionContext {
 	foregroundMode: "single" | "parallel" | "chain";
 	execData: ExecutionContextData;
 	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
-	writeNestedForegroundEvent: (type: "subagent.nested.started" | "subagent.nested.completed", result?: SubagentToolResult) => void;
+	writeNestedForegroundEvent: (
+		type: "subagent.nested.started" | "subagent.nested.completed",
+		result?: SubagentToolResult,
+	) => void;
 }
 
 export interface ExecutionContextBuildResult {

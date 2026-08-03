@@ -2,7 +2,6 @@ import { describe, expect, test, vi } from "vitest";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
-
 describeModelRegistry((context) => {
 	const { providerConfig, getModelsForProvider, writeRawModelsJson } = context;
 	describe("dynamic provider lifecycle", () => {
@@ -181,7 +180,6 @@ describeModelRegistry((context) => {
 			expect(registry.getProvider("anthropic")?.auth.oauth?.name).not.toBe("Custom Anthropic OAuth");
 		});
 
-
 		describe("dynamic provider override persistence", () => {
 			test("baseUrl-only override keeps built-in provider models after refresh", async () => {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
@@ -309,7 +307,6 @@ describeModelRegistry((context) => {
 				expect(getModelsForProvider(registry, "dynamic").map((model) => model.id)).toEqual(["new"]);
 			});
 
-
 			test("async catalog refresh returns partial provider errors without discarding successes", async () => {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const good = providerConfig("https://good.test/v1", [{ id: "old-good" }]);
@@ -318,7 +315,12 @@ describeModelRegistry((context) => {
 					...good,
 					refreshModels: async () => providerConfig("https://good.test/v1", [{ id: "new-good" }]).models!,
 				});
-				registry.registerProvider("bad", { ...bad, refreshModels: async ({ allowNetwork }) => { throw new Error(allowNetwork ? "catalog failed" : "cache fallback failed"); } });
+				registry.registerProvider("bad", {
+					...bad,
+					refreshModels: async ({ allowNetwork }) => {
+						throw new Error(allowNetwork ? "catalog failed" : "cache fallback failed");
+					},
+				});
 
 				const result = await getModelRuntime(registry).refresh();
 
@@ -348,9 +350,15 @@ describeModelRegistry((context) => {
 				let releaseStale!: () => void;
 				let markAllStaleStarted!: () => void;
 				let markAllStaleFinished!: () => void;
-				const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
-				const allStaleStarted = new Promise<void>((resolve) => { markAllStaleStarted = resolve; });
-				const allStaleFinished = new Promise<void>((resolve) => { markAllStaleFinished = resolve; });
+				const staleGate = new Promise<void>((resolve) => {
+					releaseStale = resolve;
+				});
+				const allStaleStarted = new Promise<void>((resolve) => {
+					markAllStaleStarted = resolve;
+				});
+				const allStaleFinished = new Promise<void>((resolve) => {
+					markAllStaleFinished = resolve;
+				});
 				let staleStartCount = 0;
 				let staleFinishCount = 0;
 				let persistedAfterStale: string[] | undefined;
@@ -421,9 +429,11 @@ describeModelRegistry((context) => {
 					availableModelIds: [allowed.id],
 				}));
 				await getModelRuntime(registry).refresh({ allowNetwork: false });
-				const availableIds = () => registry.getAvailable()
-					.filter((model) => model.provider === "github-copilot")
-					.map((model) => model.id);
+				const availableIds = () =>
+					registry
+						.getAvailable()
+						.filter((model) => model.provider === "github-copilot")
+						.map((model) => model.id);
 				expect(availableIds()).toEqual([allowed.id]);
 
 				registry.registerProvider("github-copilot", { headers: { "x-test": "1" } });
@@ -433,5 +443,4 @@ describeModelRegistry((context) => {
 			});
 		});
 	});
-
 });

@@ -1,13 +1,13 @@
 import { ModelsError } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { loginRuntimeOAuthProvider } from "../src/core/agent-session-runtime-auth.ts";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import {
 	isOAuthLoginCancelled,
 	normalizeOAuthLoginError,
 	OAuthLoginTransactionError,
 } from "../src/core/oauth-login.ts";
-import { loginRuntimeOAuthProvider } from "../src/core/agent-session-runtime-auth.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
 
 const callbacks = (signal?: AbortSignal) => ({
 	signal,
@@ -26,12 +26,16 @@ describe("OAuth cancellation normalization", () => {
 		controller.abort(new Error("cancelled by caller"));
 		expect(isOAuthLoginCancelled(controller.signal.reason, controller.signal)).toBe(true);
 		expect(isOAuthLoginCancelled(new Error("Login cancelled"))).toBe(true);
-		expect(isOAuthLoginCancelled(new Error("wrapped", { cause: new DOMException("aborted", "AbortError") }))).toBe(true);
+		expect(isOAuthLoginCancelled(new Error("wrapped", { cause: new DOMException("aborted", "AbortError") }))).toBe(
+			true,
+		);
 	});
 
 	it("does not classify ordinary failures or completed-transaction failures as cancellation", () => {
 		expect(isOAuthLoginCancelled(new Error("provider failed"))).toBe(false);
-		expect(isOAuthLoginCancelled(new OAuthLoginTransactionError(new DOMException("aborted", "AbortError")))).toBe(false);
+		expect(isOAuthLoginCancelled(new OAuthLoginTransactionError(new DOMException("aborted", "AbortError")))).toBe(
+			false,
+		);
 	});
 
 	it("normalizes cancellation while preserving the native cause", () => {
@@ -56,45 +60,53 @@ describe("OAuth cancellation normalization", () => {
 		const controller = new AbortController();
 		controller.abort();
 
-		await expect(loginRuntimeOAuthProvider(
-			{ modelRuntime } as never,
-			"kimi-coding",
-			callbacks(controller.signal),
-		)).rejects.toMatchObject({ message: "Login cancelled" });
+		await expect(
+			loginRuntimeOAuthProvider({ modelRuntime } as never, "kimi-coding", callbacks(controller.signal)),
+		).rejects.toMatchObject({ message: "Login cancelled" });
 		expect(await authStorage.read("kimi-coding")).toEqual(previous);
 	});
 
-
 	it("normalizes Kimi cancellation immediately after the device code is shown", async () => {
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
-			device_code: "device",
-			user_code: "KIMI-CODE",
-			verification_uri: "https://auth.kimi.com/device",
-			verification_uri_complete: "https://auth.kimi.com/device?code=KIMI-CODE",
-			interval: 1,
-			expires_in: 60,
-		}), { status: 200, headers: { "content-type": "application/json" } }));
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					device_code: "device",
+					user_code: "KIMI-CODE",
+					verification_uri: "https://auth.kimi.com/device",
+					verification_uri_complete: "https://auth.kimi.com/device?code=KIMI-CODE",
+					interval: 1,
+					expires_in: 60,
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			),
+		);
 		const authStorage = AuthStorage.inMemory();
 		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 		const controller = new AbortController();
 
-		await expect(loginRuntimeOAuthProvider(
-			{ modelRuntime } as never,
-			"kimi-coding",
-			{
+		await expect(
+			loginRuntimeOAuthProvider({ modelRuntime } as never, "kimi-coding", {
 				...callbacks(controller.signal),
 				onDeviceCode: () => controller.abort(new Error("user stopped")),
-			},
-		)).rejects.toMatchObject({ message: "Login cancelled" });
+			}),
+		).rejects.toMatchObject({ message: "Login cancelled" });
 		expect(fetch).toHaveBeenCalledOnce();
 		expect(await authStorage.read("kimi-coding")).toBeUndefined();
 	});
 	it("normalizes provider-owned runtime aborts", async () => {
 		const abort = new DOMException("aborted", "AbortError");
-		const session = { modelRuntime: { login: async () => { throw abort; } } };
+		const session = {
+			modelRuntime: {
+				login: async () => {
+					throw abort;
+				},
+			},
+		};
 
-		await expect(loginRuntimeOAuthProvider(session as never, "kimi-coding", callbacks()))
-			.rejects.toMatchObject({ message: "Login cancelled", cause: abort });
+		await expect(loginRuntimeOAuthProvider(session as never, "kimi-coding", callbacks())).rejects.toMatchObject({
+			message: "Login cancelled",
+			cause: abort,
+		});
 	});
 
 	it("does not relabel a persistence failure when the signal aborts during persistence", async () => {
@@ -112,7 +124,8 @@ describe("OAuth cancellation normalization", () => {
 			},
 		};
 
-		await expect(loginRuntimeOAuthProvider(session as never, "openrouter", callbacks(controller.signal)))
-			.rejects.toEqual(new OAuthLoginTransactionError(persistenceFailure));
+		await expect(
+			loginRuntimeOAuthProvider(session as never, "openrouter", callbacks(controller.signal)),
+		).rejects.toEqual(new OAuthLoginTransactionError(persistenceFailure));
 	});
 });

@@ -26,10 +26,7 @@ function parseFrontMatter(text: string, idFallback: string): TodoFrontMatter {
 		if (typeof parsed.title === "string") data.title = parsed.title;
 		if (typeof parsed.status === "string" && parsed.status) data.status = parsed.status;
 		if (typeof parsed.created_at === "string") data.created_at = parsed.created_at;
-		if (
-			typeof parsed.assigned_to_session === "string" &&
-			parsed.assigned_to_session.trim()
-		) {
+		if (typeof parsed.assigned_to_session === "string" && parsed.assigned_to_session.trim()) {
 			data.assigned_to_session = parsed.assigned_to_session;
 		}
 		if (Array.isArray(parsed.tags)) {
@@ -193,11 +190,7 @@ export async function ensureTodoExists(filePath: string, id: string): Promise<To
 	return readTodoFile(filePath, id);
 }
 
-export async function appendTodoBody(
-	filePath: string,
-	todo: TodoRecord,
-	text: string,
-): Promise<TodoRecord> {
+export async function appendTodoBody(filePath: string, todo: TodoRecord, text: string): Promise<TodoRecord> {
 	const spacer = todo.body.trim().length ? "\n\n" : "";
 	todo.body = `${todo.body.replace(/\s+$/, "")}${spacer}${text.trim()}\n`;
 	await writeTodoFile(filePath, todo);

@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type PromptTurnHarness = {
@@ -16,6 +16,7 @@ type PromptTurnHarness = {
 	deferredStartupPromise?: Promise<void>;
 	session: {
 		readonly isStreaming: boolean;
+		subscribe: (listener: (event: { type: string }) => void) => () => void;
 		resumeQueuedMessages: () => Promise<boolean>;
 		prompt: (text: string) => Promise<void>;
 	};
@@ -64,7 +65,10 @@ describe("interactive deferred startup first prompt readiness", () => {
 
 	it("loads extension tools, resources, and provider overrides before the first prompt", async () => {
 		const skillFile = join(tempDir, "startup-skill.md");
-		writeFileSync(skillFile, `---\nname: startup-skill\ndescription: Use when deferred startup resources are ready.\n---\n\n# Startup Skill\n`);
+		writeFileSync(
+			skillFile,
+			`---\nname: startup-skill\ndescription: Use when deferred startup resources are ready.\n---\n\n# Startup Skill\n`,
+		);
 		const deferredBaseUrl = "http://localhost:8080/deferred-startup";
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory();
@@ -118,6 +122,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 					get isStreaming() {
 						return session.isStreaming;
 					},
+					subscribe: vi.fn(() => () => {}),
 					resumeQueuedMessages: vi.fn(async () => false),
 					prompt: vi.fn(async (text: string) => {
 						order.push("prompt");

@@ -1,14 +1,14 @@
-import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider } from "@bastani/atomic";
+import { afterEach, describe, test } from "vitest";
 import { createAsyncJobTracker } from "../../packages/subagents/src/runs/background/async-job-tracker.js";
-import { stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
 import type { AsyncStatus, SubagentState } from "../../packages/subagents/src/shared/types.js";
+import { stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
-import { makeSnap, makeStage, makeStore, defaultTheme, visibleText } from "./overlay-graph-helpers.js";
+import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
 
 type SetWidgetArgs = Parameters<ExtensionContext["ui"]["setWidget"]>;
 

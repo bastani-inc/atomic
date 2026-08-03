@@ -42,19 +42,31 @@ function rowLineNumber(line: string): { lineNumber: number; isMatch: boolean } |
 	return { lineNumber: Number.parseInt(match[1] ?? match[2] ?? "0", 10), isMatch: match[1] !== undefined };
 }
 
-export function filterSearchOutputByLineRange(text: string, ranges: readonly SearchLineRange[] | undefined, contextBefore = 1, contextAfter = 3): string {
+export function filterSearchOutputByLineRange(
+	text: string,
+	ranges: readonly SearchLineRange[] | undefined,
+	contextBefore = 1,
+	contextAfter = 3,
+): string {
 	if (!ranges || ranges.length === 0) return text;
-	const inSelectedRange = (lineNumber: number): boolean => ranges.some((range) => lineNumber >= range.start && lineNumber <= range.end);
+	const inSelectedRange = (lineNumber: number): boolean =>
+		ranges.some((range) => lineNumber >= range.start && lineNumber <= range.end);
 	const acceptedMatches: number[] = [];
 	for (const line of text.split("\n")) {
 		const row = rowLineNumber(line);
 		if (row?.isMatch && inSelectedRange(row.lineNumber)) acceptedMatches.push(row.lineNumber);
 	}
 	if (acceptedMatches.length === 0) return "No matches found";
-	const keepLine = (lineNumber: number): boolean => acceptedMatches.some((matchLine) => lineNumber >= matchLine - contextBefore && lineNumber <= matchLine + contextAfter);
-	const filtered = text.split("\n").filter((line) => {
-		const row = rowLineNumber(line);
-		return row !== undefined && keepLine(row.lineNumber);
-	}).join("\n");
+	const keepLine = (lineNumber: number): boolean =>
+		acceptedMatches.some(
+			(matchLine) => lineNumber >= matchLine - contextBefore && lineNumber <= matchLine + contextAfter,
+		);
+	const filtered = text
+		.split("\n")
+		.filter((line) => {
+			const row = rowLineNumber(line);
+			return row !== undefined && keepLine(row.lineNumber);
+		})
+		.join("\n");
 	return filtered || "No matches found";
 }

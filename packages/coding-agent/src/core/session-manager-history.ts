@@ -1,9 +1,21 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { convertToLlm, createBranchSummaryMessage, createCustomMessage, createVerbatimCompactionMessage, normalizeMessageContent } from "./messages.ts";
-import { normalizeDerivedSessionEntries } from "./session-entry-normalization.ts";
-import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
-import type { CompactionEntry, FileEntry, SessionContext, SessionEntry, SessionTreeNode } from "./session-manager-types.ts";
+import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.ts";
+import {
+	convertToLlm,
+	createBranchSummaryMessage,
+	createCustomMessage,
+	createVerbatimCompactionMessage,
+	normalizeMessageContent,
+} from "./messages.ts";
+import { normalizeDerivedSessionEntries } from "./session-entry-normalization.ts";
+import type {
+	CompactionEntry,
+	FileEntry,
+	SessionContext,
+	SessionEntry,
+	SessionTreeNode,
+} from "./session-manager-types.ts";
 
 /** Build the single context message a durable entry contributes, if any. */
 function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
@@ -16,6 +28,7 @@ function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined 
 			entry.details,
 			entry.timestamp,
 			entry.excludeFromContext,
+			entry.stageAdmissionKey,
 		);
 	}
 	if (entry.type === "branch_summary" && typeof entry.summary === "string" && entry.summary.length > 0) {
@@ -60,7 +73,17 @@ export function getLatestCompactionBoundaryEntry(
 export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage[] {
 	if (entry.type === "message") return [normalizeMessageContent(entry.message)];
 	if (entry.type === "custom_message") {
-		return [createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp, entry.excludeFromContext)];
+		return [
+			createCustomMessage(
+				entry.customType,
+				entry.content,
+				entry.display,
+				entry.details,
+				entry.timestamp,
+				entry.excludeFromContext,
+				entry.stageAdmissionKey,
+			),
+		];
 	}
 	if (entry.type === "branch_summary" && entry.summary.length > 0) {
 		return [createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp)];
@@ -68,7 +91,14 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	if (entry.type === "compaction") {
 		const details = (entry as CompactionEntry<{ strategy?: string }>).details;
 		if (details?.strategy === "verbatim-lines") {
-			return [createVerbatimCompactionMessage(entry.summary, entry.tokensBefore, entry.timestamp, entry.details as VerbatimCompactionDetails)];
+			return [
+				createVerbatimCompactionMessage(
+					entry.summary,
+					entry.tokensBefore,
+					entry.timestamp,
+					entry.details as VerbatimCompactionDetails,
+				),
+			];
 		}
 	}
 	return [];
@@ -87,10 +117,15 @@ export function buildContextEntries(
 	const boundary = getLatestCompactionBoundaryEntry(path);
 	if (!boundary) return path;
 	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
-	const firstKeptIndex = path.findIndex((entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId);
-	return [boundary, ...(firstKeptIndex >= 0 ? path.slice(firstKeptIndex, boundaryIndex) : []), ...path.slice(boundaryIndex + 1)];
+	const firstKeptIndex = path.findIndex(
+		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
+	);
+	return [
+		boundary,
+		...(firstKeptIndex >= 0 ? path.slice(firstKeptIndex, boundaryIndex) : []),
+		...path.slice(boundaryIndex + 1),
+	];
 }
-
 
 /**
  * Build the session context from entries using tree traversal.
@@ -140,7 +175,7 @@ export function buildSessionContext(
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel;
-				} else if (entry.type === "model_change") {
+		} else if (entry.type === "model_change") {
 			model = { provider: entry.provider, modelId: entry.modelId };
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			model = { provider: entry.message.provider, modelId: entry.message.model };
@@ -164,7 +199,8 @@ export function buildSessionContext(
 		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
 	);
 	const keptTail = firstKeptIndex >= 0 ? serializeKeptTail(path.slice(firstKeptIndex, boundaryIndex)) : [];
-	const separator: TranscriptChunk[] = keptTail.length > 0 && boundary.summary.length > 0 ? [{ type: "text", text: "\n\n" }] : [];
+	const separator: TranscriptChunk[] =
+		keptTail.length > 0 && boundary.summary.length > 0 ? [{ type: "text", text: "\n\n" }] : [];
 	messages.push(
 		createVerbatimCompactionMessage(boundary.summary, boundary.tokensBefore, boundary.timestamp, boundary.details, [
 			...separator,

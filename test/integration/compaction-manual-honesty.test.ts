@@ -7,13 +7,13 @@
  * cannot prove the diagnostic half, so this one is written to disk.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MIN_COMPACTABLE_REGION_LINES } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { test } from "vitest";
 import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { MIN_COMPACTABLE_REGION_LINES } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { createRungSession, plannerScript } from "./compaction-rung-session.js";
 
 const THROTTLED = { errorMessage: "429 Too Many Requests" };
@@ -36,8 +36,14 @@ test("manual compaction with every model rate limited reports a real diagnostic 
 		await assert.rejects(() => built.session.compact({ preserve_recent: 2 }), /429 Too Many Requests/);
 
 		// Recoverable: every configured model was tried once, and nothing was written.
-		assert.deepEqual(calls.map((call) => call.provider), ["anthropic", "openai"]);
-		assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
+		assert.deepEqual(
+			calls.map((call) => call.provider),
+			["anthropic", "openai"],
+		);
+		assert.deepEqual(
+			built.manager.getBranch().filter((entry) => entry.type === "compaction"),
+			[],
+		);
 
 		const ends = built.events.filter((event) => event.type === "compaction_end") as Array<{
 			result?: { rung?: string };
@@ -104,7 +110,8 @@ test("an over-limit post-tool context with a tiny region persists a fresh bounda
 		assert.equal(details?.rung, "fresh");
 		// A region this small cannot be made rankable by changing models.
 		assert.ok(
-			(boundary as { details?: VerbatimCompactionDetails }).details!.stats.linesBefore < MIN_COMPACTABLE_REGION_LINES,
+			(boundary as { details?: VerbatimCompactionDetails }).details!.stats.linesBefore <
+				MIN_COMPACTABLE_REGION_LINES,
 			"the seeded region was not below the planner minimum",
 		);
 		assert.equal(calls.length, 0);
@@ -141,7 +148,10 @@ test("a fitting post-tool threshold crossing with a tiny region is a safe no-op"
 
 		// No throw, no boundary, no planner call, and the context is untouched.
 		assert.equal(rebuilt, before);
-		assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
+		assert.deepEqual(
+			built.manager.getBranch().filter((entry) => entry.type === "compaction"),
+			[],
+		);
 		assert.equal(calls.length, 0);
 		assert.equal(built.continueCalls(), 0);
 
@@ -227,7 +237,10 @@ test("a small recoverable region is still refused, never cleared", async () => {
 		});
 
 		assert.equal(result, undefined);
-		assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
+		assert.deepEqual(
+			built.manager.getBranch().filter((entry) => entry.type === "compaction"),
+			[],
+		);
 		assert.equal(calls.length, 0);
 	} finally {
 		built.dispose();
@@ -243,7 +256,10 @@ test("a caller cannot inject load_bearing urgency through the public compact doo
 		const injected = { preserve_recent: 2, urgency: "load_bearing" } as unknown as { preserve_recent: number };
 		await assert.rejects(() => built.session.compact(injected), /429 Too Many Requests/);
 
-		assert.deepEqual(built.manager.getBranch().filter((entry) => entry.type === "compaction"), []);
+		assert.deepEqual(
+			built.manager.getBranch().filter((entry) => entry.type === "compaction"),
+			[],
+		);
 		assert.equal(calls.length, 1);
 		assert.equal(built.continueCalls(), 0);
 

@@ -8,17 +8,19 @@
  * `ui.custom` seam and assert the identical handle semantics: select/cancel
  * resolution, row updates, header errors, owner-owned deletion, and close.
  */
-import { afterAll, beforeAll, describe, test } from "bun:test";
+
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import type { HostSessionPickerRow } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
-	openLocalHostSessionPicker,
 	type HostSessionPickerUi,
+	openLocalHostSessionPicker,
 } from "../../packages/coding-agent/src/modes/interactive/components/host-session-picker.ts";
 import { SessionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { sleep } from "../helpers/runtime.js";
 
 const DOWN = "\x1b[B";
 const ENTER = "\r";
@@ -49,7 +51,10 @@ function makeLocalUi(): LocalMount {
 					resolved = true;
 					resolve(result);
 				});
-				if (built instanceof Promise) void built.then((mounted) => { component = mounted; });
+				if (built instanceof Promise)
+					void built.then((mounted) => {
+						component = mounted;
+					});
 				else component = built;
 			}),
 	} as unknown as HostSessionPickerUi;
@@ -86,7 +91,7 @@ function renderText(mount: LocalMount, width = 120): string {
 }
 
 async function flush(times = 6): Promise<void> {
-	for (let index = 0; index < times; index += 1) await Bun.sleep(0);
+	for (let index = 0; index < times; index += 1) await sleep(0);
 }
 
 describe("in-process host session picker (non-isolated)", () => {

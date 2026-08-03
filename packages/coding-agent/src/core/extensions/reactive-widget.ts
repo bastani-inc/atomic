@@ -6,10 +6,7 @@ export interface ReactiveWidgetComponent {
 	dispose?(): void;
 }
 
-export type ReactiveWidgetFactory<TTheme> = (
-	tui: unknown,
-	theme: TTheme,
-) => ReactiveWidgetComponent;
+export type ReactiveWidgetFactory<TTheme> = (tui: unknown, theme: TTheme) => ReactiveWidgetComponent;
 
 export interface ReactiveWidgetUi<TTheme> {
 	setWidget(key: string, factory: ReactiveWidgetFactory<TTheme> | undefined, options?: ExtensionWidgetOptions): void;
@@ -205,7 +202,11 @@ export function installReactiveWidget<TSnapshot, TTheme = object>(
 
 				switch (action) {
 					case "mount":
-						options.ui.setWidget(options.key, widgetFactory, options.placement ? { placement: options.placement } : undefined);
+						options.ui.setWidget(
+							options.key,
+							widgetFactory,
+							options.placement ? { placement: options.placement } : undefined,
+						);
 						mounted = true;
 						if (requestRenderOnMount) requestRender();
 						break;

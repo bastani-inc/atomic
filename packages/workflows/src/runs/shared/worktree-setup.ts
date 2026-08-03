@@ -21,9 +21,10 @@ const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 
 function originDefaultBranch(mainRoot: string): string | undefined {
 	const symbolic = runGit(mainRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-	let branch = symbolic.status === 0 && symbolic.stdout.trim().startsWith("origin/")
-		? symbolic.stdout.trim().slice("origin/".length)
-		: undefined;
+	let branch =
+		symbolic.status === 0 && symbolic.stdout.trim().startsWith("origin/")
+			? symbolic.stdout.trim().slice("origin/".length)
+			: undefined;
 	if (!branch) {
 		const remote = runGit(mainRoot, ["remote", "show", "origin"]);
 		branch = remote.status === 0 ? remote.stdout.match(/^\s*HEAD branch:\s*(\S+)\s*$/m)?.[1] : undefined;
@@ -77,10 +78,7 @@ export function findWorktreeTaskCwdConflict(
 	return undefined;
 }
 
-export function formatWorktreeTaskCwdConflict(
-	conflict: WorktreeTaskCwdConflict,
-	sharedCwd: string,
-): string {
+export function formatWorktreeTaskCwdConflict(conflict: WorktreeTaskCwdConflict, sharedCwd: string): string {
 	return `worktree isolation uses the shared cwd (${sharedCwd}); task ${conflict.index + 1} (${conflict.agent}) sets cwd to ${conflict.cwd}. Remove task-level cwd overrides or disable worktree.`;
 }
 
@@ -108,9 +106,7 @@ function resolveRepoCwdRelative(cwd: string): string {
 		throw new Error("worktree isolation requires a git repository");
 	}
 	const rawPrefix = runGitChecked(cwd, ["rev-parse", "--show-prefix"]).trim();
-	const normalizedPrefix = rawPrefix
-		? path.normalize(rawPrefix.replace(/[\\/]+$/, ""))
-		: "";
+	const normalizedPrefix = rawPrefix ? path.normalize(rawPrefix.replace(/[\\/]+$/, "")) : "";
 	return normalizedPrefix === "." ? "" : normalizedPrefix;
 }
 
@@ -203,10 +199,22 @@ function parseWorktreeSetupHookOutput(rawStdout: string): WorktreeSetupHookOutpu
 	return parsed as WorktreeSetupHookOutput;
 }
 
-function runWorktreeSetupHook(
-	hook: ResolvedWorktreeSetupHook,
-	input: WorktreeSetupHookInput,
-): string[] {
+/**
+ * Whether a `spawnSync` error is only the parent's stdin write losing its reader.
+ *
+ * A setup hook is handed its JSON input on stdin, but nothing requires a hook to
+ * read it and most do not. When such a hook exits before that write is flushed,
+ * the write fails with EPIPE even though the hook itself ran to completion — a
+ * race a loaded machine loses far more often than an idle one. Node still
+ * reports the child's real exit status and full stdout in that case, so the
+ * spawn result stays authoritative and only a spawn that never produced a status
+ * is a genuine failure.
+ */
+export function isSpuriousHookStdinWriteFailure(code: string | undefined, status: number | null): boolean {
+	return code === "EPIPE" && status !== null;
+}
+
+function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSetupHookInput): string[] {
 	const result = spawnSync(hook.hookPath, [], {
 		cwd: input.worktreePath,
 		encoding: "utf-8",
@@ -216,11 +224,13 @@ function runWorktreeSetupHook(
 	});
 
 	if (result.error) {
-		const code = "code" in result.error ? result.error.code : undefined;
+		const code = "code" in result.error && typeof result.error.code === "string" ? result.error.code : undefined;
 		if (code === "ETIMEDOUT") {
 			throw new Error(`worktree setup hook timed out after ${hook.timeoutMs}ms`);
 		}
-		throw new Error(`worktree setup hook failed: ${result.error.message}`);
+		if (!isSpuriousHookStdinWriteFailure(code, result.status)) {
+			throw new Error(`worktree setup hook failed: ${result.error.message}`);
+		}
 	}
 
 	if (result.status !== 0) {
@@ -253,11 +263,15 @@ function waitForGitLockRelease(): void {
 }
 
 function cleanupSingleWorktree(repoCwd: string, worktree: Pick<WorktreeInfo, "path" | "branch">): void {
-	try { runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]); } catch {
+	try {
+		runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]);
+	} catch {
 		// Cleanup is idempotent and best-effort.
 	}
 	waitForGitLockRelease();
-	try { runGitChecked(repoCwd, ["branch", "-D", worktree.branch]); } catch {
+	try {
+		runGitChecked(repoCwd, ["branch", "-D", worktree.branch]);
+	} catch {
 		// Cleanup is idempotent and best-effort.
 	}
 }
@@ -313,7 +327,12 @@ function createSingleWorktree(
 	}
 }
 
-export function createWorktrees(cwd: string, runId: string, count: number, options?: CreateWorktreesOptions): WorktreeSetup {
+export function createWorktrees(
+	cwd: string,
+	runId: string,
+	count: number,
+	options?: CreateWorktreesOptions,
+): WorktreeSetup {
 	const repo = resolveRepoState(cwd, options?.baseBranch);
 	ensureWorktreeIgnore(repo.mainRoot);
 	const setupHook = resolveWorktreeSetupHook(repo.mainRoot, options?.setupHook);
@@ -322,17 +341,19 @@ export function createWorktrees(cwd: string, runId: string, count: number, optio
 
 	try {
 		for (let index = 0; index < count; index++) {
-			worktrees.push(createSingleWorktree(
-				repo.mainRoot,
-				repo.cwdRelative,
-				runId,
-				index,
-				repo.baseRef,
-				repo.baseCommit,
-				symlinkDirectories,
-				setupHook,
-				options?.agents?.[index],
-			));
+			worktrees.push(
+				createSingleWorktree(
+					repo.mainRoot,
+					repo.cwdRelative,
+					runId,
+					index,
+					repo.baseRef,
+					repo.baseCommit,
+					symlinkDirectories,
+					setupHook,
+					options?.agents?.[index],
+				),
+			);
 		}
 	} catch (error) {
 		cleanupWorktrees({ cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit });

@@ -3,11 +3,12 @@ import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-a
 import type { VerbatimCompactionResult } from "../compaction/index.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
+import type { ScopedModel } from "../model-resolver.ts";
 import type { ReadonlySessionManager, SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ExtensionUIContext } from "./ui-types.ts";
-import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission.ts";
 
 export interface ContextUsage {
 	/** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
@@ -93,6 +94,11 @@ export interface ExtensionContext {
 	modelRegistry: ModelRegistry;
 	/** Current model (may be undefined) */
 	model: Model<Api> | undefined;
+	/** Models scoped to this session (resolved from `--models` / `enabledModels`
+	 *  settings against the available catalogue). Same set the `/scoped-models`
+	 *  command shows. Empty when no scoping is configured (all available models
+	 *  are usable). Read-only snapshot, resolved at access time. */
+	scopedModels: readonly ScopedModel[];
 	/** Current thinking level, resolved from the active session at access time. */
 	thinkingLevel?: ThinkingLevel;
 	/** Session-scoped internal resource router (e.g. artifact:// resolver). */

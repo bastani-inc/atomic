@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-	AgentSessionRuntime,
-	type CreateAgentSessionRuntimeFactory,
-} from "../../src/core/agent-session-runtime.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../src/core/agent-session-runtime.ts";
 import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
+import { createHarness, type Harness } from "./harness.ts";
 
 const createRuntime = (async () => {
 	throw new Error("not used");
@@ -43,13 +40,14 @@ describe("provider-metadata authentication runtime", () => {
 		});
 		vi.spyOn(harness.session.modelRuntime, "refresh").mockResolvedValue({ ok: true, providers: [] });
 
-		await runtimeFor(harness).loginOAuthProvider(providerId, {
+		const result = await runtimeFor(harness).loginOAuthProvider(providerId, {
 			onAuth: () => {},
 			onDeviceCode: () => {},
 			onPrompt: async () => "",
 			onSelect: async () => undefined,
 		});
 
+		expect(result).toEqual({ modelsRefreshed: true });
 		expect(await harness.authStorage.read(providerId)).toMatchObject({
 			type: "oauth",
 			access: "access-token",

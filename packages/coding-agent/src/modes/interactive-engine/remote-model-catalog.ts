@@ -1,6 +1,7 @@
 import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../../core/agent-session.ts";
+import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../../core/model-refresh-timeout.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcModelCatalog } from "../rpc/rpc-types.ts";
 
@@ -37,12 +38,21 @@ export class RemoteModelCatalog {
 		Object.defineProperties(runtime, {
 			refresh: { configurable: true, value: (options = {}) => this.refresh(options) },
 			getAvailableSnapshot: { configurable: true, value: () => [...this.models] },
-			getModels: { configurable: true, value: (provider?: string) => provider ? this.models.filter((model) => model.provider === provider) : [...this.models] },
-			getModel: { configurable: true, value: (provider: string, modelId: string) => this.models.find((model) => model.provider === provider && model.id === modelId) },
+			getModels: {
+				configurable: true,
+				value: (provider?: string) =>
+					provider ? this.models.filter((model) => model.provider === provider) : [...this.models],
+			},
+			getModel: {
+				configurable: true,
+				value: (provider: string, modelId: string) =>
+					this.models.find((model) => model.provider === provider && model.id === modelId),
+			},
 			hasConfiguredAuth: {
 				configurable: true,
-				value: (provider: string) => runtime.getProviderAuthStatus(provider).configured
-					|| this.models.some((model) => model.provider === provider),
+				value: (provider: string) =>
+					runtime.getProviderAuthStatus(provider).configured ||
+					this.models.some((model) => model.provider === provider),
 			},
 			getOAuthProviderMetadata: { configurable: true, value: () => [...this.oauthProviders] },
 		});
@@ -53,7 +63,10 @@ export class RemoteModelCatalog {
 		const generation = ++this.refreshGeneration;
 		if (options.signal?.aborted) return { aborted: true, errors: new Map() };
 		const remoteRefresh = this.client.refreshModels({
-			timeoutMs: options.timeoutMs,
+			// AbortSignal cannot cross the RPC boundary. Give the engine the same
+			// deadline so an abandoned frontend refresh cannot occupy its command
+			// scheduler after the selector has already returned to cached models.
+			timeoutMs: options.timeoutMs ?? (options.signal ? INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS : undefined),
 			force: options.force,
 			allowNetwork: options.allowNetwork,
 		});

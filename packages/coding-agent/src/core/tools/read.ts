@@ -7,27 +7,55 @@ import { access as fsAccess, readFile as fsReadFile, stat as fsStat } from "fs/p
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
-import { parseConflictBlocks, registerConflictBlocks } from "./conflict-registry.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
-import { buildDirectoryTree } from "./directory-tree.ts";
-import { applyReadLineSelection, extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
-import { isReadableUrlPath } from "./fetch-url.ts";
-import { readUrlBranch } from "./read-url.ts";
-import { isNotebookPath, readEditableNotebookText } from "./notebook.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { createHashlineSnapshotStore, formatHashlineContent, recordHashlineSnapshot, type HashlineSnapshotStore } from "./hashline.ts";
+import { parseConflictBlocks, registerConflictBlocks } from "./conflict-registry.ts";
+import { buildDirectoryTree } from "./directory-tree.ts";
+import { isReadableUrlPath } from "./fetch-url.ts";
+import {
+	createHashlineSnapshotStore,
+	formatHashlineContent,
+	type HashlineSnapshotStore,
+	recordHashlineSnapshot,
+} from "./hashline.ts";
+import { isNotebookPath, readEditableNotebookText } from "./notebook.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
+import { applyReadLineSelection, extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
+import {
+	formatHashlineSelectedLines,
+	isReadResourceSelector,
+	type ReadLineSelector,
+	selectExactReadRanges,
+	selectReadRanges,
+	splitReadLineSelector,
+} from "./read-selectors.ts";
+import { readUrlBranch } from "./read-url.ts";
 import { getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./render-utils.ts";
-import { formatHashlineSelectedLines, isReadResourceSelector, selectExactReadRanges, selectReadRanges, splitReadLineSelector, type ReadLineSelector } from "./read-selectors.ts";
-import { parseArchiveSelector, readArchiveSelector, readInternalSelector, readSqliteSelector, resolveArchiveSelector, resolveInternalSelector, sqliteSelectorForPath, type InternalResourceContext } from "./resource-selectors.ts";
+import {
+	type InternalResourceContext,
+	parseArchiveSelector,
+	readArchiveSelector,
+	readInternalSelector,
+	readSqliteSelector,
+	resolveArchiveSelector,
+	resolveInternalSelector,
+	sqliteSelectorForPath,
+} from "./resource-selectors.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
-const readSchema = Type.Object({
-	path: Type.String({ description: "File, directory, archive member, SQLite selector, internal resource, image, document, or URL to read. Append selectors such as :raw, :conflicts, :N, :A-B, :A+C, or :A-B,C-D to scope output." }),
-}, { additionalProperties: false });
+
+const readSchema = Type.Object(
+	{
+		path: Type.String({
+			description:
+				"File, directory, archive member, SQLite selector, internal resource, image, document, or URL to read. Append selectors such as :raw, :conflicts, :N, :A-B, :A+C, or :A-B,C-D to scope output.",
+		}),
+	},
+	{ additionalProperties: false },
+);
 export type ReadToolInput = Static<typeof readSchema>;
 const READ_TOOL_MAX_RESULT_CHARS = 50_000;
 export interface OversizedReadDetails {
@@ -46,7 +74,13 @@ export interface ReadToolDetails {
 	resolvedPath?: string;
 	truncation?: TruncationResult;
 	oversizedRead?: OversizedReadDetails;
-	meta?: { source?: string; sourcePath?: string; artifactId?: string; truncation?: TruncationResult; limits?: Record<string, number> };
+	meta?: {
+		source?: string;
+		sourcePath?: string;
+		artifactId?: string;
+		truncation?: TruncationResult;
+		limits?: Record<string, number>;
+	};
 }
 interface CompactReadClassification {
 	kind: "docs" | "resource" | "skill";
@@ -79,10 +113,22 @@ function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme): string 
 	const pathDisplay = path === null ? invalidArg : path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
 	return `${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}${formatReadLineRange(args, theme)}`;
 }
-function trimTrailingEmptyLines(lines: string[]): string[] { let end = lines.length; while (end > 0 && lines[end - 1] === "") end--; return lines.slice(0, end); }
-function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined { return !model || model.input.includes("image") ? undefined : "[Current model does not support images. The image will be omitted from this request.]"; }
-function toPosixPath(filePath: string): string { return filePath.split(sep).join("/"); }
-function formatCount(count: number): string { return count.toLocaleString("en-US"); }
+function trimTrailingEmptyLines(lines: string[]): string[] {
+	let end = lines.length;
+	while (end > 0 && lines[end - 1] === "") end--;
+	return lines.slice(0, end);
+}
+function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined {
+	return !model || model.input.includes("image")
+		? undefined
+		: "[Current model does not support images. The image will be omitted from this request.]";
+}
+function toPosixPath(filePath: string): string {
+	return filePath.split(sep).join("/");
+}
+function formatCount(count: number): string {
+	return count.toLocaleString("en-US");
+}
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -117,8 +163,18 @@ function buildOversizedReadMessage(details: OversizedReadDetails): string {
 		`- Read a targeted snippet around a match: read({ "path": ${snippetPathForExample} })`,
 	].join("\n");
 }
-function readSourceMeta(source: string): ReadToolDetails { return { meta: { source, sourcePath: source } }; }
-function oversizedReadResult(details: OversizedReadDetails): { content: TextContent[]; details: ReadToolDetails } { return { content: [{ type: "text", text: buildOversizedReadMessage(details) }], details: { oversizedRead: details, meta: { source: details.path, sourcePath: details.path, limits: { maxChars: details.maxChars }, } } }; }
+function readSourceMeta(source: string): ReadToolDetails {
+	return { meta: { source, sourcePath: source } };
+}
+function oversizedReadResult(details: OversizedReadDetails): { content: TextContent[]; details: ReadToolDetails } {
+	return {
+		content: [{ type: "text", text: buildOversizedReadMessage(details) }],
+		details: {
+			oversizedRead: details,
+			meta: { source: details.path, sourcePath: details.path, limits: { maxChars: details.maxChars } },
+		},
+	};
+}
 function getPiDocsClassification(absolutePath: string): CompactReadClassification | undefined {
 	const packageRoot = dirname(getReadmePath());
 	const relativePath = relative(resolvePath(packageRoot), resolvePath(absolutePath));
@@ -201,7 +257,8 @@ function formatReadResult(
 	const remaining = lines.length - maxLines;
 	let text = `\n${displayLines.map((line) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
 	if (remaining > 0) {
-		text += theme.fg("muted", "\n... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${remaining} more lines`);
+		text +=
+			theme.fg("muted", "\n... ") + parenthesizedKeyHint("app.tools.expand", "Expand", `${remaining} more lines`);
 	}
 	const truncation = result.details?.truncation;
 	if (truncation?.truncated) {
@@ -215,33 +272,58 @@ function formatReadResult(
 	}
 	return text;
 }
-function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean { const archive = parseArchiveSelector(pathValue); if (!archive || !archive.memberPath) return false; try { readArchiveSelector(resolveArchiveSelector(archive, cwd)); return true; } catch { return false; } }
+function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean {
+	const archive = parseArchiveSelector(pathValue);
+	if (!archive?.memberPath) return false;
+	try {
+		readArchiveSelector(resolveArchiveSelector(archive, cwd));
+		return true;
+	} catch {
+		return false;
+	}
+}
 function appendReadSelectors(pathValue: string, selector: ReadLineSelector): string {
-	const range = selector.ranges?.map((item) => item.end === undefined ? `${item.start}` : `${item.start}-${item.end}`).join(",") ?? (selector.offset ? `${selector.offset}` : "");
+	const range =
+		selector.ranges
+			?.map((item) => (item.end === undefined ? `${item.start}` : `${item.start}-${item.end}`))
+			.join(",") ?? (selector.offset ? `${selector.offset}` : "");
 	return `${pathValue}${range ? `:${range}` : ""}${selector.conflicts ? ":conflicts" : ""}${selector.raw ? ":raw" : ""}`;
 }
-export function createReadToolDefinition(cwd: string, options?: ReadToolOptions): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
+export function createReadToolDefinition(
+	cwd: string,
+	options?: ReadToolOptions,
+): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const ops = options?.operations ?? defaultReadOperations;
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return {
 		name: "read",
 		label: "read",
-		description: "Read files, directories, archives, SQLite databases, internal resources, images, documents, and URLs through one path string.",
+		description:
+			"Read files, directories, archives, SQLite databases, internal resources, images, documents, and URLs through one path string.",
 		promptSnippet: "Read a path selector.",
-		promptGuidelines: ["Use read to inspect file and resource contents; use path selectors for line ranges, raw output, and conflict views."],
+		promptGuidelines: [
+			"Use read to inspect file and resource contents; use path selectors for line ranges, raw output, and conflict views.",
+		],
 		parameters: readSchema,
 		maxResultSizeChars: Infinity,
-		async execute(
-			_toolCallId,
-			{ path }: ReadToolInput,
-			signal?: AbortSignal,
-			_onUpdate?,
-			ctx?,
-		) {
+		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?) {
 			const resourceCtx = ctx as InternalResourceContext | undefined;
-			const splitSelector = splitReadLineSelector(path), markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""), sqliteOriginal = sqliteSelectorForPath(markerless, cwd), sqliteDirect = sqliteSelectorForPath(path, cwd);
-			const selector = archiveSelectorMemberExists(path, cwd) ? { path } : sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts") ? { path } : sqliteOriginal?.rowId && splitSelector.path !== markerless ? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts } : sqliteOriginal && splitSelector.path === markerless && markerless !== path ? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts } : splitSelector.path === path && sqliteDirect ? { path } : splitSelector;
+			const splitSelector = splitReadLineSelector(path),
+				markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
+				sqliteOriginal = sqliteSelectorForPath(markerless, cwd),
+				sqliteDirect = sqliteSelectorForPath(path, cwd);
+			const selector = archiveSelectorMemberExists(path, cwd)
+				? { path }
+				: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
+					? { path }
+					: sqliteOriginal?.rowId && splitSelector.path !== markerless
+						? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
+						: sqliteOriginal && splitSelector.path === markerless && markerless !== path
+							? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
+							: splitSelector.path === path && sqliteDirect
+								? { path }
+								: splitSelector;
 			const effectivePath = selector.path;
 			const effectiveOffset = selector.offset;
 			const effectiveLimit = selector.limit;
@@ -265,14 +347,70 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 							const archive = parseArchiveSelector(effectivePath);
 							const sqlite = sqliteSelectorForPath(effectivePath, cwd);
 							if (isReadableUrlPath(effectivePath)) {
-								resolve(await readUrlBranch({ effectivePath, rawOutput: rawOutput === true, effectiveRanges, effectiveOffset, effectiveLimit, cwd, ctx, signal, maxChars: READ_TOOL_MAX_RESULT_CHARS, maxBytes: DEFAULT_MAX_BYTES, oversized: oversizedReadResult, sourceMeta: readSourceMeta }));
+								resolve(
+									await readUrlBranch({
+										effectivePath,
+										rawOutput: rawOutput === true,
+										effectiveRanges,
+										effectiveOffset,
+										effectiveLimit,
+										cwd,
+										ctx,
+										signal,
+										maxChars: READ_TOOL_MAX_RESULT_CHARS,
+										maxBytes: DEFAULT_MAX_BYTES,
+										oversized: oversizedReadResult,
+										sourceMeta: readSourceMeta,
+									}),
+								);
 								return;
 							}
 							if (sqlite) {
-								const textContent = readSqliteSelector(sqlite), selection = applyReadLineSelection(textContent.split("\n"), effectiveRanges, effectiveOffset, effectiveLimit, rawOutput), selectedText = selection.lines.join("\n");
-								if ((effectiveRanges || effectiveOffset) && selection.lines.length === 0) { const requested = effectiveRanges?.[0]?.start ?? effectiveOffset ?? 1; resolve({ content: [{ type: "text", text: `Requested line ${requested} is beyond end of resource (${textContent.split("\n").length} lines total).` }], details: undefined }); return; }
-								if (selectedText.length > READ_TOOL_MAX_RESULT_CHARS || Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES) { resolve(oversizedReadResult({ blocked: true, path: effectivePath, chars: selectedText.length, maxChars: READ_TOOL_MAX_RESULT_CHARS, startLine: selection.firstLine, totalFileLines: textContent.split("\n").length, firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"), byteGuidance: false })); return; }
-							resolve({ content: [{ type: "text", text: selectedText }], details: readSourceMeta(effectivePath) }); return;
+								const textContent = readSqliteSelector(sqlite),
+									selection = applyReadLineSelection(
+										textContent.split("\n"),
+										effectiveRanges,
+										effectiveOffset,
+										effectiveLimit,
+										rawOutput,
+									),
+									selectedText = selection.lines.join("\n");
+								if ((effectiveRanges || effectiveOffset) && selection.lines.length === 0) {
+									const requested = effectiveRanges?.[0]?.start ?? effectiveOffset ?? 1;
+									resolve({
+										content: [
+											{
+												type: "text",
+												text: `Requested line ${requested} is beyond end of resource (${textContent.split("\n").length} lines total).`,
+											},
+										],
+										details: undefined,
+									});
+									return;
+								}
+								if (
+									selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
+									Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
+								) {
+									resolve(
+										oversizedReadResult({
+											blocked: true,
+											path: effectivePath,
+											chars: selectedText.length,
+											maxChars: READ_TOOL_MAX_RESULT_CHARS,
+											startLine: selection.firstLine,
+											totalFileLines: textContent.split("\n").length,
+											firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"),
+											byteGuidance: false,
+										}),
+									);
+									return;
+								}
+								resolve({
+									content: [{ type: "text", text: selectedText }],
+									details: readSourceMeta(effectivePath),
+								});
+								return;
 							}
 							if (archive) {
 								const resolvedArchive = resolveArchiveSelector(archive, cwd);
@@ -280,41 +418,154 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 								let allLines = textContent.split("\n");
 								if (conflictsOnly) {
 									let inConflict = false;
-									const conflictLines = allLines.filter((line) => { if (line.startsWith("<<<<<<<")) inConflict = true; const keep = inConflict; if (line.startsWith(">>>>>>>")) inConflict = false; return keep; });
-									if (conflictLines.length === 0) { resolve({ content: [{ type: "text", text: "No conflict markers found" }], details: undefined }); return; }
+									const conflictLines = allLines.filter((line) => {
+										if (line.startsWith("<<<<<<<")) inConflict = true;
+										const keep = inConflict;
+										if (line.startsWith(">>>>>>>")) inConflict = false;
+										return keep;
+									});
+									if (conflictLines.length === 0) {
+										resolve({
+											content: [{ type: "text", text: "No conflict markers found" }],
+											details: undefined,
+										});
+										return;
+									}
 									allLines = conflictLines;
 								}
-								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(allLines, effectiveRanges);
-								const startLine = rangeSelection ? rangeSelection.firstLine - 1 : effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;
-								if (startLine >= allLines.length || (effectiveRanges && rangeSelection?.selectedLines.length === 0)) {
-									resolve({ content: [{ type: "text", text: `Requested line ${startLine + 1} is beyond end of resource (${allLines.length} lines total).` }], details: undefined });
+								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
+									allLines,
+									effectiveRanges,
+								);
+								const startLine = rangeSelection
+									? rangeSelection.firstLine - 1
+									: effectiveOffset
+										? Math.max(0, effectiveOffset - 1)
+										: 0;
+								if (
+									startLine >= allLines.length ||
+									(effectiveRanges && rangeSelection?.selectedLines.length === 0)
+								) {
+									resolve({
+										content: [
+											{
+												type: "text",
+												text: `Requested line ${startLine + 1} is beyond end of resource (${allLines.length} lines total).`,
+											},
+										],
+										details: undefined,
+									});
 									return;
 								}
-								const endLine = effectiveLimit !== undefined ? Math.min(startLine + effectiveLimit, allLines.length) : allLines.length;
+								const endLine =
+									effectiveLimit !== undefined
+										? Math.min(startLine + effectiveLimit, allLines.length)
+										: allLines.length;
 								const selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
 								const selectedText = selectedLines.join("\n");
-								if (selectedText.length > READ_TOOL_MAX_RESULT_CHARS || Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES) { resolve(oversizedReadResult({ blocked: true, path: `${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`, chars: selectedText.length, maxChars: READ_TOOL_MAX_RESULT_CHARS, startLine: startLine + 1, totalFileLines: allLines.length, firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"), byteGuidance: false })); return; }
-							resolve({ content: [{ type: "text", text: selectedText }], details: readSourceMeta(`${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`) });
+								if (
+									selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
+									Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
+								) {
+									resolve(
+										oversizedReadResult({
+											blocked: true,
+											path: `${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`,
+											chars: selectedText.length,
+											maxChars: READ_TOOL_MAX_RESULT_CHARS,
+											startLine: startLine + 1,
+											totalFileLines: allLines.length,
+											firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"),
+											byteGuidance: false,
+										}),
+									);
+									return;
+								}
+								resolve({
+									content: [{ type: "text", text: selectedText }],
+									details: readSourceMeta(`${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`),
+								});
 								return;
 							}
-							if (/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//.test(effectivePath)) {
-								const sourcePath = effectivePath.startsWith("local://") ? resolveInternalSelector(effectivePath, cwd) : undefined;
-								if (sourcePath) { resolve(await createReadToolDefinition(cwd, options).execute(_toolCallId, { path: appendReadSelectors(sourcePath, selector) }, signal, _onUpdate, ctx as never)); return; }
+							if (
+								/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//.test(
+									effectivePath,
+								)
+							) {
+								const sourcePath = effectivePath.startsWith("local://")
+									? resolveInternalSelector(effectivePath, cwd)
+									: undefined;
+								if (sourcePath) {
+									resolve(
+										await createReadToolDefinition(cwd, options).execute(
+											_toolCallId,
+											{ path: appendReadSelectors(sourcePath, selector) },
+											signal,
+											_onUpdate,
+											ctx as never,
+										),
+									);
+									return;
+								}
 								const allLines = (await readInternalSelector(effectivePath, cwd, resourceCtx)).split("\n");
-								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(allLines, effectiveRanges);
-								const startLine = rangeSelection ? rangeSelection.firstLine - 1 : effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;
-								if (startLine >= allLines.length || (effectiveRanges && rangeSelection?.selectedLines.length === 0)) {
-									resolve({ content: [{ type: "text", text: `Requested line ${startLine + 1} is beyond end of resource (${allLines.length} lines total).` }], details: undefined });
+								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
+									allLines,
+									effectiveRanges,
+								);
+								const startLine = rangeSelection
+									? rangeSelection.firstLine - 1
+									: effectiveOffset
+										? Math.max(0, effectiveOffset - 1)
+										: 0;
+								if (
+									startLine >= allLines.length ||
+									(effectiveRanges && rangeSelection?.selectedLines.length === 0)
+								) {
+									resolve({
+										content: [
+											{
+												type: "text",
+												text: `Requested line ${startLine + 1} is beyond end of resource (${allLines.length} lines total).`,
+											},
+										],
+										details: undefined,
+									});
 									return;
 								}
-								const endLine = effectiveLimit !== undefined ? Math.min(startLine + effectiveLimit, allLines.length) : allLines.length;
+								const endLine =
+									effectiveLimit !== undefined
+										? Math.min(startLine + effectiveLimit, allLines.length)
+										: allLines.length;
 								const selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
 								const selectedText = selectedLines.join("\n");
-								if (selectedText.length > READ_TOOL_MAX_RESULT_CHARS || Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES) { resolve(oversizedReadResult({ blocked: true, path: effectivePath, chars: selectedText.length, maxChars: READ_TOOL_MAX_RESULT_CHARS, startLine: startLine + 1, totalFileLines: allLines.length, firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"), byteGuidance: false })); return; }
-							resolve({ content: [{ type: "text", text: selectedText }], details: readSourceMeta(effectivePath) });
+								if (
+									selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
+									Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
+								) {
+									resolve(
+										oversizedReadResult({
+											blocked: true,
+											path: effectivePath,
+											chars: selectedText.length,
+											maxChars: READ_TOOL_MAX_RESULT_CHARS,
+											startLine: startLine + 1,
+											totalFileLines: allLines.length,
+											firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"),
+											byteGuidance: false,
+										}),
+									);
+									return;
+								}
+								resolve({
+									content: [{ type: "text", text: selectedText }],
+									details: readSourceMeta(effectivePath),
+								});
 								return;
 							}
-							if (isReadResourceSelector(effectivePath)) throw new Error(`Read resource selectors are not supported by this filesystem backend: ${path}`);
+							if (isReadResourceSelector(effectivePath))
+								throw new Error(
+									`Read resource selectors are not supported by this filesystem backend: ${path}`,
+								);
 							const absolutePath = await resolveReadPathAsync(effectivePath, cwd);
 							if (aborted) return;
 							let content: (TextContent | ImageContent)[];
@@ -324,19 +575,89 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 							if (isDocumentPath(absolutePath) && !rawOutput && !isNotebookPath(absolutePath)) {
 								const buffer = await ops.readFile(absolutePath);
 								const textContent = await extractDocumentMarkdown(buffer, absolutePath);
-								const selection = applyReadLineSelection(textContent.split("\n"), effectiveRanges, effectiveOffset, effectiveLimit, rawOutput);
-								if (selection.lines.length === 0) { resolve({ content: [{ type: "text", text: `Requested line ${selection.firstLine} is beyond end of document (${textContent.split("\n").length} lines total).` }], details: undefined }); return; }
+								const selection = applyReadLineSelection(
+									textContent.split("\n"),
+									effectiveRanges,
+									effectiveOffset,
+									effectiveLimit,
+									rawOutput,
+								);
+								if (selection.lines.length === 0) {
+									resolve({
+										content: [
+											{
+												type: "text",
+												text: `Requested line ${selection.firstLine} is beyond end of document (${textContent.split("\n").length} lines total).`,
+											},
+										],
+										details: undefined,
+									});
+									return;
+								}
 								const selectedText = selection.lines.join("\n");
-							if (selectedText.length > READ_TOOL_MAX_RESULT_CHARS || Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES) { resolve(oversizedReadResult({ blocked: true, path: absolutePath, chars: selectedText.length, maxChars: READ_TOOL_MAX_RESULT_CHARS, startLine: selection.firstLine, totalFileLines: textContent.split("\n").length, firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"), byteGuidance: false })); return; }
-							content = [{ type: "text", text: selectedText }]; resolve({ content, details: readSourceMeta(absolutePath) }); return;
+								if (
+									selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
+									Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
+								) {
+									resolve(
+										oversizedReadResult({
+											blocked: true,
+											path: absolutePath,
+											chars: selectedText.length,
+											maxChars: READ_TOOL_MAX_RESULT_CHARS,
+											startLine: selection.firstLine,
+											totalFileLines: textContent.split("\n").length,
+											firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"),
+											byteGuidance: false,
+										}),
+									);
+									return;
+								}
+								content = [{ type: "text", text: selectedText }];
+								resolve({ content, details: readSourceMeta(absolutePath) });
+								return;
 							}
 							if (!options?.operations && (await fsStat(absolutePath)).isDirectory()) {
-								const tree = await buildDirectoryTree(absolutePath, { maxDepth: 2, perDirLimit: 12, rootLimit: null });
-								const allLines = tree.rendered.split("\n"), rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(allLines, effectiveRanges), startLine = rangeSelection ? rangeSelection.firstLine - 1 : effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;
-								if (startLine >= allLines.length || (effectiveRanges && rangeSelection?.selectedLines.length === 0)) { resolve({ content: [{ type: "text", text: `Requested line ${startLine + 1} is beyond end of directory (${allLines.length} lines total).` }], details: undefined }); return; }
-								const endLine = effectiveLimit !== undefined ? Math.min(startLine + effectiveLimit, allLines.length) : allLines.length, selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
+								const tree = await buildDirectoryTree(absolutePath, {
+									maxDepth: 2,
+									perDirLimit: 12,
+									rootLimit: null,
+								});
+								const allLines = tree.rendered.split("\n"),
+									rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
+										allLines,
+										effectiveRanges,
+									),
+									startLine = rangeSelection
+										? rangeSelection.firstLine - 1
+										: effectiveOffset
+											? Math.max(0, effectiveOffset - 1)
+											: 0;
+								if (
+									startLine >= allLines.length ||
+									(effectiveRanges && rangeSelection?.selectedLines.length === 0)
+								) {
+									resolve({
+										content: [
+											{
+												type: "text",
+												text: `Requested line ${startLine + 1} is beyond end of directory (${allLines.length} lines total).`,
+											},
+										],
+										details: undefined,
+									});
+									return;
+								}
+								const endLine =
+										effectiveLimit !== undefined
+											? Math.min(startLine + effectiveLimit, allLines.length)
+											: allLines.length,
+									selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
 								content = [{ type: "text", text: selectedLines.join("\n") }];
-								const meta = { ...readSourceMeta(absolutePath).meta, ...(tree.truncated ? { limits: { perDirLimit: 12, totalLines: tree.totalLines } } : {}) };
+								const meta = {
+									...readSourceMeta(absolutePath).meta,
+									...(tree.truncated ? { limits: { perDirLimit: 12, totalLines: tree.totalLines } } : {}),
+								};
 								resolve({ content, details: { isDirectory: true, resolvedPath: absolutePath, meta } });
 								return;
 							}
@@ -361,7 +682,10 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 								}
 							} else {
 								const buffer = await ops.readFile(absolutePath);
-								const textContent = (isNotebookPath(absolutePath) && !rawOutput) ? readEditableNotebookText(absolutePath, effectivePath) : buffer.toString("utf-8");
+								const textContent =
+									isNotebookPath(absolutePath) && !rawOutput
+										? readEditableNotebookText(absolutePath, effectivePath)
+										: buffer.toString("utf-8");
 								let allLines = textContent.split("\n");
 								let conflictLineNumbers: number[] | undefined;
 								if (conflictsOnly) {
@@ -371,19 +695,47 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 									let inConflict = false;
 									allLines.forEach((line, index) => {
 										if (line.startsWith("<<<<<<<")) inConflict = true;
-										if (inConflict) { conflictLines.push(line); conflictLineNumbers!.push(index + 1); }
+										if (inConflict) {
+											conflictLines.push(line);
+											conflictLineNumbers!.push(index + 1);
+										}
 										if (line.startsWith(">>>>>>>")) inConflict = false;
 									});
 									if (conflictLines.length > 0) allLines = conflictLines;
-									else { signal?.removeEventListener("abort", onAbort); resolve({ content: [{ type: "text", text: "No conflict markers found" }], details: undefined }); return; }
+									else {
+										signal?.removeEventListener("abort", onAbort);
+										resolve({
+											content: [{ type: "text", text: "No conflict markers found" }],
+											details: undefined,
+										});
+										return;
+									}
 								}
 								const totalFileLines = allLines.length;
-								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(allLines, effectiveRanges);
-								const startLine = rangeSelection ? rangeSelection.firstLine - 1 : effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;
+								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
+									allLines,
+									effectiveRanges,
+								);
+								const startLine = rangeSelection
+									? rangeSelection.firstLine - 1
+									: effectiveOffset
+										? Math.max(0, effectiveOffset - 1)
+										: 0;
 								const startLineDisplay = startLine + 1;
-								if (startLine >= allLines.length || (effectiveRanges && rangeSelection?.selectedLines.length === 0)) {
+								if (
+									startLine >= allLines.length ||
+									(effectiveRanges && rangeSelection?.selectedLines.length === 0)
+								) {
 									const requested = effectiveRanges?.[0]?.start ?? startLineDisplay;
-									resolve({ content: [{ type: "text", text: `Requested line ${requested} is beyond end of file (${allLines.length} lines total). Use ${effectivePath}:${Math.max(1, allLines.length)} to read the final line.` }], details: undefined });
+									resolve({
+										content: [
+											{
+												type: "text",
+												text: `Requested line ${requested} is beyond end of file (${allLines.length} lines total). Use ${effectivePath}:${Math.max(1, allLines.length)} to read the final line.`,
+											},
+										],
+										details: undefined,
+									});
 									return;
 								}
 								let selectedContent: string;
@@ -407,8 +759,18 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 									const firstLineBytes = Buffer.byteLength(firstSelectedLine, "utf-8");
 									const selectedLineCount = trimTrailingEmptyLines(selectedLines).length;
 									const byteGuidance = selectedLineCount <= 1 || firstLineBytes > DEFAULT_MAX_BYTES;
-									const oversizedRead: OversizedReadDetails = { blocked: true, path: absolutePath, chars: selectedContent.length, maxChars: READ_TOOL_MAX_RESULT_CHARS, startLine: startLineDisplay, ...(effectiveLimit !== undefined ? { requestedLimit: effectiveLimit } : {}), totalFileLines, firstLineBytes, byteGuidance };
-								details = { oversizedRead, meta: readSourceMeta(absolutePath).meta };
+									const oversizedRead: OversizedReadDetails = {
+										blocked: true,
+										path: absolutePath,
+										chars: selectedContent.length,
+										maxChars: READ_TOOL_MAX_RESULT_CHARS,
+										startLine: startLineDisplay,
+										...(effectiveLimit !== undefined ? { requestedLimit: effectiveLimit } : {}),
+										totalFileLines,
+										firstLineBytes,
+										byteGuidance,
+									};
+									details = { oversizedRead, meta: readSourceMeta(absolutePath).meta };
 									content = [{ type: "text", text: buildOversizedReadMessage(oversizedRead) }];
 								} else {
 									const truncation = truncateHead(selectedContent);
@@ -416,13 +778,26 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 									if (truncation.firstLineExceedsLimit) {
 										const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
 										outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${effectivePath} | head -c ${DEFAULT_MAX_BYTES}]`;
-						details = { truncation, meta: { source: absolutePath, sourcePath: absolutePath, truncation } };
+										details = {
+											truncation,
+											meta: { source: absolutePath, sourcePath: absolutePath, truncation },
+										};
 									} else if (truncation.truncated) {
 										const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
 										const nextOffset = endLineDisplay + 1;
-										outputText += truncation.truncatedBy === "lines" ? `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines}. Continue with path selector :${nextOffset}.]` : `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Continue with path selector :${nextOffset}.]`;
-						details = { truncation, meta: { source: absolutePath, sourcePath: absolutePath, truncation } };
-									} else if (!rawOutput && userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
+										outputText +=
+											truncation.truncatedBy === "lines"
+												? `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines}. Continue with path selector :${nextOffset}.]`
+												: `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Continue with path selector :${nextOffset}.]`;
+										details = {
+											truncation,
+											meta: { source: absolutePath, sourcePath: absolutePath, truncation },
+										};
+									} else if (
+										!rawOutput &&
+										userLimitedLines !== undefined &&
+										startLine + userLimitedLines < allLines.length
+									) {
 										const remaining = allLines.length - (startLine + userLimitedLines);
 										const nextOffset = startLine + userLimitedLines + 1;
 										outputText = `${truncation.content}\n\n[${remaining} more lines in file. Continue with path selector :${nextOffset}.]`;
@@ -432,16 +807,33 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 										const snapshot = recordHashlineSnapshot(absolutePath, cwd, textContent, hashlineStore);
 										const visibleContent = truncation.truncated ? truncation.content : selectedContent;
 										const header = `[${snapshot.displayPath}#${snapshot.tag}]`;
-										const selectedConflictLineNumbers = conflictLineNumbers && rangeSelection?.lineNumbers ? rangeSelection.lineNumbers.map((line) => conflictLineNumbers![line - 1]).filter((line): line is number => typeof line === "number") : conflictLineNumbers ? conflictLineNumbers.slice(startLine, startLine + selectedLines.length) : undefined;
-										let hashlineOutput = rawOutput ? visibleContent : selectedConflictLineNumbers && visibleContent === selectedContent ? formatHashlineSelectedLines(header, selectedLines, selectedConflictLineNumbers) : rangeSelection && visibleContent === selectedContent ? formatHashlineSelectedLines(header, selectedLines, rangeSelection.lineNumbers) : formatHashlineContent(snapshot, visibleContent, startLineDisplay);
-										if (outputText.startsWith(truncation.content) && outputText.length > truncation.content.length) hashlineOutput += outputText.slice(truncation.content.length);
+										const selectedConflictLineNumbers =
+											conflictLineNumbers && rangeSelection?.lineNumbers
+												? rangeSelection.lineNumbers
+														.map((line) => conflictLineNumbers![line - 1])
+														.filter((line): line is number => typeof line === "number")
+												: conflictLineNumbers
+													? conflictLineNumbers.slice(startLine, startLine + selectedLines.length)
+													: undefined;
+										let hashlineOutput = rawOutput
+											? visibleContent
+											: selectedConflictLineNumbers && visibleContent === selectedContent
+												? formatHashlineSelectedLines(header, selectedLines, selectedConflictLineNumbers)
+												: rangeSelection && visibleContent === selectedContent
+													? formatHashlineSelectedLines(header, selectedLines, rangeSelection.lineNumbers)
+													: formatHashlineContent(snapshot, visibleContent, startLineDisplay);
+										if (
+											outputText.startsWith(truncation.content) &&
+											outputText.length > truncation.content.length
+										)
+											hashlineOutput += outputText.slice(truncation.content.length);
 										content = [{ type: "text", text: hashlineOutput }];
 									}
 								}
 							}
 							if (aborted) return;
 							signal?.removeEventListener("abort", onAbort);
-						resolve({ content, details: details ?? readSourceMeta(absolutePath) });
+							resolve({ content, details: details ?? readSourceMeta(absolutePath) });
 						} catch (error: unknown) {
 							signal?.removeEventListener("abort", onAbort);
 							if (!aborted) reject(error);

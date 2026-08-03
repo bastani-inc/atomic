@@ -1,12 +1,12 @@
 import type { ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import { join } from "path";
-import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
+import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
-	CURRENT_SESSION_VERSION,
 	type BranchSummaryEntry,
 	type CompactionEntry,
+	CURRENT_SESSION_VERSION,
 	type CustomEntry,
 	type CustomMessageEntry,
 	type FileEntry,
@@ -22,7 +22,10 @@ import {
 } from "./session-manager-types.ts";
 import { generateId } from "./session-manager-validation.ts";
 
-function entryBase(byId: { has(id: string): boolean }, parentId: string | null): Pick<SessionEntryBase, "id" | "parentId" | "timestamp"> {
+function entryBase(
+	byId: { has(id: string): boolean },
+	parentId: string | null,
+): Pick<SessionEntryBase, "id" | "parentId" | "timestamp"> {
 	return {
 		id: generateId(byId),
 		parentId,
@@ -116,7 +119,6 @@ export function createCompactionEntry(
 	};
 }
 
-
 export function createCustomEntry(
 	customType: string,
 	data: unknown,
@@ -164,6 +166,7 @@ export function createCustomMessageEntry<T = unknown>(
 	protectedReconciliation: CustomMessageEntry["protectedReconciliation"],
 	byId: { has(id: string): boolean },
 	parentId: string | null,
+	stageAdmissionKey?: string,
 ): CustomMessageEntry<T> {
 	return {
 		type: "custom_message",
@@ -172,6 +175,7 @@ export function createCustomMessageEntry<T = unknown>(
 		display,
 		details,
 		...(excludeFromContext === true ? { excludeFromContext: true } : {}),
+		...(stageAdmissionKey === undefined ? {} : { stageAdmissionKey }),
 		...(protectedReconciliation === undefined ? {} : { protectedReconciliation }),
 		...entryBase(byId, parentId),
 	};

@@ -64,7 +64,43 @@ Bundled MCP startup, proxy calls, direct tools, and readiness-critical commands 
 
 ## Interactive callback isolation
 
-Interactive Atomic sessions run the agent engine, extensions, tools, hooks, workflow code, and extension-owned render components in a supervised child process. The terminal host owns stdin and cached rendering, so a synchronous busy loop in one callback cannot stop keyboard handling, spinners, or render scheduling. The engine sends a heartbeat every 50 ms; Atomic identifies the active callback after a 250 ms heartbeat gap and marks the engine unresponsive after one second. Escape requests cooperative cancellation and escalates to terminating the engine when it cannot acknowledge; the interrupted result is reported as unknown and is never retried automatically.
+Interactive Atomic sessions run the agent engine, extensions, tools, hooks, workflow code, and extension-owned render components in a supervised child process. The terminal host owns stdin and cached rendering, so a synchronous busy loop in one callback cannot stop keyboard handling, spinners, or render scheduling. The engine sends a heartbeat every 50 ms; Atomic identifies the active callback after a 250 ms heartbeat gap and marks the engine unresponsive after one second.
+
+Escape requests the engine's own cooperative cancellation and waits for it, for as long as the engine takes. There is no deadline on that wait, and Escape never terminates or replaces the engine, so an interrupt cannot discard in-flight tool state.
+
+Ctrl+C is the host's escape hatch, and it applies in two distinct situations.
+
+The first is a remote custom UI. While an engine-owned `ctx.ui.custom()` component or overlay holds input, every key is forwarded to the engine child, so a component that never resolves would trap Ctrl+C too. Ownership of the key is declared per mount:
+
+- A component mounted with `handlesCtrlC: true` receives the press and keeps its own Skip, Close, or cancel binding. If that same component is still holding input on the next press, that press closes it, so a declared component cannot trap the keyboard either.
+- A component that did not declare it is closed by the first press, through the ordinary close path: its `ctx.ui.custom()` promise resolves with `undefined`, the child is told the component closed, the editor comes back, and the engine keeps running — including any other component that generation has mounted below or above this one.
+
+Declare `handlesCtrlC` whenever your component's hint row offers `ctrl+c` for anything. This is a migration for existing components: an extension that already bound Ctrl+C keeps that binding only by adding the option. The bundled workflow surfaces and the `/mcp`, `/mcp setup`, and MCP OAuth panels declare it. Native host selectors, dialogs, input forms, session pickers, and unrelated native overlays are unaffected: they keep Ctrl+C as their own cancel.
+
+```typescript
+await ctx.ui.custom<string | undefined>(
+  (tui, theme, keybindings, done) => new PromptCard(tui, theme, done),
+  { overlay: true, handlesCtrlC: true },
+);
+```
+
+Both safety keys are matched by physical identity rather than by the configured `app.clear` action, so rebinding `app.clear` — even to Escape — can neither route Escape into a stop/restart branch nor take the host route away from Ctrl+C. A configured `app.clear` on any other key keeps its ordinary editor-clear behavior, and key-release events never act.
+
+The second is an engine that is provably not answering, reported as `Interactive engine is not responding; restarting.`. That means the watchdog has called it unresponsive, a cooperative abort has been outstanding longer than that same one-second threshold, a replacement has been waiting for readiness longer than it, or a replacement failed outright. This case takes precedence over everything above: the first press terminates and replaces the engine even behind a component that declared `handlesCtrlC`, because a wedged child cannot run that component's handler either. The readiness case has no heartbeat and no watchdog diagnostic at all, so Ctrl+C is the only way out of a replacement that hangs before it becomes ready; a repeat press can stop an overdue replacement and start another, while a replacement that is still fresh is never stopped by a stray press. A failed replacement keeps Ctrl+C armed indefinitely, so recovery stays available without Atomic ever retrying on its own.
+
+If an engine generation dies for any reason (crash, SIGKILL, closed stdin, malformed transport, explicit stop), the host tears that generation's UI down immediately rather than waiting for the next `engine_ready`. Every mounted remote component is closed newest-first so a nested overlay never restores focus to a layer that has already gone, each `ctx.ui.custom()` promise settles, `select`/`confirm`/`input`/`editor` dialogs opened by that generation are cancelled without answering the replacement child, widget keys are released — both component-factory widgets and line widgets, and only those a newer generation has not taken over — terminal modes are reset, the editor is remounted and refocused unless a surviving native modal owns input, and the blocking inline custom-UI depth unwinds to zero. Frames that generation had buffered die with it, so a mount frame from a dead child can never remount UI into the replacement, and a child that exits during the startup window — after it reported ready but before the host finished attaching — is still recovered rather than leaving a live TUI bound to a dead engine. Atomic then makes one automatic replacement attempt and reports `Interactive engine stopped unexpectedly; restarting. Cause (<kind>): <summary>.`; the bounded summary retains the process exit code or signal when available but never includes child stderr, which may contain provider output or secrets. A failed replacement reports `Interactive engine restart failed: …`, leaves the editor usable, and stays recoverable with Ctrl+C. A child that dies while that replacement is still starting does not trigger another automatic attempt either — it simply keeps Ctrl+C armed. A submission the engine never accepted is returned to the editor as a draft instead of being discarded — exactly as it was typed, including surrounding whitespace and expanded paste content, placed ahead of anything typed while the send was still pending and separated by a blank line. Submissions still queued behind it come back with it, in the order they were entered. Each submission carries its own draft, so two entries that differ only in whitespace can never restore each other's text. A restored draft is the whole report: Atomic does not add a red transport error beside it.
+
+If the generation dies after an assistant tool call was persisted but before its result was recorded, reopening the inactive session derives an error result for each unanswered call. This closes the provider's tool-call/result pair and lets the transcript render, compact, and accept another prompt. The repair is not appended to the JSONL and deliberately says the result is unavailable: admitted work may have produced side effects, so inspect the filesystem or external system before retrying the command.
+
+"Never accepted" is a correlated fact, not a guess from error text. Before a child runs anything for a request — extension hook, queue change, compaction, shell — it announces that it owns that request, and flushes the announcement first. A transport failure that arrives without an announcement means the work never started, so the exact draft comes back; a transport failure after one means the work may already have had effects, so the text stays gone and the failure is reported normally. Output is deliberately not the boundary: `!touch marker && sleep 400` changes the working tree and prints nothing, and offering it back would invite a second run. Classification is otherwise unchanged: it covers the raw stream failures a dying engine produces (`EPIPE`, `ERR_STREAM_DESTROYED`, `ERR_STREAM_WRITE_AFTER_END`) as well as an explicit stop or a missing child; the rejected error keeps its own identity and its `code`, `errno`, and `syscall` fields, with the classification carried in non-enumerable markers. Request timeouts after a successful write, RPC error responses, provider and model errors, and anything after `agent_start` are reported as before and never restore a draft.
+
+Because the announcement is part of the ownership decision, the interactive-engine protocol version is now `2`. A host and child from different versions do not bind, rather than silently falling back to the old, unsafe policy.
+
+An announcement can still be in the pipe when the child dies, so a dead generation gets a short settling window: its UI is torn down at once, but its stdout keeps being read and only its ownership frames are honoured, and its requests are classified once, with the error of whatever ended it. A replacement is started only after that — at most a bounded pause, so a descendant that inherited stdout and never closes it cannot delay recovery.
+
+Session teardown fences engine recovery: disposal stops the current child, cancels an in-flight replacement, and waits for it before returning, so no engine child — and no host initialization — outlives the session that started it.
+
+The engine child is launched with an environment that never contains Atomic's engine-only control values (engine role, host PID, guardian path, and any `--api-key` credential). They travel in an owner-only bootstrap file whose path is a private CLI argument; the child reads it once, freezes the values, and unlinks exactly that file. Recursive cleanup of the file's directory belongs to the host that created it, never to a path read from arguments. This matters for extensions: under Bun a child process spawned without an explicit `env` inherits the runtime's launch-time environment, so a value placed in the engine's environment could not be taken back by deleting it later. Because the engine never receives those values in its environment, `Bun.spawn()`, `Bun.spawnSync()`, and `node:child_process` calls from extension and hook code cannot leak them either. Passing an explicit `env` derived from `process.env` remains the recommended practice for anything an extension spawns.
 
 Dialogs and `ctx.ui.custom()` components are proxied to the host as rendered lines with asynchronous input forwarding. Custom UI results must be JSON-safe. APIs that require a synchronous callback in the terminal process—raw `onTerminalInput` transforms, synchronous `getEditorText`, custom editor factories, autocomplete wrappers, component-factory widgets, and custom header/footer factories—are unavailable in isolated interactive mode and produce a warning rather than executing extension code in the host. Print and public RPC modes retain their existing execution model.
 
@@ -997,9 +1033,31 @@ ctx.sessionManager.getBranch()        // Current branch
 ctx.sessionManager.getLeafId()        // Current leaf entry ID
 ```
 
-### ctx.modelRegistry / ctx.model
+### ctx.modelRegistry / ctx.model / ctx.scopedModels
 
 Access to models and API keys.
+
+`ctx.scopedModels` is the read-only list of models scoped to the current session — the same set the `/scoped-models` command shows. It is resolved from the `--models` CLI flag and the `enabledModels` setting, matched against the available catalogue. It is empty when no scoping is configured, meaning every available model is usable. Each entry is `{ model, thinkingLevel? }`, where `thinkingLevel` is set only when a pattern pinned it (for example `anthropic/*:high`). Use it to populate a model picker that mirrors the built-in one instead of enumerating the whole catalogue.
+
+The value is resolved at access time, so it tracks session replacement. Under the isolated interactive engine it reflects the engine's catalogue rather than a stale host snapshot.
+
+It reports the scope and cannot change it. `ctx.scopedModels` is a getter with no setter, typed `readonly ScopedModel[]`, so assigning to it or pushing an entry is a compile error. The guarantee also holds at runtime, where the type does not reach: each read returns a fresh copy — of the array, of every `{ model, thinkingLevel }` entry in it, and of each entry's model — and all three are frozen. A JavaScript extension, or one that asserts the `readonly` away, therefore cannot widen the set of models the session may use by pushing an entry, nor change which model it selects by swapping one in place; the attempt throws rather than quietly working. Read it, and change scope through the commands and settings that own it.
+
+```typescript
+for (const { model, thinkingLevel } of ctx.scopedModels) {
+  console.log(`${model.provider}/${model.id}${thinkingLevel ? `:${thinkingLevel}` : ""}`);
+}
+```
+
+Both types are exported: `ScopedModel` for one entry, `ExtensionScopedModels` for the accessor's own type. They are declared at the public extension type path (`core/extensions/types.ts`) and re-exported from the package root, so an extension never reaches into an internal module to describe what it just read.
+
+```typescript
+import type { ExtensionScopedModels, ScopedModel } from "@bastani/atomic";
+
+function firstScoped(scope: ExtensionScopedModels): ScopedModel | undefined {
+  return scope[0];
+}
+```
 
 ### ctx.signal
 
@@ -2571,6 +2629,8 @@ The callback receives:
 - `done(value)` - Call to close component and return value
 
 Pass `{ signal }` to dismiss the custom UI if an operation is aborted; the returned promise rejects with the signal reason.
+
+Pass `{ handlesCtrlC: true }` when the component binds Ctrl+C itself (cancel, skip, close). In isolated interactive sessions the host otherwise closes a component that owns input on the first Ctrl+C, so that a component which never resolves cannot trap the keyboard. See [Interactive callback isolation](#interactive-callback-isolation).
 
 See [TUI components](/tui) for the full component API.
 

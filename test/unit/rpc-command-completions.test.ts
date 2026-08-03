@@ -1,5 +1,5 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { createRpcCommandHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.ts";
@@ -44,13 +44,15 @@ test("RPC command catalog advertises and evaluates live extension argument compl
 	const catalog = await handle({ id: "catalog", type: "get_commands" });
 	assert.equal(catalog?.success, true);
 	assert.deepEqual("data" in catalog! ? catalog.data : undefined, {
-		commands: [{
-			name: "workflow",
-			description: "Workflow command",
-			source: "extension",
-			sourceInfo: { path: "/fixture/workflow.ts", source: "extension" },
-			hasArgumentCompletions: true,
-		}],
+		commands: [
+			{
+				name: "workflow",
+				description: "Workflow command",
+				source: "extension",
+				sourceInfo: { path: "/fixture/workflow.ts", source: "extension" },
+				hasArgumentCompletions: true,
+			},
+		],
 	});
 
 	const response = await handle({

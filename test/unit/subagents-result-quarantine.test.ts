@@ -1,13 +1,15 @@
-import { afterEach, test } from "bun:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { afterEach, test } from "vitest";
 import { quarantineResultFile } from "../../packages/subagents/src/runs/background/result-quarantine.js";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+	for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
 
 test("quarantine retries exclusive destination collisions without overwriting evidence", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-result-quarantine-collision-"));

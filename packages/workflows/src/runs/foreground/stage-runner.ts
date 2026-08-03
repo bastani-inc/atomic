@@ -9,14 +9,14 @@
 
 export { createStageContext } from "./stage-runner-context.js";
 export type {
-  AgentSessionAdapter,
-  CompleteAdapter,
-  InternalStageContext,
-  PromptAdapter,
-  StageAdapters,
-  StageModelFallbackMeta,
-  StageRunnerOpts,
-  StageSessionCreateOptions,
-  StageSessionCreateResult,
-  StageSessionRuntime,
+	AgentSessionAdapter,
+	CompleteAdapter,
+	InternalStageContext,
+	PromptAdapter,
+	StageAdapters,
+	StageModelFallbackMeta,
+	StageRunnerOpts,
+	StageSessionCreateOptions,
+	StageSessionCreateResult,
+	StageSessionRuntime,
 } from "./stage-runner-types.js";

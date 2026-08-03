@@ -32,9 +32,9 @@ test("offline model candidate startup restores caches without catalog network re
 
 	await InteractiveModeBase.prototype.getModelCandidates.call(mode as never);
 
-	expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
+	expect(refresh).toHaveBeenCalledWith(expect.objectContaining({ allowNetwork: false }));
+	expect(refresh.mock.calls[0]?.[0]).toMatchObject({ signal: expect.any(AbortSignal) });
 });
-
 
 test("footer provider count uses the current snapshot without refreshing catalogs", async () => {
 	const refresh = vi.fn();
@@ -42,7 +42,10 @@ test("footer provider count uses the current snapshot without refreshing catalog
 	const mode = {
 		session: {
 			scopedModels: [],
-			modelRuntime: { refresh, getAvailableSnapshot: () => [{ provider: "one" }, { provider: "one" }, { provider: "two" }] },
+			modelRuntime: {
+				refresh,
+				getAvailableSnapshot: () => [{ provider: "one" }, { provider: "one" }, { provider: "two" }],
+			},
 		},
 		footerDataProvider: { setAvailableProviderCount },
 	};

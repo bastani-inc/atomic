@@ -2,15 +2,17 @@
  * RFC §8 — Integration: the rung ladder end to end through a real AgentSession.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
-import type { CompactionEntry } from "../../packages/coding-agent/src/core/session-manager.js";
+import { test } from "vitest";
 import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import type { CompactionEntry } from "../../packages/coding-agent/src/core/session-manager.js";
 import { createRungSession, plannerScript } from "./compaction-rung-session.js";
 
 const THROTTLED = { errorMessage: "429 Too Many Requests" };
 
-function boundary(manager: { getBranch(): Array<{ type: string }> }): CompactionEntry<VerbatimCompactionDetails> | undefined {
+function boundary(manager: {
+	getBranch(): Array<{ type: string }>;
+}): CompactionEntry<VerbatimCompactionDetails> | undefined {
 	return manager.getBranch().find((entry) => entry.type === "compaction") as
 		| CompactionEntry<VerbatimCompactionDetails>
 		| undefined;
@@ -25,7 +27,10 @@ test("rate-limit rescue: a healthy fallback keeps the boundary at rung planned a
 
 		assert.equal(result.rung, "planned");
 		assert.deepEqual(result.plannerModel, { provider: "openai", id: "gpt-5.1", thinkingLevel: "high" });
-		assert.deepEqual(calls.map((call) => call.provider), ["anthropic", "openai"]);
+		assert.deepEqual(
+			calls.map((call) => call.provider),
+			["anthropic", "openai"],
+		);
 
 		const entry = boundary(built.manager);
 		assert.ok(entry);
@@ -36,10 +41,11 @@ test("rate-limit rescue: a healthy fallback keeps the boundary at rung planned a
 		const ends = built.events.filter((event) => event.type === "compaction_end");
 		assert.equal(ends.length, 1);
 		assert.equal((ends[0] as { errorMessage?: string }).errorMessage, undefined);
-		assert.deepEqual(
-			(ends[0] as { result?: { plannerModel?: unknown } }).result?.plannerModel,
-			{ provider: "openai", id: "gpt-5.1", thinkingLevel: "high" },
-		);
+		assert.deepEqual((ends[0] as { result?: { plannerModel?: unknown } }).result?.plannerModel, {
+			provider: "openai",
+			id: "gpt-5.1",
+			thinkingLevel: "high",
+		});
 		assert.equal(built.continueCalls(), 0);
 	} finally {
 		built.dispose();
@@ -56,7 +62,10 @@ test("starvation rescue: exactly two planner requests, both at the inherited rea
 		const result = await built.session.compact({ preserve_recent: 2 });
 		assert.equal(result.rung, "planned");
 		assert.equal(calls.length, 2);
-		assert.deepEqual(calls.map((call) => call.reasoning), ["high", "high"]);
+		assert.deepEqual(
+			calls.map((call) => call.reasoning),
+			["high", "high"],
+		);
 		assert.equal(built.session.thinkingLevel, "high");
 	} finally {
 		built.dispose();
@@ -186,7 +195,10 @@ test("manual honesty: every model rate limited writes no boundary and leaves the
 	const built = await createRungSession({ streamFn, fallbackModels: ["openai/gpt-5.1"] });
 	try {
 		await assert.rejects(() => built.session.compact({ preserve_recent: 2 }), /429 Too Many Requests/);
-		assert.deepEqual(calls.map((call) => call.provider), ["anthropic", "openai"]);
+		assert.deepEqual(
+			calls.map((call) => call.provider),
+			["anthropic", "openai"],
+		);
 		assert.equal(boundary(built.manager), undefined);
 
 		const ends = built.events.filter((event) => event.type === "compaction_end") as Array<{

@@ -1,13 +1,16 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { QuestionnaireSession } from "../../packages/coding-agent/src/core/tools/ask-user-question/state/questionnaire-session.ts";
 import {
-	SENTINEL_LABELS,
-	type QuestionParams,
 	type QuestionnaireResult,
+	type QuestionParams,
+	SENTINEL_LABELS,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/tool/types.ts";
-import { WrappingSelect, type WrappingSelectItem } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/wrapping-select.ts";
+import {
+	WrappingSelect,
+	type WrappingSelectItem,
+} from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/wrapping-select.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -65,7 +68,10 @@ function makeMultiParams(): QuestionParams {
 	};
 }
 
-function makeSession(params: QuestionParams, done: (result: QuestionnaireResult) => void = () => {}): QuestionnaireSession {
+function makeSession(
+	params: QuestionParams,
+	done: (result: QuestionnaireResult) => void = () => {},
+): QuestionnaireSession {
 	return new QuestionnaireSession({
 		tui: { terminal: { columns: 100 }, requestRender() {} },
 		theme,

@@ -1,15 +1,24 @@
-import { executeChain } from "./chain-execution.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { compactForegroundDetails } from "../../shared/utils.ts";
-import { resolveSubagentDepthPolicy } from "../../shared/types.ts";
 import type { ChainStep } from "../../shared/settings.ts";
-import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
+import { resolveSubagentDepthPolicy } from "../../shared/types.ts";
+import { compactForegroundDetails } from "../../shared/utils.ts";
+import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
+import { executeChain } from "./chain-execution.ts";
 import { wrapChainTasksForFork } from "./subagent-executor-input.ts";
-import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, notifyDetachedForegroundChildExit, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
+import {
+	createForegroundControlNotifier,
+	maybeBuildForegroundIntercomReceipt,
+	notifyDetachedForegroundChildExit,
+	rememberForegroundRun,
+	replaceForegroundRunChild,
+} from "./subagent-executor-status.ts";
+import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 
-export async function runChainPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<import("../../shared/types.ts").SubagentToolResult> {
+export async function runChainPath(
+	data: ExecutionContextData,
+	deps: ResolvedExecutorDeps,
+): Promise<import("../../shared/types.ts").SubagentToolResult> {
 	const {
 		params,
 		effectiveCwd,
@@ -73,17 +82,21 @@ export async function runChainPath(data: ExecutionContextData, deps: ResolvedExe
 
 	const chainDetails = chainResult.details ? compactForegroundDetails({ ...chainResult.details, runId }) : undefined;
 	if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
-	if (chainDetails) rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results });
-	const intercomReceipt = chainDetails && !chainDetails.results.some((result) => result.interrupted || result.detached)
-		? await maybeBuildForegroundIntercomReceipt({
-			pi: deps.pi,
-			intercomBridge: data.intercomBridge,
-			runId,
-			mode: "chain",
-			details: chainDetails,
-			...(foregroundControl?.nestedChildren?.length ? { nestedChildren: foregroundControl.nestedChildren } : {}),
-		})
-		: null;
+	if (chainDetails)
+		rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results });
+	const intercomReceipt =
+		chainDetails && !chainDetails.results.some((result) => result.interrupted || result.detached)
+			? await maybeBuildForegroundIntercomReceipt({
+					pi: deps.pi,
+					intercomBridge: data.intercomBridge,
+					runId,
+					mode: "chain",
+					details: chainDetails,
+					...(foregroundControl?.nestedChildren?.length
+						? { nestedChildren: foregroundControl.nestedChildren }
+						: {}),
+				})
+			: null;
 	if (intercomReceipt) {
 		return {
 			...chainResult,

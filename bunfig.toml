@@ -1,15 +1,16 @@
 telemetry = false
 
-[install]
-minimumReleaseAge = 259200 # 3 days in seconds
-# Trusted first-party upstream; exempt from the age gate (its releases are consumed same-day)
-minimumReleaseAgeExcludes = ["@earendil-works/pi-agent-core", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]
-linker = "hoisted"
-exact = true
-saveTextLockfile = true
-
-[test]
-preload = ["./test/setup-workflow-durability.ts"]
-
-[run]
-bun = true
+# Everything else that used to live here moved when the toolchain took pi's
+# split (npm for install/build/check, vitest for tests, Bun for binaries):
+#
+#   [install]  -> .npmrc          min-release-age, save-exact
+#                                 the old per-package exemption list did not
+#                                 move with them: the age gate now covers every
+#                                 dependency, pi's own packages included
+#   [test]     -> vitest.config.ts  setupFiles: ["./test/setup-workflow-durability.ts"]
+#   [run] bun  -> deleted           it put a node->bun shim on PATH, which
+#                                   test/integration/installed-package-node-extensions.test.ts
+#                                   had to defend against with findRealNode()
+#
+# The file stays because test/ci/ci-workflow-contracts.test.ts reads it to assert
+# no per-test `timeout` key reappears here (Bun 1.3.14 silently ignores it).

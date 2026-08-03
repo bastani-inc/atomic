@@ -4,9 +4,9 @@ import type {
 	HostSessionPickerRow,
 } from "../../core/extensions/ui-types.ts";
 import {
+	type InteractiveEngineMessage,
 	parseInteractiveEngineCommand,
 	serializeInteractiveEngineMessage,
-	type InteractiveEngineMessage,
 } from "./protocol.ts";
 
 interface ActivePicker {
@@ -37,7 +37,9 @@ export class EngineSessionPickerService {
 	open(request: HostSessionPickerRequest): HostSessionPickerHandle {
 		const componentId = `session_picker_${++this.nextId}`;
 		let resolveResult!: (path: string | undefined) => void;
-		const result = new Promise<string | undefined>((resolve) => { resolveResult = resolve; });
+		const result = new Promise<string | undefined>((resolve) => {
+			resolveResult = resolve;
+		});
 		const record: ActivePicker = {
 			settled: false,
 			resolve: (path) => {
@@ -75,7 +77,7 @@ export class EngineSessionPickerService {
 
 	handleLine(line: string): boolean {
 		const command = parseInteractiveEngineCommand(line);
-		if (!command || !command.type.startsWith("engine_session_picker_")) return false;
+		if (!command?.type.startsWith("engine_session_picker_")) return false;
 		const record = this.active.get(command.componentId);
 		if (!record) return true;
 		switch (command.type) {

@@ -1,6 +1,6 @@
 import {
-	CURRENT_SESSION_VERSION,
 	type CompactionEntry,
+	CURRENT_SESSION_VERSION,
 	type FileEntry,
 	type SessionHeader,
 	type SessionMessageEntry,

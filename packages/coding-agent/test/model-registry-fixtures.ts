@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Context, Model } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { clearApiKeyCache, ModelRegistry, type ProviderConfigInput } from "../src/core/model-registry.ts";
+import { clearApiKeyCache, type ModelRegistry, type ProviderConfigInput } from "../src/core/model-registry.ts";
 
 export interface ModelRegistryTestContext {
 	readonly tempDir: string;
@@ -12,15 +12,14 @@ export interface ModelRegistryTestContext {
 	readonly authStorage: AuthStorage;
 	readonly openAiModel: Model<Api>;
 	readonly emptyContext: Context;
-	providerConfig(
-		baseUrl: string,
-		models: Array<{ id: string; name?: string }>,
-		api?: string,
-	): ProviderConfigInput;
+	providerConfig(baseUrl: string, models: Array<{ id: string; name?: string }>, api?: string): ProviderConfigInput;
 	writeModelsJson(providers: Record<string, ProviderConfigInput>): void;
 	getModelsForProvider(registry: ModelRegistry, provider: string): Model<Api>[];
 	toShPath(value: string): string;
-	overrideConfig(baseUrl: string, headers?: Record<string, string>): { baseUrl: string; headers?: Record<string, string> };
+	overrideConfig(
+		baseUrl: string,
+		headers?: Record<string, string>,
+	): { baseUrl: string; headers?: Record<string, string> };
 	writeRawModelsJson(providers: Record<string, unknown>): void;
 }
 

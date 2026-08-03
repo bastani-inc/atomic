@@ -1,14 +1,25 @@
 import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
-import { runCallback } from "./callback-activity.ts";
-import { ATOMIC_GUIDE_COMMAND_NAME, ATOMIC_GUIDE_HELP_CHOICES, atomicGuideModeForChoice, getAtomicGuideMessage, isAtomicGuideHelpChoice, normalizeAtomicGuideMode } from "./atomic-guide-command.ts";
-import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
-import { expandPromptTemplate } from "./prompt-templates.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { PromptOptions } from "./agent-session-types.ts";
+import {
+	ATOMIC_GUIDE_COMMAND_NAME,
+	ATOMIC_GUIDE_HELP_CHOICES,
+	atomicGuideModeForChoice,
+	getAtomicGuideMessage,
+	isAtomicGuideHelpChoice,
+	normalizeAtomicGuideMode,
+} from "./atomic-guide-command.ts";
+import {
+	formatNoApiKeyFoundMessage,
+	formatNoModelSelectedMessage,
+	formatUnresolvedModelMessage,
+} from "./auth-guidance.ts";
+import { runCallback } from "./callback-activity.ts";
+import { expandPromptTemplate } from "./prompt-templates.ts";
 
 type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
 
@@ -23,12 +34,12 @@ type PromptOptionsWithWorkflowDelivery = PromptOptions & {
 
 /** Dispatch registered slash commands without changing the raw queue pause gate. */
 export async function tryExecuteSessionSlashCommand(
-  session: Pick<AgentSession, "_tryExecuteBuiltinSlashCommand" | "_tryExecuteExtensionCommand">,
-  text: string,
+	session: Pick<AgentSession, "_tryExecuteBuiltinSlashCommand" | "_tryExecuteExtensionCommand">,
+	text: string,
 ): Promise<boolean> {
-  if (!text.startsWith("/")) return false;
-  if (await session._tryExecuteBuiltinSlashCommand(text)) return true;
-  return session._tryExecuteExtensionCommand(text);
+	if (!text.startsWith("/")) return false;
+	if (await session._tryExecuteBuiltinSlashCommand(text)) return true;
+	return session._tryExecuteExtensionCommand(text);
 }
 
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
@@ -39,29 +50,28 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 
-  try {
-    // Authorize workflow delivery before commands or input extensions can perform side effects.
-    // A later terminal transition cannot retroactively reject input accepted at this boundary.
-    workflowDelivery?.beforeDelivery?.();
-    // Registered slash commands execute without releasing ordinary queued work.
-    // Unknown slash input continues through the normal paused admission path.
-    if (expandPromptTemplates && await tryExecuteSessionSlashCommand(this, text)) {
-      workflowDelivery?.delivered?.("handled");
-      preflightResult?.(true);
-      return;
-    }
-    // A controlled pause is an admission gate, including the idle gap after
-    // abort settles. Preserve the raw user payload without running input hooks,
-    // compaction, or a provider turn; explicit resume makes it eligible again.
-    if (this._queuedMessagesPaused) {
-      const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
-      if (delivery === "followUp") await this._queueFollowUp(text, options?.images);
-      else await this._queueSteer(text, options?.images);
-      workflowDelivery?.delivered?.(delivery);
-      preflightResult?.(true);
-      return;
-    }
-
+	try {
+		// Authorize workflow delivery before commands or input extensions can perform side effects.
+		// A later terminal transition cannot retroactively reject input accepted at this boundary.
+		workflowDelivery?.beforeDelivery?.();
+		// Registered slash commands execute without releasing ordinary queued work.
+		// Unknown slash input continues through the normal paused admission path.
+		if (expandPromptTemplates && (await tryExecuteSessionSlashCommand(this, text))) {
+			workflowDelivery?.delivered?.("handled");
+			preflightResult?.(true);
+			return;
+		}
+		// A controlled pause is an admission gate, including the idle gap after
+		// abort settles. Preserve the raw user payload without running input hooks,
+		// compaction, or a provider turn; explicit resume makes it eligible again.
+		if (this._queuedMessagesPaused) {
+			const delivery = options?.streamingBehavior === "followUp" ? "followUp" : "steer";
+			if (delivery === "followUp") await this._queueFollowUp(text, options?.images);
+			else await this._queueSteer(text, options?.images);
+			workflowDelivery?.delivered?.(delivery);
+			preflightResult?.(true);
+			return;
+		}
 
 		// Emit input event for extension interception (before skill/template expansion)
 		let currentText = text;
@@ -210,7 +220,6 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 	await turn;
 }
 
-
 export async function _runAgentPrompt(
 	this: AgentSession,
 	messages: AgentMessage | AgentMessage[],
@@ -247,7 +256,6 @@ export async function _runAgentContinue(this: AgentSession): Promise<void> {
 	await this.waitForRetry();
 	await this._continueQueuedAgentMessages();
 }
-
 
 export async function _continueQueuedAgentMessages(this: AgentSession): Promise<void> {
 	await this._agentEventQueue;
@@ -409,7 +417,8 @@ export async function followUp(this: AgentSession, text: string, images?: ImageC
  * Internal: Queue a steering message (already expanded, no extension command check).
  */
 
-export async function sendUserMessage(this: AgentSession,
+export async function sendUserMessage(
+	this: AgentSession,
 	content: string | (TextContent | ImageContent)[],
 	options?: {
 		deliverAs?: "steer" | "followUp";

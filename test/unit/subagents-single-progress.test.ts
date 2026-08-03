@@ -1,14 +1,17 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Value } from "typebox/value";
 import type { ExtensionContext } from "@bastani/atomic";
+import { Value } from "typebox/value";
+import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import type { ExecutorDeps, SubagentExecutorRuntimeDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import type {
+	ExecutorDeps,
+	SubagentExecutorRuntimeDeps,
+} from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
@@ -43,7 +46,11 @@ function makeContext(cwd: string): ExtensionContext {
 		ui: {},
 		model: undefined,
 		modelRegistry: { getAvailable: () => [] },
-		sessionManager: { getSessionFile: () => join(cwd, "parent-session.jsonl"), getSessionId: () => "parent", getLeafId: () => null },
+		sessionManager: {
+			getSessionFile: () => join(cwd, "parent-session.jsonl"),
+			getSessionId: () => "parent",
+			getLeafId: () => null,
+		},
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		abort: () => {},
@@ -125,10 +132,22 @@ test("root progress true is schema-valid and independent from includeProgress", 
 		assert.equal(existsSync(progressPath), true);
 		assert.equal(readFileSync(cwdProgressPath, "utf8"), "project sentinel");
 
-		await executor.execute("telemetry", {
-			agent: "worker", task: "inspect behavior", includeProgress: true,
-		}, new AbortController().signal, undefined, context);
-		assert.equal(readFileSync(cwdProgressPath, "utf8"), "project sentinel", "includeProgress must not enable file tracking");
+		await executor.execute(
+			"telemetry",
+			{
+				agent: "worker",
+				task: "inspect behavior",
+				includeProgress: true,
+			},
+			new AbortController().signal,
+			undefined,
+			context,
+		);
+		assert.equal(
+			readFileSync(cwdProgressPath, "utf8"),
+			"project sentinel",
+			"includeProgress must not enable file tracking",
+		);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
@@ -138,22 +157,42 @@ test("single progress false overrides default and omission inherits it", async (
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-default-progress-"));
 	try {
 		const tasks: string[] = [];
-		const executor = makeExecutor(cwd, {
-			runSync: async (_cwd, _agents, _agent, task) => {
-				tasks.push(task);
-				return makeResult(task);
+		const executor = makeExecutor(
+			cwd,
+			{
+				runSync: async (_cwd, _agents, _agent, task) => {
+					tasks.push(task);
+					return makeResult(task);
+				},
 			},
-		}, false, true);
+			false,
+			true,
+		);
 		const context = makeContext(cwd);
-		await executor.execute("disabled", {
-			agent: "worker", task: "implement one", progress: false,
-		}, new AbortController().signal, undefined, context);
+		await executor.execute(
+			"disabled",
+			{
+				agent: "worker",
+				task: "implement one",
+				progress: false,
+			},
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		assert.doesNotMatch(tasks[0] ?? "", /Create and maintain progress/);
 		assert.equal(existsSync(join(cwd, "progress.md")), false);
 
-		const result = await executor.execute("inherited", {
-			agent: "worker", task: "implement two",
-		}, new AbortController().signal, undefined, context);
+		const result = await executor.execute(
+			"inherited",
+			{
+				agent: "worker",
+				task: "implement two",
+			},
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		const runId = result.details?.runId;
 		assert.ok(runId);
 		const progressPath = join(cwd, "subagent-artifacts", "progress", runId, "progress.md");
@@ -177,9 +216,18 @@ test("foreground artifacts-disabled progress storage is removed after success", 
 			},
 		});
 
-		const result = await executor.execute("cleanup", {
-			agent: "worker", task: "implement", progress: true, artifacts: false,
-		}, new AbortController().signal, undefined, makeContext(cwd));
+		const result = await executor.execute(
+			"cleanup",
+			{
+				agent: "worker",
+				task: "implement",
+				progress: true,
+				artifacts: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd),
+		);
 
 		assert.equal(result.isError, undefined);
 		assert.equal(existsSync(progressPath), false);
@@ -200,9 +248,18 @@ test("foreground artifacts-disabled progress storage is removed after child fail
 			},
 		});
 
-		const result = await executor.execute("cleanup-failure", {
-			agent: "worker", task: "implement", progress: true, artifacts: false,
-		}, new AbortController().signal, undefined, makeContext(cwd));
+		const result = await executor.execute(
+			"cleanup-failure",
+			{
+				agent: "worker",
+				task: "implement",
+				progress: true,
+				artifacts: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd),
+		);
 
 		assert.equal(result.isError, true);
 		assert.equal(existsSync(progressPath), false);
@@ -224,9 +281,18 @@ test("foreground artifacts-disabled progress storage is removed after a synchron
 			},
 		});
 
-		const result = await executor.execute("cleanup-sync-throw", {
-			agent: "worker", task: "implement", progress: true, artifacts: false,
-		}, new AbortController().signal, undefined, makeContext(cwd));
+		const result = await executor.execute(
+			"cleanup-sync-throw",
+			{
+				agent: "worker",
+				task: "implement",
+				progress: true,
+				artifacts: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd),
+		);
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /sync runtime failure/);
 		assert.equal(existsSync(progressPath), false);
@@ -247,9 +313,18 @@ test("foreground artifacts-disabled progress storage is removed after a rejected
 			},
 		});
 
-		const result = await executor.execute("cleanup-rejection", {
-			agent: "worker", task: "implement", progress: true, artifacts: false,
-		}, new AbortController().signal, undefined, makeContext(cwd));
+		const result = await executor.execute(
+			"cleanup-rejection",
+			{
+				agent: "worker",
+				task: "implement",
+				progress: true,
+				artifacts: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd),
+		);
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /async runtime failure/);
 		assert.equal(existsSync(progressPath), false);
@@ -271,9 +346,18 @@ test("foreground detached child retains artifacts-disabled progress storage unti
 			},
 		});
 
-		await executor.execute("retain-detached", {
-			agent: "worker", task: "implement", progress: true, artifacts: false,
-		}, new AbortController().signal, undefined, makeContext(cwd));
+		await executor.execute(
+			"retain-detached",
+			{
+				agent: "worker",
+				task: "implement",
+				progress: true,
+				artifacts: false,
+			},
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd),
+		);
 
 		assert.equal(existsSync(progressPath), true, "detached child may still write progress");
 		assert.ok(reportDetachedExit);
@@ -287,16 +371,28 @@ test("foreground read-only task suppresses inherited defaultProgress", async () 
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-readonly-progress-"));
 	try {
 		let capturedTask = "";
-		const executor = makeExecutor(cwd, {
-			runSync: async (_cwd, _agents, _agent, task) => {
-				capturedTask = task;
-				return makeResult(task);
+		const executor = makeExecutor(
+			cwd,
+			{
+				runSync: async (_cwd, _agents, _agent, task) => {
+					capturedTask = task;
+					return makeResult(task);
+				},
 			},
-		}, false, true);
+			false,
+			true,
+		);
 
-		await executor.execute("readonly", {
-			agent: "worker", task: "Inspect only; do not edit files.",
-		}, new AbortController().signal, undefined, makeContext(cwd));
+		await executor.execute(
+			"readonly",
+			{
+				agent: "worker",
+				task: "Inspect only; do not edit files.",
+			},
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd),
+		);
 
 		assert.doesNotMatch(capturedTask, /Create and maintain progress/);
 		assert.equal(existsSync(join(cwd, "subagent-artifacts", "progress")), false);
@@ -311,20 +407,42 @@ test("resume inherits single-agent defaultProgress", async () => {
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
 		let resumedProgress: boolean | undefined;
-		const executor = makeExecutor(cwd, {
-			runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
-			executeAsyncSingle: (_id, params) => {
-				resumedProgress = params.progress;
-				return { content: [{ type: "text", text: "launched" }], details: { mode: "single", results: [], asyncId: "revived" } };
+		const executor = makeExecutor(
+			cwd,
+			{
+				runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
+				executeAsyncSingle: (_id, params) => {
+					resumedProgress = params.progress;
+					return {
+						content: [{ type: "text", text: "launched" }],
+						details: { mode: "single", results: [], asyncId: "revived" },
+					};
+				},
 			},
-		}, false, true);
+			false,
+			true,
+		);
 		const context = makeContext(cwd);
-		const initial = await executor.execute("initial", { agent: "worker", task: "implement" }, new AbortController().signal, undefined, context);
+		const initial = await executor.execute(
+			"initial",
+			{ agent: "worker", task: "implement" },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		assert.ok(initial.details?.runId);
 
-		const resumed = await executor.execute("resume", {
-			action: "resume", id: initial.details.runId, message: "continue implementation",
-		}, new AbortController().signal, undefined, context);
+		const resumed = await executor.execute(
+			"resume",
+			{
+				action: "resume",
+				id: initial.details.runId,
+				message: "continue implementation",
+			},
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 
 		assert.equal(resumed.isError, undefined);
 		assert.equal(resumedProgress, true);
@@ -340,23 +458,46 @@ test("resume requests and forwards a fresh supervisor authorization", async () =
 		writeFileSync(sessionFile, "");
 		const authorizedChildren: string[] = [];
 		let capturedAuthorization: { capability: string; supervisorSessionId: string; childName: string } | undefined;
-		const executor = makeExecutor(cwd, {
-			runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
-			executeAsyncSingle: (_id, params) => {
-				capturedAuthorization = params.supervisorAuthorization;
-				return { content: [{ type: "text", text: "launched" }], details: { mode: "single", results: [], asyncId: "revived" } };
+		const executor = makeExecutor(
+			cwd,
+			{
+				runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
+				executeAsyncSingle: (_id, params) => {
+					capturedAuthorization = params.supervisorAuthorization;
+					return {
+						content: [{ type: "text", text: "launched" }],
+						details: { mode: "single", results: [], asyncId: "revived" },
+					};
+				},
 			},
-		}, false, true, (childName) => {
-			authorizedChildren.push(childName);
-			return { capability: `cap-${childName}`, supervisorSessionId: "supervisor-id", childName };
-		});
+			false,
+			true,
+			(childName) => {
+				authorizedChildren.push(childName);
+				return { capability: `cap-${childName}`, supervisorSessionId: "supervisor-id", childName };
+			},
+		);
 		const context = makeContext(cwd);
-		const initial = await executor.execute("initial", { agent: "worker", task: "implement" }, new AbortController().signal, undefined, context);
+		const initial = await executor.execute(
+			"initial",
+			{ agent: "worker", task: "implement" },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		assert.ok(initial.details?.runId);
 
-		const resumed = await executor.execute("resume", {
-			action: "resume", id: initial.details.runId, message: "continue implementation",
-		}, new AbortController().signal, undefined, context);
+		const resumed = await executor.execute(
+			"resume",
+			{
+				action: "resume",
+				id: initial.details.runId,
+				message: "continue implementation",
+			},
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 
 		assert.equal(resumed.isError, undefined);
 		assert.equal(authorizedChildren.length, 1);
@@ -374,20 +515,42 @@ test("resume suppresses inherited defaultProgress for a read-only follow-up", as
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
 		let resumedProgress: boolean | undefined;
-		const executor = makeExecutor(cwd, {
-			runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
-			executeAsyncSingle: (_id, params) => {
-				resumedProgress = params.progress;
-				return { content: [{ type: "text", text: "launched" }], details: { mode: "single", results: [], asyncId: "revived" } };
+		const executor = makeExecutor(
+			cwd,
+			{
+				runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
+				executeAsyncSingle: (_id, params) => {
+					resumedProgress = params.progress;
+					return {
+						content: [{ type: "text", text: "launched" }],
+						details: { mode: "single", results: [], asyncId: "revived" },
+					};
+				},
 			},
-		}, false, true);
+			false,
+			true,
+		);
 		const context = makeContext(cwd);
-		const initial = await executor.execute("initial", { agent: "worker", task: "implement" }, new AbortController().signal, undefined, context);
+		const initial = await executor.execute(
+			"initial",
+			{ agent: "worker", task: "implement" },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		assert.ok(initial.details?.runId);
 
-		await executor.execute("resume", {
-			action: "resume", id: initial.details.runId, message: "Review only; do not edit files.",
-		}, new AbortController().signal, undefined, context);
+		await executor.execute(
+			"resume",
+			{
+				action: "resume",
+				id: initial.details.runId,
+				message: "Review only; do not edit files.",
+			},
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 
 		assert.equal(resumedProgress, false);
 	} finally {
@@ -401,20 +564,43 @@ test("resume explicit progress overrides read-only suppression", async () => {
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
 		let resumedProgress: boolean | undefined;
-		const executor = makeExecutor(cwd, {
-			runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
-			executeAsyncSingle: (_id, params) => {
-				resumedProgress = params.progress;
-				return { content: [{ type: "text", text: "launched" }], details: { mode: "single", results: [], asyncId: "revived" } };
+		const executor = makeExecutor(
+			cwd,
+			{
+				runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
+				executeAsyncSingle: (_id, params) => {
+					resumedProgress = params.progress;
+					return {
+						content: [{ type: "text", text: "launched" }],
+						details: { mode: "single", results: [], asyncId: "revived" },
+					};
+				},
 			},
-		}, false, true);
+			false,
+			true,
+		);
 		const context = makeContext(cwd);
-		const initial = await executor.execute("initial", { agent: "worker", task: "implement" }, new AbortController().signal, undefined, context);
+		const initial = await executor.execute(
+			"initial",
+			{ agent: "worker", task: "implement" },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 		assert.ok(initial.details?.runId);
 
-		await executor.execute("resume", {
-			action: "resume", id: initial.details.runId, message: "Review only; do not edit files.", progress: true,
-		}, new AbortController().signal, undefined, context);
+		await executor.execute(
+			"resume",
+			{
+				action: "resume",
+				id: initial.details.runId,
+				message: "Review only; do not edit files.",
+				progress: true,
+			},
+			new AbortController().signal,
+			undefined,
+			context,
+		);
 
 		assert.equal(resumedProgress, true);
 	} finally {

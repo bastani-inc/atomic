@@ -12,14 +12,16 @@
  * (lenient exports-map resolution) stayed green — so only a Node-runtime
  * smoke over the installed layout can catch this class of regression.
  */
-import { afterAll, test } from "bun:test";
+
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { afterAll, test } from "vitest";
+import { moduleDir } from "../helpers/runtime.js";
 
-const repoRoot = resolve(import.meta.dir, "../..");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const repoNodeModules = join(repoRoot, "node_modules");
 const packageDir = join(repoRoot, "packages", "coding-agent");
 const distCli = join(packageDir, "dist", "cli.js");
@@ -36,22 +38,22 @@ const distBuilt = fs.existsSync(distCli);
  * genuine Node via `typeof Bun === "undefined"`.
  */
 function findRealNode(): string | null {
-  const names = process.platform === "win32" ? ["node.exe", "node.cmd"] : ["node"];
-  const seen = new Set<string>();
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    for (const name of names) {
-      const candidate = join(dir, name);
-      if (seen.has(candidate) || !fs.existsSync(candidate)) continue;
-      seen.add(candidate);
-      const probe = spawnSync(candidate, ["-e", "process.stdout.write(typeof Bun)"], {
-        encoding: "utf8",
-        timeout: 30_000,
-      });
-      if (probe.status === 0 && probe.stdout === "undefined") return candidate;
-    }
-  }
-  return null;
+	const names = process.platform === "win32" ? ["node.exe", "node.cmd"] : ["node"];
+	const seen = new Set<string>();
+	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+		if (!dir) continue;
+		for (const name of names) {
+			const candidate = join(dir, name);
+			if (seen.has(candidate) || !fs.existsSync(candidate)) continue;
+			seen.add(candidate);
+			const probe = spawnSync(candidate, ["-e", "process.stdout.write(typeof Bun)"], {
+				encoding: "utf8",
+				timeout: 30_000,
+			});
+			if (probe.status === 0 && probe.stdout === "undefined") return candidate;
+		}
+	}
+	return null;
 }
 
 const nodeExe = findRealNode();
@@ -63,30 +65,30 @@ const nodeExe = findRealNode();
 // test.yml gate on branch pushes and pull requests.
 const requireSmoke = process.env.ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE === "1";
 if (requireSmoke) {
-  assert.ok(distBuilt, "packages/coding-agent/dist/cli.js missing — run the build step before the integration tests");
-  assert.ok(
-    nodeExe,
-    `no real Node runtime found on PATH (bun-as-node shims are rejected) — required for the installed-package smoke. PATH=${process.env.PATH}`,
-  );
+	assert.ok(distBuilt, "packages/coding-agent/dist/cli.js missing — run the build step before the integration tests");
+	assert.ok(
+		nodeExe,
+		`no real Node runtime found on PATH (bun-as-node shims are rejected) — required for the installed-package smoke. PATH=${process.env.PATH}`,
+	);
 }
 
 const runTest = distBuilt && nodeExe ? test : test.skip;
 if (!distBuilt || !nodeExe) {
-  console.warn(
-    "[installed-package-node-extensions] skipped: requires a built packages/coding-agent/dist and a real (non-bun-shim) node on PATH",
-  );
+	console.warn(
+		"[installed-package-node-extensions] skipped: requires a built packages/coding-agent/dist and a real (non-bun-shim) node on PATH",
+	);
 }
 
 let tmpRoot: string | undefined;
 
 afterAll(() => {
-  if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
+	if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
 /** Symlink (junction on Windows, so no elevation is needed) a real directory. */
 function linkDir(target: string, linkPath: string): void {
-  const linkType = process.platform === "win32" ? "junction" : "dir";
-  fs.symlinkSync(fs.realpathSync(target), linkPath, linkType);
+	const linkType = process.platform === "win32" ? "junction" : "dir";
+	fs.symlinkSync(fs.realpathSync(target), linkPath, linkType);
 }
 
 /**
@@ -96,65 +98,68 @@ function linkDir(target: string, linkPath: string): void {
  * workspace-path short circuit.
  */
 function buildInstalledLayout(): string {
-  tmpRoot = fs.mkdtempSync(join(os.tmpdir(), "atomic-node-smoke-"));
-  const layoutNodeModules = join(tmpRoot, "install", "node_modules");
-  fs.mkdirSync(layoutNodeModules, { recursive: true });
+	tmpRoot = fs.mkdtempSync(join(os.tmpdir(), "atomic-node-smoke-"));
+	const layoutNodeModules = join(tmpRoot, "install", "node_modules");
+	fs.mkdirSync(layoutNodeModules, { recursive: true });
 
-  for (const entry of fs.readdirSync(repoNodeModules)) {
-    if (entry === ".bin" || entry === ".cache") continue;
-    const source = join(repoNodeModules, entry);
-    if (!fs.statSync(source).isDirectory()) continue;
-    if (entry === "@bastani") {
-      const scopeDir = join(layoutNodeModules, entry);
-      fs.mkdirSync(scopeDir);
-      for (const scoped of fs.readdirSync(source)) {
-        if (scoped === "atomic") continue;
-        linkDir(join(source, scoped), join(scopeDir, scoped));
-      }
-      continue;
-    }
-    linkDir(source, join(layoutNodeModules, entry));
-  }
+	for (const entry of fs.readdirSync(repoNodeModules)) {
+		if (entry === ".bin" || entry === ".cache") continue;
+		const source = join(repoNodeModules, entry);
+		if (!fs.statSync(source).isDirectory()) continue;
+		if (entry === "@bastani") {
+			const scopeDir = join(layoutNodeModules, entry);
+			fs.mkdirSync(scopeDir);
+			for (const scoped of fs.readdirSync(source)) {
+				if (scoped === "atomic") continue;
+				linkDir(join(source, scoped), join(scopeDir, scoped));
+			}
+			continue;
+		}
+		linkDir(source, join(layoutNodeModules, entry));
+	}
 
-  const atomicDest = join(layoutNodeModules, "@bastani", "atomic");
-  fs.mkdirSync(atomicDest, { recursive: true });
-  fs.copyFileSync(join(packageDir, "package.json"), join(atomicDest, "package.json"));
-  fs.cpSync(join(packageDir, "dist"), join(atomicDest, "dist"), { recursive: true, dereference: true });
-  return atomicDest;
+	const atomicDest = join(layoutNodeModules, "@bastani", "atomic");
+	fs.mkdirSync(atomicDest, { recursive: true });
+	fs.copyFileSync(join(packageDir, "package.json"), join(atomicDest, "package.json"));
+	fs.cpSync(join(packageDir, "dist"), join(atomicDest, "dist"), { recursive: true, dereference: true });
+	return atomicDest;
 }
 
 runTest(
-  "installed @bastani/atomic loads builtin extensions under Node",
-  () => {
-    const atomicDest = buildInstalledLayout();
-    assert.ok(tmpRoot, "layout setup must assign tmpRoot");
-    // Isolated HOME + empty cwd: no repo-local or user config can leak in,
-    // and the run deterministically ends at the no-configured-models exit.
-    const homeDir = join(tmpRoot, "home");
-    const workDir = join(tmpRoot, "cwd");
-    fs.mkdirSync(homeDir, { recursive: true });
-    fs.mkdirSync(workDir, { recursive: true });
+	"installed @bastani/atomic loads builtin extensions under Node",
+	() => {
+		const atomicDest = buildInstalledLayout();
+		assert.ok(tmpRoot, "layout setup must assign tmpRoot");
+		// Isolated HOME + empty cwd: no repo-local or user config can leak in,
+		// and the run deterministically ends at the no-configured-models exit.
+		const homeDir = join(tmpRoot, "home");
+		const workDir = join(tmpRoot, "cwd");
+		fs.mkdirSync(homeDir, { recursive: true });
+		fs.mkdirSync(workDir, { recursive: true });
 
-    assert.ok(nodeExe, "real node executable must be resolved before the smoke runs");
-    const result = spawnSync(nodeExe, [join(atomicDest, "dist", "cli.js"), "--no-session"], {
-      cwd: workDir,
-      input: "",
-      encoding: "utf8",
-      timeout: 180_000,
-      env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir },
-    });
+		assert.ok(nodeExe, "real node executable must be resolved before the smoke runs");
+		const result = spawnSync(nodeExe, [join(atomicDest, "dist", "cli.js"), "--no-session"], {
+			cwd: workDir,
+			input: "",
+			encoding: "utf8",
+			timeout: 180_000,
+			env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir },
+		});
 
-    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-    assert.equal(result.signal, null, `smoke run killed by ${result.signal}:\n${output}`);
-    assert.ok(!output.includes("Failed to load extension"), `extension load failure under Node:\n${output}`);
-    assert.ok(!output.includes('is not defined by "exports"'), `exports-map resolution failure under Node:\n${output}`);
-    if (result.status !== 0) {
-      assert.match(
-        output,
-        /No models available|No model selected|No API key found/,
-        `unexpected non-zero exit (${result.status}):\n${output}`,
-      );
-    }
-  },
-  240_000,
+		const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+		assert.equal(result.signal, null, `smoke run killed by ${result.signal}:\n${output}`);
+		assert.ok(!output.includes("Failed to load extension"), `extension load failure under Node:\n${output}`);
+		assert.ok(
+			!output.includes('is not defined by "exports"'),
+			`exports-map resolution failure under Node:\n${output}`,
+		);
+		if (result.status !== 0) {
+			assert.match(
+				output,
+				/No models available|No model selected|No API key found/,
+				`unexpected non-zero exit (${result.status}):\n${output}`,
+			);
+		}
+	},
+	240_000,
 );

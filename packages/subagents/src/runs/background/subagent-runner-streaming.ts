@@ -2,18 +2,24 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
-import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
 import { getSubagentDepthEnv } from "../../shared/types.ts";
-import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
+import {
+	detectSubagentError,
+	extractTextFromContent,
+	extractToolArgsPreview,
+	getFinalOutput,
+} from "../../shared/utils.ts";
+import { createAttemptWatchdog } from "../shared/attempt-watchdog.ts";
 import {
 	assistantStopReason,
 	isAssistantFailureStopReason,
 	shouldStartSubagentFinalDrain,
 } from "../shared/final-drain.ts";
 import { modelFailureMessage } from "../shared/model-fallback.ts";
-import { createAttemptWatchdog } from "../shared/attempt-watchdog.ts";
-import type { ChildEvent, ChildEventContext, RunPiStreamingResult } from "./subagent-runner-types.ts";
+import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
+import { buildSubagentSpawnEnv } from "../shared/spawn-env.ts";
 import { createChildEventJournal } from "./async-event-journal.ts";
+import type { ChildEvent, ChildEventContext, RunPiStreamingResult } from "./subagent-runner-types.ts";
 import { emptyUsage } from "./subagent-runner-utils.ts";
 
 export function runPiStreaming(
@@ -42,11 +48,21 @@ export function runPiStreaming(
 	}
 	return new Promise((resolve) => {
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
-		const spawnEnv = {
-			...process.env,
-			...(env ?? {}),
-			...getSubagentDepthEnv(maxSubagentDepth, { workflowStageSubagentGuard }),
-		};
+		// A write stream with no `error` listener turns any failure to open or write
+		// the transcript -- a removed run directory, a full disk, EPERM -- into an
+		// uncaught exception that takes the host process down, asynchronously and
+		// long after the call that caused it returned. The transcript is diagnostic,
+		// so degrade the way the child-event journal beside it already does.
+		outputStream.on("error", (streamError) => {
+			console.error(
+				`Failed to write the subagent transcript to '${outputFile}'; continuing without it: ${String(streamError)}`,
+			);
+		});
+		const spawnEnv = buildSubagentSpawnEnv(
+			process.env,
+			env,
+			getSubagentDepthEnv(maxSubagentDepth, { workflowStageSubagentGuard }),
+		);
 		const spawnSpec = getPiSpawnCommand(args, {
 			...(piPackageRoot ? { piPackageRoot } : {}),
 			...(piArgv1 ? { argv1: piArgv1 } : {}),
@@ -260,10 +276,16 @@ export function runPiStreaming(
 			await childEventJournal.close();
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const finalError = error ?? assistantError ?? spawnErrorText;
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
+			const forcedDrainAfterFinalSuccess =
+				forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
 			resolve({
 				stderr,
-				exitCode: interrupted || forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (exitCode ?? 1) : exitCode,
+				exitCode:
+					interrupted || forcedDrainAfterFinalSuccess
+						? 0
+						: forcedTerminationSignal || signal
+							? (exitCode ?? 1)
+							: exitCode,
 				messages,
 				usage,
 				model,

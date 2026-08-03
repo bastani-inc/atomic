@@ -15,8 +15,8 @@ import type {
 	AgentSettledEvent,
 	AgentStartEvent,
 	BeforeAgentStartEvent,
-	BeforeProviderRequestEvent,
 	BeforeProviderHeadersEvent,
+	BeforeProviderRequestEvent,
 	ContextEvent,
 	InputEvent,
 	InputEventResult,
@@ -63,8 +63,8 @@ import type {
 	SessionStartEvent,
 	SessionTreeEvent,
 } from "./session-events.ts";
-import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
 import type { ToolCallEvent, ToolResultEvent } from "./tool-events.ts";
+import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
 
 /** Handler function type for events */
 // biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements

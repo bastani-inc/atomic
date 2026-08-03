@@ -1,11 +1,15 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { describe, test } from "vitest";
 import type { AgentSessionReloadOptions } from "../../packages/coding-agent/src/core/agent-session-types.ts";
-import { KeybindingsReloadCoordinator, reloadSessionWithKeybindings } from "../../packages/coding-agent/src/modes/rpc/rpc-keybindings-reload.ts";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import {
+	KeybindingsReloadCoordinator,
+	reloadSessionWithKeybindings,
+} from "../../packages/coding-agent/src/modes/rpc/rpc-keybindings-reload.ts";
+import { sleep } from "../helpers/runtime.js";
 
 function writeExpandBinding(agentDir: string, binding: string): void {
 	writeFileSync(join(agentDir, "keybindings.json"), JSON.stringify({ "app.tools.expand": binding }));
@@ -54,7 +58,9 @@ describe("RPC effective-keybinding reload transaction", () => {
 			};
 
 			await assert.rejects(
-				reloadSessionWithKeybindings(session, keybindings, () => { notifications++; }),
+				reloadSessionWithKeybindings(session, keybindings, () => {
+					notifications++;
+				}),
 				/reload failed after runtime rebuild/,
 			);
 			assert.equal(keybindings, identity);
@@ -65,7 +71,6 @@ describe("RPC effective-keybinding reload transaction", () => {
 		}
 	});
 
-
 	test("serializes overlapping success/failure transactions without rolling back the committed state", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "atomic-rpc-keybinding-overlap-"));
 		try {
@@ -73,14 +78,21 @@ describe("RPC effective-keybinding reload transaction", () => {
 			const keybindings = KeybindingsManager.create(tempDir);
 			const releases: Array<() => void> = [];
 			const entered: Array<() => void> = [];
-			const enteredPromises = [0, 1].map((index) => new Promise<void>((resolve) => { entered[index] = resolve; }));
+			const enteredPromises = [0, 1].map(
+				(index) =>
+					new Promise<void>((resolve) => {
+						entered[index] = resolve;
+					}),
+			);
 			const notifications: string[] = [];
 			let call = 0;
 			const session = {
 				async reload(options?: AgentSessionReloadOptions): Promise<void> {
 					const index = call++;
 					entered[index]?.();
-					await new Promise<void>((resolve) => { releases[index] = resolve; });
+					await new Promise<void>((resolve) => {
+						releases[index] = resolve;
+					});
 					writeExpandBinding(tempDir, index === 0 ? "ctrl+y" : "ctrl+z");
 					await options?.beforeSessionStart?.();
 					if (index === 1) throw new Error("second reload failed");
@@ -93,7 +105,7 @@ describe("RPC effective-keybinding reload transaction", () => {
 			const first = coordinator.reload(session);
 			await enteredPromises[0];
 			const second = coordinator.reload(session);
-			await Bun.sleep(0);
+			await sleep(0);
 			assert.equal(call, 1, "second transaction must not enter while first is pending");
 			releases[0]?.();
 			await first;

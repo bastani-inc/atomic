@@ -5,8 +5,8 @@ import {
 	getSelectListTheme,
 	getSettingsListTheme,
 	parseAutoThemeSetting,
-	theme,
 	type TerminalTheme,
+	theme,
 } from "../theme/theme.ts";
 import type { SettingsCallbacks } from "./settings-selector-types.ts";
 

@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 interface PackageJson {
 	readonly dependencies?: Record<string, string>;
@@ -9,6 +10,8 @@ interface PackageJson {
 interface DependencyRequest {
 	readonly packageName: string;
 	readonly optional: boolean;
+	/** Directory of the package that declared this dependency, if it is transitive. */
+	readonly dependentDir?: string;
 }
 
 interface CopyRuntimeDependenciesOptions {
@@ -17,7 +20,7 @@ interface CopyRuntimeDependenciesOptions {
 	readonly destinationNodeModules?: string;
 }
 
-const defaultPackageRoot = resolve(import.meta.dir, "..");
+const defaultPackageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function readPackageJson(packageJsonPath: string): PackageJson {
 	return JSON.parse(readFileSync(packageJsonPath, "utf-8")) as PackageJson;
@@ -25,6 +28,34 @@ function readPackageJson(packageJsonPath: string): PackageJson {
 
 function packagePath(nodeModulesRoot: string, packageName: string): string {
 	return join(nodeModulesRoot, ...packageName.split("/"));
+}
+
+/**
+ * Where a package actually sits, using Node's own resolution walk.
+ *
+ * `bun install` runs with `linker = "hoisted"`, so every transitive dependency
+ * lands in the root `node_modules`. npm nests on a version conflict instead, and
+ * it nests at arbitrary depth: `css-select` resolves to
+ * `node_modules/linkedom/node_modules/css-select`, and that copy's own
+ * `boolbase` sits beside it rather than beneath it. Checking only the root, or
+ * only the dependent's own folder, reports a present dependency as missing.
+ *
+ * Walk up from the dependent through every ancestor `node_modules`, exactly as
+ * `require.resolve` would, and fall back to the root for a top-level request.
+ */
+function resolvePackageDir(
+	nodeModulesRoot: string,
+	packageName: string,
+	dependentDir: string | undefined,
+): string | undefined {
+	for (let directory = dependentDir; directory !== undefined; ) {
+		const candidate = packagePath(join(directory, "node_modules"), packageName);
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(directory);
+		directory = parent === directory ? undefined : parent;
+	}
+	const rooted = packagePath(nodeModulesRoot, packageName);
+	return existsSync(rooted) ? rooted : undefined;
 }
 
 function dependencyRequests(packageJson: PackageJson, optional: boolean): DependencyRequest[] {
@@ -97,12 +128,15 @@ export function copyRuntimeDependencies(options: CopyRuntimeDependenciesOptions 
 			continue;
 		}
 
-		const sourceDir = packagePath(nodeModulesRoot, request.packageName);
-		if (!existsSync(sourceDir)) {
+		const sourceDir = resolvePackageDir(nodeModulesRoot, request.packageName, request.dependentDir);
+		if (sourceDir === undefined) {
 			if (request.optional) {
 				continue;
 			}
-			throw new Error(`Required runtime dependency not found: ${request.packageName} at ${sourceDir}`);
+			throw new Error(
+				`Required runtime dependency not found: ${request.packageName} under ${nodeModulesRoot}` +
+					(request.dependentDir === undefined ? "" : ` or ${join(request.dependentDir, "node_modules")}`),
+			);
 		}
 
 		const sourcePackageJsonPath = join(sourceDir, "package.json");
@@ -114,7 +148,12 @@ export function copyRuntimeDependencies(options: CopyRuntimeDependenciesOptions 
 		mkdirSync(dirname(destinationDir), { recursive: true });
 		copyPackageDirectory(sourceDir, destinationDir);
 		copied.add(request.packageName);
-		queue.push(...dependencyRequests(readPackageJson(sourcePackageJsonPath), false));
+		queue.push(
+			...dependencyRequests(readPackageJson(sourcePackageJsonPath), false).map((entry) => ({
+				...entry,
+				dependentDir: sourceDir,
+			})),
+		);
 	}
 }
 

@@ -2,6 +2,8 @@
 
 Atomic runs on Android via [Termux](https://termux.dev/), a terminal emulator and Linux environment for Android.
 
+Termux uses Android's bionic libc, not Alpine's musl libc. Atomic's Alpine musl archives target x64 and arm64 musl Linux only; they are not Termux packages and do not provide an Android target. Android ARM64 still has no Atomic native target, so musl support does not change Termux's native-addon limitations.
+
 ## Prerequisites
 
 1. Install [Termux](https://github.com/termux/termux-app#installation) from GitHub or F-Droid (not Google Play, that version is deprecated)
@@ -101,7 +103,7 @@ termux-camera-photo out.jpg   # Take photo
 ## Limitations
 
 - **No image clipboard**: Termux clipboard API only supports text
-- **No native binaries**: Some optional native dependencies (like the clipboard module) are unavailable on Android ARM64 and are skipped during installation
+- **No Atomic native target on Android ARM64**: Termux uses Android's bionic libc rather than Alpine's musl libc, so Alpine musl archives are not usable as Termux targets; optional native dependencies such as the clipboard module are unavailable and skipped during installation
 - **Storage access**: To access files in `/storage/emulated/0` (Downloads, etc.), run `termux-setup-storage` once to grant permissions
 
 ## Troubleshooting

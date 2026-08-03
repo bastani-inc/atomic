@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         if: runner.os == 'Linux'
         with:
           # LFS fixtures are required by the coding-agent test suite.
@@ -57,33 +57,37 @@ jobs:
         with:
           lfs: true
           fetch-depth: 0
+      # Bun is still a declared engine: it compiles the release binaries and runs
+      # scripts/*.ts, including the flaky-suite wrapper invoked below. It no
+      # longer installs dependencies or runs any suite.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           # Pinned to match publish.yml; `latest` cannot be cached by setup-bun.
           bun-version: 1.3.14
-      # Node is required by installed-package-node-extensions.test.ts, which
-      # smoke-tests the built npm package under the Node runtime.
+      # Node now installs dependencies and runs every suite, so it is required
+      # here rather than only by installed-package-node-extensions.test.ts.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 22
+          cache: npm
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: npm ci --ignore-scripts
       # Both suites below consume this build. test/unit/pi-0.82.1-artifacts.test.ts
       # silently degrades to test.skip when packages/coding-agent/dist is absent,
       # so moving the unit suite out of this job would lose coverage without
       # failing anything.
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
-        run: bun run build
+        run: npm run build
       - name: Unit tests (one bounded flake retry)
         run: >-
           bun run scripts/run-flaky-test-suite.ts --label "unit tests (${{ matrix.binary_platform }})"
           --no-retry-file flaky-test-suite-runner.test.ts
-          -- bun run test:unit
+          -- npm run test:unit
       - name: Integration tests (one bounded flake retry)
         run: >-
           bun run scripts/run-flaky-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
-          -- bun run test:integration
+          -- npm run test:integration
         env:
           # Hard-require the installed-package Node smoke where the package
           # build above guarantees dist/ exists on both supported hosts.
@@ -117,7 +121,7 @@ jobs:
     # to shard first if a further cut is wanted.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         if: runner.os == 'Linux'
         with:
           # The only LFS fixtures in the repository live under
@@ -129,25 +133,30 @@ jobs:
         with:
           lfs: true
           fetch-depth: 0
+      # Bun still compiles binaries and runs scripts/*.ts, including the wrapper.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         timeout-minutes: 4
         with:
           # Required once pinned by SHA: the version otherwise comes from the ref.
           toolchain: stable
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: npm ci --ignore-scripts
       # packages/coding-agent/test/native-binding-exports.test.ts is hard-required
       # by ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE below, so the vitest suite must
       # stay behind this build.
       - name: Build native bindings for package tests
-        run: bun run --cwd packages/natives build
+        run: npm run build --workspace=@bastani/atomic-natives
       - name: coding-agent vitest suite (one bounded flake retry)
         run: >-
           bun run scripts/run-flaky-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }})"
-          -- bun run --cwd packages/coding-agent --bun test
+          -- npm run test --workspace=@bastani/atomic
         env:
           ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"
       - name: Upload flaky-test diagnostics
@@ -177,7 +186,7 @@ jobs:
     # itself (see the Rust toolchain note below).
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         if: runner.os == 'Linux'
         with:
           lfs: true
@@ -187,9 +196,14 @@ jobs:
         with:
           lfs: true
           fetch-depth: 0
+      # `bun build --compile` is still the binary compiler, exactly as upstream.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
       # scripts/build-binaries.sh reuses packages/natives/native/*.node when they
       # exist and otherwise builds them, so this job needs the Rust toolchain and
       # pays the native build again rather than waiting on agent-suite. That is a
@@ -199,10 +213,10 @@ jobs:
         with:
           toolchain: stable
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: npm ci --ignore-scripts
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
-        run: bun run build
+        run: npm run build
       - name: Build native release binary
         shell: bash
         run: ./scripts/build-binaries.sh --skip-install --skip-package-build --platform "${{ matrix.binary_platform }}"
@@ -310,36 +324,50 @@ jobs:
 
   static-checks:
     name: static-checks (linux-x64)
-    # Platform-independent checks. They cost 30s in total and need neither the
-    # Rust toolchain nor Node, so they run once on Linux instead of twice.
+    # Platform-independent checks. They need no Rust toolchain, so they run once
+    # on Linux instead of twice.
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 6
     steps:
-      - uses: useblacksmith/checkout@01ab2a058dd0d41e292217b76582a6f9867c02ce # v1.0.0-beta
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
         with:
           lfs: true
           fetch-depth: 0
+      # Still required here: packages/coding-agent's docs:check is a Bun
+      # TypeScript script, and scripts/*.ts run under Bun by design.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
       - name: Install dependencies
-        run: bun install --frozen-lockfile
-      - name: Typecheck
-        run: bun run typecheck
+        run: npm ci --ignore-scripts
+      - name: Check
+        run: npm run check
       - name: Docs link validation
         working-directory: packages/coding-agent
-        run: bun run docs:check
+        run: npm run docs:check
       - name: Mintlify docs validation
         if: github.event_name == 'pull_request'
         working-directory: packages/coding-agent/docs
         # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
         # Unpin once upstream publishes a resolvable release.
+        #
+        # Run through `bunx --bun`, not npx: mintlify refuses to start on Node 25+
+        # and this job installs no Node toolchain, so npx picks up whatever the
+        # runner ships. Bun hosts it regardless of the runner's Node version.
         timeout-minutes: 5
         run: |
           bunx --bun mintlify@4.2.731 validate
           bunx --bun mintlify@4.2.731 broken-links
+      # pi parity: repository scripts that Node can run are tested with Node's
+      # own runner rather than through the workspace suites.
+      - name: Script tests
+        run: npm run test:scripts
       - name: Deterministic CI and release contracts
-        run: bun run test:ci-contracts
+        run: npm run test:ci-contracts
 
   # Result gate. This job exists to carry the two contexts required by
   # repository ruleset 9310196:

@@ -17,21 +17,41 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	calculateContextTokens: () => 0,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
 	runVerbatimCompaction: async () => ({
-		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
-		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
+		text: "[User]: retained test context\n(filtered 1 lines)",
+		ranges: [{ start: 2, end: 2 }],
+		stats: {
+			linesBefore: 2,
+			linesDeleted: 1,
+			linesKept: 1,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 50,
+			percentReduction: 50,
+		},
 		rung: "planned" as const,
 		keptTail: true,
 	}),
 	estimateContextTokens: () => ({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null }),
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	MIN_COMPACTABLE_REGION_LINES: 20,
-	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
-		firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
-		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
-		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
-		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
-	}) : undefined,
+	prepareCompactionBoundary: (entries: Array<{ id: string }>) =>
+		entries[0]
+			? {
+					firstKeptEntryId: entries[0].id,
+					region: {
+						__brand: "NumberedRegion",
+						lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)],
+						headerLineNumbers: new Set([1]),
+						priorMarkerNs: new Map(),
+						tokenEstimate: 10,
+					},
+					regionEntryIds: [entries[0].id],
+					keptTailMessageCount: 1,
+					tokensBefore: 100,
+					parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+					settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+				}
+			: undefined,
 	shouldCompact: () => false,
 }));
 
@@ -53,7 +73,11 @@ describe("AgentSession overflow auto-compaction continuation", () => {
 			sessionManager: SessionManager.inMemory(),
 			settingsManager: SettingsManager.create(tempDir, tempDir),
 			cwd: tempDir,
-			modelRuntime: await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false }),
+			modelRuntime: await ModelRuntime.create({
+				credentials: authStorage,
+				modelsPath: null,
+				allowModelNetwork: false,
+			}),
 			resourceLoader: createTestResourceLoader(),
 		});
 	});
@@ -66,7 +90,11 @@ describe("AgentSession overflow auto-compaction continuation", () => {
 	});
 
 	it("waits for overflow retry continuation before prompt resolves", async () => {
-		session.sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
+		session.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "existing compactable context" }],
+			timestamp: Date.now(),
+		});
 		let promptResolved = false;
 		let continued = false;
 		const runAutoCompaction = (
@@ -144,14 +172,23 @@ describe("AgentSession overflow auto-compaction continuation", () => {
 
 		let freshTurnActive = false;
 		let releaseFreshTurn: () => void = () => {};
-		const freshTurn = new Promise<void>((resolve) => { releaseFreshTurn = resolve; });
+		const freshTurn = new Promise<void>((resolve) => {
+			releaseFreshTurn = resolve;
+		});
 		const isStreamingSpy = vi.spyOn(session, "isStreaming", "get").mockImplementation(() => freshTurnActive);
 		const waitForIdleSpy = vi.spyOn(session.agent, "waitForIdle").mockReturnValue(freshTurn);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockImplementation(async () => {
 			order.push("fresh-prompt");
 			freshTurnActive = true;
 			await freshTurn;
-			session.agent.state.messages = [{ ...overflowAssistant, content: [{ type: "text", text: "fresh response" }], stopReason: "stop", errorMessage: undefined }];
+			session.agent.state.messages = [
+				{
+					...overflowAssistant,
+					content: [{ type: "text", text: "fresh response" }],
+					stopReason: "stop",
+					errorMessage: undefined,
+				},
+			];
 			freshTurnActive = false;
 		});
 		const continueSpy = vi.spyOn(session.agent, "continue");

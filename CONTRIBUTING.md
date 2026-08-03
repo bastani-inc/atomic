@@ -5,17 +5,20 @@ Thanks for your interest in contributing to Atomic. This guide explains how to p
 ## Getting started
 
 1. Fork and clone the repository.
-2. Install dependencies with Bun:
+2. Install dependencies with npm:
 
    ```bash
-   bun install
+   npm ci --ignore-scripts
    ```
+
+   The committed `.npmrc` applies a three-day minimum release age to anything you
+   add with `npm install`, and pins exact versions.
 
 3. Read [`DEV_SETUP.md`](DEV_SETUP.md) for the full development setup, local CLI workflow, testing notes, and repository layout.
 
 ## Development guidelines
 
-- Use **Bun** for development commands (`bun`, `bun run`, `bunx`). Do not use npm, yarn, pnpm, or npx for normal development tasks.
+- Use **npm** for installs, builds, checks, and tests. **Bun** compiles the release binaries and runs `scripts/*.ts`. Do not use yarn or pnpm, and do not run `bun install` — see the Tech Stack table in [`AGENTS.md`](AGENTS.md) for the full split.
 - Keep changes focused and small enough to review.
 - Follow the existing TypeScript style and package conventions.
 - Add or update tests when changing behavior.
@@ -36,25 +39,28 @@ Assignment reserves the opportunity to work on an issue but does not guarantee m
 Before opening a pull request, run the most relevant checks for your change:
 
 ```bash
-bun run typecheck
-bun run lint
-bun run test:unit
+npm run check
+npm run test:unit
 ```
 
 For broader changes, use:
 
 ```bash
-bun run test:all
+npm run test:all
 ```
 
 ### Per-test timeouts
 
-Every Bun suite runs with a shared **30000 ms** per-test budget, declared as `--timeout 30000` in the `test:unit`, `test:integration`, and `test:ci-contracts` scripts in the root `package.json`. That single value is the whole policy:
+Every suite runs with a shared **30000 ms** per-test budget, declared once as `TEST_TIMEOUT_MS` in the root `vitest.config.ts` and applied to all three projects. That single value is the whole policy:
 
-- Do not put the budget in `bunfig.toml` (Bun ignores `[test] timeout`) or only in the CI workflow (CI and local runs would drift apart), and do not make it platform-specific.
+- Do not restate the budget in a package script, in `bunfig.toml` (Bun ignores `[test] timeout`), or only in the CI workflow (CI and local runs would drift apart), and do not make it platform-specific.
 - Pass an explicit third-argument timeout only when a test is structurally heavy — it reloads the full builtin package graph, spawns a real CLI child, runs `tsc`, or installs a built package. Otherwise rely on the shared default; never restate it.
 - CI scores every test against its effective timeout on every attempt, including a failed one that a bounded retry later rescued, and fails the step at 70 % of budget. The full duration table is uploaded as a `.ci-diagnostics/` artifact. If your test trips that gate, make it faster rather than raising the shared default.
-- That scoring reads the per-test duration records Bun prints, which its agent-quiet reporter (`CLAUDECODE`/`REPL_ID`/`AGENT`) suppresses, so the CI wrapper clears those variables for the suite it runs. A run that executes tests without printing durations fails the step instead of reporting no slow tests.
+- That scoring reads vitest's JSON reporter, which the CI wrapper requests alongside the human one so the step log stays readable. A run that executes tests without producing durations fails the step instead of reporting no slow tests.
+
+### Tests run in parallel
+
+vitest runs test files concurrently and this repository sets no pool or worker limits, matching upstream pi. A test that only passes on an idle machine is a bug in that test: give the real work headroom and derive the assertion from a named constant. Do not skip it, serialize the suite, or shard.
 
 ## Pull requests
 

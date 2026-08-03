@@ -1,13 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { getProjectAgentSettingsPath, getUserAgentSettingsPath } from "./agent-paths.ts";
 import {
-	EMPTY_SUBAGENT_SETTINGS,
 	type AgentConfig,
 	type BuiltinAgentOverrideBase,
 	type BuiltinAgentOverrideConfig,
+	EMPTY_SUBAGENT_SETTINGS,
 	type SubagentSettings,
 } from "./agent-types.ts";
-import { getProjectAgentSettingsPath, getUserAgentSettingsPath } from "./agent-paths.ts";
 
 export function splitToolList(rawTools: string[] | undefined): { tools?: string[]; mcpDirectTools?: string[] } {
 	const mcpDirectTools: string[] = [];
@@ -26,10 +26,7 @@ export function splitToolList(rawTools: string[] | undefined): { tools?: string[
 }
 
 function joinToolList(config: Pick<AgentConfig, "tools" | "mcpDirectTools">): string[] | undefined {
-	const joined = [
-		...(config.tools ?? []),
-		...(config.mcpDirectTools ?? []).map((tool) => `mcp:${tool}`),
-	];
+	const joined = [...(config.tools ?? []), ...(config.mcpDirectTools ?? []).map((tool) => `mcp:${tool}`)];
 	return joined.length > 0 ? joined : undefined;
 }
 
@@ -68,11 +65,16 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 			? { fallbackModels: override.fallbackModels === false ? false : [...override.fallbackModels] }
 			: {}),
 		...(override.fallbackThinkingLevels !== undefined
-			? { fallbackThinkingLevels: override.fallbackThinkingLevels === false ? false : [...override.fallbackThinkingLevels] }
+			? {
+					fallbackThinkingLevels:
+						override.fallbackThinkingLevels === false ? false : [...override.fallbackThinkingLevels],
+				}
 			: {}),
 		...(override.thinking !== undefined ? { thinking: override.thinking } : {}),
 		...(override.systemPromptMode !== undefined ? { systemPromptMode: override.systemPromptMode } : {}),
-		...(override.inheritProjectContext !== undefined ? { inheritProjectContext: override.inheritProjectContext } : {}),
+		...(override.inheritProjectContext !== undefined
+			? { inheritProjectContext: override.inheritProjectContext }
+			: {}),
 		...(override.inheritSkills !== undefined ? { inheritSkills: override.inheritSkills } : {}),
 		...(override.defaultContext !== undefined ? { defaultContext: override.defaultContext } : {}),
 		...(override.disabled !== undefined ? { disabled: override.disabled } : {}),
@@ -107,7 +109,7 @@ function readSettingsFileStrict(filePath: string): Record<string, unknown> {
 
 function writeSettingsFile(filePath: string, settings: Record<string, unknown>): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	fs.writeFileSync(filePath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+	fs.writeFileSync(filePath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
 }
 
 function parseOverrideStringArrayOrFalse(
@@ -117,13 +119,17 @@ function parseOverrideStringArrayOrFalse(
 	if (value === undefined) return undefined;
 	if (value === false) return false;
 	if (!Array.isArray(value)) {
-		throw new Error(`Builtin override '${meta.name}' in '${meta.filePath}' has invalid '${meta.field}'; expected an array of strings or false.`);
+		throw new Error(
+			`Builtin override '${meta.name}' in '${meta.filePath}' has invalid '${meta.field}'; expected an array of strings or false.`,
+		);
 	}
 
 	const items: string[] = [];
 	for (const item of value) {
 		if (typeof item !== "string") {
-			throw new Error(`Builtin override '${meta.name}' in '${meta.filePath}' has invalid '${meta.field}'; expected an array of strings or false.`);
+			throw new Error(
+				`Builtin override '${meta.name}' in '${meta.filePath}' has invalid '${meta.field}'; expected an array of strings or false.`,
+			);
 		}
 		const trimmed = item.trim();
 		if (trimmed) items.push(trimmed);
@@ -145,19 +151,27 @@ function parseBuiltinOverrideEntry(
 
 	if ("model" in input) {
 		if (typeof input.model === "string" || input.model === false) override.model = input.model;
-		else throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'model'; expected a string or false.`);
+		else
+			throw new Error(
+				`Builtin override '${name}' in '${filePath}' has invalid 'model'; expected a string or false.`,
+			);
 	}
 
 	if ("thinking" in input) {
 		if (typeof input.thinking === "string" || input.thinking === false) override.thinking = input.thinking;
-		else throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'thinking'; expected a string or false.`);
+		else
+			throw new Error(
+				`Builtin override '${name}' in '${filePath}' has invalid 'thinking'; expected a string or false.`,
+			);
 	}
 
 	if ("systemPromptMode" in input) {
 		if (input.systemPromptMode === "append" || input.systemPromptMode === "replace") {
 			override.systemPromptMode = input.systemPromptMode;
 		} else {
-			throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'systemPromptMode'; expected 'append' or 'replace'.`);
+			throw new Error(
+				`Builtin override '${name}' in '${filePath}' has invalid 'systemPromptMode'; expected 'append' or 'replace'.`,
+			);
 		}
 	}
 
@@ -165,7 +179,9 @@ function parseBuiltinOverrideEntry(
 		if (typeof input.inheritProjectContext === "boolean") {
 			override.inheritProjectContext = input.inheritProjectContext;
 		} else {
-			throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'inheritProjectContext'; expected a boolean.`);
+			throw new Error(
+				`Builtin override '${name}' in '${filePath}' has invalid 'inheritProjectContext'; expected a boolean.`,
+			);
 		}
 	}
 
@@ -173,7 +189,9 @@ function parseBuiltinOverrideEntry(
 		if (typeof input.inheritSkills === "boolean") {
 			override.inheritSkills = input.inheritSkills;
 		} else {
-			throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'inheritSkills'; expected a boolean.`);
+			throw new Error(
+				`Builtin override '${name}' in '${filePath}' has invalid 'inheritSkills'; expected a boolean.`,
+			);
 		}
 	}
 
@@ -181,7 +199,9 @@ function parseBuiltinOverrideEntry(
 		if (input.defaultContext === "fresh" || input.defaultContext === "fork" || input.defaultContext === false) {
 			override.defaultContext = input.defaultContext;
 		} else {
-			throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'defaultContext'; expected 'fresh', 'fork', or false.`);
+			throw new Error(
+				`Builtin override '${name}' in '${filePath}' has invalid 'defaultContext'; expected 'fresh', 'fork', or false.`,
+			);
 		}
 	}
 
@@ -195,13 +215,22 @@ function parseBuiltinOverrideEntry(
 
 	if ("systemPrompt" in input) {
 		if (typeof input.systemPrompt === "string") override.systemPrompt = input.systemPrompt;
-		else throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'systemPrompt'; expected a string.`);
+		else
+			throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'systemPrompt'; expected a string.`);
 	}
 
-	const fallbackModels = parseOverrideStringArrayOrFalse(input.fallbackModels, { filePath, name, field: "fallbackModels" });
+	const fallbackModels = parseOverrideStringArrayOrFalse(input.fallbackModels, {
+		filePath,
+		name,
+		field: "fallbackModels",
+	});
 	if (fallbackModels !== undefined) override.fallbackModels = fallbackModels;
 
-	const fallbackThinkingLevels = parseOverrideStringArrayOrFalse(input.fallbackThinkingLevels, { filePath, name, field: "fallbackThinkingLevels" });
+	const fallbackThinkingLevels = parseOverrideStringArrayOrFalse(input.fallbackThinkingLevels, {
+		filePath,
+		name,
+		field: "fallbackThinkingLevels",
+	});
 	if (fallbackThinkingLevels !== undefined) override.fallbackThinkingLevels = fallbackThinkingLevels;
 
 	const skills = parseOverrideStringArrayOrFalse(input.skills, { filePath, name, field: "skills" });
@@ -272,13 +301,15 @@ function applyBuiltinOverride(
 		next.fallbackModels = override.fallbackModels === false ? undefined : [...override.fallbackModels];
 	}
 	if (override.fallbackThinkingLevels !== undefined) {
-		next.fallbackThinkingLevels = override.fallbackThinkingLevels === false ? undefined : [...override.fallbackThinkingLevels];
+		next.fallbackThinkingLevels =
+			override.fallbackThinkingLevels === false ? undefined : [...override.fallbackThinkingLevels];
 	}
 	if (override.thinking !== undefined) next.thinking = override.thinking === false ? undefined : override.thinking;
 	if (override.systemPromptMode !== undefined) next.systemPromptMode = override.systemPromptMode;
 	if (override.inheritProjectContext !== undefined) next.inheritProjectContext = override.inheritProjectContext;
 	if (override.inheritSkills !== undefined) next.inheritSkills = override.inheritSkills;
-	if (override.defaultContext !== undefined) next.defaultContext = override.defaultContext === false ? undefined : override.defaultContext;
+	if (override.defaultContext !== undefined)
+		next.defaultContext = override.defaultContext === false ? undefined : override.defaultContext;
 	if (override.disabled !== undefined) next.disabled = override.disabled;
 	if (override.systemPrompt !== undefined) next.systemPrompt = override.systemPrompt;
 	if (override.skills !== undefined) next.skills = override.skills === false ? undefined : [...override.skills];
@@ -326,16 +357,34 @@ export function applyBuiltinOverrides(
 
 export function buildBuiltinOverrideConfig(
 	base: BuiltinAgentOverrideBase,
-	draft: Pick<AgentConfig, "model" | "fallbackModels" | "fallbackThinkingLevels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "defaultContext" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools">,
+	draft: Pick<
+		AgentConfig,
+		| "model"
+		| "fallbackModels"
+		| "fallbackThinkingLevels"
+		| "thinking"
+		| "systemPromptMode"
+		| "inheritProjectContext"
+		| "inheritSkills"
+		| "defaultContext"
+		| "disabled"
+		| "systemPrompt"
+		| "skills"
+		| "tools"
+		| "mcpDirectTools"
+	>,
 ): BuiltinAgentOverrideConfig | undefined {
 	const override: BuiltinAgentOverrideConfig = {};
 
 	if (draft.model !== base.model) override.model = draft.model ?? false;
-	if (!arraysEqual(draft.fallbackModels, base.fallbackModels)) override.fallbackModels = draft.fallbackModels ? [...draft.fallbackModels] : false;
-	if (!arraysEqual(draft.fallbackThinkingLevels, base.fallbackThinkingLevels)) override.fallbackThinkingLevels = draft.fallbackThinkingLevels ? [...draft.fallbackThinkingLevels] : false;
+	if (!arraysEqual(draft.fallbackModels, base.fallbackModels))
+		override.fallbackModels = draft.fallbackModels ? [...draft.fallbackModels] : false;
+	if (!arraysEqual(draft.fallbackThinkingLevels, base.fallbackThinkingLevels))
+		override.fallbackThinkingLevels = draft.fallbackThinkingLevels ? [...draft.fallbackThinkingLevels] : false;
 	if (draft.thinking !== base.thinking) override.thinking = draft.thinking ?? false;
 	if (draft.systemPromptMode !== base.systemPromptMode) override.systemPromptMode = draft.systemPromptMode;
-	if (draft.inheritProjectContext !== base.inheritProjectContext) override.inheritProjectContext = draft.inheritProjectContext;
+	if (draft.inheritProjectContext !== base.inheritProjectContext)
+		override.inheritProjectContext = draft.inheritProjectContext;
 	if (draft.inheritSkills !== base.inheritSkills) override.inheritSkills = draft.inheritSkills;
 	if (draft.defaultContext !== base.defaultContext) override.defaultContext = draft.defaultContext ?? false;
 	if (draft.disabled !== base.disabled) override.disabled = draft.disabled ?? false;
@@ -358,12 +407,16 @@ export function saveBuiltinAgentOverride(
 	if (!filePath) throw new Error("Project override is not available here. No project config root was found.");
 
 	const settings = readSettingsFileStrict(filePath);
-	const subagents = settings.subagents && typeof settings.subagents === "object" && !Array.isArray(settings.subagents)
-		? { ...(settings.subagents as Record<string, unknown>) }
-		: {};
-	const agentOverrides = subagents.agentOverrides && typeof subagents.agentOverrides === "object" && !Array.isArray(subagents.agentOverrides)
-		? { ...(subagents.agentOverrides as Record<string, unknown>) }
-		: {};
+	const subagents =
+		settings.subagents && typeof settings.subagents === "object" && !Array.isArray(settings.subagents)
+			? { ...(settings.subagents as Record<string, unknown>) }
+			: {};
+	const agentOverrides =
+		subagents.agentOverrides &&
+		typeof subagents.agentOverrides === "object" &&
+		!Array.isArray(subagents.agentOverrides)
+			? { ...(subagents.agentOverrides as Record<string, unknown>) }
+			: {};
 
 	agentOverrides[name] = cloneOverrideValue(override);
 	subagents.agentOverrides = agentOverrides;

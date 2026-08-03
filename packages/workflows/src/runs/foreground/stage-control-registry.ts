@@ -27,17 +27,18 @@
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
+import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 export type StageControlStatus =
-  | "pending"
-  | "running"
-  | "awaiting_input"
-  | "paused"
-  | "blocked"
-  | "completed"
-  | "failed"
-  | "skipped";
+	| "pending"
+	| "running"
+	| "awaiting_input"
+	| "paused"
+	| "blocked"
+	| "completed"
+	| "failed"
+	| "skipped";
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
@@ -49,76 +50,82 @@ export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
  * semantics that the raw SDK does not provide.
  */
 export interface StageControlHandle {
-  readonly runId: string;
-  readonly stageId: string;
-  readonly stageName: string;
-  readonly status: StageControlStatus;
-  readonly sessionId: string | undefined;
-  readonly sessionFile: string | undefined;
-  readonly isStreaming: boolean;
-  /** True after the executor has released the live SDK session behind this handle. */
-  readonly isDisposed?: boolean;
-  readonly messages: AgentSession["messages"];
-  /** Live coding-agent session when available, used by embedded chat/footer UI. */
-  readonly agentSession?: AgentSession;
-  /** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
-  pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
-  /** Ensure the SDK session exists. Cheap when already attached. */
-  ensureAttached(): Promise<void>;
-  /**
-   * Deliver through the idle-aware session primitive and report the action.
-   * `beforeDelivery` must run synchronously after async setup and immediately
-   * before the underlying SDK admits or queues the message.
-   */
-  sendUserMessage?(
-    text: string,
-    options?: { readonly deliverAs?: "steer" | "followUp" },
-    beforeDelivery?: () => void,
-  ): Promise<StageUserMessageDeliveryAction>;
+	readonly runId: string;
+	readonly stageId: string;
+	readonly stageName: string;
+	readonly status: StageControlStatus;
+	readonly sessionId: string | undefined;
+	readonly sessionFile: string | undefined;
+	readonly isStreaming: boolean;
+	/** True after the executor has released the live SDK session behind this handle. */
+	readonly isDisposed?: boolean;
+	readonly messages: AgentSession["messages"];
+	/** Live coding-agent session when available, used by embedded chat/footer UI. */
+	readonly agentSession?: AgentSession;
+	/** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
+	pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
+	/**
+	 * Pending steering/follow-up text on this stage's session, kept current from
+	 * `queue_update` for the handle's whole lifetime so a detached graph node and
+	 * a remounted stage chat can both read it. Deliberately independent of
+	 * `agentSession`: an adapter-backed runtime that publishes the ordinary
+	 * events keeps queue-aware UI.
+	 */
+	queuedUserMessages?(): StageQueuedUserMessages;
+	/** Ensure the SDK session exists. Cheap when already attached. */
+	ensureAttached(): Promise<void>;
+	/**
+	 * Deliver through the idle-aware session primitive and report the action.
+	 * `beforeDelivery` must run synchronously after async setup and immediately
+	 * before the underlying SDK admits or queues the message.
+	 */
+	sendUserMessage?(
+		text: string,
+		options?: { readonly deliverAs?: "steer" | "followUp" },
+		beforeDelivery?: () => void,
+	): Promise<StageUserMessageDeliveryAction>;
 
-  /** Send a prompt. Use only when the stage is idle / not streaming. */
-  prompt(text: string): Promise<void>;
-  /** Steer the current streaming operation (interrupt mid-turn). */
-  steer(text: string): Promise<void>;
-  /** Queue a follow-up after the current operation completes. */
-  followUp(text: string): Promise<void>;
-  /**
-   * True controlled pause. Aborts the current Pi op without finalizing
-   * the stage as failed; the original `prompt()` awaiter is held until
-   * `resume()` is called.
-   */
-  pause(): Promise<void>;
-  /**
-   * Release a paused stage. If `message` is provided it is sent as the
-   * next user message before resuming. `beforeResume` guards final admission.
-   */
-  resume(message?: string, beforeResume?: () => void): Promise<void | StageUserMessageDeliveryAction>;
-  /**
-   * Subscribe to AgentSession events. The pending-listener semantics
-   * from `InternalStageContext.subscribe` apply: listeners registered
-   * before the session exists are buffered and bound on first attach.
-   */
-  subscribe(listener: AgentSessionEventListener): () => void;
-  /**
-   * Subscribe to workflow-owned delivery lifecycle facts. Present only for
-   * handles backed by a live stage runner. An accepted idle delivery reports
-   * `delivery_start` before the public `agent_start` is published, letting an
-   * attached chat show Working for the whole turn.
-   */
-  subscribeDeliveryActivity?(
-    listener: (event: StageDeliveryActivityEvent) => void,
-  ): () => void;
-  /** Release the underlying SDK session and unregister this direct chat handle. */
-  dispose?(): void | Promise<void>;
+	/** Send a prompt. Use only when the stage is idle / not streaming. */
+	prompt(text: string): Promise<void>;
+	/** Steer the current streaming operation (interrupt mid-turn). */
+	steer(text: string): Promise<void>;
+	/** Queue a follow-up after the current operation completes. */
+	followUp(text: string): Promise<void>;
+	/**
+	 * True controlled pause. Aborts the current Pi op without finalizing
+	 * the stage as failed; the original `prompt()` awaiter is held until
+	 * `resume()` is called.
+	 */
+	pause(): Promise<void>;
+	/**
+	 * Release a paused stage. If `message` is provided it is sent as the
+	 * next user message before resuming. `beforeResume` guards final admission.
+	 */
+	resume(message?: string, beforeResume?: () => void): Promise<undefined | StageUserMessageDeliveryAction>;
+	/**
+	 * Subscribe to AgentSession events. The pending-listener semantics
+	 * from `InternalStageContext.subscribe` apply: listeners registered
+	 * before the session exists are buffered and bound on first attach.
+	 */
+	subscribe(listener: AgentSessionEventListener): () => void;
+	/**
+	 * Subscribe to workflow-owned delivery lifecycle facts. Present only for
+	 * handles backed by a live stage runner. An accepted idle delivery reports
+	 * `delivery_start` before the public `agent_start` is published, letting an
+	 * attached chat show Working for the whole turn.
+	 */
+	subscribeDeliveryActivity?(listener: (event: StageDeliveryActivityEvent) => void): () => void;
+	/** Release the underlying SDK session and unregister this direct chat handle. */
+	dispose?(): void | Promise<void>;
 }
 
 /** Tentative ownership used by workflow sends until final message admission. */
 export interface DetachedStageHandleLease {
-  readonly handle: StageControlHandle;
-  /** Keep the handle registered after admission; false when it was displaced. */
-  commit(): boolean;
-  /** Release tentative ownership and dispose an unclaimed provisional handle. */
-  release(): Promise<void>;
+	readonly handle: StageControlHandle;
+	/** Keep the handle registered after admission; false when it was displaced. */
+	commit(): boolean;
+	/** Release tentative ownership and dispose an unclaimed provisional handle. */
+	release(): Promise<void>;
 }
 
 /**
@@ -126,77 +133,69 @@ export interface DetachedStageHandleLease {
  * handles. Backed by the same `StageControlRegistry`.
  */
 export interface WorkflowRunControlHandle {
-  readonly runId: string;
-  /** Stage handles still participating in run-level workflow control. */
-  stages(): readonly StageControlHandle[];
-  /** Currently paused stage handles. */
-  pausedStages(): readonly StageControlHandle[];
-  /**
-   * Pause every currently running stage (or the specific stage when
-   * `stageId` is supplied). Returns every handle whose pause state changed,
-   * including cascade-blocked descendants; keeping the array return preserves
-   * existing slash-command iteration ergonomics.
-   */
-  pause(stageId?: string): Promise<readonly StageControlHandle[]>;
-  /**
-   * Resume every paused stage (or the specific stage when `stageId`
-   * is supplied). `message`, if given, is forwarded to each resumed
-   * stage as the next user message.
-   */
-  resume(stageId?: string, message?: string): Promise<readonly StageControlHandle[]>;
+	readonly runId: string;
+	/** Stage handles still participating in run-level workflow control. */
+	stages(): readonly StageControlHandle[];
+	/** Currently paused stage handles. */
+	pausedStages(): readonly StageControlHandle[];
+	/**
+	 * Pause every currently running stage (or the specific stage when
+	 * `stageId` is supplied). Returns every handle whose pause state changed,
+	 * including cascade-blocked descendants; keeping the array return preserves
+	 * existing slash-command iteration ergonomics.
+	 */
+	pause(stageId?: string): Promise<readonly StageControlHandle[]>;
+	/**
+	 * Resume every paused stage (or the specific stage when `stageId`
+	 * is supplied). `message`, if given, is forwarded to each resumed
+	 * stage as the next user message.
+	 */
+	resume(stageId?: string, message?: string): Promise<readonly StageControlHandle[]>;
 }
 
 export interface StageControlRegistry {
-  /**
-   * Register a stage handle. The returned disposer removes the chat handle
-   * entirely. Stage completion should normally call `detachControl()` first so
-   * run-level pause/resume stops seeing the stage while any open chat pane can
-   * keep using its direct handle reference.
-   */
-  register(handle: StageControlHandle): () => void;
-  /**
-   * Atomically resolve an existing non-disposed handle for `runId + stageId`
-   * or create one via `create`, register it, and immediately detach it from
-   * run-level pause/resume control. Used by the post-mortem stage-chat
-   * resolver so repeated attach/send calls single-flight onto one detached
-   * writer per real stage instead of racing competing sessions.
-   */
-  getOrCreateDetached(
-    runId: string,
-    stageId: string,
-    create: () => StageControlHandle,
-  ): StageControlHandle;
-  /**
-   * Acquire tentative ownership of a detached handle. A newly-created handle
-   * stays provisional until one lease commits or an ordinary consumer claims
-   * it through `claim()` / `getOrCreateDetached()`.
-   */
-  acquireDetached(
-    runId: string,
-    stageId: string,
-    create: () => StageControlHandle,
-  ): DetachedStageHandleLease;
-  /** Inspect without claiming a provisional detached handle. */
-  peek(runId: string, stageId: string): StageControlHandle | undefined;
-  /** Resolve and permanently claim a provisional detached handle. */
-  claim(runId: string, stageId: string): StageControlHandle | undefined;
-  /**
-   * Remove this stage from run-level pause/resume aggregates while keeping
-   * `get()` chat attachment live until the registration disposer runs.
-   */
-  detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean;
-  /** Resolve one stage handle by run + stage id, including detached chats. */
-  get(runId: string, stageId: string): StageControlHandle | undefined;
-  /** Resolve all currently-registered chat handles for a run. */
-  forRun(runId: string): readonly StageControlHandle[];
-  /** Build a run-level control aggregate. Cheap; not memoised. */
-  run(runId: string): WorkflowRunControlHandle;
-  /**
-   * Drop every registration and invoke each handle's optional dispose hook.
-   * Used on session boundaries to release retained direct chat handles and
-   * their subscriptions when the host store is cleared.
-   */
-  clear(): void;
+	/**
+	 * Register a stage handle. The returned disposer removes the chat handle
+	 * entirely. Stage completion should normally call `detachControl()` first so
+	 * run-level pause/resume stops seeing the stage while any open chat pane can
+	 * keep using its direct handle reference.
+	 */
+	register(handle: StageControlHandle): () => void;
+	/**
+	 * Atomically resolve an existing non-disposed handle for `runId + stageId`
+	 * or create one via `create`, register it, and immediately detach it from
+	 * run-level pause/resume control. Used by the post-mortem stage-chat
+	 * resolver so repeated attach/send calls single-flight onto one detached
+	 * writer per real stage instead of racing competing sessions.
+	 */
+	getOrCreateDetached(runId: string, stageId: string, create: () => StageControlHandle): StageControlHandle;
+	/**
+	 * Acquire tentative ownership of a detached handle. A newly-created handle
+	 * stays provisional until one lease commits or an ordinary consumer claims
+	 * it through `claim()` / `getOrCreateDetached()`.
+	 */
+	acquireDetached(runId: string, stageId: string, create: () => StageControlHandle): DetachedStageHandleLease;
+	/** Inspect without claiming a provisional detached handle. */
+	peek(runId: string, stageId: string): StageControlHandle | undefined;
+	/** Resolve and permanently claim a provisional detached handle. */
+	claim(runId: string, stageId: string): StageControlHandle | undefined;
+	/**
+	 * Remove this stage from run-level pause/resume aggregates while keeping
+	 * `get()` chat attachment live until the registration disposer runs.
+	 */
+	detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean;
+	/** Resolve one stage handle by run + stage id, including detached chats. */
+	get(runId: string, stageId: string): StageControlHandle | undefined;
+	/** Resolve all currently-registered chat handles for a run. */
+	forRun(runId: string): readonly StageControlHandle[];
+	/** Build a run-level control aggregate. Cheap; not memoised. */
+	run(runId: string): WorkflowRunControlHandle;
+	/**
+	 * Drop every registration and invoke each handle's optional dispose hook.
+	 * Used on session boundaries to release retained direct chat handles and
+	 * their subscriptions when the host store is cleared.
+	 */
+	clear(): void;
 }
 
 /**
@@ -204,251 +203,229 @@ export interface StageControlRegistry {
  * so per-run lookups stay cheap as workflows scale.
  */
 export function createStageControlRegistry(): StageControlRegistry {
-  type RegistryEntry = {
-    handle: StageControlHandle;
-    controlsDependencies: boolean;
-    permanent: boolean;
-    readonly leases: Set<symbol>;
-    disposal?: Promise<void>;
-  };
+	type RegistryEntry = {
+		handle: StageControlHandle;
+		controlsDependencies: boolean;
+		permanent: boolean;
+		readonly leases: Set<symbol>;
+		disposal?: Promise<void>;
+	};
 
-  const _byRun = new Map<string, Map<string, RegistryEntry>>();
+	const _byRun = new Map<string, Map<string, RegistryEntry>>();
 
-  function ensureRun(runId: string): Map<string, RegistryEntry> {
-    let runMap = _byRun.get(runId);
-    if (!runMap) {
-      runMap = new Map();
-      _byRun.set(runId, runMap);
-    }
-    return runMap;
-  }
+	function ensureRun(runId: string): Map<string, RegistryEntry> {
+		let runMap = _byRun.get(runId);
+		if (!runMap) {
+			runMap = new Map();
+			_byRun.set(runId, runMap);
+		}
+		return runMap;
+	}
 
-  function controlledEntries(runId: string): RegistryEntry[] {
-    const runMap = _byRun.get(runId);
-    if (!runMap) return [];
-    return [...runMap.values()].filter((entry) => entry.controlsDependencies);
-  }
+	function controlledEntries(runId: string): RegistryEntry[] {
+		const runMap = _byRun.get(runId);
+		if (!runMap) return [];
+		return [...runMap.values()].filter((entry) => entry.controlsDependencies);
+	}
 
-  function disposeEntry(entry: RegistryEntry): Promise<void> {
-    if (entry.disposal !== undefined) return entry.disposal;
-    try {
-      entry.disposal = Promise.resolve(entry.handle.dispose?.());
-    } catch (error) {
-      entry.disposal = Promise.reject(error);
-    }
-    return entry.disposal;
-  }
+	function disposeEntry(entry: RegistryEntry): Promise<void> {
+		if (entry.disposal !== undefined) return entry.disposal;
+		try {
+			entry.disposal = Promise.resolve(entry.handle.dispose?.());
+		} catch (error) {
+			entry.disposal = Promise.reject(error);
+		}
+		return entry.disposal;
+	}
 
-  function disposeEntryInBackground(entry: RegistryEntry, message: string): void {
-    void disposeEntry(entry).catch((err: unknown) => console.warn(message, err));
-  }
+	function disposeEntryInBackground(entry: RegistryEntry, message: string): void {
+		void disposeEntry(entry).catch((err: unknown) => console.warn(message, err));
+	}
 
-  function makeRunHandle(runId: string): WorkflowRunControlHandle {
-    return {
-      runId,
-      stages(): readonly StageControlHandle[] {
-        return controlledEntries(runId).map((entry) => entry.handle);
-      },
-      pausedStages(): readonly StageControlHandle[] {
-        return controlledEntries(runId)
-          .map((entry) => entry.handle)
-          .filter((h) => h.status === "paused");
-      },
-      async pause(stageId?: string): Promise<readonly StageControlHandle[]> {
-        const runMap = _byRun.get(runId);
-        if (!runMap) return [];
-        const controlEntries = controlledEntries(runId);
-        const targets = stageId
-          ? [runMap.get(stageId)]
-              .filter(
-                (entry): entry is RegistryEntry => entry !== undefined && entry.controlsDependencies,
-              )
-              .map((entry) => entry.handle)
-          : controlEntries
-              .map((entry) => entry.handle)
-              .filter((h) => h.status === "running" || h.status === "pending");
-        const before = new Map(
-          controlEntries.map((entry) => [entry.handle.stageId, entry.handle.status]),
-        );
-        for (const handle of targets) {
-          if (handle.status === "paused") continue;
-          if (handle.status === "completed" || handle.status === "failed" || handle.status === "skipped") continue;
-          await handle.pause();
-        }
-        return controlledEntries(runId)
-          .map((entry) => entry.handle)
-          .filter((handle) => {
-            const previous = before.get(handle.stageId);
-            return previous !== handle.status && (handle.status === "paused" || handle.status === "blocked");
-          });
-      },
-      async resume(
-        stageId?: string,
-        message?: string,
-      ): Promise<readonly StageControlHandle[]> {
-        const runMap = _byRun.get(runId);
-        if (!runMap) return [];
-        const controlEntries = controlledEntries(runId);
-        const before = new Map(
-          controlEntries.map((entry) => [entry.handle.stageId, entry.handle.status]),
-        );
-        const targets = stageId
-          ? [runMap.get(stageId)]
-              .filter(
-                (entry): entry is RegistryEntry => entry !== undefined && entry.controlsDependencies,
-              )
-              .map((entry) => entry.handle)
-          : controlEntries.map((entry) => entry.handle).filter((h) => h.status === "paused");
-        for (const handle of targets) {
-          if (handle.status !== "paused") continue;
-          await handle.resume(message);
-        }
-        return controlledEntries(runId)
-          .map((entry) => entry.handle)
-          .filter((handle) => {
-            const previous = before.get(handle.stageId);
-            return (previous === "paused" || previous === "blocked") && previous !== handle.status;
-          });
-      },
-    };
-  }
+	function makeRunHandle(runId: string): WorkflowRunControlHandle {
+		return {
+			runId,
+			stages(): readonly StageControlHandle[] {
+				return controlledEntries(runId).map((entry) => entry.handle);
+			},
+			pausedStages(): readonly StageControlHandle[] {
+				return controlledEntries(runId)
+					.map((entry) => entry.handle)
+					.filter((h) => h.status === "paused");
+			},
+			async pause(stageId?: string): Promise<readonly StageControlHandle[]> {
+				const runMap = _byRun.get(runId);
+				if (!runMap) return [];
+				const controlEntries = controlledEntries(runId);
+				const targets = stageId
+					? [runMap.get(stageId)]
+							.filter((entry): entry is RegistryEntry => entry?.controlsDependencies === true)
+							.map((entry) => entry.handle)
+					: controlEntries
+							.map((entry) => entry.handle)
+							.filter((h) => h.status === "running" || h.status === "pending");
+				const before = new Map(controlEntries.map((entry) => [entry.handle.stageId, entry.handle.status]));
+				for (const handle of targets) {
+					if (handle.status === "paused") continue;
+					if (handle.status === "completed" || handle.status === "failed" || handle.status === "skipped") continue;
+					await handle.pause();
+				}
+				return controlledEntries(runId)
+					.map((entry) => entry.handle)
+					.filter((handle) => {
+						const previous = before.get(handle.stageId);
+						return previous !== handle.status && (handle.status === "paused" || handle.status === "blocked");
+					});
+			},
+			async resume(stageId?: string, message?: string): Promise<readonly StageControlHandle[]> {
+				const runMap = _byRun.get(runId);
+				if (!runMap) return [];
+				const controlEntries = controlledEntries(runId);
+				const before = new Map(controlEntries.map((entry) => [entry.handle.stageId, entry.handle.status]));
+				const targets = stageId
+					? [runMap.get(stageId)]
+							.filter((entry): entry is RegistryEntry => entry?.controlsDependencies === true)
+							.map((entry) => entry.handle)
+					: controlEntries.map((entry) => entry.handle).filter((h) => h.status === "paused");
+				for (const handle of targets) {
+					if (handle.status !== "paused") continue;
+					await handle.resume(message);
+				}
+				return controlledEntries(runId)
+					.map((entry) => entry.handle)
+					.filter((handle) => {
+						const previous = before.get(handle.stageId);
+						return (previous === "paused" || previous === "blocked") && previous !== handle.status;
+					});
+			},
+		};
+	}
 
-  return {
-    register(handle: StageControlHandle): () => void {
-      const runMap = ensureRun(handle.runId);
-      const displaced = runMap.get(handle.stageId);
-      runMap.set(handle.stageId, {
-        handle,
-        controlsDependencies: true,
-        permanent: true,
-        leases: new Set(),
-      });
-      if (displaced !== undefined && displaced.handle !== handle && !displaced.permanent) {
-        disposeEntryInBackground(
-          displaced,
-          "atomic-workflows: displaced provisional stage handle dispose failed",
-        );
-      }
-      return () => {
-        const existing = _byRun.get(handle.runId);
-        if (!existing) return;
-        if (existing.get(handle.stageId)?.handle === handle) {
-          existing.delete(handle.stageId);
-        }
-        if (existing.size === 0) _byRun.delete(handle.runId);
-      };
-    },
-    getOrCreateDetached(
-      runId: string,
-      stageId: string,
-      create: () => StageControlHandle,
-    ): StageControlHandle {
-      const runMap = ensureRun(runId);
-      const existing = runMap.get(stageId);
-      if (existing !== undefined && existing.handle.isDisposed !== true) {
-        existing.permanent = true;
-        return existing.handle;
-      }
-      if (existing !== undefined) {
-        runMap.delete(stageId);
-        disposeEntryInBackground(existing, "atomic-workflows: stale stage handle dispose failed");
-      }
-      const handle = create();
-      runMap.set(handle.stageId, {
-        handle,
-        controlsDependencies: false,
-        permanent: true,
-        leases: new Set(),
-      });
-      return handle;
-    },
-    acquireDetached(
-      runId: string,
-      stageId: string,
-      create: () => StageControlHandle,
-    ): DetachedStageHandleLease {
-      const runMap = ensureRun(runId);
-      let entry = runMap.get(stageId);
-      if (entry?.handle.isDisposed === true) {
-        runMap.delete(stageId);
-        disposeEntryInBackground(entry, "atomic-workflows: stale stage handle dispose failed");
-        entry = undefined;
-      }
-      if (entry === undefined) {
-        entry = {
-          handle: create(),
-          controlsDependencies: false,
-          permanent: false,
-          leases: new Set(),
-        };
-        runMap.set(stageId, entry);
-      }
-      const leasedEntry = entry;
-      const token = Symbol("detached-stage-handle-lease");
-      leasedEntry.leases.add(token);
-      let settled = false;
-      return {
-        handle: leasedEntry.handle,
-        commit() {
-          if (settled) return false;
-          if (runMap.get(stageId) !== leasedEntry || leasedEntry.disposal !== undefined) {
-            return false;
-          }
-          settled = true;
-          leasedEntry.leases.delete(token);
-          leasedEntry.permanent = true;
-          return true;
-        },
-        async release() {
-          if (settled) return;
-          settled = true;
-          leasedEntry.leases.delete(token);
-          if (runMap.get(stageId) !== leasedEntry) {
-            if (leasedEntry.disposal !== undefined) await leasedEntry.disposal;
-            return;
-          }
-          if (leasedEntry.permanent || leasedEntry.leases.size > 0) return;
-          runMap.delete(stageId);
-          if (runMap.size === 0) _byRun.delete(runId);
-          await disposeEntry(leasedEntry);
-        },
-      };
-    },
-    detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean {
-      const entry = _byRun.get(runId)?.get(stageId);
-      if (!entry) return false;
-      if (handle !== undefined && entry.handle !== handle) return false;
-      if (!entry.controlsDependencies) return false;
-      entry.controlsDependencies = false;
-      return true;
-    },
-    peek(runId: string, stageId: string): StageControlHandle | undefined {
-      return _byRun.get(runId)?.get(stageId)?.handle;
-    },
-    claim(runId: string, stageId: string): StageControlHandle | undefined {
-      const entry = _byRun.get(runId)?.get(stageId);
-      if (entry !== undefined) entry.permanent = true;
-      return entry?.handle;
-    },
-    get(runId: string, stageId: string): StageControlHandle | undefined {
-      return _byRun.get(runId)?.get(stageId)?.handle;
-    },
-    forRun(runId: string): readonly StageControlHandle[] {
-      const runMap = _byRun.get(runId);
-      if (!runMap) return [];
-      return [...runMap.values()].map((entry) => entry.handle);
-    },
-    run(runId: string): WorkflowRunControlHandle {
-      return makeRunHandle(runId);
-    },
-    clear(): void {
-      const entries = [..._byRun.values()].flatMap((runMap) => [...runMap.values()]);
-      _byRun.clear();
-      for (const entry of entries) {
-        disposeEntryInBackground(entry, "atomic-workflows: stage handle dispose failed");
-      }
-    },
-  };
+	return {
+		register(handle: StageControlHandle): () => void {
+			const runMap = ensureRun(handle.runId);
+			const displaced = runMap.get(handle.stageId);
+			runMap.set(handle.stageId, {
+				handle,
+				controlsDependencies: true,
+				permanent: true,
+				leases: new Set(),
+			});
+			if (displaced !== undefined && displaced.handle !== handle && !displaced.permanent) {
+				disposeEntryInBackground(displaced, "atomic-workflows: displaced provisional stage handle dispose failed");
+			}
+			return () => {
+				const existing = _byRun.get(handle.runId);
+				if (!existing) return;
+				if (existing.get(handle.stageId)?.handle === handle) {
+					existing.delete(handle.stageId);
+				}
+				if (existing.size === 0) _byRun.delete(handle.runId);
+			};
+		},
+		getOrCreateDetached(runId: string, stageId: string, create: () => StageControlHandle): StageControlHandle {
+			const runMap = ensureRun(runId);
+			const existing = runMap.get(stageId);
+			if (existing !== undefined && existing.handle.isDisposed !== true) {
+				existing.permanent = true;
+				return existing.handle;
+			}
+			if (existing !== undefined) {
+				runMap.delete(stageId);
+				disposeEntryInBackground(existing, "atomic-workflows: stale stage handle dispose failed");
+			}
+			const handle = create();
+			runMap.set(handle.stageId, {
+				handle,
+				controlsDependencies: false,
+				permanent: true,
+				leases: new Set(),
+			});
+			return handle;
+		},
+		acquireDetached(runId: string, stageId: string, create: () => StageControlHandle): DetachedStageHandleLease {
+			const runMap = ensureRun(runId);
+			let entry = runMap.get(stageId);
+			if (entry?.handle.isDisposed === true) {
+				runMap.delete(stageId);
+				disposeEntryInBackground(entry, "atomic-workflows: stale stage handle dispose failed");
+				entry = undefined;
+			}
+			if (entry === undefined) {
+				entry = {
+					handle: create(),
+					controlsDependencies: false,
+					permanent: false,
+					leases: new Set(),
+				};
+				runMap.set(stageId, entry);
+			}
+			const leasedEntry = entry;
+			const token = Symbol("detached-stage-handle-lease");
+			leasedEntry.leases.add(token);
+			let settled = false;
+			return {
+				handle: leasedEntry.handle,
+				commit() {
+					if (settled) return false;
+					if (runMap.get(stageId) !== leasedEntry || leasedEntry.disposal !== undefined) {
+						return false;
+					}
+					settled = true;
+					leasedEntry.leases.delete(token);
+					leasedEntry.permanent = true;
+					return true;
+				},
+				async release() {
+					if (settled) return;
+					settled = true;
+					leasedEntry.leases.delete(token);
+					if (runMap.get(stageId) !== leasedEntry) {
+						if (leasedEntry.disposal !== undefined) await leasedEntry.disposal;
+						return;
+					}
+					if (leasedEntry.permanent || leasedEntry.leases.size > 0) return;
+					runMap.delete(stageId);
+					if (runMap.size === 0) _byRun.delete(runId);
+					await disposeEntry(leasedEntry);
+				},
+			};
+		},
+		detachControl(runId: string, stageId: string, handle?: StageControlHandle): boolean {
+			const entry = _byRun.get(runId)?.get(stageId);
+			if (!entry) return false;
+			if (handle !== undefined && entry.handle !== handle) return false;
+			if (!entry.controlsDependencies) return false;
+			entry.controlsDependencies = false;
+			return true;
+		},
+		peek(runId: string, stageId: string): StageControlHandle | undefined {
+			return _byRun.get(runId)?.get(stageId)?.handle;
+		},
+		claim(runId: string, stageId: string): StageControlHandle | undefined {
+			const entry = _byRun.get(runId)?.get(stageId);
+			if (entry !== undefined) entry.permanent = true;
+			return entry?.handle;
+		},
+		get(runId: string, stageId: string): StageControlHandle | undefined {
+			return _byRun.get(runId)?.get(stageId)?.handle;
+		},
+		forRun(runId: string): readonly StageControlHandle[] {
+			const runMap = _byRun.get(runId);
+			if (!runMap) return [];
+			return [...runMap.values()].map((entry) => entry.handle);
+		},
+		run(runId: string): WorkflowRunControlHandle {
+			return makeRunHandle(runId);
+		},
+		clear(): void {
+			const entries = [..._byRun.values()].flatMap((runMap) => [...runMap.values()]);
+			_byRun.clear();
+			for (const entry of entries) {
+				disposeEntryInBackground(entry, "atomic-workflows: stage handle dispose failed");
+			}
+		},
+	};
 }
 
 /**

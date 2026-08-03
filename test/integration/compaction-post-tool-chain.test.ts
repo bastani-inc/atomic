@@ -8,25 +8,25 @@
  * notice, exactly one follow-up chat request, and no `agent.continue()`.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { Agent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
+import { test } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { RANGE_PLANNER_SYSTEM_PROMPT } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { RANGE_PLANNER_SYSTEM_PROMPT } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
-import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { CompactionBoundaryMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/compaction-boundary-message.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { createFauxStreamFn } from "../../packages/coding-agent/test/test-harness.js";
+import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 
 const SESSION_MODEL = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -52,7 +52,14 @@ function message(model: Model<Api>, body: Partial<AssistantMessage>): AssistantM
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
-		usage: { input: 900, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 920, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 900,
+			output: 20,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 920,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp: Date.now(),
 		...body,
@@ -102,9 +109,14 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 		return realContinue(...args);
 	}) as typeof agent.continue;
 
-	const authStorage = AuthStorage.inMemory(Object.fromEntries(
-		["anthropic", "openai", "google"].map((provider) => [provider, { type: "api_key" as const, key: `${provider}-key` }]),
-	));
+	const authStorage = AuthStorage.inMemory(
+		Object.fromEntries(
+			["anthropic", "openai", "google"].map((provider) => [
+				provider,
+				{ type: "api_key" as const, key: `${provider}-key` },
+			]),
+		),
+	);
 	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
 	settingsManager.applyOverrides({
@@ -137,11 +149,7 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 
 		// 3-4: the primary failed and each configured fallback got exactly one
 		// planner invocation, in configured order.
-		assert.deepEqual(traffic.planner, [
-			"anthropic/claude-sonnet-4-5",
-			"openai/gpt-5.1",
-			"google/gemini-2.5-pro",
-		]);
+		assert.deepEqual(traffic.planner, ["anthropic/claude-sonnet-4-5", "openai/gpt-5.1", "google/gemini-2.5-pro"]);
 
 		// 5: all failed, so the boundary is the fresh rung.
 		const boundary = manager.getBranch().find((entry) => entry.type === "compaction");
@@ -156,7 +164,9 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 				text: (boundary as { summary?: string }).summary ?? "",
 				stats: details!.stats,
 				rung: details!.rung,
-			}).render(200).join("\n"),
+			})
+				.render(200)
+				.join("\n"),
 		);
 		assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
 

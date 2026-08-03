@@ -35,10 +35,7 @@ export function mergeHeaders(
 	return merged;
 }
 
-type ResolveAuth = (
-	model: Model<Api>,
-	overrides?: ModelRuntimeAuthOverrides,
-) => Promise<AuthResult | undefined>;
+type ResolveAuth = (model: Model<Api>, overrides?: ModelRuntimeAuthOverrides) => Promise<AuthResult | undefined>;
 
 /** Streaming request preparation split from ModelRuntime solely for Atomic's 500-line source gate. */
 export class ModelRuntimeStreaming {

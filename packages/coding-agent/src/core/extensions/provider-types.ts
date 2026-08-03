@@ -1,3 +1,4 @@
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type {
 	Api,
 	AssistantMessageEventStream,
@@ -7,9 +8,9 @@ import type {
 	OAuthLoginCallbacks,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "./api-types.ts";
 import type { AtomicProviderCompat } from "../model-capabilities.ts";
+import type { ExtensionAPI } from "./api-types.ts";
+
 export type { AtomicProviderCompat } from "../model-capabilities.ts";
 
 /** Configuration for registering a provider via pi.registerProvider(). */

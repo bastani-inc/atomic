@@ -4,7 +4,6 @@
  * Replace everything - no discovery, explicit configuration.
  */
 
-import { getModel } from "@earendil-works/pi-ai/compat";
 import {
 	createAgentSession,
 	createExtensionRuntime,
@@ -13,6 +12,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@bastani/atomic";
+import { getModel } from "@earendil-works/pi-ai/compat";
 
 // Custom credential location with no custom models.json
 const modelRuntime = await ModelRuntime.create({

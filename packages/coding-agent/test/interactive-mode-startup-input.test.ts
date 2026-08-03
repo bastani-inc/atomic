@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { seedStartupInput } from "../src/modes/interactive/interactive-mode-base.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { seedStartupInput } from "../src/modes/interactive/interactive-mode-base.ts";
+import type { InteractiveSubmission } from "../src/modes/interactive/interactive-submission.ts";
 
 type SubmitContext = {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
@@ -31,8 +32,8 @@ type SubmitContext = {
 	recoverCookedStartupInput: () => boolean;
 	handleModelCommand: (searchTerm?: string) => Promise<void>;
 	showSettingsSelector: () => void;
-	onInputCallback?: (text: string) => void;
-	pendingUserInputs: string[];
+	onInputCallback?: (submission: InteractiveSubmission) => void;
+	pendingUserInputs: InteractiveSubmission[];
 	startupReplayInputs: string[];
 	startupReplayActiveInput?: string;
 	startupDraftText?: string;
@@ -40,8 +41,8 @@ type SubmitContext = {
 };
 type InputContext = {
 	defaultEditor?: { onSubmit?: (text: string) => void | Promise<void> };
-	onInputCallback?: (text: string) => void;
-	pendingUserInputs: string[];
+	onInputCallback?: (submission: InteractiveSubmission) => void;
+	pendingUserInputs: InteractiveSubmission[];
 	startupReplayActiveInput?: string;
 	drainStartupReplayCommands?: () => Promise<void>;
 	recoverCookedStartupInput?: () => boolean;
@@ -49,7 +50,7 @@ type InputContext = {
 
 type InteractiveModePrivate = {
 	setupEditorSubmitHandler(this: SubmitContext): void;
-	getUserInput(this: InputContext): Promise<string>;
+	getUserInput(this: InputContext): Promise<InteractiveSubmission>;
 };
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
@@ -98,7 +99,7 @@ describe("InteractiveMode startup input", () => {
 
 		await context.defaultEditor.onSubmit?.(" early prompt ");
 
-		expect(context.pendingUserInputs).toEqual(["early prompt"]);
+		expect(context.pendingUserInputs).toEqual([{ text: "early prompt", draft: " early prompt " }]);
 		expect(context.flushPendingBashComponents).toHaveBeenCalledTimes(1);
 		expect(context.editor.addToHistory).toHaveBeenCalledWith("early prompt");
 	});
@@ -131,7 +132,8 @@ describe("InteractiveMode startup input", () => {
 	});
 
 	it("loads deferred startup before explicit extension slash submissions", async () => {
-		const order: string[] = [], context = createSubmitContext();
+		const order: string[] = [],
+			context = createSubmitContext();
 		context.deferredStartupPending = true;
 		context.ensureDeferredStartupComplete = vi.fn(async () => {
 			order.push("deferred");
@@ -147,16 +149,19 @@ describe("InteractiveMode startup input", () => {
 
 	it("returns queued startup input before installing a new input callback", async () => {
 		const context: InputContext = {
-			pendingUserInputs: ["queued prompt"],
+			pendingUserInputs: [{ text: "queued prompt", draft: "queued prompt" }],
 		};
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("queued prompt");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "queued prompt",
+			draft: "queued prompt",
+		});
 		expect(context.onInputCallback).toBeUndefined();
 		expect(context.pendingUserInputs).toEqual([]);
 	});
 
 	it("seeds captured startup input into the visible editor and prompt queue", () => {
-		const pendingUserInputs: string[] = [];
+		const pendingUserInputs: InteractiveSubmission[] = [];
 		const editor = { setText: vi.fn() };
 
 		seedStartupInput(pendingUserInputs, editor, {
@@ -165,11 +170,11 @@ describe("InteractiveMode startup input", () => {
 		});
 
 		expect(editor.setText).toHaveBeenCalledWith("draft before paint");
-		expect(pendingUserInputs).toEqual(["submitted before paint"]);
+		expect(pendingUserInputs).toEqual([{ text: "submitted before paint", draft: "submitted before paint" }]);
 	});
 
 	it("preserves command-like startup submissions as standalone editor replay", () => {
-		const pendingUserInputs: string[] = [];
+		const pendingUserInputs: InteractiveSubmission[] = [];
 		const startupReplayInputs: string[] = [];
 		let startupDraftText: string | undefined;
 		let startupReplayActiveInput: string | undefined;
@@ -191,7 +196,7 @@ describe("InteractiveMode startup input", () => {
 			},
 		);
 
-		expect(pendingUserInputs).toEqual(["ordinary prompt"]);
+		expect(pendingUserInputs).toEqual([{ text: "ordinary prompt", draft: "ordinary prompt" }]);
 		expect(startupReplayInputs).toEqual(["!pwd"]);
 		expect(startupDraftText).toBe("unfinished draft");
 		expect(startupReplayActiveInput).toBe("/settings");
@@ -199,7 +204,7 @@ describe("InteractiveMode startup input", () => {
 	});
 
 	it("preserves startup submission order without merging later prompts into commands", () => {
-		const pendingUserInputs: string[] = [];
+		const pendingUserInputs: InteractiveSubmission[] = [];
 		const startupReplayInputs: string[] = [];
 		let startupReplayActiveInput: string | undefined;
 		const editor = { setText: vi.fn() };
@@ -218,7 +223,7 @@ describe("InteractiveMode startup input", () => {
 			},
 		);
 
-		expect(pendingUserInputs).toEqual(["first prompt"]);
+		expect(pendingUserInputs).toEqual([{ text: "first prompt", draft: "first prompt" }]);
 		expect(startupReplayInputs).toEqual(["second prompt"]);
 		expect(startupReplayActiveInput).toBe("/settings");
 		expect(editor.setText).toHaveBeenCalledWith("/settings");
@@ -233,7 +238,7 @@ describe("InteractiveMode startup input", () => {
 
 		context.advanceStartupInputReplay("/settings");
 
-		expect(onInputCallback).toHaveBeenCalledWith("second prompt");
+		expect(onInputCallback).toHaveBeenCalledWith({ text: "second prompt", draft: "second prompt" });
 		expect(context.startupReplayActiveInput).toBeUndefined();
 		expect(context.startupReplayInputs).toEqual([]);
 		expect(context.editor.setText).not.toHaveBeenCalledWith("/settings\nsecond prompt");
@@ -246,7 +251,7 @@ describe("InteractiveMode startup input", () => {
 
 		context.advanceStartupInputReplay("/settings");
 
-		expect(context.pendingUserInputs).toEqual(["second prompt"]);
+		expect(context.pendingUserInputs).toEqual([{ text: "second prompt", draft: "second prompt" }]);
 		expect(context.startupReplayActiveInput).toBeUndefined();
 	});
 
@@ -256,7 +261,10 @@ describe("InteractiveMode startup input", () => {
 		context.startupReplayInputs = ["explain result"];
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("explain result");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "explain result",
+			draft: "explain result",
+		});
 
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.startupReplayActiveInput).toBeUndefined();
@@ -273,7 +281,10 @@ describe("InteractiveMode startup input", () => {
 		expect(context.pendingUserInputs).toEqual([]);
 		expect(context.startupReplayInputs).toEqual(["later prompt"]);
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("later prompt");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "later prompt",
+			draft: "later prompt",
+		});
 
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.startupReplayActiveInput).toBeUndefined();
@@ -296,7 +307,7 @@ describe("InteractiveMode startup input", () => {
 	});
 
 	it("returns prompts that originally preceded startup command replay first", async () => {
-		const pendingUserInputs: string[] = [];
+		const pendingUserInputs: InteractiveSubmission[] = [];
 		const startupReplayInputs: string[] = [];
 		let startupReplayActiveInput: string | undefined;
 		const editor = { setText: vi.fn() };
@@ -321,17 +332,23 @@ describe("InteractiveMode startup input", () => {
 		context.startupReplayInputs = startupReplayInputs;
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("first prompt");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "first prompt",
+			draft: "first prompt",
+		});
 		expect(context.handleBashCommand).not.toHaveBeenCalled();
 		expect(context.startupReplayActiveInput).toBe("!pwd");
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("explain result");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "explain result",
+			draft: "explain result",
+		});
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.startupReplayActiveInput).toBeUndefined();
 	});
 
 	it("preserves raw-captured startup ordering across multiple commands and prompts", async () => {
-		const pendingUserInputs: string[] = [];
+		const pendingUserInputs: InteractiveSubmission[] = [];
 		const startupReplayInputs: string[] = [];
 		let startupReplayActiveInput: string | undefined;
 		const editor = { setText: vi.fn() };
@@ -359,13 +376,19 @@ describe("InteractiveMode startup input", () => {
 		context.startupReplayInputs = startupReplayInputs;
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("explain result");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "explain result",
+			draft: "explain result",
+		});
 
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.startupReplayActiveInput).toBe("!date");
 		expect(context.startupReplayInputs).toEqual(["explain date"]);
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("explain date");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "explain date",
+			draft: "explain date",
+		});
 
 		expect(context.handleBashCommand).toHaveBeenCalledWith("date", false);
 		expect(context.startupReplayActiveInput).toBeUndefined();
@@ -386,7 +409,9 @@ describe("InteractiveMode startup input", () => {
 
 	it("recovers cooked immediate launch input as separate startup submissions", () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("!pwd\nordinary prompt after command\n/exit");
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue(
+			"!pwd\nordinary prompt after command\n/exit",
+		);
 
 		context.recoverCookedStartupInput();
 
@@ -402,7 +427,7 @@ describe("InteractiveMode startup input", () => {
 
 		context.recoverCookedStartupInput();
 
-		expect(context.pendingUserInputs).toEqual(["first submitted"]);
+		expect(context.pendingUserInputs).toEqual([{ text: "first submitted", draft: "first submitted" }]);
 		expect(context.startupReplayActiveInput).toBeUndefined();
 		expect(context.editor.setText).toHaveBeenCalledWith("");
 		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
@@ -414,18 +439,23 @@ describe("InteractiveMode startup input", () => {
 
 		context.recoverCookedStartupInput();
 
-		expect(context.pendingUserInputs).toEqual(["first submitted"]);
+		expect(context.pendingUserInputs).toEqual([{ text: "first submitted", draft: "first submitted" }]);
 		expect(context.startupReplayActiveInput).toBe("/settings");
 		expect(context.editor.setText).toHaveBeenCalledWith("/settings");
 	});
 
 	it("preserves cooked draft text behind an active command-like submission", async () => {
 		const context = createSubmitContext();
-		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("ordinary prompt after command\nunfinished draft");
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue(
+			"ordinary prompt after command\nunfinished draft",
+		);
 		context.startupReplayActiveInput = "!pwd";
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("ordinary prompt after command");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "ordinary prompt after command",
+			draft: "ordinary prompt after command",
+		});
 
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
@@ -449,7 +479,10 @@ describe("InteractiveMode startup input", () => {
 			.mockReturnValueOnce("")
 			.mockReturnValueOnce("first submitted\nunfinished draft");
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("first submitted");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "first submitted",
+			draft: "first submitted",
+		});
 
 		expect(context.editor.getText).toHaveBeenCalledTimes(2);
 		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
@@ -469,14 +502,16 @@ describe("InteractiveMode startup input", () => {
 		expect(context.startupReplayActiveInput).toBeUndefined();
 	});
 
-
 	it("queues cooked submissions behind an active raw-captured command", async () => {
 		const context = createSubmitContext();
 		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("ordinary prompt after command\n/exit");
 		context.startupReplayActiveInput = "!pwd";
 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
 
-		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("ordinary prompt after command");
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toEqual({
+			text: "ordinary prompt after command",
+			draft: "ordinary prompt after command",
+		});
 
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.startupReplayActiveInput).toBe("/exit");
@@ -495,6 +530,6 @@ describe("InteractiveMode startup input", () => {
 
 		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
 		expect(context.handleBashCommand).not.toHaveBeenCalledWith("pwd\nexplain result", false);
-		expect(onInputCallback).toHaveBeenCalledWith("explain result");
+		expect(onInputCallback).toHaveBeenCalledWith({ text: "explain result", draft: "explain result" });
 	});
 });

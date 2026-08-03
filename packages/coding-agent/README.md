@@ -79,7 +79,7 @@ atomic
 
 Then just talk to Atomic. By default, Atomic gives the model six coding tools: `read`, `write`, `edit`, `bash`, `find`, and `search`. The model uses these to fulfill your requests. `read`, `search`, `write`, and successful `edit` calls emit session-scoped hashline anchors (`[path#TAG]` plus `LINE:text`) so the model can make stale-safe line edits; see [docs/tools.md](docs/tools.md). Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Atomic packages](#atomic-packages).
 
-**Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
+**Platform notes:** [Windows](docs/windows.md) | [Alpine/musl Linux](docs/index.md#alpine-and-musl-linux-archives) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
 ---
 

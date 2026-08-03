@@ -1,8 +1,7 @@
 import type { Theme } from "@bastani/atomic";
-import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
-import { Input, matchesKey } from "@earendil-works/pi-tui";
-import { BaseOverlay, sleep } from "./overlay-qa-shared.js";
-
+import type { OverlayHandle, TUI } from "@earendil-works/pi-tui";
+import { matchesKey } from "@earendil-works/pi-tui";
+import { BaseOverlay } from "./overlay-qa-shared.js";
 
 export type ToggleHandleAccessor = () => OverlayHandle | null;
 
@@ -166,4 +165,3 @@ export class TimerPanel extends BaseOverlay {
 }
 
 // === Focus cycling demo ===
-

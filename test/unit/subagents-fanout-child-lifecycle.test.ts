@@ -1,14 +1,14 @@
-import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@bastani/atomic";
+import { afterEach, describe, test } from "vitest";
 import registerFanoutChildSubagentExtension from "../../packages/subagents/src/extension/fanout-child.js";
 import {
 	createNestedRoute,
+	type NestedRoute,
 	readNestedControlResults,
 	writeNestedControlRequest,
-	type NestedRoute,
 } from "../../packages/subagents/src/runs/shared/nested-events.js";
 import {
 	SUBAGENT_CHILD_ENV,
@@ -18,6 +18,7 @@ import {
 	SUBAGENT_PARENT_EVENT_SINK_ENV,
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 } from "../../packages/subagents/src/runs/shared/pi-args.js";
+import { sleep } from "../helpers/runtime.js";
 
 interface FanoutHarness {
 	pi: ExtensionAPI;
@@ -69,7 +70,7 @@ function activateRoute(prefix: string): NestedRoute {
 async function waitForControlResult(route: NestedRoute, requestId: string): Promise<void> {
 	for (let attempt = 0; attempt < 20; attempt++) {
 		if (readNestedControlResults(route).some((result) => result.requestId === requestId)) return;
-		await Bun.sleep(50);
+		await sleep(50);
 	}
 	assert.fail(`fanout listener did not process ${requestId}`);
 }
@@ -124,7 +125,7 @@ describe("fanout-child ExtensionAPI lifecycle ownership", () => {
 			targetRunId: "missing-run",
 			action: "interrupt",
 		});
-		await Bun.sleep(300);
+		await sleep(300);
 		assert.equal(
 			readNestedControlResults(retiredRoute).some((result) => result.requestId === retiredRequestId),
 			false,

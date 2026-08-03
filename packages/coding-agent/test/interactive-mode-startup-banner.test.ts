@@ -1,20 +1,23 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { TUI, type Terminal } from "@earendil-works/pi-tui";
+import { type Terminal, TUI } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { FastModeSelectorComponent } from "../src/modes/interactive/components/fast-mode-selector.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import {
-	STARTUP_ASSEMBLY_GAPS,
 	composeStartupIdentity,
 	renderAtomicAssemblyBanner,
 	renderStartupManifesto,
+	STARTUP_ASSEMBLY_GAPS,
 } from "../src/modes/interactive/components/atomic-banner.ts";
-import { StartupIdentityComponent, startupStateAtElapsed } from "../src/modes/interactive/components/startup-identity.ts";
+import type { FastModeSelectorComponent } from "../src/modes/interactive/components/fast-mode-selector.ts";
+import {
+	StartupIdentityComponent,
+	startupStateAtElapsed,
+} from "../src/modes/interactive/components/startup-identity.ts";
+import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 
 function plain(text: string): string {
 	return text.replace(/\u001b\[[0-9;]*m/g, "");
@@ -177,7 +180,10 @@ describe("InteractiveMode startup banner", () => {
 		process.env.NO_COLOR = "";
 		try {
 			initTheme("dark");
-			for (const state of [{ gap: 4, manifestoPhase: 0 }, { gap: 0, manifestoPhase: 4 }]) {
+			for (const state of [
+				{ gap: 4, manifestoPhase: 0 },
+				{ gap: 0, manifestoPhase: 4 },
+			]) {
 				const rendered = renderStartupIdentity({
 					chatFastMode: false,
 					reasoning: false,
@@ -209,8 +215,9 @@ describe("InteractiveMode startup banner", () => {
 	});
 
 	it("holds the landed identity before three 80ms manifesto phrases", () => {
-		expect([0, 80, 160, 240, 320, 400, 480, 560, 640].map((ms) => startupStateAtElapsed(ms).gap))
-			.toEqual([10, 8, 6, 4, 3, 2, 1, 1, 0]);
+		expect([0, 80, 160, 240, 320, 400, 480, 560, 640].map((ms) => startupStateAtElapsed(ms).gap)).toEqual([
+			10, 8, 6, 4, 3, 2, 1, 1, 0,
+		]);
 		expect(startupStateAtElapsed(799).manifestoPhase).toBe(0);
 		expect(startupStateAtElapsed(800).manifestoPhase).toBe(1);
 		expect(startupStateAtElapsed(880).manifestoPhase).toBe(2);
@@ -242,7 +249,9 @@ describe("InteractiveMode startup banner", () => {
 		const editor = {
 			render: () => [],
 			invalidate: () => {},
-			handleInput: (data: string) => { editorInputs.push(data); },
+			handleInput: (data: string) => {
+				editorInputs.push(data);
+			},
 		};
 		tui.setFocus(editor);
 		const handleCtrlC = vi.fn();
@@ -272,7 +281,9 @@ describe("InteractiveMode startup banner", () => {
 		const meta = ["Atomic v0.0.0", "(openai) model", "/tmp/project"];
 		expect(plain(composeStartupIdentity(mark, meta, 120, renderStartupManifesto(0)))).not.toContain("We question,");
 		expect(plain(composeStartupIdentity(mark, meta, 120, renderStartupManifesto(1)))).toContain("We question,");
-		expect(plain(composeStartupIdentity(mark, meta, 120, renderStartupManifesto(2)))).toContain("we break away from what is accepted.");
+		expect(plain(composeStartupIdentity(mark, meta, 120, renderStartupManifesto(2)))).toContain(
+			"we break away from what is accepted.",
+		);
 		const final = plain(composeStartupIdentity(mark, meta, 64, renderStartupManifesto(4)));
 		expect(final).toContain("Engineering matters.");
 		expect(final.split("\n").every((line) => line.length <= 64)).toBe(true);

@@ -11,7 +11,8 @@
 #   --skip-install       Reuse dependencies installed by the caller
 #   --skip-package-build Reuse packages/coding-agent/dist built by the caller
 #   --platform <name>    Build only for specified platform
-#                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64, windows-arm64)
+#                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64,
+#                         linux-x64-musl, linux-arm64-musl, windows-x64, windows-arm64)
 #
 # Output:
 #   packages/coding-agent/binaries/
@@ -19,6 +20,8 @@
 #     atomic-darwin-x64.tar.gz
 #     atomic-linux-x64.tar.gz
 #     atomic-linux-arm64.tar.gz
+#     atomic-linux-x64-musl.tar.gz
+#     atomic-linux-arm64-musl.tar.gz
 #     atomic-windows-x64.zip
 #     atomic-windows-arm64.zip
 
@@ -71,11 +74,11 @@ done
 
 if [[ -n "$PLATFORM" ]]; then
     case "$PLATFORM" in
-        darwin-arm64|darwin-x64|linux-x64|linux-arm64|windows-x64|windows-arm64)
+        darwin-arm64|darwin-x64|linux-x64|linux-arm64|linux-x64-musl|linux-arm64-musl|windows-x64|windows-arm64)
             ;;
         *)
             echo "Invalid platform: $PLATFORM"
-            echo "Valid platforms: darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64, windows-arm64"
+            echo "Valid platforms: darwin-arm64, darwin-x64, linux-x64, linux-arm64, linux-x64-musl, linux-arm64-musl, windows-x64, windows-arm64"
             exit 1
             ;;
     esac
@@ -83,17 +86,42 @@ fi
 
 if [[ "$SKIP_INSTALL" == "false" ]]; then
     echo "==> Installing dependencies..."
-    bun install --frozen-lockfile
+    npm ci --ignore-scripts
 else
     echo "==> Reusing caller-installed dependencies (--skip-install)"
 fi
 
 if [[ "$SKIP_DEPS" == "false" ]]; then
+    echo "==> Installing cross-platform Atomic native bindings..."
+    # Mirrors pi's build-binaries.sh. Every platform binding goes in one command
+    # because npm prunes what a previous --no-save install added, so a binding
+    # per invocation would leave only the last one on disk. --force bypasses the
+    # os/cpu restrictions that exist to prevent exactly this, and --ignore-scripts
+    # because none of these are meant to run on this host.
+    natives_version="$(node -p 'require("./packages/natives/package.json").version')"
+    natives_targets=()
+    for natives_platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl win32-x64-msvc win32-arm64-msvc; do
+        natives_targets+=("@bastani/atomic-natives-${natives_platform}@${natives_version}")
+    done
+    # A versionless release base pins every manifest at the 0.0.0 placeholder, and
+    # nothing is published under it, so the fetch can only fail. Skip it rather
+    # than let npm prune the installed tree on its way to ETARGET.
+    if [[ "$natives_version" == "0.0.0" ]]; then
+        echo "==> Skipping cross-platform bindings: packages/natives is at the 0.0.0 placeholder"
+    elif ! npm install --include=optional --no-save --package-lock=false --force --ignore-scripts \
+        "${natives_targets[@]}"; then
+        # `--no-save --force` mutates node_modules before it fails, and it prunes
+        # real runtime dependencies on the way out (this removed css-select and
+        # broke the release binary). Put the tree back before continuing.
+        echo "==> Cross-platform bindings unavailable; restoring the dependency tree"
+        npm ci --ignore-scripts
+    fi
+
     echo "==> Staging cross-platform native bindings for clipboard..."
     # Stage in a disposable package so release preparation never mutates the
-    # repository manifest or lockfiles. --os '*' --cpu '*' bypasses Bun's host
+    # repository manifest or lockfiles. --os '*' --cpu '*' bypasses host
     # filtering and installs every exact-version release target.
-    clipboard_version="$(bun -e 'const p = await Bun.file("node_modules/@mariozechner/clipboard/package.json").json(); console.log(p.version)')"
+    clipboard_version="$(node -p 'require("./node_modules/@mariozechner/clipboard/package.json").version')"
     CLIPBOARD_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/atomic-clipboard-stage.XXXXXX")"
     # mktemp may echo a relative path when TMPDIR is relative. Canonicalize it
     # before the later cd into packages/coding-agent so staging and cleanup
@@ -109,13 +137,13 @@ if compgen -G "packages/natives/native/*.node" >/dev/null; then
     echo "==> Using existing Atomic native binding artifacts..."
 else
     echo "==> Building Atomic native bindings for host platform..."
-    bun run --cwd packages/natives build
+    npm run build --workspace=@bastani/atomic-natives
 fi
 
 if [[ "$SKIP_PACKAGE_BUILD" == "false" ]]; then
     echo "==> Building @bastani/atomic package..."
     cd packages/coding-agent
-    bun run build
+    npm run build
 else
     echo "==> Reusing caller-built @bastani/atomic package (--skip-package-build)"
     test -f packages/coding-agent/dist/bun/cli.js || {
@@ -133,7 +161,7 @@ mkdir -p binaries
 if [[ -n "$PLATFORM" ]]; then
     PLATFORMS=("$PLATFORM")
 else
-    PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64 windows-arm64)
+    PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl windows-x64 windows-arm64)
 fi
 
 shared_app_dir="binaries/.app"
@@ -181,6 +209,8 @@ atomic_native_filename() {
         darwin-x64) echo "atomic_natives.darwin-x64.node" ;;
         linux-x64) echo "atomic_natives.linux-x64-gnu.node" ;;
         linux-arm64) echo "atomic_natives.linux-arm64-gnu.node" ;;
+        linux-x64-musl) echo "atomic_natives.linux-x64-musl.node" ;;
+        linux-arm64-musl) echo "atomic_natives.linux-arm64-musl.node" ;;
         windows-x64) echo "atomic_natives.win32-x64-msvc.node" ;;
         windows-arm64) echo "atomic_natives.win32-arm64-msvc.node" ;;
         *) echo "Unknown platform: $1" >&2; return 1 ;;
@@ -219,6 +249,11 @@ for platform in "${PLATFORMS[@]}"; do
     fi
 
     cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
+    if [[ "$platform" == linux-*-musl ]]; then
+        # The embedded-postgres wrapper remains useful for its Docker/in-memory fallback,
+        # but its optional @embedded-postgres/* packages contain glibc binaries only.
+        rm -rf "binaries/$platform/node_modules/@embedded-postgres"
+    fi
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
     find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
     atomic_native="$(atomic_native_filename "$platform")"

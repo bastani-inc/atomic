@@ -67,7 +67,7 @@ interface PromptTemplateDelegationUpdate {
 }
 
 export interface PromptTemplateBridgeEvents {
-	on(event: string, handler: (data: unknown) => void): (() => void) | void;
+	on(event: string, handler: (data: unknown) => void): (() => void) | undefined;
 	emit(event: string, data: unknown): void;
 }
 
@@ -187,10 +187,12 @@ function sanitizeRecentTools(
 	if (!tools || tools.length === 0) return undefined;
 	const sanitized = tools.flatMap((entry) => {
 		if (typeof entry.tool !== "string" || entry.tool.trim().length === 0) return [];
-		return [{
-			tool: entry.tool,
-			args: typeof entry.args === "string" ? entry.args : String(entry.args ?? ""),
-		}];
+		return [
+			{
+				tool: entry.tool,
+				args: typeof entry.args === "string" ? entry.args : String(entry.args ?? ""),
+			},
+		];
 	});
 	return sanitized.length > 0 ? sanitized : undefined;
 }
@@ -214,11 +216,12 @@ function resolveProgressModel(
 }
 
 function toolCallSummaryText(summary: { text?: string; expandedText?: string }): string | undefined {
-	const text = typeof summary.expandedText === "string" && summary.expandedText.trim().length > 0
-		? summary.expandedText.trim()
-		: typeof summary.text === "string"
-			? summary.text.trim()
-			: "";
+	const text =
+		typeof summary.expandedText === "string" && summary.expandedText.trim().length > 0
+			? summary.expandedText.trim()
+			: typeof summary.text === "string"
+				? summary.text.trim()
+				: "";
 	return text || undefined;
 }
 
@@ -232,22 +235,24 @@ function buildDelegationMessages(
 		return text ? [`- ${text}`] : [];
 	});
 	const toolCallText = toolCallSummaries.length > 0 ? `Tool calls:\n${toolCallSummaries.join("\n")}` : undefined;
-	const text = typeof result.finalOutput === "string" && result.finalOutput.trim().length > 0
-		? result.finalOutput.trim()
-		: fallbackText;
+	const text =
+		typeof result.finalOutput === "string" && result.finalOutput.trim().length > 0
+			? result.finalOutput.trim()
+			: fallbackText;
 	const contentText = [toolCallText, text].filter((part): part is string => Boolean(part)).join("\n\n");
 	if (!contentText) return [];
 	return [{ role: "assistant", content: [{ type: "text", text: contentText }] }];
 }
 
-function toDelegationUpdate(requestId: string, update: PromptTemplateBridgeResult): PromptTemplateDelegationUpdate | undefined {
+function toDelegationUpdate(
+	requestId: string,
+	update: PromptTemplateBridgeResult,
+): PromptTemplateDelegationUpdate | undefined {
 	const progress = update.details?.progress?.[0];
 	const taskProgress = update.details?.progress?.map((entry) => {
 		const lastOutput = entry.recentOutput?.[entry.recentOutput.length - 1];
 		const safeLastOutput =
-			typeof lastOutput === "string" && lastOutput.trim() && lastOutput !== "(running...)"
-				? lastOutput
-				: undefined;
+			typeof lastOutput === "string" && lastOutput.trim() && lastOutput !== "(running...)" ? lastOutput : undefined;
 		return {
 			index: entry.index,
 			agent: entry.agent ?? "delegate",
@@ -266,9 +271,7 @@ function toDelegationUpdate(requestId: string, update: PromptTemplateBridgeResul
 	if (!progress && (!taskProgress || taskProgress.length === 0)) return undefined;
 	const lastOutput = progress?.recentOutput?.[progress.recentOutput.length - 1];
 	const safeLastOutput =
-		typeof lastOutput === "string" && lastOutput.trim() && lastOutput !== "(running...)"
-			? lastOutput
-			: undefined;
+		typeof lastOutput === "string" && lastOutput.trim() && lastOutput !== "(running...)" ? lastOutput : undefined;
 	return {
 		requestId,
 		currentTool: progress?.currentTool,
@@ -346,39 +349,33 @@ export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: strin
 		options.events.emit(PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT, { requestId: request.requestId });
 
 		try {
-			const result = await options.execute(
-				request.requestId,
-				request,
-				controller.signal,
-				ctx,
-				(update) => {
-					const payload = toDelegationUpdate(request.requestId, update);
-					if (!payload) return;
-					options.events.emit(PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT, payload);
-				},
-			);
+			const result = await options.execute(request.requestId, request, controller.signal, ctx, (update) => {
+				const payload = toDelegationUpdate(request.requestId, update);
+				if (!payload) return;
+				options.events.emit(PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT, payload);
+			});
 			const contentText = firstTextContent(result.content);
 			const messages = buildDelegationMessages(result.details?.results?.[0] ?? {}, contentText);
 			const parallelResults = request.tasks
 				? request.tasks.map<PromptTemplateDelegationParallelResult>((task, index) => {
-					const step = result.details?.results?.[index];
-					if (!step) {
+						const step = result.details?.results?.[index];
+						if (!step) {
+							return {
+								agent: task.agent,
+								messages: [],
+								isError: true,
+								errorText: "Missing result for delegated parallel task.",
+							};
+						}
+						const exitCode = typeof step.exitCode === "number" ? step.exitCode : undefined;
+						const errorText = step.error;
 						return {
-							agent: task.agent,
-							messages: [],
-							isError: true,
-							errorText: "Missing result for delegated parallel task.",
+							agent: step.agent ?? task.agent,
+							messages: buildDelegationMessages(step),
+							isError: (exitCode !== undefined && exitCode !== 0) || !!errorText,
+							errorText: errorText || undefined,
 						};
-					}
-					const exitCode = typeof step.exitCode === "number" ? step.exitCode : undefined;
-					const errorText = step.error;
-					return {
-						agent: step.agent ?? task.agent,
-						messages: buildDelegationMessages(step),
-						isError: (exitCode !== undefined && exitCode !== 0) || !!errorText,
-						errorText: errorText || undefined,
-					};
-				})
+					})
 				: undefined;
 			const response: PromptTemplateDelegationResponse = {
 				...request,

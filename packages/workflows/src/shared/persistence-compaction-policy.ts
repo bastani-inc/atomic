@@ -10,9 +10,9 @@
  * cross-ref: pi-subagents fork-context children preservation pattern (upstream #147)
  */
 
-import type { Store } from "./store.js";
-import { appendRunStart, appendStageStart } from "./persistence-session-entries.js";
 import type { PersistenceAPI } from "./persistence-session-entries.js";
+import { appendRunStart, appendStageStart } from "./persistence-session-entries.js";
+import type { Store } from "./store.js";
 
 // ---------------------------------------------------------------------------
 // Compaction API structural type
@@ -20,8 +20,8 @@ import type { PersistenceAPI } from "./persistence-session-entries.js";
 
 /** Subset of the pi runtime API needed to install lifecycle hooks. */
 export interface CompactionAPI {
-  /** Register a listener for a pi lifecycle event. */
-  on?: (event: string, handler: () => void | Promise<void>) => void;
+	/** Register a listener for a pi lifecycle event. */
+	on?: (event: string, handler: () => void | Promise<void>) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,34 +39,34 @@ export interface CompactionAPI {
  * Degrades gracefully if `api.on` is not available.
  */
 export function installCompactionHook(api: CompactionAPI & PersistenceAPI, store: Store): void {
-  if (typeof api.on !== "function") return;
+	if (typeof api.on !== "function") return;
 
-  api.on("session_before_compact", () => {
-    const runs = store.runs();
-    const now = Date.now();
+	api.on("session_before_compact", () => {
+		const runs = store.runs();
+		const now = Date.now();
 
-    for (const run of runs) {
-      // Only preserve runs that haven't ended
-      if (run.endedAt !== undefined) continue;
+		for (const run of runs) {
+			// Only preserve runs that haven't ended
+			if (run.endedAt !== undefined) continue;
 
-      appendRunStart(api, {
-        runId: run.id,
-        name: run.name,
-        inputs: run.inputs,
-        ts: run.startedAt ?? now,
-      });
+			appendRunStart(api, {
+				runId: run.id,
+				name: run.name,
+				inputs: run.inputs,
+				ts: run.startedAt ?? now,
+			});
 
-      for (const stage of run.stages) {
-        // Re-append start for stages that haven't completed
-        if (stage.endedAt !== undefined) continue;
-        appendStageStart(api, {
-          runId: run.id,
-          stageId: stage.id,
-          name: stage.name,
-          parentIds: [...stage.parentIds],
-          ts: stage.startedAt ?? now,
-        });
-      }
-    }
-  });
+			for (const stage of run.stages) {
+				// Re-append start for stages that haven't completed
+				if (stage.endedAt !== undefined) continue;
+				appendStageStart(api, {
+					runId: run.id,
+					stageId: stage.id,
+					name: stage.name,
+					parentIds: [...stage.parentIds],
+					ts: stage.startedAt ?? now,
+				});
+			}
+		}
+	});
 }

@@ -1,5 +1,5 @@
 import { ActivityWatchdog, type ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
-import { parseInteractiveEngineMessage, type InteractiveEngineMessage } from "./protocol.ts";
+import { type InteractiveEngineMessage, parseInteractiveEngineMessage } from "./protocol.ts";
 
 export class InteractiveEngineMonitor {
 	private readonly watchdog: ActivityWatchdog;
@@ -32,11 +32,13 @@ export class InteractiveEngineMonitor {
 		this.failure.catch(() => {});
 	}
 
-
 	stop(): void {
 		this.watchdog.stop();
 	}
-	fail(error: Error): void { this.rejectBound(error); this.rejectFailure(error); }
+	fail(error: Error): void {
+		this.rejectBound(error);
+		this.rejectFailure(error);
+	}
 
 	/**
 	 * Waits for the engine to announce readiness. There is deliberately no
@@ -47,7 +49,9 @@ export class InteractiveEngineMonitor {
 		await Promise.race([this.readiness, this.failure]);
 	}
 
-	waitUntilBound(): Promise<void> { return this.bound; }
+	waitUntilBound(): Promise<void> {
+		return this.bound;
+	}
 
 	handleLine(line: string): boolean {
 		const message = parseInteractiveEngineMessage(line);

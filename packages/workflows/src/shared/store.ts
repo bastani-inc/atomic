@@ -5,11 +5,11 @@
 
 export { createStore, store } from "./store-factory.js";
 export type {
-  PromptAnswerRecord,
-  RecordStagePromptAnswerOptions,
-  ResolveStagePendingPromptOptions,
-  RunBlockedMetadata,
-  RunEndMetadata,
-  StagePromptAnswerSource,
-  Store,
+	PromptAnswerRecord,
+	RecordStagePromptAnswerOptions,
+	ResolveStagePendingPromptOptions,
+	RunBlockedMetadata,
+	RunEndMetadata,
+	StagePromptAnswerSource,
+	Store,
 } from "./store-public-types.js";

@@ -1,17 +1,17 @@
 import type { NestedRunState, NestedRunSummary, NestedStepSummary } from "../../shared/types.ts";
-import { sanitizeNestedPath } from "./nested-path.ts";
 import {
+	clampNumber,
+	isSafeNestedId,
 	MAX_NESTED_CHILDREN,
 	MAX_NESTED_DEPTH,
 	MAX_NESTED_EVENT_BYTES,
 	MAX_NESTED_STEPS,
-	clampNumber,
-	isSafeNestedId,
-	stringValue,
 	type NestedEventRecord,
 	type NestedRegistry,
 	type NestedRoute,
+	stringValue,
 } from "./nested-events-core.ts";
+import { sanitizeNestedPath } from "./nested-path.ts";
 
 function sanitizeTokenUsage(value: unknown): NestedRunSummary["totalTokens"] | undefined {
 	if (!value || typeof value !== "object") return undefined;
@@ -19,9 +19,7 @@ function sanitizeTokenUsage(value: unknown): NestedRunSummary["totalTokens"] | u
 	const input = clampNumber(raw.input);
 	const output = clampNumber(raw.output);
 	const total = clampNumber(raw.total);
-	return input !== undefined && output !== undefined && total !== undefined
-		? { input, output, total }
-		: undefined;
+	return input !== undefined && output !== undefined && total !== undefined ? { input, output, total } : undefined;
 }
 
 function sanitizeState(value: unknown, fallback: NestedRunState): NestedRunState {
@@ -35,24 +33,41 @@ function sanitizeStep(input: unknown, depth: number): NestedStepSummary | undefi
 	const raw = input as Record<string, unknown>;
 	const agent = stringValue(raw.agent, 128);
 	if (!agent) return undefined;
-	const status = raw.status === "pending" || raw.status === "running" || raw.status === "complete" || raw.status === "completed" || raw.status === "failed" || raw.status === "paused"
-		? raw.status
-		: "pending";
+	const status =
+		raw.status === "pending" ||
+		raw.status === "running" ||
+		raw.status === "complete" ||
+		raw.status === "completed" ||
+		raw.status === "failed" ||
+		raw.status === "paused"
+			? raw.status
+			: "pending";
 	return {
 		agent,
 		status: status === "completed" ? "complete" : status,
 		...(stringValue(raw.sessionFile, 2048) ? { sessionFile: stringValue(raw.sessionFile, 2048) } : {}),
-		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention" ? { activityState: raw.activityState } : {}),
+		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention"
+			? { activityState: raw.activityState }
+			: {}),
 		...(clampNumber(raw.lastActivityAt) !== undefined ? { lastActivityAt: clampNumber(raw.lastActivityAt) } : {}),
 		...(stringValue(raw.currentTool, 128) ? { currentTool: stringValue(raw.currentTool, 128) } : {}),
-		...(clampNumber(raw.currentToolStartedAt) !== undefined ? { currentToolStartedAt: clampNumber(raw.currentToolStartedAt) } : {}),
+		...(clampNumber(raw.currentToolStartedAt) !== undefined
+			? { currentToolStartedAt: clampNumber(raw.currentToolStartedAt) }
+			: {}),
 		...(stringValue(raw.currentPath, 2048) ? { currentPath: stringValue(raw.currentPath, 2048) } : {}),
 		...(clampNumber(raw.turnCount) !== undefined ? { turnCount: clampNumber(raw.turnCount) } : {}),
 		...(clampNumber(raw.toolCount) !== undefined ? { toolCount: clampNumber(raw.toolCount) } : {}),
 		...(clampNumber(raw.startedAt) !== undefined ? { startedAt: clampNumber(raw.startedAt) } : {}),
 		...(clampNumber(raw.endedAt) !== undefined ? { endedAt: clampNumber(raw.endedAt) } : {}),
 		...(stringValue(raw.error, 1024) ? { error: stringValue(raw.error, 1024) } : {}),
-		...(depth < MAX_NESTED_DEPTH && Array.isArray(raw.children) ? { children: raw.children.map((child) => sanitizeSummary(child, depth + 1)).filter((child): child is NestedRunSummary => Boolean(child)).slice(0, MAX_NESTED_CHILDREN) } : {}),
+		...(depth < MAX_NESTED_DEPTH && Array.isArray(raw.children)
+			? {
+					children: raw.children
+						.map((child) => sanitizeSummary(child, depth + 1))
+						.filter((child): child is NestedRunSummary => Boolean(child))
+						.slice(0, MAX_NESTED_CHILDREN),
+				}
+			: {}),
 	};
 }
 
@@ -62,7 +77,10 @@ export function sanitizeSummary(input: unknown, depth = 0): NestedRunSummary | u
 	if (!isSafeNestedId(raw.id) || !isSafeNestedId(raw.parentRunId)) return undefined;
 	const pathParts = sanitizeNestedPath(raw.path);
 	const steps = Array.isArray(raw.steps)
-		? raw.steps.map((step) => sanitizeStep(step, depth + 1)).filter((step): step is NestedStepSummary => Boolean(step)).slice(0, MAX_NESTED_STEPS)
+		? raw.steps
+				.map((step) => sanitizeStep(step, depth + 1))
+				.filter((step): step is NestedStepSummary => Boolean(step))
+				.slice(0, MAX_NESTED_STEPS)
 		: undefined;
 	const totalTokens = sanitizeTokenUsage(raw.totalTokens);
 	return {
@@ -74,24 +92,43 @@ export function sanitizeSummary(input: unknown, depth = 0): NestedRunSummary | u
 		path: pathParts,
 		state: sanitizeState(raw.state, "running"),
 		...(stringValue(raw.asyncDir, 2048) ? { asyncDir: stringValue(raw.asyncDir, 2048) } : {}),
-		...(clampNumber(raw.pid) !== undefined && clampNumber(raw.pid)! > 0 && Number.isInteger(clampNumber(raw.pid)) ? { pid: clampNumber(raw.pid) } : {}),
+		...(clampNumber(raw.pid) !== undefined && clampNumber(raw.pid)! > 0 && Number.isInteger(clampNumber(raw.pid))
+			? { pid: clampNumber(raw.pid) }
+			: {}),
 		...(stringValue(raw.sessionId, 256) ? { sessionId: stringValue(raw.sessionId, 256) } : {}),
 		...(stringValue(raw.sessionFile, 2048) ? { sessionFile: stringValue(raw.sessionFile, 2048) } : {}),
 		...(stringValue(raw.intercomTarget, 256) ? { intercomTarget: stringValue(raw.intercomTarget, 256) } : {}),
-		...(stringValue(raw.ownerIntercomTarget, 256) ? { ownerIntercomTarget: stringValue(raw.ownerIntercomTarget, 256) } : {}),
-		...(stringValue(raw.leafIntercomTarget, 256) ? { leafIntercomTarget: stringValue(raw.leafIntercomTarget, 256) } : {}),
-		...(raw.ownerState === "live" || raw.ownerState === "gone" || raw.ownerState === "unknown" ? { ownerState: raw.ownerState } : {}),
+		...(stringValue(raw.ownerIntercomTarget, 256)
+			? { ownerIntercomTarget: stringValue(raw.ownerIntercomTarget, 256) }
+			: {}),
+		...(stringValue(raw.leafIntercomTarget, 256)
+			? { leafIntercomTarget: stringValue(raw.leafIntercomTarget, 256) }
+			: {}),
+		...(raw.ownerState === "live" || raw.ownerState === "gone" || raw.ownerState === "unknown"
+			? { ownerState: raw.ownerState }
+			: {}),
 		...(stringValue(raw.controlInbox, 2048) ? { controlInbox: stringValue(raw.controlInbox, 2048) } : {}),
 		...(stringValue(raw.capabilityToken, 128) ? { capabilityToken: stringValue(raw.capabilityToken, 128) } : {}),
 		...(raw.mode === "single" || raw.mode === "parallel" || raw.mode === "chain" ? { mode: raw.mode } : {}),
 		...(stringValue(raw.agent, 128) ? { agent: stringValue(raw.agent, 128) } : {}),
-		...(Array.isArray(raw.agents) ? { agents: raw.agents.map((agent) => stringValue(agent, 128)).filter((agent): agent is string => Boolean(agent)).slice(0, MAX_NESTED_STEPS) } : {}),
+		...(Array.isArray(raw.agents)
+			? {
+					agents: raw.agents
+						.map((agent) => stringValue(agent, 128))
+						.filter((agent): agent is string => Boolean(agent))
+						.slice(0, MAX_NESTED_STEPS),
+				}
+			: {}),
 		...(clampNumber(raw.currentStep) !== undefined ? { currentStep: clampNumber(raw.currentStep) } : {}),
 		...(clampNumber(raw.chainStepCount) !== undefined ? { chainStepCount: clampNumber(raw.chainStepCount) } : {}),
-		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention" ? { activityState: raw.activityState } : {}),
+		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention"
+			? { activityState: raw.activityState }
+			: {}),
 		...(clampNumber(raw.lastActivityAt) !== undefined ? { lastActivityAt: clampNumber(raw.lastActivityAt) } : {}),
 		...(stringValue(raw.currentTool, 128) ? { currentTool: stringValue(raw.currentTool, 128) } : {}),
-		...(clampNumber(raw.currentToolStartedAt) !== undefined ? { currentToolStartedAt: clampNumber(raw.currentToolStartedAt) } : {}),
+		...(clampNumber(raw.currentToolStartedAt) !== undefined
+			? { currentToolStartedAt: clampNumber(raw.currentToolStartedAt) }
+			: {}),
 		...(stringValue(raw.currentPath, 2048) ? { currentPath: stringValue(raw.currentPath, 2048) } : {}),
 		...(clampNumber(raw.turnCount) !== undefined ? { turnCount: clampNumber(raw.turnCount) } : {}),
 		...(clampNumber(raw.toolCount) !== undefined ? { toolCount: clampNumber(raw.toolCount) } : {}),
@@ -101,7 +138,14 @@ export function sanitizeSummary(input: unknown, depth = 0): NestedRunSummary | u
 		...(clampNumber(raw.lastUpdate) !== undefined ? { lastUpdate: clampNumber(raw.lastUpdate) } : {}),
 		...(stringValue(raw.error, 1024) ? { error: stringValue(raw.error, 1024) } : {}),
 		...(steps && steps.length > 0 ? { steps } : {}),
-		...(depth < MAX_NESTED_DEPTH && Array.isArray(raw.children) ? { children: raw.children.map((child) => sanitizeSummary(child, depth + 1)).filter((child): child is NestedRunSummary => Boolean(child)).slice(0, MAX_NESTED_CHILDREN) } : {}),
+		...(depth < MAX_NESTED_DEPTH && Array.isArray(raw.children)
+			? {
+					children: raw.children
+						.map((child) => sanitizeSummary(child, depth + 1))
+						.filter((child): child is NestedRunSummary => Boolean(child))
+						.slice(0, MAX_NESTED_CHILDREN),
+				}
+			: {}),
 	};
 }
 
@@ -115,7 +159,12 @@ export function parseRecord(content: string, route: NestedRoute): NestedEventRec
 	}
 	if (!parsed || typeof parsed !== "object") return undefined;
 	const raw = parsed as Record<string, unknown>;
-	if (raw.type !== "subagent.nested.started" && raw.type !== "subagent.nested.updated" && raw.type !== "subagent.nested.completed") return undefined;
+	if (
+		raw.type !== "subagent.nested.started" &&
+		raw.type !== "subagent.nested.updated" &&
+		raw.type !== "subagent.nested.completed"
+	)
+		return undefined;
 	if (raw.rootRunId !== route.rootRunId || raw.capabilityToken !== route.capabilityToken) return undefined;
 	if (!isSafeNestedId(raw.parentRunId)) return undefined;
 	const ts = clampNumber(raw.ts);
@@ -144,9 +193,10 @@ export function parseNestedEventRecords(content: string, route: NestedRoute): Ne
 		const record = parseRecord(content.trim(), route);
 		return record ? [record] : [];
 	}
-	return content.split("\n")
+	return content
+		.split("\n")
 		.slice(0, content.endsWith("\n") ? undefined : -1)
-		.map((line) => line.trim() ? parseRecord(line, route) : undefined)
+		.map((line) => (line.trim() ? parseRecord(line, route) : undefined))
 		.filter((event): event is NestedEventRecord => Boolean(event));
 }
 
@@ -155,7 +205,8 @@ export function terminal(state: NestedRunState): boolean {
 }
 
 function mergeSummary(existing: NestedRunSummary | undefined, event: NestedEventRecord): NestedRunSummary {
-	const incomingState = event.type === "subagent.nested.completed" && event.child.state === "running" ? "complete" : event.child.state;
+	const incomingState =
+		event.type === "subagent.nested.completed" && event.child.state === "running" ? "complete" : event.child.state;
 	const incoming = { ...event.child, state: incomingState, lastUpdate: event.child.lastUpdate ?? event.ts };
 	if (!existing) return incoming;
 	const existingUpdate = existing.lastUpdate ?? 0;
@@ -168,27 +219,33 @@ function mergeSummary(existing: NestedRunSummary | undefined, event: NestedEvent
 
 function attachChild(children: NestedRunSummary[], event: NestedEventRecord): NestedRunSummary[] {
 	let updated = false;
-	const walk = (items: NestedRunSummary[]): NestedRunSummary[] => items.map((item) => {
-		if (item.id === event.parentRunId) {
-			const existingChildren = item.children ?? [];
-			const childIndex = existingChildren.findIndex((child) => child.id === event.child.id);
-			const nextChild = mergeSummary(childIndex >= 0 ? existingChildren[childIndex] : undefined, event);
-			const nextChildren = childIndex >= 0
-				? existingChildren.map((child, index) => index === childIndex ? nextChild : child)
-				: [...existingChildren, nextChild];
-			updated = true;
-			return { ...item, children: nextChildren.slice(0, MAX_NESTED_CHILDREN), lastUpdate: Math.max(item.lastUpdate ?? 0, event.ts) };
-		}
-		if (!item.children?.length) return item;
-		const nextChildren = walk(item.children);
-		return nextChildren === item.children ? item : { ...item, children: nextChildren };
-	});
+	const walk = (items: NestedRunSummary[]): NestedRunSummary[] =>
+		items.map((item) => {
+			if (item.id === event.parentRunId) {
+				const existingChildren = item.children ?? [];
+				const childIndex = existingChildren.findIndex((child) => child.id === event.child.id);
+				const nextChild = mergeSummary(childIndex >= 0 ? existingChildren[childIndex] : undefined, event);
+				const nextChildren =
+					childIndex >= 0
+						? existingChildren.map((child, index) => (index === childIndex ? nextChild : child))
+						: [...existingChildren, nextChild];
+				updated = true;
+				return {
+					...item,
+					children: nextChildren.slice(0, MAX_NESTED_CHILDREN),
+					lastUpdate: Math.max(item.lastUpdate ?? 0, event.ts),
+				};
+			}
+			if (!item.children?.length) return item;
+			const nextChildren = walk(item.children);
+			return nextChildren === item.children ? item : { ...item, children: nextChildren };
+		});
 	const next = walk(children);
 	if (updated) return next;
 	const childIndex = next.findIndex((child) => child.id === event.child.id);
 	const nextChild = mergeSummary(childIndex >= 0 ? next[childIndex] : undefined, event);
 	return childIndex >= 0
-		? next.map((child, index) => index === childIndex ? nextChild : child)
+		? next.map((child, index) => (index === childIndex ? nextChild : child))
 		: [...next, nextChild].slice(0, MAX_NESTED_CHILDREN);
 }
 

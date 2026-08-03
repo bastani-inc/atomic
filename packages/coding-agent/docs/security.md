@@ -51,6 +51,21 @@ Common patterns are documented in [Containerization](/containerization):
 
 If you bind-mount a host workspace read/write, writes from inside the container or VM can still modify host files. Use read-only mounts or copy files into and out of the sandbox when you need stronger protection from unintended writes.
 
+## Credential Export
+
+`atomic auth print-api-key` and `atomic auth print-bearer-token` are the only commands that emit a stored credential. They exist so an external client can reuse the credential you already configured, rather than making you copy it out of `auth.json` by hand.
+
+What the commands guarantee:
+
+- **stdout carries the credential or nothing.** Warnings, provider selection, refresh notices, and even `atomic auth --help` go to stderr, and stdout is empty on every non-zero exit but one. `KEY=$(atomic auth print-api-key --model gpt-5.5)` cannot capture a diagnostic instead of a key. The rule runs both ways: once the credential is on stdout the command has succeeded, so a stream that then fails to drain is reported on stderr and the exit code stays `0`. The single exception is exit `9`: if the stream failed part-way through the payload, those bytes are already gone and stdout cannot be made empty, so the command says so rather than reporting a truncated secret as a whole one. Every other non-zero exit leaves stdout empty, which is what makes the exit code safe to branch on.
+- **No file or clipboard sink.** There is no `--output` flag. `--provider` and `--model` are the only options either subcommand accepts, checked as an allowlist: any other parsed flag, including `--export <path>` and `--session-dir <path>`, is a usage error. If you want the value in a file, you redirect it yourself and own that decision.
+- **No ambient model.** `--model` is required, so the command cannot emit a credential for a model you did not name.
+- **A failed refresh never strands you.** If the OAuth refresh itself fails, the command exits `5` and leaves the stored credential exactly as it was. Other OAuth failures — a token that still expires too soon after a successful refresh, or an auth derivation failure that may follow a rotation — exit `6` and `7` and make no claim about the stored credential, rather than asserting a rollback nothing verified.
+- **The value is not loggable in transit.** Internally the credential is carried in a wrapper that throws if anything tries to interpolate, serialize, or inspect it, so it cannot reach a log line, a session transcript, or an error message. The wrapper is tested under both Node and Bun, since the published binary is Bun-compiled and `Bun.inspect` is a different formatter.
+- **One egress, enumerated.** A single function in `src/cli/credential-print.ts` opens the wrapper and writes to stdout; nothing else in the source tree can read a credential out of it. A test walks every file under `packages/coding-agent/src` and lists *every* call that puts a non-literal value on the real stdout, so a new one has to be added to that list and reviewed. The test carries its own negative control: it feeds the scanner two planted egress modules and fails if either goes unreported. No RPC response type carries a credential either — that is asserted against `src/modes/rpc/rpc-types.ts` directly, because the RPC login reply once echoed the API key the host had just typed in.
+
+What they do **not** do: once the credential is on stdout it is ordinary text in your shell, your pipeline, and possibly your shell history and process listing. Prefer `print-bearer-token`, whose output expires, over a long-lived API key. Do not embed either command in a script that logs its own output.
+
 ## Reporting Security Issues
 
 To report a security issue, follow the repository [Security Policy](https://github.com/bastani-inc/atomic/blob/main/SECURITY.md). Do not open a public issue for security-sensitive reports.

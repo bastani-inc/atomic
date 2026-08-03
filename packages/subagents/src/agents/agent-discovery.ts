@@ -2,9 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getEnvValue } from "@bastani/atomic";
-import { mergeAgentsForScope } from "./agent-selection.ts";
-import { applyBuiltinOverrides, readMergedSubagentSettings } from "./agent-overrides.ts";
 import { loadAgentsFromDir, loadChainsFromDir } from "./agent-loaders.ts";
+import { applyBuiltinOverrides, readMergedSubagentSettings } from "./agent-overrides.ts";
 import {
 	BUILTIN_AGENTS_DIR,
 	getProjectAgentSettingsPath,
@@ -17,13 +16,14 @@ import {
 	resolveNearestProjectAgentDirs,
 	resolveNearestProjectChainDirs,
 } from "./agent-paths.ts";
+import { mergeAgentsForScope } from "./agent-selection.ts";
 import {
-	EMPTY_SUBAGENT_SETTINGS,
 	type AgentConfig,
 	type AgentDiscoveryResult,
 	type AgentScope,
 	type ChainConfig,
 	type ChainDiscoveryDiagnostic,
+	EMPTY_SUBAGENT_SETTINGS,
 } from "./agent-types.ts";
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
@@ -50,8 +50,9 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	const userAgents = [...userAgentsOld, ...userAgentsNew];
 
 	const projectAgents = scope === "user" ? [] : projectAgentDirs.flatMap((dir) => loadAgentsFromDir(dir, "project"));
-	const agents = mergeAgentsForScope(scope, userAgents, projectAgents, builtinAgents)
-		.filter((agent) => agent.disabled !== true);
+	const agents = mergeAgentsForScope(scope, userAgents, projectAgents, builtinAgents).filter(
+		(agent) => agent.disabled !== true,
+	);
 
 	return { agents, projectAgentsDir };
 }
@@ -110,18 +111,28 @@ export function discoverAgentsAll(cwd: string): {
 		}
 	}
 	const userChainLoads = getUserChainDirs().map((dir) => loadChainsFromDir(dir, "user"));
-	const chains = [
-		...userChainLoads.flatMap((loaded) => loaded.chains),
-		...Array.from(chainMap.values()),
-	];
-	const chainDiagnostics = [
-		...userChainLoads.flatMap((loaded) => loaded.diagnostics),
-		...projectChainDiagnostics,
-	];
+	const chains = [...userChainLoads.flatMap((loaded) => loaded.chains), ...Array.from(chainMap.values())];
+	const chainDiagnostics = [...userChainLoads.flatMap((loaded) => loaded.diagnostics), ...projectChainDiagnostics];
 
 	const legacyUserAgentDir = userDirOld[0]!;
 	// ATOMIC_CODING_AGENT_DIR is already applied by getUserAgentDirs(); prefer that resolved path over ~/.agents.
-	const userDir = getEnvValue("ATOMIC_CODING_AGENT_DIR") ? legacyUserAgentDir : fs.existsSync(userDirNew) ? userDirNew : legacyUserAgentDir;
+	const userDir = getEnvValue("ATOMIC_CODING_AGENT_DIR")
+		? legacyUserAgentDir
+		: fs.existsSync(userDirNew)
+			? userDirNew
+			: legacyUserAgentDir;
 
-	return { builtin, user, project, chains, chainDiagnostics, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
+	return {
+		builtin,
+		user,
+		project,
+		chains,
+		chainDiagnostics,
+		userDir,
+		projectDir,
+		userChainDir,
+		projectChainDir,
+		userSettingsPath,
+		projectSettingsPath,
+	};
 }

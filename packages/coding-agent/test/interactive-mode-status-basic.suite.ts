@@ -60,7 +60,7 @@ describe("InteractiveMode.showStatus", () => {
 });
 
 describe("InteractiveMode.setToolsExpanded", () => {
-	test("applies expansion state to the active header and chat entries", () => {
+	test("applies expansion state to the active header and chat entries without a status line", () => {
 		const header = { setExpanded: vi.fn() };
 		const chatChild = { setExpanded: vi.fn() };
 		const fakeThis: any = {
@@ -69,6 +69,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
 			builtInHeader: header,
 			chatContainer: { children: [chatChild] },
 			ui: { requestRender: vi.fn() },
+			showStatus: vi.fn(),
 		};
 
 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
@@ -76,7 +77,8 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(fakeThis.toolOutputExpanded).toBe(true);
 		expect(header.setExpanded).toHaveBeenCalledWith(true);
 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
-		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showStatus).not.toHaveBeenCalled();
+		expect(fakeThis.ui.requestRender).toHaveBeenCalled();
 	});
 });
 
@@ -117,18 +119,18 @@ describe("InteractiveMode /trust", () => {
 				runtimeHost: { services: { agentDir: runtimeAgentDir } },
 				showStatus: vi.fn(),
 				ui: { requestRender: vi.fn() },
-				showSelector: vi.fn((factory: (done: () => void) => { component: { handleInput(input: string): void } }) => {
-					createdSelector = factory(vi.fn()).component;
-				}),
+				showSelector: vi.fn(
+					(factory: (done: () => void) => { component: { handleInput(input: string): void } }) => {
+						createdSelector = factory(vi.fn()).component;
+					},
+				),
 			};
 
 			(InteractiveMode as any).prototype.showTrustSelector.call(fakeThis);
 			createdSelector?.handleInput("\n");
 
 			expect(new ProjectTrustStore(runtimeAgentDir).get(cwd)).toBe(true);
-			expect(fakeThis.showStatus).toHaveBeenCalledWith(
-				expect.stringContaining("Saved trust decision: trusted"),
-			);
+			expect(fakeThis.showStatus).toHaveBeenCalledWith(expect.stringContaining("Saved trust decision: trusted"));
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -362,4 +364,3 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 		expect(fakeThis.ui.requestRender).not.toHaveBeenCalled();
 	});
 });
-

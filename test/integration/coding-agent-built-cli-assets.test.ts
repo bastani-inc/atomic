@@ -1,10 +1,11 @@
-import { afterAll, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterAll, describe, test } from "vitest";
+import { bunExecutable, moduleDir, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
-const repoRoot = join(import.meta.dir, "../..");
+const repoRoot = join(moduleDir(import.meta.url), "../..");
 const packageDir = join(repoRoot, "packages/coding-agent");
 const fixtureRoot = mkdtempSync(join(packageDir, ".tmp-built-cli-assets-"));
 const distDir = join(fixtureRoot, "dist");
@@ -17,9 +18,9 @@ afterAll(() => {
 });
 
 function compileFixture(): void {
-	const result = Bun.spawnSync({
+	const result = spawnSyncCollect({
 		cmd: [
-			process.execPath,
+			bunExecutable(),
 			"x",
 			"--bun",
 			"--no-install",
@@ -62,9 +63,9 @@ async function runCli(
 	if (packageDirOverride) env[packageDirOverride.name] = packageDirOverride.value;
 	delete env.ATOMIC_CODING_AGENT;
 
-	const child = Bun.spawn(
+	const child = spawnProcess(
 		[
-			process.execPath,
+			bunExecutable(),
 			cliPath,
 			"--provider",
 			"github-copilot",
@@ -87,12 +88,12 @@ async function runCli(
 			stderr: "pipe",
 		},
 	);
-	child.stdin.end();
+	child.stdin?.end();
 	const timeout = setTimeout(() => child.kill(), 15_000);
 	const [exitCode, stdout, stderr] = await Promise.all([
 		child.exited,
-		new Response(child.stdout).text(),
-		new Response(child.stderr).text(),
+		readStreamText(child.stdout),
+		readStreamText(child.stderr),
 	]);
 	clearTimeout(timeout);
 	return { exitCode, output: `${stdout}\n${stderr}` };

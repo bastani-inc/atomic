@@ -122,8 +122,12 @@ function nonThinkingBlocksAlign(message: AssistantMessage, providerBlocks: reado
 		if (block.type === "text") return typeof block.text === "string" && block.text.trim().length > 0 ? ["text"] : [];
 		return block.type === "toolCall" ? ["tool_use"] : [];
 	});
-	const providerTypes = providerBlocks.filter((block) => !isThinkingLikeAnthropicBlock(block)).map((block) => block.type);
-	return sourceTypes.length === providerTypes.length && sourceTypes.every((type, index) => type === providerTypes[index]);
+	const providerTypes = providerBlocks
+		.filter((block) => !isThinkingLikeAnthropicBlock(block))
+		.map((block) => block.type);
+	return (
+		sourceTypes.length === providerTypes.length && sourceTypes.every((type, index) => type === providerTypes[index])
+	);
 }
 
 function repairAssistantContent(
@@ -201,7 +205,11 @@ function getAnthropicAssistantContent(message: unknown): AnthropicContentBlock[]
  * restores exact same-model payloads while leaving non-Anthropic and cross-model
  * payloads unchanged.
  */
-export function restoreAnthropicReplayThinkingBlocks(payload: unknown, sourceMessages: readonly Message[], model: Model<Api>): unknown {
+export function restoreAnthropicReplayThinkingBlocks(
+	payload: unknown,
+	sourceMessages: readonly Message[],
+	model: Model<Api>,
+): unknown {
 	if (model.api !== "anthropic-messages") return payload;
 
 	const payloadMessages = getAnthropicMessages(payload);
@@ -217,7 +225,8 @@ export function restoreAnthropicReplayThinkingBlocks(payload: unknown, sourceMes
 	if (assistantPayloads.length === 0) return payload;
 
 	const emittingSourceAssistants = sourceMessages.filter(
-		(message): message is AssistantMessage => message.role === "assistant" && legacyProviderWouldEmitAssistant(message, model),
+		(message): message is AssistantMessage =>
+			message.role === "assistant" && legacyProviderWouldEmitAssistant(message, model),
 	);
 	// Fail closed if pi-ai's converter emission behavior drifts from the model above;
 	// ordinal restoration must never splice thinking into a different assistant.
@@ -229,7 +238,8 @@ export function restoreAnthropicReplayThinkingBlocks(payload: unknown, sourceMes
 	for (const [assistantPayloadOrdinal, sourceMessage] of emittingSourceAssistants.entries()) {
 		const payloadAssistant = assistantPayloads[assistantPayloadOrdinal];
 
-		if (!isSameModelAssistant(sourceMessage, model) || !hasReplayThinkingBlock(sourceMessage, allowEmptySignature)) continue;
+		if (!isSameModelAssistant(sourceMessage, model) || !hasReplayThinkingBlock(sourceMessage, allowEmptySignature))
+			continue;
 		// A second fail-closed guard verifies the non-thinking shape before replacing
 		// signed blocks, protecting against equal-count ordinal misalignment.
 		if (!nonThinkingBlocksAlign(sourceMessage, payloadAssistant.content)) continue;

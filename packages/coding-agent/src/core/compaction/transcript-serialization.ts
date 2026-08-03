@@ -103,7 +103,8 @@ function serializeTranscriptChunks(messages: Message[], mode: SerializeMode): Tr
 			}
 			if (thinking.length > 0) pushSection("[Assistant thinking]: ", [{ type: "text", text: thinking.join("\n") }]);
 			if (text.length > 0) pushSection("[Assistant]: ", [{ type: "text", text: text.join("\n") }]);
-			if (toolCalls.length > 0) pushSection("[Assistant tool calls]: ", [{ type: "text", text: toolCalls.join("; ") }]);
+			if (toolCalls.length > 0)
+				pushSection("[Assistant tool calls]: ", [{ type: "text", text: toolCalls.join("; ") }]);
 			continue;
 		}
 

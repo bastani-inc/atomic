@@ -24,7 +24,9 @@ export function deliverLocalCompletionNotification(
 			events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				...payload,
 				notificationId,
-				defer: () => { deferred = true; },
+				defer: () => {
+					deferred = true;
+				},
 				acknowledge: finish,
 			} satisfies CompletionNotificationEnvelope);
 			if (!deferred) finish(true);

@@ -1,5 +1,5 @@
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { describe, test } from "vitest";
 import {
 	assistantStopReason,
 	isAssistantFailureStopReason,
@@ -22,23 +22,32 @@ describe("subagent final-drain predicate", () => {
 	});
 
 	test("starts final-drain only for a clean assistant stop without tool calls", () => {
-		assert.equal(shouldStartSubagentFinalDrain({
-			role: "assistant",
-			stopReason: "stop",
-			content: [{ type: "text", text: "done" }],
-		}), true);
+		assert.equal(
+			shouldStartSubagentFinalDrain({
+				role: "assistant",
+				stopReason: "stop",
+				content: [{ type: "text", text: "done" }],
+			}),
+			true,
+		);
 
-		assert.equal(shouldStartSubagentFinalDrain({
-			role: "assistant",
-			stopReason: "stop",
-			content: [{ type: "toolCall", name: "read" }],
-		}), false);
+		assert.equal(
+			shouldStartSubagentFinalDrain({
+				role: "assistant",
+				stopReason: "stop",
+				content: [{ type: "toolCall", name: "read" }],
+			}),
+			false,
+		);
 
-		assert.equal(shouldStartSubagentFinalDrain({
-			role: "assistant",
-			stopReason: "stop",
-			errorMessage: "provider transport failed",
-			content: [{ type: "text", text: "failed" }],
-		}), false);
+		assert.equal(
+			shouldStartSubagentFinalDrain({
+				role: "assistant",
+				stopReason: "stop",
+				errorMessage: "provider transport failed",
+				content: [{ type: "text", text: "failed" }],
+			}),
+			false,
+		);
 	});
 });

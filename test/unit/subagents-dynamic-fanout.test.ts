@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import { parseJsonChain, serializeJsonChain } from "../../packages/subagents/src/agents/chain-serializer.js";
-import { ChainOutputValidationError, validateChainOutputBindings } from "../../packages/subagents/src/runs/shared/chain-outputs.js";
 import {
-	DynamicFanoutError,
+	ChainOutputValidationError,
+	validateChainOutputBindings,
+} from "../../packages/subagents/src/runs/shared/chain-outputs.js";
+import {
 	collectDynamicResults,
+	DynamicFanoutError,
 	materializeDynamicParallelStep,
 	resolveJsonPointer,
 	validateDynamicCollection,
@@ -14,7 +17,7 @@ import type { ChainOutputMap, SingleResult } from "../../packages/subagents/src/
 
 const outputs: ChainOutputMap = {
 	targets: {
-		text: "{\"items\":[{\"path\":\"src/a.ts\"},{\"path\":\"src/b.ts\"}]}",
+		text: '{"items":[{"path":"src/a.ts"},{"path":"src/b.ts"}]}',
 		structured: { items: [{ path: "src/a.js" }, { path: "src/b.js" }] },
 		agent: "scout",
 		stepIndex: 0,
@@ -30,9 +33,18 @@ describe("dynamic fanout helpers", () => {
 			collect: { as: "reviews" },
 		};
 		const materialized = materializeDynamicParallelStep(step, outputs, 1);
-		assert.deepEqual(materialized.items.map((item) => item.key), ["src/a.js", "src/b.js"]);
-		assert.deepEqual(materialized.parallel.map((task) => task.task), ["Review src/a.js", "Review src/b.js"]);
-		assert.deepEqual(materialized.parallel.map((task) => task.label), ["Review src/a.js", "Review src/b.js"]);
+		assert.deepEqual(
+			materialized.items.map((item) => item.key),
+			["src/a.js", "src/b.js"],
+		);
+		assert.deepEqual(
+			materialized.parallel.map((task) => task.task),
+			["Review src/a.js", "Review src/b.js"],
+		);
+		assert.deepEqual(
+			materialized.parallel.map((task) => task.label),
+			["Review src/a.js", "Review src/b.js"],
+		);
 	});
 
 	test("rejects missing structured sources, over-limit arrays, duplicate keys, colliding ids, and bad templates", () => {
@@ -50,23 +62,48 @@ describe("dynamic fanout helpers", () => {
 			/requires structured output/,
 		);
 		assert.throws(
-			() => materializeDynamicParallelStep(base, { targets: { ...outputs.targets, structured: { items: [{ path: "x" }, { path: "x" }] } } }, 1),
+			() =>
+				materializeDynamicParallelStep(
+					base,
+					{ targets: { ...outputs.targets, structured: { items: [{ path: "x" }, { path: "x" }] } } },
+					1,
+				),
 			/duplicate item key/,
 		);
 		assert.throws(
-			() => materializeDynamicParallelStep(base, { targets: { ...outputs.targets, structured: { items: [{ path: "a/b" }, { path: "a-b" }] } } }, 1),
+			() =>
+				materializeDynamicParallelStep(
+					base,
+					{ targets: { ...outputs.targets, structured: { items: [{ path: "a/b" }, { path: "a-b" }] } } },
+					1,
+				),
 			/colliding item id/,
 		);
 		assert.throws(
-			() => materializeDynamicParallelStep({ ...base, parallel: { agent: "reviewer", task: "Review {other.path}" } }, outputs, 1),
+			() =>
+				materializeDynamicParallelStep(
+					{ ...base, parallel: { agent: "reviewer", task: "Review {other.path}" } },
+					outputs,
+					1,
+				),
 			/Unsupported template reference/,
 		);
 		assert.throws(
-			() => materializeDynamicParallelStep({ ...base, parallel: { agent: "reviewer", task: "Review {target[path]}" } }, outputs, 1),
+			() =>
+				materializeDynamicParallelStep(
+					{ ...base, parallel: { agent: "reviewer", task: "Review {target[path]}" } },
+					outputs,
+					1,
+				),
 			/Invalid item reference/,
 		);
 		assert.throws(
-			() => materializeDynamicParallelStep({ ...base, parallel: { agent: "reviewer", task: "Review {target.path" } }, outputs, 1),
+			() =>
+				materializeDynamicParallelStep(
+					{ ...base, parallel: { agent: "reviewer", task: "Review {target.path" } },
+					outputs,
+					1,
+				),
 			/Invalid item reference/,
 		);
 	});
@@ -79,14 +116,27 @@ describe("dynamic fanout helpers", () => {
 		};
 		const materialized = materializeDynamicParallelStep(base, outputs, 1, { maxItems: 4 });
 		assert.equal(materialized.parallel.length, 2);
-		assert.doesNotThrow(() => validateChainOutputBindings([
-			{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
+		assert.doesNotThrow(() =>
+			validateChainOutputBindings(
+				[{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } }, base],
+				{ maxItems: 4 },
+			),
+		);
+		const empty = materializeDynamicParallelStep(
 			base,
-		], { maxItems: 4 }));
-		const empty = materializeDynamicParallelStep(base, { targets: { ...outputs.targets, structured: { items: [] } } }, 1, { maxItems: 4 });
+			{ targets: { ...outputs.targets, structured: { items: [] } } },
+			1,
+			{ maxItems: 4 },
+		);
 		assert.equal(empty.parallel.length, 0);
 		assert.throws(
-			() => materializeDynamicParallelStep({ ...base, expand: { ...base.expand, onEmpty: "fail" } }, { targets: { ...outputs.targets, structured: { items: [] } } }, 1, { maxItems: 4 }),
+			() =>
+				materializeDynamicParallelStep(
+					{ ...base, expand: { ...base.expand, onEmpty: "fail" } },
+					{ targets: { ...outputs.targets, structured: { items: [] } } },
+					1,
+					{ maxItems: 4 },
+				),
 			/source array is empty/,
 		);
 	});
@@ -100,27 +150,33 @@ describe("dynamic fanout helpers", () => {
 			[removedGateField]: { level: "checked" },
 		};
 
-		assert.doesNotThrow(() => validateChainOutputBindings([
-			{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
-			legacyStep,
-		]));
+		assert.doesNotThrow(() =>
+			validateChainOutputBindings([
+				{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
+				legacyStep,
+			]),
+		);
 		const materialized = materializeDynamicParallelStep(legacyStep, outputs, 1);
 		assert.equal(removedGateField in materialized.parallel[0]!, false);
 	});
 
 	test("JSON chain rewrites strip legacy acceptance fields", () => {
 		const removedGateField = "accept" + "ance";
-		const chain = parseJsonChain(JSON.stringify({
-			name: "legacy-cleanup",
-			description: "Legacy cleanup",
-			chain: [
-				{ agent: "scout", task: "Return targets", [removedGateField]: { level: "checked" } },
-				{ parallel: [{ agent: "reviewer", task: "Review", [removedGateField]: "reviewed" }] },
-			],
-		}), "project", "legacy-cleanup.chain.json");
+		const chain = parseJsonChain(
+			JSON.stringify({
+				name: "legacy-cleanup",
+				description: "Legacy cleanup",
+				chain: [
+					{ agent: "scout", task: "Return targets", [removedGateField]: { level: "checked" } },
+					{ parallel: [{ agent: "reviewer", task: "Review", [removedGateField]: "reviewed" }] },
+				],
+			}),
+			"project",
+			"legacy-cleanup.chain.json",
+		);
 
 		const serialized = serializeJsonChain(chain);
-		assert.doesNotMatch(serialized, new RegExp(`\"${removedGateField}\"`));
+		assert.doesNotMatch(serialized, new RegExp(`"${removedGateField}"`));
 	});
 
 	test("rejects malformed dynamic-like shapes before they can run as static parallel", () => {
@@ -149,7 +205,11 @@ describe("dynamic fanout helpers", () => {
 
 		for (const step of malformed) {
 			assert.throws(
-				() => validateChainOutputBindings([{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } }, step]),
+				() =>
+					validateChainOutputBindings([
+						{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
+						step,
+					]),
 				ChainOutputValidationError,
 			);
 		}
@@ -165,10 +225,7 @@ describe("dynamic fanout helpers", () => {
 			},
 		];
 		assert.throws(() => validateChainOutputBindings(chain), ChainOutputValidationError);
-		assert.throws(
-			() => validateChainOutputBindings([chain[1]!]),
-			/unknown output 'targets'/,
-		);
+		assert.throws(() => validateChainOutputBindings([chain[1]!]), /unknown output 'targets'/);
 	});
 
 	test("collects ordered child result records and validates aggregate schema", () => {
@@ -187,9 +244,18 @@ describe("dynamic fanout helpers", () => {
 			finalOutput: "ok",
 			structuredOutput,
 		});
-		const collected = collectDynamicResults(step, materialized.items, [result("reviewer", { ok: "a" }), result("reviewer", { ok: "b" })]);
-		assert.deepEqual(collected.map((item) => item.key), ["src/a.js", "src/b.js"]);
-		assert.deepEqual(collected.map((item) => item.structured), [{ ok: "a" }, { ok: "b" }]);
+		const collected = collectDynamicResults(step, materialized.items, [
+			result("reviewer", { ok: "a" }),
+			result("reviewer", { ok: "b" }),
+		]);
+		assert.deepEqual(
+			collected.map((item) => item.key),
+			["src/a.js", "src/b.js"],
+		);
+		assert.deepEqual(
+			collected.map((item) => item.structured),
+			[{ ok: "a" }, { ok: "b" }],
+		);
 		assert.doesNotThrow(() => validateDynamicCollection({ type: "array", minItems: 2 }, collected));
 		assert.throws(() => validateDynamicCollection({ type: "object" }, collected), DynamicFanoutError);
 	});

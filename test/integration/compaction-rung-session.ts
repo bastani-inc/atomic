@@ -4,9 +4,8 @@
  * Kept out of `*.test.ts` so `bun test test/integration` does not treat it as a suite.
  */
 
-import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
@@ -39,7 +38,11 @@ export interface PlannerCall {
 export function plannerScript(script: Record<string, ScriptedTurn[]>): { streamFn: StreamFn; calls: PlannerCall[] } {
 	const calls: PlannerCall[] = [];
 	const cursors = new Map<string, number>();
-	const streamFn = ((model: Model<Api>, context: { messages: Array<{ content: Array<{ text?: string }> }> }, options?: { reasoning?: ThinkingLevel }) => {
+	const streamFn = ((
+		model: Model<Api>,
+		context: { messages: Array<{ content: Array<{ text?: string }> }> },
+		options?: { reasoning?: ThinkingLevel },
+	) => {
 		const prompt = context.messages[0]?.content?.[0]?.text ?? "";
 		const numbered = prompt.match(/^\d+→/gm)?.length ?? 0;
 		const keepTarget = prompt.match(/^Target lines to keep: (\d+)$/m)?.[1];
@@ -55,25 +58,26 @@ export function plannerScript(script: Record<string, ScriptedTurn[]>): { streamF
 		cursors.set(model.provider, index + 1);
 		const turn = entries[index];
 		return {
-			result: async (): Promise<AssistantMessage> => ({
-				role: "assistant",
-				content: turn.text === undefined ? [] : [{ type: "text", text: turn.text }],
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: {
-					input: 0,
-					output: turn.reasoningTokens ?? 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					...(turn.reasoningTokens === undefined ? {} : { reasoning: turn.reasoningTokens }),
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: turn.stopReason ?? (turn.errorMessage ? "error" : "stop"),
-				...(turn.errorMessage ? { errorMessage: turn.errorMessage } : {}),
-				timestamp: Date.now(),
-			} as AssistantMessage),
+			result: async (): Promise<AssistantMessage> =>
+				({
+					role: "assistant",
+					content: turn.text === undefined ? [] : [{ type: "text", text: turn.text }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 0,
+						output: turn.reasoningTokens ?? 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						...(turn.reasoningTokens === undefined ? {} : { reasoning: turn.reasoningTokens }),
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: turn.stopReason ?? (turn.errorMessage ? "error" : "stop"),
+					...(turn.errorMessage ? { errorMessage: turn.errorMessage } : {}),
+					timestamp: Date.now(),
+				}) as AssistantMessage,
 		};
 	}) as unknown as StreamFn;
 	return { streamFn, calls };
@@ -123,12 +127,14 @@ function assistantTurn(text: string, timestamp: number, totalTokens: number): As
 }
 
 export async function createRungSession(options: RungSessionOptions): Promise<RungSession> {
-	const model = options.contextWindow === undefined
-		? SESSION_MODEL
-		: ({ ...SESSION_MODEL, contextWindow: options.contextWindow } as Model<Api>);
-	const manager = options.sessionDir === undefined
-		? SessionManager.inMemory()
-		: SessionManager.create(options.sessionDir, options.sessionDir);
+	const model =
+		options.contextWindow === undefined
+			? SESSION_MODEL
+			: ({ ...SESSION_MODEL, contextWindow: options.contextWindow } as Model<Api>);
+	const manager =
+		options.sessionDir === undefined
+			? SessionManager.inMemory()
+			: SessionManager.create(options.sessionDir, options.sessionDir);
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: {

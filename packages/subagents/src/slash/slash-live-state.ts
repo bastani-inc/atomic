@@ -1,8 +1,8 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { type Details, type SingleResult, SLASH_RESULT_TYPE, type Usage } from "../shared/types.ts";
 import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.ts";
-import { type Details, type SingleResult, type Usage, SLASH_RESULT_TYPE } from "../shared/types.ts";
 
 export interface SlashMessageDetails {
 	requestId: string;
@@ -136,12 +136,26 @@ function flattenChainResults(chain: ChainStepLike[], fallbackTask: string | unde
 	for (const step of chain) {
 		if (isParallelChainStep(step)) {
 			for (const task of step.parallel) {
-				results.push(createPlaceholderResult(task.agent, task.task ?? fallbackTask ?? "", results.length === 0 ? "running" : "pending", flatIndex));
+				results.push(
+					createPlaceholderResult(
+						task.agent,
+						task.task ?? fallbackTask ?? "",
+						results.length === 0 ? "running" : "pending",
+						flatIndex,
+					),
+				);
 				flatIndex++;
 			}
 			continue;
 		}
-		results.push(createPlaceholderResult(step.agent, step.task ?? fallbackTask ?? "", results.length === 0 ? "running" : "pending", flatIndex));
+		results.push(
+			createPlaceholderResult(
+				step.agent,
+				step.task ?? fallbackTask ?? "",
+				results.length === 0 ? "running" : "pending",
+				flatIndex,
+			),
+		);
 		flatIndex++;
 	}
 	return results;
@@ -151,10 +165,12 @@ function buildChainInitialResult(params: SubagentParamsLike): AgentToolResult<De
 	const chain = (params.chain ?? []) as ChainStepLike[];
 	const results = flattenChainResults(chain, params.task);
 	return {
-		content: [{
-			type: "text",
-			text: results.map((result, index) => `Step ${index + 1}: ${result.agent}\n${result.task}`).join("\n\n"),
-		}],
+		content: [
+			{
+				type: "text",
+				text: results.map((result, index) => `Step ${index + 1}: ${result.agent}\n${result.task}`).join("\n\n"),
+			},
+		],
 		details: {
 			mode: "chain",
 			...(params.context ? { context: params.context } : {}),
@@ -162,7 +178,7 @@ function buildChainInitialResult(params: SubagentParamsLike): AgentToolResult<De
 			progress: results.map((result, index) => ({
 				index,
 				agent: result.agent,
-				status: index === 0 ? "running" as const : "pending" as const,
+				status: index === 0 ? ("running" as const) : ("pending" as const),
 				task: result.task,
 				recentTools: [],
 				recentOutput: [],
@@ -186,28 +202,35 @@ function buildSingleInitialResult(params: SubagentParamsLike): AgentToolResult<D
 			mode: "single",
 			...(params.context ? { context: params.context } : {}),
 			results: [createPlaceholderResult(agent, task, "running")],
-			progress: [{
-				index: 0,
-				agent,
-				status: "running",
-				task,
-				recentTools: [],
-				recentOutput: [],
-				toolCount: 0,
-				tokens: 0,
-				durationMs: 0,
-			}],
+			progress: [
+				{
+					index: 0,
+					agent,
+					status: "running",
+					task,
+					recentTools: [],
+					recentOutput: [],
+					toolCount: 0,
+					tokens: 0,
+					durationMs: 0,
+				},
+			],
 		},
 	};
 }
 
-export function buildSlashInitialResult(requestId: string, params: SubagentParamsLike, owner?: object): SlashMessageDetails {
+export function buildSlashInitialResult(
+	requestId: string,
+	params: SubagentParamsLike,
+	owner?: object,
+): SlashMessageDetails {
 	const store = getSlashSnapshotStore(owner);
-	const result = (params.tasks?.length ?? 0) > 0
-		? buildParallelInitialResult(params)
-		: (params.chain?.length ?? 0) > 0
-			? buildChainInitialResult(params)
-			: buildSingleInitialResult(params);
+	const result =
+		(params.tasks?.length ?? 0) > 0
+			? buildParallelInitialResult(params)
+			: (params.chain?.length ?? 0) > 0
+				? buildChainInitialResult(params)
+				: buildSingleInitialResult(params);
 	store.liveSnapshots.set(requestId, { result, version: nextVersion(store) });
 	store.finalSnapshots.delete(requestId);
 	return { requestId, result };
@@ -218,9 +241,7 @@ function cloneResultsWithProgress(
 	progress: NonNullable<Details["progress"]> | undefined,
 ): SingleResult[] {
 	return results.map((result, index) => {
-		const nextProgress = progress?.find((entry) => entry.index === index)
-			?? progress?.[index]
-			?? result.progress;
+		const nextProgress = progress?.find((entry) => entry.index === index) ?? progress?.[index] ?? result.progress;
 		return nextProgress ? { ...result, progress: nextProgress } : result;
 	});
 }
@@ -261,7 +282,12 @@ export function finalizeSlashResult(response: SlashSubagentResponse, owner?: obj
 	};
 }
 
-export function failSlashResult(requestId: string, params: SubagentParamsLike, message: string, owner?: object): SlashMessageDetails {
+export function failSlashResult(
+	requestId: string,
+	params: SubagentParamsLike,
+	message: string,
+	owner?: object,
+): SlashMessageDetails {
 	const store = getSlashSnapshotStore(owner);
 	const initial = buildSlashInitialResult(requestId, params, owner).result;
 	const failedResults = initial.details.results.map((result) => ({
@@ -298,9 +324,10 @@ export function resolveSlashMessageDetails(value: unknown): SlashMessageDetails 
 
 export function getSlashRenderableSnapshot(details: SlashMessageDetails, owner?: object): SlashSnapshot {
 	const store = getSlashSnapshotStore(owner);
-	return store.finalSnapshots.get(details.requestId)
-		?? store.liveSnapshots.get(details.requestId)
-		?? { result: details.result, version: 0 };
+	return (
+		store.finalSnapshots.get(details.requestId) ??
+		store.liveSnapshots.get(details.requestId) ?? { result: details.result, version: 0 }
+	);
 }
 
 export function restoreSlashFinalSnapshots(entries: unknown[], owner?: object): void {

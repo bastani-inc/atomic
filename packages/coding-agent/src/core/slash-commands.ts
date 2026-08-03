@@ -20,9 +20,7 @@ export interface BuiltinSlashCommand {
 	name: string;
 	description: string;
 	argumentHint?: string;
-	getArgumentCompletions?: (
-		argumentPrefix: string,
-	) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
+	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 }
 
 type WorkflowInputCompletionMetadata = {
@@ -52,7 +50,8 @@ const WORKFLOW_ADMIN_COMPLETIONS: AutocompleteItem[] = [
 const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	{
 		name: "adversarial-verification",
-		description: "Produce a candidate, challenge it with fresh-context rubric-based verifiers, and reduce their evidence through a bounded repair loop.",
+		description:
+			"Produce a candidate, challenge it with fresh-context rubric-based verifiers, and reduce their evidence through a bounded repair loop.",
 		inputs: {
 			task: { description: "Task whose candidate result must be independently verified.", kind: "string" },
 			verifier_count: { description: "Number of independent verifiers per review round.", kind: "number" },
@@ -61,25 +60,34 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	},
 	{
 		name: "classify-and-act",
-		description: "Classify a task with structured confidence, route deterministically to an isolated category action, and ask for human selection when confidence is low.",
+		description:
+			"Classify a task with structured confidence, route deterministically to an isolated category action, and ask for human selection when confidence is low.",
 		inputs: {
 			prompt: { description: "Task to classify and execute.", kind: "string" },
 			categories: { description: "Ordered action categories available to the classifier and fallback chooser." },
-			confidence_threshold: { description: "Minimum structured confidence required to route without human selection.", kind: "number" },
+			confidence_threshold: {
+				description: "Minimum structured confidence required to route without human selection.",
+				kind: "number",
+			},
 		},
 	},
 	{
 		name: "fan-out-and-synthesize",
-		description: "Partition a task, run bounded independent artifact branches, then synthesize all evidence at an explicit barrier.",
+		description:
+			"Partition a task, run bounded independent artifact branches, then synthesize all evidence at an explicit barrier.",
 		inputs: {
 			prompt: { description: "Task to partition, investigate, and synthesize.", kind: "string" },
-			max_branches: { description: "Maximum number of independent partitions produced and executed.", kind: "number" },
+			max_branches: {
+				description: "Maximum number of independent partitions produced and executed.",
+				kind: "number",
+			},
 			max_concurrency: { description: "Maximum number of branch agents running concurrently.", kind: "number" },
 		},
 	},
 	{
 		name: "generate-and-filter",
-		description: "Generate more independent candidates than needed, deduplicate and filter them by rubric, optionally judge them, and return a parent-consumable shortlist.",
+		description:
+			"Generate more independent candidates than needed, deduplicate and filter them by rubric, optionally judge them, and return a parent-consumable shortlist.",
 		inputs: {
 			prompt: { description: "Prompt for candidate generation and selection.", kind: "string" },
 			num_candidates: { description: "Number of independent candidates to generate.", kind: "number" },
@@ -90,52 +98,118 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 	},
 	{
 		name: "goal",
-		description: "Goal Runner workflow with bounded sub-agent orchestration turns, immutable acceptance criteria, ledger artifacts, parallel reviewers, and reducer-gated completion. When launching follow-up goal runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the objective text and set create_pr=true instead when preparing the workflow inputs.",
+		description:
+			"Goal Runner workflow with bounded sub-agent orchestration turns, immutable acceptance criteria, ledger artifacts, parallel reviewers, and reducer-gated completion. When launching follow-up goal runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the objective text and set create_pr=true instead when preparing the workflow inputs.",
 		inputs: {
-			objective: { description: "The objective or delta for this Goal Runner workflow run. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead.", kind: "string" },
-			acceptance_criteria: { description: "Original immutable task contract this run must remain consistent with. Defaults to objective. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here.", kind: "string" },
-			max_turns: { description: "Maximum orchestrator/review turns before Goal Runner stops as needs_human.", kind: "number" },
-			base_branch: { description: "Optional branch reviewers compare the current code delta against (default origin/main).", kind: "string" },
-			git_worktree_dir: { description: "Optional Git worktree path. Leave at the default unless the user explicitly requested worktree isolation — stages never create git worktrees on their own. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.", kind: "string" },
-			create_pr: { description: "Whether to run the final pull-request creation stage after reviewer/reducer approval. Defaults to false; prompt text alone does not opt in. If the task asks to submit a PR/MR/review, remove that from the objective text and set this to true — only the final stage then attempts provider-appropriate PR/MR/review creation after Goal completes.", kind: "boolean" },
+			objective: {
+				description:
+					"The objective or delta for this Goal Runner workflow run. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead.",
+				kind: "string",
+			},
+			acceptance_criteria: {
+				description:
+					"Original immutable task contract this run must remain consistent with. Defaults to objective. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here.",
+				kind: "string",
+			},
+			max_turns: {
+				description: "Maximum orchestrator/review turns before Goal Runner stops as needs_human.",
+				kind: "number",
+			},
+			base_branch: {
+				description: "Optional branch reviewers compare the current code delta against (default origin/main).",
+				kind: "string",
+			},
+			git_worktree_dir: {
+				description:
+					"Optional Git worktree path. Leave at the default unless the user explicitly requested worktree isolation — stages never create git worktrees on their own. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.",
+				kind: "string",
+			},
+			create_pr: {
+				description:
+					"Whether to run the final pull-request creation stage after reviewer/reducer approval. Defaults to false; prompt text alone does not opt in. If the task asks to submit a PR/MR/review, remove that from the objective text and set this to true — only the final stage then attempts provider-appropriate PR/MR/review creation after Goal completes.",
+				kind: "boolean",
+			},
 		},
 	},
 	{
 		name: "loop-until-done",
-		description: "Repeat evidence-producing work and independent completion evaluation against a durable ledger until done or an inspectable iteration-limit failure.",
+		description:
+			"Repeat evidence-producing work and independent completion evaluation against a durable ledger until done or an inspectable iteration-limit failure.",
 		inputs: {
-			prompt: { description: "Objective whose explicit completion condition controls the bounded loop.", kind: "string" },
-			max_iterations: { description: "Maximum work/evaluation iterations before returning an inspectable failed status (1-20).", kind: "number" },
+			prompt: {
+				description: "Objective whose explicit completion condition controls the bounded loop.",
+				kind: "string",
+			},
+			max_iterations: {
+				description: "Maximum work/evaluation iterations before returning an inspectable failed status (1-20).",
+				kind: "number",
+			},
 		},
 	},
 	{
 		name: "open-claude-design",
-		description: "AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → live-driven refinement → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate, then runs impeccable init for PRODUCT.md/DESIGN.md (references take precedence over project context). The user iteratively reviews the generated HTML.",
+		description:
+			"AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → live-driven refinement → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate, then runs impeccable init for PRODUCT.md/DESIGN.md (references take precedence over project context). The user iteratively reviews the generated HTML.",
 		inputs: {
-			prompt: { description: "What to design (for example, a dashboard, page, component, or prototype). The discovery stage refines this into a confirmed brief and asks for the output type and references.", kind: "string" },
-			discover_references: { description: "Discover beautiful, current reference designs from notable design websites (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.", kind: "boolean" },
-			max_refinements: { description: "Maximum generate/user-feedback loop iterations (default 3).", kind: "number" },
+			prompt: {
+				description:
+					"What to design (for example, a dashboard, page, component, or prototype). The discovery stage refines this into a confirmed brief and asks for the output type and references.",
+				kind: "string",
+			},
+			discover_references: {
+				description:
+					"Discover beautiful, current reference designs from notable design websites (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.",
+				kind: "boolean",
+			},
+			max_refinements: {
+				description: "Maximum generate/user-feedback loop iterations (default 3).",
+				kind: "number",
+			},
 		},
 	},
 	{
 		name: "ralph",
-		description: "Raw prompt → research-prompt-refinement → research → orchestrate → multi-model parallel review loop with bounded iteration and immutable acceptance criteria. When launching follow-up ralph runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the prompt text and set create_pr=true instead when preparing the workflow inputs.",
+		description:
+			"Raw prompt → research-prompt-refinement → research → orchestrate → multi-model parallel review loop with bounded iteration and immutable acceptance criteria. When launching follow-up ralph runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract. If the task includes submitting a pull request (or MR/review), remove that final action from the prompt text and set create_pr=true instead when preparing the workflow inputs.",
 		inputs: {
-			prompt: { description: "The task or goal to research, execute, and refine. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead.", kind: "string" },
-			acceptance_criteria: { description: "Original immutable task contract this run must remain consistent with. Defaults to prompt. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here.", kind: "string" },
+			prompt: {
+				description:
+					"The task or goal to research, execute, and refine. Do not include PR/MR submission instructions here; strip them from the task text and request them via create_pr=true instead.",
+				kind: "string",
+			},
+			acceptance_criteria: {
+				description:
+					"Original immutable task contract this run must remain consistent with. Defaults to prompt. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here.",
+				kind: "string",
+			},
 			max_loops: { description: "Maximum research/orchestrate/review iterations (default 10).", kind: "number" },
-			base_branch: { description: "Branch reviewers compare the current code delta against (default origin/main).", kind: "string" },
-			git_worktree_dir: { description: "Optional Git worktree path. Leave at the default unless the user explicitly requested worktree isolation — stages never create git worktrees on their own. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.", kind: "string" },
-			create_pr: { description: "Whether to run the final pull-request creation stage. Defaults to false; prompt text alone does not opt in. If the task asks to submit a PR/MR/review, remove that from the prompt text and set this to true — only the final stage then attempts provider-appropriate PR/MR/review creation.", kind: "boolean" },
+			base_branch: {
+				description: "Branch reviewers compare the current code delta against (default origin/main).",
+				kind: "string",
+			},
+			git_worktree_dir: {
+				description:
+					"Optional Git worktree path. Leave at the default unless the user explicitly requested worktree isolation — stages never create git worktrees on their own. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.",
+				kind: "string",
+			},
+			create_pr: {
+				description:
+					"Whether to run the final pull-request creation stage. Defaults to false; prompt text alone does not opt in. If the task asks to submit a PR/MR/review, remove that from the prompt text and set this to true — only the final stage then attempts provider-appropriate PR/MR/review creation.",
+				kind: "boolean",
+			},
 		},
 	},
 	{
 		name: "tournament",
-		description: "Run several independent whole-task attempts through a balanced pairwise judging bracket and return an auditable winner.",
+		description:
+			"Run several independent whole-task attempts through a balanced pairwise judging bracket and return an auditable winner.",
 		inputs: {
 			prompt: { description: "Task every competing agent must attempt independently.", kind: "string" },
 			num_attempts: { description: "Number of independent whole-task attempts (2-8).", kind: "number" },
-			max_concurrency: { description: "Maximum simultaneously active attempts or pairwise judges (1-8).", kind: "number" },
+			max_concurrency: {
+				description: "Maximum simultaneously active attempts or pairwise judges (1-8).",
+				kind: "number",
+			},
 		},
 	},
 ];
@@ -246,7 +320,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "workflow",
-		description: "Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|quit|pause|resume|inputs|reload] [args]",
+		description:
+			"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|quit|pause|resume|inputs|reload] [args]",
 		getArgumentCompletions: getBundledWorkflowArgumentCompletions,
 	},
 	{ name: "run", description: "Run a subagent directly: /run agent[output=file] [task] [--bg] [--fork]" },

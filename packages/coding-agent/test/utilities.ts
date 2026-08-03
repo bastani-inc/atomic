@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
 import { AgentSession } from "../src/core/agent-session.ts";
-import { readStoredCredential, AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage, readStoredCredential } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import type { Extension, ExtensionFactory, LoadExtensionsResult } from "../src/core/extensions/index.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
@@ -29,7 +29,6 @@ export const API_KEY = process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPI
 // ============================================================================
 
 const AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
-
 
 /**
  * Resolve API key for a provider from ~/.pi/agent/auth.json
@@ -158,7 +157,9 @@ export function createTestResourceLoader(options: CreateTestResourceLoaderOption
 		getThemes: () => ({ themes: [], diagnostics: [] }),
 		getAgentsFiles: () => ({ agentsFiles: [] }),
 		getSystemPrompt: () => undefined,
+		getSystemPromptSource: () => undefined,
 		getAppendSystemPrompt: () => [],
+		getAppendSystemPromptSources: () => [],
 		extendResources: async () => {},
 		reload: async () => {},
 	};

@@ -1,7 +1,12 @@
-import { isDynamicParallelStep, isParallelStep, type ChainStep, type SequentialStep } from "../../shared/settings.ts";
+import { type ChainStep, isDynamicParallelStep, isParallelStep, type SequentialStep } from "../../shared/settings.ts";
 import type { ChainOutputMap, ChainOutputMapEntry, SingleResult } from "../../shared/types.ts";
 import { getSingleResultOutput } from "../../shared/utils.ts";
-import { DynamicFanoutError, hasDynamicFanoutFields, type DynamicFanoutConfig, validateDynamicStepShape } from "./dynamic-fanout.ts";
+import {
+	type DynamicFanoutConfig,
+	DynamicFanoutError,
+	hasDynamicFanoutFields,
+	validateDynamicStepShape,
+} from "./dynamic-fanout.ts";
 
 const OUTPUT_REF_PATTERN = /\{outputs\.([^}]*)\}/g;
 const SAFE_OUTPUT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -9,7 +14,8 @@ const SAFE_OUTPUT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export class ChainOutputValidationError extends Error {}
 
 function outputNamesForStep(step: ChainStep): string[] {
-	if (isParallelStep(step)) return step.parallel.map((task) => task.as).filter((name): name is string => Boolean(name));
+	if (isParallelStep(step))
+		return step.parallel.map((task) => task.as).filter((name): name is string => Boolean(name));
 	if (isDynamicParallelStep(step)) return [step.collect.as];
 	const name = (step as SequentialStep).as;
 	return name ? [name] : [];
@@ -17,7 +23,8 @@ function outputNamesForStep(step: ChainStep): string[] {
 
 function taskTemplatesForStep(step: ChainStep): string[] {
 	if (isParallelStep(step)) return step.parallel.map((task) => task.task ?? "{previous}");
-	if (isDynamicParallelStep(step)) return [step.parallel.task ?? "{previous}", step.parallel.label ?? ""].filter(Boolean);
+	if (isDynamicParallelStep(step))
+		return [step.parallel.task ?? "{previous}", step.parallel.label ?? ""].filter(Boolean);
 	return [(step as SequentialStep).task ?? "{previous}"];
 }
 
@@ -28,7 +35,9 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 		const step = steps[stepIndex]!;
 		if (hasDynamicFanoutFields(step)) {
 			if (!isDynamicParallelStep(step)) {
-				throw new ChainOutputValidationError(`Dynamic chain step ${stepIndex + 1} requires expand, a single parallel template object, and collect; dynamic expand/collect cannot be mixed with static parallel arrays.`);
+				throw new ChainOutputValidationError(
+					`Dynamic chain step ${stepIndex + 1} requires expand, a single parallel template object, and collect; dynamic expand/collect cannot be mixed with static parallel arrays.`,
+				);
 			}
 			try {
 				validateDynamicStepShape(step, stepIndex, dynamicFanoutConfig);
@@ -37,12 +46,16 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 				throw error;
 			}
 			if (!available.has(step.expand.from.output)) {
-				throw new ChainOutputValidationError(`Dynamic chain step ${stepIndex + 1} references unknown output '${step.expand.from.output}'. Named outputs are only available after producing step/group completes.`);
+				throw new ChainOutputValidationError(
+					`Dynamic chain step ${stepIndex + 1} references unknown output '${step.expand.from.output}'. Named outputs are only available after producing step/group completes.`,
+				);
 			}
 		}
 		for (const name of outputNamesForStep(step)) {
 			if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) {
-				throw new ChainOutputValidationError(`Invalid chain output name '${name}' at step ${stepIndex + 1}. Use /^[A-Za-z_][A-Za-z0-9_]*$/.`);
+				throw new ChainOutputValidationError(
+					`Invalid chain output name '${name}' at step ${stepIndex + 1}. Use /^[A-Za-z_][A-Za-z0-9_]*$/.`,
+				);
 			}
 			if (seen.has(name)) {
 				throw new ChainOutputValidationError(`Duplicate chain output name '${name}'. Each as name must be unique.`);
@@ -54,10 +67,14 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 				const rawReference = match[0];
 				const name = match[1]!;
 				if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) {
-					throw new ChainOutputValidationError(`Invalid chain output reference '${rawReference}' at step ${stepIndex + 1}. Use {outputs.name} with /^[A-Za-z_][A-Za-z0-9_]*$/ names.`);
+					throw new ChainOutputValidationError(
+						`Invalid chain output reference '${rawReference}' at step ${stepIndex + 1}. Use {outputs.name} with /^[A-Za-z_][A-Za-z0-9_]*$/ names.`,
+					);
 				}
 				if (!available.has(name)) {
-					throw new ChainOutputValidationError(`Unknown chain output reference '${rawReference}' at step ${stepIndex + 1}. Named outputs are only available after producing step/group completes.`);
+					throw new ChainOutputValidationError(
+						`Unknown chain output reference '${rawReference}' at step ${stepIndex + 1}. Named outputs are only available after producing step/group completes.`,
+					);
 				}
 			}
 		}
@@ -70,7 +87,9 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 export function resolveOutputReferences(template: string, outputs: ChainOutputMap): string {
 	return template.replace(OUTPUT_REF_PATTERN, (rawReference, name: string) => {
 		if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) {
-			throw new ChainOutputValidationError(`Invalid chain output reference '${rawReference}'. Use {outputs.name} with /^[A-Za-z_][A-Za-z0-9_]*$/ names.`);
+			throw new ChainOutputValidationError(
+				`Invalid chain output reference '${rawReference}'. Use {outputs.name} with /^[A-Za-z_][A-Za-z0-9_]*$/ names.`,
+			);
 		}
 		const entry = outputs[name];
 		if (!entry) throw new ChainOutputValidationError(`Unknown chain output reference '${rawReference}'.`);
@@ -84,14 +103,20 @@ function compactStructuredText(value: unknown): string {
 
 export function outputEntryFromResult(result: SingleResult, stepIndex: number): ChainOutputMapEntry {
 	return {
-		text: result.structuredOutput !== undefined ? compactStructuredText(result.structuredOutput) : getSingleResultOutput(result),
+		text:
+			result.structuredOutput !== undefined
+				? compactStructuredText(result.structuredOutput)
+				: getSingleResultOutput(result),
 		...(result.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),
 		agent: result.agent,
 		stepIndex,
 	};
 }
 
-export function outputEntryFromAsyncResult(result: { agent: string; output: string; structuredOutput?: unknown }, stepIndex: number): ChainOutputMapEntry {
+export function outputEntryFromAsyncResult(
+	result: { agent: string; output: string; structuredOutput?: unknown },
+	stepIndex: number,
+): ChainOutputMapEntry {
 	return {
 		text: result.structuredOutput !== undefined ? compactStructuredText(result.structuredOutput) : result.output,
 		...(result.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),

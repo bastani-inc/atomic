@@ -73,7 +73,10 @@ function isWindowsProcessAlive(pid: number): boolean {
  * after the grace elapses. A longer active-drain hard cap is armed once on `exit`
  * so an endlessly noisy descendant cannot keep the wait pending forever.
  */
-export function waitForChildProcess(child: ChildProcess, options: WaitForChildProcessOptions = {}): Promise<number | null> {
+export function waitForChildProcess(
+	child: ChildProcess,
+	options: WaitForChildProcessOptions = {},
+): Promise<number | null> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;
@@ -138,10 +141,7 @@ export function waitForChildProcess(child: ChildProcess, options: WaitForChildPr
 
 		const armActiveDrainHardCapTimer = () => {
 			if (postExitActiveDrainHardCapTimer) return;
-			postExitActiveDrainHardCapTimer = setTimeout(
-				() => finalize(exitCode),
-				EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS,
-			);
+			postExitActiveDrainHardCapTimer = setTimeout(() => finalize(exitCode), EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS);
 		};
 
 		const onData = () => {

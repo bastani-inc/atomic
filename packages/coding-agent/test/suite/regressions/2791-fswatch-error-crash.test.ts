@@ -50,6 +50,7 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 		writeFileSync(
 			scriptPath,
 			`
+
 import { mock } from "bun:test";
 import * as realFs from "node:fs";
 

@@ -3,14 +3,14 @@
  * and the urgency refusal that keeps `/compact` away from context destruction.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import {
 	runVerbatimCompaction,
 	startNewContextWindow,
 } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
-import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import type { CompactedTranscript } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { RangePlanError } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { preparation, region, runRequest, scriptedStream, testModel } from "./compaction-rung-support.js";
 
 const MARKER = /^\(filtered \d+ lines\)$/;
@@ -20,13 +20,7 @@ function retainedLines(text: string): string[] {
 }
 
 test("startNewContextWindow is total across empty, single-line, and all-protected regions", () => {
-	const cases = [
-		region(0),
-		region(1),
-		region(1, [1]),
-		region(8, [1, 2, 3, 4, 5, 6, 7, 8]),
-		region(9, [2, 5, 8]),
-	];
+	const cases = [region(0), region(1), region(1, [1]), region(8, [1, 2, 3, 4, 5, 6, 7, 8]), region(9, [2, 5, 8])];
 	for (const built of cases) {
 		const fresh = startNewContextWindow(preparation({ region: built }));
 		// Every retained non-marker line is byte-identical to an input line, in order.
@@ -54,7 +48,10 @@ test("property: retained lines are byte-identical and in input order for arbitra
 		const built = region(size, protectedLines);
 		const fresh = startNewContextWindow(preparation({ region: built }));
 		const retained = retainedLines(fresh.text).filter((line) => line.length > 0);
-		assert.deepEqual(retained, protectedLines.map((line) => built.lines[line - 1]));
+		assert.deepEqual(
+			retained,
+			protectedLines.map((line) => built.lines[line - 1]),
+		);
 	}
 });
 

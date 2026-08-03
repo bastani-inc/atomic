@@ -10,10 +10,10 @@ import type { ChatMessageRenderOptions } from "@bastani/atomic";
  * ExtensionUIDialogOptions.
  */
 export interface PiUIDialogOptions {
-  /** AbortSignal to programmatically dismiss the dialog. */
-  signal?: AbortSignal;
-  /** Timeout in milliseconds. */
-  timeout?: number;
+	/** AbortSignal to programmatically dismiss the dialog. */
+	signal?: AbortSignal;
+	/** Timeout in milliseconds. */
+	timeout?: number;
 }
 
 /**
@@ -25,35 +25,35 @@ export interface PiUIDialogOptions {
  * accept additional fields in the future; values pass through verbatim.
  */
 export interface PiOverlayOptions {
-  /** Overlay width — number = columns, "N%" = percent of terminal columns. */
-  width?: number | string;
-  /** Minimum overlay width in columns. */
-  minWidth?: number;
-  /** Overlay maximum height — number = rows, "N%" = percent of terminal rows. */
-  maxHeight?: number | string;
-  /** Anchor edge / corner. Pi-tui accepts named anchors like "center". */
-  anchor?: string;
-  /** Horizontal offset (columns) applied after anchor resolution. */
-  offsetX?: number;
-  /** Vertical offset (rows) applied after anchor resolution. */
-  offsetY?: number;
-  /** Explicit overlay top row (0-indexed) — overrides anchor vertical. */
-  row?: number;
-  /** Explicit overlay left column (0-indexed) — overrides anchor horizontal. */
-  col?: number;
-  /** Margin inset, scalar or per-edge object. */
-  margin?: number | { top?: number; right?: number; bottom?: number; left?: number };
-  /** Responsive visibility predicate. */
-  visible?: boolean | ((terminal: { rows: number; columns: number }) => boolean);
-  /** When `true`, overlay does not capture focus. */
-  nonCapturing?: boolean;
+	/** Overlay width — number = columns, "N%" = percent of terminal columns. */
+	width?: number | string;
+	/** Minimum overlay width in columns. */
+	minWidth?: number;
+	/** Overlay maximum height — number = rows, "N%" = percent of terminal rows. */
+	maxHeight?: number | string;
+	/** Anchor edge / corner. Pi-tui accepts named anchors like "center". */
+	anchor?: string;
+	/** Horizontal offset (columns) applied after anchor resolution. */
+	offsetX?: number;
+	/** Vertical offset (rows) applied after anchor resolution. */
+	offsetY?: number;
+	/** Explicit overlay top row (0-indexed) — overrides anchor vertical. */
+	row?: number;
+	/** Explicit overlay left column (0-indexed) — overrides anchor horizontal. */
+	col?: number;
+	/** Margin inset, scalar or per-edge object. */
+	margin?: number | { top?: number; right?: number; bottom?: number; left?: number };
+	/** Responsive visibility predicate. */
+	visible?: boolean | ((terminal: { rows: number; columns: number }) => boolean);
+	/** When `true`, overlay does not capture focus. */
+	nonCapturing?: boolean;
 }
 
 export interface PiCustomComponent {
-  render(width: number): string[];
-  handleInput?: (data: string) => void;
-  invalidate?: () => void;
-  dispose?: () => void;
+	render(width: number): string[];
+	handleInput?: (data: string) => void;
+	invalidate?: () => void;
+	dispose?: () => void;
 }
 
 /**
@@ -63,12 +63,12 @@ export interface PiCustomComponent {
  * show/hide toggle), `hide()` permanently dismisses it.
  */
 export interface PiOverlayHandle {
-  hide(): void;
-  setHidden(hidden: boolean): void;
-  isHidden(): boolean;
-  focus(): void;
-  unfocus(): void;
-  isFocused(): boolean;
+	hide(): void;
+	setHidden(hidden: boolean): void;
+	isHidden(): boolean;
+	focus(): void;
+	unfocus(): void;
+	isFocused(): boolean;
 }
 
 /**
@@ -97,37 +97,43 @@ export interface PiOverlayHandle {
  * via the factory `done()` callback.
  */
 export interface PiHostCustomUiState {
-  blockingInlineCustomUiDepth: number;
-  blockingInlineCustomUiActive: boolean;
-  blockingInlineCustomUiFocusDeferred?: boolean;
+	blockingInlineCustomUiDepth: number;
+	blockingInlineCustomUiActive: boolean;
+	blockingInlineCustomUiFocusDeferred?: boolean;
 }
 
 export type PiHostCustomUiStateListener = (state: PiHostCustomUiState) => void;
 
 export interface PiCustomOverlayOptions {
-  /**
-   * `true` mounts a floating popup; `false` mounts a focused
-   * full-screen pi-tui pane that takes keyboard focus and renders in
-   * place of the editor until the factory's `done()` callback fires.
-   */
-  overlay: boolean;
-  /** Keep host inline custom UI pending in the background while this overlay is visible. */
-  deferInlineCustomUiFocus?: boolean;
-  /**
-   * Geometry / anchoring intended for pi-tui's `resolveOverlayLayout`.
-   * NOT forwarded by current pi interactive `custom()` — see
-   * the host-compatibility note above. Treat as advisory metadata
-   * until the host wires it through.
-   */
-  overlayOptions?: PiOverlayOptions;
-  /**
-   * Optional callback invoked with the OverlayHandle once pi-tui
-   * mounts the overlay. Use to drive show/hide toggles without
-   * re-mounting. Only the full-screen graph overlay path consumes
-   * this today; inline pickers leave it unset and dismiss via the
-   * factory `done()` callback.
-   */
-  onHandle?: (handle: PiOverlayHandle) => void;
+	/**
+	 * `true` mounts a floating popup; `false` mounts a focused
+	 * full-screen pi-tui pane that takes keyboard focus and renders in
+	 * place of the editor until the factory's `done()` callback fires.
+	 */
+	overlay: boolean;
+	/** Keep host inline custom UI pending in the background while this overlay is visible. */
+	deferInlineCustomUiFocus?: boolean;
+	/**
+	 * Declare that this component binds Ctrl+C itself, so the host forwards the
+	 * first press instead of closing the component. Required by every workflow
+	 * surface whose hint row offers `ctrl+c Skip`, `ctrl+c Close`, or cancel.
+	 */
+	handlesCtrlC?: boolean;
+	/**
+	 * Geometry / anchoring intended for pi-tui's `resolveOverlayLayout`.
+	 * NOT forwarded by current pi interactive `custom()` — see
+	 * the host-compatibility note above. Treat as advisory metadata
+	 * until the host wires it through.
+	 */
+	overlayOptions?: PiOverlayOptions;
+	/**
+	 * Optional callback invoked with the OverlayHandle once pi-tui
+	 * mounts the overlay. Use to drive show/hide toggles without
+	 * re-mounting. Only the full-screen graph overlay path consumes
+	 * this today; inline pickers leave it unset and dismiss via the
+	 * factory `done()` callback.
+	 */
+	onHandle?: (handle: PiOverlayHandle) => void;
 }
 
 /**
@@ -142,8 +148,8 @@ export interface PiCustomOverlayOptions {
  * escape sequences to its local `process.stdout`.
  */
 export interface PiRemoteTerminalControl {
-  setMouseScrollTracking(enabled: boolean): void;
-  setAutowrap(enabled: boolean): void;
+	setMouseScrollTracking(enabled: boolean): void;
+	setAutowrap(enabled: boolean): void;
 }
 
 /**
@@ -152,56 +158,54 @@ export interface PiRemoteTerminalControl {
  * test mocks do not surface it; consumers must handle `undefined`.
  */
 export interface PiCustomOverlayFactoryTui {
-  requestRender?: () => void;
-  terminal?: {
-    rows?: number;
-    columns?: number;
-    setMouseScrollTracking?: (enabled: boolean) => void;
-    setAutowrap?: (enabled: boolean) => void;
-  };
-  setFocus?: (target: unknown) => void;
-  start?: () => void;
-  stop?: () => void;
-  [key: string]: unknown;
+	requestRender?: () => void;
+	terminal?: {
+		rows?: number;
+		columns?: number;
+		setMouseScrollTracking?: (enabled: boolean) => void;
+		setAutowrap?: (enabled: boolean) => void;
+	};
+	setFocus?: (target: unknown) => void;
+	start?: () => void;
+	stop?: () => void;
+	[key: string]: unknown;
 }
 
 export type PiTheme = unknown;
 export type PiKeybindings = unknown;
 
 export type PiCustomOverlayFactory<T = unknown> = (
-  tui: PiCustomOverlayFactoryTui,
-  theme: PiTheme,
-  keybindings: PiKeybindings,
-  done: (result: T) => void,
+	tui: PiCustomOverlayFactoryTui,
+	theme: PiTheme,
+	keybindings: PiKeybindings,
+	done: (result: T) => void,
 ) => PiCustomComponent | Promise<PiCustomComponent>;
 
 export type PiCustomOverlayFunction = (
-  factory: PiCustomOverlayFactory,
-  options: PiCustomOverlayOptions,
+	factory: PiCustomOverlayFactory,
+	options: PiCustomOverlayOptions,
 ) => Promise<unknown> | unknown;
 
 export interface PiHostInputFormField {
-  name: string;
-  type: "string" | "text" | "number" | "integer" | "boolean" | "select";
-  description?: string;
-  required?: boolean;
-  choices?: string[];
-  placeholder?: string;
-  initialValue: string;
+	name: string;
+	type: "string" | "text" | "number" | "integer" | "boolean" | "select";
+	description?: string;
+	required?: boolean;
+	choices?: string[];
+	placeholder?: string;
+	initialValue: string;
 }
 
 export interface PiHostInputFormRequest {
-  title: string;
-  fields: PiHostInputFormField[];
-  /** Optional panel heading label rendered on the form border. */
-  heading?: string;
-  /** Optional submit button label. */
-  submitLabel?: string;
+	title: string;
+	fields: PiHostInputFormField[];
+	/** Optional panel heading label rendered on the form border. */
+	heading?: string;
+	/** Optional submit button label. */
+	submitLabel?: string;
 }
 
-export type PiHostInputFormFunction = (
-  request: PiHostInputFormRequest,
-) => Promise<Record<string, string> | undefined>;
+export type PiHostInputFormFunction = (request: PiHostInputFormRequest) => Promise<Record<string, string> | undefined>;
 
 /**
  * JSON-safe session-selector row for the host-native session picker
@@ -209,44 +213,44 @@ export type PiHostInputFormFunction = (
  * `SessionInfo` with `created`/`modified` flattened to epoch millis.
  */
 export interface PiHostSessionPickerRow {
-  path: string;
-  id: string;
-  cwd: string;
-  /** Creation time in epoch milliseconds. */
-  createdAt: number;
-  /** Last-modified time in epoch milliseconds. */
-  modifiedAt: number;
-  messageCount: number;
-  firstMessage: string;
-  allMessagesText?: string;
-  name?: string;
-  /** Optional semantic color for synthetic selector rows. */
-  messageColor?: "success" | "warning" | "accent" | "error";
+	path: string;
+	id: string;
+	cwd: string;
+	/** Creation time in epoch milliseconds. */
+	createdAt: number;
+	/** Last-modified time in epoch milliseconds. */
+	modifiedAt: number;
+	messageCount: number;
+	firstMessage: string;
+	allMessagesText?: string;
+	name?: string;
+	/** Optional semantic color for synthetic selector rows. */
+	messageColor?: "success" | "warning" | "accent" | "error";
 }
 
 /** Request accepted by the host-native session picker capability. */
 export interface PiHostSessionPickerRequest {
-  /** Rows shown in the first frame; push later rows via the handle's `update()`. */
-  sessions: PiHostSessionPickerRow[];
-  /** Show the rename keybinding hint in the picker header. Defaults to false. */
-  showRenameHint?: boolean;
-  /**
-   * Invoked after the user confirms a Ctrl+D delete on a row. The host never
-   * removes the row itself; reply with `update()` (row removed) or `error()`.
-   */
-  onDelete?: (path: string) => void | Promise<void>;
+	/** Rows shown in the first frame; push later rows via the handle's `update()`. */
+	sessions: PiHostSessionPickerRow[];
+	/** Show the rename keybinding hint in the picker header. Defaults to false. */
+	showRenameHint?: boolean;
+	/**
+	 * Invoked after the user confirms a Ctrl+D delete on a row. The host never
+	 * removes the row itself; reply with `update()` (row removed) or `error()`.
+	 */
+	onDelete?: (path: string) => void | Promise<void>;
 }
 
 /** Live control surface for an open host-native session picker. */
 export interface PiHostSessionPickerHandle {
-  /** Resolves with the selected row's `path`, or `undefined` on cancel/close. */
-  result: Promise<string | undefined>;
-  /** Replace the picker rows; host-side navigation/search state is preserved. */
-  update(sessions: PiHostSessionPickerRow[]): void;
-  /** Surface a transient error message in the picker header. */
-  error(message: string): void;
-  /** Close the picker; `result` resolves `undefined`. Idempotent. */
-  close(): void;
+	/** Resolves with the selected row's `path`, or `undefined` on cancel/close. */
+	result: Promise<string | undefined>;
+	/** Replace the picker rows; host-side navigation/search state is preserved. */
+	update(sessions: PiHostSessionPickerRow[]): void;
+	/** Surface a transient error message in the picker header. */
+	error(message: string): void;
+	/** Close the picker; `result` resolves `undefined`. Idempotent. */
+	close(): void;
 }
 
 /**
@@ -260,9 +264,7 @@ export interface PiHostSessionPickerHandle {
  * and mismatched hosts; callers fail with an actionable error there rather
  * than degrade. The workflow resume picker REQUIRES this capability.
  */
-export type PiHostSessionPickerFunction = (
-  request: PiHostSessionPickerRequest,
-) => PiHostSessionPickerHandle;
+export type PiHostSessionPickerFunction = (request: PiHostSessionPickerRequest) => PiHostSessionPickerHandle;
 
 /**
  * Structural shape of pi's custom editor component. Interactive mode
@@ -277,40 +279,40 @@ export type PiHostSessionPickerFunction = (
  * them or the host throws `TypeError` on the first terminal resize.
  */
 export interface PiEditorComponent {
-  focused?: boolean;
-  getText(): string;
-  setText(text: string): void;
-  handleInput(data: string): void;
-  render(width: number): string[];
-  invalidate?(): void;
-  dispose?(): void;
-  onSubmit?: (text: string) => void | Promise<void>;
-  onChange?: (text: string) => void;
-  onAutocompleteCancel?: () => void;
-  onAutocompleteUpdate?: () => void;
-  setUseTerminalCursor?(useTerminalCursor: boolean): void;
-  getUseTerminalCursor?(): boolean;
-  setAutocompleteMaxVisible?(maxVisible: number): void;
-  getAutocompleteMaxVisible?(): number;
-  setMaxHeight?(maxHeight: number | undefined): void;
-  setHistoryStorage?(storage: object): void;
-  setActionKeys?(action: string, keys: readonly string[]): void;
-  setCustomKeyHandler?(key: string, handler: () => void): void;
-  removeCustomKeyHandler?(key: string): void;
-  clearCustomKeyHandlers?(): void;
-  setAutocompleteProvider?(provider: object): void;
-  addToHistory?(text: string): void;
-  insertTextAtCursor?(text: string): void;
-  getExpandedText?(): string;
-  setPaddingX?(padding: number): void;
-  setTopBorder?(content: unknown): void;
-  getTopBorderAvailableWidth?(terminalWidth: number): number;
+	focused?: boolean;
+	getText(): string;
+	setText(text: string): void;
+	handleInput(data: string): void;
+	render(width: number): string[];
+	invalidate?(): void;
+	dispose?(): void;
+	onSubmit?: (text: string) => void | Promise<void>;
+	onChange?: (text: string) => void;
+	onAutocompleteCancel?: () => void;
+	onAutocompleteUpdate?: () => void;
+	setUseTerminalCursor?(useTerminalCursor: boolean): void;
+	getUseTerminalCursor?(): boolean;
+	setAutocompleteMaxVisible?(maxVisible: number): void;
+	getAutocompleteMaxVisible?(): number;
+	setMaxHeight?(maxHeight: number | undefined): void;
+	setHistoryStorage?(storage: object): void;
+	setActionKeys?(action: string, keys: readonly string[]): void;
+	setCustomKeyHandler?(key: string, handler: () => void): void;
+	removeCustomKeyHandler?(key: string): void;
+	clearCustomKeyHandlers?(): void;
+	setAutocompleteProvider?(provider: object): void;
+	addToHistory?(text: string): void;
+	insertTextAtCursor?(text: string): void;
+	getExpandedText?(): string;
+	setPaddingX?(padding: number): void;
+	setTopBorder?(content: unknown): void;
+	getTopBorderAvailableWidth?(terminalWidth: number): number;
 }
 
 export type PiEditorFactory = (
-  tui: { requestRender?: () => void },
-  theme: unknown,
-  keybindings: unknown,
+	tui: { requestRender?: () => void },
+	theme: unknown,
+	keybindings: unknown,
 ) => PiEditorComponent;
 
 /**
@@ -319,66 +321,66 @@ export type PiEditorFactory = (
  * All fields optional — presence is checked at runtime before building adapter.
  */
 export interface PiUISurface {
-  /** Show a text input dialog. Returns undefined when user dismisses. */
-  input?: (title: string, placeholder?: string, opts?: PiUIDialogOptions) => Promise<string | undefined>;
-  /** Show a confirmation dialog. */
-  confirm?: (title: string, message: string, opts?: PiUIDialogOptions) => Promise<boolean>;
-  /** Show a selector and return the user's choice. Returns undefined when user dismisses. */
-  select?: (title: string, options: string[], opts?: PiUIDialogOptions) => Promise<string | undefined>;
-  /** Show a multi-line editor. Returns undefined when user dismisses. */
-  editor?: (title: string, prefill?: string) => Promise<string | undefined>;
-  notify?: (message: string, type?: "info" | "warning" | "error") => void;
-  onTerminalInput?: (handler: unknown) => () => void;
-  setStatus?: (key: string, text: string | undefined) => void;
-  setWorkingMessage?: (message?: string) => void;
-  setWorkingVisible?: (visible: boolean) => void;
-  setWorkingIndicator?: (options?: unknown) => void;
-  setHiddenThinkingLabel?: (label?: string) => void;
-  /** Set a live widget above or below the editor. */
-  setWidget?: (
-    key: string,
-    factory:
-      | string[]
-      | ((tui: unknown, theme: unknown) => { render(width: number): string[]; dispose?(): void })
-      | undefined,
-    opts?: { placement?: string },
-  ) => void;
-  setFooter?: (factory: unknown) => void;
-  setHeader?: (factory: unknown) => void;
-  setTitle?: (title: string) => void;
-  /** Show a custom component or overlay. */
-  custom?: PiCustomOverlayFunction;
-  /** Host-native session-list picker (all interactive hosts; absent headless). */
-  hostSessionPicker?: PiHostSessionPickerFunction;
-  /** Host-native inline input form (all current interactive Atomic hosts). */
-  hostInputForm?: PiHostInputFormFunction;
-  /** Get host-owned inline custom UI focus state, if exposed by the host. */
-  getHostCustomUiState?: () => PiHostCustomUiState;
-  /** Observe host-owned inline custom UI focus state changes, if exposed by the host. */
-  onHostCustomUiStateChange?: (listener: PiHostCustomUiStateListener) => () => void;
-  /** Move focus to a mounted host-owned inline custom UI, if one is pending. */
-  focusHostInlineCustomUi?: () => boolean;
-  pasteToEditor?: (text: string) => void;
-  setEditorText?: (text: string) => void;
-  getEditorText?: () => string;
-  addAutocompleteProvider?: (factory: unknown) => void;
-  /**
-   * Install a custom editor (replaces the bottom input bar) until cleared
-   * with `setEditorComponent(undefined)`. Used by the inline workflow
-   * input form to capture per-field keystrokes.
-   * cross-ref: docs/extensions.md §Custom Editor (pi-coding-agent).
-   */
-  setEditorComponent?: (factory: PiEditorFactory | undefined) => void;
-  /** Return the currently-installed editor factory, or undefined for the default. */
-  getEditorComponent?: () => PiEditorFactory | undefined;
-  /** Current resolved Pi theme and theme helpers, forwarded to stage extensions. */
-  theme?: unknown;
-  getAllThemes?: () => Array<{ name: string; path: string | undefined }>;
-  getTheme?: (name: string) => unknown;
-  setTheme?: (theme: string | unknown) => { success: boolean; error?: string };
-  getToolsExpanded?: () => boolean;
-  setToolsExpanded?: (expanded: boolean) => void;
-  getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+	/** Show a text input dialog. Returns undefined when user dismisses. */
+	input?: (title: string, placeholder?: string, opts?: PiUIDialogOptions) => Promise<string | undefined>;
+	/** Show a confirmation dialog. */
+	confirm?: (title: string, message: string, opts?: PiUIDialogOptions) => Promise<boolean>;
+	/** Show a selector and return the user's choice. Returns undefined when user dismisses. */
+	select?: (title: string, options: string[], opts?: PiUIDialogOptions) => Promise<string | undefined>;
+	/** Show a multi-line editor. Returns undefined when user dismisses. */
+	editor?: (title: string, prefill?: string) => Promise<string | undefined>;
+	notify?: (message: string, type?: "info" | "warning" | "error") => void;
+	onTerminalInput?: (handler: unknown) => () => void;
+	setStatus?: (key: string, text: string | undefined) => void;
+	setWorkingMessage?: (message?: string) => void;
+	setWorkingVisible?: (visible: boolean) => void;
+	setWorkingIndicator?: (options?: unknown) => void;
+	setHiddenThinkingLabel?: (label?: string) => void;
+	/** Set a live widget above or below the editor. */
+	setWidget?: (
+		key: string,
+		factory:
+			| string[]
+			| ((tui: unknown, theme: unknown) => { render(width: number): string[]; dispose?(): void })
+			| undefined,
+		opts?: { placement?: string },
+	) => void;
+	setFooter?: (factory: unknown) => void;
+	setHeader?: (factory: unknown) => void;
+	setTitle?: (title: string) => void;
+	/** Show a custom component or overlay. */
+	custom?: PiCustomOverlayFunction;
+	/** Host-native session-list picker (all interactive hosts; absent headless). */
+	hostSessionPicker?: PiHostSessionPickerFunction;
+	/** Host-native inline input form (all current interactive Atomic hosts). */
+	hostInputForm?: PiHostInputFormFunction;
+	/** Get host-owned inline custom UI focus state, if exposed by the host. */
+	getHostCustomUiState?: () => PiHostCustomUiState;
+	/** Observe host-owned inline custom UI focus state changes, if exposed by the host. */
+	onHostCustomUiStateChange?: (listener: PiHostCustomUiStateListener) => () => void;
+	/** Move focus to a mounted host-owned inline custom UI, if one is pending. */
+	focusHostInlineCustomUi?: () => boolean;
+	pasteToEditor?: (text: string) => void;
+	setEditorText?: (text: string) => void;
+	getEditorText?: () => string;
+	addAutocompleteProvider?: (factory: unknown) => void;
+	/**
+	 * Install a custom editor (replaces the bottom input bar) until cleared
+	 * with `setEditorComponent(undefined)`. Used by the inline workflow
+	 * input form to capture per-field keystrokes.
+	 * cross-ref: docs/extensions.md §Custom Editor (pi-coding-agent).
+	 */
+	setEditorComponent?: (factory: PiEditorFactory | undefined) => void;
+	/** Return the currently-installed editor factory, or undefined for the default. */
+	getEditorComponent?: () => PiEditorFactory | undefined;
+	/** Current resolved Pi theme and theme helpers, forwarded to stage extensions. */
+	theme?: unknown;
+	getAllThemes?: () => Array<{ name: string; path: string | undefined }>;
+	getTheme?: (name: string) => unknown;
+	setTheme?: (theme: string | unknown) => { success: boolean; error?: string };
+	getToolsExpanded?: () => boolean;
+	setToolsExpanded?: (expanded: boolean) => void;
+	getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
 }
 
 /**
@@ -390,5 +392,5 @@ export interface PiUISurface {
  * SDK stage sessions.
  */
 export interface UIWiringSurface {
-  ui?: PiUISurface;
+	ui?: PiUISurface;
 }

@@ -1,60 +1,17 @@
-import { matchesKey, type KeyId } from "@earendil-works/pi-tui";
+import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.ts";
+import type { KeybindingsManager } from "../../core/keybindings.ts";
+import type { RpcAutocompleteItem, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
-import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
-import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
-import { RemoteComponentController } from "./remote-component.ts";
+import { EngineDialogHostController } from "./engine-dialog-host.ts";
 import { InputFormHostController } from "./input-form-host.ts";
+import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
+import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
+import { RemoteComponentController } from "./remote-component.ts";
+import { registerRemoteProxyOwnership } from "./remote-input-ownership.ts";
 import { SessionPickerHostController } from "./session-picker-host.ts";
-import type { RpcAutocompleteItem, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSlashCommand } from "../rpc/rpc-types.ts";
-
-async function handleRequest(
-	ui: ExtensionUIContext,
-	request: RpcExtensionUIRequest,
-): Promise<RpcExtensionUIResponse | undefined> {
-	switch (request.method) {
-		case "select": {
-			const value = await ui.select(request.title, request.options, { timeout: request.timeout });
-			return value === undefined
-				? { type: "extension_ui_response", id: request.id, cancelled: true }
-				: { type: "extension_ui_response", id: request.id, value };
-		}
-		case "confirm": {
-			const confirmed = await ui.confirm(request.title, request.message, { timeout: request.timeout });
-			return { type: "extension_ui_response", id: request.id, confirmed };
-		}
-		case "input": {
-			const value = await ui.input(request.title, request.placeholder, { timeout: request.timeout });
-			return value === undefined
-				? { type: "extension_ui_response", id: request.id, cancelled: true }
-				: { type: "extension_ui_response", id: request.id, value };
-		}
-		case "editor": {
-			const value = await ui.editor(request.title, request.prefill);
-			return value === undefined
-				? { type: "extension_ui_response", id: request.id, cancelled: true }
-				: { type: "extension_ui_response", id: request.id, value };
-		}
-		case "notify":
-			ui.notify(request.message, request.notifyType);
-			return undefined;
-		case "setStatus":
-			ui.setStatus(request.statusKey, request.statusText);
-			return undefined;
-		case "setWidget":
-			ui.setWidget(request.widgetKey, request.widgetLines, { placement: request.widgetPlacement });
-			return undefined;
-		case "setTitle":
-			ui.setTitle(request.title);
-			return undefined;
-		case "set_editor_text":
-			ui.setEditorText(request.text);
-			return undefined;
-	}
-}
 
 interface EngineMessageSource {
 	onEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void;
@@ -80,18 +37,23 @@ export function attachInteractiveEngineHost(
 	runtime: AgentSessionRuntime,
 	ui: ExtensionUIContext,
 	onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void,
-	setShortcutHandler?: (handler: (data: string) => boolean) => void | (() => void),
+	setShortcutHandler?: (handler: (data: string) => boolean) => undefined | (() => void),
 	keybindings?: KeybindingsManager,
 ): () => void {
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
 	const disposeDiagnostic = runtime.onDiagnostic(onDiagnostic);
-	const disposeExtensionUi = runtime.setExtensionUIHandler((request) => handleRequest(ui, request));
+	// Generation-owned: RPC dialogs mount real host components and must not
+	// outlive, or answer through, a replacement engine child.
+	const dialogs = new EngineDialogHostController(runtime, ui);
 	let shortcuts: EngineExtensionShortcut[] = [];
 	const dispatchShortcut = (data: string): boolean => {
 		const shortcut = shortcuts.find(({ key }) => matchesKey(data, key as KeyId));
 		if (!shortcut) return false;
-		void runtime.invokeRemoteShortcut(shortcut.key).catch((error: Error) =>
-			onDiagnostic({ activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message }));
+		void runtime
+			.invokeRemoteShortcut(shortcut.key)
+			.catch((error: Error) =>
+				onDiagnostic({ activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message }),
+			);
 		return true;
 	};
 	let disposeShortcutHandler: (() => void) | undefined;
@@ -108,9 +70,12 @@ export function attachInteractiveEngineHost(
 	const disposeKeybindings = keybindings
 		? attachInteractiveEngineKeybindingSync(runtime, keybindings, applyState)
 		: runtime.onEngineMessage((message) => {
-			if (message.type === "engine_keybindings_reloaded") applyState(message.state);
-		});
+				if (message.type === "engine_keybindings_reloaded") applyState(message.state);
+			});
 	const remoteComponents = new RemoteComponentController(runtime, ui);
+	// Ctrl+C must reach the host while a remote proxy owns input, so publish the
+	// only component that can answer that question exactly.
+	const disposeOwnership = registerRemoteProxyOwnership(runtime, remoteComponents);
 	const sessionPicker = new SessionPickerHostController(runtime, ui);
 	const inputForm = new InputFormHostController(runtime, ui);
 	let disposed = false;
@@ -119,10 +84,11 @@ export function attachInteractiveEngineHost(
 		disposed = true;
 		disposeShortcutHandler?.();
 		disposeKeybindings();
+		disposeOwnership();
 		remoteComponents.dispose();
 		sessionPicker.dispose();
 		inputForm.dispose();
-		disposeExtensionUi();
+		dialogs.dispose();
 		disposeDiagnostic();
 	};
 }
@@ -135,6 +101,25 @@ export async function waitForInteractiveEngineBound(runtime: AgentSessionRuntime
 
 export function interruptBlockedInteractiveEngine(runtime: AgentSessionRuntime): boolean {
 	return runtime instanceof IsolatedInteractiveRuntime && runtime.interruptBlockedCallback();
+}
+
+/**
+ * True when the interactive engine still owes a cooperative abort or the
+ * heartbeat watchdog has declared it unresponsive, i.e. when the explicit
+ * Ctrl+C escape hatch promised by the watchdog copy applies.
+ */
+export function interactiveEngineNeedsExplicitTermination(runtime: AgentSessionRuntime): boolean {
+	return runtime instanceof IsolatedInteractiveRuntime && runtime.needsExplicitTermination();
+}
+
+/**
+ * Explicitly terminate an unresponsive interactive engine and start recovery.
+ * Only ever reached from a deliberate user action (Ctrl+C) — never from Escape.
+ */
+export function terminateInteractiveEngine(runtime: AgentSessionRuntime): boolean {
+	if (!interactiveEngineNeedsExplicitTermination(runtime)) return false;
+	void (runtime as IsolatedInteractiveRuntime).terminateAndRecover();
+	return true;
 }
 
 /**

@@ -18,14 +18,14 @@
  * literal wording with durable persistence.
  */
 
-import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { getModel } from "@earendil-works/pi-ai/compat";
+import { test } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
@@ -44,7 +44,14 @@ function assistantMessage(text: string, timestamp: number): AssistantMessage {
 		api: "anthropic-messages",
 		provider: "anthropic",
 		model: "claude-sonnet-4-5",
-		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp,
 	} as AssistantMessage;
@@ -57,17 +64,25 @@ function rescueStream(): { streamFn: StreamFn; models: string[] } {
 		models.push(`${model.provider}/${model.id}`);
 		const throttled = model.provider === "anthropic";
 		return {
-			result: async (): Promise<AssistantMessage> => ({
-				role: "assistant",
-				content: throttled ? [] : [{ type: "text", text: "3,8\n" }],
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-				stopReason: throttled ? "error" : "stop",
-				...(throttled ? { errorMessage: "429 Too Many Requests" } : {}),
-				timestamp: Date.now(),
-			} as AssistantMessage),
+			result: async (): Promise<AssistantMessage> =>
+				({
+					role: "assistant",
+					content: throttled ? [] : [{ type: "text", text: "3,8\n" }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: throttled ? "error" : "stop",
+					...(throttled ? { errorMessage: "429 Too Many Requests" } : {}),
+					timestamp: Date.now(),
+				}) as AssistantMessage,
 		};
 	}) as unknown as StreamFn;
 	return { streamFn, models };
@@ -220,7 +235,10 @@ test("a rescued compaction appends exactly one durable boundary and nothing else
 
 		// Session-channel events: no model change or fallback announcement.
 		const forbiddenSessionEvents = new Set(["model_changed", "model_fallback_start"]);
-		assert.deepEqual(harness.events.filter((event) => forbiddenSessionEvents.has(event.type as string)), []);
+		assert.deepEqual(
+			harness.events.filter((event) => forbiddenSessionEvents.has(event.type as string)),
+			[],
+		);
 
 		// Extension-channel events: `model_select` travels here, not on
 		// AgentSessionEvent, so its absence is proved on the instrumented channel

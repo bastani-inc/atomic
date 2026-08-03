@@ -1,11 +1,9 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { test } from "vitest";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import {
-	attachInteractiveEngineHost,
-} from "../../packages/coding-agent/src/modes/interactive-engine/extension-ui-bridge.ts";
+import { attachInteractiveEngineHost } from "../../packages/coding-agent/src/modes/interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type {
 	EngineKeybindingState,
@@ -26,6 +24,8 @@ test("interactive engine host attachment disposes every listener and its editor 
 			extensionUiListeners.add(listener);
 			return () => extensionUiListeners.delete(listener);
 		},
+		// Engine death is not exercised here; the controllers only need the subscription.
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			engineListeners.add(listener);
 			return () => engineListeners.delete(listener);
@@ -64,11 +64,12 @@ test("interactive engine host attachment disposes every listener and its editor 
 		assert.equal(stateListeners.size, 1);
 		assert.equal(diagnosticListeners.size, 1);
 		assert.equal(extensionUiListeners.size, 1);
-		for (const listener of stateListeners) listener({
-			userBindings: { "app.tools.expand": "ctrl+y" },
-			effectiveBindings: { "app.tools.expand": "ctrl+y" },
-			shortcuts: [{ key: "ctrl+z" }],
-		});
+		for (const listener of stateListeners)
+			listener({
+				userBindings: { "app.tools.expand": "ctrl+y" },
+				effectiveBindings: { "app.tools.expand": "ctrl+y" },
+				shortcuts: [{ key: "ctrl+z" }],
+			});
 		assert.deepEqual(manager.getKeys("app.tools.expand"), ["ctrl+y"]);
 		assert.equal(shortcutHandler?.("\x1a"), true);
 
@@ -78,11 +79,12 @@ test("interactive engine host attachment disposes every listener and its editor 
 		assert.equal(diagnosticListeners.size, 0);
 		assert.equal(extensionUiListeners.size, 0);
 		assert.equal(shortcutHandler, undefined);
-		for (const listener of stateListeners) listener({
-			userBindings: { "app.tools.expand": "ctrl+w" },
-			effectiveBindings: { "app.tools.expand": "ctrl+w" },
-			shortcuts: [],
-		});
+		for (const listener of stateListeners)
+			listener({
+				userBindings: { "app.tools.expand": "ctrl+w" },
+				effectiveBindings: { "app.tools.expand": "ctrl+w" },
+				shortcuts: [],
+			});
 		assert.deepEqual(manager.getKeys("app.tools.expand"), ["ctrl+y"]);
 	}
 });

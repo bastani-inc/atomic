@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getCustomThemesDir, getThemesDir } from "../../../config.ts";
-import { detectColorMode, type ColorMode, resolveThemeColors } from "./color-utils.ts";
-import { assertThemeNameIsValid, parseThemeJsonContent } from "./theme-parse.ts";
+import { type ColorMode, detectColorMode, resolveThemeColors } from "./color-utils.ts";
 import { Theme, type ThemeBg, type ThemeColor, type WorkingIndicatorTone } from "./theme-class.ts";
+import { assertThemeNameIsValid, parseThemeJsonContent } from "./theme-parse.ts";
 import type { ThemeJson } from "./theme-schema.ts";
 
 let BUILTIN_THEMES: Record<string, ThemeJson> | undefined;

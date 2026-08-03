@@ -1,5 +1,11 @@
-import { isDynamicParallelStep, isParallelStep, type ChainStep, type SequentialStep } from "../../shared/settings.ts";
-import type { SingleResult, SubagentRunMode, WorkflowGraphNode, WorkflowGraphSnapshot, WorkflowNodeStatus } from "../../shared/types.ts";
+import { type ChainStep, isDynamicParallelStep, isParallelStep, type SequentialStep } from "../../shared/settings.ts";
+import type {
+	SingleResult,
+	SubagentRunMode,
+	WorkflowGraphNode,
+	WorkflowGraphSnapshot,
+	WorkflowNodeStatus,
+} from "../../shared/types.ts";
 
 export interface WorkflowGraphBuildInput {
 	runId: string;
@@ -9,7 +15,18 @@ export interface WorkflowGraphBuildInput {
 	currentFlatIndex?: number;
 	currentStepIndex?: number;
 	stepStatuses?: Array<{ status?: string; error?: string }>;
-	dynamicChildren?: Record<number, Array<{ agent: string; label?: string; flatIndex: number; itemKey: string; outputName?: string; structured?: boolean; error?: string }>>;
+	dynamicChildren?: Record<
+		number,
+		Array<{
+			agent: string;
+			label?: string;
+			flatIndex: number;
+			itemKey: string;
+			outputName?: string;
+			structured?: boolean;
+			error?: string;
+		}>
+	>;
 	dynamicGroupStatuses?: Record<number, { status: WorkflowNodeStatus; error?: string }>;
 }
 
@@ -33,7 +50,9 @@ function normalizeStatus(status: string | undefined): WorkflowNodeStatus | undef
 	}
 }
 
-function resultStatus(result: Pick<SingleResult, "exitCode" | "detached" | "interrupted"> | undefined): WorkflowNodeStatus | undefined {
+function resultStatus(
+	result: Pick<SingleResult, "exitCode" | "detached" | "interrupted"> | undefined,
+): WorkflowNodeStatus | undefined {
 	if (!result) return undefined;
 	if (result.detached) return "detached";
 	if (result.interrupted) return "paused";
@@ -41,9 +60,11 @@ function resultStatus(result: Pick<SingleResult, "exitCode" | "detached" | "inte
 }
 
 function nodeStatus(input: WorkflowGraphBuildInput, flatIndex: number): WorkflowNodeStatus {
-	return normalizeStatus(input.stepStatuses?.[flatIndex]?.status)
-		?? resultStatus(input.results?.[flatIndex])
-		?? (input.currentFlatIndex === flatIndex ? "running" : "pending");
+	return (
+		normalizeStatus(input.stepStatuses?.[flatIndex]?.status) ??
+		resultStatus(input.results?.[flatIndex]) ??
+		(input.currentFlatIndex === flatIndex ? "running" : "pending")
+	);
 }
 
 function pushPhase(phases: WorkflowGraphSnapshot["phases"], phase: string | undefined, nodeId: string): void {
@@ -141,13 +162,20 @@ export function buildWorkflowGraphSnapshot(input: WorkflowGraphBuildInput): Work
 					itemKey: task.itemKey,
 					outputName: task.outputName,
 					structured: task.structured,
-					error: input.stepStatuses?.[task.flatIndex]?.error ?? input.results?.[task.flatIndex]?.error ?? task.error,
+					error:
+						input.stepStatuses?.[task.flatIndex]?.error ?? input.results?.[task.flatIndex]?.error ?? task.error,
 				};
 				children.push(child);
 				pushPhase(phases, child.phase, childId);
 				if (status === "running" || input.currentFlatIndex === task.flatIndex) currentNodeId = childId;
 			}
-			const groupStatus = groupOverride?.status ?? (children.length > 0 ? summarizeParallelStatuses(childStatuses) : (input.currentStepIndex === stepIndex ? "running" : "pending"));
+			const groupStatus =
+				groupOverride?.status ??
+				(children.length > 0
+					? summarizeParallelStatuses(childStatuses)
+					: input.currentStepIndex === stepIndex
+						? "running"
+						: "pending");
 			if (input.currentStepIndex === stepIndex && !currentNodeId) currentNodeId = groupId;
 			nodes.push({
 				id: groupId,
@@ -167,7 +195,8 @@ export function buildWorkflowGraphSnapshot(input: WorkflowGraphBuildInput): Work
 				},
 				children,
 			});
-			if (materialized.length > 0) flatIndex = Math.max(flatIndex, ...materialized.map((child) => child.flatIndex + 1));
+			if (materialized.length > 0)
+				flatIndex = Math.max(flatIndex, ...materialized.map((child) => child.flatIndex + 1));
 			continue;
 		}
 
@@ -188,7 +217,8 @@ export function buildWorkflowGraphSnapshot(input: WorkflowGraphBuildInput): Work
 			error: input.stepStatuses?.[flatIndex]?.error ?? input.results?.[flatIndex]?.error,
 		});
 		pushPhase(phases, seq.phase, id);
-		if (status === "running" || input.currentFlatIndex === flatIndex || input.currentStepIndex === stepIndex) currentNodeId = id;
+		if (status === "running" || input.currentFlatIndex === flatIndex || input.currentStepIndex === stepIndex)
+			currentNodeId = id;
 		flatIndex++;
 	}
 

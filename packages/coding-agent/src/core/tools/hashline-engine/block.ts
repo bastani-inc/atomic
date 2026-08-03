@@ -51,7 +51,7 @@ export interface ResolveBlockEditsOptions {
 
 /** True when at least one edit is an unresolved deferred block edit. */
 export function hasBlockEdit(edits: readonly Edit[]): boolean {
-	return edits.some(edit => edit.kind === "block");
+	return edits.some((edit) => edit.kind === "block");
 }
 
 /**

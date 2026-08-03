@@ -1,7 +1,7 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
-import { createSessionAsyncDeliveryHandler } from "../src/core/async/session-manager.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import { createSessionAsyncDeliveryHandler } from "../src/core/async/session-manager.ts";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
 
 function relevantDelivery(message: AgentSession["messages"][number]): string | undefined {
@@ -10,12 +10,9 @@ function relevantDelivery(message: AgentSession["messages"][number]): string | u
 		return text === "explicit resume driver" || text.includes("late raw") ? `user:${text}` : undefined;
 	}
 	if (message.role !== "custom") return undefined;
-	return [
-		"late-trigger",
-		"late-batch",
-		"late-interrupt",
-		"async-job-result",
-	].includes(message.customType) ? `custom:${message.customType}:${String(message.details && "id" in message.details ? message.details.id : "")}` : undefined;
+	return ["late-trigger", "late-batch", "late-interrupt", "async-job-result"].includes(message.customType)
+		? `custom:${message.customType}:${String(message.details && "id" in message.details ? message.details.id : "")}`
+		: undefined;
 }
 
 describe("paused queue late admission gate", () => {
@@ -91,7 +88,11 @@ describe("paused queue late admission gate", () => {
 
 		expect(harness.getPendingResponseCount()).toBe(responsesBeforeLateArrival);
 		expect(harness.session.queuedMessagesPaused).toBe(true);
-		expect(harness.session.messages.filter((message) => message.role === "custom" && message.customType === "history-only")).toHaveLength(1);
+		expect(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "history-only",
+			),
+		).toHaveLength(1);
 
 		await harness.session.resumeQueuedMessages();
 		expect(harness.getPendingResponseCount()).toBe(responsesBeforeLateArrival);
@@ -117,10 +118,9 @@ describe("paused queue late admission gate", () => {
 			details: { id: 1, optional: undefined },
 		});
 		expect(Object.hasOwn(lateTrigger?.details ?? {}, "optional")).toBe(true);
-		expect(deliveredCustom.filter((message) => message.customType === "late-batch").map((message) => message.details)).toEqual([
-			{ id: 1 },
-			{ id: 2 },
-		]);
+		expect(
+			deliveredCustom.filter((message) => message.customType === "late-batch").map((message) => message.details),
+		).toEqual([{ id: 1 }, { id: 2 }]);
 		expect(deliveredCustom.find((message) => message.customType === "async-job-result")?.details).toMatchObject({
 			jobId: "job-paused",
 			status: "completed",
@@ -162,16 +162,16 @@ describe("paused queue late admission gate", () => {
 		await harness.session.prompt("resume interleave");
 		expect(harness.getPendingResponseCount()).toBe(0);
 		const delivered = harness.session.messages
-			.filter((message) =>
-				(message.role === "user" && ["older held steer", "resume interleave"].includes(getMessageText(message))) ||
-				(message.role === "custom" && message.customType === "late-interleaved-interrupt"),
+			.filter(
+				(message) =>
+					(message.role === "user" &&
+						["older held steer", "resume interleave"].includes(getMessageText(message))) ||
+					(message.role === "custom" && message.customType === "late-interleaved-interrupt"),
 			)
-			.map((message) => message.role === "custom" ? `custom:${message.content}` : `user:${getMessageText(message)}`);
-		expect(delivered).toEqual([
-			"user:resume interleave",
-			"user:older held steer",
-			"custom:interleaved interrupt",
-		]);
+			.map((message) =>
+				message.role === "custom" ? `custom:${message.content}` : `user:${getMessageText(message)}`,
+			);
+		expect(delivered).toEqual(["user:resume interleave", "user:older held steer", "custom:interleaved interrupt"]);
 	});
 
 	test("non-trigger custom single and batch arrivals remain history-only during paused abort overlap", async () => {
@@ -200,18 +200,25 @@ describe("paused queue late admission gate", () => {
 			{ customType: "overlap-history-single", content: "single history", display: true, details: { id: 1 } },
 			{ triggerTurn: false },
 		);
-		await harness.session.sendCustomMessages([
-			{ customType: "overlap-history-batch", content: "batch history", display: true, details: { id: 2 } },
-			{ customType: "overlap-history-batch", content: "batch history", display: true, details: { id: 3 } },
-		], { triggerTurn: false });
+		await harness.session.sendCustomMessages(
+			[
+				{ customType: "overlap-history-batch", content: "batch history", display: true, details: { id: 2 } },
+				{ customType: "overlap-history-batch", content: "batch history", display: true, details: { id: 3 } },
+			],
+			{ triggerTurn: false },
+		);
 
 		const overlappingHistory = harness.session.messages.filter(
 			(message) => message.role === "custom" && message.customType.startsWith("overlap-history-"),
 		);
 		const paused = harness.session as AgentSession & {
-			readonly _activeInterruptQueueHold?: { readonly steering: readonly object[]; readonly followUp: readonly object[] };
+			readonly _activeInterruptQueueHold?: {
+				readonly steering: readonly object[];
+				readonly followUp: readonly object[];
+			};
 		};
-		const heldDuringAbort = (paused._activeInterruptQueueHold?.steering.length ?? 0) +
+		const heldDuringAbort =
+			(paused._activeInterruptQueueHold?.steering.length ?? 0) +
 			(paused._activeInterruptQueueHold?.followUp.length ?? 0);
 
 		finishAbortingTurn.resolve();
@@ -244,9 +251,11 @@ describe("paused queue late admission gate", () => {
 		}
 
 		for (const generation of [1, 2]) {
-			expect(harness.session.messages.filter(
-				(message) => message.role === "user" && getMessageText(message) === `late generation ${generation}`,
-			)).toHaveLength(1);
+			expect(
+				harness.session.messages.filter(
+					(message) => message.role === "user" && getMessageText(message) === `late generation ${generation}`,
+				),
+			).toHaveLength(1);
 		}
 		expect(harness.session.queuedMessagesPaused).toBe(false);
 		expect(harness.session.agent.hasQueuedMessages()).toBe(false);

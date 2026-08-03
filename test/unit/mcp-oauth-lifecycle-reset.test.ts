@@ -1,19 +1,20 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { test } from "vitest";
+import { moduleDir } from "../helpers/runtime.js";
 
-const repoRoot = resolve(import.meta.dir, "../..");
+const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 
 test("session cleanup retires old OAuth waiters before same-server replacement auth", () => {
-  const fixtureDir = mkdtempSync(join(repoRoot, ".mcp-oauth-reset-"));
-  try {
-    const authFlowUrl = new URL("../../packages/mcp/mcp-auth-flow.js", import.meta.url).href;
-    const callbackUrl = new URL("../../packages/mcp/mcp-callback-server.js", import.meta.url).href;
-    const providerUrl = new URL("../../packages/mcp/mcp-oauth-provider.js", import.meta.url).href;
-    const authStoreUrl = new URL("../../packages/mcp/mcp-auth.js", import.meta.url).href;
-    const script = `
+	const fixtureDir = mkdtempSync(join(repoRoot, ".mcp-oauth-reset-"));
+	try {
+		const authFlowUrl = new URL("../../packages/mcp/mcp-auth-flow.js", import.meta.url).href;
+		const callbackUrl = new URL("../../packages/mcp/mcp-callback-server.js", import.meta.url).href;
+		const providerUrl = new URL("../../packages/mcp/mcp-oauth-provider.js", import.meta.url).href;
+		const authStoreUrl = new URL("../../packages/mcp/mcp-auth.js", import.meta.url).href;
+		const script = `
 import { mock } from "bun:test";
 const fixtureDir = ${JSON.stringify(fixtureDir)};
 let browserLaunchCount = 0;
@@ -98,54 +99,54 @@ try {
   await oauthServer.stop(true);
 }
 `;
-    const result = spawnSync("bun", ["--eval", script], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 15_000,
-      env: { ...process.env },
-    });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const output = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "{}") as {
-      oldMessages: string[];
-      oldSettledAfterCleanup: boolean;
-      pendingAfterCleanup: number;
-      callbackRunningAfterCleanup: boolean;
-      oldState: string;
-      freshState: string;
-      freshResults: string[];
-      pending: number;
-      browserLaunches: number;
-      registrations: number;
-      tokenRequests: number;
-      callbackStatus: number;
-    };
-    assert.equal(output.oldSettledAfterCleanup, true, "cleanup must settle retired callers before returning");
-    assert.equal(output.pendingAfterCleanup, 0, "cleanup must remove every retired callback waiter");
-    assert.equal(output.callbackRunningAfterCleanup, false, "cleanup must stop the retired callback server");
-    assert.equal(output.oldMessages.length, 2);
-    for (const message of output.oldMessages) {
-      assert.match(message, /session.*restart|reset.*retry/i);
-    }
-    assert.notEqual(output.oldState, output.freshState);
-    assert.deepEqual(output.freshResults, ["authenticated", "authenticated"]);
-    assert.equal(output.pending, 0);
-    assert.equal(output.browserLaunches, 2, "each lifecycle should start one shared browser flow");
-    assert.equal(output.registrations, 2, "each lifecycle should register only its one producer");
-    assert.equal(output.tokenRequests, 1);
-    assert.equal(output.callbackStatus, 200);
-  } finally {
-    rmSync(fixtureDir, { recursive: true, force: true });
-  }
+		const result = spawnSync("bun", ["--eval", script], {
+			cwd: repoRoot,
+			encoding: "utf8",
+			timeout: 15_000,
+			env: { ...process.env },
+		});
+		assert.equal(result.status, 0, result.stderr || result.stdout);
+		const output = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "{}") as {
+			oldMessages: string[];
+			oldSettledAfterCleanup: boolean;
+			pendingAfterCleanup: number;
+			callbackRunningAfterCleanup: boolean;
+			oldState: string;
+			freshState: string;
+			freshResults: string[];
+			pending: number;
+			browserLaunches: number;
+			registrations: number;
+			tokenRequests: number;
+			callbackStatus: number;
+		};
+		assert.equal(output.oldSettledAfterCleanup, true, "cleanup must settle retired callers before returning");
+		assert.equal(output.pendingAfterCleanup, 0, "cleanup must remove every retired callback waiter");
+		assert.equal(output.callbackRunningAfterCleanup, false, "cleanup must stop the retired callback server");
+		assert.equal(output.oldMessages.length, 2);
+		for (const message of output.oldMessages) {
+			assert.match(message, /session.*restart|reset.*retry/i);
+		}
+		assert.notEqual(output.oldState, output.freshState);
+		assert.deepEqual(output.freshResults, ["authenticated", "authenticated"]);
+		assert.equal(output.pending, 0);
+		assert.equal(output.browserLaunches, 2, "each lifecycle should start one shared browser flow");
+		assert.equal(output.registrations, 2, "each lifecycle should register only its one producer");
+		assert.equal(output.tokenRequests, 1);
+		assert.equal(output.callbackStatus, 200);
+	} finally {
+		rmSync(fixtureDir, { recursive: true, force: true });
+	}
 });
 
 test("reset drains callback startup before replacement authentication publishes a fresh server", () => {
-  const fixtureDir = mkdtempSync(join(repoRoot, ".mcp-oauth-startup-drain-"));
-  try {
-    const authFlowUrl = new URL("../../packages/mcp/mcp-auth-flow.js", import.meta.url).href;
-    const callbackUrl = new URL("../../packages/mcp/mcp-callback-server.js", import.meta.url).href;
-    const providerUrl = new URL("../../packages/mcp/mcp-oauth-provider.js", import.meta.url).href;
-    const authStoreUrl = new URL("../../packages/mcp/mcp-auth.js", import.meta.url).href;
-    const script = `
+	const fixtureDir = mkdtempSync(join(repoRoot, ".mcp-oauth-startup-drain-"));
+	try {
+		const authFlowUrl = new URL("../../packages/mcp/mcp-auth-flow.js", import.meta.url).href;
+		const callbackUrl = new URL("../../packages/mcp/mcp-callback-server.js", import.meta.url).href;
+		const providerUrl = new URL("../../packages/mcp/mcp-oauth-provider.js", import.meta.url).href;
+		const authStoreUrl = new URL("../../packages/mcp/mcp-auth.js", import.meta.url).href;
+		const script = `
 import { mock } from "bun:test";
 import * as realHttp from "node:http";
 const events = [];
@@ -269,36 +270,41 @@ try {
   await oauthServer.stop(true);
 }
 `;
-    const result = spawnSync("bun", ["--eval", script], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 15_000,
-      env: { ...process.env },
-    });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const output = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "{}") as {
-      blocked: { cleanupSettled: boolean; freshSettled: boolean; serverCount: number; events: string[] };
-      freshResult: string;
-      callbackStatus: number;
-      beforeFinalStop: { running: boolean; serverCount: number; events: string[] };
-      events: string[];
-      oldMessage: string;
-    };
-    assert.equal(output.blocked.cleanupSettled, false, "cleanup must wait for the actual old producer");
-    assert.equal(output.blocked.freshSettled, false);
-    assert.equal(output.blocked.serverCount, 1, "replacement startup must wait behind teardown");
-    assert.deepEqual(output.blocked.events, ["listening:1"]);
-    assert.match(output.oldMessage, /session.*restart|reset.*retry/i);
-    assert.equal(output.freshResult, "authenticated");
-    assert.equal(output.callbackStatus, 200);
-    assert.equal(output.beforeFinalStop.running, true);
-    assert.equal(output.beforeFinalStop.serverCount, 2);
-    assert.deepEqual(output.beforeFinalStop.events.slice(0, 6), [
-      "listening:1", "publish:1", "close:1", "cleanup", "listening:2", "publish:2",
-    ]);
-    assert.equal(output.events.filter((event) => event === "close:1").length, 1);
-    assert.equal(output.events.filter((event) => event === "close:2").length, 1);
-  } finally {
-    rmSync(fixtureDir, { recursive: true, force: true });
-  }
+		const result = spawnSync("bun", ["--eval", script], {
+			cwd: repoRoot,
+			encoding: "utf8",
+			timeout: 15_000,
+			env: { ...process.env },
+		});
+		assert.equal(result.status, 0, result.stderr || result.stdout);
+		const output = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "{}") as {
+			blocked: { cleanupSettled: boolean; freshSettled: boolean; serverCount: number; events: string[] };
+			freshResult: string;
+			callbackStatus: number;
+			beforeFinalStop: { running: boolean; serverCount: number; events: string[] };
+			events: string[];
+			oldMessage: string;
+		};
+		assert.equal(output.blocked.cleanupSettled, false, "cleanup must wait for the actual old producer");
+		assert.equal(output.blocked.freshSettled, false);
+		assert.equal(output.blocked.serverCount, 1, "replacement startup must wait behind teardown");
+		assert.deepEqual(output.blocked.events, ["listening:1"]);
+		assert.match(output.oldMessage, /session.*restart|reset.*retry/i);
+		assert.equal(output.freshResult, "authenticated");
+		assert.equal(output.callbackStatus, 200);
+		assert.equal(output.beforeFinalStop.running, true);
+		assert.equal(output.beforeFinalStop.serverCount, 2);
+		assert.deepEqual(output.beforeFinalStop.events.slice(0, 6), [
+			"listening:1",
+			"publish:1",
+			"close:1",
+			"cleanup",
+			"listening:2",
+			"publish:2",
+		]);
+		assert.equal(output.events.filter((event) => event === "close:1").length, 1);
+		assert.equal(output.events.filter((event) => event === "close:2").length, 1);
+	} finally {
+		rmSync(fixtureDir, { recursive: true, force: true });
+	}
 }, 20_000);

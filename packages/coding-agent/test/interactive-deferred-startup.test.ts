@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
+import type { ModelRegistry } from "../src/core/model-registry.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 const claudeModel = {
 	provider: "anthropic",
@@ -20,15 +20,17 @@ function registerExtensionModel(registry: ModelRegistry, provider: string, model
 		baseUrl: "https://extension.test/v1",
 		apiKey: "test-key",
 		api: "openai-completions",
-		models: [{
-			id: modelId,
-			name: "Extension model",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 4096,
-		}],
+		models: [
+			{
+				id: modelId,
+				name: "Extension model",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 4096,
+			},
+		],
 	});
 }
 
@@ -200,7 +202,12 @@ describe("retryDeferredModelRestore", () => {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
 			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
-			session: { model: undefined, modelRuntime: getModelRuntime(registry), setModel: vi.fn(), setThinkingLevel: vi.fn() },
+			session: {
+				model: undefined,
+				modelRuntime: getModelRuntime(registry),
+				setModel: vi.fn(),
+				setThinkingLevel: vi.fn(),
+			},
 			showWarning,
 		};
 

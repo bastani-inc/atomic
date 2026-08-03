@@ -2,17 +2,35 @@
  * Extension system for lifecycle events and custom tools.
  */
 
-export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
-export type { AtomicProviderCompat } from "../model-capabilities.ts";
 export type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai/compat";
+export type { AtomicProviderCompat } from "../model-capabilities.ts";
+export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
 export type { SourceInfo } from "../source-info.ts";
+export type { WorkflowResourceProvider, WorkflowResourceProviderInput } from "./loader.ts";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,
 	loadExtensionFromFactory,
 	loadExtensions,
 } from "./loader.ts";
-export type { WorkflowResourceProvider, WorkflowResourceProviderInput } from "./loader.ts";
+export type {
+	InstallReactiveWidgetOptions,
+	ReactiveWidgetAction,
+	ReactiveWidgetComponent,
+	ReactiveWidgetController,
+	ReactiveWidgetFactory,
+	ReactiveWidgetRefreshReason,
+	ReactiveWidgetRenderContext,
+	ReactiveWidgetRenderState,
+	ReactiveWidgetScheduler,
+	ReactiveWidgetTimerApi,
+	ReactiveWidgetTimerHandle,
+	ReactiveWidgetUi,
+} from "./reactive-widget.ts";
+export {
+	decideReactiveWidgetAction,
+	installReactiveWidget,
+} from "./reactive-widget.ts";
 export type {
 	ExtensionErrorListener,
 	ForkHandler,
@@ -39,8 +57,8 @@ export type {
 	BashToolResultEvent,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
-	BeforeProviderRequestEvent,
 	BeforeProviderHeadersEvent,
+	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
 	// Context
@@ -56,6 +74,9 @@ export type {
 	EditorFactory,
 	EditToolCallEvent,
 	EditToolResultEvent,
+	// Message Rendering
+	EntryRenderer,
+	EntryRenderOptions,
 	ExecOptions,
 	ExecResult,
 	Extension,
@@ -75,6 +96,7 @@ export type {
 	ExtensionMode,
 	// Runtime
 	ExtensionRuntime,
+	ExtensionScopedModels,
 	ExtensionShortcut,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -93,6 +115,7 @@ export type {
 	HostSessionPickerHandle,
 	HostSessionPickerRequest,
 	HostSessionPickerRow,
+	InlineExtension,
 	// Events - Input
 	InputEvent,
 	InputEventResult,
@@ -103,17 +126,13 @@ export type {
 	LsToolResultEvent,
 	// Events - Message
 	MessageEndEvent,
-	// Message Rendering
-	EntryRenderer,
-	EntryRenderOptions,
 	MessageRenderer,
 	MessageRenderOptions,
 	MessageStartEvent,
-	OrchestrationContext,
-	WorkflowStageOrchestrationContext,
 	MessageUpdateEvent,
 	ModelSelectEvent,
 	ModelSelectSource,
+	OrchestrationContext,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventDecision,
@@ -122,7 +141,6 @@ export type {
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
-	InlineExtension,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
 	// Commands
@@ -133,6 +151,7 @@ export type {
 	// Events - Resources
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
+	ScopedModel,
 	SendMessageHandler,
 	SendMessageOptions,
 	SendMessagesHandler,
@@ -147,8 +166,8 @@ export type {
 	SessionBeforeTreeEvent,
 	SessionBeforeTreeResult,
 	SessionCompactEvent,
-	SessionInfoChangedEvent,
 	SessionEvent,
+	SessionInfoChangedEvent,
 	SessionShutdownEvent,
 	// Events - Session
 	SessionStartEvent,
@@ -180,6 +199,7 @@ export type {
 	UserBashEvent,
 	UserBashEventResult,
 	WidgetPlacement,
+	WorkflowStageOrchestrationContext,
 	WorkingIndicatorOptions,
 	WriteToolCallEvent,
 	WriteToolResultEvent,
@@ -191,27 +211,9 @@ export {
 	isEditToolResult,
 	isFindToolResult,
 	isLsToolResult,
-	isSearchToolResult,
 	isReadToolResult,
+	isSearchToolResult,
 	isToolCallEventType,
 	isWriteToolResult,
 } from "./types.ts";
-export {
-	decideReactiveWidgetAction,
-	installReactiveWidget,
-} from "./reactive-widget.ts";
-export type {
-	InstallReactiveWidgetOptions,
-	ReactiveWidgetAction,
-	ReactiveWidgetComponent,
-	ReactiveWidgetController,
-	ReactiveWidgetFactory,
-	ReactiveWidgetRefreshReason,
-	ReactiveWidgetRenderContext,
-	ReactiveWidgetRenderState,
-	ReactiveWidgetScheduler,
-	ReactiveWidgetTimerApi,
-	ReactiveWidgetTimerHandle,
-	ReactiveWidgetUi,
-} from "./reactive-widget.ts";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
-import { runCliProcess, removeTempDirs } from "./cli-test-helpers.ts";
+import { removeTempDirs, runCliProcess } from "./cli-test-helpers.ts";
 
 const tempDirs: string[] = [];
 

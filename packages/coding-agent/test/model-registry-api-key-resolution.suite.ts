@@ -1,21 +1,11 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { createModelRegistry } from "./model-runtime-test-utils.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
+import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
-	const {
-		providerConfig,
-		writeModelsJson,
-		getModelsForProvider,
-		toShPath,
-		overrideConfig,
-		writeRawModelsJson,
-		openAiModel,
-		emptyContext,
-	} = context;
+	const { toShPath, writeRawModelsJson } = context;
 	describe("API key resolution", () => {
 		/** Create provider config with custom apiKey */
 		function providerWithApiKey(apiKey: string) {

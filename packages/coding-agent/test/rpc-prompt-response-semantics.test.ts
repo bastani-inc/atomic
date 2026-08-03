@@ -150,13 +150,14 @@ async function createRuntimeHost(options: {
 		resourceLoader: createTestResourceLoader(),
 	});
 
-	const fallbackWarning = "Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+	const fallbackWarning =
+		"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
 	const runtimeHost = {
 		modelFallbackMessage: options.unsupportedFallback ? fallbackWarning : undefined,
 		modelFallbackReason: options.unsupportedFallback ? "configured-provider-unsupported" : undefined,
 		session,
 		services: { agentDir: tempDir },
-		newSession: vi.fn(async function(this: { modelFallbackMessage?: string; modelFallbackReason?: string }) {
+		newSession: vi.fn(async function (this: { modelFallbackMessage?: string; modelFallbackReason?: string }) {
 			this.modelFallbackMessage = fallbackWarning;
 			this.modelFallbackReason = "configured-provider-unsupported";
 			return { cancelled: false };
@@ -165,11 +166,11 @@ async function createRuntimeHost(options: {
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
 		dispose: vi.fn(async () => {}),
 		setRebindSession: vi.fn(),
-		resolveModelFallback: vi.fn(function(this: { modelFallbackMessage?: string; modelFallbackReason?: string }) {
+		resolveModelFallback: vi.fn(function (this: { modelFallbackMessage?: string; modelFallbackReason?: string }) {
 			this.modelFallbackMessage = undefined;
 			this.modelFallbackReason = undefined;
 		}),
-		resolveModelFallbackAfterExplicitModelSelection: vi.fn(function(
+		resolveModelFallbackAfterExplicitModelSelection: vi.fn(function (
 			this: { modelFallbackMessage?: string; modelFallbackReason?: string },
 			previous: Model<Api> | undefined,
 			selected: Model<Api> | null | undefined,
@@ -213,7 +214,9 @@ async function startRpcMode(options: {
 	rpcIo.lineHandler = undefined;
 
 	const { runtimeHost, cleanup } = await createRuntimeHost(options);
-	withNormalRpcEnvironment(() => { void runRpcMode(runtimeHost); });
+	withNormalRpcEnvironment(() => {
+		void runRpcMode(runtimeHost);
+	});
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
 	return { lineHandler: rpcIo.lineHandler!, cleanup, runtimeHost };
@@ -273,7 +276,8 @@ describe("RPC prompt response semantics", () => {
 			model,
 			unsupportedFallback: true,
 		});
-		const warning = "Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+		const warning =
+			"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
 
 		try {
 			lineHandler(JSON.stringify({ id: "blocked", type: "prompt", message: "Do not send" }));
@@ -303,9 +307,9 @@ describe("RPC prompt response semantics", () => {
 
 			lineHandler(JSON.stringify({ id: "replace", type: "new_session" }));
 			await vi.waitFor(() => {
-				expect(parseOutputLines(rpcIo.outputLines).some(
-					(record) => record.id === "replace" && record.success === true,
-				)).toBe(true);
+				expect(
+					parseOutputLines(rpcIo.outputLines).some((record) => record.id === "replace" && record.success === true),
+				).toBe(true);
 			});
 			rpcIo.outputLines = [];
 			lineHandler(JSON.stringify({ id: "blocked-again", type: "prompt", message: "blocked again" }));
@@ -342,28 +346,43 @@ describe("RPC prompt response semantics", () => {
 				return { model: selected, thinkingLevel: "off", isScoped: false };
 			});
 			lineHandler(JSON.stringify({ id: "changed-cycle", type: "cycle_model" }));
-			await vi.waitFor(() => expect(parseOutputLines(rpcIo.outputLines).some(
-				(record) => record.id === "changed-cycle" && record.success === true,
-			)).toBe(true));
+			await vi.waitFor(() =>
+				expect(
+					parseOutputLines(rpcIo.outputLines).some(
+						(record) => record.id === "changed-cycle" && record.success === true,
+					),
+				).toBe(true),
+			);
 			expect(runtimeHost.modelFallbackReason).toBeUndefined();
 			lineHandler(JSON.stringify({ id: "after-cycle", type: "prompt", message: "run after cycle" }));
-			await vi.waitFor(() => expect(getPromptResponses(rpcIo.outputLines, "after-cycle")).toEqual([
-				expect.objectContaining({ success: true }),
-			]));
+			await vi.waitFor(() =>
+				expect(getPromptResponses(rpcIo.outputLines, "after-cycle")).toEqual([
+					expect.objectContaining({ success: true }),
+				]),
+			);
 
 			for (const [id, implementation] of [
 				["null-cycle", async () => undefined],
 				["same-cycle", async () => ({ model: { ...selected }, thinkingLevel: "high" as const, isScoped: false })],
-				["failed-cycle", async () => { throw new Error("cycle hook failed"); }],
+				[
+					"failed-cycle",
+					async () => {
+						throw new Error("cycle hook failed");
+					},
+				],
 			] as const) {
 				lock();
 				cycle.mockImplementationOnce(implementation);
 				lineHandler(JSON.stringify({ id, type: "cycle_model" }));
-				await vi.waitFor(() => expect(parseOutputLines(rpcIo.outputLines).some((record) => record.id === id)).toBe(true));
+				await vi.waitFor(() =>
+					expect(parseOutputLines(rpcIo.outputLines).some((record) => record.id === id)).toBe(true),
+				);
 				lineHandler(JSON.stringify({ id: `${id}-prompt`, type: "prompt", message: "must remain blocked" }));
-				await vi.waitFor(() => expect(getPromptResponses(rpcIo.outputLines, `${id}-prompt`)).toEqual([
-					expect.objectContaining({ success: false }),
-				]));
+				await vi.waitFor(() =>
+					expect(getPromptResponses(rpcIo.outputLines, `${id}-prompt`)).toEqual([
+						expect.objectContaining({ success: false }),
+					]),
+				);
 			}
 		} finally {
 			await cleanup();

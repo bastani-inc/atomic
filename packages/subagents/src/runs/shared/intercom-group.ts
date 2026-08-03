@@ -44,7 +44,8 @@ export function sharedAutoGroupForSet(
 	setGroup: string | true | undefined,
 	items: ReadonlyArray<{ group?: string | true }>,
 ): string | undefined {
-	const needsAuto = normalizeAutoGroupSentinel(setGroup) === true
-		|| items.some((item) => normalizeAutoGroupSentinel(item.group) === true);
+	const needsAuto =
+		normalizeAutoGroupSentinel(setGroup) === true ||
+		items.some((item) => normalizeAutoGroupSentinel(item.group) === true);
 	return needsAuto ? randomUUID() : undefined;
 }

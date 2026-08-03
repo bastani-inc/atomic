@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { delimiter } from "node:path";
-import { spawn, spawnSync } from "child_process";
 import { Worker } from "node:worker_threads";
+import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
 
 export interface ShellConfig {
@@ -178,7 +178,7 @@ interface DetachedChildGuardian {
 
 let detachedChildGuardian: DetachedChildGuardian | undefined;
 
-const PARENT_GUARDIAN_SOURCE = String.raw`
+const PARENT_GUARDIAN_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { spawn } = require("node:child_process");
 const { existsSync } = require("node:fs");

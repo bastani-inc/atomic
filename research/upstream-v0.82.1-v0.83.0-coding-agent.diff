@@ -1,0 +1,2918 @@
+diff --git a/packages/coding-agent/CHANGELOG.md b/packages/coding-agent/CHANGELOG.md
+index ba126725..81c1a89a 100644
+--- a/packages/coding-agent/CHANGELOG.md
++++ b/packages/coding-agent/CHANGELOG.md
+@@ -1,5 +1,50 @@
+ # Changelog
+ 
++## [0.83.0] - 2026-07-29
++
++### New Features
++
++- **Credential export for external clients** — `pi auth print-api-key` and `pi auth print-bearer-token` export configured credentials with automatic OAuth refresh and minimum-validity enforcement.
++- **Headless OpenRouter sign-in** — Complete `/login` over SSH by pasting the redirect URL or authorization code when the loopback callback is unavailable. See [OpenRouter](docs/providers.md#openrouter).
++- **Claude Opus 5 on GitHub Copilot** — Use Claude Opus 5 through GitHub Copilot with adaptive thinking and a 1M context window. See [GitHub Copilot](docs/providers.md#github-copilot).
++
++### Breaking Changes
++
++- Upgraded bundled TypeBox aliases to 1.3.7, removing deprecated APIs including `Type.Base`, `Type.Awaited`, `Type.Promise`, `Type.AsyncIterator`, `Type.Iterator`, `Type.Options`, and `Value.Mutate`, while fixing compiled validation of nullable array tool arguments. Extensions using removed APIs must migrate to supported TypeBox APIs. See [Package Dependencies](docs/packages.md#dependencies) ([#7243](https://github.com/earendil-works/pi/pull/7243) by [@petrroll](https://github.com/petrroll)).
++
++### Added
++
++- Added `pi auth print-api-key` and `pi auth print-bearer-token` commands for exporting configured credentials to external clients, including automatic OAuth refresh and configurable minimum token validity ([#7168](https://github.com/earendil-works/pi/pull/7168)).
++- Exposed the session's resolved model scope as `ctx.scopedModels` to extensions. See [Extension Context](docs/extensions.md#ctxmodelregistry--ctxmodel--ctxthinkinglevel--ctxscopedmodels) ([#7191](https://github.com/earendil-works/pi/pull/7191) by [@pungggi](https://github.com/pungggi), [#7215](https://github.com/earendil-works/pi/pull/7215)).
++- Added inherited per-request `fetch` injection for supported text and image provider transports.
++- Added the inherited `"pending"` stop reason for partial streaming messages. See [Custom Provider Stream Pattern](docs/custom-provider.md#stream-pattern) ([#7151](https://github.com/earendil-works/pi/pull/7151) by [@lucasmeijer](https://github.com/lucasmeijer)).
++- Added inherited raw provider stop reasons across Google, Anthropic, Amazon Bedrock, Mistral, and OpenAI streams; unmapped terminal reasons now surface as provider errors instead of successful stops ([#7272](https://github.com/earendil-works/pi/pull/7272)).
++- Added manual redirect URL and authorization-code entry to OpenRouter login for remote and headless environments. See [OpenRouter](docs/providers.md#openrouter) ([#7114](https://github.com/earendil-works/pi/pull/7114) by [@rgarcia](https://github.com/rgarcia)).
++- Added inherited Claude Opus 5 support for GitHub Copilot with adaptive thinking and a 1M context window. See [GitHub Copilot](docs/providers.md#github-copilot) ([#7158](https://github.com/earendil-works/pi/pull/7158) by [@jay-aye-see-kay](https://github.com/jay-aye-see-kay)).
++
++### Changed
++
++- Changed inherited OAuth credential resolution to refresh tokens with less than five minutes of validity remaining instead of waiting until expiration ([#7168](https://github.com/earendil-works/pi/pull/7168)).
++
++### Fixed
++
++- Added a status line when the tool output expansion is toggled ([#7180](https://github.com/earendil-works/pi/issues/7180)).
++- Fixed file-backed `SYSTEM.md` and `APPEND_SYSTEM.md` prompts being omitted from the interactive startup context listing. See [System Prompt Files](docs/usage.md#system-prompt-files) ([#7096](https://github.com/earendil-works/pi/issues/7096)).
++- Fixed context files loading twice when a linked Git worktree is nested under its main repository. See [Context Files](docs/usage.md#context-files) ([#7221](https://github.com/earendil-works/pi/pull/7221) by [@arajkumar](https://github.com/arajkumar)).
++- Fixed llama.cpp streamed responses reporting zero token usage and leaving session context accounting empty. See [llama.cpp](docs/llama-cpp.md) ([#7258](https://github.com/earendil-works/pi/pull/7258) by [@SteveImmanuel](https://github.com/SteveImmanuel)).
++- Fixed session replacement and committed tree navigation during an active response to abort and persist the outgoing turn instead of leaving dangling tool calls. See [Sessions](docs/usage.md#sessions) ([#7022](https://github.com/earendil-works/pi/pull/7022) by [@tmustier](https://github.com/tmustier)).
++- Fixed failed Git package installs leaving partial directories that blocked clean retries. See [Install and Manage](docs/packages.md#install-and-manage) ([#7210](https://github.com/earendil-works/pi/pull/7210) by [@haoqixu](https://github.com/haoqixu)).
++- Fixed the `/model` selector retaining a stale selection while filtering instead of highlighting the top match ([#7211](https://github.com/earendil-works/pi/pull/7211) by [@christianbasch](https://github.com/christianbasch)).
++- Fixed direct RPC bash commands bypassing extension `user_bash` handlers. See [User Bash Events](docs/extensions.md#user-bash-events) ([#7214](https://github.com/earendil-works/pi/pull/7214)).
++- Fixed skills, prompts, and themes losing package source metadata after extensions reload resources. See [Resource Events](docs/extensions.md#resource-events) ([#6968](https://github.com/earendil-works/pi/issues/6968)).
++- Fixed cancellation of concurrently running user bash commands so every active command is aborted ([#7103](https://github.com/earendil-works/pi/pull/7103) by [@yzhg1983](https://github.com/yzhg1983)).
++- Fixed duplicate messages appearing when extensions switch sessions during interactive startup ([#7110](https://github.com/earendil-works/pi/pull/7110) by [@yzhg1983](https://github.com/yzhg1983)).
++- Fixed inherited Qwen Token Plan reasoning models to send their service-specific thinking controls and supported reasoning-effort levels ([#6951](https://github.com/earendil-works/pi/issues/6951), [#6998](https://github.com/earendil-works/pi/issues/6998)).
++- Fixed inherited Z.AI output limits being sent through an unsupported parameter. See [Providers](docs/providers.md) ([#7174](https://github.com/earendil-works/pi/pull/7174) by [@HyeokjaeLee](https://github.com/HyeokjaeLee)).
++- Fixed explicitly configured Amazon Bedrock profiles being overridden by ambient AWS access keys. See [Amazon Bedrock](docs/providers.md#amazon-bedrock) ([#7176](https://github.com/earendil-works/pi/pull/7176) by [@christianbasch](https://github.com/christianbasch)).
++- Fixed inherited image fallback paths overflowing narrow terminals, shortened home-directory paths, and made absolute paths clickable when terminal hyperlinks are available ([#7262](https://github.com/earendil-works/pi/pull/7262)).
++- Fixed inherited OpenAI-compatible tool calls losing their function arguments when malformed deltas also contain an empty `custom` object ([#7288](https://github.com/earendil-works/pi/pull/7288) by [@sunnyyoung](https://github.com/sunnyyoung)).
++
+ ## [0.82.1] - 2026-07-25
+ 
+ ### New Features
+diff --git a/packages/coding-agent/README.md b/packages/coding-agent/README.md
+index a6845476..ebb81ec0 100644
+--- a/packages/coding-agent/README.md
++++ b/packages/coding-agent/README.md
+@@ -16,7 +16,7 @@ Pi is a minimal terminal coding harness. Adapt pi to your workflows, not the oth
+ 
+ Pi ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow.
+ 
+-Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps. See [openclaw/openclaw](https://github.com/openclaw/openclaw) for a real-world SDK integration.
++Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
+ 
+ ## Share your OSS coding agent sessions
+ 
+diff --git a/packages/coding-agent/docs/custom-provider.md b/packages/coding-agent/docs/custom-provider.md
+index 83b9cff6..652e2346 100644
+--- a/packages/coding-agent/docs/custom-provider.md
++++ b/packages/coding-agent/docs/custom-provider.md
+@@ -442,7 +442,7 @@ function streamMyProvider(
+         totalTokens: 0,
+         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+       },
+-      stopReason: "stop",
++      stopReason: "pending",
+       timestamp: Date.now(),
+     };
+ 
+@@ -451,12 +451,18 @@ function streamMyProvider(
+       stream.push({ type: "start", partial: output });
+ 
+       // Make API request and process response...
+-      // Push content events as they arrive...
++      // Push content events as they arrive and set stopReason from the terminal event.
++      if (output.stopReason === "pending") {
++        throw new Error("Provider stream ended without a stop reason");
++      }
++      if (output.stopReason === "error" || output.stopReason === "aborted") {
++        throw new Error(output.errorMessage || "An unknown error occurred");
++      }
+ 
+       // Push done event
+       stream.push({
+         type: "done",
+-        reason: output.stopReason as "stop" | "length" | "toolUse",
++        reason: output.stopReason,
+         message: output
+       });
+       stream.end();
+diff --git a/packages/coding-agent/docs/extensions.md b/packages/coding-agent/docs/extensions.md
+index aeb5e866..7eea02c9 100644
+--- a/packages/coding-agent/docs/extensions.md
++++ b/packages/coding-agent/docs/extensions.md
+@@ -982,10 +982,12 @@ ctx.sessionManager.buildContextEntries()    // Active branch entries with compac
+ ctx.sessionManager.getLeafId()              // Current leaf entry ID
+ ```
+ 
+-### ctx.modelRegistry / ctx.model / ctx.thinkingLevel
++### ctx.modelRegistry / ctx.model / ctx.thinkingLevel / ctx.scopedModels
+ 
+ Access to models, providers, and resolved authentication. `ctx.modelRegistry.getProvider(id)` returns the effective pi-ai provider, while `getProviderAuth(id)` resolves its current API key, headers, base URL, and provider-scoped environment without requiring a loaded model. `ctx.model` is the active model, and `ctx.thinkingLevel` is its current effective thinking level.
+ 
++`ctx.scopedModels` is the read-only list of models scoped to the current session — the same set the `/scoped-models` command shows. It is resolved at session start from the `--models` CLI flag and the `enabledModels` setting (matched against the available catalogue with minimatch on `provider/modelId` or a bare `modelId`). It is empty when no scoping is configured, meaning every available model is usable. Each entry is `{ model, thinkingLevel? }`, where `thinkingLevel` is set only when a pattern pinned it (e.g. `anthropic/*:high`). Use it to populate a model picker that mirrors the built-in one instead of enumerating the whole catalogue via `ctx.modelRegistry.getAvailable()`.
++
+ ### ctx.signal
+ 
+ The current agent abort signal, or `undefined` when no agent turn is active.
+diff --git a/packages/coding-agent/docs/providers.md b/packages/coding-agent/docs/providers.md
+index 905bfcc4..e70dc4dc 100644
+--- a/packages/coding-agent/docs/providers.md
++++ b/packages/coding-agent/docs/providers.md
+@@ -48,6 +48,7 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
+ 
+ - Run `/login openrouter`, then select **Sign in with OpenRouter** to open the OpenRouter PKCE authorization flow
+ - The authorization creates a user-controlled OpenRouter API key billed from your OpenRouter credits
++- On remote/headless machines (e.g. over SSH) the browser cannot reach the loopback callback; paste the final redirect URL (or the authorization code) into the login prompt instead
+ - `OPENROUTER_API_KEY` remains available through **Use an API key**
+ 
+ ### Radius
+diff --git a/packages/coding-agent/docs/session-format.md b/packages/coding-agent/docs/session-format.md
+index e2c49f1d..c5956ed3 100644
+--- a/packages/coding-agent/docs/session-format.md
++++ b/packages/coding-agent/docs/session-format.md
+@@ -117,6 +117,8 @@ interface Usage {
+ }
+ ```
+ 
++The exported pi-ai `StopReason` type also includes `"pending"`, but that value is reserved for partial messages in streaming events. Terminal `done`/`error` messages replace it with a completion reason before pi persists the assistant message, so `"pending"` should never appear in session JSONL.
++
+ ### Extended Message Types (from pi-coding-agent)
+ 
+ ```typescript
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-anthropic/index.ts b/packages/coding-agent/examples/extensions/custom-provider-anthropic/index.ts
+index c4bebc32..45304be4 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-anthropic/index.ts
++++ b/packages/coding-agent/examples/extensions/custom-provider-anthropic/index.ts
+@@ -353,7 +353,7 @@ function streamCustomAnthropic(
+ 				totalTokens: 0,
+ 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+ 			},
+-			stopReason: "stop",
++			stopReason: "pending",
+ 			timestamp: Date.now(),
+ 		};
+ 
+@@ -546,8 +546,14 @@ function streamCustomAnthropic(
+ 			if (options?.signal?.aborted) {
+ 				throw new Error("Request was aborted");
+ 			}
++			if (output.stopReason === "pending") {
++				throw new Error("Anthropic stream ended without a stop reason");
++			}
++			if (output.stopReason === "error" || output.stopReason === "aborted") {
++				throw new Error(output.errorMessage || "An unknown error occurred");
++			}
+ 
+-			stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
++			stream.push({ type: "done", reason: output.stopReason, message: output });
+ 			stream.end();
+ 		} catch (error) {
+ 			for (const block of output.content) delete (block as any).index;
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+index a57da499..cd8b869c 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "pi-extension-custom-provider",
+-  "version": "0.82.1",
++  "version": "0.83.0",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "pi-extension-custom-provider",
+-      "version": "0.82.1",
++      "version": "0.83.0",
+       "dependencies": {
+         "@anthropic-ai/sdk": "^0.52.0"
+       }
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+index 8fc64cd8..78997267 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-custom-provider-anthropic",
+   "private": true,
+-  "version": "0.82.1",
++  "version": "0.83.0",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json b/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+index 951aa10d..8a606dc1 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-custom-provider-gitlab-duo",
+   "private": true,
+-  "version": "0.82.1",
++  "version": "0.83.0",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/gondolin/package-lock.json b/packages/coding-agent/examples/extensions/gondolin/package-lock.json
+index 70697cd2..1df21a22 100644
+--- a/packages/coding-agent/examples/extensions/gondolin/package-lock.json
++++ b/packages/coding-agent/examples/extensions/gondolin/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+ 	"name": "pi-extension-gondolin",
+-	"version": "0.82.1",
++	"version": "0.83.0",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "pi-extension-gondolin",
+-			"version": "0.82.1",
++			"version": "0.83.0",
+ 			"dependencies": {
+ 				"@earendil-works/gondolin": "0.12.0"
+ 			}
+diff --git a/packages/coding-agent/examples/extensions/gondolin/package.json b/packages/coding-agent/examples/extensions/gondolin/package.json
+index 7d0bb754..caeead46 100644
+--- a/packages/coding-agent/examples/extensions/gondolin/package.json
++++ b/packages/coding-agent/examples/extensions/gondolin/package.json
+@@ -1,7 +1,7 @@
+ {
+ 	"name": "pi-extension-gondolin",
+ 	"private": true,
+-	"version": "0.82.1",
++	"version": "0.83.0",
+ 	"type": "module",
+ 	"scripts": {
+ 		"clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/sandbox/package-lock.json b/packages/coding-agent/examples/extensions/sandbox/package-lock.json
+index e34d4139..fe7b970b 100644
+--- a/packages/coding-agent/examples/extensions/sandbox/package-lock.json
++++ b/packages/coding-agent/examples/extensions/sandbox/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+ 	"name": "pi-extension-sandbox",
+-	"version": "1.12.1",
++	"version": "1.13.0",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "pi-extension-sandbox",
+-			"version": "1.12.1",
++			"version": "1.13.0",
+ 			"dependencies": {
+ 				"@anthropic-ai/sandbox-runtime": "^0.0.26"
+ 			}
+diff --git a/packages/coding-agent/examples/extensions/sandbox/package.json b/packages/coding-agent/examples/extensions/sandbox/package.json
+index 59704fa1..49d381d3 100644
+--- a/packages/coding-agent/examples/extensions/sandbox/package.json
++++ b/packages/coding-agent/examples/extensions/sandbox/package.json
+@@ -1,7 +1,7 @@
+ {
+ 	"name": "pi-extension-sandbox",
+ 	"private": true,
+-	"version": "1.12.1",
++	"version": "1.13.0",
+ 	"type": "module",
+ 	"scripts": {
+ 		"clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/with-deps/package-lock.json b/packages/coding-agent/examples/extensions/with-deps/package-lock.json
+index d817c1be..2b0fc24b 100644
+--- a/packages/coding-agent/examples/extensions/with-deps/package-lock.json
++++ b/packages/coding-agent/examples/extensions/with-deps/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "pi-extension-with-deps",
+-  "version": "0.82.1",
++  "version": "0.83.0",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "pi-extension-with-deps",
+-      "version": "0.82.1",
++      "version": "0.83.0",
+       "dependencies": {
+         "ms": "^2.1.3"
+       },
+diff --git a/packages/coding-agent/examples/extensions/with-deps/package.json b/packages/coding-agent/examples/extensions/with-deps/package.json
+index 9d72c649..41a28634 100644
+--- a/packages/coding-agent/examples/extensions/with-deps/package.json
++++ b/packages/coding-agent/examples/extensions/with-deps/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-with-deps",
+   "private": true,
+-  "version": "0.82.1",
++  "version": "0.83.0",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/sdk/12-full-control.ts b/packages/coding-agent/examples/sdk/12-full-control.ts
+index 066a5bbd..2305e615 100644
+--- a/packages/coding-agent/examples/sdk/12-full-control.ts
++++ b/packages/coding-agent/examples/sdk/12-full-control.ts
+@@ -41,7 +41,9 @@ const resourceLoader: ResourceLoader = {
+ 	getAgentsFiles: () => ({ agentsFiles: [] }),
+ 	getSystemPrompt: () => `You are a minimal assistant.
+ Available: read, bash. Be concise.`,
++	getSystemPromptSource: () => undefined,
+ 	getAppendSystemPrompt: () => [],
++	getAppendSystemPromptSources: () => [],
+ 	extendResources: () => {},
+ 	reload: async () => {},
+ };
+diff --git a/packages/coding-agent/install-lock/package-lock.json b/packages/coding-agent/install-lock/package-lock.json
+index bb806605..7e3b2775 100644
+--- a/packages/coding-agent/install-lock/package-lock.json
++++ b/packages/coding-agent/install-lock/package-lock.json
+@@ -1,14 +1,14 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent-install",
+-	"version": "0.82.1",
++	"version": "0.83.0",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "@earendil-works/pi-coding-agent-install",
+-			"version": "0.82.1",
++			"version": "0.83.0",
+ 			"dependencies": {
+-				"@earendil-works/pi-coding-agent": "0.82.1"
++				"@earendil-works/pi-coding-agent": "0.83.0"
+ 			},
+ 			"engines": {
+ 				"node": ">=22.19.0"
+@@ -450,14 +450,14 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-agent-core": {
+-			"version": "0.82.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.82.1.tgz",
++			"version": "0.83.0",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.83.0.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-ai": "^0.82.1",
++				"@earendil-works/pi-ai": "^0.83.0",
+ 				"diff": "8.0.4",
+ 				"ignore": "7.0.5",
+-				"typebox": "1.1.38",
++				"typebox": "1.3.7",
+ 				"yaml": "2.9.0"
+ 			},
+ 			"engines": {
+@@ -465,8 +465,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-ai": {
+-			"version": "0.82.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.82.1.tgz",
++			"version": "0.83.0",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.83.0.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"@anthropic-ai/sdk": "0.91.1",
+@@ -479,7 +479,7 @@
+ 				"https-proxy-agent": "7.0.6",
+ 				"openai": "6.26.0",
+ 				"partial-json": "0.1.7",
+-				"typebox": "1.1.38"
++				"typebox": "1.3.7"
+ 			},
+ 			"bin": {
+ 				"pi-ai": "dist/cli.js"
+@@ -489,13 +489,13 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-coding-agent": {
+-			"version": "0.82.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.82.1.tgz",
++			"version": "0.83.0",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.83.0.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-agent-core": "^0.82.1",
+-				"@earendil-works/pi-ai": "^0.82.1",
+-				"@earendil-works/pi-tui": "^0.82.1",
++				"@earendil-works/pi-agent-core": "^0.83.0",
++				"@earendil-works/pi-ai": "^0.83.0",
++				"@earendil-works/pi-tui": "^0.83.0",
+ 				"@silvia-odwyer/photon-node": "0.3.4",
+ 				"chalk": "5.6.2",
+ 				"cross-spawn": "7.0.6",
+@@ -508,7 +508,7 @@
+ 				"minimatch": "10.2.5",
+ 				"proper-lockfile": "4.1.2",
+ 				"semver": "7.8.0",
+-				"typebox": "1.1.38",
++				"typebox": "1.3.7",
+ 				"undici": "8.5.0",
+ 				"yaml": "2.9.0"
+ 			},
+@@ -523,8 +523,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-tui": {
+-			"version": "0.82.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.82.1.tgz",
++			"version": "0.83.0",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.83.0.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"get-east-asian-width": "1.6.0",
+@@ -1718,9 +1718,9 @@
+ 			"license": "0BSD"
+ 		},
+ 		"node_modules/typebox": {
+-			"version": "1.1.38",
+-			"resolved": "https://registry.npmjs.org/typebox/-/typebox-1.1.38.tgz",
+-			"integrity": "sha512-pZ0aQPmMmXoUvSbeuWf/Hzsc+avNw/Zd6VeE8CFgkVGWyuHPJvqeJJDeJqLve+K70LvjYIoleGcoJHPT17cWoA==",
++			"version": "1.3.7",
++			"resolved": "https://registry.npmjs.org/typebox/-/typebox-1.3.7.tgz",
++			"integrity": "sha512-meKuifc33Pccx0O6PdIzYMq3Og8zvP4TIi/a+Bw3AEMZMxOD0+RHGQvpglEe6Zdy3wZ8nqn/j95h8LUZLk/6Hg==",
+ 			"license": "MIT"
+ 		},
+ 		"node_modules/undici": {
+diff --git a/packages/coding-agent/install-lock/package.json b/packages/coding-agent/install-lock/package.json
+index 6063bd8d..e641dbcc 100644
+--- a/packages/coding-agent/install-lock/package.json
++++ b/packages/coding-agent/install-lock/package.json
+@@ -1,10 +1,10 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent-install",
+-	"version": "0.82.1",
++	"version": "0.83.0",
+ 	"private": true,
+ 	"description": "Lockfile root used by the Pi installer and updater.",
+ 	"dependencies": {
+-		"@earendil-works/pi-coding-agent": "0.82.1"
++		"@earendil-works/pi-coding-agent": "0.83.0"
+ 	},
+ 	"overrides": {
+ 		"protobufjs": "7.6.5",
+diff --git a/packages/coding-agent/npm-shrinkwrap.json b/packages/coding-agent/npm-shrinkwrap.json
+index 17b92c98..86988fc1 100644
+--- a/packages/coding-agent/npm-shrinkwrap.json
++++ b/packages/coding-agent/npm-shrinkwrap.json
+@@ -1,17 +1,17 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent",
+-	"version": "0.82.1",
++	"version": "0.83.0",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "@earendil-works/pi-coding-agent",
+-			"version": "0.82.1",
++			"version": "0.83.0",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-agent-core": "^0.82.1",
+-				"@earendil-works/pi-ai": "^0.82.1",
+-				"@earendil-works/pi-tui": "^0.82.1",
++				"@earendil-works/pi-agent-core": "^0.83.0",
++				"@earendil-works/pi-ai": "^0.83.0",
++				"@earendil-works/pi-tui": "^0.83.0",
+ 				"@silvia-odwyer/photon-node": "0.3.4",
+ 				"chalk": "5.6.2",
+ 				"cross-spawn": "7.0.6",
+@@ -24,7 +24,7 @@
+ 				"minimatch": "10.2.5",
+ 				"proper-lockfile": "4.1.2",
+ 				"semver": "7.8.0",
+-				"typebox": "1.1.38",
++				"typebox": "1.3.7",
+ 				"undici": "8.5.0",
+ 				"yaml": "2.9.0"
+ 			},
+@@ -474,14 +474,14 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-agent-core": {
+-			"version": "0.82.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.82.1.tgz",
++			"version": "0.83.0",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.83.0.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-ai": "^0.82.1",
++				"@earendil-works/pi-ai": "^0.83.0",
+ 				"diff": "8.0.4",
+ 				"ignore": "7.0.5",
+-				"typebox": "1.1.38",
++				"typebox": "1.3.7",
+ 				"yaml": "2.9.0"
+ 			},
+ 			"engines": {
+@@ -489,8 +489,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-ai": {
+-			"version": "0.82.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.82.1.tgz",
++			"version": "0.83.0",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.83.0.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"@anthropic-ai/sdk": "0.91.1",
+@@ -503,7 +503,7 @@
+ 				"https-proxy-agent": "7.0.6",
+ 				"openai": "6.26.0",
+ 				"partial-json": "0.1.7",
+-				"typebox": "1.1.38"
++				"typebox": "1.3.7"
+ 			},
+ 			"bin": {
+ 				"pi-ai": "dist/cli.js"
+@@ -513,8 +513,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-tui": {
+-			"version": "0.82.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.82.1.tgz",
++			"version": "0.83.0",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.83.0.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"get-east-asian-width": "1.6.0",
+@@ -1708,9 +1708,9 @@
+ 			"license": "0BSD"
+ 		},
+ 		"node_modules/typebox": {
+-			"version": "1.1.38",
+-			"resolved": "https://registry.npmjs.org/typebox/-/typebox-1.1.38.tgz",
+-			"integrity": "sha512-pZ0aQPmMmXoUvSbeuWf/Hzsc+avNw/Zd6VeE8CFgkVGWyuHPJvqeJJDeJqLve+K70LvjYIoleGcoJHPT17cWoA==",
++			"version": "1.3.7",
++			"resolved": "https://registry.npmjs.org/typebox/-/typebox-1.3.7.tgz",
++			"integrity": "sha512-meKuifc33Pccx0O6PdIzYMq3Og8zvP4TIi/a+Bw3AEMZMxOD0+RHGQvpglEe6Zdy3wZ8nqn/j95h8LUZLk/6Hg==",
+ 			"license": "MIT"
+ 		},
+ 		"node_modules/undici": {
+diff --git a/packages/coding-agent/package.json b/packages/coding-agent/package.json
+index 3ba3d1f9..c7d8c8b4 100644
+--- a/packages/coding-agent/package.json
++++ b/packages/coding-agent/package.json
+@@ -1,6 +1,6 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent",
+-	"version": "0.82.1",
++	"version": "0.83.0",
+ 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
+ 	"type": "module",
+ 	"piConfig": {
+@@ -39,9 +39,9 @@
+ 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
+ 	},
+ 	"dependencies": {
+-		"@earendil-works/pi-agent-core": "^0.82.1",
+-		"@earendil-works/pi-ai": "^0.82.1",
+-		"@earendil-works/pi-tui": "^0.82.1",
++		"@earendil-works/pi-agent-core": "^0.83.0",
++		"@earendil-works/pi-ai": "^0.83.0",
++		"@earendil-works/pi-tui": "^0.83.0",
+ 		"@silvia-odwyer/photon-node": "0.3.4",
+ 		"chalk": "5.6.2",
+ 		"cross-spawn": "7.0.6",
+@@ -54,7 +54,7 @@
+ 		"minimatch": "10.2.5",
+ 		"proper-lockfile": "4.1.2",
+ 		"semver": "7.8.0",
+-		"typebox": "1.1.38",
++		"typebox": "1.3.7",
+ 		"undici": "8.5.0",
+ 		"yaml": "2.9.0"
+ 	},
+diff --git a/packages/coding-agent/src/cli/args.ts b/packages/coding-agent/src/cli/args.ts
+index 1e9b36b4..ae70dc40 100644
+--- a/packages/coding-agent/src/cli/args.ts
++++ b/packages/coding-agent/src/cli/args.ts
+@@ -232,7 +232,8 @@ ${chalk.bold("Commands:")}
+   ${APP_NAME} update [source|self|pi]   Update pi, extensions, or model catalogs
+   ${APP_NAME} list                      List installed extensions from settings
+   ${APP_NAME} config [-l]               Open TUI to enable/disable package resources (Tab switches scope)
+-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config
++  ${APP_NAME} auth <command>            Print credentials for external clients
++  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth
+ 
+ ${chalk.bold("Options:")}
+   --provider <name>              Provider name (default: google)
+@@ -280,6 +281,12 @@ ${chalk.bold("Options:")}
+ Extensions can register additional flags (e.g., --plan from plan-mode extension).${extensionFlagsText}
+ 
+ ${chalk.bold("Examples:")}
++  # Print a provider API key for an external client
++  ${APP_NAME} auth print-api-key --provider openai --model gpt-5.5
++
++  # Print an OAuth bearer token for an external client (refreshes if expired)
++  ${APP_NAME} auth print-bearer-token --provider openai-codex --model gpt-5.5
++
+   # Interactive mode
+   ${APP_NAME}
+ 
+diff --git a/packages/coding-agent/src/cli/credential-print.ts b/packages/coding-agent/src/cli/credential-print.ts
+new file mode 100644
+index 00000000..e2628710
+--- /dev/null
++++ b/packages/coding-agent/src/cli/credential-print.ts
+@@ -0,0 +1,152 @@
++import type { Api, CredentialInfo, Model } from "@earendil-works/pi-ai";
++import { resolveCliModel } from "../core/model-resolver.ts";
++import type { ModelRuntime } from "../core/model-runtime.ts";
++import type { Args } from "./args.ts";
++
++export type CredentialPrintKind = "api_key" | "bearer_token";
++
++const DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS = 30 * 60_000;
++
++export interface CredentialPrintCommand {
++	kind: CredentialPrintKind;
++	args: string[];
++	minExpiryMs?: number;
++}
++
++export class CredentialPrintError extends Error {}
++
++export function isCredentialPrintHelp(args: string[]): boolean {
++	return (
++		args[0] === "auth" && (args[1] === undefined || args[1] === "help" || args[1] === "--help" || args[1] === "-h")
++	);
++}
++
++export function printCredentialPrintHelp(): void {
++	console.log(`Usage:
++  pi auth print-api-key --model <model> [--provider <provider>]
++  pi auth print-bearer-token --model <model> [--provider <provider>] [--min-expiry <duration>]
++
++Prints the configured credential alone on stdout. Provider inference uses configured credentials; specify --provider to select explicitly. Bearer tokens have a 30-minute minimum expiry by default. --min-expiry accepts ms, s, m, or h (for example, 30m).`);
++}
++
++/** Parse the small, extensible `pi auth` command surface before normal startup. */
++export function parseCredentialPrintCommand(args: string[]): CredentialPrintCommand | undefined {
++	if (args[0] !== "auth") return undefined;
++
++	const kind = args[1] === "print-api-key" ? "api_key" : args[1] === "print-bearer-token" ? "bearer_token" : undefined;
++	if (!kind) {
++		throw new CredentialPrintError(
++			`Unknown auth command "${args[1] ?? ""}". Use "pi auth print-api-key" or "pi auth print-bearer-token".`,
++		);
++	}
++
++	const commandArgs: string[] = [];
++	let minExpiryMs: number | undefined;
++	for (let index = 2; index < args.length; index++) {
++		if (args[index] !== "--min-expiry") {
++			commandArgs.push(args[index]);
++			continue;
++		}
++		if (kind !== "bearer_token") {
++			throw new CredentialPrintError("--min-expiry is only supported by print-bearer-token");
++		}
++		const value = args[++index];
++		const match = value ? /^(\d+)(ms|s|m|h)$/iu.exec(value) : undefined;
++		if (!match) {
++			throw new CredentialPrintError("--min-expiry must use a duration such as 30m or 1h");
++		}
++		const amount = Number(match[1]);
++		const unit = match[2];
++		minExpiryMs = amount * (unit === "ms" ? 1 : unit === "s" ? 1_000 : unit === "m" ? 60_000 : 3_600_000);
++	}
++
++	return minExpiryMs === undefined ? { kind, args: commandArgs } : { kind, args: commandArgs, minExpiryMs };
++}
++
++export function validateCredentialPrintArgs(args: Args): void {
++	if (!args.model?.trim()) {
++		throw new CredentialPrintError("Credential printing requires --model <model>");
++	}
++	if (args.apiKey !== undefined) {
++		throw new CredentialPrintError("Credential printing reads configured credentials; --api-key is not supported");
++	}
++	if (args.messages.length > 0 || args.fileArgs.length > 0 || args.unknownFlags.size > 0) {
++		throw new CredentialPrintError("Credential printing only accepts --provider and --model");
++	}
++}
++
++/**
++ * Resolve one request credential for a specific provider/model pair.
++ *
++ * This intentionally calls ModelRuntime.getAuth(), which refreshes and persists
++ * OAuth credentials with less than five minutes remaining through the normal request-auth path.
++ */
++export async function resolveCredentialForPrint(
++	args: Args,
++	modelRuntime: ModelRuntime,
++	kind: CredentialPrintKind,
++	minExpiryMs?: number,
++): Promise<string> {
++	validateCredentialPrintArgs(args);
++
++	const credentialTypes = new Map<string, CredentialInfo["type"]>(
++		(await modelRuntime.listCredentials()).map((credential) => [credential.providerId, credential.type]),
++	);
++	const models: Model<Api>[] = [];
++	if (args.provider) {
++		const resolved = resolveCliModel({ cliProvider: args.provider, cliModel: args.model, modelRuntime });
++		if (resolved.error || !resolved.model) {
++			throw new CredentialPrintError(resolved.error ?? "Unable to resolve the requested provider/model");
++		}
++		models.push(resolved.model);
++	} else {
++		for (const provider of modelRuntime.getProviders()) {
++			if (!credentialTypes.has(provider.id)) continue;
++			const resolved = resolveCliModel({ cliProvider: provider.id, cliModel: args.model, modelRuntime });
++			if (resolved.model && !resolved.error && !resolved.warning?.includes("Using custom model id")) {
++				models.push(resolved.model);
++			}
++		}
++		if (models.length === 0) {
++			throw new CredentialPrintError(`Model "${args.model}" not found. Use --list-models to see available models.`);
++		}
++	}
++
++	const credentials: Array<{ providerId: string; value: string }> = [];
++	for (const model of models) {
++		const type = credentialTypes.get(model.provider);
++		if (kind === "api_key" && type === "oauth") continue;
++		if (kind === "bearer_token" && type !== "oauth") continue;
++
++		const auth = await modelRuntime.getAuth(
++			model,
++			kind === "bearer_token"
++				? { minOAuthValidityMs: minExpiryMs ?? DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS }
++				: undefined,
++		);
++		const authorization = Object.entries(auth?.auth.headers ?? {}).find(
++			([name]) => name.toLowerCase() === "authorization",
++		)?.[1];
++		const bearerToken = typeof authorization === "string" ? /^Bearer\s+(.+)$/iu.exec(authorization)?.[1] : undefined;
++		const value = kind === "bearer_token" ? (auth?.auth.apiKey ?? bearerToken) : auth?.auth.apiKey;
++		if (value) credentials.push({ providerId: model.provider, value });
++	}
++
++	if (credentials.length === 1) return credentials[0].value;
++	if (credentials.length === 0) {
++		const providerId = models[0]?.provider;
++		const type = providerId ? credentialTypes.get(providerId) : undefined;
++		if (args.provider && kind === "api_key" && type === "oauth") {
++			throw new CredentialPrintError(`Provider "${providerId}" is configured with OAuth, not an API key`);
++		}
++		if (args.provider && kind === "bearer_token" && type !== "oauth") {
++			throw new CredentialPrintError(`Provider "${providerId}" is not configured with an OAuth bearer token`);
++		}
++		throw new CredentialPrintError(
++			`No usable ${kind === "api_key" ? "API key" : "OAuth bearer token"} is configured`,
++		);
++	}
++	throw new CredentialPrintError(
++		`Model "${args.model}" has multiple configured providers (${credentials.map(({ providerId }) => providerId).join(", ")}). Specify --provider.`,
++	);
++}
+diff --git a/packages/coding-agent/src/core/agent-session-runtime.ts b/packages/coding-agent/src/core/agent-session-runtime.ts
+index 93b7ee2d..c3b60569 100644
+--- a/packages/coding-agent/src/core/agent-session-runtime.ts
++++ b/packages/coding-agent/src/core/agent-session-runtime.ts
+@@ -165,6 +165,9 @@ export class AgentSessionRuntime {
+ 	}
+ 
+ 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
++		// Settle any active response first so the aborted turn (including tool
++		// results) is persisted to the outgoing session before it is replaced.
++		await this.session.abort();
+ 		await emitSessionShutdownEvent(this.session.extensionRunner, {
+ 			type: "session_shutdown",
+ 			reason,
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index a688528c..312404d9 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -334,7 +334,7 @@ export class AgentSession {
+ 	private _retryAttempt = 0;
+ 
+ 	// Bash execution state
+-	private _bashAbortController: AbortController | undefined = undefined;
++	private readonly _bashAbortControllers = new Set<AbortController>();
+ 	private _pendingBashMessages: BashExecutionMessage[] = [];
+ 
+ 	// Extension system
+@@ -2405,6 +2405,7 @@ export class AgentSession {
+ 			},
+ 			{
+ 				getModel: () => this.model,
++				getScopedModels: () => this._scopedModels,
+ 				isIdle: () => this.isIdle,
+ 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
+ 				getSignal: () => this.agent.signal,
+@@ -2766,7 +2767,8 @@ export class AgentSession {
+ 		onChunk?: (chunk: string) => void,
+ 		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
+ 	): Promise<BashResult> {
+-		this._bashAbortController = new AbortController();
++		const abortController = new AbortController();
++		this._bashAbortControllers.add(abortController);
+ 
+ 		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
+ 		const prefix = this.settingsManager.getShellCommandPrefix();
+@@ -2783,14 +2785,14 @@ export class AgentSession {
+ 						onChunk?.(delta);
+ 						this._emit({ type: "bash_execution_update", id: options?.id, delta });
+ 					},
+-					signal: this._bashAbortController.signal,
++					signal: abortController.signal,
+ 				},
+ 			);
+ 
+ 			this.recordBashResult(command, result, options);
+ 			return result;
+ 		} finally {
+-			this._bashAbortController = undefined;
++			this._bashAbortControllers.delete(abortController);
+ 		}
+ 	}
+ 
+@@ -2828,12 +2830,14 @@ export class AgentSession {
+ 	 * Cancel running bash command.
+ 	 */
+ 	abortBash(): void {
+-		this._bashAbortController?.abort();
++		for (const abortController of [...this._bashAbortControllers]) {
++			abortController.abort();
++		}
+ 	}
+ 
+ 	/** Whether a bash command is currently running */
+ 	get isBashRunning(): boolean {
+-		return this._bashAbortController !== undefined;
++		return this._bashAbortControllers.size > 0;
+ 	}
+ 
+ 	/** Whether there are pending bash messages waiting to be flushed */
+@@ -2892,6 +2896,10 @@ export class AgentSession {
+ 		targetId: string,
+ 		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
+ 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
++		if (this.isStreaming) {
++			throw new Error("Wait for the current response to finish before navigating the session tree.");
++		}
++
+ 		const oldLeafId = this.sessionManager.getLeafId();
+ 
+ 		// No-op if already at target
+diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
+index e0119fed..a23cd6a1 100644
+--- a/packages/coding-agent/src/core/extensions/runner.ts
++++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -9,6 +9,7 @@ import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
+ import type { ResourceDiagnostic } from "../diagnostics.ts";
+ import type { KeybindingsConfig } from "../keybindings.ts";
+ import type { ModelRegistry } from "../model-registry.ts";
++import type { ScopedModel } from "../model-resolver.ts";
+ import type { SessionManager } from "../session-manager.ts";
+ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+ import type {
+@@ -273,6 +274,7 @@ export class ExtensionRunner {
+ 	private modelRegistry: ModelRegistry;
+ 	private errorListeners: Set<ExtensionErrorListener> = new Set();
+ 	private getModel: () => Model<any> | undefined = () => undefined;
++	private getScopedModels: () => readonly ScopedModel[] = () => [];
+ 	private isIdleFn: () => boolean = () => true;
+ 	private isProjectTrustedFn: () => boolean = () => true;
+ 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
+@@ -335,6 +337,7 @@ export class ExtensionRunner {
+ 
+ 		// Context actions (required)
+ 		this.getModel = contextActions.getModel;
++		this.getScopedModels = contextActions.getScopedModels;
+ 		this.isIdleFn = contextActions.isIdle;
+ 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
+ 		this.getSignalFn = contextActions.getSignal;
+@@ -665,6 +668,7 @@ export class ExtensionRunner {
+ 	createContext(): ExtensionContext {
+ 		const runner = this;
+ 		const getModel = this.getModel;
++		const getScopedModels = this.getScopedModels;
+ 		return {
+ 			get ui() {
+ 				runner.assertActive();
+@@ -694,6 +698,10 @@ export class ExtensionRunner {
+ 				runner.assertActive();
+ 				return getModel();
+ 			},
++			get scopedModels() {
++				runner.assertActive();
++				return getScopedModels();
++			},
+ 			get thinkingLevel() {
+ 				runner.assertActive();
+ 				return runner.runtime.getThinkingLevel();
+diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
+index c8989a59..b607c7f3 100644
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -54,6 +54,7 @@ import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
+ import type { KeybindingsManager } from "../keybindings.ts";
+ import type { CustomMessage } from "../messages.ts";
+ import type { ModelRegistry } from "../model-registry.ts";
++import type { ScopedModel } from "../model-resolver.ts";
+ import type {
+ 	BranchSummaryEntry,
+ 	CompactionEntry,
+@@ -318,6 +319,11 @@ export interface ExtensionContext {
+ 	modelRegistry: ModelRegistry;
+ 	/** Current model (may be undefined) */
+ 	model: Model<any> | undefined;
++	/** Models scoped to this session (resolved from `--models` /
++	 *  `enabledModels` settings against the available catalogue). Same set
++	 *  the `/scoped-models` command shows. Empty when no scoping is
++	 *  configured (all available models are usable). Read-only snapshot. */
++	scopedModels: readonly ScopedModel[];
+ 	/** Current thinking level, when provided by the session runtime. */
+ 	thinkingLevel?: ThinkingLevel;
+ 	/** Whether the agent is idle (not streaming) */
+@@ -1615,6 +1621,7 @@ export interface ExtensionActions {
+  */
+ export interface ExtensionContextActions {
+ 	getModel: () => Model<any> | undefined;
++	getScopedModels: () => readonly ScopedModel[];
+ 	isIdle: () => boolean;
+ 	isProjectTrusted: () => boolean;
+ 	getSignal: () => AbortSignal | undefined;
+diff --git a/packages/coding-agent/src/core/footer-data-provider.ts b/packages/coding-agent/src/core/footer-data-provider.ts
+index f15001c2..edee25ca 100644
+--- a/packages/coding-agent/src/core/footer-data-provider.ts
++++ b/packages/coding-agent/src/core/footer-data-provider.ts
+@@ -3,7 +3,7 @@ import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatch
+ import { dirname, join, resolve } from "path";
+ import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "../utils/fs-watch.ts";
+ 
+-type GitPaths = {
++export type GitPaths = {
+ 	repoDir: string;
+ 	commonGitDir: string;
+ 	headPath: string;
+@@ -13,7 +13,7 @@ type GitPaths = {
+  * Find git metadata paths by walking up from cwd.
+  * Handles both regular git repos (.git is a directory) and worktrees (.git is a file).
+  */
+-function findGitPaths(cwd: string): GitPaths | null {
++export function findGitPaths(cwd: string): GitPaths | null {
+ 	let dir = cwd;
+ 	while (true) {
+ 		const gitPath = join(dir, ".git");
+diff --git a/packages/coding-agent/src/core/model-runtime.ts b/packages/coding-agent/src/core/model-runtime.ts
+index e4575b07..59f26573 100644
+--- a/packages/coding-agent/src/core/model-runtime.ts
++++ b/packages/coding-agent/src/core/model-runtime.ts
+@@ -72,6 +72,8 @@ export interface CreateModelRuntimeOptions {
+ export interface ModelRuntimeAuthOverrides {
+ 	apiKey?: string;
+ 	env?: Record<string, string>;
++	/** Require this much remaining OAuth-token validity; defaults to five minutes. */
++	minOAuthValidityMs?: number;
+ }
+ 
+ function mergeHeaders(
+diff --git a/packages/coding-agent/src/core/package-manager.ts b/packages/coding-agent/src/core/package-manager.ts
+index 9f11b750..a5ce4443 100644
+--- a/packages/coding-agent/src/core/package-manager.ts
++++ b/packages/coding-agent/src/core/package-manager.ts
+@@ -1834,13 +1834,19 @@ export class DefaultPackageManager implements PackageManager {
+ 		}
+ 		mkdirSync(dirname(targetDir), { recursive: true });
+ 
+-		await this.runCommand("git", ["clone", source.repo, targetDir]);
+-		if (source.ref) {
+-			await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
+-		}
+-		const packageJsonPath = join(targetDir, "package.json");
+-		if (existsSync(packageJsonPath)) {
+-			await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
++		try {
++			await this.runCommand("git", ["clone", source.repo, targetDir]);
++			if (source.ref) {
++				await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
++			}
++			const packageJsonPath = join(targetDir, "package.json");
++			if (existsSync(packageJsonPath)) {
++				await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
++			}
++		} catch (error) {
++			rmSync(targetDir, { recursive: true, force: true });
++			this.pruneEmptyGitParents(targetDir, gitRoot);
++			throw error;
+ 		}
+ 	}
+ 
+diff --git a/packages/coding-agent/src/core/resource-loader.ts b/packages/coding-agent/src/core/resource-loader.ts
+index 6632315e..3102a27e 100644
+--- a/packages/coding-agent/src/core/resource-loader.ts
++++ b/packages/coding-agent/src/core/resource-loader.ts
+@@ -1,5 +1,5 @@
+ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+-import { dirname, join, resolve, sep } from "node:path";
++import { basename, dirname, join, resolve, sep } from "node:path";
+ import chalk from "chalk";
+ import { CONFIG_DIR_NAME } from "../config.ts";
+ import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.ts";
+@@ -16,6 +16,7 @@ import {
+ 	loadExtensionsCached,
+ } from "./extensions/loader.ts";
+ import type { Extension, ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
++import { findGitPaths } from "./footer-data-provider.ts";
+ import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+ import type { PromptTemplate } from "./prompt-templates.ts";
+ import { loadPromptTemplates } from "./prompt-templates.ts";
+@@ -42,7 +43,9 @@ export interface ResourceLoader {
+ 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
+ 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
+ 	getSystemPrompt(): string | undefined;
++	getSystemPromptSource(): { path: string } | undefined;
+ 	getAppendSystemPrompt(): string[];
++	getAppendSystemPromptSources(): Array<{ path: string }>;
+ 	extendResources(paths: ResourceExtensionPaths): void;
+ 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
+ }
+@@ -85,6 +88,33 @@ function loadContextFileFromDir(dir: string): { path: string; content: string }
+ 	return null;
+ }
+ 
++/**
++ * The main repo's context file that a nested linked worktree's own copy shadows: both
++ * are the same tracked AGENTS.md/CLAUDE.md, so loading both loads it twice. Returns
++ * undefined when nothing is shadowed, leaving normal ancestor inheritance alone.
++ *
++ * Returned canonicalized (realpath), because `git worktree add` writes the `.git`
++ * file's `gitdir:` target in realpath form while cwd may still be symlinked
++ * (macOS `/tmp` -> `/private/tmp`).
++ */
++function findShadowedContextFile(cwd: string): string | undefined {
++	const gitPaths = findGitPaths(cwd);
++	if (!gitPaths) return undefined;
++	const commonGitDir = canonicalizePath(gitPaths.commonGitDir);
++	const worktreeRoot = canonicalizePath(gitPaths.repoDir);
++	const mainRepoRoot = dirname(commonGitDir);
++	// False for an ordinary repo, where the two are the same dir, and for a sibling
++	// worktree (`git worktree add ../feat`), whose main repo is not an ancestor.
++	if (!worktreeRoot.startsWith(`${mainRepoRoot}${sep}`)) return undefined;
++	// dirname of the common git dir is the main worktree root only when that dir is
++	// itself checked out from the same repo. In a bare layout (`proj/.bare` +
++	// `proj/main`) it is just the directory holding `.bare`, which tracks nothing; a
++	// submodule's gitdir has no `commondir`, so it lands under `.git/modules`.
++	if (canonicalizePath(join(mainRepoRoot, ".git")) !== commonGitDir) return undefined;
++	const worktreeContextFile = loadContextFileFromDir(worktreeRoot);
++	return worktreeContextFile ? join(mainRepoRoot, basename(worktreeContextFile.path)) : undefined;
++}
++
+ export function loadProjectContextFiles(options: {
+ 	cwd: string;
+ 	agentDir: string;
+@@ -103,11 +133,14 @@ export function loadProjectContextFiles(options: {
+ 
+ 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
+ 
++	const shadowedContextFile = findShadowedContextFile(resolvedCwd);
+ 	let currentDir = resolvedCwd;
+ 
+ 	while (true) {
+ 		const contextFile = loadContextFileFromDir(currentDir);
+-		if (contextFile && !seenPaths.has(contextFile.path)) {
++		const isShadowed =
++			shadowedContextFile !== undefined && canonicalizePath(contextFile?.path ?? "") === shadowedContextFile;
++		if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
+ 			ancestorContextFiles.unshift(contextFile);
+ 			seenPaths.add(contextFile.path);
+ 		}
+@@ -205,11 +238,14 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 	private themeDiagnostics: ResourceDiagnostic[];
+ 	private agentsFiles: Array<{ path: string; content: string }>;
+ 	private systemPrompt?: string;
++	private systemPromptSourcePath?: string;
+ 	private appendSystemPrompt: string[];
++	private appendSystemPromptSourcePaths: string[];
+ 	private lastSkillPaths: string[];
+ 	private extensionSkillSourceInfos: Map<string, SourceInfo>;
+ 	private extensionPromptSourceInfos: Map<string, SourceInfo>;
+ 	private extensionThemeSourceInfos: Map<string, SourceInfo>;
++	private resourceMetadataByPath: Map<string, PathMetadata>;
+ 	private lastPromptPaths: string[];
+ 	private lastThemePaths: string[];
+ 	private loaded: boolean;
+@@ -253,10 +289,12 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 		this.themeDiagnostics = [];
+ 		this.agentsFiles = [];
+ 		this.appendSystemPrompt = [];
++		this.appendSystemPromptSourcePaths = [];
+ 		this.lastSkillPaths = [];
+ 		this.extensionSkillSourceInfos = new Map();
+ 		this.extensionPromptSourceInfos = new Map();
+ 		this.extensionThemeSourceInfos = new Map();
++		this.resourceMetadataByPath = new Map();
+ 		this.lastPromptPaths = [];
+ 		this.lastThemePaths = [];
+ 		this.loaded = false;
+@@ -286,10 +324,18 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 		return this.systemPrompt;
+ 	}
+ 
++	getSystemPromptSource(): { path: string } | undefined {
++		return this.systemPromptSourcePath ? { path: this.systemPromptSourcePath } : undefined;
++	}
++
+ 	getAppendSystemPrompt(): string[] {
+ 		return this.appendSystemPrompt;
+ 	}
+ 
++	getAppendSystemPromptSources(): Array<{ path: string }> {
++		return this.appendSystemPromptSourcePaths.map((path) => ({ path }));
++	}
++
+ 	extendResources(paths: ResourceExtensionPaths): void {
+ 		const skillPaths = this.normalizeExtensionPaths(paths.skillPaths ?? []);
+ 		const promptPaths = this.normalizeExtensionPaths(paths.promptPaths ?? []);
+@@ -310,7 +356,7 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 				this.lastSkillPaths,
+ 				skillPaths.map((entry) => entry.path),
+ 			);
+-			this.updateSkillsFromPaths(this.lastSkillPaths);
++			this.updateSkillsFromPaths(this.lastSkillPaths, this.resourceMetadataByPath);
+ 		}
+ 
+ 		if (promptPaths.length > 0) {
+@@ -318,7 +364,7 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 				this.lastPromptPaths,
+ 				promptPaths.map((entry) => entry.path),
+ 			);
+-			this.updatePromptsFromPaths(this.lastPromptPaths);
++			this.updatePromptsFromPaths(this.lastPromptPaths, this.resourceMetadataByPath);
+ 		}
+ 
+ 		if (themePaths.length > 0) {
+@@ -326,7 +372,7 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 				this.lastThemePaths,
+ 				themePaths.map((entry) => entry.path),
+ 			);
+-			this.updateThemesFromPaths(this.lastThemePaths);
++			this.updateThemesFromPaths(this.lastThemePaths, this.resourceMetadataByPath);
+ 		}
+ 	}
+ 
+@@ -358,7 +404,9 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
+ 			temporary: true,
+ 		});
+-		const metadataByPath = new Map<string, PathMetadata>();
++		// Kept on the instance so post-reload passes (extendResources) can still resolve package metadata.
++		this.resourceMetadataByPath = new Map();
++		const metadataByPath = this.resourceMetadataByPath;
+ 
+ 		this.extensionSkillSourceInfos = new Map();
+ 		this.extensionPromptSourceInfos = new Map();
+@@ -474,21 +522,26 @@ export class DefaultResourceLoader implements ResourceLoader {
+ 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
+ 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
+ 
+-		const baseSystemPrompt = resolvePromptInput(
+-			this.systemPromptSource ?? this.discoverSystemPromptFile(),
+-			"system prompt",
+-		);
++		const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile();
++		const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
+ 		this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
++		this.systemPromptSourcePath =
++			systemPromptSource && existsSync(systemPromptSource) ? resolvePath(systemPromptSource) : undefined;
+ 
+-		const appendSources =
+-			this.appendSystemPromptSource ??
+-			(this.discoverAppendSystemPromptFile() ? [this.discoverAppendSystemPromptFile()!] : []);
++		let appendSources = this.appendSystemPromptSource;
++		if (!appendSources) {
++			const discoveredAppendSystemPromptFile = this.discoverAppendSystemPromptFile();
++			appendSources = discoveredAppendSystemPromptFile ? [discoveredAppendSystemPromptFile] : [];
++		}
+ 		const baseAppend = appendSources
+ 			.map((s) => resolvePromptInput(s, "append system prompt"))
+ 			.filter((s): s is string => s !== undefined);
+ 		this.appendSystemPrompt = this.appendSystemPromptOverride
+ 			? this.appendSystemPromptOverride(baseAppend)
+ 			: baseAppend;
++		this.appendSystemPromptSourcePaths = appendSources
++			.filter((source) => existsSync(source))
++			.map((source) => resolvePath(source));
+ 		this.loaded = true;
+ 	}
+ 
+diff --git a/packages/coding-agent/src/extensions/llama/provider.ts b/packages/coding-agent/src/extensions/llama/provider.ts
+index 1692a7d4..64d45d7b 100644
+--- a/packages/coding-agent/src/extensions/llama/provider.ts
++++ b/packages/coding-agent/src/extensions/llama/provider.ts
+@@ -43,7 +43,7 @@ function toPiModel(model: LlamaModelInfo, serverUrl: string): Model<"openai-comp
+ 			supportsStore: false,
+ 			supportsDeveloperRole: false,
+ 			supportsReasoningEffort: false,
+-			supportsUsageInStreaming: false,
++			supportsUsageInStreaming: true,
+ 			supportsStrictMode: false,
+ 			maxTokensField: "max_tokens",
+ 		},
+diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
+index ce7465f1..a9c3e468 100644
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -9,6 +9,15 @@ import { createInterface } from "node:readline";
+ import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
+ import chalk from "chalk";
+ import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
++import {
++	type CredentialPrintCommand,
++	CredentialPrintError,
++	isCredentialPrintHelp,
++	parseCredentialPrintCommand,
++	printCredentialPrintHelp,
++	resolveCredentialForPrint,
++	validateCredentialPrintArgs,
++} from "./cli/credential-print.ts";
+ import { processFileArguments } from "./cli/file-processor.ts";
+ import { buildInitialMessage } from "./cli/initial-message.ts";
+ import { listModels } from "./cli/list-models.ts";
+@@ -27,7 +36,7 @@ import { exportFromFile } from "./core/export-html/index.ts";
+ import type { InlineExtension } from "./core/extensions/types.ts";
+ import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
+ import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
+-import type { ModelRuntime } from "./core/model-runtime.ts";
++import { ModelRuntime } from "./core/model-runtime.ts";
+ import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
+ import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
+ import type { CreateAgentSessionOptions } from "./core/sdk.ts";
+@@ -118,6 +127,45 @@ function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
+ 	return !parsed.print && parsed.mode === undefined && (parsed.help === true || parsed.listModels !== undefined);
+ }
+ 
++async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
++	if (isCredentialPrintHelp(args)) {
++		printCredentialPrintHelp();
++		return true;
++	}
++
++	let command: CredentialPrintCommand | undefined;
++	try {
++		command = parseCredentialPrintCommand(args);
++	} catch (error) {
++		const message = error instanceof CredentialPrintError ? error.message : "Failed to parse auth command";
++		console.error(chalk.red(`Error: ${message}`));
++		process.exitCode = 1;
++		return true;
++	}
++	if (!command) return false;
++
++	const parsed = parseArgs(command.args);
++	if (parsed.diagnostics.length > 0) {
++		for (const diagnostic of parsed.diagnostics) {
++			console.error(chalk.red(`Error: ${diagnostic.message}`));
++		}
++		process.exitCode = 1;
++		return true;
++	}
++
++	try {
++		validateCredentialPrintArgs(parsed);
++		const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
++		const credential = await resolveCredentialForPrint(parsed, modelRuntime, command.kind, command.minExpiryMs);
++		process.stdout.write(`${credential}\n`);
++	} catch (error) {
++		const message = error instanceof CredentialPrintError ? error.message : "Failed to resolve credential";
++		console.error(chalk.red(`Error: ${message}`));
++		process.exitCode = 1;
++	}
++	return true;
++}
++
+ async function prepareInitialMessage(
+ 	parsed: Args,
+ 	autoResizeImages: boolean,
+@@ -506,6 +554,10 @@ export async function main(args: string[], options?: MainOptions) {
+ 		return;
+ 	}
+ 
++	if (await runCredentialPrintCommand(args)) {
++		return;
++	}
++
+ 	const parsed = parseArgs(args);
+ 	if (parsed.diagnostics.length > 0) {
+ 		for (const d of parsed.diagnostics) {
+diff --git a/packages/coding-agent/src/modes/interactive/components/model-selector.ts b/packages/coding-agent/src/modes/interactive/components/model-selector.ts
+index 567784a5..7efa65c4 100644
+--- a/packages/coding-agent/src/modes/interactive/components/model-selector.ts
++++ b/packages/coding-agent/src/modes/interactive/components/model-selector.ts
+@@ -238,7 +238,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
+ 					getModelSelectorSearchText({ id, provider, name: model.name }),
+ 				)
+ 			: this.activeModels;
+-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
++		// When filtering by a query, move the selector to the top row so the best
++		// match is highlighted. When the query is cleared, keep the current position
++		// clamped to the (restored) list length.
++		this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
+ 		this.updateList();
+ 	}
+ 
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index 30cd984f..6eba438b 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -1492,7 +1492,12 @@ export class InteractiveMode {
+ 		}
+ 
+ 		if (showListing) {
+-			const contextFiles = this.session.resourceLoader.getAgentsFiles().agentsFiles;
++			const systemPromptSource = this.session.resourceLoader.getSystemPromptSource();
++			const contextFiles = [
++				...(systemPromptSource ? [systemPromptSource] : []),
++				...this.session.resourceLoader.getAppendSystemPromptSources(),
++				...this.session.resourceLoader.getAgentsFiles().agentsFiles,
++			];
+ 			if (contextFiles.length > 0) {
+ 				this.loadedResourcesContainer.addChild(new Spacer(1));
+ 				const contextList = contextFiles
+@@ -1730,17 +1735,27 @@ export class InteractiveMode {
+ 	}
+ 
+ 	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
++		const session = this.session;
++
+ 		this.unsubscribe?.();
+ 		this.unsubscribe = undefined;
+ 		this.applyRuntimeSettings();
++
+ 		if (options.renderBeforeBind) {
+ 			this.renderCurrentSessionState();
+ 			this.subscribeToAgent();
+-			await this.bindCurrentSessionExtensions();
+-		} else {
+-			await this.bindCurrentSessionExtensions();
++		}
++
++		await this.bindCurrentSessionExtensions();
++
++		if (this.session !== session) {
++			return;
++		}
++
++		if (!options.renderBeforeBind) {
+ 			this.subscribeToAgent();
+ 		}
++
+ 		await this.updateAvailableProviderCount();
+ 		this.updateEditorBorderColor();
+ 		this.updateTerminalTitle();
+@@ -1788,6 +1803,7 @@ export class InteractiveMode {
+ 			sessionManager: this.sessionManager,
+ 			modelRegistry: extensionRunner.getModelRegistry(),
+ 			model: this.session.model,
++			scopedModels: this.session.scopedModels,
+ 			thinkingLevel: this.session.thinkingLevel,
+ 			isIdle: () => this.session.isIdle,
+ 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
+@@ -3812,7 +3828,7 @@ export class InteractiveMode {
+ 				}
+ 			}
+ 		}
+-		this.ui.requestRender();
++		this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
+ 	}
+ 
+ 	private toggleThinkingBlockVisibility(): void {
+@@ -4639,7 +4655,7 @@ export class InteractiveMode {
+ 				this.ui.terminal.rows,
+ 				async (entryId) => {
+ 					// Selecting the current leaf is a no-op (already there)
+-					if (entryId === realLeafId) {
++					if (entryId === this.sessionManager.getLeafId()) {
+ 						done();
+ 						this.showStatus("Already at this point");
+ 						return;
+@@ -4682,6 +4698,12 @@ export class InteractiveMode {
+ 						}
+ 					}
+ 
++					// The user committed to navigating: stop the active response first.
++					if (this.session.isStreaming) {
++						this.restoreQueuedMessagesToEditor();
++						await this.session.abort();
++					}
++
+ 					// Set up escape handler and status indicator if summarizing
+ 					let showingSummaryIndicator = false;
+ 					const originalOnEscape = this.defaultEditor.onEscape;
+diff --git a/packages/coding-agent/src/modes/rpc/rpc-mode.ts b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
+index e3988e81..c6db8c3a 100644
+--- a/packages/coding-agent/src/modes/rpc/rpc-mode.ts
++++ b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
+@@ -556,9 +556,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
+ 			// =================================================================
+ 
+ 			case "bash": {
++				const eventResult = await session.extensionRunner.emitUserBash({
++					type: "user_bash",
++					command: command.command,
++					excludeFromContext: command.excludeFromContext ?? false,
++					cwd: session.sessionManager.getCwd(),
++				});
++
++				if (eventResult?.result) {
++					session.recordBashResult(command.command, eventResult.result, {
++						excludeFromContext: command.excludeFromContext,
++					});
++					return success(id, "bash", eventResult.result);
++				}
++
+ 				const result = await session.executeBash(command.command, undefined, {
+ 					excludeFromContext: command.excludeFromContext,
+ 					id,
++					operations: eventResult?.operations,
+ 				});
+ 				return success(id, "bash", result);
+ 			}
+diff --git a/packages/coding-agent/test/credential-print.test.ts b/packages/coding-agent/test/credential-print.test.ts
+new file mode 100644
+index 00000000..be17a1b3
+--- /dev/null
++++ b/packages/coding-agent/test/credential-print.test.ts
+@@ -0,0 +1,104 @@
++import { InMemoryModelsStore } from "@earendil-works/pi-ai";
++import { describe, expect, test, vi } from "vitest";
++import { parseArgs } from "../src/cli/args.ts";
++import {
++	CredentialPrintError,
++	isCredentialPrintHelp,
++	parseCredentialPrintCommand,
++	resolveCredentialForPrint,
++} from "../src/cli/credential-print.ts";
++import { AuthStorage } from "../src/core/auth-storage.ts";
++import { ModelRuntime } from "../src/core/model-runtime.ts";
++
++async function createRuntime(credentials: AuthStorage): Promise<ModelRuntime> {
++	return ModelRuntime.create({
++		credentials,
++		modelsPath: null,
++		modelsStore: new InMemoryModelsStore(),
++		allowModelNetwork: false,
++	});
++}
++
++describe("credential print commands", () => {
++	test("prints a resolved API key", async () => {
++		const runtime = await createRuntime(AuthStorage.inMemory({ openai: { type: "api_key", key: "test-api-key" } }));
++		const args = parseArgs(["--model", "gpt-5.5"]);
++
++		await expect(resolveCredentialForPrint(args, runtime, "api_key")).resolves.toBe("test-api-key");
++	});
++
++	test("prints bearer tokens resolved from an Authorization header", async () => {
++		const runtime = await createRuntime(
++			AuthStorage.inMemory({
++				"kimi-coding": {
++					type: "oauth",
++					access: "header-test-token",
++					refresh: "test-refresh-token",
++					expires: Date.now() + 60 * 60 * 1000,
++				},
++			}),
++		);
++		const args = parseArgs(["--provider", "kimi-coding", "--model", "kimi-for-coding"]);
++
++		await expect(resolveCredentialForPrint(args, runtime, "bearer_token")).resolves.toBe("header-test-token");
++	});
++
++	test("refreshes an expired OAuth token before printing it", async () => {
++		const storage = AuthStorage.inMemory({
++			"openai-codex": {
++				type: "oauth",
++				access: "old-test-token",
++				refresh: "test-refresh-token",
++				expires: 0,
++			},
++		});
++		const runtime = await createRuntime(storage);
++		const refresh = vi.fn(async () => ({
++			type: "oauth" as const,
++			access: "fresh-test-token",
++			refresh: "test-refresh-token",
++			expires: Date.now() + 60 * 60 * 1000,
++		}));
++		const oauth = runtime.getProvider("openai-codex")?.auth.oauth;
++		if (!oauth) throw new Error("OpenAI Codex OAuth provider is not registered");
++		oauth.refresh = refresh;
++		const args = parseArgs(["--provider", "openai-codex", "--model", "gpt-5.5"]);
++
++		await expect(resolveCredentialForPrint(args, runtime, "bearer_token")).resolves.toBe("fresh-test-token");
++		expect(refresh).toHaveBeenCalledOnce();
++		expect(await storage.read("openai-codex")).toMatchObject({ access: "fresh-test-token" });
++	});
++
++	test("parses credential commands and rejects invalid arguments or credential types", async () => {
++		const runtime = await createRuntime(
++			AuthStorage.inMemory({
++				"openai-codex": {
++					type: "oauth",
++					access: "test-token-not-to-be-printed",
++					refresh: "test-refresh-token",
++					expires: Date.now() + 60 * 60 * 1000,
++				},
++			}),
++		);
++
++		expect(parseCredentialPrintCommand(["auth", "print-api-key", "--provider", "openai"])).toEqual({
++			kind: "api_key",
++			args: ["--provider", "openai"],
++		});
++		expect(parseCredentialPrintCommand(["auth", "print-bearer-token"])).toMatchObject({ kind: "bearer_token" });
++		expect(parseCredentialPrintCommand(["auth", "print-bearer-token", "--min-expiry", "30m"])).toEqual({
++			kind: "bearer_token",
++			args: [],
++			minExpiryMs: 30 * 60_000,
++		});
++		expect(() => parseCredentialPrintCommand(["auth", "print-api-key", "--min-expiry", "30m"])).toThrow(
++			"only supported by print-bearer-token",
++		);
++		expect(isCredentialPrintHelp(["auth", "--help"])).toBe(true);
++		expect(() => parseCredentialPrintCommand(["auth", "unknown"])).toThrow(CredentialPrintError);
++		await expect(resolveCredentialForPrint(parseArgs([]), runtime, "api_key")).rejects.toThrow("requires --model");
++		await expect(
++			resolveCredentialForPrint(parseArgs(["--provider", "openai-codex", "--model", "gpt-5.5"]), runtime, "api_key"),
++		).rejects.toThrow("configured with OAuth");
++	});
++});
+diff --git a/packages/coding-agent/test/extensions-runner.test.ts b/packages/coding-agent/test/extensions-runner.test.ts
+index 69f20be9..af7d42c7 100644
+--- a/packages/coding-agent/test/extensions-runner.test.ts
++++ b/packages/coding-agent/test/extensions-runner.test.ts
+@@ -18,6 +18,7 @@ import type {
+ } from "../src/core/extensions/types.ts";
+ import { KeybindingsManager, type KeyId } from "../src/core/keybindings.ts";
+ import type { ModelRegistry } from "../src/core/model-registry.ts";
++import type { ScopedModel } from "../src/core/model-resolver.ts";
+ import { SessionManager } from "../src/core/session-manager.ts";
+ 
+ describe("ExtensionRunner", () => {
+@@ -99,8 +100,25 @@ describe("ExtensionRunner", () => {
+ 		getContextUsage: () => undefined,
+ 		compact: () => {},
+ 		getSystemPrompt: () => "",
++		getScopedModels: () => [],
+ 	};
+ 
++	describe("scopedModels", () => {
++		it("reflects the getScopedModels context action on ctx.scopedModels", async () => {
++			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
++			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
++
++			// Before bindCore the default is an empty list (never undefined).
++			expect(runner.createContext().scopedModels).toEqual([]);
++
++			// After bindCore wires a getScopedModels action, ctx.scopedModels
++			// returns it live (same reference, lazy getter).
++			const scoped = [{ model: { id: "scoped-test" }, thinkingLevel: "high" }] as unknown as ScopedModel[];
++			runner.bindCore(extensionActions, { ...extensionContextActions, getScopedModels: () => scoped });
++			expect(runner.createContext().scopedModels).toBe(scoped);
++		});
++	});
++
+ 	describe("project_trust", () => {
+ 		it("continues past undecided handlers and returns the first yes/no decision", async () => {
+ 			const undecidedPath = path.join(extensionsDir, "undecided.ts");
+diff --git a/packages/coding-agent/test/git-update.test.ts b/packages/coding-agent/test/git-update.test.ts
+index 1508adcd..7b2a8f7e 100644
+--- a/packages/coding-agent/test/git-update.test.ts
++++ b/packages/coding-agent/test/git-update.test.ts
+@@ -13,6 +13,7 @@ import { join } from "node:path";
+ import { afterEach, beforeEach, describe, expect, it } from "vitest";
+ import { DefaultPackageManager } from "../src/core/package-manager.ts";
+ import { SettingsManager } from "../src/core/settings-manager.ts";
++import { allowNetwork } from "./test-network-env.ts";
+ 
+ // Helper to run git commands in a directory
+ function git(args: string[], cwd: string): string {
+@@ -78,6 +79,7 @@ describe("DefaultPackageManager git update", () => {
+ 	const gitSource = "git:github.com/test/extension";
+ 
+ 	beforeEach(() => {
++		allowNetwork();
+ 		tempDir = join(tmpdir(), `git-update-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+ 		mkdirSync(tempDir, { recursive: true });
+ 		remoteDir = join(tempDir, "remote");
+diff --git a/packages/coding-agent/test/interactive-mode-status.test.ts b/packages/coding-agent/test/interactive-mode-status.test.ts
+index 19a7f9e9..41685817 100644
+--- a/packages/coding-agent/test/interactive-mode-status.test.ts
++++ b/packages/coding-agent/test/interactive-mode-status.test.ts
+@@ -129,6 +129,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
+ 			loadedResourcesContainer: { children: [loadedResourcesChild] },
+ 			chatContainer: { children: [chatChild] },
+ 			ui: { requestRender: vi.fn() },
++			showStatus: vi.fn(),
+ 		};
+ 
+ 		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, true);
+@@ -137,7 +138,7 @@ describe("InteractiveMode.setToolsExpanded", () => {
+ 		expect(header.setExpanded).toHaveBeenCalledWith(true);
+ 		expect(loadedResourcesChild.setExpanded).toHaveBeenCalledWith(true);
+ 		expect(chatChild.setExpanded).toHaveBeenCalledWith(true);
+-		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(1);
++		expect(fakeThis.showStatus).toHaveBeenCalledWith("Tool output: expanded");
+ 	});
+ });
+ 
+@@ -491,6 +492,8 @@ describe("InteractiveMode.showLoadedResources", () => {
+ 		toolOutputExpanded?: boolean;
+ 		cwd?: string;
+ 		contextFiles?: Array<{ path: string; content?: string }>;
++		systemPromptSource?: { path: string };
++		appendSystemPromptSources?: Array<{ path: string }>;
+ 		extensions?: ExtensionFixture[];
+ 		skills?: Array<{ filePath: string; name: string }>;
+ 		skillDiagnostics?: Array<{ type: "warning" | "error" | "collision"; message: string }>;
+@@ -516,6 +519,8 @@ describe("InteractiveMode.showLoadedResources", () => {
+ 				resourceLoader: {
+ 					getPathMetadata: () => new Map(),
+ 					getAgentsFiles: () => ({ agentsFiles: options.contextFiles ?? [] }),
++					getSystemPromptSource: () => options.systemPromptSource,
++					getAppendSystemPromptSources: () => options.appendSystemPromptSources ?? [],
+ 					getSkills: () => ({
+ 						skills: options.skills ?? [],
+ 						diagnostics: options.skillDiagnostics ?? [],
+@@ -1146,6 +1151,25 @@ describe("InteractiveMode.showLoadedResources", () => {
+ 		expect(output).not.toContain(`${cwd.replace(/\\/g, "/")}/AGENTS.md`);
+ 	});
+ 
++	test("shows system prompt context paths before project context files", () => {
++		const cwd = "/tmp/project";
++		const fakeThis = createShowLoadedResourcesThis({
++			quietStartup: false,
++			cwd,
++			systemPromptSource: { path: path.join(cwd, ".pi", "SYSTEM.md") },
++			appendSystemPromptSources: [{ path: path.join(cwd, ".pi", "APPEND_SYSTEM.md") }],
++			contextFiles: [{ path: path.join(cwd, "AGENTS.md") }],
++		});
++
++		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
++			force: false,
++		});
++
++		const output = renderAll(fakeThis.loadedResourcesContainer).replace(/\\/g, "/");
++		expect(output).toContain("[Context]");
++		expect(output).toContain(".pi/SYSTEM.md, .pi/APPEND_SYSTEM.md, AGENTS.md");
++	});
++
+ 	test("shows full context paths when expanded", () => {
+ 		const home = homedir();
+ 		const cwd = path.join(home, "Development", "pi-mono");
+diff --git a/packages/coding-agent/test/model-registry.test.ts b/packages/coding-agent/test/model-registry.test.ts
+index 70a8fe9e..ef4b133b 100644
+--- a/packages/coding-agent/test/model-registry.test.ts
++++ b/packages/coding-agent/test/model-registry.test.ts
+@@ -652,7 +652,7 @@ describe("ModelRegistry", () => {
+ 			expect(anthropicModels.some((m) => m.id === "claude-custom")).toBe(false);
+ 			expect(anthropicModels.some((m) => m.id === "claude-custom-2")).toBe(true);
+ 			expect(anthropicModels.some((m) => m.id.includes("claude"))).toBe(true);
+-		}, 60_000);
++		});
+ 
+ 		test("removing custom models from models.json keeps built-in provider models", async () => {
+ 			writeModelsJson({
+diff --git a/packages/coding-agent/test/package-command-paths.test.ts b/packages/coding-agent/test/package-command-paths.test.ts
+index eb6972bf..c7b11c8c 100644
+--- a/packages/coding-agent/test/package-command-paths.test.ts
++++ b/packages/coding-agent/test/package-command-paths.test.ts
+@@ -10,6 +10,7 @@ import { ProjectTrustStore } from "../src/core/trust-manager.ts";
+ import { main } from "../src/main.ts";
+ import { ConfigSelectorComponent } from "../src/modes/interactive/components/config-selector.ts";
+ import { handlePackageCommand } from "../src/package-manager-cli.ts";
++import { allowNetwork } from "./test-network-env.ts";
+ 
+ describe("package commands", () => {
+ 	let tempDir: string;
+@@ -51,6 +52,7 @@ describe("package commands", () => {
+ 	}
+ 
+ 	beforeEach(() => {
++		allowNetwork();
+ 		tempDir = join(tmpdir(), `pi-package-commands-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+ 		agentDir = join(tempDir, "agent");
+ 		projectDir = join(tempDir, "project");
+diff --git a/packages/coding-agent/test/package-manager.test.ts b/packages/coding-agent/test/package-manager.test.ts
+index a4451e19..a1095959 100644
+--- a/packages/coding-agent/test/package-manager.test.ts
++++ b/packages/coding-agent/test/package-manager.test.ts
+@@ -1,5 +1,5 @@
+ import { EventEmitter } from "node:events";
+-import { mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
++import { existsSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join, relative } from "node:path";
+ import { PassThrough } from "node:stream";
+@@ -774,6 +774,42 @@ Content`,
+ 			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+ 		});
+ 
++		it("should remove a newly created checkout when git clone fails", async () => {
++			const source = "git:github.com/user/repo";
++			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
++			vi.spyOn(packageManager as any, "runCommand").mockImplementation(async (...callArgs: unknown[]) => {
++				const [command, args] = callArgs as [string, string[]];
++				if (command === "git" && args[0] === "clone") {
++					mkdirSync(targetDir, { recursive: true });
++					throw new Error("simulated git clone failure");
++				}
++			});
++
++			await expect(packageManager.install(source)).rejects.toThrow("simulated git clone failure");
++
++			expect(existsSync(targetDir)).toBe(false);
++		});
++
++		it("should remove a newly cloned checkout when dependency installation fails", async () => {
++			const source = "git:github.com/user/repo";
++			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
++			vi.spyOn(packageManager as any, "runCommand").mockImplementation(async (...callArgs: unknown[]) => {
++				const [command, args] = callArgs as [string, string[]];
++				if (command === "git" && args[0] === "clone") {
++					mkdirSync(targetDir, { recursive: true });
++					writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
++					return;
++				}
++				if (command === "npm") {
++					throw new Error("simulated dependency install failure");
++				}
++			});
++
++			await expect(packageManager.install(source)).rejects.toThrow("simulated dependency install failure");
++
++			expect(existsSync(targetDir)).toBe(false);
++		});
++
+ 		it("should reconcile an existing git checkout to a pinned ref during install", async () => {
+ 			const source = "git:github.com/user/repo@v2";
+ 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+@@ -1101,42 +1137,29 @@ Content`,
+ 		it("should emit progress events on install attempt", async () => {
+ 			const events: ProgressEvent[] = [];
+ 			packageManager.setProgressCallback((event) => events.push(event));
++			vi.spyOn(packageManager as unknown as PackageManagerInternals, "runCommand").mockRejectedValue(
++				new Error("simulated npm install failure"),
++			);
+ 
+-			// Use public install method which emits progress events
+-			try {
+-				await packageManager.install("npm:nonexistent-package@1.0.0");
+-			} catch {
+-				// Expected to fail - package doesn't exist
+-			}
++			await expect(packageManager.install("npm:nonexistent-package@1.0.0")).rejects.toThrow(
++				"simulated npm install failure",
++			);
+ 
+-			// Should have emitted start event before failure
+ 			expect(events.some((e) => e.type === "start" && e.action === "install")).toBe(true);
+-			// Should have emitted error event
+ 			expect(events.some((e) => e.type === "error")).toBe(true);
+ 		});
+ 
+ 		it("should recognize github URLs without git: prefix", async () => {
+ 			const events: ProgressEvent[] = [];
+ 			packageManager.setProgressCallback((event) => events.push(event));
+-			const previousGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+-			process.env.GIT_TERMINAL_PROMPT = "0";
++			const runCommand = vi
++				.spyOn(packageManager as unknown as PackageManagerInternals, "runCommand")
++				.mockRejectedValue(new Error("simulated git clone failure"));
++			const source = "https://github.com/nonexistent/repo";
+ 
+-			try {
+-				// This should be parsed as a git source, not throw "unsupported"
+-				try {
+-					await packageManager.install("https://github.com/nonexistent/repo");
+-				} catch {
+-					// Expected to fail - repo doesn't exist
+-				}
+-			} finally {
+-				if (previousGitTerminalPrompt === undefined) {
+-					delete process.env.GIT_TERMINAL_PROMPT;
+-				} else {
+-					process.env.GIT_TERMINAL_PROMPT = previousGitTerminalPrompt;
+-				}
+-			}
++			await expect(packageManager.install(source)).rejects.toThrow("simulated git clone failure");
+ 
+-			// Should have attempted clone, not thrown unsupported error
++			expect(runCommand).toHaveBeenCalledWith("git", ["clone", source, expect.any(String)]);
+ 			expect(events.some((e) => e.type === "start" && e.action === "install")).toBe(true);
+ 		});
+ 
+@@ -1715,6 +1738,7 @@ Content`,
+ 		});
+ 
+ 		it("should resolve autoload-disabled package entries as positive-only without a global package", async () => {
++			vi.stubEnv("HOME", tempDir);
+ 			const pkgDir = join(tempDir, "positive-only-pkg");
+ 			mkdirSync(join(pkgDir, "extensions"), { recursive: true });
+ 			mkdirSync(join(pkgDir, "skills", "foo"), { recursive: true });
+diff --git a/packages/coding-agent/test/radius.test.ts b/packages/coding-agent/test/radius.test.ts
+index 8a7f5965..630bcecf 100644
+--- a/packages/coding-agent/test/radius.test.ts
++++ b/packages/coding-agent/test/radius.test.ts
+@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { AuthStorage } from "../src/core/auth-storage.ts";
+ import { ModelRuntime } from "../src/core/model-runtime.ts";
+ import { RADIUS_PROVIDER_ID } from "../src/core/radius.ts";
++import { allowNetwork } from "./test-network-env.ts";
+ 
+ function radiusOAuthCredential(gatewayBaseUrl: string) {
+ 	return {
+@@ -37,6 +38,7 @@ function radiusConfig(baseUrl: string) {
+ let tempDir: string;
+ 
+ beforeEach(() => {
++	allowNetwork();
+ 	tempDir = join(tmpdir(), `pi-test-radius-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+ 	mkdirSync(tempDir, { recursive: true });
+ });
+@@ -92,7 +94,7 @@ describe("Radius provider", () => {
+ 	});
+ 
+ 	it("does not refresh catalogs over the network by default", async () => {
+-		const fetchSpy = vi.spyOn(globalThis, "fetch");
++		const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected catalog fetch"));
+ 		const runtime = await ModelRuntime.create({
+ 			credentials: AuthStorage.inMemory({
+ 				[RADIUS_PROVIDER_ID]: radiusOAuthCredential("https://radius.example.com/v1"),
+diff --git a/packages/coding-agent/test/resource-loader.test.ts b/packages/coding-agent/test/resource-loader.test.ts
+index 9989ab1c..a437fe97 100644
+--- a/packages/coding-agent/test/resource-loader.test.ts
++++ b/packages/coding-agent/test/resource-loader.test.ts
+@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { AuthStorage } from "../src/core/auth-storage.ts";
+ import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
++import { DefaultResourceLoader, loadProjectContextFiles } from "../src/core/resource-loader.ts";
+ import { SessionManager } from "../src/core/session-manager.ts";
+ import { SettingsManager } from "../src/core/settings-manager.ts";
+ import type { Skill } from "../src/core/skills.ts";
+@@ -451,6 +451,87 @@ Project skill content`,
+ 		});
+ 	});
+ 
++	describe("system prompt sources", () => {
++		it("exposes discovered project SYSTEM.md as the system prompt source", async () => {
++			const piDir = join(cwd, ".pi");
++			const systemPromptPath = join(piDir, "SYSTEM.md");
++			mkdirSync(piDir, { recursive: true });
++			writeFileSync(systemPromptPath, "Project system prompt.");
++
++			const loader = new DefaultResourceLoader({ cwd, agentDir });
++			await loader.reload();
++
++			expect(loader.getSystemPrompt()).toBe("Project system prompt.");
++			expect(loader.getSystemPromptSource()).toEqual({ path: systemPromptPath });
++		});
++
++		it("exposes discovered global SYSTEM.md as the system prompt source", async () => {
++			const systemPromptPath = join(agentDir, "SYSTEM.md");
++			writeFileSync(systemPromptPath, "Global system prompt.");
++
++			const loader = new DefaultResourceLoader({ cwd, agentDir });
++			await loader.reload();
++
++			expect(loader.getSystemPrompt()).toBe("Global system prompt.");
++			expect(loader.getSystemPromptSource()).toEqual({ path: systemPromptPath });
++		});
++
++		it("does not expose literal system prompt text as a source", async () => {
++			const loader = new DefaultResourceLoader({ cwd, agentDir, systemPrompt: "Literal system prompt." });
++			await loader.reload();
++
++			expect(loader.getSystemPrompt()).toBe("Literal system prompt.");
++			expect(loader.getSystemPromptSource()).toBeUndefined();
++		});
++
++		it("exposes file-backed system prompt options as a source", async () => {
++			const systemPromptPath = join(tempDir, "custom-system.md");
++			writeFileSync(systemPromptPath, "Custom system prompt.");
++
++			const loader = new DefaultResourceLoader({ cwd, agentDir, systemPrompt: systemPromptPath });
++			await loader.reload();
++
++			expect(loader.getSystemPrompt()).toBe("Custom system prompt.");
++			expect(loader.getSystemPromptSource()).toEqual({ path: systemPromptPath });
++		});
++
++		it("exposes discovered APPEND_SYSTEM.md as an append system prompt source", async () => {
++			const piDir = join(cwd, ".pi");
++			const appendSystemPromptPath = join(piDir, "APPEND_SYSTEM.md");
++			mkdirSync(piDir, { recursive: true });
++			writeFileSync(appendSystemPromptPath, "Project append prompt.");
++
++			const loader = new DefaultResourceLoader({ cwd, agentDir });
++			await loader.reload();
++
++			expect(loader.getAppendSystemPrompt()).toEqual(["Project append prompt."]);
++			expect(loader.getAppendSystemPromptSources()).toEqual([{ path: appendSystemPromptPath }]);
++		});
++
++		it("does not expose literal append system prompt text as a source", async () => {
++			const loader = new DefaultResourceLoader({ cwd, agentDir, appendSystemPrompt: ["Literal append prompt."] });
++			await loader.reload();
++
++			expect(loader.getAppendSystemPrompt()).toEqual(["Literal append prompt."]);
++			expect(loader.getAppendSystemPromptSources()).toEqual([]);
++		});
++
++		it("only exposes file-backed append system prompt options as sources", async () => {
++			const appendSystemPromptPath = join(tempDir, "custom-append.md");
++			writeFileSync(appendSystemPromptPath, "Custom append prompt.");
++
++			const loader = new DefaultResourceLoader({
++				cwd,
++				agentDir,
++				appendSystemPrompt: [appendSystemPromptPath, "Literal append prompt."],
++			});
++			await loader.reload();
++
++			expect(loader.getAppendSystemPrompt()).toEqual(["Custom append prompt.", "Literal append prompt."]);
++			expect(loader.getAppendSystemPromptSources()).toEqual([{ path: appendSystemPromptPath }]);
++		});
++	});
++
+ 	describe("extendResources", () => {
+ 		it("should load skills and prompts with extension metadata", async () => {
+ 			const extraSkillDir = join(tempDir, "extra-skills", "extra-skill");
+@@ -554,6 +635,107 @@ Extra content`,
+ 			expect(loadedSkill?.filePath).toBe(skillPath);
+ 			expect(loadedSkill?.sourceInfo?.source).toBe("extension:file-url");
+ 		});
++
++		// Regression: extension discovery used to drop package scope/source, collapsing every
++		// autocomplete source tag to [t]. See issue #6968.
++		it("should keep package metadata for skills, prompts, and themes", async () => {
++			const packageRoot = join(agentDir, "npm", "node_modules", "metadata-pkg");
++			const packageSkillDir = join(packageRoot, "skills", "package-skill");
++			const packagePromptsDir = join(packageRoot, "prompts");
++			const packageThemesDir = join(packageRoot, "themes");
++			mkdirSync(packageSkillDir, { recursive: true });
++			mkdirSync(packagePromptsDir, { recursive: true });
++			mkdirSync(packageThemesDir, { recursive: true });
++			writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "metadata-pkg", version: "1.0.0" }));
++			writeFileSync(
++				join(packageSkillDir, "SKILL.md"),
++				`---
++name: package-skill
++description: Package skill
++---
++Package skill content`,
++			);
++			writeFileSync(
++				join(packagePromptsDir, "package-prompt.md"),
++				`---
++description: Package prompt
++---
++Package prompt content`,
++			);
++			const baseTheme = JSON.parse(
++				readFileSync(join(process.cwd(), "src", "modes", "interactive", "theme", "dark.json"), "utf-8"),
++			) as { name: string };
++			writeFileSync(
++				join(packageThemesDir, "package-theme.json"),
++				JSON.stringify({ ...baseTheme, name: "package-theme" }),
++			);
++
++			const extensionResourceDir = join(tempDir, "extension-resources");
++			const extensionSkillDir = join(extensionResourceDir, "extension-skill");
++			const extensionPromptsDir = join(extensionResourceDir, "prompts");
++			const extensionThemesDir = join(extensionResourceDir, "themes");
++			mkdirSync(extensionSkillDir, { recursive: true });
++			mkdirSync(extensionPromptsDir, { recursive: true });
++			mkdirSync(extensionThemesDir, { recursive: true });
++			writeFileSync(
++				join(extensionSkillDir, "SKILL.md"),
++				`---
++name: extension-skill
++description: Extension skill
++---
++Extension skill content`,
++			);
++			writeFileSync(
++				join(extensionPromptsDir, "extension-prompt.md"),
++				`---
++description: Extension prompt
++---
++Extension prompt content`,
++			);
++			writeFileSync(
++				join(extensionThemesDir, "extension.json"),
++				JSON.stringify({ ...baseTheme, name: "extension-theme" }),
++			);
++
++			const loader = new DefaultResourceLoader({
++				cwd,
++				agentDir,
++				settingsManager: SettingsManager.inMemory({ packages: ["npm:metadata-pkg"] }),
++			});
++			await loader.reload();
++
++			const extensionMetadata = {
++				source: "extension:discovery",
++				scope: "temporary",
++				origin: "top-level",
++			} as const;
++			loader.extendResources({
++				skillPaths: [{ path: extensionSkillDir, metadata: extensionMetadata }],
++				promptPaths: [{ path: extensionPromptsDir, metadata: extensionMetadata }],
++				themePaths: [{ path: extensionThemesDir, metadata: extensionMetadata }],
++			});
++
++			const packageSourceInfo = { source: "npm:metadata-pkg", scope: "user", origin: "package" };
++			expect(loader.getSkills().skills.find((skill) => skill.name === "package-skill")?.sourceInfo).toMatchObject(
++				packageSourceInfo,
++			);
++			expect(
++				loader.getPrompts().prompts.find((prompt) => prompt.name === "package-prompt")?.sourceInfo,
++			).toMatchObject(packageSourceInfo);
++			expect(loader.getThemes().themes.find((theme) => theme.name === "package-theme")?.sourceInfo).toMatchObject(
++				packageSourceInfo,
++			);
++
++			expect(loader.getSkills().skills.find((skill) => skill.name === "extension-skill")?.sourceInfo).toMatchObject(
++				extensionMetadata,
++			);
++			expect(
++				loader.getPrompts().prompts.find((prompt) => prompt.name === "extension-prompt")?.sourceInfo,
++			).toMatchObject(extensionMetadata);
++			expect(loader.getThemes().themes.find((theme) => theme.name === "extension-theme")?.sourceInfo).toMatchObject(
++				extensionMetadata,
++			);
++		});
+ 	});
+ 
+ 	describe("noSkills option", () => {
+@@ -752,4 +934,166 @@ export default function(pi: ExtensionAPI) {
+ 			expect(runner.getToolDefinition("duplicate-tool")?.description).toBe("explicit tool");
+ 		});
+ 	});
++
++	describe("loadProjectContextFiles - nested worktree dedup", () => {
++		// Builds a linked-worktree skeleton (no git binary needed): the main repo's
++		// `.git/worktrees/<name>/` holds `HEAD` plus a `commondir` pointing back at the
++		// main `.git`, and the worktree's working tree carries a `.git` *file* whose
++		// `gitdir:` resolves to it.
++		const linkWorktree = (mainDir: string, worktreeDir: string, name: string) => {
++			const gitDir = join(mainDir, ".git", "worktrees", name);
++			mkdirSync(gitDir, { recursive: true });
++			// The main repo's own `.git` is a real git dir with a HEAD, as git writes it.
++			writeFileSync(join(mainDir, ".git", "HEAD"), "ref: refs/heads/main\n");
++			writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/feat\n");
++			// commondir is relative to the worktree gitdir and points at the main .git.
++			writeFileSync(join(gitDir, "commondir"), "../..");
++			writeFileSync(join(worktreeDir, ".git"), `gitdir: ${gitDir}\n`);
++		};
++
++		// Main repo at <tempDir>/outer/main with a linked worktree at main/worktrees/feat.
++		// Each case writes only the AGENTS.md files it needs.
++		const setupNestedWorktree = () => {
++			const outer = join(tempDir, "outer");
++			const main = join(outer, "main");
++			const worktree = join(main, "worktrees", "feat");
++			const worktreeSrc = join(worktree, "src");
++			mkdirSync(worktreeSrc, { recursive: true });
++			linkWorktree(main, worktree, "feat");
++			return { outer, main, worktree, worktreeSrc };
++		};
++
++		it("should skip the main repo's duplicate when the worktree root has its own context", () => {
++			const { main, worktree, worktreeSrc } = setupNestedWorktree();
++			writeFileSync(join(main, "AGENTS.md"), "main repo instructions");
++			writeFileSync(join(worktree, "AGENTS.md"), "worktree instructions");
++
++			const files = loadProjectContextFiles({ cwd: worktreeSrc, agentDir });
++
++			expect(files.map((f) => f.content)).toEqual(["worktree instructions"]);
++		});
++
++		it("should still inherit the main repo's context when the worktree root has none", () => {
++			const { main, worktreeSrc } = setupNestedWorktree();
++			writeFileSync(join(main, "AGENTS.md"), "main repo instructions");
++
++			const files = loadProjectContextFiles({ cwd: worktreeSrc, agentDir });
++
++			expect(files.map((f) => f.content)).toEqual(["main repo instructions"]);
++		});
++
++		it("should only skip the same filename, not a differently named context file", () => {
++			// The repo tracks CLAUDE.md; the worktree adds an AGENTS.md, which
++			// loadContextFileFromDir prefers. The main repo's CLAUDE.md is nobody's
++			// duplicate, so dropping it would lose its content entirely.
++			const { main, worktree, worktreeSrc } = setupNestedWorktree();
++			writeFileSync(join(main, "CLAUDE.md"), "main repo instructions");
++			writeFileSync(join(worktree, "AGENTS.md"), "worktree instructions");
++
++			const files = loadProjectContextFiles({ cwd: worktreeSrc, agentDir });
++
++			expect(files.map((f) => f.content)).toEqual(["main repo instructions", "worktree instructions"]);
++		});
++
++		it("should NOT skip the container's context in a bare layout (proj/.bare + proj/main)", () => {
++			// `git clone --bare proj/.bare` + `git worktree add ../main` makes commondir
++			// `../..`, so dirname(commonGitDir) is `proj` - a plain directory that tracks
++			// nothing. Its AGENTS.md is not a duplicate of the worktree's. Layout below
++			// matches what real git writes for this setup.
++			const proj = join(tempDir, "proj");
++			const bare = join(proj, ".bare");
++			const worktree = join(proj, "main");
++			const worktreeGitDir = join(bare, "worktrees", "main");
++			mkdirSync(worktreeGitDir, { recursive: true });
++			mkdirSync(worktree, { recursive: true });
++			writeFileSync(join(bare, "HEAD"), "ref: refs/heads/main\n");
++			writeFileSync(join(worktreeGitDir, "HEAD"), "ref: refs/heads/main\n");
++			writeFileSync(join(worktreeGitDir, "commondir"), "../..");
++			writeFileSync(join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
++			writeFileSync(join(proj, "AGENTS.md"), "container instructions");
++			writeFileSync(join(worktree, "AGENTS.md"), "worktree instructions");
++
++			const files = loadProjectContextFiles({ cwd: worktree, agentDir });
++
++			expect(files.map((f) => f.content)).toEqual(["container instructions", "worktree instructions"]);
++		});
++
++		it("should keep loading ancestors above the main repo", () => {
++			const { outer, main, worktree, worktreeSrc } = setupNestedWorktree();
++			writeFileSync(join(outer, "AGENTS.md"), "outer instructions");
++			writeFileSync(join(main, "AGENTS.md"), "main repo instructions");
++			writeFileSync(join(worktree, "AGENTS.md"), "worktree instructions");
++
++			const files = loadProjectContextFiles({ cwd: worktreeSrc, agentDir });
++
++			// Only the main repo root's duplicate is dropped; the unrelated dir above it stays.
++			expect(files.map((f) => f.content)).toEqual(["outer instructions", "worktree instructions"]);
++		});
++
++		it("should NOT skip anything for a sibling worktree (main repo is not an ancestor)", () => {
++			// git worktree add ../feat puts the worktree beside the main repo, so no
++			// duplicate is ever encountered and ancestors above it are unrelated.
++			const outer = join(tempDir, "outer");
++			const main = join(outer, "main");
++			const sib = join(outer, "sib-feat");
++			const sibSrc = join(sib, "src");
++			mkdirSync(sibSrc, { recursive: true });
++			mkdirSync(main, { recursive: true });
++			writeFileSync(join(outer, "AGENTS.md"), "outer instructions");
++			writeFileSync(join(sib, "AGENTS.md"), "sibling worktree instructions");
++			linkWorktree(main, sib, "sib");
++
++			const files = loadProjectContextFiles({ cwd: sibSrc, agentDir });
++
++			expect(files.map((f) => f.content)).toEqual(["outer instructions", "sibling worktree instructions"]);
++		});
++
++		it("should NOT skip the superproject's context from inside a submodule", () => {
++			// A submodule's `.git` file is also `gitdir:`-style, but its gitdir has no
++			// commondir, so it resolves under `.git/modules` - never an ancestor of cwd.
++			const sup = join(tempDir, "super");
++			const sub = join(sup, "vendor", "lib");
++			const subSrc = join(sub, "src");
++			mkdirSync(subSrc, { recursive: true });
++			writeFileSync(join(sup, "AGENTS.md"), "superproject instructions");
++			writeFileSync(join(sub, "AGENTS.md"), "submodule instructions");
++			const subGitDir = join(sup, ".git", "modules", "vendor", "lib");
++			mkdirSync(subGitDir, { recursive: true });
++			writeFileSync(join(subGitDir, "HEAD"), "ref: refs/heads/main\n");
++			writeFileSync(join(sub, ".git"), `gitdir: ${subGitDir}\n`);
++
++			const files = loadProjectContextFiles({ cwd: subSrc, agentDir });
++
++			expect(files.map((f) => f.content)).toEqual(["superproject instructions", "submodule instructions"]);
++		});
++
++		it("should keep climbing past an ordinary repo root", () => {
++			const outer = join(tempDir, "outer");
++			const repo = join(outer, "repo");
++			const leaf = join(repo, "src");
++			mkdirSync(leaf, { recursive: true });
++			mkdirSync(join(repo, ".git"), { recursive: true });
++			writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
++			writeFileSync(join(outer, "AGENTS.md"), "outer instructions");
++			writeFileSync(join(repo, "AGENTS.md"), "repo instructions");
++			writeFileSync(join(leaf, "AGENTS.md"), "leaf instructions");
++
++			const files = loadProjectContextFiles({ cwd: leaf, agentDir });
++
++			expect(files.map((f) => f.content)).toEqual(["outer instructions", "repo instructions", "leaf instructions"]);
++		});
++
++		it("should climb normally when the gitdir: target does not exist", () => {
++			const repo = join(tempDir, "corrupt");
++			const src = join(repo, "src");
++			mkdirSync(src, { recursive: true });
++			writeFileSync(join(repo, ".git"), "gitdir: /nonexistent/path/worktrees/feat\n");
++			writeFileSync(join(repo, "AGENTS.md"), "repo instructions");
++			writeFileSync(join(src, "AGENTS.md"), "src instructions");
++
++			const files = loadProjectContextFiles({ cwd: src, agentDir });
++
++			expect(files.map((f) => f.content)).toEqual(["repo instructions", "src instructions"]);
++		});
++	});
+ });
+diff --git a/packages/coding-agent/test/sdk-codex-cache-probe-tool-loop.ts b/packages/coding-agent/test/sdk-codex-cache-probe-tool-loop.ts
+index a6d3566d..8a6ca1b4 100644
+--- a/packages/coding-agent/test/sdk-codex-cache-probe-tool-loop.ts
++++ b/packages/coding-agent/test/sdk-codex-cache-probe-tool-loop.ts
+@@ -178,7 +178,9 @@ function createMinimalResourceLoader(systemPrompt: string): ResourceLoader {
+ 		getThemes: () => ({ themes: [], diagnostics: [] }),
+ 		getAgentsFiles: () => ({ agentsFiles: [] }),
+ 		getSystemPrompt: () => systemPrompt,
++		getSystemPromptSource: () => undefined,
+ 		getAppendSystemPrompt: () => [],
++		getAppendSystemPromptSources: () => [],
+ 		extendResources: () => {},
+ 		reload: async () => {},
+ 	};
+diff --git a/packages/coding-agent/test/sdk-skills.test.ts b/packages/coding-agent/test/sdk-skills.test.ts
+index 49ade057..007a5140 100644
+--- a/packages/coding-agent/test/sdk-skills.test.ts
++++ b/packages/coding-agent/test/sdk-skills.test.ts
+@@ -58,7 +58,9 @@ This is a test skill.
+ 			getThemes: () => ({ themes: [], diagnostics: [] }),
+ 			getAgentsFiles: () => ({ agentsFiles: [] }),
+ 			getSystemPrompt: () => undefined,
++			getSystemPromptSource: () => undefined,
+ 			getAppendSystemPrompt: () => [],
++			getAppendSystemPromptSources: () => [],
+ 			extendResources: () => {},
+ 			reload: async () => {},
+ 		};
+@@ -91,7 +93,9 @@ This is a test skill.
+ 			getThemes: () => ({ themes: [], diagnostics: [] }),
+ 			getAgentsFiles: () => ({ agentsFiles: [] }),
+ 			getSystemPrompt: () => undefined,
++			getSystemPromptSource: () => undefined,
+ 			getAppendSystemPrompt: () => [],
++			getAppendSystemPromptSources: () => [],
+ 			extendResources: () => {},
+ 			reload: async () => {},
+ 		};
+diff --git a/packages/coding-agent/test/stdout-cleanliness.test.ts b/packages/coding-agent/test/stdout-cleanliness.test.ts
+index f1b31eb3..83abde7c 100644
+--- a/packages/coding-agent/test/stdout-cleanliness.test.ts
++++ b/packages/coding-agent/test/stdout-cleanliness.test.ts
+@@ -2,13 +2,18 @@ import { spawn } from "node:child_process";
+ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join, resolve } from "node:path";
+-import { afterEach, describe, expect, it } from "vitest";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
+ import { ENV_AGENT_DIR } from "../src/config.ts";
++import { allowNetwork } from "./test-network-env.ts";
+ 
+ const cliPath = resolve(__dirname, "../src/cli.ts");
+ 
+ const tempDirs: string[] = [];
+ 
++beforeEach(() => {
++	allowNetwork();
++});
++
+ afterEach(() => {
+ 	for (const dir of tempDirs.splice(0)) {
+ 		rmSync(dir, { recursive: true, force: true });
+diff --git a/packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts b/packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts
+index e1b8534a..0e9db222 100644
+--- a/packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-bash-persistence.test.ts
+@@ -10,6 +10,24 @@ function getEntryTypes(harness: Harness): string[] {
+ 	return harness.sessionManager.getEntries().map((entry) => entry.type);
+ }
+ 
++interface ControlledBashInvocation {
++	signal: AbortSignal | undefined;
++	finish: () => void;
++}
++
++function createControlledBashOperations(invocations: ControlledBashInvocation[]): BashOperations {
++	return {
++		exec: async (_command, _cwd, options) => {
++			return await new Promise<{ exitCode: number | null }>((resolve) => {
++				invocations.push({
++					signal: options.signal,
++					finish: () => resolve({ exitCode: 0 }),
++				});
++			});
++		},
++	};
++}
++
+ describe("AgentSession bash and persistence characterization", () => {
+ 	const harnesses: Harness[] = [];
+ 
+@@ -132,6 +150,52 @@ describe("AgentSession bash and persistence characterization", () => {
+ 		expect(harness.session.isBashRunning).toBe(false);
+ 	});
+ 
++	it("keeps newer bash execution tracked when an older execution finishes", async () => {
++		const harness = await createHarness();
++		harnesses.push(harness);
++		const invocations: ControlledBashInvocation[] = [];
++		const operations = createControlledBashOperations(invocations);
++
++		const firstBash = harness.session.executeBash("first", undefined, { operations });
++		const secondBash = harness.session.executeBash("second", undefined, { operations });
++
++		invocations[0].finish();
++		const firstResult = await firstBash;
++		const runningAfterFirstSettles = harness.session.isBashRunning;
++
++		harness.session.abortBash();
++		const secondWasAborted = invocations[1].signal?.aborted;
++		invocations[1].finish();
++		const secondResult = await secondBash;
++
++		expect(firstResult.cancelled).toBe(false);
++		expect(runningAfterFirstSettles).toBe(true);
++		expect(secondWasAborted).toBe(true);
++		expect(secondResult.cancelled).toBe(true);
++		expect(harness.session.isBashRunning).toBe(false);
++	});
++
++	it("aborts all active bash executions", async () => {
++		const harness = await createHarness();
++		harnesses.push(harness);
++		const invocations: ControlledBashInvocation[] = [];
++		const operations = createControlledBashOperations(invocations);
++
++		const firstBash = harness.session.executeBash("first", undefined, { operations });
++		const secondBash = harness.session.executeBash("second", undefined, { operations });
++
++		harness.session.abortBash();
++		const abortedSignals = invocations.map((invocation) => invocation.signal?.aborted);
++		for (const invocation of invocations) {
++			invocation.finish();
++		}
++		const results = await Promise.all([firstBash, secondBash]);
++
++		expect(abortedSignals).toEqual([true, true]);
++		expect(results.map((result) => result.cancelled)).toEqual([true, true]);
++		expect(harness.session.isBashRunning).toBe(false);
++	});
++
+ 	it("persists user, assistant, toolResult, and custom messages in order", async () => {
+ 		const echoTool: AgentTool = {
+ 			name: "echo",
+diff --git a/packages/coding-agent/test/suite/agent-session-runtime.test.ts b/packages/coding-agent/test/suite/agent-session-runtime.test.ts
+index 79855e9c..1a2a9cf6 100644
+--- a/packages/coding-agent/test/suite/agent-session-runtime.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-runtime.test.ts
+@@ -1,7 +1,8 @@
+ import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join, parse } from "node:path";
+-import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
++import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
++import { Type } from "typebox";
+ import { afterEach, describe, expect, it } from "vitest";
+ import {
+ 	type CreateAgentSessionRuntimeFactory,
+@@ -12,6 +13,7 @@ import {
+ import { AuthStorage } from "../../src/core/auth-storage.ts";
+ import { SessionManager } from "../../src/core/session-manager.ts";
+ import type {
++	AgentToolResult,
+ 	ExtensionAPI,
+ 	ExtensionFactory,
+ 	SessionBeforeForkEvent,
+@@ -161,6 +163,55 @@ describe("AgentSessionRuntime characterization", () => {
+ 		expect(persistedAssistant.usage.cost.total).toBe(0.123);
+ 	});
+ 
++	it("settles the active response before session replacement", async () => {
++		let toolStarted!: () => void;
++		const toolStartedPromise = new Promise<void>((resolve) => {
++			toolStarted = resolve;
++		});
++		const { runtime, faux } = await createRuntimeForTest((pi: ExtensionAPI) => {
++			pi.registerTool({
++				name: "block",
++				label: "Block",
++				description: "Blocks until aborted",
++				parameters: Type.Object({}),
++				execute: (_toolCallId, _params, signal) =>
++					new Promise<AgentToolResult<unknown>>((resolve) => {
++						toolStarted();
++						signal?.addEventListener("abort", () =>
++							resolve({ content: [{ type: "text", text: "tool aborted" }], details: {} }),
++						);
++					}),
++			});
++		});
++
++		await runtime.session.prompt("hello");
++		const firstSessionFile = runtime.session.sessionFile!;
++		await runtime.newSession();
++		await runtime.session.bindExtensions({});
++
++		faux.setResponses([fauxAssistantMessage(fauxToolCall("block", {}), { stopReason: "toolUse" })]);
++		const outgoingSession = runtime.session;
++		const promptPromise = outgoingSession.prompt("start blocking tool");
++		await toolStartedPromise;
++
++		const switchResult = await runtime.switchSession(firstSessionFile);
++		await promptPromise;
++
++		expect(switchResult.cancelled).toBe(false);
++		expect(runtime.session.sessionFile).toBe(firstSessionFile);
++		// The outgoing session settled before replacement: the interrupted tool
++		// call has a persisted tool result instead of dangling forever.
++		const outgoingEntries = SessionManager.open(outgoingSession.sessionFile!)
++			.getEntries()
++			.filter((entry) => entry.type === "message");
++		expect(outgoingEntries.map((entry) => entry.message.role)).toEqual([
++			"user",
++			"assistant",
++			"toolResult",
++			"assistant",
++		]);
++	});
++
+ 	it("emits session_before_switch and session_start for new and resume flows", async () => {
+ 		const events: RecordedSessionEvent[] = [];
+ 		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
+diff --git a/packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts b/packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts
+index b020205d..6e9c8ecf 100644
+--- a/packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts
++++ b/packages/coding-agent/test/suite/regressions/5943-session-start-notify.test.ts
+@@ -56,6 +56,8 @@ type LoadedResourcesContext = {
+ 		promptTemplates: [];
+ 		resourceLoader: {
+ 			getAgentsFiles: () => LoadedResourcesResult<{ agentsFiles: Array<{ path: string }> }>;
++			getSystemPromptSource: () => { path: string } | undefined;
++			getAppendSystemPromptSources: () => Array<{ path: string }>;
+ 			getSkills: () => LoadedResourcesResult<{ skills: [] }>;
+ 			getPrompts: () => LoadedResourcesResult<{ prompts: [] }>;
+ 			getThemes: () => LoadedResourcesResult<{ themes: [] }>;
+@@ -230,6 +232,8 @@ function createLoadedResourcesContext(): LoadedResourcesContext {
+ 			promptTemplates: [],
+ 			resourceLoader: {
+ 				getAgentsFiles: () => ({ agentsFiles: [{ path: "/repo/AGENTS.md" }], diagnostics: [] }),
++				getSystemPromptSource: () => undefined,
++				getAppendSystemPromptSources: () => [],
+ 				getSkills: () => ({ skills: [], diagnostics: [] }),
+ 				getPrompts: () => ({ prompts: [], diagnostics: [] }),
+ 				getThemes: () => ({ themes: [], diagnostics: [] }),
+diff --git a/packages/coding-agent/test/suite/regressions/6647-compaction-retries-transient-stream-drop.test.ts b/packages/coding-agent/test/suite/regressions/6647-compaction-retries-transient-stream-drop.test.ts
+index 88383687..d11216cb 100644
+--- a/packages/coding-agent/test/suite/regressions/6647-compaction-retries-transient-stream-drop.test.ts
++++ b/packages/coding-agent/test/suite/regressions/6647-compaction-retries-transient-stream-drop.test.ts
+@@ -59,18 +59,18 @@ describe("#6647 compaction retries transient summarization failures", () => {
+ 			callCount++;
+ 			const stream = createAssistantMessageEventStream();
+ 			queueMicrotask(() => {
+-				if (message.stopReason === "error" || message.stopReason === "aborted") {
+-					stream.push({
+-						type: "error",
+-						reason: message.stopReason,
+-						error: { ...message, api: model.api, provider: model.provider, model: model.id },
+-					});
++				const response = { ...message, api: model.api, provider: model.provider, model: model.id };
++				if (response.stopReason === "pending") {
++					const error: AssistantMessage = {
++						...response,
++						stopReason: "error",
++						errorMessage: "Scripted response ended without a stop reason",
++					};
++					stream.push({ type: "error", reason: "error", error });
++				} else if (response.stopReason === "error" || response.stopReason === "aborted") {
++					stream.push({ type: "error", reason: response.stopReason, error: response });
+ 				} else {
+-					stream.push({
+-						type: "done",
+-						reason: message.stopReason,
+-						message: { ...message, api: model.api, provider: model.provider, model: model.id },
+-					});
++					stream.push({ type: "done", reason: response.stopReason, message: response });
+ 				}
+ 			});
+ 			return stream;
+diff --git a/packages/coding-agent/test/suite/regressions/7209-model-selector-filter-resets-selection.test.ts b/packages/coding-agent/test/suite/regressions/7209-model-selector-filter-resets-selection.test.ts
+new file mode 100644
+index 00000000..84551ddf
+--- /dev/null
++++ b/packages/coding-agent/test/suite/regressions/7209-model-selector-filter-resets-selection.test.ts
+@@ -0,0 +1,128 @@
++import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
++import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
++import { KeybindingsManager } from "../../../src/core/keybindings.ts";
++import { ModelSelectorComponent } from "../../../src/modes/interactive/components/model-selector.ts";
++import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
++import { stripAnsi } from "../../../src/utils/ansi.ts";
++import { createHarness, type Harness } from "../harness.ts";
++
++function createFakeTui(): TUI {
++	return { requestRender: () => {} } as unknown as TUI;
++}
++
++/** Return the model id of the highlighted (→) row in the rendered selector. */
++function selectedModelId(rendered: string): string | undefined {
++	const line = rendered.split("\n").find((l) => l.startsWith("→ "));
++	if (!line) return undefined;
++	const rest = line.replace(/^→\s*/, "");
++	const id = rest.split(" [")[0];
++	return id?.trim() || undefined;
++}
++
++describe("model selector filter resets selection to top", () => {
++	const harnesses: Harness[] = [];
++
++	beforeAll(() => {
++		initTheme("dark");
++	});
++
++	beforeEach(() => {
++		setKeybindings(new KeybindingsManager());
++	});
++
++	afterAll(() => {
++		while (harnesses.length > 0) {
++			harnesses.pop()?.cleanup();
++		}
++	});
++
++	it("moves selection to the first row in the All tab when typing a query", async () => {
++		const harness = await createHarness({
++			models: [
++				{ id: "alpha-1", name: "Alpha One", reasoning: true },
++				{ id: "alpha-2", name: "Alpha Two", reasoning: true },
++				{ id: "alpha-3", name: "Alpha Three", reasoning: true },
++				{ id: "beta-1", name: "Beta One", reasoning: true },
++			],
++		});
++		harnesses.push(harness);
++
++		const current = harness.getModel("alpha-1")!;
++		const selector = new ModelSelectorComponent(
++			createFakeTui(),
++			current,
++			harness.settingsManager,
++			harness.session.modelRuntime,
++			[],
++			() => {},
++			() => {},
++		);
++
++		await vi.waitFor(() => {
++			const rendered = stripAnsi(selector.render(120).join("\n"));
++			expect(rendered).toContain("Model catalogs refreshed.");
++		});
++
++		// Current model (alpha-1) is sorted first, so selection starts on row 0.
++		expect(selectedModelId(stripAnsi(selector.render(120).join("\n")))).toBe("alpha-1");
++
++		// Move selection down two rows to alpha-3.
++		selector.handleInput("\x1b[B");
++		selector.handleInput("\x1b[B");
++		expect(selectedModelId(stripAnsi(selector.render(120).join("\n")))).toBe("alpha-3");
++
++		// Type a query that matches the three alpha models. The selection must
++		// move back to the top row (alpha-1), not stay clamped at index 2.
++		for (const char of "alpha") {
++			selector.handleInput(char);
++		}
++
++		const rendered = stripAnsi(selector.render(120).join("\n"));
++		expect(selectedModelId(rendered)).toBe("alpha-1");
++		// Sanity: the filter actually narrowed the list.
++		expect(rendered).not.toContain("beta-1");
++	});
++
++	it("moves selection to the first row in the Scoped tab when typing a query", async () => {
++		const harness = await createHarness({
++			models: [
++				{ id: "alpha-1", name: "Alpha One", reasoning: true },
++				{ id: "alpha-2", name: "Alpha Two", reasoning: true },
++				{ id: "alpha-3", name: "Alpha Three", reasoning: true },
++			],
++		});
++		harnesses.push(harness);
++
++		const alpha1 = harness.getModel("alpha-1")!;
++		const alpha2 = harness.getModel("alpha-2")!;
++		const alpha3 = harness.getModel("alpha-3")!;
++
++		// Scoped list is intentionally not in current-model-first order; the
++		// current model (alpha-1) sits at index 2.
++		const selector = new ModelSelectorComponent(
++			createFakeTui(),
++			alpha1,
++			harness.settingsManager,
++			harness.session.modelRuntime,
++			[{ model: alpha2 }, { model: alpha3 }, { model: alpha1 }],
++			() => {},
++			() => {},
++		);
++
++		await vi.waitFor(() => {
++			const rendered = stripAnsi(selector.render(120).join("\n"));
++			expect(rendered).toContain("Model catalogs refreshed.");
++		});
++
++		// Selection starts on the current model (alpha-1), which is row 2 here.
++		expect(selectedModelId(stripAnsi(selector.render(120).join("\n")))).toBe("alpha-1");
++
++		// Type a query matching all three scoped models. Selection must move to
++		// the top row (alpha-2), not stay clamped at index 2 (alpha-1).
++		for (const char of "alpha") {
++			selector.handleInput(char);
++		}
++
++		expect(selectedModelId(stripAnsi(selector.render(120).join("\n")))).toBe("alpha-2");
++	});
++});
+diff --git a/packages/coding-agent/test/suite/regressions/startup-session-rebind-duplicate-subscription.test.ts b/packages/coding-agent/test/suite/regressions/startup-session-rebind-duplicate-subscription.test.ts
+new file mode 100644
+index 00000000..7b641d7f
+--- /dev/null
++++ b/packages/coding-agent/test/suite/regressions/startup-session-rebind-duplicate-subscription.test.ts
+@@ -0,0 +1,77 @@
++import { describe, expect, it, vi } from "vitest";
++import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
++
++type RebindContext = {
++	session: object;
++	unsubscribe?: () => void;
++	applyRuntimeSettings: () => void;
++	renderCurrentSessionState: () => void;
++	bindCurrentSessionExtensions: () => Promise<void>;
++	subscribeToAgent: () => void;
++	updateAvailableProviderCount: () => Promise<void>;
++	updateEditorBorderColor: () => void;
++	updateTerminalTitle: () => void;
++};
++
++type InteractiveModePrototype = {
++	rebindCurrentSession(this: RebindContext, options?: { renderBeforeBind?: boolean }): Promise<void>;
++};
++
++const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrototype;
++
++describe("overlapping startup and replacement session rebinds", () => {
++	it("does not subscribe from the stale startup rebind", async () => {
++		const startupSession = {};
++		const replacementSession = {};
++		let resolveStartupBind!: () => void;
++		let resolveReplacementBind!: () => void;
++
++		const startupBind = new Promise<void>((resolve) => {
++			resolveStartupBind = resolve;
++		});
++		const replacementBind = new Promise<void>((resolve) => {
++			resolveReplacementBind = resolve;
++		});
++
++		const subscribeToAgent = vi.fn();
++		const updateTerminalTitle = vi.fn();
++		let bindCount = 0;
++
++		const context: RebindContext = {
++			session: startupSession,
++			applyRuntimeSettings: () => {},
++			renderCurrentSessionState: () => {},
++			bindCurrentSessionExtensions: () => {
++				bindCount += 1;
++				return bindCount === 1 ? startupBind : replacementBind;
++			},
++			subscribeToAgent,
++			updateAvailableProviderCount: async () => {},
++			updateEditorBorderColor: () => {},
++			updateTerminalTitle,
++		};
++
++		const startupRebind = interactiveModePrototype.rebindCurrentSession.call(context);
++		expect(bindCount).toBe(1);
++
++		context.session = replacementSession;
++		const replacementRebind = interactiveModePrototype.rebindCurrentSession.call(context, {
++			renderBeforeBind: true,
++		});
++
++		expect(bindCount).toBe(2);
++		expect(subscribeToAgent).toHaveBeenCalledTimes(1);
++
++		resolveStartupBind();
++		await startupRebind;
++
++		expect(subscribeToAgent).toHaveBeenCalledTimes(1);
++		expect(updateTerminalTitle).not.toHaveBeenCalled();
++
++		resolveReplacementBind();
++		await replacementRebind;
++
++		expect(subscribeToAgent).toHaveBeenCalledTimes(1);
++		expect(updateTerminalTitle).toHaveBeenCalledTimes(1);
++	});
++});
+diff --git a/packages/coding-agent/test/suite/regressions/tree-during-streaming.test.ts b/packages/coding-agent/test/suite/regressions/tree-during-streaming.test.ts
+new file mode 100644
+index 00000000..e38fa134
+--- /dev/null
++++ b/packages/coding-agent/test/suite/regressions/tree-during-streaming.test.ts
+@@ -0,0 +1,35 @@
++import { fauxAssistantMessage } from "@earendil-works/pi-ai";
++import { describe, expect, it } from "vitest";
++import { userMsg } from "../../utilities.ts";
++import { createHarness } from "../harness.ts";
++
++describe("tree navigation during an active response", () => {
++	it("rejects navigation without changing the active leaf", async () => {
++		const harness = await createHarness();
++		const targetId = harness.sessionManager.appendMessage(userMsg("first"));
++		let navigationResult: unknown;
++		let leafUnchanged = false;
++
++		try {
++			// Navigate from inside the response factory, while the run is active.
++			harness.setResponses([
++				async () => {
++					const activeLeafId = harness.sessionManager.getLeafId();
++					navigationResult = await harness.session
++						.navigateTree(targetId, { summarize: false })
++						.catch((error) => error);
++					leafUnchanged = activeLeafId !== targetId && harness.sessionManager.getLeafId() === activeLeafId;
++					return fauxAssistantMessage("response");
++				},
++			]);
++			await harness.session.prompt("second");
++
++			expect(navigationResult).toEqual(
++				new Error("Wait for the current response to finish before navigating the session tree."),
++			);
++			expect(leafUnchanged).toBe(true);
++		} finally {
++			harness.cleanup();
++		}
++	});
++});
+diff --git a/packages/coding-agent/test/test-harness.test.ts b/packages/coding-agent/test/test-harness.test.ts
+index 0c4a151f..3ac71622 100644
+--- a/packages/coding-agent/test/test-harness.test.ts
++++ b/packages/coding-agent/test/test-harness.test.ts
+@@ -88,6 +88,17 @@ describe("test harness", () => {
+ 		expect(assistantMessages[0].errorMessage).toBe("something broke");
+ 	});
+ 
++	it("turns a pending terminal response into an error", async () => {
++		harness = await createHarness({ responses: [{ text: "partial", stopReason: "pending" }] });
++
++		await harness.session.prompt("hi");
++
++		const assistantMessages = harness.session.messages.filter((m): m is AssistantMessage => m.role === "assistant");
++		expect(assistantMessages).toHaveLength(1);
++		expect(assistantMessages[0].stopReason).toBe("error");
++		expect(assistantMessages[0].errorMessage).toBe("Faux response ended without a stop reason");
++	});
++
+ 	it("retry on transient error", async () => {
+ 		harness = await createHarness({
+ 			responses: [{ error: "overloaded_error" }, "recovered"],
+diff --git a/packages/coding-agent/test/test-harness.ts b/packages/coding-agent/test/test-harness.ts
+index 89a94411..9b14ed40 100644
+--- a/packages/coding-agent/test/test-harness.ts
++++ b/packages/coding-agent/test/test-harness.ts
+@@ -184,10 +184,8 @@ function chunkString(text: string): string[] {
+  * intermediate delta events for each content block.
+  */
+ function streamWithDeltas(stream: AssistantMessageEventStream, message: AssistantMessage): void {
+-	const isError = message.stopReason === "error" || message.stopReason === "aborted";
+-
+ 	// Build partial progressively as we stream content blocks
+-	const partial: AssistantMessage = { ...message, content: [] };
++	const partial: AssistantMessage = { ...message, content: [], stopReason: "pending" };
+ 	stream.push({ type: "start", partial: { ...partial } });
+ 
+ 	for (let i = 0; i < message.content.length; i++) {
+@@ -243,11 +241,20 @@ function streamWithDeltas(stream: AssistantMessageEventStream, message: Assistan
+ 		}
+ 	}
+ 
+-	if (isError) {
+-		stream.push({ type: "error", reason: message.stopReason as "error" | "aborted", error: message });
+-	} else {
+-		stream.push({ type: "done", reason: message.stopReason as "stop" | "length" | "toolUse", message });
++	if (message.stopReason === "pending") {
++		const error: AssistantMessage = {
++			...message,
++			stopReason: "error",
++			errorMessage: "Faux response ended without a stop reason",
++		};
++		stream.push({ type: "error", reason: "error", error });
++		return;
++	}
++	if (message.stopReason === "error" || message.stopReason === "aborted") {
++		stream.push({ type: "error", reason: message.stopReason, error: message });
++		return;
+ 	}
++	stream.push({ type: "done", reason: message.stopReason, message });
+ }
+ 
+ function makeEvent(
+diff --git a/packages/coding-agent/test/test-network-env.ts b/packages/coding-agent/test/test-network-env.ts
+new file mode 100644
+index 00000000..35515f34
+--- /dev/null
++++ b/packages/coding-agent/test/test-network-env.ts
+@@ -0,0 +1,6 @@
++import { vi } from "vitest";
++
++/** Enable network code paths for tests that replace external I/O with local fixtures or mocks. */
++export function allowNetwork(): void {
++	vi.stubEnv("PI_OFFLINE", undefined);
++}
+diff --git a/packages/coding-agent/test/trigger-compact-extension.test.ts b/packages/coding-agent/test/trigger-compact-extension.test.ts
+index 80f3d46c..930769f3 100644
+--- a/packages/coding-agent/test/trigger-compact-extension.test.ts
++++ b/packages/coding-agent/test/trigger-compact-extension.test.ts
+@@ -11,6 +11,7 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
+ 		sessionManager: {} as ExtensionContext["sessionManager"],
+ 		modelRegistry: {} as ExtensionContext["modelRegistry"],
+ 		model: undefined,
++		scopedModels: [],
+ 		isIdle: () => true,
+ 		isProjectTrusted: () => true,
+ 		signal: undefined,
+diff --git a/packages/coding-agent/test/utilities.ts b/packages/coding-agent/test/utilities.ts
+index b14fed1e..27053ef5 100644
+--- a/packages/coding-agent/test/utilities.ts
++++ b/packages/coding-agent/test/utilities.ts
+@@ -224,7 +224,9 @@ export function createTestResourceLoader(options: CreateTestResourceLoaderOption
+ 		getThemes: () => ({ themes: [], diagnostics: [] }),
+ 		getAgentsFiles: () => ({ agentsFiles: [] }),
+ 		getSystemPrompt: () => undefined,
++		getSystemPromptSource: () => undefined,
+ 		getAppendSystemPrompt: () => [],
++		getAppendSystemPromptSources: () => [],
+ 		extendResources: () => {},
+ 		reload: async () => {},
+ 	};
+diff --git a/packages/coding-agent/test/version-check.test.ts b/packages/coding-agent/test/version-check.test.ts
+index 6e2f0ac4..c06ee12c 100644
+--- a/packages/coding-agent/test/version-check.test.ts
++++ b/packages/coding-agent/test/version-check.test.ts
+@@ -1,4 +1,4 @@
+-import { afterEach, describe, expect, it, vi } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import {
+ 	checkForNewPiVersion,
+ 	comparePackageVersions,
+@@ -6,9 +6,13 @@ import {
+ 	getLatestPiVersion,
+ 	isNewerPackageVersion,
+ } from "../src/utils/version-check.ts";
++import { allowNetwork } from "./test-network-env.ts";
+ 
+ const originalSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
+-const originalOffline = process.env.PI_OFFLINE;
++
++beforeEach(() => {
++	allowNetwork();
++});
+ 
+ afterEach(() => {
+ 	vi.unstubAllGlobals();
+@@ -17,11 +21,6 @@ afterEach(() => {
+ 	} else {
+ 		process.env.PI_SKIP_VERSION_CHECK = originalSkipVersionCheck;
+ 	}
+-	if (originalOffline === undefined) {
+-		delete process.env.PI_OFFLINE;
+-	} else {
+-		process.env.PI_OFFLINE = originalOffline;
+-	}
+ });
+ 
+ describe("version checks", () => {
+diff --git a/packages/coding-agent/vitest.config.ts b/packages/coding-agent/vitest.config.ts
+index dbd8f34a..19057ab8 100644
+--- a/packages/coding-agent/vitest.config.ts
++++ b/packages/coding-agent/vitest.config.ts
+@@ -8,6 +8,9 @@ export default mergeConfig(
+ 			globals: true,
+ 			environment: "node",
+ 			testTimeout: 30000,
++			// Tests run offline by default; opt in with allowNetwork() from test/test-network-env.ts.
++			env: { PI_OFFLINE: "1" },
++			unstubEnvs: true,
+ 			reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
+ 			silent: "passed-only",
+ 			server: {

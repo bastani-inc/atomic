@@ -1,493 +1,350 @@
 // @ts-nocheck
-import { afterEach, beforeEach, describe, test } from "bun:test";
+
 import assert from "node:assert/strict";
-import {
-    existsSync,
-    mkdirSync,
-    mkdtempSync,
-    readFileSync,
-    readdirSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
-import {
-    assertOutputTypes,
-    assertStringOutput,
-    assertWorkflowDefinition,
-    expectedDeepResearchAggregatorReadCount,
-    fieldChoices,
-    fieldDefault,
-    fieldDescription,
-    fieldKind,
-    fieldRequired,
-    makeMockCtx,
-    makeTaskResult,
-    normalizePathSeparators,
-    promptText,
-    readPathEndsWith,
-    readPaths,
-} from "./builtin-workflows-helpers.js";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, test } from "vitest";
+import { makeMockCtx, normalizePathSeparators, readPaths } from "./builtin-workflows-helpers.js";
 import { assertReviewerIntercomCoordination } from "./reviewer-intercom-prompt-assertions.js";
 
 describe("ralph", () => {
-    let tempCwd: string | undefined;
+	let tempCwd: string | undefined;
 
-    beforeEach(() => {
-        tempCwd = mkdtempSync(join(tmpdir(), "atomic-ralph-unit-"));
-    });
+	beforeEach(() => {
+		tempCwd = mkdtempSync(join(tmpdir(), "atomic-ralph-unit-"));
+	});
 
-    afterEach(() => {
-        if (tempCwd !== undefined) {
-            rmSync(tempCwd, { recursive: true, force: true });
-            tempCwd = undefined;
-        }
-    });
+	afterEach(() => {
+		if (tempCwd !== undefined) {
+			rmSync(tempCwd, { recursive: true, force: true });
+			tempCwd = undefined;
+		}
+	});
 
-    function requireRalphTempCwd(): string {
-        if (tempCwd === undefined) throw new Error("expected Ralph temp cwd");
-        return tempCwd;
-    }
+	function requireRalphTempCwd(): string {
+		if (tempCwd === undefined) throw new Error("expected Ralph temp cwd");
+		return tempCwd;
+	}
 
-    function assertEveryRalphStageCwd(
-        ctx: { readonly calls: MockCalls },
-        expectedCwd: string | undefined,
-    ): void {
-        for (const [taskName, entries] of Object.entries(
-            ctx.calls.taskOptions,
-        )) {
-            for (const options of entries) {
-                assert.equal(
-                    options.cwd,
-                    expectedCwd,
-                    `unexpected cwd for ${taskName}`,
-                );
-            }
-        }
-        for (const options of ctx.calls.parallelOptions) {
-            assert.equal(
-                options.cwd,
-                expectedCwd,
-                "unexpected cwd for parallel stage",
-            );
-        }
-    }
+	function _assertEveryRalphStageCwd(ctx: { readonly calls: MockCalls }, expectedCwd: string | undefined): void {
+		for (const [taskName, entries] of Object.entries(ctx.calls.taskOptions)) {
+			for (const options of entries) {
+				assert.equal(options.cwd, expectedCwd, `unexpected cwd for ${taskName}`);
+			}
+		}
+		for (const options of ctx.calls.parallelOptions) {
+			assert.equal(options.cwd, expectedCwd, "unexpected cwd for parallel stage");
+		}
+	}
 
-    function preFinalStageTexts(ctx: {
-        readonly calls: MockCalls;
-    }): readonly { readonly label: string; readonly text: string }[] {
-        return [
-            {
-                label: "research-prompt-refinement prompt",
-                text:
-                    ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ??
-                    "",
-            },
-            {
-                label: "orchestrator prompt",
-                text: ctx.calls.prompts["orchestrator-1"]?.[0] ?? "",
-            },
+	function _preFinalStageTexts(ctx: {
+		readonly calls: MockCalls;
+	}): readonly { readonly label: string; readonly text: string }[] {
+		return [
+			{
+				label: "research-prompt-refinement prompt",
+				text: ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? "",
+			},
+			{
+				label: "orchestrator prompt",
+				text: ctx.calls.prompts["orchestrator-1"]?.[0] ?? "",
+			},
 
-            {
-                label: "reviewer-a prompt",
-                text: ctx.calls.prompts["reviewer-a"]?.[0] ?? "",
-            },
-            {
-                label: "reviewer-b prompt",
-                text: ctx.calls.prompts["reviewer-b"]?.[0] ?? "",
-            },
-            {
-                label: "parallel shared task",
-                text: String(ctx.calls.parallelOptions[0]?.task ?? ""),
-            },
-        ];
-    }
+			{
+				label: "reviewer-a prompt",
+				text: ctx.calls.prompts["reviewer-a"]?.[0] ?? "",
+			},
+			{
+				label: "reviewer-b prompt",
+				text: ctx.calls.prompts["reviewer-b"]?.[0] ?? "",
+			},
+			{
+				label: "parallel shared task",
+				text: String(ctx.calls.parallelOptions[0]?.task ?? ""),
+			},
+		];
+	}
 
-    function assertNoFinalHandoffMentions(
-        entries: readonly { readonly label: string; readonly text: string }[],
-    ): void {
-        const finalHandoffPatterns = [
-            /<pr_policy>/i,
-            /preparing a provider-appropriate pull request, merge request, or code-review handoff/i,
-            /create a provider-appropriate pull request, merge request, or code-review handoff/i,
-            /created PR\/MR\/review URL/i,
-            /provider-appropriate comment containing the implementation notes file contents as the last action/i,
-        ] as const;
+	function _assertNoFinalHandoffMentions(entries: readonly { readonly label: string; readonly text: string }[]): void {
+		const finalHandoffPatterns = [
+			/<pr_policy>/i,
+			/preparing a provider-appropriate pull request, merge request, or code-review handoff/i,
+			/create a provider-appropriate pull request, merge request, or code-review handoff/i,
+			/created PR\/MR\/review URL/i,
+			/provider-appropriate comment containing the implementation notes file contents as the last action/i,
+		] as const;
 
-        for (const { label, text } of entries) {
-            for (const pattern of finalHandoffPatterns) {
-                assert.doesNotMatch(text, pattern, label);
-            }
-        }
-    }
+		for (const { label, text } of entries) {
+			for (const pattern of finalHandoffPatterns) {
+				assert.doesNotMatch(text, pattern, label);
+			}
+		}
+	}
 
-    test("rewrites the original Ralph research artifact across iterations", async () => {
-        const mod = await import("../../packages/workflows/builtin/ralph.js");
-        const prompt = "Collision research";
-        const cwd = requireRalphTempCwd();
-        const researchDir = join(cwd, "research");
-        const date = new Date().toISOString().slice(0, 10);
-        const expectedResearchPath = join(
-            researchDir,
-            `${date}-collision-research.md`,
-        );
-        mkdirSync(researchDir, { recursive: true });
-        writeFileSync(expectedResearchPath, "pre-existing research\n", "utf8");
+	test("rewrites the original Ralph research artifact across iterations", async () => {
+		const mod = await import("../../packages/workflows/builtin/ralph.js");
+		const prompt = "Collision research";
+		const cwd = requireRalphTempCwd();
+		const researchDir = join(cwd, "research");
+		const date = new Date().toISOString().slice(0, 10);
+		const expectedResearchPath = join(researchDir, `${date}-collision-research.md`);
+		mkdirSync(researchDir, { recursive: true });
+		writeFileSync(expectedResearchPath, "pre-existing research\n", "utf8");
 
-        const ctx = makeMockCtx(
-            {
-                prompt,
-                max_loops: 2,
-                base_branch: "main",
-                git_worktree_dir: "",
-                create_pr: false,
-            },
-            {
-                task: (name) => {
-                    if (name === "research-prompt-refinement-1")
-                        return "first question";
-                    if (name === "research-1") return "first research";
-                    if (name === "research-prompt-refinement-2")
-                        return "second question";
-                    if (name === "research-2") return "second research";
-                    return undefined;
-                },
-            },
-        );
+		const ctx = makeMockCtx(
+			{
+				prompt,
+				max_loops: 2,
+				base_branch: "main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) => {
+					if (name === "research-prompt-refinement-1") return "first question";
+					if (name === "research-1") return "first research";
+					if (name === "research-prompt-refinement-2") return "second question";
+					if (name === "research-2") return "second research";
+					return undefined;
+				},
+			},
+		);
 
-        const result = await mod.default.run({ ...ctx, cwd });
+		const result = await mod.default.run({ ...ctx, cwd });
 
-        assert.equal(result["plan_path"], expectedResearchPath);
-        assert.equal(result["research_path"], expectedResearchPath);
-        assert.equal(
-            readFileSync(expectedResearchPath, "utf8"),
-            "second research",
-        );
-        assert.deepEqual(
-            readPaths(
-                ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0],
-            ),
-            [],
-        );
-        const secondPromptEngineerReads = readPaths(
-            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0],
-        );
-        assert.equal(
-            secondPromptEngineerReads.some((path) =>
-                /review-round-latest\.json$/.test(
-                    normalizePathSeparators(path),
-                ),
-            ),
-            true,
-        );
-        const secondResearchReads = readPaths(
-            ctx.calls.taskOptions["research-2"]?.[0],
-        );
-        assert.equal(
-            secondResearchReads.some((path) =>
-                /review-round-latest\.json$/.test(
-                    normalizePathSeparators(path),
-                ),
-            ),
-            true,
-        );
-        assert.match(
-            ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "",
-            /unresolved reviewer findings in the transformed research question/,
-        );
-        assert.match(
-            ctx.calls.prompts["research-2"]?.[0] ?? "",
-            /Research whether each unresolved finding still applies/,
-        );
-        assert.equal(
-            existsSync(join(researchDir, `${date}-collision-research-2.md`)),
-            false,
-        );
-    });
+		assert.equal(result.plan_path, expectedResearchPath);
+		assert.equal(result.research_path, expectedResearchPath);
+		assert.equal(readFileSync(expectedResearchPath, "utf8"), "second research");
+		assert.deepEqual(readPaths(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]), []);
+		const secondPromptEngineerReads = readPaths(ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]);
+		assert.equal(
+			secondPromptEngineerReads.some((path) => /review-round-latest\.json$/.test(normalizePathSeparators(path))),
+			true,
+		);
+		const secondResearchReads = readPaths(ctx.calls.taskOptions["research-2"]?.[0]);
+		assert.equal(
+			secondResearchReads.some((path) => /review-round-latest\.json$/.test(normalizePathSeparators(path))),
+			true,
+		);
+		assert.match(
+			ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "",
+			/unresolved reviewer findings in the transformed research question/,
+		);
+		assert.match(
+			ctx.calls.prompts["research-2"]?.[0] ?? "",
+			/Research whether each unresolved finding still applies/,
+		);
+		assert.equal(existsSync(join(researchDir, `${date}-collision-research-2.md`)), false);
+	});
 
-    test("forks Ralph research loop workers from matching prior sessions without forking reviewers", async () => {
-        const mod = await import("../../packages/workflows/builtin/ralph.js");
-        const cwd = requireRalphTempCwd();
-        const ctx = makeMockCtx(
-            {
-                prompt: "Repair review handoff",
-                max_loops: 2,
-                base_branch: "main",
-                git_worktree_dir: "",
-                create_pr: false,
-            },
-            {
-                sessionFile: (name) => `/tmp/ralph-${name}.jsonl`,
-            },
-        );
+	test("forks Ralph research loop workers from matching prior sessions without forking reviewers", async () => {
+		const mod = await import("../../packages/workflows/builtin/ralph.js");
+		const cwd = requireRalphTempCwd();
+		const ctx = makeMockCtx(
+			{
+				prompt: "Repair review handoff",
+				max_loops: 2,
+				base_branch: "main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				sessionFile: (name) => `/tmp/ralph-${name}.jsonl`,
+			},
+		);
 
-        await mod.default.run({ ...ctx, cwd });
+		await mod.default.run({ ...ctx, cwd });
 
-        assert.equal(
-            ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.context,
-            undefined,
-        );
-        assert.equal(
-            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.context,
-            "fork",
-        );
-        assert.equal(
-            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]
-                ?.forkFromSessionFile,
-            "/tmp/ralph-research-prompt-refinement-1.jsonl",
-        );
-        const forkedRefinementPrompt =
-            ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
-        // Forked continuations inherit the skill, request, and contracts from
-        // the forked session history and must not repeat them.
-        assert.doesNotMatch(forkedRefinementPrompt, /\/skill:prompt-engineer/);
-        assert.match(
-            forkedRefinementPrompt,
-            /Transform the same user request into an updated research question/,
-        );
-        assert.doesNotMatch(forkedRefinementPrompt, /<literal_contract>/);
+		assert.equal(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.context, undefined);
+		assert.equal(ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.context, "fork");
+		assert.equal(
+			ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.forkFromSessionFile,
+			"/tmp/ralph-research-prompt-refinement-1.jsonl",
+		);
+		const forkedRefinementPrompt = ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
+		// Forked continuations inherit the skill, request, and contracts from
+		// the forked session history and must not repeat them.
+		assert.doesNotMatch(forkedRefinementPrompt, /\/skill:prompt-engineer/);
+		assert.match(forkedRefinementPrompt, /Transform the same user request into an updated research question/);
+		assert.doesNotMatch(forkedRefinementPrompt, /<literal_contract>/);
 
-        assert.equal(ctx.calls.taskOptions["research-2"]?.[0]?.context, "fork");
-        assert.equal(
-            ctx.calls.taskOptions["research-2"]?.[0]?.forkFromSessionFile,
-            "/tmp/ralph-research-1.jsonl",
-        );
-        const forkedResearchPrompt = ctx.calls.prompts["research-2"]?.[0] ?? "";
-        assert.doesNotMatch(forkedResearchPrompt, /\/skill:research-codebase/);
-        assert.match(
-            forkedResearchPrompt,
-            /Research this updated question against the current repository state/,
-        );
-        assert.doesNotMatch(forkedResearchPrompt, /<literal_contract>/);
+		assert.equal(ctx.calls.taskOptions["research-2"]?.[0]?.context, "fork");
+		assert.equal(ctx.calls.taskOptions["research-2"]?.[0]?.forkFromSessionFile, "/tmp/ralph-research-1.jsonl");
+		const forkedResearchPrompt = ctx.calls.prompts["research-2"]?.[0] ?? "";
+		assert.doesNotMatch(forkedResearchPrompt, /\/skill:research-codebase/);
+		assert.match(forkedResearchPrompt, /Research this updated question against the current repository state/);
+		assert.doesNotMatch(forkedResearchPrompt, /<literal_contract>/);
 
-        assert.equal(
-            ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context,
-            "fork",
-        );
-        assert.equal(
-            ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionFile,
-            "/tmp/ralph-orchestrator-1.jsonl",
-        );
-        const forkedOrchestratorPrompt =
-            ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
-        assert.match(
-            forkedOrchestratorPrompt,
-            /Continue implementing from the latest research findings/i,
-        );
-        // The forked orchestrator inherits contracts, E2E guidance, and the
-        // report format from its forked history and must not repeat them.
-        assert.match(
-            forkedOrchestratorPrompt,
-            /inherited objective[\s\S]*report contracts remain unchanged/i,
-        );
-        assert.doesNotMatch(
-            forkedOrchestratorPrompt,
-            /Verify correctness end-to-end whenever practical/,
-        );
-        assert.doesNotMatch(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
-        assert.doesNotMatch(forkedOrchestratorPrompt, /<acceptance_matrix>/);
-        assert.doesNotMatch(
-            ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
-            /project_initialization_preflight/,
-        );
-        assert.equal(ctx.calls.task.includes("planner-1"), false);
-        assert.equal(ctx.calls.task.includes("code-simplifier-2"), false);
+		assert.equal(ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context, "fork");
+		assert.equal(
+			ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionFile,
+			"/tmp/ralph-orchestrator-1.jsonl",
+		);
+		const forkedOrchestratorPrompt = ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
+		assert.match(forkedOrchestratorPrompt, /Continue implementing from the latest research findings/i);
+		// The forked orchestrator inherits contracts, E2E guidance, and the
+		// report format from its forked history and must not repeat them.
+		assert.match(forkedOrchestratorPrompt, /inherited objective[\s\S]*report contracts remain unchanged/i);
+		assert.doesNotMatch(forkedOrchestratorPrompt, /Verify correctness end-to-end whenever practical/);
+		assert.doesNotMatch(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
+		assert.doesNotMatch(forkedOrchestratorPrompt, /<acceptance_matrix>/);
+		assert.doesNotMatch(ctx.calls.prompts["orchestrator-2"]?.[0] ?? "", /project_initialization_preflight/);
+		assert.equal(ctx.calls.task.includes("planner-1"), false);
+		assert.equal(ctx.calls.task.includes("code-simplifier-2"), false);
 
-        for (const reviewerName of ["reviewer-a", "reviewer-b"]) {
-            const entries = ctx.calls.taskOptions[reviewerName] ?? [];
-            assert.equal(entries.length, 2, reviewerName);
-            for (const [index, options] of entries.entries()) {
-                assert.equal(
-                    options.context,
-                    undefined,
-                    `${reviewerName}-${index}`,
-                );
-                assert.equal(
-                    options.forkFromSessionFile,
-                    undefined,
-                    `${reviewerName}-${index}`,
-                );
-            }
-        }
-    });
+		for (const reviewerName of ["reviewer-a", "reviewer-b"]) {
+			const entries = ctx.calls.taskOptions[reviewerName] ?? [];
+			assert.equal(entries.length, 2, reviewerName);
+			for (const [index, options] of entries.entries()) {
+				assert.equal(options.context, undefined, `${reviewerName}-${index}`);
+				assert.equal(options.forkFromSessionFile, undefined, `${reviewerName}-${index}`);
+			}
+		}
+	});
 
-    test("uses schema-backed Ralph reviewer stages without prompt tool nudges", async () => {
-        const mod = await import("../../packages/workflows/builtin/ralph.js");
-        const ctx = makeMockCtx(
-            {
-                prompt: "Review schema migration",
-                max_loops: 1,
-                base_branch: "origin/main",
-                git_worktree_dir: "",
-                create_pr: false,
-            },
-            {
-                task: (name) => {
-                    if (name === "reviewer-a" || name === "reviewer-b") {
-                        return JSON.stringify({
-                            findings: [],
-                            overall_correctness: "patch is correct",
-                            overall_explanation: "No blocking findings.",
-                            overall_confidence_score: 1,
-                            requirements_traceability: [
-                                {
-                                    requirement: "Review schema migration",
-                                    status: "proven",
-                                    evidence:
-                                        "Current repository state satisfies the migration task.",
-                                },
-                            ],
-                            stop_review_loop: true,
-                            reviewer_error: null,
-                        });
-                    }
-                    return undefined;
-                },
-            },
-        );
+	test("uses schema-backed Ralph reviewer stages without prompt tool nudges", async () => {
+		const mod = await import("../../packages/workflows/builtin/ralph.js");
+		const ctx = makeMockCtx(
+			{
+				prompt: "Review schema migration",
+				max_loops: 1,
+				base_branch: "origin/main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) => {
+					if (name === "reviewer-a" || name === "reviewer-b") {
+						return JSON.stringify({
+							findings: [],
+							overall_correctness: "patch is correct",
+							overall_explanation: "No blocking findings.",
+							overall_confidence_score: 1,
+							requirements_traceability: [
+								{
+									requirement: "Review schema migration",
+									status: "proven",
+									evidence: "Current repository state satisfies the migration task.",
+								},
+							],
+							stop_review_loop: true,
+							reviewer_error: null,
+						});
+					}
+					return undefined;
+				},
+			},
+		);
 
-        await mod.default.run({ ...ctx, cwd: requireRalphTempCwd() });
+		await mod.default.run({ ...ctx, cwd: requireRalphTempCwd() });
 
-        const reviewerOptions = ctx.calls.taskOptions["reviewer-a"]?.[0];
-        assert.notEqual(reviewerOptions?.schema, undefined);
-        assert.equal(reviewerOptions?.customTools, undefined);
-        const reviewerBOptions = ctx.calls.taskOptions["reviewer-b"]?.[0];
-        assert.equal(reviewerBOptions?.model, "openai-codex/gpt-5.6-sol:xhigh");
-        assert.deepEqual(ctx.calls.parallel[0], ["reviewer-a", "reviewer-b"]);
-        // Dominated models (benchmark 2026-07-02) must stay out of the chain.
-        const reviewerBFallbacks = reviewerBOptions?.fallbackModels ?? [];
-        assert.equal(
-            reviewerBFallbacks.includes("openrouter/sakana/fugu-ultra:high"),
-            true,
-        );
-        assert.equal(
-            reviewerBFallbacks.some((m) => m.startsWith("sakana/")),
-            false,
-        );
-        assert.equal(
-            reviewerBFallbacks.some((m) => /gemini|sonnet/.test(m)),
-            false,
-        );
-        for (const reviewerName of ["reviewer-a", "reviewer-b"]) {
-            assertReviewerIntercomCoordination(
-                ctx.calls.prompts[reviewerName]?.[0] ?? "",
-                reviewerName,
-            );
-        }
+		const reviewerOptions = ctx.calls.taskOptions["reviewer-a"]?.[0];
+		assert.notEqual(reviewerOptions?.schema, undefined);
+		assert.equal(reviewerOptions?.customTools, undefined);
+		const reviewerBOptions = ctx.calls.taskOptions["reviewer-b"]?.[0];
+		assert.equal(reviewerBOptions?.model, "openai-codex/gpt-5.6-sol:xhigh");
+		assert.deepEqual(ctx.calls.parallel[0], ["reviewer-a", "reviewer-b"]);
+		// Dominated models (benchmark 2026-07-02) must stay out of the chain.
+		const reviewerBFallbacks = reviewerBOptions?.fallbackModels ?? [];
+		assert.equal(reviewerBFallbacks.includes("openrouter/sakana/fugu-ultra:high"), true);
+		assert.equal(
+			reviewerBFallbacks.some((m) => m.startsWith("sakana/")),
+			false,
+		);
+		assert.equal(
+			reviewerBFallbacks.some((m) => /gemini|sonnet/.test(m)),
+			false,
+		);
+		for (const reviewerName of ["reviewer-a", "reviewer-b"]) {
+			assertReviewerIntercomCoordination(ctx.calls.prompts[reviewerName]?.[0] ?? "", reviewerName);
+		}
 
-        const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
-        assert.match(reviewerPrompt, /<structured_decision_assurance>/);
-        assert.match(reviewerPrompt, /findings is always an array/);
-        assert.match(reviewerPrompt, /requirements_traceability is a non-empty array/);
-        assert.doesNotMatch(reviewerPrompt, /structured_output/i);
-        assert.doesNotMatch(reviewerPrompt, /output_format/i);
-    });
+		const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
+		assert.match(reviewerPrompt, /<structured_decision_assurance>/);
+		assert.match(reviewerPrompt, /findings is always an array/);
+		assert.match(reviewerPrompt, /requirements_traceability is a non-empty array/);
+		assert.doesNotMatch(reviewerPrompt, /structured_output/i);
+		assert.doesNotMatch(reviewerPrompt, /output_format/i);
+	});
 
-    test("passes Ralph review artifacts into follow-up research", async () => {
-        const mod = await import("../../packages/workflows/builtin/ralph.js");
-        const cwd = requireRalphTempCwd();
-        const reviewerPayload = JSON.stringify(
-            {
-                findings: [
-                    {
-                        title: "[P1] Fix reviewer payload",
-                        body: "critical reviewer payload should be addressed by research prompts",
-                        confidence_score: 0.9,
-                        objective_alignment: "required_by_objective",
-                        priority: 1,
-                        code_location: {
-                            absolute_file_path: join(cwd, "src/example.ts"),
-                            line_range: { start: 1, end: 1 },
-                        },
-                    },
-                ],
-                overall_correctness: "patch is incorrect",
-                overall_explanation: "critical reviewer payload",
-                overall_confidence_score: 0.8,
-                requirements_traceability: [
-                    {
-                        requirement: "Repair review handoff",
-                        status: "missing",
-                        evidence: "Reviewer found a critical handoff issue.",
-                    },
-                ],
-                stop_review_loop: false,
-                reviewer_error: null,
-            },
-            null,
-            2,
-        );
-        const ctx = makeMockCtx(
-            {
-                prompt: "Repair review handoff",
-                max_loops: 2,
-                base_branch: "main",
-                git_worktree_dir: "",
-                create_pr: false,
-            },
-            {
-                task: (name) => {
-                    if (name === "reviewer-a" || name === "reviewer-b") {
-                        return reviewerPayload;
-                    }
-                    return undefined;
-                },
-            },
-        );
+	test("passes Ralph review artifacts into follow-up research", async () => {
+		const mod = await import("../../packages/workflows/builtin/ralph.js");
+		const cwd = requireRalphTempCwd();
+		const reviewerPayload = JSON.stringify(
+			{
+				findings: [
+					{
+						title: "[P1] Fix reviewer payload",
+						body: "critical reviewer payload should be addressed by research prompts",
+						confidence_score: 0.9,
+						objective_alignment: "required_by_objective",
+						priority: 1,
+						code_location: {
+							absolute_file_path: join(cwd, "src/example.ts"),
+							line_range: { start: 1, end: 1 },
+						},
+					},
+				],
+				overall_correctness: "patch is incorrect",
+				overall_explanation: "critical reviewer payload",
+				overall_confidence_score: 0.8,
+				requirements_traceability: [
+					{
+						requirement: "Repair review handoff",
+						status: "missing",
+						evidence: "Reviewer found a critical handoff issue.",
+					},
+				],
+				stop_review_loop: false,
+				reviewer_error: null,
+			},
+			null,
+			2,
+		);
+		const ctx = makeMockCtx(
+			{
+				prompt: "Repair review handoff",
+				max_loops: 2,
+				base_branch: "main",
+				git_worktree_dir: "",
+				create_pr: false,
+			},
+			{
+				task: (name) => {
+					if (name === "reviewer-a" || name === "reviewer-b") {
+						return reviewerPayload;
+					}
+					return undefined;
+				},
+			},
+		);
 
-        const result = await mod.default.run({ ...ctx, cwd });
+		const result = await mod.default.run({ ...ctx, cwd });
 
-        const promptEngineerTwoPrompt =
-            ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
-        assert.match(promptEngineerTwoPrompt, /Latest review round artifact:/);
-        assert.match(promptEngineerTwoPrompt, /unresolved reviewer findings/);
-        assert.equal(
-            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]
-                ?.previous,
-            undefined,
-        );
-        const promptEngineerTwoReads = readPaths(
-            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0],
-        );
-        assert.equal(
-            promptEngineerTwoReads.some((path) =>
-                /review-round-latest\.json$/.test(
-                    normalizePathSeparators(path),
-                ),
-            ),
-            true,
-        );
-        const researchTwoReads = readPaths(
-            ctx.calls.taskOptions["research-2"]?.[0],
-        );
-        assert.equal(
-            researchTwoReads.some((path) =>
-                /review-round-latest\.json$/.test(
-                    normalizePathSeparators(path),
-                ),
-            ),
-            true,
-        );
-        assert.equal(
-            ctx.calls.taskOptions["research-1"]?.[0]?.outputMode,
-            "file-only",
-        );
-        assert.equal(
-            ctx.calls.taskOptions["orchestrator-1"]?.[0]?.outputMode,
-            "file-only",
-        );
-        assert.equal(ctx.calls.task.includes("planner-1"), false);
-        assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
-        assert.equal(
-            ctx.calls.parallel.flat().some((name) => name.startsWith("infra-")),
-            false,
-        );
-        assert.equal(typeof result["review_report_path"], "string");
-        assert.match(
-            normalizePathSeparators(result["review_report_path"] as string),
-            /review-round-latest\.json$/,
-        );
-    });
+		const promptEngineerTwoPrompt = ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
+		assert.match(promptEngineerTwoPrompt, /Latest review round artifact:/);
+		assert.match(promptEngineerTwoPrompt, /unresolved reviewer findings/);
+		assert.equal(ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.previous, undefined);
+		const promptEngineerTwoReads = readPaths(ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]);
+		assert.equal(
+			promptEngineerTwoReads.some((path) => /review-round-latest\.json$/.test(normalizePathSeparators(path))),
+			true,
+		);
+		const researchTwoReads = readPaths(ctx.calls.taskOptions["research-2"]?.[0]);
+		assert.equal(
+			researchTwoReads.some((path) => /review-round-latest\.json$/.test(normalizePathSeparators(path))),
+			true,
+		);
+		assert.equal(ctx.calls.taskOptions["research-1"]?.[0]?.outputMode, "file-only");
+		assert.equal(ctx.calls.taskOptions["orchestrator-1"]?.[0]?.outputMode, "file-only");
+		assert.equal(ctx.calls.task.includes("planner-1"), false);
+		assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
+		assert.equal(
+			ctx.calls.parallel.flat().some((name) => name.startsWith("infra-")),
+			false,
+		);
+		assert.equal(typeof result.review_report_path, "string");
+		assert.match(normalizePathSeparators(result.review_report_path as string), /review-round-latest\.json$/);
+	});
 });

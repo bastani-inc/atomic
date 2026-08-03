@@ -159,7 +159,9 @@ export function applyAutoloadDisabledPatterns(
 		const enabled = !pattern.startsWith("-") && !pattern.startsWith("!");
 		const exact = pattern.startsWith("+") || pattern.startsWith("-");
 		for (const filePath of allPaths) {
-			if (exact ? matchesAnyExactPattern(filePath, [target], baseDir) : matchesAnyPattern(filePath, [target], baseDir)) {
+			if (
+				exact ? matchesAnyExactPattern(filePath, [target], baseDir) : matchesAnyPattern(filePath, [target], baseDir)
+			) {
 				result.set(filePath, enabled);
 			}
 		}

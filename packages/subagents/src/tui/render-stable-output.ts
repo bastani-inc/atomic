@@ -47,9 +47,11 @@ export function progressRenderKey(progress: Partial<AgentProgress> | undefined):
 }
 
 export function isRunningSubagentResult(result: AgentToolResult<Details>): boolean {
-	return result.details?.progress?.some((entry) => entry.status === "running")
-		|| result.details?.results.some((entry) => entry.progress?.status === "running")
-		|| false;
+	return (
+		result.details?.progress?.some((entry) => entry.status === "running") ||
+		result.details?.results.some((entry) => entry.progress?.status === "running") ||
+		false
+	);
 }
 
 export function subagentResultRenderKey(
@@ -60,16 +62,18 @@ export function subagentResultRenderKey(
 	if (!details) return `${options.isPartial ? "partial" : "final"}:${result.content.length}`;
 	const progressKeys = [
 		...(details.progress ?? []).map(progressRenderKey),
-		...details.results.map((entry) => [
-			entry.agent,
-			entry.exitCode,
-			entry.interrupted === true ? "interrupted" : "",
-			entry.detached === true ? "detached" : "",
-			progressRenderKey(entry.progress),
-			progressRenderKey(entry.progressSummary),
-			entry.finalOutput?.length ?? "",
-			entry.error?.length ?? "",
-		].join(":")),
+		...details.results.map((entry) =>
+			[
+				entry.agent,
+				entry.exitCode,
+				entry.interrupted === true ? "interrupted" : "",
+				entry.detached === true ? "detached" : "",
+				progressRenderKey(entry.progress),
+				progressRenderKey(entry.progressSummary),
+				entry.finalOutput?.length ?? "",
+				entry.error?.length ?? "",
+			].join(":"),
+		),
 	];
 	return [
 		options.isPartial ? "partial" : "final",

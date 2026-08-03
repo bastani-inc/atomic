@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, beforeEach, test } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import { cleanupWorktrees, createWorktrees } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
@@ -66,7 +66,9 @@ test("full worktree lifecycle stays scrubbed and only writes shared core.hooksPa
 
 	const configPath = join(fixtureDir, ".git", "config");
 	const keysBefore = runGitChecked(fixtureDir, ["config", "--file", configPath, "--name-only", "--list"])
-		.trim().split("\n").filter(Boolean);
+		.trim()
+		.split("\n")
+		.filter(Boolean);
 	const setup = createWorktrees(fixtureDir, "hostile/nested", 1, { symlinkDirectories: [] });
 	const worktree = setup.worktrees[0]!;
 	assert.equal(worktree.path, join(fixtureDir, ".atomic", "worktrees", "hostile+nested-0"));
@@ -75,13 +77,24 @@ test("full worktree lifecycle stays scrubbed and only writes shared core.hooksPa
 	cleanupWorktrees(setup);
 	cleanupWorktrees(setup);
 	assert.equal(existsSync(worktree.path), false);
-	assert.notEqual(runGitChecked(fixtureDir, ["branch", "--list", "worktree-hostile+nested-0"]).trim(), "worktree-hostile+nested-0");
+	assert.notEqual(
+		runGitChecked(fixtureDir, ["branch", "--list", "worktree-hostile+nested-0"]).trim(),
+		"worktree-hostile+nested-0",
+	);
 
 	const keysAfter = runGitChecked(fixtureDir, ["config", "--file", configPath, "--name-only", "--list"])
-		.trim().split("\n").filter(Boolean);
-	assert.deepEqual(keysAfter.filter((key) => !keysBefore.includes(key)), ["core.hookspath"]);
+		.trim()
+		.split("\n")
+		.filter(Boolean);
+	assert.deepEqual(
+		keysAfter.filter((key) => !keysBefore.includes(key)),
+		["core.hookspath"],
+	);
 	const invokingConfig = readFileSync(configPath, "utf8");
-	assert.ok(!invokingConfig.toLowerCase().includes("worktree ="), `invoking config gained core.worktree:\n${invokingConfig}`);
+	assert.ok(
+		!invokingConfig.toLowerCase().includes("worktree ="),
+		`invoking config gained core.worktree:\n${invokingConfig}`,
+	);
 	const sentinelAfter = readFileSync(join(sentinelRepo, ".git", "config"), "utf-8");
 	assert.equal(sentinelAfter, sentinelConfigBefore, "sentinel repository config must be byte-identical");
 });

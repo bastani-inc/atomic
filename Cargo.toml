@@ -15,20 +15,20 @@ strip = "symbols"
 
 [workspace.dependencies]
 dashmap = "6.1"
-globset = "0.4"
+globset = "0.4.19"
 grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
-libc = "0.2"
+libc = "0.2.189"
 memmap2 = "0.9"
-napi = { version = "3", features = ["napi10", "tokio_rt", "tokio_time"] }
+napi = { version = "3.12.0", features = ["napi10", "tokio_rt", "tokio_time"] }
 napi-build = "2"
-napi-derive = "3"
+napi-derive = "3.6.1"
 portable-pty = "0.9"
 rayon = "1.12"
 smallvec = "1.15"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tree-sitter = "0.26"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.25"

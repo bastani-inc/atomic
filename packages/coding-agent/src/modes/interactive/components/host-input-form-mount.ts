@@ -1,8 +1,5 @@
 import type { TUI } from "@earendil-works/pi-tui";
-import type {
-	ExtensionUIContext,
-	HostInputFormRequest,
-} from "../../../core/extensions/ui-types.ts";
+import type { ExtensionUIContext, HostInputFormRequest } from "../../../core/extensions/ui-types.ts";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { Theme } from "../theme/theme.ts";
 import { HostInputFormComponent } from "./host-input-form.ts";
@@ -62,12 +59,14 @@ export function mountHostInputForm(
 		});
 	};
 	try {
-		void Promise.resolve(ui.custom<undefined>(factory, { overlay: false })).catch(() => {
-			finish(() => delegate.onCancel());
-		}).finally(() => {
-			if (settled) restoreWorking();
-			else finish(() => delegate.onCancel());
-		});
+		void Promise.resolve(ui.custom<undefined>(factory, { overlay: false }))
+			.catch(() => {
+				finish(() => delegate.onCancel());
+			})
+			.finally(() => {
+				if (settled) restoreWorking();
+				else finish(() => delegate.onCancel());
+			});
 	} catch {
 		finish(() => delegate.onCancel());
 	}

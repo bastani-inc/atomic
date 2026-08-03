@@ -1,4 +1,5 @@
 import type { Message } from "@earendil-works/pi-ai/compat";
+import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import type {
 	ActivityState,
 	ArtifactConfig,
@@ -11,13 +12,12 @@ import type {
 	NestedRouteInfo,
 	ResolvedControlConfig,
 	SubagentRunMode,
+	TokenUsage,
 	Usage,
 	WorkflowGraphSnapshot,
 } from "../../shared/types.ts";
-import type { TokenUsage } from "../../shared/types.ts";
 import type { RunnerStep, RunnerSubagentStep as SubagentStep } from "../shared/parallel-utils.ts";
 import type { WorktreeSetup } from "../shared/worktree.ts";
-import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 
 export interface SubagentRunConfig {
 	id: string;
@@ -48,7 +48,12 @@ export interface SubagentRunConfig {
 	workflowGraph?: WorkflowGraphSnapshot;
 	nestedRoute?: NestedRouteInfo;
 	workflowStageSubagentGuard?: boolean;
-	nestedSelf?: { parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }> };
+	nestedSelf?: {
+		parentRunId: string;
+		parentStepIndex?: number;
+		depth: number;
+		path?: Array<{ runId: string; stepIndex?: number; agent?: string }>;
+	};
 }
 
 export interface StepResult {
@@ -142,7 +147,10 @@ export type RunnerStatusStep = NonNullable<AsyncStatus["steps"]>[number] & {
 	exitCode?: number | null;
 };
 
-export type RunnerStatusPayload = Omit<AsyncStatus, "steps" | "parallelGroups" | "pid" | "cwd" | "currentStep" | "chainStepCount" | "lastUpdate"> & {
+export type RunnerStatusPayload = Omit<
+	AsyncStatus,
+	"steps" | "parallelGroups" | "pid" | "cwd" | "currentStep" | "chainStepCount" | "lastUpdate"
+> & {
 	pid: number;
 	cwd: string;
 	currentStep: number;
@@ -189,7 +197,9 @@ export interface RunnerExecutionState {
 	sessionEnabled: boolean;
 	statusPayload: RunnerStatusPayload;
 	flatIndex: number;
-	mutatingFailureStates: Array<ReturnType<typeof import("../shared/long-running-guard.ts").createMutatingFailureState>>;
+	mutatingFailureStates: Array<
+		ReturnType<typeof import("../shared/long-running-guard.ts").createMutatingFailureState>
+	>;
 	pendingToolResults: Array<{ tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined>;
 	emittedControlEventKeys: Set<string>;
 	activeLongRunningSteps: Set<number>;
@@ -197,4 +207,4 @@ export interface RunnerExecutionState {
 
 export type ParallelGroup = Extract<RunnerStep, { parallel: SubagentStep[] }>;
 export type DynamicGroup = Extract<RunnerStep, { collect: { as: string } }>;
-export type { SubagentStep, RunnerStep, WorktreeSetup };
+export type { RunnerStep, SubagentStep, WorktreeSetup };

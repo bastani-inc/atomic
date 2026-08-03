@@ -1,6 +1,6 @@
 import * as path from "node:path";
-import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl } from "../../shared/artifacts.ts";
+import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
 import { diffWorktrees, formatWorktreeDiffSummary, type WorktreeSetup } from "../shared/worktree.ts";
 import type { ParallelGroup, RunnerStatusPayload, StepResult, SubagentStep } from "./subagent-runner-types.ts";
@@ -25,19 +25,28 @@ export function markParallelGroupSetupFailure(input: {
 		input.statusPayload.steps[flatTaskIndex].endedAt = input.failedAt;
 		input.statusPayload.steps[flatTaskIndex].durationMs = 0;
 		input.statusPayload.steps[flatTaskIndex].exitCode = 1;
-		input.results.push({ agent: input.group.parallel[taskIndex].agent, output: input.setupError, success: false, exitCode: 1, sessionFile: input.group.parallel[taskIndex].sessionFile });
+		input.results.push({
+			agent: input.group.parallel[taskIndex].agent,
+			output: input.setupError,
+			success: false,
+			exitCode: 1,
+			sessionFile: input.group.parallel[taskIndex].sessionFile,
+		});
 	}
 	input.statusPayload.currentStep = input.groupStartFlatIndex;
 	input.statusPayload.lastUpdate = input.failedAt;
 	input.statusPayload.outputFile = path.join(input.asyncDir, `output-${input.groupStartFlatIndex}.log`);
 	writeAtomicJson(input.statusPath, input.statusPayload);
-	appendJsonl(input.eventsPath, JSON.stringify({
-		type: "subagent.parallel.completed",
-		ts: input.failedAt,
-		runId: input.runId,
-		stepIndex: input.stepIndex,
-		success: false,
-	}));
+	appendJsonl(
+		input.eventsPath,
+		JSON.stringify({
+			type: "subagent.parallel.completed",
+			ts: input.failedAt,
+			runId: input.runId,
+			stepIndex: input.stepIndex,
+			success: false,
+		}),
+	);
 }
 
 export function markParallelGroupRunning(input: {
@@ -67,14 +76,17 @@ export function markParallelGroupRunning(input: {
 	input.statusPayload.lastUpdate = input.groupStartTime;
 	input.statusPayload.outputFile = path.join(input.asyncDir, `output-${input.groupStartFlatIndex}.log`);
 	writeAtomicJson(input.statusPath, input.statusPayload);
-	appendJsonl(input.eventsPath, JSON.stringify({
-		type: "subagent.parallel.started",
-		ts: input.groupStartTime,
-		runId: input.runId,
-		stepIndex: input.stepIndex,
-		agents: input.group.parallel.map((task) => task.agent),
-		count: input.group.parallel.length,
-	}));
+	appendJsonl(
+		input.eventsPath,
+		JSON.stringify({
+			type: "subagent.parallel.started",
+			ts: input.groupStartTime,
+			runId: input.runId,
+			stepIndex: input.stepIndex,
+			agents: input.group.parallel.map((task) => task.agent),
+			count: input.group.parallel.length,
+		}),
+	);
 }
 
 export function prepareParallelTaskRun(
@@ -99,7 +111,11 @@ export function appendParallelWorktreeSummary(
 ): string {
 	if (!worktreeSetup) return previousOutput;
 	const diffsDir = path.join(asyncDir, "worktree-diffs", `step-${stepIndex}`);
-	const diffs = diffWorktrees(worktreeSetup, group.parallel.map((task) => task.agent), diffsDir);
+	const diffs = diffWorktrees(
+		worktreeSetup,
+		group.parallel.map((task) => task.agent),
+		diffsDir,
+	);
 	const diffSummary = formatWorktreeDiffSummary(diffs);
 	if (!diffSummary) return previousOutput;
 	return `${previousOutput}\n\n${diffSummary}`;

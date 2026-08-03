@@ -18,17 +18,24 @@
 // ---------------------------------------------------------------------------
 
 export interface ActiveRunEntry {
-  readonly controller: AbortController;
-  readonly children: AbortController[];
+	readonly controller: AbortController;
+	readonly children: AbortController[];
 }
 
 export interface CancellationRegistry {
-  register(runId: string, controller: AbortController): void;
-  registerChild(runId: string, controller: AbortController): void;
-  abort(runId: string, reason?: unknown): boolean;
-  abortAll(reason?: unknown): number;
-  unregister(runId: string): void;
-  isAborted(runId: string): boolean;
+	register(runId: string, controller: AbortController): void;
+	registerChild(runId: string, controller: AbortController): void;
+	abort(runId: string, reason?: unknown): boolean;
+	abortAll(reason?: unknown): number;
+	/**
+	 * Remove a run's registration.
+	 *
+	 * When `expectedController` is supplied the entry is removed only if it is
+	 * still the registered primary, so a stale executor's finalizer cannot evict
+	 * the replacement that now owns this run id. Returns true when it removed.
+	 */
+	unregister(runId: string, expectedController?: AbortController): boolean;
+	isAborted(runId: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -36,63 +43,69 @@ export interface CancellationRegistry {
 // ---------------------------------------------------------------------------
 
 class CancellationRegistryImpl implements CancellationRegistry {
-  private readonly _runs = new Map<string, ActiveRunEntry>();
+	private readonly _runs = new Map<string, ActiveRunEntry>();
 
-  register(runId: string, controller: AbortController): void {
-    // If already registered, replace (unregister old entry first without aborting)
-    const existing = this._runs.get(runId);
-    if (existing) {
-      // Preserve children when re-registering same runId
-      this._runs.set(runId, { controller, children: existing.children });
-    } else {
-      this._runs.set(runId, { controller, children: [] });
-    }
-  }
+	register(runId: string, controller: AbortController): void {
+		// If already registered, replace (unregister old entry first without aborting)
+		const existing = this._runs.get(runId);
+		if (existing) {
+			// Preserve children when re-registering same runId
+			this._runs.set(runId, { controller, children: existing.children });
+		} else {
+			this._runs.set(runId, { controller, children: [] });
+		}
+	}
 
-  registerChild(runId: string, controller: AbortController): void {
-    const entry = this._runs.get(runId);
-    if (!entry) {
-      // No primary controller yet — create a placeholder entry with no primary
-      // so children can still be tracked. Callers should call register() first.
-      // Strict: throw to surface misuse.
-      throw new Error(`CancellationRegistry: cannot registerChild for unknown runId "${runId}". Call register() first.`);
-    }
-    entry.children.push(controller);
-  }
+	registerChild(runId: string, controller: AbortController): void {
+		const entry = this._runs.get(runId);
+		if (!entry) {
+			// No primary controller yet — create a placeholder entry with no primary
+			// so children can still be tracked. Callers should call register() first.
+			// Strict: throw to surface misuse.
+			throw new Error(
+				`CancellationRegistry: cannot registerChild for unknown runId "${runId}". Call register() first.`,
+			);
+		}
+		entry.children.push(controller);
+	}
 
-  abort(runId: string, reason?: unknown): boolean {
-    const entry = this._runs.get(runId);
-    if (!entry) return false;
+	abort(runId: string, reason?: unknown): boolean {
+		const entry = this._runs.get(runId);
+		if (!entry) return false;
 
-    // Abort children first, then primary
-    for (const child of entry.children) {
-      if (!child.signal.aborted) {
-        child.abort(reason);
-      }
-    }
-    if (!entry.controller.signal.aborted) {
-      entry.controller.abort(reason);
-    }
-    return true;
-  }
+		// Abort children first, then primary
+		for (const child of entry.children) {
+			if (!child.signal.aborted) {
+				child.abort(reason);
+			}
+		}
+		if (!entry.controller.signal.aborted) {
+			entry.controller.abort(reason);
+		}
+		return true;
+	}
 
-  abortAll(reason?: unknown): number {
-    let count = 0;
-    for (const runId of this._runs.keys()) {
-      if (this.abort(runId, reason)) count++;
-    }
-    return count;
-  }
+	abortAll(reason?: unknown): number {
+		let count = 0;
+		for (const runId of this._runs.keys()) {
+			if (this.abort(runId, reason)) count++;
+		}
+		return count;
+	}
 
-  unregister(runId: string): void {
-    this._runs.delete(runId);
-  }
+	unregister(runId: string, expectedController?: AbortController): boolean {
+		const entry = this._runs.get(runId);
+		if (entry === undefined) return false;
+		if (expectedController !== undefined && entry.controller !== expectedController) return false;
+		this._runs.delete(runId);
+		return true;
+	}
 
-  isAborted(runId: string): boolean {
-    const entry = this._runs.get(runId);
-    if (!entry) return false;
-    return entry.controller.signal.aborted;
-  }
+	isAborted(runId: string): boolean {
+		const entry = this._runs.get(runId);
+		if (!entry) return false;
+		return entry.controller.signal.aborted;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +116,7 @@ class CancellationRegistryImpl implements CancellationRegistry {
  * Create an isolated CancellationRegistry instance (useful for testing).
  */
 export function createCancellationRegistry(): CancellationRegistry {
-  return new CancellationRegistryImpl();
+	return new CancellationRegistryImpl();
 }
 
 /**

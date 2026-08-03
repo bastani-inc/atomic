@@ -111,7 +111,9 @@ describe("issue #3217 scoped model ordering", () => {
 		const selector = new ScopedModelsSelectorComponent(
 			{ allModels: [...harness.models], enabledModelIds: [unavailableId, availableId] },
 			{
-				onChange: (enabledModelIds) => { changes.push(enabledModelIds); },
+				onChange: (enabledModelIds) => {
+					changes.push(enabledModelIds);
+				},
 				onPersist: () => {},
 				onCancel: () => {},
 			},

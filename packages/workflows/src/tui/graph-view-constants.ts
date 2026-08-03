@@ -1,13 +1,13 @@
 export const HINT_KEYS: Array<{ key: string; label: string }> = [
-  { key: "ctrl+x", label: "return to main chat" },
-  { key: "↵", label: "open stage chat" },
-  { key: "↑↓←→", label: "navigate" },
-  { key: "/", label: "stages" },
+	{ key: "ctrl+x", label: "return to main chat" },
+	{ key: "↵", label: "open stage chat" },
+	{ key: "↑↓←→", label: "navigate" },
+	{ key: "/", label: "stages" },
 ];
 
 export const COMPACT_HINT_KEYS: Array<{ key: string; label: string }> = [
-  { key: "ctrl+x", label: "return to main chat" },
-  { key: "↵", label: "stage chat" },
+	{ key: "ctrl+x", label: "return to main chat" },
+	{ key: "↵", label: "stage chat" },
 ];
 
 /**
@@ -37,6 +37,9 @@ export const OVERLAY_VERTICAL_MARGIN_ROWS = 1;
  * and the running-stage border lerps between `borderDim` and
  * `warning` without a key press. The host-supplied `requestRender`
  * gate prevents work while the overlay is hidden or unfocused.
+ * GraphView also skips ticks when nothing is animating — no running or
+ * awaiting_input stage and no prompt caret — so large idle graphs do not
+ * burn ~10 full paints/sec (#2100).
  */
 export const ANIMATION_TICK_MS = 100;
 

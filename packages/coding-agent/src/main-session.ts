@@ -1,16 +1,13 @@
 import { createInterface } from "node:readline";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { getAgentDir } from "./config.ts";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
-import {
-	formatMissingSessionCwdPrompt,
-	type SessionCwdIssue,
-} from "./core/session-cwd.ts";
-import { workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
-import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { getAgentDir } from "./config.ts";
 import { KeybindingsManager } from "./core/keybindings.ts";
+import { formatMissingSessionCwdPrompt, type SessionCwdIssue } from "./core/session-cwd.ts";
+import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";

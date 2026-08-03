@@ -6,7 +6,13 @@
  */
 
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { retryAssistantCall, type ProviderHeaders, type RetryCallbacks, type RetryPolicy, uuidv7 } from "@earendil-works/pi-ai";
+import {
+	type ProviderHeaders,
+	type RetryCallbacks,
+	type RetryPolicy,
+	retryAssistantCall,
+	uuidv7,
+} from "@earendil-works/pi-ai";
 import type { Api, Model, SimpleStreamOptions, Usage } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
@@ -373,9 +379,10 @@ export async function generateBranchSummary(
 	const response = await (async () => {
 		try {
 			return await retryAssistantCall(
-				async () => streamFn
-					? (await streamFn(requestModel, context, requestOptions)).result()
-					: completeSimple(requestModel, context, requestOptions),
+				async () =>
+					streamFn
+						? (await streamFn(requestModel, context, requestOptions)).result()
+						: completeSimple(requestModel, context, requestOptions),
 				retry,
 				signal,
 				callbacks,

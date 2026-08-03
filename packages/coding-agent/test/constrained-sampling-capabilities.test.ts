@@ -1,8 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
-import type { AtomicProviderCompat } from "../src/index.ts";
 import { normalizeGrammarToolCapability } from "../src/core/model-capabilities.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import type { AtomicProviderCompat } from "../src/index.ts";
 
 function compatOf(model: Model<Api>): AtomicProviderCompat | undefined {
 	return model.compat as AtomicProviderCompat | undefined;
@@ -27,15 +27,13 @@ describe("constrained-sampling model capabilities", () => {
 	});
 
 	test("uses the canonical capability when aliases conflict to avoid false claims", () => {
-		expect(
-			normalizeGrammarToolCapability({ supportsOpenAIGrammarTools: false, supportsGrammarTools: true }),
-		).toEqual({ supportsOpenAIGrammarTools: false, supportsGrammarTools: false });
+		expect(normalizeGrammarToolCapability({ supportsOpenAIGrammarTools: false, supportsGrammarTools: true })).toEqual(
+			{ supportsOpenAIGrammarTools: false, supportsGrammarTools: false },
+		);
 	});
 
 	test("preserves unrelated strict capability fields while normalizing the grammar alias", () => {
-		expect(
-			normalizeGrammarToolCapability({ supportsStrictMode: false, supportsGrammarTools: true }),
-		).toEqual({
+		expect(normalizeGrammarToolCapability({ supportsStrictMode: false, supportsGrammarTools: true })).toEqual({
 			supportsStrictMode: false,
 			supportsGrammarTools: true,
 			supportsOpenAIGrammarTools: true,

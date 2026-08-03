@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 
 function postToolFailureMessage(error: unknown): string {
@@ -43,10 +43,17 @@ export async function _preflightPostToolContext(
 	const relayAbort = () => abortController.abort();
 	signal?.addEventListener("abort", relayAbort, { once: true });
 	if (signal?.aborted) abortController.abort();
-	this._autoCompactionAbortController = abortController;
-	this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
-
+	// Ownership publication and the synchronous `compaction_start` emission live
+	// inside the cleanup scope: `_emit` runs subscribers synchronously, so a
+	// throwing listener would otherwise leave `_autoCompactionAbortController`
+	// and `_compactionReason` set with no `finally` to clear them. The next
+	// threshold compaction would then be rejected as already active, and
+	// attached clients would keep painting a compaction that never runs.
 	try {
+		this._autoCompactionAbortController = abortController;
+		this._compactionReason = "threshold";
+		this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
+
 		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async (candidate) => {
 				const auth = await this._getRequiredRequestAuth(candidate);
@@ -105,14 +112,12 @@ export async function _preflightPostToolContext(
 	} finally {
 		signal?.removeEventListener("abort", relayAbort);
 		this._autoCompactionAbortController = undefined;
+		if (this._compactionReason === "threshold") this._compactionReason = undefined;
 	}
 }
 
 /** Gate the transformed message context immediately before provider conversion. */
-export function _finishPostToolCompactionPreflight(
-	this: AgentSession,
-	messages: AgentMessage[],
-): AgentMessage[] {
+export function _finishPostToolCompactionPreflight(this: AgentSession, messages: AgentMessage[]): AgentMessage[] {
 	const pending = this._pendingPostToolCompactionGuard;
 	if (!pending) return messages;
 	this._pendingPostToolCompactionGuard = undefined;

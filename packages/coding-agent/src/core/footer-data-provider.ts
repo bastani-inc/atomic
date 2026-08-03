@@ -1,10 +1,15 @@
 import { type ExecFileException, execFile, spawnSync } from "child_process";
 import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatchFile, watchFile } from "fs";
 import { dirname, join, resolve } from "path";
-import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, isSafeFsWatchPathError, watchWithErrorHandler } from "../utils/fs-watch.ts";
+import {
+	closeWatcher,
+	FS_WATCH_RETRY_DELAY_MS,
+	isSafeFsWatchPathError,
+	watchWithErrorHandler,
+} from "../utils/fs-watch.ts";
 import { createGitEnvironment } from "../utils/git-env.ts";
 
-type GitPaths = {
+export type GitPaths = {
 	repoDir: string;
 	commonGitDir: string;
 	headPath: string;
@@ -14,7 +19,7 @@ type GitPaths = {
  * Find git metadata paths by walking up from cwd.
  * Handles both regular git repos (.git is a directory) and worktrees (.git is a file).
  */
-function findGitPaths(cwd: string): GitPaths | null {
+export function findGitPaths(cwd: string): GitPaths | null {
 	let dir = cwd;
 	while (true) {
 		const gitPath = join(dir, ".git");
@@ -313,14 +318,17 @@ export class FooterDataProvider {
 		}
 	}
 
-
 	private installHeadPollingFallback(): void {
 		if (!this.gitPaths || this.headWatchFilePath || this.headWatchFileListener) {
 			return;
 		}
 		this.headWatchFilePath = this.gitPaths.headPath;
 		this.headWatchFileListener = (current, previous) => {
-			if (current.mtimeMs !== previous.mtimeMs || current.ctimeMs !== previous.ctimeMs || current.size !== previous.size) {
+			if (
+				current.mtimeMs !== previous.mtimeMs ||
+				current.ctimeMs !== previous.ctimeMs ||
+				current.size !== previous.size
+			) {
 				this.scheduleRefresh();
 			}
 		};

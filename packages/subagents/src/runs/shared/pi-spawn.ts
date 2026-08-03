@@ -56,7 +56,8 @@ export function validatePiSpawnCwd(cwd: string, deps: PiSpawnDeps = {}): PiSpawn
 	} catch (error) {
 		const fsError = error as NodeJS.ErrnoException;
 		if (fsError.code === "ENOENT") return { ok: false, error: `cwd does not exist: ${cwd}` };
-		if (fsError.code === "ENOTDIR") return { ok: false, error: `cwd path contains a non-directory component: ${cwd}` };
+		if (fsError.code === "ENOTDIR")
+			return { ok: false, error: `cwd path contains a non-directory component: ${cwd}` };
 		const details = fsError.message ? ` (${fsError.message})` : "";
 		return { ok: false, error: `cwd is not accessible: ${cwd}${details}` };
 	}
@@ -114,23 +115,26 @@ export function resolvePiCliScript(deps: PiSpawnDeps = {}): string | undefined {
 	}
 
 	try {
-		const resolvePackageJson = deps.resolvePackageJson ?? (() => {
-			const root = deps.piPackageRoot ?? resolvePiPackageRoot();
-			if (root) return pathImpl.join(root, "package.json");
-			const packageRoot = deps.resolvePackageEntry
-				? findPiPackageRootFromEntry(deps.resolvePackageEntry())
-				: resolveInstalledPiPackageRoot();
-			if (!packageRoot) throw new Error(`Could not resolve ${CODING_AGENT_PACKAGE} package root`);
-			return pathImpl.join(packageRoot, "package.json");
-		});
+		const resolvePackageJson =
+			deps.resolvePackageJson ??
+			(() => {
+				const root = deps.piPackageRoot ?? resolvePiPackageRoot();
+				if (root) return pathImpl.join(root, "package.json");
+				const packageRoot = deps.resolvePackageEntry
+					? findPiPackageRootFromEntry(deps.resolvePackageEntry())
+					: resolveInstalledPiPackageRoot();
+				if (!packageRoot) throw new Error(`Could not resolve ${CODING_AGENT_PACKAGE} package root`);
+				return pathImpl.join(packageRoot, "package.json");
+			});
 		const packageJsonPath = resolvePackageJson();
 		const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
 			bin?: string | Record<string, string>;
 		};
 		const binField = packageJson.bin;
-		const binPath = typeof binField === "string"
-			? binField
-			: binField?.[APP_NAME] ?? binField?.pi ?? Object.values(binField ?? {})[0];
+		const binPath =
+			typeof binField === "string"
+				? binField
+				: (binField?.[APP_NAME] ?? binField?.pi ?? Object.values(binField ?? {})[0]);
 		if (!binPath) return undefined;
 		const candidate = pathImpl.resolve(pathImpl.dirname(packageJsonPath), binPath);
 		if (isRunnableCliScript(candidate, execPath, platform, existsSync)) {

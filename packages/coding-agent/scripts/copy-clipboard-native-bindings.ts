@@ -44,6 +44,21 @@ export const CLIPBOARD_NATIVE_TARGETS = {
 	},
 } satisfies Record<string, ClipboardNativeTarget>;
 
+/**
+ * Release platforms that deliberately ship without a clipboard binding.
+ *
+ * `@mariozechner/clipboard@0.3.9` declares `@mariozechner/clipboard-linux-x64-musl` and
+ * `-linux-arm64-musl` as optional dependencies, but both are published as metadata-only stubs:
+ * their tarballs contain `package.json` (and, for x64, a README) and no `.node` payload at all,
+ * while the glibc leaf ships a 627 KB binding. There is nothing to copy, so the musl archives
+ * ship the wrapper without a binding and `loadClipboardNative()` returns null — the same
+ * degradation a headless Linux box without DISPLAY already takes.
+ *
+ * `packages/coding-agent/test/clipboard-native-packaging.test.ts` fails when an excluded package
+ * gains a `.node` payload, so the exclusion cannot silently outlive its upstream justification.
+ */
+export const CLIPBOARD_PLATFORMS_WITHOUT_BINDING: readonly string[] = ["linux-x64-musl", "linux-arm64-musl"];
+
 function packagePath(nodeModulesRoot: string, packageName: string): string {
 	return join(nodeModulesRoot, ...packageName.split("/"));
 }
@@ -73,6 +88,7 @@ export function copyClipboardNativeBindings(options: CopyClipboardNativeBindings
 	}
 
 	for (const platform of options.platforms) {
+		if (CLIPBOARD_PLATFORMS_WITHOUT_BINDING.includes(platform)) continue;
 		const target = CLIPBOARD_NATIVE_TARGETS[platform as keyof typeof CLIPBOARD_NATIVE_TARGETS];
 		if (!target) throw new Error(`Unsupported clipboard target: ${platform}`);
 		const sourcePackage = packagePath(options.sourceNodeModules, target.packageName);

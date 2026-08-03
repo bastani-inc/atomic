@@ -2,19 +2,15 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Provider } from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { KeyId } from "@earendil-works/pi-tui";
+import type { ResourceOverlap } from "../diagnostics.ts";
 import type { CustomMessage } from "../messages.ts";
+import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
-import type { ResourceOverlap } from "../diagnostics.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { RegisteredCommand } from "./command-types.ts";
-import type {
-	CompactOptions,
-	ContextUsage,
-	ExtensionContext,
-	ReplacedSessionContext,
-} from "./context-types.ts";
+import type { CompactOptions, ContextUsage, ExtensionContext, ReplacedSessionContext } from "./context-types.ts";
 import type { EntryRenderer, MessageRenderer, SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
@@ -92,7 +88,9 @@ export interface ExtensionRuntimeState {
 	/** Configuration origin of each active flag owner. */
 	flagOwnerOrigins?: Map<string, Extension["sourceInfo"]["configurationOrigin"]>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
-	pendingProviderRegistrations: Array<{ provider: Provider; extensionPath: string } | { name: string; config: ProviderConfig; extensionPath: string }>;
+	pendingProviderRegistrations: Array<
+		{ provider: Provider; extensionPath: string } | { name: string; config: ProviderConfig; extensionPath: string }
+	>;
 	/** Resource-level compatibility gate installed after extension provenance is resolved. */
 	canRegisterResource?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => boolean;
 	beginResourceRegistrationBatch?: () => void;
@@ -106,10 +104,23 @@ export interface ExtensionRuntimeState {
 	) => void;
 	stageToolRegistration?: (extension: Extension, name: string, registration: RegisteredTool) => boolean;
 	stageCommandRegistration?: (extension: Extension, name: string, registration: RegisteredCommand) => boolean;
-	stageFlagRegistration?: (extension: Extension, name: string, registration: ExtensionFlag, defaultValue?: boolean | string) => boolean;
+	stageFlagRegistration?: (
+		extension: Extension,
+		name: string,
+		registration: ExtensionFlag,
+		defaultValue?: boolean | string,
+	) => boolean;
 	stageShortcutRegistration?: (extension: Extension, name: KeyId, registration: ExtensionShortcut) => boolean;
-	hasPendingResourceRegistration?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => boolean;
-	deletePendingResourceRegistration?: (extension: Extension, resourceType: ResourceOverlap["resourceType"], name: string) => void;
+	hasPendingResourceRegistration?: (
+		extension: Extension,
+		resourceType: ResourceOverlap["resourceType"],
+		name: string,
+	) => boolean;
+	deletePendingResourceRegistration?: (
+		extension: Extension,
+		resourceType: ResourceOverlap["resourceType"],
+		name: string,
+	) => void;
 	getPendingFlagDefault?: (ownerPath: string, name: string) => boolean | string | undefined;
 	getAllToolsAfterRegistration?: (extension: Extension) => ToolInfo[];
 	getCommandsAfterRegistration?: (extension: Extension) => SlashCommandInfo[];
@@ -125,7 +136,8 @@ export interface ExtensionRuntimeState {
 	 * Before bindCore(): queues registrations / removes from queue.
 	 * After bindCore(): calls ModelRegistry directly for immediate effect.
 	 */
-	registerProvider: ((name: string, config: ProviderConfig, extensionPath?: string) => void) & ((provider: Provider, extensionPath?: string) => void);
+	registerProvider: ((name: string, config: ProviderConfig, extensionPath?: string) => void) &
+		((provider: Provider, extensionPath?: string) => void);
 	unregisterProvider: (name: string, extensionPath?: string) => void;
 }
 
@@ -157,6 +169,7 @@ export interface ExtensionActions {
  */
 export interface ExtensionContextActions {
 	getModel: () => Model<Api> | undefined;
+	getScopedModels: () => readonly ScopedModel[];
 	getThinkingLevel: () => ThinkingLevel | undefined;
 	isIdle: () => boolean;
 	isProjectTrusted: () => boolean;

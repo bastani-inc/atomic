@@ -9,79 +9,79 @@
  *     records failed status (RFC §7).
  */
 
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
-import { statusRuns, killRun } from "../../packages/workflows/src/runs/background/status.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { Type } from "typebox";
+import { describe, test } from "vitest";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { Type } from "typebox";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
+import { killRun, statusRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { PromptAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Deferred adapter — a prompt adapter that holds until explicitly released
 // ---------------------------------------------------------------------------
 
 interface DeferredAdapter {
-  adapter: PromptAdapter;
-  release(value?: string): void;
-  rejectWith(err: Error): void;
+	adapter: PromptAdapter;
+	release(value?: string): void;
+	rejectWith(err: Error): void;
 }
 
 function makeDeferredAdapter(): DeferredAdapter {
-  let resolveFn!: (value: string) => void;
-  let rejectFn!: (reason: unknown) => void;
-  const holdPromise = new Promise<string>((res, rej) => {
-    resolveFn = res;
-    rejectFn = rej;
-  });
-  // Prevent unhandled rejection on the hold promise itself when rejected
-  holdPromise.catch(() => {});
-  return {
-    adapter: {
-      prompt: (_text: string) => holdPromise,
-    },
-    release: (value = "released") => resolveFn(value),
-    rejectWith: (err: Error) => rejectFn(err),
-  };
+	let resolveFn!: (value: string) => void;
+	let rejectFn!: (reason: unknown) => void;
+	const holdPromise = new Promise<string>((res, rej) => {
+		resolveFn = res;
+		rejectFn = rej;
+	});
+	// Prevent unhandled rejection on the hold promise itself when rejected
+	holdPromise.catch(() => {});
+	return {
+		adapter: {
+			prompt: (_text: string) => holdPromise,
+		},
+		release: (value = "released") => resolveFn(value),
+		rejectWith: (err: Error) => rejectFn(err),
+	};
 }
 
 function makeDelayedWorkflow(name: string): WorkflowDefinition {
-  return workflow({
-    name: name,
-    description: "",
-    inputs: {},
-    outputs: {
-      done: Type.Boolean(),
-    },
-    run: async (ctx) => {
-      await ctx.stage("delayed-stage").prompt("waiting for input");
-      return { done: true };
-    },
-  }) as WorkflowDefinition;
+	return workflow({
+		name: name,
+		description: "",
+		inputs: {},
+		outputs: {
+			done: Type.Boolean(),
+		},
+		run: async (ctx) => {
+			await ctx.stage("delayed-stage").prompt("waiting for input");
+			return { done: true };
+		},
+	}) as WorkflowDefinition;
 }
 
 function makeThrowingWorkflow(name: string): WorkflowDefinition {
-  return workflow({
-    name: name,
-    description: "",
-    inputs: {},
-    outputs: {},
-    run: async (_ctx) => {
-      throw new Error(`${name} internal error`);
-    },
-  }) as WorkflowDefinition;
+	return workflow({
+		name: name,
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (_ctx) => {
+			throw new Error(`${name} internal error`);
+		},
+	}) as WorkflowDefinition;
 }
 
 function busyWait(ms: number): void {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    // Intentional synchronous work used to prove detached dispatch does not
-    // run user workflow code before returning the accepted result.
-  }
+	const end = Date.now() + ms;
+	while (Date.now() < end) {
+		// Intentional synchronous work used to prove detached dispatch does not
+		// run user workflow code before returning the accepted result.
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -89,126 +89,133 @@ function busyWait(ms: number): void {
 // ---------------------------------------------------------------------------
 
 describe("runDetached — returns immediately", () => {
-  test("accepted result returned synchronously before background completes", async () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = makeDelayedWorkflow("immediate-return-wf");
+	test("accepted result returned synchronously before background completes", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = makeDelayedWorkflow("immediate-return-wf");
 
-    let backgroundSettled = false;
-    const accepted = runDetached(def, {}, {
-      store,
-      cancellation,
-      jobs,
-      adapters: {
-        prompt: {
-          prompt: async (text) => {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            backgroundSettled = true;
-            return text;
-          },
-        },
-      },
-    });
+		let backgroundSettled = false;
+		const accepted = runDetached(
+			def,
+			{},
+			{
+				store,
+				cancellation,
+				jobs,
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							await new Promise((resolve) => setTimeout(resolve, 100));
+							backgroundSettled = true;
+							return text;
+						},
+					},
+				},
+			},
+		);
 
-    // runDetached must have returned before background settled
-    assert.equal(backgroundSettled, false);
-    assert.equal(accepted.action, "run");
-    assert.equal(accepted.status, "running");
-    assert.ok(accepted.runId);
+		// runDetached must have returned before background settled
+		assert.equal(backgroundSettled, false);
+		assert.equal(accepted.action, "run");
+		assert.equal(accepted.status, "running");
+		assert.ok(accepted.runId);
 
-    // Cleanup — let background finish
-    const job = jobs.get(accepted.runId);
-    if (job) await job.promise;
-  });
+		// Cleanup — let background finish
+		const job = jobs.get(accepted.runId);
+		if (job) await job.promise;
+	});
 
-  test("accepted result message contains workflow name", () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = workflow({
-      name: "named-wf-result",
-      description: "",
-      inputs: {},
-      outputs: {},
-      run: async () => ({}),
-    }) as WorkflowDefinition;
+	test("accepted result message contains workflow name", () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = workflow({
+			name: "named-wf-result",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async () => ({}),
+		}) as WorkflowDefinition;
 
-    const accepted = runDetached(def, {}, { store, cancellation, jobs });
-    assert.ok(accepted.message.includes("named-wf-result"));
-    assert.ok(accepted.message.includes(`/workflow connect ${accepted.runId}`));
-    assert.match(accepted.message, /see agents working.*chat with and steer each stage/);
-    assert.doesNotMatch(accepted.message, /attach|detach/i);
-    assert.deepEqual(accepted.stages, []);
-  });
+		const accepted = runDetached(def, {}, { store, cancellation, jobs });
+		assert.ok(accepted.message.includes("named-wf-result"));
+		assert.ok(accepted.message.includes(`/workflow connect ${accepted.runId}`));
+		assert.match(accepted.message, /see agents working.*chat with and steer each stage/);
+		assert.doesNotMatch(accepted.message, /attach|detach/i);
+		assert.deepEqual(accepted.stages, []);
+	});
 
-  test("accepted result returns before synchronous workflow body prefix starts", async () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    let bodyStarted = false;
-    const def = workflow({
-      name: "sync-prefix-wf",
-      description: "",
-      inputs: {},
-      outputs: {
-        done: Type.Boolean(),
-      },
-      run: async () => {
-        bodyStarted = true;
-        busyWait(100);
-        return { done: true };
-      },
-    }) as WorkflowDefinition;
+	test("accepted result returns before synchronous workflow body prefix starts", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		let bodyStarted = false;
+		const def = workflow({
+			name: "sync-prefix-wf",
+			description: "",
+			inputs: {},
+			outputs: {
+				done: Type.Boolean(),
+			},
+			run: async () => {
+				bodyStarted = true;
+				busyWait(100);
+				return { done: true };
+			},
+		}) as WorkflowDefinition;
 
-    async function dispatchLike(): Promise<ReturnType<typeof runDetached>> {
-      return runDetached(def, {}, { store, cancellation, jobs });
-    }
+		async function dispatchLike(): Promise<ReturnType<typeof runDetached>> {
+			return runDetached(def, {}, { store, cancellation, jobs });
+		}
 
-    const accepted = await dispatchLike();
+		const accepted = await dispatchLike();
 
-    assert.equal(bodyStarted, false);
-    assert.equal(accepted.status, "running");
-    assert.equal(jobs.has(accepted.runId), true);
-    assert.notEqual(store.runs().find((run) => run.id === accepted.runId), undefined);
+		assert.equal(bodyStarted, false);
+		assert.equal(accepted.status, "running");
+		assert.equal(jobs.has(accepted.runId), true);
+		assert.notEqual(
+			store.runs().find((run) => run.id === accepted.runId),
+			undefined,
+		);
 
-    const job = jobs.get(accepted.runId);
-    if (job === undefined) throw new Error("expected background job to be registered");
-    await job.promise;
-    assert.equal(bodyStarted, true);
-  });
+		const job = jobs.get(accepted.runId);
+		if (job === undefined) throw new Error("expected background job to be registered");
+		await job.promise;
+		assert.equal(bodyStarted, true);
+	});
 
-  test("killing before deferred workflow body starts prevents body execution", async () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    let bodyStarted = false;
-    const def = workflow({
-      name: "killed-before-start-wf",
-      description: "",
-      inputs: {},
-      outputs: {
-        unreached: Type.Boolean(),
-      },
-      run: async () => {
-        bodyStarted = true;
-        return { unreached: true };
-      },
-    }) as WorkflowDefinition;
+	test("killing before deferred workflow body starts prevents body execution", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		let bodyStarted = false;
+		const def = workflow({
+			name: "killed-before-start-wf",
+			description: "",
+			inputs: {},
+			outputs: {
+				unreached: Type.Boolean(),
+			},
+			run: async () => {
+				bodyStarted = true;
+				return { unreached: true };
+			},
+		}) as WorkflowDefinition;
 
-    const accepted = runDetached(def, {}, { store, cancellation, jobs });
-    const killed = killRun(accepted.runId, { store, cancellation });
+		const accepted = runDetached(def, {}, { store, cancellation, jobs });
+		const killed = killRun(accepted.runId, { store, cancellation });
 
-    assert.equal(killed.ok, true);
+		assert.equal(killed.ok, true);
 
-    const job = jobs.get(accepted.runId);
-    if (job === undefined) throw new Error("expected background job to be registered");
-    await job.promise;
+		const job = jobs.get(accepted.runId);
+		if (job === undefined) throw new Error("expected background job to be registered");
+		await job.promise;
 
-    assert.equal(bodyStarted, false);
-    const run = store.runs().find((snapshot) => snapshot.id === accepted.runId);
-    assert.equal(run?.status, "killed");
-  });
+		assert.equal(bodyStarted, false);
+		const run = store.runs().find((snapshot) => snapshot.id === accepted.runId);
+		assert.equal(run?.status, "killed");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -216,80 +223,84 @@ describe("runDetached — returns immediately", () => {
 // ---------------------------------------------------------------------------
 
 describe("statusRuns — lists detached run during active stage", () => {
-  test("in-flight run appears in statusRuns while stage is blocked on prompt", async () => {
-    const deferred = makeDeferredAdapter();
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = makeDelayedWorkflow("status-listed-wf");
+	test("in-flight run appears in statusRuns while stage is blocked on prompt", async () => {
+		const deferred = makeDeferredAdapter();
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = makeDelayedWorkflow("status-listed-wf");
 
-    const accepted = runDetached(def, {}, {
-      store,
-      cancellation,
-      jobs,
-      adapters: { prompt: deferred.adapter },
-    });
+		const accepted = runDetached(
+			def,
+			{},
+			{
+				store,
+				cancellation,
+				jobs,
+				adapters: { prompt: deferred.adapter },
+			},
+		);
 
-    // While stage is blocked, statusRuns should list this run
-    const runs = statusRuns({ store });
-    const found = runs.find((r) => r.runId === accepted.runId);
-    assert.notEqual(found, undefined);
-    assert.equal(found?.name, "status-listed-wf");
-    assert.equal(found?.status, "running");
+		// While stage is blocked, statusRuns should list this run
+		const runs = statusRuns({ store });
+		const found = runs.find((r) => r.runId === accepted.runId);
+		assert.notEqual(found, undefined);
+		assert.equal(found?.name, "status-listed-wf");
+		assert.equal(found?.status, "running");
 
-    // Cleanup — release the stage
-    deferred.release();
-    const job = jobs.get(accepted.runId);
-    if (job) await job.promise;
-  });
+		// Cleanup — release the stage
+		deferred.release();
+		const job = jobs.get(accepted.runId);
+		if (job) await job.promise;
+	});
 
-  test("settled retained run remains listed in statusRuns by default", async () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = workflow({
-      name: "completes-quickly-wf",
-      description: "",
-      inputs: {},
-      outputs: {
-        done: Type.Boolean(),
-      },
-      run: async () => ({ done: true }),
-    }) as WorkflowDefinition;
+	test("settled retained run remains listed in statusRuns by default", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = workflow({
+			name: "completes-quickly-wf",
+			description: "",
+			inputs: {},
+			outputs: {
+				done: Type.Boolean(),
+			},
+			run: async () => ({ done: true }),
+		}) as WorkflowDefinition;
 
-    const accepted = runDetached(def, {}, { store, cancellation, jobs });
-    const job = jobs.get(accepted.runId);
-    // Wait for background to finish
-    if (job) await job.promise;
+		const accepted = runDetached(def, {}, { store, cancellation, jobs });
+		const job = jobs.get(accepted.runId);
+		// Wait for background to finish
+		if (job) await job.promise;
 
-    // Small yield to allow store update propagation
-    await new Promise((resolve) => setTimeout(resolve, 5));
+		// Small yield to allow store update propagation
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
-    const runs = statusRuns({ store });
-    const found = runs.find((r) => r.runId === accepted.runId);
-    assert.notEqual(found, undefined);
-    assert.notEqual(store.runs().find((r) => r.id === accepted.runId)?.endedAt, undefined);
-  });
+		const runs = statusRuns({ store });
+		const found = runs.find((r) => r.runId === accepted.runId);
+		assert.notEqual(found, undefined);
+		assert.notEqual(store.runs().find((r) => r.id === accepted.runId)?.endedAt, undefined);
+	});
 
-  test("statusRuns all:true is equivalent to default retained-run status", async () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = workflow({
-      name: "completes-all-flag-wf",
-      description: "",
-      inputs: {},
-      outputs: {},
-      run: async () => ({}),
-    }) as WorkflowDefinition;
+	test("statusRuns all:true is equivalent to default retained-run status", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = workflow({
+			name: "completes-all-flag-wf",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async () => ({}),
+		}) as WorkflowDefinition;
 
-    const accepted = runDetached(def, {}, { store, cancellation, jobs });
-    const job = jobs.get(accepted.runId);
-    if (job) await job.promise;
-    await new Promise((resolve) => setTimeout(resolve, 5));
+		const accepted = runDetached(def, {}, { store, cancellation, jobs });
+		const job = jobs.get(accepted.runId);
+		if (job) await job.promise;
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
-    assert.deepEqual(statusRuns({ all: true, store }), statusRuns({ store }));
-  });
+		assert.deepEqual(statusRuns({ all: true, store }), statusRuns({ store }));
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -297,101 +308,113 @@ describe("statusRuns — lists detached run during active stage", () => {
 // ---------------------------------------------------------------------------
 
 describe("killRun — aborts delayed stage and records killed state", () => {
-  test("kill during active stage: store records killed status", async () => {
-    const deferred = makeDeferredAdapter();
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = makeDelayedWorkflow("kill-during-stage-wf");
+	test("kill during active stage: store records killed status", async () => {
+		const deferred = makeDeferredAdapter();
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = makeDelayedWorkflow("kill-during-stage-wf");
 
-    const accepted = runDetached(def, {}, {
-      store,
-      cancellation,
-      jobs,
-      adapters: { prompt: deferred.adapter },
-    });
+		const accepted = runDetached(
+			def,
+			{},
+			{
+				store,
+				cancellation,
+				jobs,
+				adapters: { prompt: deferred.adapter },
+			},
+		);
 
-    // Run is active — kill it
-    const killResult = killRun(accepted.runId, { store, cancellation });
-    assert.equal(killResult.ok, true);
-    if (killResult.ok) {
-      assert.equal(killResult.previousStatus, "running");
-    }
+		// Run is active — kill it
+		const killResult = killRun(accepted.runId, { store, cancellation });
+		assert.equal(killResult.ok, true);
+		if (killResult.ok) {
+			assert.equal(killResult.previousStatus, "running");
+		}
 
-    // Wait for background promise to settle after abort
-    const job = jobs.get(accepted.runId);
-    if (job) await job.promise;
-    await new Promise((resolve) => setTimeout(resolve, 5));
+		// Wait for background promise to settle after abort
+		const job = jobs.get(accepted.runId);
+		if (job) await job.promise;
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
-    // Store must reflect killed terminal state
-    const run = store.runs().find((r) => r.id === accepted.runId);
-    assert.equal(run?.status, "killed");
-    assert.notEqual(run?.endedAt, undefined);
-  });
+		// Store must reflect killed terminal state
+		const run = store.runs().find((r) => r.id === accepted.runId);
+		assert.equal(run?.status, "killed");
+		assert.notEqual(run?.endedAt, undefined);
+	});
 
-  test("kill signals abort to the cancellation controller", async () => {
-    const deferred = makeDeferredAdapter();
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = makeDelayedWorkflow("kill-aborts-controller-wf");
+	test("kill signals abort to the cancellation controller", async () => {
+		const deferred = makeDeferredAdapter();
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = makeDelayedWorkflow("kill-aborts-controller-wf");
 
-    const accepted = runDetached(def, {}, {
-      store,
-      cancellation,
-      jobs,
-      adapters: { prompt: deferred.adapter },
-    });
+		const accepted = runDetached(
+			def,
+			{},
+			{
+				store,
+				cancellation,
+				jobs,
+				adapters: { prompt: deferred.adapter },
+			},
+		);
 
-    // Before kill: not aborted
-    assert.equal(cancellation.isAborted(accepted.runId), false);
+		// Before kill: not aborted
+		assert.equal(cancellation.isAborted(accepted.runId), false);
 
-    killRun(accepted.runId, { store, cancellation });
+		killRun(accepted.runId, { store, cancellation });
 
-    // After kill: aborted
-    assert.equal(cancellation.isAborted(accepted.runId), true);
+		// After kill: aborted
+		assert.equal(cancellation.isAborted(accepted.runId), true);
 
-    const job = jobs.get(accepted.runId);
-    if (job) await job.promise;
-  });
+		const job = jobs.get(accepted.runId);
+		if (job) await job.promise;
+	});
 
-  test("kill result: ok:false not_found for unknown runId", () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const result = killRun("no-such-run", { store, cancellation });
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.reason, "not_found");
-    }
-  });
+	test("kill result: ok:false not_found for unknown runId", () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const result = killRun("no-such-run", { store, cancellation });
+		assert.equal(result.ok, false);
+		if (!result.ok) {
+			assert.equal(result.reason, "not_found");
+		}
+	});
 
-  test("kill after already killed: ok:false already_ended", async () => {
-    const deferred = makeDeferredAdapter();
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = makeDelayedWorkflow("double-kill-wf");
+	test("kill after already killed: ok:false already_ended", async () => {
+		const deferred = makeDeferredAdapter();
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = makeDelayedWorkflow("double-kill-wf");
 
-    const accepted = runDetached(def, {}, {
-      store,
-      cancellation,
-      jobs,
-      adapters: { prompt: deferred.adapter },
-    });
+		const accepted = runDetached(
+			def,
+			{},
+			{
+				store,
+				cancellation,
+				jobs,
+				adapters: { prompt: deferred.adapter },
+			},
+		);
 
-    killRun(accepted.runId, { store, cancellation });
+		killRun(accepted.runId, { store, cancellation });
 
-    const job = jobs.get(accepted.runId);
-    if (job) await job.promise;
-    await new Promise((resolve) => setTimeout(resolve, 5));
+		const job = jobs.get(accepted.runId);
+		if (job) await job.promise;
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
-    // Second kill attempt
-    const secondKill = killRun(accepted.runId, { store, cancellation });
-    assert.equal(secondKill.ok, false);
-    if (!secondKill.ok) {
-      assert.equal(secondKill.reason, "already_ended");
-    }
-  });
+		// Second kill attempt
+		const secondKill = killRun(accepted.runId, { store, cancellation });
+		assert.equal(secondKill.ok, false);
+		if (!secondKill.ok) {
+			assert.equal(secondKill.reason, "already_ended");
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -399,62 +422,123 @@ describe("killRun — aborts delayed stage and records killed state", () => {
 // ---------------------------------------------------------------------------
 
 describe("runDetached — rejection swallowed, failed status recorded", () => {
-  test("throwing workflow: background promise resolves (no unhandled rejection)", async () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = makeThrowingWorkflow("throwing-wf");
+	test("throwing workflow: background promise resolves (no unhandled rejection)", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = makeThrowingWorkflow("throwing-wf");
 
-    const accepted = runDetached(def, {}, { store, cancellation, jobs });
+		const accepted = runDetached(def, {}, { store, cancellation, jobs });
 
-    // Track any unhandled rejection
-    let unhandledRejection: unknown = undefined;
-    const handler = (reason: unknown) => { unhandledRejection = reason; };
-    process.on("unhandledRejection", handler);
+		// Track any unhandled rejection
+		let unhandledRejection: unknown;
+		const handler = (reason: unknown) => {
+			unhandledRejection = reason;
+		};
+		process.on("unhandledRejection", handler);
 
-    // Wait for background to settle — voidPromise must fulfill (swallows rejection)
-    const job = jobs.get(accepted.runId);
-    assert.notEqual(job, undefined);
-    // The void promise should resolve (not reject) because runner swallows errors
-    assert.equal(await job!.promise, undefined);
+		// Wait for background to settle — voidPromise must fulfill (swallows rejection)
+		const job = jobs.get(accepted.runId);
+		assert.notEqual(job, undefined);
+		// The void promise should resolve (not reject) because runner swallows errors
+		assert.equal(await job!.promise, undefined);
 
-    // Give event loop a tick for any unhandled rejection to surface
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    process.off("unhandledRejection", handler);
+		// Give event loop a tick for any unhandled rejection to surface
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		process.off("unhandledRejection", handler);
 
-    assert.equal(unhandledRejection, undefined);
-  });
+		assert.equal(unhandledRejection, undefined);
+	});
 
-  test("throwing workflow: store records failed status after background settles", async () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = makeThrowingWorkflow("throwing-status-wf");
+	test("throwing workflow: store records failed status after background settles", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = makeThrowingWorkflow("throwing-status-wf");
 
-    const accepted = runDetached(def, {}, { store, cancellation, jobs });
+		const accepted = runDetached(def, {}, { store, cancellation, jobs });
 
-    const job = jobs.get(accepted.runId);
-    if (job) await job.promise;
-    await new Promise((resolve) => setTimeout(resolve, 5));
+		const job = jobs.get(accepted.runId);
+		if (job) await job.promise;
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
-    const run = store.runs().find((r) => r.id === accepted.runId);
-    assert.equal(run?.status, "failed");
-    assert.notEqual(run?.endedAt, undefined);
-  });
+		const run = store.runs().find((r) => r.id === accepted.runId);
+		assert.equal(run?.status, "failed");
+		assert.notEqual(run?.endedAt, undefined);
+	});
 
-  test("job unregistered from tracker after rejection settles", async () => {
-    const store = createStore();
-    const cancellation = createCancellationRegistry();
-    const jobs = createJobTracker();
-    const def = makeThrowingWorkflow("throwing-unregister-wf");
+	test("job unregistered from tracker after rejection settles", async () => {
+		const store = createStore();
+		const cancellation = createCancellationRegistry();
+		const jobs = createJobTracker();
+		const def = makeThrowingWorkflow("throwing-unregister-wf");
 
-    const accepted = runDetached(def, {}, { store, cancellation, jobs });
-    assert.equal(jobs.has(accepted.runId), true);
+		const accepted = runDetached(def, {}, { store, cancellation, jobs });
+		assert.equal(jobs.has(accepted.runId), true);
 
-    const job = jobs.get(accepted.runId);
-    if (job) await job.promise;
-    await new Promise((resolve) => setTimeout(resolve, 5));
+		const job = jobs.get(accepted.runId);
+		if (job) await job.promise;
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
-    assert.equal(jobs.has(accepted.runId), false);
-  });
+		assert.equal(jobs.has(accepted.runId), false);
+	});
+
+	test("a detached stale job cannot unregister the replacement that reused its run id", async () => {
+		const jobs = createJobTracker();
+		const runId = "stale-job-identity";
+		const staleSettled = Promise.withResolvers<void>();
+		const stale = { runId, controller: new AbortController(), promise: staleSettled.promise };
+		jobs.register(stale);
+
+		// Quit abandons the stale executor: it stays alive but stops being the
+		// active job, so a resume may register a replacement under the same id.
+		assert.equal(jobs.detach(runId, stale), stale);
+		assert.equal(jobs.has(runId), false);
+
+		const replacementSettled = Promise.withResolvers<void>();
+		const replacement = { runId, controller: new AbortController(), promise: replacementSettled.promise };
+		jobs.register(replacement);
+		assert.equal(jobs.get(runId), replacement);
+
+		// The stale executor settles late and cleans up with its own identity.
+		staleSettled.resolve();
+		await stale.promise;
+		assert.equal(jobs.unregister(runId, stale), false, "a stale entry must not evict its replacement");
+		assert.equal(jobs.get(runId), replacement);
+
+		replacementSettled.resolve();
+		await replacement.promise;
+		assert.equal(jobs.unregister(runId, replacement), true);
+		assert.deepEqual(jobs.runIds(), []);
+	});
+
+	test("registering over a still-active job is a loud error", () => {
+		const jobs = createJobTracker();
+		const runId = "duplicate-dispatch";
+		const active = { runId, controller: new AbortController(), promise: Promise.resolve() };
+		jobs.register(active);
+
+		assert.throws(
+			() => jobs.register({ runId, controller: new AbortController(), promise: Promise.resolve() }),
+			/already registered for run duplicate-dispatch/,
+		);
+		assert.equal(jobs.get(runId), active);
+	});
+
+	test("a stale executor cleanup cannot unregister a replacement cancellation entry", () => {
+		const registry = createCancellationRegistry();
+		const runId = "stale-cancellation-identity";
+		const staleController = new AbortController();
+		registry.register(runId, staleController);
+
+		const replacementController = new AbortController();
+		registry.register(runId, replacementController);
+
+		assert.equal(registry.unregister(runId, staleController), false, "stale cleanup must be a no-op");
+		assert.equal(registry.abort(runId), true, "the replacement registration survives");
+		assert.equal(replacementController.signal.aborted, true);
+		assert.equal(staleController.signal.aborted, false);
+		assert.equal(registry.unregister(runId, replacementController), true);
+		assert.equal(registry.abort(runId), false);
+	});
 });

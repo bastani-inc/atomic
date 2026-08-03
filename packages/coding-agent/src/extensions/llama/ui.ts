@@ -18,6 +18,7 @@ import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { LlamaModelInfo, LlamaProgress } from "./client.js";
 import type { HuggingFaceModel } from "./huggingface.js";
 import { HuggingFaceSearch } from "./huggingface-ui.js";
+
 const DOWNLOAD_VALUE = "\0download";
 
 export type LlamaManagerAction = { type: "model"; model: LlamaModelInfo } | { type: "download" } | { type: "close" };

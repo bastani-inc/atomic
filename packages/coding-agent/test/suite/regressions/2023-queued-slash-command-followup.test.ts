@@ -1,6 +1,6 @@
+import type { ExtensionAPI } from "@bastani/atomic";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "../harness.ts";

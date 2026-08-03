@@ -1,7 +1,7 @@
 import type { Terminal } from "@earendil-works/pi-tui";
 import { TUI } from "@earendil-works/pi-tui";
-import type { AgentSession } from "../../core/agent-session.ts";
 import { getAgentDir } from "../../config.ts";
+import type { AgentSession } from "../../core/agent-session.ts";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { CustomMessage } from "../../core/messages.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
@@ -42,7 +42,9 @@ class RenderTerminal implements Terminal {
 	start(): void {}
 	stop(): void {}
 	async drainInput(): Promise<void> {}
-	write(): void { this.requestRender(); }
+	write(): void {
+		this.requestRender();
+	}
 	moveBy(): void {}
 	hideCursor(): void {}
 	showCursor(): void {}
@@ -52,7 +54,6 @@ class RenderTerminal implements Terminal {
 	setTitle(): void {}
 	setProgress(): void {}
 }
-
 
 export class EngineRenderService {
 	private readonly records = new Map<string, RenderRecord>();
@@ -70,26 +71,35 @@ export class EngineRenderService {
 
 	handleLine(line: string): boolean {
 		const command = parseInteractiveEngineCommand(line);
-		if (!command || !command.type.startsWith("engine_") || command.type.startsWith("engine_custom_")) return false;
+		if (!command?.type.startsWith("engine_") || command.type.startsWith("engine_custom_")) return false;
 		if (command.type === "engine_render_dispose") {
 			this.disposeRecord(command.componentId);
 			return true;
 		}
 		if (command.type !== "engine_tool_render" && command.type !== "engine_message_render") return false;
-		const name = command.type === "engine_tool_render" ? `tool:${command.toolName}` : `message:${command.message.customType ?? "custom"}`;
+		const name =
+			command.type === "engine_tool_render"
+				? `tool:${command.toolName}`
+				: `message:${command.message.customType ?? "custom"}`;
 		void runCallback({ kind: "renderer", name }, async () => {
 			return command.type === "engine_tool_render" ? this.renderTool(command) : this.renderMessage(command);
-		}).then((lines) => this.send({
-			type: "engine_custom_frame",
-			componentId: command.componentId,
-			requestId: command.requestId,
-			lines,
-		})).catch((error: Error) => this.send({
-			type: "engine_custom_frame",
-			componentId: command.componentId,
-			requestId: command.requestId,
-			lines: [`Remote renderer failed: ${error.message}`],
-		}));
+		})
+			.then((lines) =>
+				this.send({
+					type: "engine_custom_frame",
+					componentId: command.componentId,
+					requestId: command.requestId,
+					lines,
+				}),
+			)
+			.catch((error: Error) =>
+				this.send({
+					type: "engine_custom_frame",
+					componentId: command.componentId,
+					requestId: command.requestId,
+					lines: [`Remote renderer failed: ${error.message}`],
+				}),
+			);
 		return true;
 	}
 
@@ -138,7 +148,10 @@ export class EngineRenderService {
 		if (command.argsComplete) tool.setArgsComplete();
 		tool.setExpanded(command.expanded);
 		if (command.result) {
-			tool.updateResult(command.result as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0], command.isPartial);
+			tool.updateResult(
+				command.result as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0],
+				command.isPartial,
+			);
 		}
 		return tool.render(command.width);
 	}

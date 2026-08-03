@@ -1,21 +1,21 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { NestedRunSummary } from "../../shared/types.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import type { NestedRunSummary } from "../../shared/types.ts";
 import {
-	MAX_NESTED_EVENT_BYTES,
-	MAX_PROCESSED_NESTED_EVENTS,
-	NESTED_EVENTS_DIR,
-	REGISTRY_FILE,
-	ROUTE_FILE,
 	assertSafeId,
 	commonRouteRoot,
 	containedPath,
-	validateRouteShape,
+	MAX_NESTED_EVENT_BYTES,
+	MAX_PROCESSED_NESTED_EVENTS,
+	NESTED_EVENTS_DIR,
 	type NestedEventRecord,
 	type NestedRegistry,
 	type NestedRoute,
+	REGISTRY_FILE,
+	ROUTE_FILE,
+	validateRouteShape,
 } from "./nested-events-core.ts";
 import { applyNestedEvent, parseNestedEventRecords, parseRecord, sanitizeSummary } from "./nested-events-sanitize.ts";
 
@@ -43,7 +43,11 @@ function acquireRegistryLock(route: NestedRoute): () => void {
 		try {
 			fs.mkdirSync(lockPath, { mode: 0o700 });
 			try {
-				fs.writeFileSync(path.join(lockPath, "owner.json"), `${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`, { mode: 0o600 });
+				fs.writeFileSync(
+					path.join(lockPath, "owner.json"),
+					`${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`,
+					{ mode: 0o600 },
+				);
 			} catch {
 				// Lock ownership metadata is diagnostic only.
 			}
@@ -61,7 +65,8 @@ function acquireRegistryLock(route: NestedRoute): () => void {
 				if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError;
 				continue;
 			}
-			if (Date.now() >= deadline) throw new Error(`Timed out waiting for nested registry lock for root '${route.rootRunId}'.`);
+			if (Date.now() >= deadline)
+				throw new Error(`Timed out waiting for nested registry lock for root '${route.rootRunId}'.`);
 			sleepSync(REGISTRY_LOCK_POLL_MS);
 		}
 	}
@@ -80,7 +85,10 @@ export function findNestedRouteForRootId(rootRunId: string): NestedRoute | undef
 		if (!entry.startsWith(`${rootRunId}-`)) continue;
 		const routeRoot = path.join(NESTED_EVENTS_DIR, entry);
 		try {
-			const metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, ROUTE_FILE), "utf-8")) as { rootRunId?: unknown; capabilityToken?: unknown };
+			const metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, ROUTE_FILE), "utf-8")) as {
+				rootRunId?: unknown;
+				capabilityToken?: unknown;
+			};
 			if (metadata.rootRunId !== rootRunId || typeof metadata.capabilityToken !== "string") continue;
 			const route = {
 				rootRunId,
@@ -94,7 +102,6 @@ export function findNestedRouteForRootId(rootRunId: string): NestedRoute | undef
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 				console.error(`Ignoring unreadable nested route metadata under '${routeRoot}':`, error);
 			}
-			continue;
 		}
 	}
 	return undefined;
@@ -109,7 +116,12 @@ export function findNestedRun(children: NestedRunSummary[] | undefined, id: stri
 	if (!children?.length) return undefined;
 	for (const child of children) {
 		if (child.id === id) return child;
-		const nested = findNestedRun(child.children, id) ?? findNestedRun(child.steps?.flatMap((step) => step.children ?? []), id);
+		const nested =
+			findNestedRun(child.children, id) ??
+			findNestedRun(
+				child.steps?.flatMap((step) => step.children ?? []),
+				id,
+			);
 		if (nested) return nested;
 	}
 	return undefined;
@@ -126,24 +138,41 @@ export interface NestedRunResolutionScope {
 	descendantOf?: { parentRunId: string; parentStepIndex?: number };
 }
 
-function collectNestedRuns(children: NestedRunSummary[] | undefined, output: NestedRunSummary[] = []): NestedRunSummary[] {
+function collectNestedRuns(
+	children: NestedRunSummary[] | undefined,
+	output: NestedRunSummary[] = [],
+): NestedRunSummary[] {
 	for (const child of children ?? []) {
 		output.push(child);
 		collectNestedRuns(child.children, output);
-		collectNestedRuns(child.steps?.flatMap((step) => step.children ?? []), output);
+		collectNestedRuns(
+			child.steps?.flatMap((step) => step.children ?? []),
+			output,
+		);
 	}
 	return output;
 }
 
-function collectScopedNestedRuns(children: NestedRunSummary[] | undefined, scope: NestedRunResolutionScope["descendantOf"], output: NestedRunSummary[] = []): NestedRunSummary[] {
+function collectScopedNestedRuns(
+	children: NestedRunSummary[] | undefined,
+	scope: NestedRunResolutionScope["descendantOf"],
+	output: NestedRunSummary[] = [],
+): NestedRunSummary[] {
 	if (!scope) return collectNestedRuns(children, output);
 	for (const child of children ?? []) {
-		if (child.parentRunId === scope.parentRunId && (scope.parentStepIndex === undefined || child.parentStepIndex === scope.parentStepIndex)) {
+		if (
+			child.parentRunId === scope.parentRunId &&
+			(scope.parentStepIndex === undefined || child.parentStepIndex === scope.parentStepIndex)
+		) {
 			collectNestedRuns([child], output);
 			continue;
 		}
 		collectScopedNestedRuns(child.children, scope, output);
-		collectScopedNestedRuns(child.steps?.flatMap((step) => step.children ?? []), scope, output);
+		collectScopedNestedRuns(
+			child.steps?.flatMap((step) => step.children ?? []),
+			scope,
+			output,
+		);
 	}
 	return output;
 }
@@ -160,7 +189,10 @@ function listNestedRoutes(): NestedRoute[] {
 	for (const entry of entries) {
 		const routeRoot = path.join(NESTED_EVENTS_DIR, entry);
 		try {
-			const metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, ROUTE_FILE), "utf-8")) as { rootRunId?: unknown; capabilityToken?: unknown };
+			const metadata = JSON.parse(fs.readFileSync(path.join(routeRoot, ROUTE_FILE), "utf-8")) as {
+				rootRunId?: unknown;
+				capabilityToken?: unknown;
+			};
 			if (typeof metadata.rootRunId !== "string" || typeof metadata.capabilityToken !== "string") continue;
 			const route = {
 				rootRunId: metadata.rootRunId,
@@ -174,24 +206,25 @@ function listNestedRoutes(): NestedRoute[] {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 				console.error(`Ignoring unreadable nested route metadata under '${routeRoot}':`, error);
 			}
-			continue;
 		}
 	}
 	return routes;
 }
 
-export function findNestedRunMatchesById(id: string, options: { prefix?: boolean; scope?: NestedRunResolutionScope } = {}): NestedRunMatch[] {
+export function findNestedRunMatchesById(
+	id: string,
+	options: { prefix?: boolean; scope?: NestedRunResolutionScope } = {},
+): NestedRunMatch[] {
 	assertSafeId("id", id);
 	const matches: NestedRunMatch[] = [];
 	for (const route of options.scope?.routes ?? listNestedRoutes()) {
 		try {
 			const registry = projectNestedEvents(route);
 			for (const run of collectScopedNestedRuns(registry.children, options.scope?.descendantOf)) {
-				if (options.prefix ? run.id.startsWith(id) : run.id === id) matches.push({ rootRunId: route.rootRunId, route, run });
+				if (options.prefix ? run.id.startsWith(id) : run.id === id)
+					matches.push({ rootRunId: route.rootRunId, route, run });
 			}
-		} catch {
-			continue;
-		}
+		} catch {}
 	}
 	return matches;
 }
@@ -208,8 +241,16 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 		return {
 			rootRunId: route.rootRunId,
 			updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
-			children: Array.isArray(parsed.children) ? parsed.children.map((child) => sanitizeSummary(child)).filter((child): child is NestedRunSummary => Boolean(child)) : [],
-			processedEvents: Array.isArray(parsed.processedEvents) ? parsed.processedEvents.filter((item): item is string => typeof item === "string").slice(-MAX_PROCESSED_NESTED_EVENTS) : [],
+			children: Array.isArray(parsed.children)
+				? parsed.children
+						.map((child) => sanitizeSummary(child))
+						.filter((child): child is NestedRunSummary => Boolean(child))
+				: [],
+			processedEvents: Array.isArray(parsed.processedEvents)
+				? parsed.processedEvents
+						.filter((item): item is string => typeof item === "string")
+						.slice(-MAX_PROCESSED_NESTED_EVENTS)
+				: [],
 		};
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -226,7 +267,10 @@ export function projectNestedEvents(route: NestedRoute): NestedRegistry {
 		let changed = false;
 		let entries: string[] = [];
 		try {
-			entries = fs.readdirSync(route.eventSink).filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).sort();
+			entries = fs
+				.readdirSync(route.eventSink)
+				.filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl"))
+				.sort();
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
@@ -265,7 +309,8 @@ export function projectNestedEvents(route: NestedRoute): NestedRegistry {
 
 export function writeRouteRecord(dir: string, ts: number, payload: object): string {
 	const content = `${JSON.stringify(payload)}\n`;
-	if (Buffer.byteLength(content, "utf-8") > MAX_NESTED_EVENT_BYTES) throw new Error("Nested route record exceeds the maximum size.");
+	if (Buffer.byteLength(content, "utf-8") > MAX_NESTED_EVENT_BYTES)
+		throw new Error("Nested route record exceeds the maximum size.");
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const name = `${String(ts).padStart(13, "0")}-${randomUUID()}.json`;
 	const tmp = path.join(dir, `.${name}.tmp`);
@@ -275,7 +320,10 @@ export function writeRouteRecord(dir: string, ts: number, payload: object): stri
 	return finalPath;
 }
 
-export function writeNestedEvent(route: NestedRoute, event: Omit<NestedEventRecord, "rootRunId" | "capabilityToken">): void {
+export function writeNestedEvent(
+	route: NestedRoute,
+	event: Omit<NestedEventRecord, "rootRunId" | "capabilityToken">,
+): void {
 	// Child and runner processes append immutable route events; parent projection owns registry/status aggregation.
 	validateRouteShape(route);
 	const record: NestedEventRecord = {

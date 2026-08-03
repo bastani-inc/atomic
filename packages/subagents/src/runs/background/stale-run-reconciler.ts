@@ -2,9 +2,21 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { publishFileExclusive, unlinkIfPresent } from "../../shared/exclusive-file-publication.js";
-import { RESULTS_DIR, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
+import {
+	type AsyncParallelGroupStatus,
+	type AsyncStatus,
+	type NestedRunSummary,
+	RESULTS_DIR,
+	type SubagentRunMode,
+} from "../../shared/types.ts";
+import {
+	type NestedRoute,
+	nestedSummaryFromAsyncStatus,
+	projectNestedEvents,
+	resolveNestedAsyncDir,
+	writeNestedEvent,
+} from "../shared/nested-events.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
-import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDir, writeNestedEvent, type NestedRoute } from "../shared/nested-events.ts";
 
 export type PidLiveness = "alive" | "dead" | "unknown";
 
@@ -44,10 +56,12 @@ function getErrorMessage(error: unknown): string {
 }
 
 function isNotFoundError(error: unknown): boolean {
-	return typeof error === "object"
-		&& error !== null
-		&& "code" in error
-		&& (error as NodeJS.ErrnoException).code === "ENOENT";
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as NodeJS.ErrnoException).code === "ENOENT"
+	);
 }
 
 function appendJsonl(filePath: string, payload: object): void {
@@ -78,7 +92,11 @@ function retireObsoleteStage(resultPath: string): void {
 	const retiredPath = `${stagePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.retired`;
 	try {
 		fs.renameSync(stagePath, retiredPath);
-		try { fs.unlinkSync(retiredPath); } catch (error) { if (!isNotFoundError(error)) console.error(error); }
+		try {
+			fs.unlinkSync(retiredPath);
+		} catch (error) {
+			if (!isNotFoundError(error)) console.error(error);
+		}
 	} catch (error) {
 		if (!isNotFoundError(error)) console.error(error);
 	}
@@ -139,7 +157,12 @@ interface ResultRepairData {
 
 function readResultRepairData(resultPath: string): ResultRepairData | undefined {
 	try {
-		const data = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as { success?: boolean; state?: string; exitCode?: number; results?: ResultChildOutcome[] };
+		const data = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as {
+			success?: boolean;
+			state?: string;
+			exitCode?: number;
+			results?: ResultChildOutcome[];
+		};
 		const state = data.success ? "complete" : data.state === "paused" || data.exitCode === 0 ? "paused" : "failed";
 		return { state, ...(Array.isArray(data.results) ? { results: data.results } : {}) };
 	} catch (error) {
@@ -150,7 +173,10 @@ function readResultRepairData(resultPath: string): ResultRepairData | undefined 
 	}
 }
 
-function childState(overallState: ResultRepairData["state"], child: ResultChildOutcome | undefined): "complete" | "failed" | "paused" {
+function childState(
+	overallState: ResultRepairData["state"],
+	child: ResultChildOutcome | undefined,
+): "complete" | "failed" | "paused" {
 	if (child?.success === true) return "complete";
 	if (child?.success === false) return "failed";
 	return overallState;
@@ -165,11 +191,14 @@ function terminalStatusFromResult(status: AsyncStatus, resultPath: string, now: 
 		const state = childState(repair.state, child);
 		return {
 			...step,
-			status: state === "complete" ? "complete" as const : state,
+			status: state === "complete" ? ("complete" as const) : state,
 			endedAt: step.endedAt ?? now,
-			durationMs: step.startedAt !== undefined && step.durationMs === undefined ? Math.max(0, now - step.startedAt) : step.durationMs,
+			durationMs:
+				step.startedAt !== undefined && step.durationMs === undefined
+					? Math.max(0, now - step.startedAt)
+					: step.durationMs,
 			exitCode: step.exitCode ?? (state === "complete" || state === "paused" ? 0 : 1),
-			error: state === "failed" ? step.error ?? child?.error : step.error,
+			error: state === "failed" ? (step.error ?? child?.error) : step.error,
 			sessionFile: step.sessionFile ?? child?.sessionFile,
 			model: step.model ?? child?.model,
 			fastMode: step.fastMode ?? child?.fastMode,
@@ -191,9 +220,10 @@ function buildStartedStatus(asyncDir: string, startedRun: StartedRunMetadata, no
 	const startedAt = startedRun.startedAt ?? now;
 	const agents = startedRun.agents?.length ? startedRun.agents : ["subagent"];
 	const chainStepCount = startedRun.chainStepCount;
-	const parallelGroups = chainStepCount !== undefined
-		? normalizeParallelGroups(startedRun.parallelGroups, agents.length, chainStepCount)
-		: [];
+	const parallelGroups =
+		chainStepCount !== undefined
+			? normalizeParallelGroups(startedRun.parallelGroups, agents.length, chainStepCount)
+			: [];
 	return {
 		runId: startedRun.runId || path.basename(asyncDir),
 		...(startedRun.sessionId ? { sessionId: startedRun.sessionId } : {}),
@@ -214,22 +244,34 @@ function buildStartedStatus(asyncDir: string, startedRun: StartedRunMetadata, no
 	};
 }
 
-function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, reason?: string): { status: AsyncStatus; result: object; message: string } {
+function buildFailedRepair(
+	status: AsyncStatus,
+	asyncDir: string,
+	now: number,
+	reason?: string,
+): { status: AsyncStatus; result: object; message: string } {
 	const runId = status.runId || path.basename(asyncDir);
 	const pid = typeof status.pid === "number" ? status.pid : "unknown";
-	const message = reason ?? `Async runner process ${pid} exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.`;
+	const message =
+		reason ??
+		`Async runner process ${pid} exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.`;
 	const steps = status.steps?.length ? status.steps : [{ agent: "subagent", status: "running" as const }];
-	const repairedSteps = steps.map((step) => step.status === "running" || step.status === "pending"
-		? {
-			...step,
-			status: "failed" as const,
-			activityState: undefined,
-			endedAt: step.endedAt ?? now,
-			durationMs: step.startedAt !== undefined && step.durationMs === undefined ? Math.max(0, now - step.startedAt) : step.durationMs,
-			exitCode: step.exitCode ?? 1,
-			error: step.error ?? message,
-		}
-		: step);
+	const repairedSteps = steps.map((step) =>
+		step.status === "running" || step.status === "pending"
+			? {
+					...step,
+					status: "failed" as const,
+					activityState: undefined,
+					endedAt: step.endedAt ?? now,
+					durationMs:
+						step.startedAt !== undefined && step.durationMs === undefined
+							? Math.max(0, now - step.startedAt)
+							: step.durationMs,
+					exitCode: step.exitCode ?? 1,
+					error: step.error ?? message,
+				}
+			: step,
+	);
 	const repairedStatus: AsyncStatus = {
 		...status,
 		state: "failed",
@@ -252,7 +294,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 			results: repairedSteps.map((step) => ({
 				agent: step.agent,
 				output: step.status === "complete" || step.status === "completed" ? "" : message,
-				error: step.status === "complete" || step.status === "completed" ? undefined : step.error ?? message,
+				error: step.status === "complete" || step.status === "completed" ? undefined : (step.error ?? message),
 				success: step.status === "complete" || step.status === "completed",
 				model: step.model,
 				fastMode: step.fastMode,
@@ -270,7 +312,14 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 	};
 }
 
-function writeFailedRepair(asyncDir: string, status: AsyncStatus, resultPath: string, now: number, reason?: string, publish?: ReconcileAsyncRunOptions["publish"]): ReconcileAsyncRunResult {
+function writeFailedRepair(
+	asyncDir: string,
+	status: AsyncStatus,
+	resultPath: string,
+	now: number,
+	reason?: string,
+	publish?: ReconcileAsyncRunOptions["publish"],
+): ReconcileAsyncRunResult {
 	const repair = buildFailedRepair(status, asyncDir, now, reason);
 	// Stage the exact public payload beside its destination. Publication consumes
 	// the hidden stage with one atomic rename after terminal status is durable.
@@ -286,7 +335,9 @@ function writeFailedRepair(asyncDir: string, status: AsyncStatus, resultPath: st
 			message: repair.message,
 		});
 	} catch (error) {
-		console.error(`Failed to append stale-repair event for '${asyncDir}'; publishing the recoverable result: ${getErrorMessage(error)}`);
+		console.error(
+			`Failed to append stale-repair event for '${asyncDir}'; publishing the recoverable result: ${getErrorMessage(error)}`,
+		);
 	}
 	return publishStagedRepair(resultPath, repair.status, repair.result, publish);
 }
@@ -340,9 +391,10 @@ export function checkPidLiveness(pid: number, kill: KillFn = process.kill): PidL
 		kill(pid, 0);
 		return "alive";
 	} catch (error) {
-		const code = typeof error === "object" && error !== null && "code" in error
-			? (error as NodeJS.ErrnoException).code
-			: undefined;
+		const code =
+			typeof error === "object" && error !== null && "code" in error
+				? (error as NodeJS.ErrnoException).code
+				: undefined;
 		if (code === "ESRCH") return "dead";
 		if (code === "EPERM") return "unknown";
 		return "unknown";
@@ -352,7 +404,8 @@ export function checkPidLiveness(pid: number, kill: KillFn = process.kill): PidL
 export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOptions = {}): ReconcileAsyncRunResult {
 	const now = options.now?.() ?? Date.now();
 	const status = readStatusFile(asyncDir);
-	const startedStatus = !status && options.startedRun ? buildStartedStatus(asyncDir, options.startedRun, now) : undefined;
+	const startedStatus =
+		!status && options.startedRun ? buildStartedStatus(asyncDir, options.startedRun, now) : undefined;
 	const effectiveStatus = status ?? startedStatus;
 	if (!effectiveStatus) return { status: null, repaired: false };
 
@@ -360,12 +413,18 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 	const resultPath = path.join(options.resultsDir ?? RESULTS_DIR, `${runId}.json`);
 	if (fs.existsSync(resultPath)) {
 		retireObsoleteStage(resultPath);
-		const terminalStatus = effectiveStatus.state === "running" || effectiveStatus.state === "queued"
-			? terminalStatusFromResult(effectiveStatus, resultPath, now)
-			: undefined;
+		const terminalStatus =
+			effectiveStatus.state === "running" || effectiveStatus.state === "queued"
+				? terminalStatusFromResult(effectiveStatus, resultPath, now)
+				: undefined;
 		if (terminalStatus) {
 			writeAtomicJson(path.join(asyncDir, "status.json"), terminalStatus);
-			return { status: terminalStatus, repaired: true, resultPath, message: "Existing async result file was used to repair stale running status." };
+			return {
+				status: terminalStatus,
+				repaired: true,
+				resultPath,
+				message: "Existing async result file was used to repair stale running status.",
+			};
 		}
 		return { status: effectiveStatus, repaired: false, resultPath };
 	}

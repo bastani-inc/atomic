@@ -16,12 +16,8 @@ import {
 } from "../src/modes/interactive/external-editor.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
-const fixturePath = fileURLToPath(
-	new URL("./fixtures/fake-external-editor.mjs", import.meta.url),
-);
-const externalEditorSourcePath = fileURLToPath(
-	new URL("../src/modes/interactive/external-editor.ts", import.meta.url),
-);
+const fixturePath = fileURLToPath(new URL("./fixtures/fake-external-editor.mjs", import.meta.url));
+const externalEditorSourcePath = fileURLToPath(new URL("../src/modes/interactive/external-editor.ts", import.meta.url));
 const extensionDialogsSourcePath = fileURLToPath(
 	new URL("../src/modes/interactive/interactive-extension-dialogs.ts", import.meta.url),
 );
@@ -46,12 +42,7 @@ async function runEditor(
 	const captureDirectory = mkdtempSync(join(tmpdir(), prefix));
 	temporaryDirectories.push(captureDirectory);
 	const capturePath = join(captureDirectory, "capture output.json");
-	const command = [
-		quote(process.execPath),
-		quote(fixturePath),
-		quote(capturePath),
-		...(flag ? [flag] : []),
-	].join(" ");
+	const command = [quote(process.execPath), quote(fixturePath), quote(capturePath), ...(flag ? [flag] : [])].join(" ");
 	const result = await editInExternalEditor({ command, content: "original" });
 	const capture = JSON.parse(readFileSync(capturePath, "utf-8")) as EditorCapture;
 	return { result, capture };
@@ -212,9 +203,7 @@ describe("external editor selection and hosts", () => {
 				EDITOR: "editor",
 			}),
 		).toBe("configured --wait");
-		expect(resolveExternalEditorCommand(undefined, { VISUAL: "visual", EDITOR: "editor" })).toBe(
-			"visual",
-		);
+		expect(resolveExternalEditorCommand(undefined, { VISUAL: "visual", EDITOR: "editor" })).toBe("visual");
 		expect(resolveExternalEditorCommand(undefined, { EDITOR: "editor" })).toBe("editor");
 		expect(resolveExternalEditorCommand(undefined, {}, "linux")).toBe("nano");
 		expect(resolveExternalEditorCommand(undefined, {}, "win32")).toBe("notepad");

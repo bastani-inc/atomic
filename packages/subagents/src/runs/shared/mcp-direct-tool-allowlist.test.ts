@@ -1,9 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 import {
 	computeMcpServerHash,
-	resolveMcpDirectToolNamesFromConfig,
 	type McpConfig,
 	type MetadataCache,
+	resolveMcpDirectToolNamesFromConfig,
 } from "./mcp-direct-tool-allowlist.ts";
 
 describe("resolveMcpDirectToolNamesFromConfig", () => {

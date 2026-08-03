@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "bun:test";
+import { test } from "vitest";
 import { createGitEnvironment, GIT_LOCAL_ENV_VARS } from "../../packages/coding-agent/src/utils/git-env.js";
 
 test("createGitEnvironment removes Git-local env while preserving unrelated entries", () => {

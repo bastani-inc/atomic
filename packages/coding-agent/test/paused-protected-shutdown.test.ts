@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import type { AgentSessionServices } from "../src/core/agent-session-services.ts";
-import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
@@ -32,26 +32,29 @@ function runtimeFor(harness: Harness): AgentSessionRuntime {
 
 async function queueProtectedBatchHold(harness: Harness): Promise<void> {
 	harness.session.pauseQueuedMessages();
-	await harness.session.sendCustomMessages([
-		{
-			customType: "paused-shutdown-protected-card",
-			content: [{ type: "text", text: "persist first without a provider turn" }],
-			display: true,
-			details: { retained: true },
-		},
-		{
-			customType: "paused-shutdown-protected-card",
-			content: [{ type: "text", text: "persist second without a provider turn" }],
-			display: true,
-			details: { retained: true },
-		},
-	], { triggerTurn: true, persistWhenStreaming: true });
+	await harness.session.sendCustomMessages(
+		[
+			{
+				customType: "paused-shutdown-protected-card",
+				content: [{ type: "text", text: "persist first without a provider turn" }],
+				display: true,
+				details: { retained: true },
+			},
+			{
+				customType: "paused-shutdown-protected-card",
+				content: [{ type: "text", text: "persist second without a provider turn" }],
+				display: true,
+				details: { retained: true },
+			},
+		],
+		{ triggerTurn: true, persistWhenStreaming: true },
+	);
 }
 
 function hiddenEntries(harness: Harness) {
-	return harness.session.sessionManager.getEntries().filter(
-		(entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE,
-	);
+	return harness.session.sessionManager
+		.getEntries()
+		.filter((entry) => entry.type === "custom_message" && entry.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE);
 }
 
 describe("paused protected reconciliation shutdown", () => {
@@ -72,7 +75,9 @@ describe("paused protected reconciliation shutdown", () => {
 
 		expect(harness.getPendingResponseCount()).toBe(responsesBeforeDispose);
 		expect(hiddenEntries(harness)).toHaveLength(2);
-		expect(hiddenEntries(harness).map((entry) => entry.type === "custom_message" ? entry.content : undefined)).toEqual([
+		expect(
+			hiddenEntries(harness).map((entry) => (entry.type === "custom_message" ? entry.content : undefined)),
+		).toEqual([
 			[{ type: "text", text: "persist first without a provider turn" }],
 			[{ type: "text", text: "persist second without a provider turn" }],
 		]);
@@ -84,13 +89,27 @@ describe("paused protected reconciliation shutdown", () => {
 		await queueProtectedBatchHold(harness);
 		const events: string[] = [];
 		const exit = new Error("test process exit");
-		vi.spyOn(process, "exit").mockImplementation((() => { throw exit; }) as typeof process.exit);
+		vi.spyOn(process, "exit").mockImplementation((() => {
+			throw exit;
+		}) as typeof process.exit);
 		const context: ShutdownContext = {
 			isShuttingDown: false,
 			runtimeHost: runtimeFor(harness),
-			themeController: { disableAutoSync() { events.push("theme"); } },
-			ui: { terminal: { async drainInput() { events.push("drain"); } } },
-			stop() { events.push("stop"); },
+			themeController: {
+				disableAutoSync() {
+					events.push("theme");
+				},
+			},
+			ui: {
+				terminal: {
+					async drainInput() {
+						events.push("drain");
+					},
+				},
+			},
+			stop() {
+				events.push("stop");
+			},
 			sessionManager: harness.session.sessionManager,
 		};
 

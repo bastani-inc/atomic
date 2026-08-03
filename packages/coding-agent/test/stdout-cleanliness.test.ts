@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR, VERSION } from "../src/config.ts";
-import { runCliProcess, removeTempDirs } from "./cli-test-helpers.ts";
+import { removeTempDirs, runCliProcess } from "./cli-test-helpers.ts";
 
 const tempDirs: string[] = [];
 
@@ -93,7 +93,11 @@ describe("stdout cleanliness in non-interactive modes", () => {
 		const commandsDir = join(projectDir, ".atomic", "commands");
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(commandsDir, { recursive: true });
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }, null, 2), "utf-8");
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ defaultProjectTrust: "always" }, null, 2),
+			"utf-8",
+		);
 		writeFileSync(join(commandsDir, "test.md"), "hello", "utf-8");
 
 		const result = await runCliInProject(["--help"], { agentDir, projectDir });

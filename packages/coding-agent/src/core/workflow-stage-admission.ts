@@ -35,7 +35,10 @@ export class WorkflowStageAdmissionBoundary {
 			if (this.completed.has(key)) return { decision: "duplicate", completion: Promise.resolve() };
 			const inFlight = this.inFlight.get(key);
 			if (inFlight) {
-				return { decision: "duplicate", completion: this.invocationContext.getStore() === key ? Promise.resolve() : inFlight };
+				return {
+					decision: "duplicate",
+					completion: this.invocationContext.getStore() === key ? Promise.resolve() : inFlight,
+				};
 			}
 		}
 		const decision: WorkflowStageAdmissionDecision = this.open ? "admitted" : "late";
@@ -45,7 +48,10 @@ export class WorkflowStageAdmissionBoundary {
 		} else {
 			let resolveCompletion!: () => void;
 			let rejectCompletion!: (reason?: unknown) => void;
-			completion = new Promise<void>((resolve, reject) => { resolveCompletion = resolve; rejectCompletion = reject; });
+			completion = new Promise<void>((resolve, reject) => {
+				resolveCompletion = resolve;
+				rejectCompletion = reject;
+			});
 			void completion.catch(() => {});
 			this.inFlight.set(key, completion);
 			const delivery = this.invocationContext.run(key, () => this.invoke(this.open ? deliver : routeLate));
@@ -91,7 +97,6 @@ export class WorkflowStageAdmissionBoundary {
 		await Promise.allSettled([...this.pending]);
 		await this.drainAdmittedWork();
 	}
-
 
 	private invoke(callback: () => void | Promise<void>): Promise<void> {
 		try {

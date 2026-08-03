@@ -72,7 +72,9 @@ export function lookupSeenWithTtl(
 	const record = seen.get(key);
 	if (record === undefined) return "miss";
 	const recordedSignature = typeof record === "number" ? undefined : record.signature;
-	return recordedSignature === undefined || signature === undefined || recordedSignature === signature ? "match" : "conflict";
+	return recordedSignature === undefined || signature === undefined || recordedSignature === signature
+		? "match"
+		: "conflict";
 }
 
 export function hasSeenWithTtl(seen: CompletionSeenMap, key: string, now: number, ttlMs: number): boolean {

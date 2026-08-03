@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import type { ExtensionFactory } from "../src/core/sdk.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -115,5 +114,4 @@ describe("AgentSession dynamic provider registration", () => {
 
 		session.dispose();
 	});
-
 });

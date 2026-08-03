@@ -18,7 +18,9 @@ export function isBundledIntercomBrokerPath(
 	executablePath: string = process.execPath,
 	platform: NodeJS.Platform = process.platform,
 ): boolean {
-	return comparablePath(modulePath, platform) === comparablePath(getBundledIntercomBrokerPath(executablePath), platform);
+	return (
+		comparablePath(modulePath, platform) === comparablePath(getBundledIntercomBrokerPath(executablePath), platform)
+	);
 }
 
 export function validateInternalIntercomBrokerPath(

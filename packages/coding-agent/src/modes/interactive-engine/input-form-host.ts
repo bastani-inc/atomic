@@ -1,8 +1,5 @@
 import type { ExtensionUIContext, HostInputFormRequest } from "../../core/extensions/index.ts";
-import {
-	mountHostInputForm,
-	type HostInputFormMount,
-} from "../interactive/components/host-input-form-mount.ts";
+import { type HostInputFormMount, mountHostInputForm } from "../interactive/components/host-input-form-mount.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import type { InteractiveEngineMessage } from "./protocol.ts";
 
@@ -12,14 +9,20 @@ export class InputFormHostController {
 	private readonly runtime: IsolatedInteractiveRuntime;
 	private readonly ui: ExtensionUIContext;
 	private readonly unsubscribe: () => void;
+	private readonly unsubscribeGenerationEnded: () => void;
 	constructor(runtime: IsolatedInteractiveRuntime, ui: ExtensionUIContext) {
 		this.runtime = runtime;
 		this.ui = ui;
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
+		// A dead generation cannot answer a form, and its componentIds mean nothing
+		// to a replacement child, so unmount on death rather than waiting for the
+		// next `engine_ready` (which never arrives if the restart hangs or fails).
+		this.unsubscribeGenerationEnded = runtime.onGenerationEnded(() => this.disposeAll());
 	}
 
 	dispose(): void {
 		this.unsubscribe();
+		this.unsubscribeGenerationEnded();
 		this.disposeAll();
 	}
 
@@ -34,7 +37,12 @@ export class InputFormHostController {
 			return;
 		}
 		if (message.type === "engine_input_form_open") {
-			this.open(message.componentId, { title: message.title, fields: message.fields, ...(message.heading !== undefined ? { heading: message.heading } : {}), ...(message.submitLabel !== undefined ? { submitLabel: message.submitLabel } : {}) });
+			this.open(message.componentId, {
+				title: message.title,
+				fields: message.fields,
+				...(message.heading !== undefined ? { heading: message.heading } : {}),
+				...(message.submitLabel !== undefined ? { submitLabel: message.submitLabel } : {}),
+			});
 		}
 	}
 

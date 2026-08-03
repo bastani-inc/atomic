@@ -9,8 +9,8 @@
  * test combined a live stage view with a successful `rung: "fresh"` event.
  */
 
-import { describe, test } from "bun:test";
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import { describe, test } from "vitest";
 import {
 	assert,
 	createStore,
@@ -18,8 +18,8 @@ import {
 	fakeFooterAgentSession,
 	flush,
 	makeHandle,
-	setupRun,
 	StageChatView,
+	setupRun,
 	stripAnsi,
 } from "./stage-chat-view-helpers.js";
 

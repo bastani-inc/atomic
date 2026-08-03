@@ -26,7 +26,9 @@ interface RuntimeSettingsHarness {
 	editor: { setPaddingX?: Setter<number>; setAutocompleteMaxVisible?: Setter<number> };
 }
 
-const applyRuntimeSettings = InteractiveModeBase.prototype.applyRuntimeSettings as (this: RuntimeSettingsHarness) => void;
+const applyRuntimeSettings = InteractiveModeBase.prototype.applyRuntimeSettings as (
+	this: RuntimeSettingsHarness,
+) => void;
 
 describe("InteractiveMode runtime settings", () => {
 	it("reloads outputPad alongside other mutable runtime settings", () => {

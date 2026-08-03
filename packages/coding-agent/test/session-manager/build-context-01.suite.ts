@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai/compat";
+import type { ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import {
 	type BranchSummaryEntry,
@@ -50,8 +50,7 @@ function compaction(id: string, parentId: string | null, summary: string, firstK
 	};
 }
 
-
-function toolResultMessage(toolCallId: string, text: string): ToolResultMessage {
+function _toolResultMessage(toolCallId: string, text: string): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
@@ -69,7 +68,6 @@ function branchSummary(id: string, parentId: string | null, summary: string, fro
 function thinkingLevel(id: string, parentId: string | null, level: string): ThinkingLevelChangeEntry {
 	return { type: "thinking_level_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", thinkingLevel: level };
 }
-
 
 function modelChange(id: string, parentId: string | null, provider: string, modelId: string): ModelChangeEntry {
 	return { type: "model_change", id, parentId, timestamp: "2025-01-01T00:00:00Z", provider, modelId };
@@ -235,5 +233,5 @@ describe("buildSessionContext", () => {
 			expect((ctxBranch.messages[3] as any).summary).toContain("Tried wrong approach");
 			expect((ctxBranch.messages[4] as any).content).toBe("better approach");
 		});
-});
+	});
 });

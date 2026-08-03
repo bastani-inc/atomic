@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getCustomThemesDir } from "../../../config.ts";
 import { closeWatcher, isSafeFsWatchPathError, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
-import { Theme } from "./theme-class.ts";
 import { getDefaultTheme } from "./terminal-detection.ts";
+import type { Theme } from "./theme-class.ts";
 import { getBuiltinThemes, loadTheme, loadThemeFromPath, setRegisteredTheme } from "./theme-loading.ts";
 
 // Use globalThis to share theme across module loaders (tsx + jiti in dev mode)

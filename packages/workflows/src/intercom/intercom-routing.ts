@@ -20,18 +20,18 @@ import type { IntercomControlCallbacks, IntercomControlPayload } from "./result-
  * Separating them makes the logic independently testable.
  */
 export interface IntercomRoutingDeps {
-  /** Workflow store — for recordNotice / ackNotice. */
-  store: Store;
-  /**
-   * Raw pi events emit — used to fire `subagent:control-intercom:response`.
-   * `undefined` when pi.events.emit is not available.
-   */
-  emit: ((event: string, payload: Record<string, unknown>) => void) | undefined;
-  /**
-   * Pi confirm dialog with separate title + message args.
-   * `undefined` when pi.ui.confirm is absent.
-   */
-  confirm: ((title: string, message: string) => Promise<boolean>) | undefined;
+	/** Workflow store — for recordNotice / ackNotice. */
+	store: Store;
+	/**
+	 * Raw pi events emit — used to fire `subagent:control-intercom:response`.
+	 * `undefined` when pi.events.emit is not available.
+	 */
+	emit: ((event: string, payload: Record<string, unknown>) => void) | undefined;
+	/**
+	 * Pi confirm dialog with separate title + message args.
+	 * `undefined` when pi.ui.confirm is absent.
+	 */
+	confirm: ((title: string, message: string) => Promise<boolean>) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,13 +39,13 @@ export interface IntercomRoutingDeps {
 // ---------------------------------------------------------------------------
 
 function toNoticeLevel(raw: unknown): NoticeLevel {
-  if (raw === "warning" || raw === "error") return raw;
-  return "info";
+	if (raw === "warning" || raw === "error") return raw;
+	return "info";
 }
 
 function makeId(): string {
-  // crypto.randomUUID() is available globally in Bun and Node ≥ 16.
-  return crypto.randomUUID();
+	// crypto.randomUUID() is available globally in Bun and Node ≥ 16.
+	return crypto.randomUUID();
 }
 
 // ---------------------------------------------------------------------------
@@ -69,57 +69,57 @@ function makeId(): string {
  *     Record a warning notice. No ack, no emit.
  */
 export function buildIntercomCallbacks(deps: IntercomRoutingDeps): IntercomControlCallbacks {
-  const { store, emit, confirm } = deps;
+	const { store, emit, confirm } = deps;
 
-  return {
-    async onNeedDecision(payload: IntercomControlPayload): Promise<void> {
-      const noticeId = makeId();
+	return {
+		async onNeedDecision(payload: IntercomControlPayload): Promise<void> {
+			const noticeId = makeId();
 
-      store.recordNotice({
-        id: noticeId,
-        runId: payload.runId,
-        stageId: payload.stageId,
-        level: "warning",
-        message: payload.message,
-        createdAt: Date.now(),
-        requiresAck: true,
-      });
+			store.recordNotice({
+				id: noticeId,
+				runId: payload.runId,
+				stageId: payload.stageId,
+				level: "warning",
+				message: payload.message,
+				createdAt: Date.now(),
+				requiresAck: true,
+			});
 
-      const accepted: boolean =
-        typeof confirm === "function"
-          ? await confirm("Subagent needs decision", payload.message).catch(() => false)
-          : false;
+			const accepted: boolean =
+				typeof confirm === "function"
+					? await confirm("Subagent needs decision", payload.message).catch(() => false)
+					: false;
 
-      emit?.("subagent:control-intercom:response", {
-        requestId: payload.requestId ?? "",
-        runId: payload.runId ?? "",
-        stageId: payload.stageId ?? "",
-        accepted,
-      });
+			emit?.("subagent:control-intercom:response", {
+				requestId: payload.requestId ?? "",
+				runId: payload.runId ?? "",
+				stageId: payload.stageId ?? "",
+				accepted,
+			});
 
-      store.ackNotice(noticeId);
-    },
+			store.ackNotice(noticeId);
+		},
 
-    onNotify(payload: IntercomControlPayload): void {
-      store.recordNotice({
-        id: makeId(),
-        runId: payload.runId,
-        stageId: payload.stageId,
-        level: toNoticeLevel(payload.level),
-        message: payload.message,
-        createdAt: Date.now(),
-      });
-    },
+		onNotify(payload: IntercomControlPayload): void {
+			store.recordNotice({
+				id: makeId(),
+				runId: payload.runId,
+				stageId: payload.stageId,
+				level: toNoticeLevel(payload.level),
+				message: payload.message,
+				createdAt: Date.now(),
+			});
+		},
 
-    onUnknown(payload: IntercomControlPayload): void {
-      store.recordNotice({
-        id: makeId(),
-        runId: payload.runId,
-        stageId: payload.stageId,
-        level: "warning",
-        message: `Unknown intercom type "${payload.type}": ${payload.message}`,
-        createdAt: Date.now(),
-      });
-    },
-  };
+		onUnknown(payload: IntercomControlPayload): void {
+			store.recordNotice({
+				id: makeId(),
+				runId: payload.runId,
+				stageId: payload.stageId,
+				level: "warning",
+				message: `Unknown intercom type "${payload.type}": ${payload.message}`,
+				createdAt: Date.now(),
+			});
+		},
+	};
 }

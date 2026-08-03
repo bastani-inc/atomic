@@ -4,9 +4,9 @@
 
 import type { ExtensionAPI } from "@bastani/atomic";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT } from "../../shared/types.ts";
 import { buildCompletionKey, hasSeenWithTtl, recordSeen } from "./completion-dedupe.ts";
 import type { CompletionNotificationEnvelope } from "./completion-notification.ts";
-import { SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT } from "../../shared/types.ts";
 
 interface ChainStepResult {
 	agent: string;
@@ -88,9 +88,11 @@ function getNotifySeen(pi: ExtensionAPI): Map<string, number> {
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<void> {
-	return (typeof value === "object" || typeof value === "function")
-		&& value !== null
-		&& typeof (value as { then?: unknown }).then === "function";
+	return (
+		(typeof value === "object" || typeof value === "function") &&
+		value !== null &&
+		typeof (value as { then?: unknown }).then === "function"
+	);
 }
 
 async function dispatchFallback(
@@ -126,14 +128,24 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	const seen = getNotifySeen(pi);
 	const ttlMs = 10 * 60 * 1000;
 
-	const emitTerminalOrderingBarrier = (result: SubagentResult, dispatch?: (prefix: TerminalPreludeMessage[]) => void | Promise<void>): Promise<void> | undefined => {
+	const emitTerminalOrderingBarrier = (
+		result: SubagentResult,
+		dispatch?: (prefix: TerminalPreludeMessage[]) => void | Promise<void>,
+	): Promise<void> | undefined => {
 		const runId = result.runId ?? result.id;
 		if (!runId) return undefined;
-		const resultTargets = result.results?.map((child, arrayIndex) =>
-			child.intercomTarget?.trim() || resolveSubagentIntercomTarget(runId, child.agent, child.index ?? arrayIndex)) ?? [];
-		const sourceSessionTargets = resultTargets.length > 0
-			? resultTargets
-			: result.agent ? [resolveSubagentIntercomTarget(runId, result.agent, 0)] : [];
+		const resultTargets =
+			result.results?.map(
+				(child, arrayIndex) =>
+					child.intercomTarget?.trim() ||
+					resolveSubagentIntercomTarget(runId, child.agent, child.index ?? arrayIndex),
+			) ?? [];
+		const sourceSessionTargets =
+			resultTargets.length > 0
+				? resultTargets
+				: result.agent
+					? [resolveSubagentIntercomTarget(runId, result.agent, 0)]
+					: [];
 		if (sourceSessionTargets.length === 0) return undefined;
 		const terminalId = result.notificationId?.startsWith("completion-notify-")
 			? result.notificationId.slice("completion-notify-".length)
@@ -158,7 +170,9 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		if (registry.get(pi) !== registration) return;
 		const result = data as SubagentResult & Partial<CompletionNotificationEnvelope>;
 		const now = Date.now();
-		const key = result.notificationId ? `notification:${result.notificationId}` : buildCompletionKey(result, "notify");
+		const key = result.notificationId
+			? `notification:${result.notificationId}`
+			: buildCompletionKey(result, "notify");
 		if (hasSeenWithTtl(seen, key, now, ttlMs)) {
 			result.acknowledge?.(true);
 			return;
@@ -166,7 +180,10 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		const pending = inFlight.get(key);
 		if (pending) {
 			result.defer?.();
-			void pending.then(() => result.acknowledge?.(true), () => result.acknowledge?.(false));
+			void pending.then(
+				() => result.acknowledge?.(true),
+				() => result.acknowledge?.(false),
+			);
 			return;
 		}
 		const ownership = Promise.withResolvers<void>();
@@ -174,17 +191,15 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		inFlight.set(key, ownership.promise);
 		const agent = result.agent ?? "unknown";
 		const summary = typeof result.summary === "string" ? result.summary : "";
-		const paused = !result.success && (
-			result.exitCode === 0
-			|| result.state === "paused"
-			|| summary.startsWith("Paused after interrupt.")
-		);
+		const paused =
+			!result.success &&
+			(result.exitCode === 0 || result.state === "paused" || summary.startsWith("Paused after interrupt."));
 		const status = paused ? "paused" : result.success ? "completed" : "failed";
 
 		const taskInfo =
 			result.taskIndex !== undefined && result.totalTasks !== undefined
-				? ` (${result.taskIndex + 1}/${result.totalTasks})`
-				: "";
+				? `(${result.taskIndex + 1}/${result.totalTasks})`
+				: undefined;
 
 		const sessionLine = result.shareUrl
 			? `Session: ${result.shareUrl}`
@@ -195,9 +210,27 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 					: undefined;
 
 		const displaySummary = summary.trim() ? summary : "(no output)";
-		const noticeLabel = typeof result.noticeLabel === "string" && result.noticeLabel.trim() ? result.noticeLabel.trim() : "Background task";
+		const noticeLabel =
+			typeof result.noticeLabel === "string" && result.noticeLabel.trim()
+				? result.noticeLabel.trim()
+				: "Background task";
+		let sessionLabel: string | undefined;
+		let sessionValue: string | undefined;
+		if (sessionLine) {
+			const separator = sessionLine.indexOf(":");
+			sessionLabel = sessionLine.slice(0, separator).toLowerCase();
+			sessionValue = sessionLine.slice(separator + 1).trim();
+		}
+		const details: SubagentNotifyDetails = {
+			agent,
+			status,
+			...(taskInfo ? { taskInfo } : {}),
+			resultPreview: displaySummary,
+			...(result.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+			...(sessionLabel && sessionValue ? { sessionLabel, sessionValue } : {}),
+		};
 		const content = [
-			`${noticeLabel} ${status}: **${agent}**${taskInfo}`,
+			`${noticeLabel} ${status}: **${agent}**${taskInfo ? ` ${taskInfo}` : ""}`,
 			"",
 			displaySummary,
 			sessionLine ? "" : undefined,
@@ -206,10 +239,11 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			.filter((line) => line !== undefined)
 			.join("\n");
 
-		const terminalMessage = {
+		const terminalMessage: TerminalPreludeMessage = {
 			customType: "subagent-notify",
 			content,
 			display: true,
+			details,
 		};
 		const deliveryOptions = { triggerTurn: true, stageAdmissionKey: `subagent:${key}` } as const;
 		const succeed = (): void => {

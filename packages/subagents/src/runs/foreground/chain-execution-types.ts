@@ -1,17 +1,14 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@bastani/atomic";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { AgentConfig } from "../../agents/agents.ts";
 import type { ModelInfo } from "../../shared/model-info.ts";
-import type {
-	ChainStep,
-	ParallelStep,
-	ResolvedStepBehavior,
-} from "../../shared/settings.ts";
+import type { ChainStep, ParallelStep, ResolvedStepBehavior } from "../../shared/settings.ts";
 import type {
 	ActivityState,
 	AgentProgress,
 	ArtifactConfig,
 	ArtifactPaths,
+	ChainOutputMap,
 	ControlEvent,
 	Details,
 	IntercomEventBus,
@@ -19,7 +16,6 @@ import type {
 	ResolvedControlConfig,
 	SingleResult,
 } from "../../shared/types.ts";
-import type { ChainOutputMap } from "../../shared/types.ts";
 import type { WorktreeSetup } from "../shared/worktree.ts";
 import type { runSync } from "./execution.ts";
 
@@ -53,8 +49,22 @@ export interface ChainExecutionDetailsInput {
 	runId: string;
 	outputs?: ChainOutputMap;
 	currentFlatIndex?: number;
-	dynamicChildren?: Record<number, Array<{ agent: string; label?: string; flatIndex: number; itemKey: string; outputName?: string; structured?: boolean; error?: string }>>;
-	dynamicGroupStatuses?: Record<number, { status: "pending" | "running" | "completed" | "failed" | "paused" | "detached"; error?: string }>;
+	dynamicChildren?: Record<
+		number,
+		Array<{
+			agent: string;
+			label?: string;
+			flatIndex: number;
+			itemKey: string;
+			outputName?: string;
+			structured?: boolean;
+			error?: string;
+		}>
+	>;
+	dynamicGroupStatuses?: Record<
+		number,
+		{ status: "pending" | "running" | "completed" | "failed" | "paused" | "detached"; error?: string }
+	>;
 }
 
 export interface ChainExecutionParams {
@@ -183,6 +193,8 @@ export interface ChainRuntimeContext {
 	chainSteps: ChainStep[];
 	totalSteps: number;
 	executeRunSync: RunSyncDependency;
-	makeDetailsInput(overrides?: Pick<Partial<ChainExecutionDetailsInput>, "currentStepIndex" | "currentFlatIndex">): ChainExecutionDetailsInput;
+	makeDetailsInput(
+		overrides?: Pick<Partial<ChainExecutionDetailsInput>, "currentStepIndex" | "currentFlatIndex">,
+	): ChainExecutionDetailsInput;
 	onDetachedExit?: (index: number, result: SingleResult) => void;
 }

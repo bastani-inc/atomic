@@ -39,9 +39,7 @@ export function resolveTempScopeId(options?: {
 	homedir?: (() => string) | undefined;
 }): string {
 	const env = options?.env ?? process.env;
-	const getuid = options && Object.hasOwn(options, "getuid")
-		? options.getuid
-		: process.getuid?.bind(process);
+	const getuid = options && Object.hasOwn(options, "getuid") ? options.getuid : process.getuid?.bind(process);
 	if (typeof getuid === "function") {
 		return `uid-${getuid()}`;
 	}
@@ -51,9 +49,7 @@ export function resolveTempScopeId(options?: {
 		if (value) return `user-${sanitizeTempScopeSegment(value)}`;
 	}
 
-	const userInfo = options && Object.hasOwn(options, "userInfo")
-		? options.userInfo
-		: os.userInfo;
+	const userInfo = options && Object.hasOwn(options, "userInfo") ? options.userInfo : os.userInfo;
 	try {
 		const username = userInfo?.().username;
 		if (username) return `user-${sanitizeTempScopeSegment(username)}`;
@@ -64,9 +60,7 @@ export function resolveTempScopeId(options?: {
 	const homedir = env.USERPROFILE ?? env.HOME;
 	if (homedir) return `home-${sanitizeTempScopeSegment(homedir)}`;
 
-	const resolveHomedir = options && Object.hasOwn(options, "homedir")
-		? options.homedir
-		: os.homedir;
+	const resolveHomedir = options && Object.hasOwn(options, "homedir") ? options.homedir : os.homedir;
 	try {
 		const fallbackHomedir = resolveHomedir?.();
 		if (fallbackHomedir) return `home-${sanitizeTempScopeSegment(fallbackHomedir)}`;
@@ -95,7 +89,17 @@ export const POLL_INTERVAL_MS = 250;
 export const MAX_WIDGET_JOBS = 4;
 export const MAX_SUBAGENT_NESTING_DEPTH = 5;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;
-export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "resume", "doctor"] as const;
+export const SUBAGENT_ACTIONS = [
+	"list",
+	"get",
+	"create",
+	"update",
+	"delete",
+	"status",
+	"interrupt",
+	"resume",
+	"doctor",
+] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +
@@ -114,13 +118,8 @@ export function resolveTopLevelParallelMaxTasks(value: unknown): number {
 	return configuredMax === undefined ? MAX_PARALLEL_TASKS : Math.min(configuredMax, MAX_PARALLEL_TASKS);
 }
 
-export function resolveTopLevelParallelConcurrency(
-	override: unknown,
-	configValue: unknown,
-): number {
-	return normalizeTopLevelParallelValue(override)
-		?? normalizeTopLevelParallelValue(configValue)
-		?? MAX_CONCURRENCY;
+export function resolveTopLevelParallelConcurrency(override: unknown, configValue: unknown): number {
+	return normalizeTopLevelParallelValue(override) ?? normalizeTopLevelParallelValue(configValue) ?? MAX_CONCURRENCY;
 }
 
 export function getAsyncConfigPath(suffix: string): string {

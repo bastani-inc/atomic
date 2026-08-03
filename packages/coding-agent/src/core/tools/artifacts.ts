@@ -64,7 +64,8 @@ export class ArtifactManager {
 		this.#init();
 		if (!existsSync(this.#dir)) return undefined;
 		const prefix = `${id}.`;
-		for (const name of readdirSync(this.#dir)) if (name.startsWith(prefix) && name.endsWith(".log")) return join(this.#dir, name);
+		for (const name of readdirSync(this.#dir))
+			if (name.startsWith(prefix) && name.endsWith(".log")) return join(this.#dir, name);
 		return undefined;
 	}
 

@@ -7,14 +7,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import { createExtensionRuntime, discoverAndLoadExtensions, loadExtensions } from "../../src/core/extensions/loader.ts";
-import { ExtensionRunner, emitProjectTrustEvent } from "../../src/core/extensions/runner.ts";
-import type {
-	ExtensionActions,
-	ExtensionContextActions,
-	ExtensionUIContext,
-	ProviderConfig,
-} from "../../src/core/extensions/types.ts";
+import { discoverAndLoadExtensions } from "../../src/core/extensions/loader.ts";
+import { ExtensionRunner } from "../../src/core/extensions/runner.ts";
+import type { ExtensionActions, ExtensionContextActions, ProviderConfig } from "../../src/core/extensions/types.ts";
 import { KeybindingsManager, type KeyId } from "../../src/core/keybindings.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
@@ -40,7 +35,7 @@ describe("ExtensionRunner", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	const providerModelConfig: ProviderConfig = {
+	const _providerModelConfig: ProviderConfig = {
 		baseUrl: "https://provider.test/v1",
 		apiKey: "provider-test-key",
 		api: "openai-completions",
@@ -57,7 +52,7 @@ describe("ExtensionRunner", () => {
 		],
 	};
 
-	const extensionActions: ExtensionActions = {
+	const _extensionActions: ExtensionActions = {
 		sendMessage: () => {},
 		sendUserMessage: () => {},
 		appendEntry: () => {},
@@ -74,7 +69,7 @@ describe("ExtensionRunner", () => {
 		setThinkingLevel: () => {},
 	};
 
-	const extensionContextActions: ExtensionContextActions = {
+	const _extensionContextActions: ExtensionContextActions = {
 		getModel: () => undefined,
 		isIdle: () => true,
 		isProjectTrusted: () => true,
@@ -87,7 +82,7 @@ describe("ExtensionRunner", () => {
 		getSystemPrompt: () => "",
 	};
 
-		describe("shortcut conflicts", () => {
+	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {
 			const extCode = `
 				export default function(pi) {
@@ -294,5 +289,4 @@ describe("ExtensionRunner", () => {
 			warnSpy.mockRestore();
 		});
 	});
-
 });

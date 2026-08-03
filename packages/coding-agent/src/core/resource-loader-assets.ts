@@ -7,17 +7,22 @@ import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplatesAsync } from "./prompt-templates-async.ts";
-import type { Skill } from "./skills.ts";
-import { loadSkillsAsync } from "./skills-async.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs, resolveResourcePath } from "./resource-loader-paths.ts";
 import { findSourceInfoForPath, getDefaultSourceInfoForPath } from "./resource-loader-source-info.ts";
+import type { Skill } from "./skills.ts";
+import { loadSkillsAsync } from "./skills-async.ts";
 
 const RESOURCE_LOAD_YIELD_AFTER_MS = 8;
 
 async function existsAsync(path: string): Promise<boolean> {
-	try { await access(path); return true; } catch { return false; }
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function applySkillsResult(
@@ -43,9 +48,10 @@ export async function updateSkillsFromPathsAsync(
 	metadataByPath?: Map<string, PathMetadata>,
 ): Promise<void> {
 	const state = resourceInternals(loader);
-	const skillsResult = state.noSkills && skillPaths.length === 0
-		? { skills: [], diagnostics: [] }
-		: await loadSkillsAsync({ cwd: state.cwd, agentDir: state.agentDir, skillPaths, includeDefaults: false });
+	const skillsResult =
+		state.noSkills && skillPaths.length === 0
+			? { skills: [], diagnostics: [] }
+			: await loadSkillsAsync({ cwd: state.cwd, agentDir: state.agentDir, skillPaths, includeDefaults: false });
 	applySkillsResult(loader, skillsResult, metadataByPath);
 }
 
@@ -72,9 +78,15 @@ export async function updatePromptsFromPathsAsync(
 	metadataByPath?: Map<string, PathMetadata>,
 ): Promise<void> {
 	const state = resourceInternals(loader);
-	const loadedPrompts = state.noPromptTemplates && promptPaths.length === 0
-		? []
-		: await loadPromptTemplatesAsync({ cwd: state.cwd, agentDir: state.agentDir, promptPaths, includeDefaults: false });
+	const loadedPrompts =
+		state.noPromptTemplates && promptPaths.length === 0
+			? []
+			: await loadPromptTemplatesAsync({
+					cwd: state.cwd,
+					agentDir: state.agentDir,
+					promptPaths,
+					includeDefaults: false,
+				});
 	const sourcedPrompts = loadedPrompts.map((prompt) => ({
 		...prompt,
 		sourceInfo:
@@ -86,7 +98,8 @@ export async function updatePromptsFromPathsAsync(
 		if (prompt.sourceInfo) state.extensionPromptSourceInfos.set(prompt.filePath, prompt.sourceInfo);
 	}
 	const promptsResult = dedupePrompts(sourcedPrompts);
-	const overlaps = state.extensionsResult.overlaps ??= [];
+	state.extensionsResult.overlaps ??= [];
+	const overlaps = state.extensionsResult.overlaps;
 	const extensionOverlaps = overlaps.filter((overlap) => overlap.resourceType !== "prompt");
 	overlaps.splice(0, overlaps.length, ...extensionOverlaps, ...promptsResult.overlaps);
 	applyPromptsResult(loader, promptsResult, metadataByPath);
@@ -117,24 +130,34 @@ export async function updateThemesFromPathsAsync(
 	metadataByPath?: Map<string, PathMetadata>,
 ): Promise<void> {
 	const state = resourceInternals(loader);
-	const themesResult = state.noThemes && themePaths.length === 0
-		? { themes: [], diagnostics: [] }
-		: loadAndDedupeThemes(await loadThemesAsync(loader, themePaths, false));
+	const themesResult =
+		state.noThemes && themePaths.length === 0
+			? { themes: [], diagnostics: [] }
+			: loadAndDedupeThemes(await loadThemesAsync(loader, themePaths, false));
 	applyThemesResult(loader, themesResult, metadataByPath);
 }
 
-function loadAndDedupeThemes(loaded: { themes: Theme[]; diagnostics: ResourceDiagnostic[] }): { themes: Theme[]; diagnostics: ResourceDiagnostic[] } {
+function loadAndDedupeThemes(loaded: { themes: Theme[]; diagnostics: ResourceDiagnostic[] }): {
+	themes: Theme[];
+	diagnostics: ResourceDiagnostic[];
+} {
 	const deduped = dedupeThemes(loaded.themes);
 	return { themes: deduped.themes, diagnostics: [...loaded.diagnostics, ...deduped.diagnostics] };
 }
 
-
-async function loadThemesAsync(loader: DefaultResourceLoader, paths: string[], includeDefaults = true): Promise<{ themes: Theme[]; diagnostics: ResourceDiagnostic[] }> {
+async function loadThemesAsync(
+	loader: DefaultResourceLoader,
+	paths: string[],
+	includeDefaults = true,
+): Promise<{ themes: Theme[]; diagnostics: ResourceDiagnostic[] }> {
 	const state = resourceInternals(loader);
 	const themes: Theme[] = [];
 	const diagnostics: ResourceDiagnostic[] = [];
 	if (includeDefaults) {
-		for (const dir of [...getLoaderAgentDirs(state.agentDir).map((agentDir) => join(agentDir, "themes")), ...getProjectThemeDirs(state.cwd)]) {
+		for (const dir of [
+			...getLoaderAgentDirs(state.agentDir).map((agentDir) => join(agentDir, "themes")),
+			...getProjectThemeDirs(state.cwd),
+		]) {
 			await loadThemesFromDirAsync(dir, themes, diagnostics);
 		}
 	}
@@ -149,7 +172,8 @@ async function loadThemesAsync(loader: DefaultResourceLoader, paths: string[], i
 		try {
 			const stats = await stat(resolved);
 			if (stats.isDirectory()) await loadThemesFromDirAsync(resolved, themes, diagnostics);
-			else if (stats.isFile() && resolved.endsWith(".json")) await loadThemeFromFileAsync(resolved, themes, diagnostics);
+			else if (stats.isFile() && resolved.endsWith(".json"))
+				await loadThemeFromFileAsync(resolved, themes, diagnostics);
 			else diagnostics.push({ type: "warning", message: "theme path is not a json file", path: resolved });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "failed to read theme path";
@@ -163,7 +187,6 @@ function getProjectThemeDirs(cwd: string): string[] {
 	return getProjectConfigDirs(cwd).map((configDir) => join(configDir, "themes"));
 }
 
-
 async function loadThemesFromDirAsync(dir: string, themes: Theme[], diagnostics: ResourceDiagnostic[]): Promise<void> {
 	if (!(await existsAsync(dir))) return;
 	const startedAt = Date.now();
@@ -173,9 +196,14 @@ async function loadThemesFromDirAsync(dir: string, themes: Theme[], diagnostics:
 			await yieldToEventLoopIfSlow(startedAt, RESOURCE_LOAD_YIELD_AFTER_MS);
 			let isFile = entry.isFile();
 			if (entry.isSymbolicLink()) {
-				try { isFile = (await stat(join(dir, entry.name))).isFile(); } catch { continue; }
+				try {
+					isFile = (await stat(join(dir, entry.name))).isFile();
+				} catch {
+					continue;
+				}
 			}
-			if (isFile && entry.name.endsWith(".json")) await loadThemeFromFileAsync(join(dir, entry.name), themes, diagnostics);
+			if (isFile && entry.name.endsWith(".json"))
+				await loadThemeFromFileAsync(join(dir, entry.name), themes, diagnostics);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "failed to read theme directory";
@@ -183,10 +211,14 @@ async function loadThemesFromDirAsync(dir: string, themes: Theme[], diagnostics:
 	}
 }
 
-
-async function loadThemeFromFileAsync(filePath: string, themes: Theme[], diagnostics: ResourceDiagnostic[]): Promise<void> {
-	try { themes.push(loadThemeFromContent(filePath, await readFile(filePath, "utf-8"))); }
-	catch (error) {
+async function loadThemeFromFileAsync(
+	filePath: string,
+	themes: Theme[],
+	diagnostics: ResourceDiagnostic[],
+): Promise<void> {
+	try {
+		themes.push(loadThemeFromContent(filePath, await readFile(filePath, "utf-8")));
+	} catch (error) {
 		const message = error instanceof Error ? error.message : "failed to load theme";
 		diagnostics.push({ type: "warning", message, path: filePath });
 	}
@@ -209,7 +241,12 @@ function dedupePrompts(prompts: PromptTemplate[]): {
 	for (const prompt of prompts) {
 		const bundled = bundledByName.get(prompt.name);
 		if (prompt.sourceInfo?.configurationOrigin === "inherited-pi" && bundled?.sourceInfo) {
-			overlaps.push({ resourceType: "prompt", name: prompt.name, bundled: bundled.sourceInfo, inherited: prompt.sourceInfo });
+			overlaps.push({
+				resourceType: "prompt",
+				name: prompt.name,
+				bundled: bundled.sourceInfo,
+				inherited: prompt.sourceInfo,
+			});
 			continue;
 		}
 		const existing = seen.get(prompt.name);
@@ -218,7 +255,12 @@ function dedupePrompts(prompts: PromptTemplate[]): {
 				type: "collision",
 				message: `name "/${prompt.name}" collision`,
 				path: prompt.filePath,
-				collision: { resourceType: "prompt", name: prompt.name, winnerPath: existing.filePath, loserPath: prompt.filePath },
+				collision: {
+					resourceType: "prompt",
+					name: prompt.name,
+					winnerPath: existing.filePath,
+					loserPath: prompt.filePath,
+				},
 			});
 		} else {
 			seen.set(prompt.name, prompt);
@@ -238,7 +280,12 @@ function dedupeThemes(themes: Theme[]): { themes: Theme[]; diagnostics: Resource
 				type: "collision",
 				message: `name "${name}" collision`,
 				path: t.sourcePath,
-				collision: { resourceType: "theme", name, winnerPath: existing.sourcePath ?? "<builtin>", loserPath: t.sourcePath ?? "<builtin>" },
+				collision: {
+					resourceType: "theme",
+					name,
+					winnerPath: existing.sourcePath ?? "<builtin>",
+					loserPath: t.sourcePath ?? "<builtin>",
+				},
 			});
 		} else {
 			seen.set(name, t);

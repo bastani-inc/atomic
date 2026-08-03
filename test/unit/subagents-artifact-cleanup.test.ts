@@ -1,8 +1,8 @@
-import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { test } from "vitest";
 import { cleanupOldArtifacts } from "../../packages/subagents/src/shared/artifacts.js";
 
 test("stale artifact cleanup recursively removes nested progress storage", () => {

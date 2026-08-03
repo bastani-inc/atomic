@@ -12,7 +12,13 @@
 import * as path from "node:path";
 import { applyEdits } from "./apply.js";
 import { resolveBlockEdits } from "./block.js";
-import { HL_FILE_HASH_EXAMPLES, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "./format.js";
+import {
+	HL_FILE_HASH_EXAMPLES,
+	HL_FILE_HASH_LENGTH,
+	HL_FILE_HASH_SEP,
+	HL_FILE_PREFIX,
+	HL_FILE_SUFFIX,
+} from "./format.js";
 import { parsePatch, parsePatchStreaming } from "./parser.js";
 import { Tokenizer } from "./tokenizer.js";
 import type { ApplyResult, BlockResolver, Edit, SplitOptions } from "./types.js";
@@ -161,7 +167,7 @@ function normalizeFallbackInput(input: string, options: SplitOptions): string {
 	const stripped = input.startsWith("\uFEFF") ? input.slice(1) : input;
 	const hasExplicitHeader = stripped
 		.split(/\r?\n/)
-		.some(rawLine => parseHashlineHeaderLine(rawLine, options.cwd) !== null);
+		.some((rawLine) => parseHashlineHeaderLine(rawLine, options.cwd) !== null);
 	if (hasExplicitHeader) return input;
 
 	if (!options.path || !containsRecognizableHashlineOperations(input)) return input;
@@ -198,7 +204,7 @@ function splitRawSections(input: string, options: SplitOptions = {}): RawSection
 
 	const flush = () => {
 		if (!current) return;
-		const hasOps = currentLines.some(line => line.trim().length > 0);
+		const hasOps = currentLines.some((line) => line.trim().length > 0);
 		if (hasOps) sections.push({ ...current, diff: currentLines.join("\n") });
 		currentLines = [];
 	};
@@ -272,7 +278,7 @@ export class PatchSection {
 	 * safe to apply to files that don't yet exist.
 	 */
 	get hasAnchorScopedEdit(): boolean {
-		return this.edits.some(edit => {
+		return this.edits.some((edit) => {
 			if (edit.kind === "delete") return true;
 			// A `replace block N:` edit is anchored to concrete content on line N.
 			if (edit.kind === "block") return true;
@@ -314,7 +320,7 @@ export class PatchSection {
 		const resolveWarnings: string[] = [];
 		const resolved = resolveBlockEdits(edits, text, this.path, blockResolver, {
 			onUnresolved: "throw",
-			onWarning: warning => resolveWarnings.push(warning),
+			onWarning: (warning) => resolveWarnings.push(warning),
 		});
 		const result = applyEdits(text, resolved);
 		// Preserve parse warnings so consumers don't need to call `parse()`
@@ -341,7 +347,7 @@ export class PatchSection {
 		const resolveWarnings: string[] = [];
 		const resolved = resolveBlockEdits(edits, text, this.path, blockResolver, {
 			onUnresolved: "drop",
-			onWarning: warning => resolveWarnings.push(warning),
+			onWarning: (warning) => resolveWarnings.push(warning),
 		});
 		const result = applyEdits(text, resolved);
 		const merged = [...warnings, ...resolveWarnings, ...(result.warnings ?? [])];
@@ -379,7 +385,7 @@ export class Patch {
 	 */
 	static parse(input: string, options: SplitOptions = {}): Patch {
 		const raw = mergeSamePathSections(splitRawSections(input, options));
-		return new Patch(raw.map(section => new PatchSection(section)));
+		return new Patch(raw.map((section) => new PatchSection(section)));
 	}
 
 	/**

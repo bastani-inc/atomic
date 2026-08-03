@@ -9,9 +9,7 @@ export interface ExternalEditorRequest {
 	content: string;
 }
 
-export type ExternalEditorResult =
-	| { status: "complete"; content: string }
-	| { status: "failed" };
+export type ExternalEditorResult = { status: "complete"; content: string } | { status: "failed" };
 
 function parseEditorCommand(command: string): string[] {
 	const args: string[] = [];
@@ -86,9 +84,7 @@ export function resolveExternalEditorCommand(
 	return platform === "win32" ? "notepad" : "nano";
 }
 
-export async function editInExternalEditor(
-	request: ExternalEditorRequest,
-): Promise<ExternalEditorResult> {
+export async function editInExternalEditor(request: ExternalEditorRequest): Promise<ExternalEditorResult> {
 	const directory = mkdtempSync(join(tmpdir(), `${APP_NAME}-editor-`));
 	const filePath = join(directory, "prompt.md");
 	try {

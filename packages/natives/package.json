@@ -28,7 +28,7 @@
     "prepublish:native": "napi prepublish --npm-dir npm --tag-style npm --no-gh-release"
   },
   "devDependencies": {
-    "@napi-rs/cli": "3.7.3"
+    "@napi-rs/cli": "3.8.1"
   },
   "engines": {
     "bun": ">=1.3.14",
@@ -42,7 +42,9 @@
       "x86_64-unknown-linux-gnu",
       "aarch64-unknown-linux-gnu",
       "aarch64-apple-darwin",
-      "aarch64-pc-windows-msvc"
+      "aarch64-pc-windows-msvc",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl"
     ]
   },
   "files": [

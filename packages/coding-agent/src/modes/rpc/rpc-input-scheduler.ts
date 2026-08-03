@@ -9,12 +9,17 @@ const INTERRUPT_COMMANDS: ReadonlySet<string> = new Set([
 	"abort_bash",
 	"pause_queued_messages",
 ]);
-const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set(["bash", "user_bash"]);
+const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set(["bash", "user_bash", "refresh_models"]);
 
 export function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIResponse {
-	return typeof value === "object" && value !== null &&
-		"type" in value && value.type === "extension_ui_response" &&
-		"id" in value && typeof value.id === "string";
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"type" in value &&
+		value.type === "extension_ui_response" &&
+		"id" in value &&
+		typeof value.id === "string"
+	);
 }
 
 /**
@@ -32,8 +37,12 @@ export function isConcurrentRpcControlLine(line: string): boolean {
 		return false;
 	}
 	if (isRpcExtensionUIResponse(value)) return true;
-	return value !== null && "type" in value && typeof value.type === "string" &&
-		(INTERRUPT_COMMANDS.has(value.type) || CONCURRENT_COMMANDS.has(value.type));
+	return (
+		value !== null &&
+		"type" in value &&
+		typeof value.type === "string" &&
+		(INTERRUPT_COMMANDS.has(value.type) || CONCURRENT_COMMANDS.has(value.type))
+	);
 }
 
 /**
@@ -61,7 +70,9 @@ export function createRpcInputScheduler(handleLine: (line: string) => Promise<vo
 			return;
 		}
 		ordinaryActive = true;
-		void invoke(line).finally(startNextOrdinary).catch(() => {});
+		void invoke(line)
+			.finally(startNextOrdinary)
+			.catch(() => {});
 	};
 
 	return (line: string): void => {

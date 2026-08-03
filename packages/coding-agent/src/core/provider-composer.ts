@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import type { ModelConfig, ModelsJsonProvider } from "./model-config.ts";
+import type { AuthStatus, ProviderConfigInput } from "./provider-composer-internal.ts";
 import {
 	applyExtension,
 	applyModelOverride,
@@ -23,7 +24,6 @@ import {
 	configuredHeaders,
 	rawModelHeaders,
 } from "./provider-composer-internal.ts";
-import type { AuthStatus, ProviderConfigInput } from "./provider-composer-internal.ts";
 import {
 	getConfigValueEnvVarNames,
 	isCommandConfigValue,
@@ -31,8 +31,8 @@ import {
 	resolveHeadersOrThrow,
 } from "./resolve-config-value.ts";
 
-export { clearApiKeyCache } from "./provider-composer-internal.ts";
 export type { AuthStatus, ExtensionOAuthConfig, ProviderConfigInput } from "./provider-composer-internal.ts";
+export { clearApiKeyCache } from "./provider-composer-internal.ts";
 
 export function validateExtensionProvider(
 	providerId: string,

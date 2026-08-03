@@ -28,7 +28,8 @@ const CATPPUCCIN_THEMES = [
 	"catppuccin-mocha",
 ] as const;
 
-const ATOMIC_THEME_SCHEMA_URL = "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json";
+const ATOMIC_THEME_SCHEMA_URL =
+	"https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json";
 
 describe("built-in themes", () => {
 	it("includes the bundled Catppuccin themes", () => {
@@ -69,7 +70,9 @@ describe("built-in themes", () => {
 		for (const name of BUNDLED_THEME_NAMES) {
 			const content = JSON.parse(readFileSync(join(themesDir, `${name}.json`), "utf8"));
 			expect(content.$schema, name).toBe(ATOMIC_THEME_SCHEMA_URL);
-			expect(validateDeclaredSchema(content), `${name}: ${JSON.stringify(validateDeclaredSchema.errors)}`).toBe(true);
+			expect(validateDeclaredSchema(content), `${name}: ${JSON.stringify(validateDeclaredSchema.errors)}`).toBe(
+				true,
+			);
 			expect(validateThemeJson.Check(content), name).toBe(true);
 		}
 	});

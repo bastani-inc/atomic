@@ -8,12 +8,16 @@
  * cross-ref: spec §5.5
  */
 
+import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
+import {
+	actionableReturnedStatusText,
+	effectiveRunStatus,
+	structuredRecoverableWorkflowFailureText,
+} from "../../shared/returned-run-status.js";
 import type { Store } from "../../shared/store.js";
+import { store as defaultStore } from "../../shared/store.js";
 import type { RunSnapshot, RunStatus } from "../../shared/store-types.js";
 import type { WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
-import { store as defaultStore } from "../../shared/store.js";
-import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
-import { actionableReturnedStatusText, effectiveRunStatus, structuredRecoverableWorkflowFailureText } from "../../shared/returned-run-status.js";
 
 /**
  * Per-run detail returned by {@link inspectRun}. A read-only view over the
@@ -22,96 +26,97 @@ import { actionableReturnedStatusText, effectiveRunStatus, structuredRecoverable
  * stage shape so renderers don't have to recompute it.
  */
 export interface RunDetail {
-  readonly runId: string;
-  readonly name: string;
-  readonly status: RunStatus;
-  readonly mode: "single" | "chain";
-  readonly startedAt: number;
-  readonly endedAt?: number;
-  readonly durationMs?: number;
-  readonly pausedDurationMs?: number;
-  readonly pausedAt?: number;
-  readonly resumedAt?: number;
-  /** Elapsed ms inherited from prior sessions of a resumed durable run. */
-  readonly accumulatedDurationMs?: number;
-  readonly inputs: Readonly<WorkflowInputValues>;
-  readonly stages: readonly RunSnapshot["stages"][number][];
-  /** Always populated by inspectRun; optional for legacy structural literals. */
-  readonly tools?: readonly NonNullable<RunSnapshot["toolNodes"]>[number][];
-  readonly result?: WorkflowOutputValues;
-  readonly error?: string;
-  readonly exited?: boolean;
-  readonly exitReason?: string;
-  readonly failureKind?: RunSnapshot["failureKind"];
-  readonly failureCode?: RunSnapshot["failureCode"];
-  readonly failureRecoverability?: RunSnapshot["failureRecoverability"];
-  readonly failureDisposition?: RunSnapshot["failureDisposition"];
-  readonly failedStageId?: string;
-  readonly failedToolNodeId?: string;
-  readonly resumable?: boolean;
-  readonly retryAfterMs?: number;
-  readonly blockedAt?: number;
+	readonly runId: string;
+	readonly name: string;
+	readonly status: RunStatus;
+	readonly mode: "single" | "chain";
+	readonly startedAt: number;
+	readonly endedAt?: number;
+	readonly durationMs?: number;
+	readonly pausedDurationMs?: number;
+	readonly pausedAt?: number;
+	readonly resumedAt?: number;
+	/** Elapsed ms inherited from prior sessions of a resumed durable run. */
+	readonly accumulatedDurationMs?: number;
+	readonly inputs: Readonly<WorkflowInputValues>;
+	readonly stages: readonly RunSnapshot["stages"][number][];
+	/** Always populated by inspectRun; optional for legacy structural literals. */
+	readonly tools?: readonly NonNullable<RunSnapshot["toolNodes"]>[number][];
+	readonly result?: WorkflowOutputValues;
+	readonly error?: string;
+	readonly exited?: boolean;
+	readonly exitReason?: string;
+	readonly failureKind?: RunSnapshot["failureKind"];
+	readonly failureCode?: RunSnapshot["failureCode"];
+	readonly failureRecoverability?: RunSnapshot["failureRecoverability"];
+	readonly failureDisposition?: RunSnapshot["failureDisposition"];
+	readonly failedStageId?: string;
+	readonly failedToolNodeId?: string;
+	readonly resumable?: boolean;
+	readonly retryAfterMs?: number;
+	readonly blockedAt?: number;
 }
 
 export type InspectRunResult =
-  | { ok: true; runId: string; detail: RunDetail }
-  | { ok: false; runId: string; reason: "not_found" };
+	| { ok: true; runId: string; detail: RunDetail }
+	| { ok: false; runId: string; reason: "not_found" };
 
 /**
- * Look up a single run by id (full UUID or unique prefix) and return a
- * normalised {@link RunDetail} for the per-run text/TUI surfaces.
+ * Look up a single run by its exact id and return a normalised
+ * {@link RunDetail} for the per-run text/TUI surfaces.
  *
- * Returns ok:false "not_found" when no run matches, "ambiguous" when a
- * prefix matches multiple. Read-only: does not mutate the store.
+ * Exact match only. Callers reach this with an id already resolved at the input
+ * boundary, where shape is validated; a second, looser prefix match here would
+ * only reintroduce the truncated targeting the resolvers now reject.
+ *
+ * Read-only: does not mutate the store.
  */
-export function inspectRun(
-  runId: string,
-  opts?: { store?: Store },
-): InspectRunResult {
-  const activeStore = opts?.store ?? defaultStore;
-  const runs = activeStore.runs();
+export function inspectRun(runId: string, opts?: { store?: Store }): InspectRunResult {
+	const activeStore = opts?.store ?? defaultStore;
+	const candidate = activeStore.runs().find((r) => r.id === runId);
 
-  const exact = runs.find((r) => r.id === runId);
-  const candidate = exact ?? (runs.length > 0 ? runs.find((r) => r.id.startsWith(runId)) : undefined);
+	if (!candidate) {
+		return { ok: false, runId, reason: "not_found" };
+	}
 
-  if (!candidate) {
-    return { ok: false, runId, reason: "not_found" };
-  }
+	// Deep copy so callers cannot mutate the store via the snapshot.
+	const copy = structuredClone(candidate);
+	const expandedGraph = expandWorkflowGraph(activeStore.snapshot(), copy.id);
+	const expandedStages = expandedGraph.stages;
 
-  // Deep copy so callers cannot mutate the store via the snapshot.
-  const copy = structuredClone(candidate);
-  const expandedGraph = expandWorkflowGraph(activeStore.snapshot(), copy.id);
-  const expandedStages = expandedGraph.stages;
+	const detail: RunDetail = {
+		runId: copy.id,
+		name: copy.name,
+		status: effectiveRunStatus(copy),
+		mode: expandedStages.length > 1 ? "chain" : "single",
+		startedAt: copy.startedAt,
+		endedAt: copy.endedAt,
+		durationMs: copy.durationMs,
+		pausedDurationMs: copy.pausedDurationMs,
+		pausedAt: copy.pausedAt,
+		resumedAt: copy.resumedAt,
+		accumulatedDurationMs: copy.accumulatedDurationMs,
+		inputs: copy.inputs,
+		stages: expandedStages.map((stage) => structuredClone(stage)),
+		tools: expandedGraph.tools.map((tool) => structuredClone(tool)),
+		result: copy.result,
+		error:
+			copy.error ??
+			(effectiveRunStatus(copy) === copy.status
+				? undefined
+				: (structuredRecoverableWorkflowFailureText(copy) ?? actionableReturnedStatusText(copy.result))),
+		exited: copy.exited,
+		exitReason: copy.exitReason,
+		failureKind: copy.failureKind,
+		failureCode: copy.failureCode,
+		failureRecoverability: copy.failureRecoverability,
+		failureDisposition: copy.failureDisposition,
+		failedStageId: copy.failedStageId,
+		failedToolNodeId: copy.failedToolNodeId,
+		resumable: copy.resumable,
+		retryAfterMs: copy.retryAfterMs,
+		blockedAt: copy.blockedAt,
+	};
 
-  const detail: RunDetail = {
-    runId: copy.id,
-    name: copy.name,
-    status: effectiveRunStatus(copy),
-    mode: expandedStages.length > 1 ? "chain" : "single",
-    startedAt: copy.startedAt,
-    endedAt: copy.endedAt,
-    durationMs: copy.durationMs,
-    pausedDurationMs: copy.pausedDurationMs,
-    pausedAt: copy.pausedAt,
-    resumedAt: copy.resumedAt,
-    accumulatedDurationMs: copy.accumulatedDurationMs,
-    inputs: copy.inputs,
-    stages: expandedStages.map((stage) => structuredClone(stage)),
-    tools: expandedGraph.tools.map((tool) => structuredClone(tool)),
-    result: copy.result,
-    error: copy.error ?? (effectiveRunStatus(copy) === copy.status ? undefined : (structuredRecoverableWorkflowFailureText(copy) ?? actionableReturnedStatusText(copy.result))),
-    exited: copy.exited,
-    exitReason: copy.exitReason,
-    failureKind: copy.failureKind,
-    failureCode: copy.failureCode,
-    failureRecoverability: copy.failureRecoverability,
-    failureDisposition: copy.failureDisposition,
-    failedStageId: copy.failedStageId,
-    failedToolNodeId: copy.failedToolNodeId,
-    resumable: copy.resumable,
-    retryAfterMs: copy.retryAfterMs,
-    blockedAt: copy.blockedAt,
-  };
-
-  return { ok: true, runId: copy.id, detail };
+	return { ok: true, runId: copy.id, detail };
 }

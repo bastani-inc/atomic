@@ -19,7 +19,8 @@ const bunFsMarkers = ["$bunfs", "~BUN", "%7EBUN"];
 // Check process.argv[1] as well as import.meta.url: in a CJS (bytecode) bundle
 // import.meta.url is rewritten to the original source path, but argv[1] still
 // points into Bun's virtual filesystem.
-export const isBunBinary = isSplitLauncherRuntime() ||
+export const isBunBinary =
+	isSplitLauncherRuntime() ||
 	[import.meta.url, process.argv[1] ?? ""].some((candidate) =>
 		bunFsMarkers.some((marker) => candidate.includes(marker)),
 	);
@@ -45,6 +46,7 @@ import {
 	getUpdateInstructionForRuntime,
 	type SelfUpdateRuntime,
 } from "./config-self-update.ts";
+
 export type { InstallMethod, SelfUpdateCommand, SelfUpdateTarget } from "./config-self-update.ts";
 
 function selfUpdateRuntime(): SelfUpdateRuntime {
@@ -289,11 +291,15 @@ function parseCodexFastModeEnvBoolean(value: string | undefined): boolean | unde
 	}
 }
 
-export function serializeCodexFastModeEnvironmentSettings(settings: Required<CodexFastModeEnvironmentSettings>): string {
+export function serializeCodexFastModeEnvironmentSettings(
+	settings: Required<CodexFastModeEnvironmentSettings>,
+): string {
 	return `chat=${settings.chat ? "1" : "0"};workflow=${settings.workflow ? "1" : "0"}`;
 }
 
-export function parseCodexFastModeEnvironmentSettings(value: string | undefined): CodexFastModeEnvironmentSettings | undefined {
+export function parseCodexFastModeEnvironmentSettings(
+	value: string | undefined,
+): CodexFastModeEnvironmentSettings | undefined {
 	if (!value) return undefined;
 	const settings: CodexFastModeEnvironmentSettings = {};
 	for (const part of value.split(/[;,]/)) {
@@ -404,9 +410,8 @@ export function getProjectConfigPaths(cwd: string, ...segments: string[]): strin
 
 /** Model config paths from highest to lowest precedence: Atomic project/global, then Pi project/global. */
 export function getModelsConfigPaths(cwd: string, agentDir: string = getAgentDir(), includeProject = true): string[] {
-	const globalPaths = agentDir === getAgentDir()
-		? getAgentConfigPaths("models.json")
-		: [join(agentDir, "models.json")];
+	const globalPaths =
+		agentDir === getAgentDir() ? getAgentConfigPaths("models.json") : [join(agentDir, "models.json")];
 	if (!includeProject) return globalPaths;
 	const projectPaths = getProjectConfigPaths(cwd, "models.json");
 	const paths: string[] = [];

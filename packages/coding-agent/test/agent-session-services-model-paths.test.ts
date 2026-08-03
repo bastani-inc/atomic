@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,19 +30,21 @@ function configureTemporaryHome(home: string): void {
 	delete process.env.PI_CODING_AGENT_DIR;
 }
 
-
 function writeCustomModels(path: string, models: Array<{ id: string; name?: string }>): void {
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, JSON.stringify({
-		providers: {
-			"project-probe": {
-				baseUrl: "https://example.test/v1",
-				api: "openai-completions",
-				apiKey: "test-key",
-				models,
+	writeFileSync(
+		path,
+		JSON.stringify({
+			providers: {
+				"project-probe": {
+					baseUrl: "https://example.test/v1",
+					api: "openai-completions",
+					apiKey: "test-key",
+					models,
+				},
 			},
-		},
-	}));
+		}),
+	);
 }
 
 function writeCustomModel(path: string, id: string, name = id): void {
@@ -60,7 +62,6 @@ afterEach(() => {
 });
 
 describe("agent session service model paths", () => {
-
 	it("does not load project-scoped models for a trusted project", async () => {
 		const home = mkdtempSync(join(tmpdir(), "atomic-service-project-models-"));
 		tempDirs.push(home);
@@ -125,5 +126,4 @@ describe("agent session service model paths", () => {
 		expect(runtime.getModel("project-probe", "api-explicit-only")?.id).toBe("api-explicit-only");
 		expect(runtime.getModel("project-probe", "project-default-only")).toBeUndefined();
 	});
-
 });

@@ -1,9 +1,9 @@
 import type { AgentProgress, ControlEvent, RunSyncOptions, SingleResult } from "../../shared/types.ts";
 import { detectSubagentError, getFinalOutput } from "../../shared/utils.ts";
-import { readStructuredOutput } from "../shared/structured-output.ts";
 import { formatSavedOutputReference, resolveSingleOutput } from "../shared/single-output.ts";
-import { artifactOutputByResult, snapshotProgress, snapshotResult } from "./execution-utils.ts";
+import { readStructuredOutput } from "../shared/structured-output.ts";
 import type { RunSingleAttemptShared } from "./execution-attempt-types.ts";
+import { artifactOutputByResult, snapshotProgress, snapshotResult } from "./execution-utils.ts";
 
 export function finalizeSingleAttempt(input: {
 	result: SingleResult;
@@ -85,9 +85,10 @@ export function finalizeSingleAttempt(input: {
 	}
 	artifactOutputByResult.set(result, fullOutput);
 	result.outputMode = options.outputMode ?? "inline";
-	result.finalOutput = options.outputMode === "file-only" && result.savedOutputPath && result.outputReference
-		? result.outputReference.message
-		: fullOutput;
+	result.finalOutput =
+		options.outputMode === "file-only" && result.savedOutputPath && result.outputReference
+			? result.outputReference.message
+			: fullOutput;
 	result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
 	if (options.onUpdate) {
 		const finalText = result.finalOutput || result.error || "(no output)";

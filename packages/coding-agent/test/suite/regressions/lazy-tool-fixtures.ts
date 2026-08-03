@@ -1,7 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
 
 export const repoRoot = resolve(__dirname, "../../../../..");
 const subprocessTimeoutMs = 10_000;
@@ -35,9 +35,18 @@ export function runWebFixture<T>(heavySource: string, scriptBody: string): T {
 	const tempDir = createRepositoryFixtureDir("web-lazy-hardening");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
-		writeFileSync(join(tempDir, "index.ts"), readFileSync(resolve(repoRoot, "packages/web-access/index.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "lifecycle-lease.ts"), readFileSync(resolve(repoRoot, "packages/web-access/lifecycle-lease.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "result-renderers.ts"), "export function renderWebAccessToolResult() { return undefined; }\n");
+		writeFileSync(
+			join(tempDir, "index.ts"),
+			readFileSync(resolve(repoRoot, "packages/web-access/index.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "lifecycle-lease.ts"),
+			readFileSync(resolve(repoRoot, "packages/web-access/lifecycle-lease.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "result-renderers.ts"),
+			"export function renderWebAccessToolResult() { return undefined; }\n",
+		);
 		writeFileSync(join(tempDir, "index-heavy.ts"), heavySource);
 		const extensionUrl = pathToFileURL(join(tempDir, "index.ts")).href;
 		const script = `
@@ -55,9 +64,13 @@ const tool = (name) => { const found = tools.find((candidate) => candidate.name 
 const execute = (name, id, params, signal, ctx) => tool(name).execute(id, params, signal, undefined, ctx);
 ${scriptBody}
 `;
-		return parseFixtureResult<T>(spawnSync("bun", ["--eval", script], {
-			cwd: repoRoot, encoding: "utf-8", timeout: subprocessTimeoutMs,
-		}));
+		return parseFixtureResult<T>(
+			spawnSync("bun", ["--eval", script], {
+				cwd: repoRoot,
+				encoding: "utf-8",
+				timeout: subprocessTimeoutMs,
+			}),
+		);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -68,12 +81,30 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
 		writeFileSync(join(tempDir, "index.ts"), readFileSync(resolve(repoRoot, "packages/intercom/index.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "config.ts"), readFileSync(resolve(repoRoot, "packages/intercom/config.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "lifecycle-lease.ts"), readFileSync(resolve(repoRoot, "packages/intercom/lifecycle-lease.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "lazy-tool-execution.ts"), readFileSync(resolve(repoRoot, "packages/intercom/lazy-tool-execution.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "lazy-subagent-ack.ts"), readFileSync(resolve(repoRoot, "packages/intercom/lazy-subagent-ack.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "lazy-heavy-proxy.ts"), readFileSync(resolve(repoRoot, "packages/intercom/lazy-heavy-proxy.ts"), "utf-8"));
-		writeFileSync(join(tempDir, "result-renderers.ts"), "export function renderIntercomToolResult() { return undefined; }\n");
+		writeFileSync(
+			join(tempDir, "config.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/config.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "lifecycle-lease.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/lifecycle-lease.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "lazy-tool-execution.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/lazy-tool-execution.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "lazy-subagent-ack.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/lazy-subagent-ack.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "lazy-heavy-proxy.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/lazy-heavy-proxy.ts"), "utf-8"),
+		);
+		writeFileSync(
+			join(tempDir, "result-renderers.ts"),
+			"export function renderIntercomToolResult() { return undefined; }\n",
+		);
 		writeFileSync(join(tempDir, "index-heavy.ts"), heavySource);
 		const extensionUrl = pathToFileURL(join(tempDir, "index.ts")).href;
 		const script = `
@@ -94,9 +125,13 @@ const tool = (name) => { const found = tools.find((candidate) => candidate.name 
 const execute = (id, callCtx = ctx) => tool("intercom").execute(id, { action: "status" }, new AbortController().signal, undefined, callCtx);
 ${scriptBody}
 `;
-		return parseFixtureResult<T>(spawnSync("bun", ["--eval", script], {
-			cwd: repoRoot, encoding: "utf-8", timeout: subprocessTimeoutMs,
-		}));
+		return parseFixtureResult<T>(
+			spawnSync("bun", ["--eval", script], {
+				cwd: repoRoot,
+				encoding: "utf-8",
+				timeout: subprocessTimeoutMs,
+			}),
+		);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -105,7 +140,9 @@ ${scriptBody}
 export function runGateTimeoutFixture(label: string): string {
 	const script = `${waitForGateSource}\nawait waitForGate(${JSON.stringify(label)}, () => false, 20, 2);`;
 	const result = spawnSync("bun", ["--eval", script], {
-		cwd: repoRoot, encoding: "utf-8", timeout: subprocessTimeoutMs,
+		cwd: repoRoot,
+		encoding: "utf-8",
+		timeout: subprocessTimeoutMs,
 	});
 	return [result.error?.message, result.stderr, result.stdout].filter(Boolean).join("\n");
 }

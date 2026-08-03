@@ -1,28 +1,23 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { keyHintIfBound, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
+import { type ExtensionAPI, type ExtensionContext, keyHintIfBound } from "@bastani/atomic";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import { discoverAgents, discoverAgentsAll, type ChainConfig } from "../agents/agents.ts";
+import { type ChainConfig, discoverAgents, discoverAgentsAll } from "../agents/agents.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import { mapSavedChainSteps } from "./saved-chain-mapping.ts";
-import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.ts";
 import {
-	applySlashUpdate,
-	buildSlashInitialResult,
-	failSlashResult,
-	finalizeSlashResult,
-} from "./slash-live-state.ts";
-import {
+	type SingleResult,
 	SLASH_RESULT_TYPE,
 	SLASH_SUBAGENT_CANCEL_EVENT,
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
 	SLASH_SUBAGENT_STARTED_EVENT,
 	SLASH_SUBAGENT_UPDATE_EVENT,
-	type SingleResult,
 	type SubagentState,
 } from "../shared/types.ts";
+import { mapSavedChainSteps } from "./saved-chain-mapping.ts";
+import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.ts";
+import { applySlashUpdate, buildSlashInitialResult, failSlashResult, finalizeSlashResult } from "./slash-live-state.ts";
 
 interface InlineConfig {
 	output?: string | false;
@@ -46,12 +41,25 @@ const parseInlineConfig = (raw: string): InlineConfig => {
 		const key = trimmed.slice(0, eq).trim();
 		const val = trimmed.slice(eq + 1).trim();
 		switch (key) {
-			case "output": config.output = val === "false" ? false : val; break;
-			case "outputMode": if (val === "inline" || val === "file-only") config.outputMode = val; break;
-			case "reads": config.reads = val === "false" ? false : val.split("+").filter(Boolean); break;
-			case "model": config.model = val || undefined; break;
-			case "skill": case "skills": config.skill = val === "false" ? false : val.split("+").filter(Boolean); break;
-			case "progress": config.progress = val !== "false"; break;
+			case "output":
+				config.output = val === "false" ? false : val;
+				break;
+			case "outputMode":
+				if (val === "inline" || val === "file-only") config.outputMode = val;
+				break;
+			case "reads":
+				config.reads = val === "false" ? false : val.split("+").filter(Boolean);
+				break;
+			case "model":
+				config.model = val || undefined;
+				break;
+			case "skill":
+			case "skills":
+				config.skill = val === "false" ? false : val.split("+").filter(Boolean);
+				break;
+			case "progress":
+				config.progress = val !== "false";
+				break;
 		}
 	}
 	return config;
@@ -61,7 +69,10 @@ const parseAgentToken = (token: string): { name: string; config: InlineConfig } 
 	const bracket = token.indexOf("[");
 	if (bracket === -1) return { name: token, config: {} };
 	const end = token.lastIndexOf("]");
-	return { name: token.slice(0, bracket), config: parseInlineConfig(token.slice(bracket + 1, end !== -1 ? end : undefined)) };
+	return {
+		name: token.slice(0, bracket),
+		config: parseInlineConfig(token.slice(bracket + 1, end !== -1 ? end : undefined)),
+	};
 };
 
 const extractExecutionFlags = (rawArgs: string): { args: string; bg: boolean; fork: boolean } => {
@@ -105,7 +116,9 @@ const makeAgentCompletions = (state: SubagentState, multiAgent: boolean) => (pre
 		return agents.map((a) => ({ value: `${prefix} ${a.name}`, label: a.name }));
 	}
 
-	return agents.filter((a) => a.name.startsWith(lastWord)).map((a) => ({ value: `${beforeLastWord}${a.name}`, label: a.name }));
+	return agents
+		.filter((a) => a.name.startsWith(lastWord))
+		.map((a) => ({ value: `${beforeLastWord}${a.name}`, label: a.name }));
 };
 
 const discoverSavedChains = (cwd: string): ChainConfig[] => {
@@ -135,9 +148,11 @@ async function requestSlashRun(
 
 		const startTimeoutMs = 15_000;
 		const startTimeout = setTimeout(() => {
-			finish(() => reject(new Error(
-				"Slash subagent bridge did not start within 15s. Ensure the extension is loaded correctly.",
-			)));
+			finish(() =>
+				reject(
+					new Error("Slash subagent bridge did not start within 15s. Ensure the extension is loaded correctly."),
+				),
+			);
 		}, startTimeoutMs);
 
 		const onStarted = (data: unknown) => {
@@ -170,11 +185,11 @@ async function requestSlashRun(
 
 		const onTerminalInput = ctx.hasUI
 			? ctx.ui.onTerminalInput((input) => {
-				if (!matchesKey(input, Key.escape)) return undefined;
-				pi.events.emit(SLASH_SUBAGENT_CANCEL_EVENT, { requestId });
-				finish(() => reject(new Error("Cancelled")));
-				return { consume: true };
-			})
+					if (!matchesKey(input, Key.escape)) return undefined;
+					pi.events.emit(SLASH_SUBAGENT_CANCEL_EVENT, { requestId });
+					finish(() => reject(new Error("Cancelled")));
+					return { consume: true };
+				})
 			: undefined;
 
 		const unsubStarted = pi.events.on(SLASH_SUBAGENT_STARTED_EVENT, onStarted);
@@ -198,9 +213,9 @@ async function requestSlashRun(
 		// If not started, no bridge received the request.
 		if (!started && done) return;
 		if (!started) {
-			finish(() => reject(new Error(
-				"No slash subagent bridge responded. Ensure the subagent extension is loaded correctly.",
-			)));
+			finish(() =>
+				reject(new Error("No slash subagent bridge responded. Ensure the subagent extension is loaded correctly.")),
+			);
 		}
 	});
 }
@@ -219,9 +234,7 @@ function formatExportPathList(paths: string[]): string {
 }
 
 function collectResultPaths(results: SingleResult[], getPath: (result: SingleResult) => string | undefined): string[] {
-	return results
-		.map(getPath)
-		.filter((file): file is string => typeof file === "string" && file.length > 0);
+	return results.map(getPath).filter((file): file is string => typeof file === "string" && file.length > 0);
 }
 
 function buildSlashExportText(response: SlashSubagentResponse): string {
@@ -254,11 +267,7 @@ function persistSlashSessionSnapshot(ctx: ExtensionContext): void {
 	}
 }
 
-async function runSlashSubagent(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	params: SubagentParamsLike,
-): Promise<void> {
+async function runSlashSubagent(pi: ExtensionAPI, ctx: ExtensionContext, params: SubagentParamsLike): Promise<void> {
 	if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
 	const requestId = randomUUID();
 	const initialDetails = buildSlashInitialResult(requestId, params, pi);
@@ -308,8 +317,11 @@ async function runSlashSubagent(
 	}
 }
 
-
-interface ParsedStep { name: string; config: InlineConfig; task?: string }
+interface ParsedStep {
+	name: string;
+	config: InlineConfig;
+	task?: string;
+}
 const parseAgentArgs = (
 	state: SubagentState,
 	args: string,
@@ -359,7 +371,10 @@ const parseAgentArgs = (
 			ctx.ui.notify(usage, "error");
 			return null;
 		}
-		steps = agentsPart.split(/\s+/).filter(Boolean).map((t) => parseAgentToken(t));
+		steps = agentsPart
+			.split(/\s+/)
+			.filter(Boolean)
+			.map((t) => parseAgentToken(t));
 	}
 	if (steps.length === 0) {
 		ctx.ui.notify(usage, "error");
@@ -386,10 +401,7 @@ const parseAgentArgs = (
 	}
 	return { steps, task: sharedTask };
 };
-export function registerSlashCommands(
-	pi: ExtensionAPI,
-	state: SubagentState,
-): void {
+export function registerSlashCommands(pi: ExtensionAPI, state: SubagentState): void {
 	pi.registerCommand("run", {
 		description: "Run a subagent directly: /run agent[output=file] [task] [--bg] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(state, false),
@@ -397,12 +409,23 @@ export function registerSlashCommands(
 			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
 			const input = cleanedArgs.trim();
 			const firstSpace = input.indexOf(" ");
-			if (!input) { ctx.ui.notify("Usage: /run <agent> [task] [--bg] [--fork]", "error"); return; }
-			const { name: agentName, config: inline } = parseAgentToken(firstSpace === -1 ? input : input.slice(0, firstSpace));
+			if (!input) {
+				ctx.ui.notify("Usage: /run <agent> [task] [--bg] [--fork]", "error");
+				return;
+			}
+			const { name: agentName, config: inline } = parseAgentToken(
+				firstSpace === -1 ? input : input.slice(0, firstSpace),
+			);
 			const task = firstSpace === -1 ? "" : input.slice(firstSpace + 1).trim();
-			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
+			if (!state.baseCwd) {
+				ctx.ui.notify("Subagent session cwd is not initialized yet", "error");
+				return;
+			}
 			const agents = discoverAgents(state.baseCwd, "both").agents;
-			if (!agents.find((a) => a.name === agentName)) { ctx.ui.notify(`Unknown agent: ${agentName}`, "error"); return; }
+			if (!agents.find((a) => a.name === agentName)) {
+				ctx.ui.notify(`Unknown agent: ${agentName}`, "error");
+				return;
+			}
 			const params: SubagentParamsLike = { agent: agentName, task, agentScope: "both" };
 			if (inline.reads !== undefined) params.reads = inline.reads;
 			if (inline.output !== undefined) params.output = inline.output;
@@ -415,7 +438,7 @@ export function registerSlashCommands(
 		},
 	});
 	pi.registerCommand("chain", {
-		description: "Run agents in sequence: /chain scout \"task\" -> planner [--bg] [--fork]",
+		description: 'Run agents in sequence: /chain scout "task" -> planner [--bg] [--fork]',
 		getArgumentCompletions: makeAgentCompletions(state, true),
 		handler: async (args, ctx) => {
 			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
@@ -454,7 +477,10 @@ export function registerSlashCommands(
 				ctx.ui.notify(usage, "error");
 				return;
 			}
-			if (!state.baseCwd) { ctx.ui.notify("Subagent session cwd is not initialized yet", "error"); return; }
+			if (!state.baseCwd) {
+				ctx.ui.notify("Subagent session cwd is not initialized yet", "error");
+				return;
+			}
 			const chain = discoverSavedChains(state.baseCwd).find((candidate) => candidate.name === chainName);
 			if (!chain) {
 				ctx.ui.notify(`Unknown chain: ${chainName}`, "error");
@@ -467,7 +493,7 @@ export function registerSlashCommands(
 		},
 	});
 	pi.registerCommand("parallel", {
-		description: "Run agents in parallel: /parallel scout \"task1\" -> reviewer \"task2\" [--bg] [--fork]",
+		description: 'Run agents in parallel: /parallel scout "task1" -> reviewer "task2" [--bg] [--fork]',
 		getArgumentCompletions: makeAgentCompletions(state, true),
 		handler: async (args, ctx) => {
 			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);

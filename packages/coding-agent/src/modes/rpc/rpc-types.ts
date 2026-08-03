@@ -6,18 +6,24 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AuthInfoLink, OAuthAuthInfo, OAuthDeviceCodeInfo, OAuthPrompt, OAuthSelectPrompt } from "@earendil-works/pi-ai";
+import type {
+	AuthInfoLink,
+	Credential,
+	OAuthAuthInfo,
+	OAuthDeviceCodeInfo,
+	OAuthPrompt,
+	OAuthSelectPrompt,
+} from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
-import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
-import type { AuthStatus } from "../../core/provider-composer.ts";
-import type { Credential } from "@earendil-works/pi-ai";
+import type { AgentSessionEvent, CompactionReason, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
-import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
-import type { SourceInfo } from "../../core/source-info.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
 import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
+import type { AuthStatus } from "../../core/provider-composer.ts";
+import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { SourceInfo } from "../../core/source-info.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -34,11 +40,16 @@ export interface RpcModelRefreshResult extends RpcModelCatalog {
 	aborted: boolean;
 	errors: Array<{ provider: string; message: string }>;
 }
+/**
+ * The host supplied the API key through the login input form, so echoing it
+ * back over the stdout pipe would make this response a second credential
+ * egress. Only the metadata a caller needs to confirm the login travels.
+ */
 export type RpcLoginProviderResult =
 	| (RpcModelCatalog & {
 			provider: string;
 			cancelled: false;
-			credential: Extract<Credential, { type: "api_key" }>;
+			type: "api_key";
 	  })
 	| { provider: string; cancelled: true };
 
@@ -105,7 +116,12 @@ export type RpcCommand =
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
-	| { id?: string; type: "navigate_tree"; targetId: string; options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } }
+	| {
+			id?: string;
+			type: "navigate_tree";
+			targetId: string;
+			options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string };
+	  }
 	| { id?: string; type: "set_label"; entryId: string; label?: string }
 	| { id?: string; type: "reload" }
 	| { id?: string; type: "get_shortcuts" }
@@ -155,6 +171,7 @@ export interface RpcSessionState {
 	thinkingLevel: ThinkingLevel;
 	isStreaming: boolean;
 	isCompacting: boolean;
+	compactionReason?: CompactionReason;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	sessionFile?: string;
@@ -271,7 +288,13 @@ export type RpcResponse =
 	// Retry
 	| { id?: string; type: "response"; command: "set_auto_retry"; success: true }
 	| { id?: string; type: "response"; command: "abort_retry"; success: true }
-	| { id?: string; type: "response"; command: "clear_queue"; success: true; data: { steering: string[]; followUp: string[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "clear_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
 	| { id?: string; type: "response"; command: "pause_queued_messages"; success: true }
 	| { id?: string; type: "response"; command: "resume_queued_messages"; success: true; data: { released: boolean } }
 
@@ -316,10 +339,22 @@ export type RpcResponse =
 			data: { text: string | null };
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
-	| { id?: string; type: "response"; command: "navigate_tree"; success: true; data: { cancelled: boolean; editorText?: string } }
+	| {
+			id?: string;
+			type: "response";
+			command: "navigate_tree";
+			success: true;
+			data: { cancelled: boolean; editorText?: string };
+	  }
 	| { id?: string; type: "response"; command: "set_label"; success: true }
 	| { id?: string; type: "response"; command: "reload"; success: true }
-	| { id?: string; type: "response"; command: "get_shortcuts"; success: true; data: { shortcuts: Array<{ key: string; description?: string }> } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_shortcuts";
+			success: true;
+			data: { shortcuts: Array<{ key: string; description?: string }> };
+	  }
 	| { id?: string; type: "response"; command: "invoke_shortcut"; success: true }
 
 	// Messages
@@ -359,11 +394,37 @@ type RpcOAuthUIEnvelope = { type: "extension_ui_request"; id: string; provider: 
 export type RpcExtensionUIRequest =
 	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
 	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
-	| { type: "extension_ui_request"; id: string; method: "input"; title: string; placeholder?: string; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "input";
+			title: string;
+			placeholder?: string;
+			timeout?: number;
+	  }
 	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
-	| { type: "extension_ui_request"; id: string; method: "notify"; message: string; notifyType?: "info" | "warning" | "error" }
-	| { type: "extension_ui_request"; id: string; method: "setStatus"; statusKey: string; statusText: string | undefined }
-	| { type: "extension_ui_request"; id: string; method: "setWidget"; widgetKey: string; widgetLines: string[] | undefined; widgetPlacement?: "aboveEditor" | "belowEditor" }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "notify";
+			message: string;
+			notifyType?: "info" | "warning" | "error";
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "setStatus";
+			statusKey: string;
+			statusText: string | undefined;
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "setWidget";
+			widgetKey: string;
+			widgetLines: string[] | undefined;
+			widgetPlacement?: "aboveEditor" | "belowEditor";
+	  }
 	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
 	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string }
 	| (RpcOAuthUIEnvelope & { method: "oauth_auth"; info: OAuthAuthInfo })

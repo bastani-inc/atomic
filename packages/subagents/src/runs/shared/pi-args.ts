@@ -4,25 +4,34 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	APP_NAME,
-	ENV_CODEX_FAST_MODE,
-	getEnvValue,
 	type CodexFastModeResolvedSettings,
 	type CodexFastModeScope,
+	ENV_CODEX_FAST_MODE,
+	getEnvValue,
 	type SessionWorkflowMetadata,
 	WORKFLOW_SESSION_METADATA_ENV,
 } from "@bastani/atomic";
-import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
-import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
+import { THINKING_LEVELS } from "../../shared/model-info.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 import { MAX_SUBAGENT_NESTING_DEPTH } from "../../shared/types-runtime.ts";
-import { THINKING_LEVELS } from "../../shared/model-info.ts";
+import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
+import { encodeNestedPathEnv, type NestedPathEntry, parseNestedPathEnv } from "./nested-path.ts";
+import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
 
 const TASK_ARG_LIMIT = 8000;
 export const SUBAGENT_PARENT_MAX_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;
-export const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
+export const PROMPT_RUNTIME_EXTENSION_PATH = path.join(
+	path.dirname(fileURLToPath(import.meta.url)),
+	"subagent-prompt-runtime.ts",
+);
 const ENV_PREFIX = APP_NAME.toUpperCase();
-export const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", "fanout-child.ts");
+export const FANOUT_CHILD_EXTENSION_PATH = path.join(
+	path.dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"..",
+	"extension",
+	"fanout-child.ts",
+);
 export const SUBAGENT_CHILD_ENV = `${ENV_PREFIX}_SUBAGENT_CHILD`;
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = `${ENV_PREFIX}_SUBAGENT_ORCHESTRATOR_TARGET`;
 export const SUBAGENT_RUN_ID_ENV = `${ENV_PREFIX}_SUBAGENT_RUN_ID`;
@@ -136,7 +145,8 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 		args.push("--model", modelArg);
 	}
 
-	const declaredBuiltinTools = input.tools?.filter((tool) => !(tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) ?? [];
+	const declaredBuiltinTools =
+		input.tools?.filter((tool) => !(tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) ?? [];
 	const fanoutAuthorized = declaredBuiltinTools.includes("subagent");
 	const toolExtensionPaths: string[] = [];
 	if (input.tools !== undefined) {
@@ -145,13 +155,16 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 		// extension-only list intentionally emits no --tools flag, so default built-ins
 		// remain available; do not synthesize a built-in allowlist just to add
 		// structured_output and accidentally make that case restrictive.
-		const shouldAutoAllowStructuredOutput = input.structuredOutput
-			&& (declaredBuiltinTools.length > 0 || input.tools.length === 0);
+		const shouldAutoAllowStructuredOutput =
+			input.structuredOutput && (declaredBuiltinTools.length > 0 || input.tools.length === 0);
 		if (shouldAutoAllowStructuredOutput && !builtinTools.includes(STRUCTURED_OUTPUT_TOOL_NAME)) {
 			builtinTools.push(STRUCTURED_OUTPUT_TOOL_NAME);
 		}
 		for (const tool of input.tools) {
-			if (!declaredBuiltinTools.includes(tool) && (tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) {
+			if (
+				!declaredBuiltinTools.includes(tool) &&
+				(tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))
+			) {
 				toolExtensionPaths.push(tool);
 			}
 		}
@@ -227,38 +240,49 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const parentPathEnv = getEnvValue(SUBAGENT_PARENT_PATH_ENV);
 	const parentCapabilityTokenEnv = getEnvValue(SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV);
 	const inheritedNestedRoute = Boolean(parentEventSinkEnv && parentRootRunIdEnv && parentCapabilityTokenEnv);
-	const parentRunId = input.parentRunId ?? input.runId ?? (inheritedNestedRoute ? getEnvValue(SUBAGENT_RUN_ID_ENV) : undefined) ?? parentRunIdEnv ?? "";
-	const parentChildIndex = input.parentChildIndex !== undefined
-		? String(input.parentChildIndex)
-		: input.childIndex !== undefined
-			? String(input.childIndex)
-			: parentChildIndexEnv ?? "";
+	const parentRunId =
+		input.parentRunId ??
+		input.runId ??
+		(inheritedNestedRoute ? getEnvValue(SUBAGENT_RUN_ID_ENV) : undefined) ??
+		parentRunIdEnv ??
+		"";
+	const parentChildIndex =
+		input.parentChildIndex !== undefined
+			? String(input.parentChildIndex)
+			: input.childIndex !== undefined
+				? String(input.childIndex)
+				: (parentChildIndexEnv ?? "");
 	const inheritedDepth = Number(parentDepthEnv);
-	const unclampedParentDepth = input.parentDepth ?? (inheritedNestedRoute && Number.isFinite(inheritedDepth) ? inheritedDepth + 1 : 1);
+	const unclampedParentDepth =
+		input.parentDepth ?? (inheritedNestedRoute && Number.isFinite(inheritedDepth) ? inheritedDepth + 1 : 1);
 	const parentDepth = Math.min(Math.max(1, unclampedParentDepth), SUBAGENT_PARENT_MAX_DEPTH);
 	const parentPath = input.parentPath ?? [
 		...parseNestedPathEnv(parentPathEnv),
-		...(parentRunId ? [{
-			runId: parentRunId,
-			...(parentChildIndex && /^\d+$/.test(parentChildIndex) ? { stepIndex: Number(parentChildIndex) } : {}),
-			...(input.childAgentName ? { agent: input.childAgentName } : {}),
-		}] : []),
+		...(parentRunId
+			? [
+					{
+						runId: parentRunId,
+						...(parentChildIndex && /^\d+$/.test(parentChildIndex)
+							? { stepIndex: Number(parentChildIndex) }
+							: {}),
+						...(input.childAgentName ? { agent: input.childAgentName } : {}),
+					},
+				]
+			: []),
 	];
-	env[SUBAGENT_PARENT_EVENT_SINK_ENV] = fanoutAuthorized
-		? input.parentEventSink ?? parentEventSinkEnv ?? ""
-		: "";
+	env[SUBAGENT_PARENT_EVENT_SINK_ENV] = fanoutAuthorized ? (input.parentEventSink ?? parentEventSinkEnv ?? "") : "";
 	env[SUBAGENT_PARENT_CONTROL_INBOX_ENV] = fanoutAuthorized
-		? input.parentControlInbox ?? parentControlInboxEnv ?? ""
+		? (input.parentControlInbox ?? parentControlInboxEnv ?? "")
 		: "";
 	env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] = fanoutAuthorized
-		? input.parentRootRunId ?? parentRootRunIdEnv ?? input.runId ?? ""
+		? (input.parentRootRunId ?? parentRootRunIdEnv ?? input.runId ?? "")
 		: "";
 	env[SUBAGENT_PARENT_RUN_ID_ENV] = fanoutAuthorized ? parentRunId : "";
 	env[SUBAGENT_PARENT_CHILD_INDEX_ENV] = fanoutAuthorized ? parentChildIndex : "";
 	env[SUBAGENT_PARENT_DEPTH_ENV] = fanoutAuthorized ? String(parentDepth) : "";
 	env[SUBAGENT_PARENT_PATH_ENV] = fanoutAuthorized ? encodeNestedPathEnv(parentPath) : "";
 	env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] = fanoutAuthorized
-		? input.parentCapabilityToken ?? parentCapabilityTokenEnv ?? ""
+		? (input.parentCapabilityToken ?? parentCapabilityTokenEnv ?? "")
 		: "";
 	env[SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV] = input.inheritProjectContext ? "1" : "0";
 	env[SUBAGENT_INHERIT_SKILLS_ENV] = input.inheritSkills ? "1" : "0";

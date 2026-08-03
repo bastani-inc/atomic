@@ -1,9 +1,9 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { isContextOverflow } from "@earendil-works/pi-ai/compat";
-import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./compaction/index.ts";
-import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
-import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./compaction/index.ts";
+import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
+import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
 
 /**
  * Upper bound on consecutive automatic continuations of a response that was
@@ -28,7 +28,11 @@ const OUTPUT_BUDGET_UNDERFLOW_PATTERN = new RegExp(
 	`(?:integer\\s+below\\s+minimum\\s+value|expected\\s+(?:a\\s+)?value\\s*>=\\s*${MIN_RESPONSES_MAX_OUTPUT_TOKENS}|got\\s+1\\s+instead)`,
 );
 
-export async function _checkCompaction(this: AgentSession, assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+export async function _checkCompaction(
+	this: AgentSession,
+	assistantMessage: AssistantMessage,
+	skipAbortedCheck = true,
+): Promise<void> {
 	if (this._pendingPostToolCompactionGuard) {
 		const { result } = this._pendingPostToolCompactionGuard;
 		this._pendingPostToolCompactionGuard = undefined;
@@ -215,7 +219,9 @@ function isStructuredOutputBudgetUnderflow(details: ProviderErrorDetails): boole
 	const message = details.message?.toLowerCase() ?? "";
 	const param = details.param?.toLowerCase();
 	if (!OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message)) return false;
-	return param !== undefined ? OUTPUT_BUDGET_PARAMETER_PATTERN.test(param) : OUTPUT_BUDGET_PARAMETER_PATTERN.test(message);
+	return param !== undefined
+		? OUTPUT_BUDGET_PARAMETER_PATTERN.test(param)
+		: OUTPUT_BUDGET_PARAMETER_PATTERN.test(message);
 }
 
 export function isRetryWorthyOutputBudgetError(assistantMessage: AssistantMessage): boolean {
@@ -253,7 +259,8 @@ export function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSe
  * turn owns the agent when the grace period ends.
  */
 
-export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
+export function _schedulePostAutoCompactionContinuationProbe(
+	this: AgentSession,
 	_reason: "overflow" | "threshold",
 	willRetry: boolean,
 ): void {
@@ -327,23 +334,28 @@ export function _resumeAfterLengthTruncation(this: AgentSession): void {
 	this._schedulePostAutoCompactionContinuationProbe("threshold", true);
 }
 
-
 function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): boolean | undefined {
 	return reason === "overflow" && !aborted ? true : undefined;
 }
 
-export async function _runAutoCompaction(this: AgentSession, reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
+export async function _runAutoCompaction(
+	this: AgentSession,
+	reason: "overflow" | "threshold",
+	willRetry: boolean,
+): Promise<void> {
 	// Publish automatic ownership before notifying listeners. `_emit()` invokes
 	// public listeners synchronously, so a `compaction_start` listener that calls
 	// `compact()` must already observe this controller and be rejected rather than
 	// racing the run that was just announced.
 	this._autoCompactionAbortController = new AbortController();
+	this._compactionReason = reason;
 	try {
 		this._emit({ type: "compaction_start", reason });
 	} catch (error) {
 		// A throwing start listener still propagates, matching current behavior,
 		// but must not leave ownership published with no owner running.
 		this._autoCompactionAbortController = undefined;
+		if (this._compactionReason === reason) this._compactionReason = undefined;
 		throw error;
 	}
 
@@ -399,7 +411,8 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		this._schedulePostAutoCompactionContinuationProbe(reason, willRetry);
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : "compaction failed";
-		const aborted = errorMessage === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
+		const aborted =
+			errorMessage === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
 		this._emit({
 			type: "compaction_end",
 			reason,
@@ -415,6 +428,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		});
 	} finally {
 		this._autoCompactionAbortController = undefined;
+		if (this._compactionReason === reason) this._compactionReason = undefined;
 	}
 }
 

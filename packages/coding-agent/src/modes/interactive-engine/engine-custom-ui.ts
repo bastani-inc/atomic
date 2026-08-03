@@ -1,23 +1,31 @@
-import { isKeyRelease, type Component, type OverlayHandle, type OverlayOptions, type Terminal } from "@earendil-works/pi-tui";
-import { TUI } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	isKeyRelease,
+	type OverlayHandle,
+	type OverlayOptions,
+	type Terminal,
+	TUI,
+} from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../config.ts";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.ts";
 import { theme } from "../interactive/theme/theme.ts";
 import {
-	isJsonValue,
-	parseInteractiveEngineCommand,
-	serializeInteractiveEngineMessage,
 	type EngineTerminalControl,
 	type InteractiveEngineMessage,
+	isJsonValue,
 	type JsonValue,
+	parseInteractiveEngineCommand,
 	type SerializableOverlayOptions,
+	serializeInteractiveEngineMessage,
 } from "./protocol.ts";
 
 interface CustomUiOptions {
 	overlay?: boolean;
 	deferInlineCustomUiFocus?: boolean;
+	/** The component binds Ctrl+C itself; see ExtensionUIContext.custom options. */
+	handlesCtrlC?: boolean;
 	overlayOptions?: OverlayOptions | (() => OverlayOptions);
 	onHandle?: (handle: OverlayHandle) => void;
 	signal?: AbortSignal;
@@ -52,7 +60,9 @@ class RemoteTerminal implements Terminal {
 	start(): void {}
 	stop(): void {}
 	async drainInput(): Promise<void> {}
-	write(): void { this.invalidate(); }
+	write(): void {
+		this.invalidate();
+	}
 	moveBy(): void {}
 	hideCursor(): void {}
 	showCursor(): void {}
@@ -71,7 +81,9 @@ class RemoteTerminal implements Terminal {
 	}
 }
 
-function serializableOverlayOptions(options: CustomUiOptions["overlayOptions"]): SerializableOverlayOptions | undefined {
+function serializableOverlayOptions(
+	options: CustomUiOptions["overlayOptions"],
+): SerializableOverlayOptions | undefined {
 	const value = typeof options === "function" ? options() : options;
 	if (!value) return undefined;
 	const { anchor, col, margin, maxHeight, minWidth, offsetX, offsetY, row, width } = value;
@@ -87,15 +99,15 @@ function jsonResult(value: object | boolean | null | number | string | undefined
 	return decoded;
 }
 
-
 export class EngineCustomUiService {
 	private readonly widgetIds = new Map<string, string>();
 	private readonly active = new Map<string, ActiveComponent>();
 	private nextId = 0;
 	private readonly write: (line: string) => void;
 	private readonly keybindings: KeybindingsManager;
-	private readonly stateListeners = new Set<(state: { blockingInlineCustomUiDepth: number; blockingInlineCustomUiActive: boolean }) => void>();
-
+	private readonly stateListeners = new Set<
+		(state: { blockingInlineCustomUiDepth: number; blockingInlineCustomUiActive: boolean }) => void
+	>();
 
 	setWidget(
 		key: string,
@@ -109,28 +121,38 @@ export class EngineCustomUiService {
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
 		const tui = new TUI(terminal, undefined, getAgentDir());
-		void runCallback(
-			{ kind: "renderer", name: `widget:${key}` },
-			() => factory(tui, theme),
-		).then((component) => {
-			if (this.widgetIds.get(key) !== componentId) {
-				component.dispose?.();
-				return;
-			}
-			tui.addChild(component);
-			this.active.set(componentId, {
-				component,
-				resolve: () => {},
-				overlay: false,
-				terminal,
-				tui,
-				widgetKey: key,
+		void runCallback({ kind: "renderer", name: `widget:${key}` }, () => factory(tui, theme))
+			.then((component) => {
+				if (this.widgetIds.get(key) !== componentId) {
+					component.dispose?.();
+					return;
+				}
+				tui.addChild(component);
+				this.active.set(componentId, {
+					component,
+					resolve: () => {},
+					overlay: false,
+					terminal,
+					tui,
+					widgetKey: key,
+				});
+				this.send({
+					type: "engine_custom_open",
+					componentId,
+					overlay: false,
+					widgetKey: key,
+					widgetPlacement: placement,
+				});
+			})
+			.catch((error: Error) => {
+				if (this.widgetIds.get(key) === componentId) this.widgetIds.delete(key);
+				this.send({
+					type: "engine_custom_frame",
+					componentId,
+					requestId: 0,
+					lines: [`Widget ${key} failed: ${error.message}`],
+				});
 			});
-			this.send({ type: "engine_custom_open", componentId, overlay: false, widgetKey: key, widgetPlacement: placement });
-		}).catch((error: Error) => {
-			if (this.widgetIds.get(key) === componentId) this.widgetIds.delete(key);
-			this.send({ type: "engine_custom_frame", componentId, requestId: 0, lines: [`Widget ${key} failed: ${error.message}`] });
-		});
 	}
 	constructor(write: (line: string) => void, keybindings: KeybindingsManager) {
 		this.write = write;
@@ -148,7 +170,9 @@ export class EngineCustomUiService {
 	): Promise<T> {
 		const componentId = `remote_component_${++this.nextId}`;
 		let resolveCompletion!: (value: T) => void;
-		const completion = new Promise<T>((resolve) => { resolveCompletion = resolve; });
+		const completion = new Promise<T>((resolve) => {
+			resolveCompletion = resolve;
+		});
 		let opened = false;
 		let pendingDone: T | undefined;
 		let doneCalled = false;
@@ -182,6 +206,7 @@ export class EngineCustomUiService {
 			componentId,
 			overlay: options?.overlay === true,
 			deferInlineCustomUiFocus: options?.deferInlineCustomUiFocus,
+			handlesCtrlC: options?.handlesCtrlC,
 			overlayOptions: serializableOverlayOptions(options?.overlayOptions),
 		});
 		if (options?.onHandle) options.onHandle(this.remoteHandle(componentId));
@@ -207,8 +232,9 @@ export class EngineCustomUiService {
 		return () => this.stateListeners.delete(listener);
 	}
 
-	focusHostInlineCustomUi(): boolean { return this.getHostCustomUiState().blockingInlineCustomUiActive; }
-
+	focusHostInlineCustomUi(): boolean {
+		return this.getHostCustomUiState().blockingInlineCustomUiActive;
+	}
 
 	requestRender(): void {
 		for (const [componentId, record] of this.active) {
@@ -227,29 +253,31 @@ export class EngineCustomUiService {
 			case "engine_custom_render":
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
-				void runCallback(
-					{ kind: "renderer", name: command.componentId },
-					() => record.component.render(record.terminal.columns),
-				).then((lines) => this.send({
-					type: "engine_custom_frame",
-					componentId: command.componentId,
-					requestId: command.requestId,
-					lines,
-				})).catch((error: Error) => this.send({
-					type: "engine_custom_frame",
-					componentId: command.componentId,
-					requestId: command.requestId,
-					lines: [`Remote component render failed: ${error.message}`],
-				}));
+				void runCallback({ kind: "renderer", name: command.componentId }, () =>
+					record.component.render(record.terminal.columns),
+				)
+					.then((lines) =>
+						this.send({
+							type: "engine_custom_frame",
+							componentId: command.componentId,
+							requestId: command.requestId,
+							lines,
+						}),
+					)
+					.catch((error: Error) =>
+						this.send({
+							type: "engine_custom_frame",
+							componentId: command.componentId,
+							requestId: command.requestId,
+							lines: [`Remote component render failed: ${error.message}`],
+						}),
+					);
 				break;
 			case "engine_custom_input":
-				void runCallback(
-					{ kind: "renderer", name: command.componentId },
-					() => {
-						if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return;
-						record.component.handleInput?.(command.data);
-					},
-				).catch(() => undefined);
+				void runCallback({ kind: "renderer", name: command.componentId }, () => {
+					if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return;
+					record.component.handleInput?.(command.data);
+				}).catch(() => undefined);
 				break;
 			case "engine_custom_dispose":
 				this.disposeComponent(command.componentId, true);
@@ -278,7 +306,6 @@ export class EngineCustomUiService {
 		const state = this.getHostCustomUiState();
 		for (const listener of this.stateListeners) listener(state);
 	}
-
 
 	private remoteHandle(componentId: string): OverlayHandle {
 		let focused = true;

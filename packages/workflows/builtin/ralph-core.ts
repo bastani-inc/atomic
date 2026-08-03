@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
+import { createWorkflowArtifactDirectory } from "../src/shared/workflow-artifacts.js";
 import {
   E2E_VERIFICATION_GUIDANCE,
   LITERAL_OBJECTIVE_CONTRACT,
@@ -170,8 +170,8 @@ export function defaultResearchPath(prompt: string, now = new Date()): string {
   return join(DEFAULT_RESEARCH_DIR, `${date}-${slugifyResearchTopic(prompt)}.md`);
 }
 
-export async function createImplementationNotesFile(prompt: string): Promise<string> {
-  const notesDir = await mkdtemp(join(tmpdir(), "atomic-ralph-notes-"));
+export async function createImplementationNotesFile(prompt: string, runId?: string): Promise<string> {
+  const notesDir = await createWorkflowArtifactDirectory(runId);
   const notesPath = join(notesDir, IMPLEMENTATION_NOTES_FILENAME);
   const initialNotes = [
     "# Implementation Notes",
@@ -195,8 +195,8 @@ export async function createImplementationNotesFile(prompt: string): Promise<str
 // write to it; the video file itself is produced by the orchestrator's QA pass
 // (and overwritten each iteration so it always reflects the latest state). The
 // final pull-request stage attaches it when it exists.
-export async function createQaEvidenceVideoPath(): Promise<string> {
-  const qaDir = await mkdtemp(join(tmpdir(), "atomic-ralph-qa-"));
+export async function createQaEvidenceVideoPath(runId?: string): Promise<string> {
+  const qaDir = await createWorkflowArtifactDirectory(runId);
   return join(qaDir, QA_E2E_VIDEO_FILENAME);
 }
 
@@ -367,7 +367,6 @@ export function renderResearchPrompt(args: {
   readonly acceptanceCriteria: string;
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
-  readonly researchPath: string;
 }): string {
   return taggedPrompt([
     ["acceptance_criteria", args.acceptanceCriteria],
@@ -386,8 +385,7 @@ export function renderResearchPrompt(args: {
     [
       "research_artifact",
       [
-        "Return the complete research report as your final message. This workflow saves that final message verbatim as the run's research artifact; downstream implementation and review stages read it from that file.",
-        `Do not write ${args.researchPath} yourself. Anything written there during this stage is replaced by your final message, so a file you author is lost and a final message that only points at the path leaves later stages with no findings. Skill-owned notes under research/docs/ and research/web/ are unaffected.`,
+        "Return the complete research report as your final message. Downstream implementation and review stages read it from there.",
         "Produce a complete Markdown report with codebase and useful online/contextual findings, implementation guidance, relevant files/tests/docs, unresolved-finding analysis, and validation recommendations. Lead with conclusions; keep facts, caveats, and implementation-relevant next steps; drop background and repetition.",
         "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.",
         "Do not author an RFC/spec or implement code changes.",
@@ -417,6 +415,7 @@ export type RalphWorkflowOptions = {
   readonly comparisonBaseBranch: string;
   readonly workflowStartCwd: string;
   readonly createPr: boolean;
+  readonly runId?: string;
 };
 
 export type RalphWorkflowResult = {

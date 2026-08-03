@@ -27,7 +27,6 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(typeof compat.StringEnum).toBe("function");
 	});
 
-
 	it("maps root and compat specifiers to the same jiti alias path", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
 
@@ -35,7 +34,6 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
 	});
-
 
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {
 		const root = (await import("@earendil-works/pi-ai")) as PiAiExports;
@@ -71,9 +69,7 @@ describe("extension loader package-root resolution", () => {
 				}),
 			);
 
-			const resolved = extensionLoaderTestHooks.findPackageRoot("@scope/esm-only", [
-				path.join(tmp, "node_modules"),
-			]);
+			const resolved = extensionLoaderTestHooks.findPackageRoot("@scope/esm-only", [path.join(tmp, "node_modules")]);
 
 			expect(resolved).toBe(packageRoot);
 		} finally {

@@ -52,7 +52,10 @@ const MUTATING_FAILURE_HINTS = [
 	"could not",
 ];
 
-export function resolveCurrentPath(toolName: string | undefined, args: Record<string, unknown> | undefined): string | undefined {
+export function resolveCurrentPath(
+	toolName: string | undefined,
+	args: Record<string, unknown> | undefined,
+): string | undefined {
 	if (!toolName || !args) return undefined;
 	const direct = ["path", "file", "filename", "target", "cwd"];
 	for (const key of direct) {
@@ -119,8 +122,10 @@ export function nextLongRunningTrigger(
 	metrics: LongRunningNoticeMetrics,
 ): LongRunningTriggerReason | undefined {
 	if (metrics.now - metrics.startedAt >= config.activeNoticeAfterMs) return "time_threshold";
-	if (config.activeNoticeAfterTurns !== undefined && metrics.turns >= config.activeNoticeAfterTurns) return "turn_threshold";
-	if (config.activeNoticeAfterTokens !== undefined && metrics.tokens >= config.activeNoticeAfterTokens) return "token_threshold";
+	if (config.activeNoticeAfterTurns !== undefined && metrics.turns >= config.activeNoticeAfterTurns)
+		return "turn_threshold";
+	if (config.activeNoticeAfterTokens !== undefined && metrics.tokens >= config.activeNoticeAfterTokens)
+		return "token_threshold";
 	return undefined;
 }
 

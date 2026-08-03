@@ -5,9 +5,9 @@
  */
 import { resolve as resolvePath } from "node:path";
 import type { TextContent } from "@earendil-works/pi-ai/compat";
+import { executeReadUrl, loadPage } from "./fetch-url.ts";
 import type { ReadToolDetails } from "./read.ts";
 import { applyReadLineSelection, decodeReadableUrl } from "./read-document-extract.ts";
-import { executeReadUrl, loadPage } from "./fetch-url.ts";
 
 export interface ReadUrlBranchArgs {
 	effectivePath: string;
@@ -20,15 +20,41 @@ export interface ReadUrlBranchArgs {
 	signal?: AbortSignal;
 	maxChars: number;
 	maxBytes: number;
-	oversized: (details: { blocked: true; path: string; chars: number; maxChars: number; startLine: number; totalFileLines: number; firstLineBytes: number; byteGuidance: boolean }) => { content: TextContent[]; details: ReadToolDetails };
+	oversized: (details: {
+		blocked: true;
+		path: string;
+		chars: number;
+		maxChars: number;
+		startLine: number;
+		totalFileLines: number;
+		firstLineBytes: number;
+		byteGuidance: boolean;
+	}) => { content: TextContent[]; details: ReadToolDetails };
 	sourceMeta: (source: string) => ReadToolDetails;
 }
 
 export type ReadUrlBranchResult = { content: TextContent[]; details: ReadToolDetails | undefined };
 
 export async function readUrlBranch(args: ReadUrlBranchArgs): Promise<ReadUrlBranchResult> {
-	const { effectivePath, rawOutput, effectiveRanges, effectiveOffset, effectiveLimit, cwd, ctx, signal, maxChars, maxBytes, oversized, sourceMeta } = args;
-	const session = (ctx as { sessionManager?: { getSessionDir?: () => string | undefined; getSessionId?: () => string | undefined } } | undefined)?.sessionManager;
+	const {
+		effectivePath,
+		rawOutput,
+		effectiveRanges,
+		effectiveOffset,
+		effectiveLimit,
+		cwd,
+		ctx,
+		signal,
+		maxChars,
+		maxBytes,
+		oversized,
+		sourceMeta,
+	} = args;
+	const session = (
+		ctx as
+			| { sessionManager?: { getSessionDir?: () => string | undefined; getSessionId?: () => string | undefined } }
+			| undefined
+	)?.sessionManager;
 	const sessionDir = session?.getSessionDir?.();
 	const scope = session?.getSessionId?.() ?? cwd;
 	const artifactsDir = sessionDir ? resolvePath(sessionDir, "artifacts") : undefined;
@@ -40,19 +66,63 @@ export async function readUrlBranch(args: ReadUrlBranchArgs): Promise<ReadUrlBra
 			content: [{ type: "text", text: result.content }],
 			details: {
 				...(truncation ? { truncation } : {}),
-				meta: { ...(result.details.meta ?? {}), source: effectivePath, sourcePath: effectivePath, ...(artifactId ? { artifactId } : {}) },
+				meta: {
+					...(result.details.meta ?? {}),
+					source: effectivePath,
+					sourcePath: effectivePath,
+					...(artifactId ? { artifactId } : {}),
+				},
 			},
 		};
 	}
 	const page = await loadPage(effectivePath, 10_000, signal);
-	const textContent = rawOutput ? page.content : await decodeReadableUrl(new Response(page.content, { headers: { "content-type": page.contentType } }), page.finalUrl || effectivePath);
-	const selection = applyReadLineSelection(textContent.split("\n"), effectiveRanges, effectiveOffset, effectiveLimit, rawOutput), selectedText = selection.lines.join("\n");
+	const textContent = rawOutput
+		? page.content
+		: await decodeReadableUrl(
+				new Response(page.content, { headers: { "content-type": page.contentType } }),
+				page.finalUrl || effectivePath,
+			);
+	const selection = applyReadLineSelection(
+			textContent.split("\n"),
+			effectiveRanges,
+			effectiveOffset,
+			effectiveLimit,
+			rawOutput,
+		),
+		selectedText = selection.lines.join("\n");
 	if ((effectiveRanges || effectiveOffset) && selection.lines.length === 0) {
 		const requested = effectiveRanges?.[0]?.start ?? effectiveOffset ?? 1;
-		return { content: [{ type: "text", text: `Requested line ${requested} is beyond end of resource (${textContent.split("\n").length} lines total).` }], details: undefined };
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Requested line ${requested} is beyond end of resource (${textContent.split("\n").length} lines total).`,
+				},
+			],
+			details: undefined,
+		};
 	}
 	if (selectedText.length > maxChars || Buffer.byteLength(selectedText, "utf8") > maxBytes) {
-		return oversized({ blocked: true, path: effectivePath, chars: selectedText.length, maxChars, startLine: selection.firstLine, totalFileLines: textContent.split("\n").length, firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"), byteGuidance: false });
+		return oversized({
+			blocked: true,
+			path: effectivePath,
+			chars: selectedText.length,
+			maxChars,
+			startLine: selection.firstLine,
+			totalFileLines: textContent.split("\n").length,
+			firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"),
+			byteGuidance: false,
+		});
 	}
-	return { content: [{ type: "text", text: rawOutput ? selectedText : `URL: ${effectivePath}\nStatus: ${page.status}\nContent-Type: ${page.contentType || "unknown"}\n\n${selectedText}` }], details: sourceMeta(effectivePath) };
+	return {
+		content: [
+			{
+				type: "text",
+				text: rawOutput
+					? selectedText
+					: `URL: ${effectivePath}\nStatus: ${page.status}\nContent-Type: ${page.contentType || "unknown"}\n\n${selectedText}`,
+			},
+		],
+		details: sourceMeta(effectivePath),
+	};
 }

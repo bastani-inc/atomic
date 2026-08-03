@@ -198,15 +198,19 @@ describe("remote catalog provider", () => {
 		const provider = testProvider();
 		const store: ProviderModelsStore = {
 			read: async () => ({ models: [model("stale")], checkedAt: 0 }),
-			write: async () => { throw new Error("disk full"); },
+			write: async () => {
+				throw new Error("disk full");
+			},
 			delete: async () => {},
 		};
 
-		await expect(provider.refreshModels?.({
-			credential: { type: "api_key" },
-			store,
-			allowNetwork: true,
-		})).rejects.toThrow("disk full");
+		await expect(
+			provider.refreshModels?.({
+				credential: { type: "api_key" },
+				store,
+				allowNetwork: true,
+			}),
+		).rejects.toThrow("disk full");
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "new"]);
 	});
 });

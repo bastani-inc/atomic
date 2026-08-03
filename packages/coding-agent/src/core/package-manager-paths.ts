@@ -39,11 +39,7 @@ export function resolvePathFromBase(input: string, baseDir: string): string {
 	return resolvePath(input, baseDir, { homeDir: getHomeDir(), trim: true });
 }
 
-export function getNpmInstallRoot(
-	context: PackageManagerContext,
-	scope: SourceScope,
-	temporary: boolean,
-): string {
+export function getNpmInstallRoot(context: PackageManagerContext, scope: SourceScope, temporary: boolean): string {
 	if (temporary) {
 		return getTemporaryDir("npm");
 	}
@@ -53,7 +49,11 @@ export function getNpmInstallRoot(
 	return join(context.agentDir, "npm");
 }
 
-export function getGitInstallPath(context: PackageManagerContext, source: { host: string; path: string }, scope: SourceScope): string {
+export function getGitInstallPath(
+	context: PackageManagerContext,
+	source: { host: string; path: string },
+	scope: SourceScope,
+): string {
 	if (scope === "temporary") {
 		return getTemporaryDir(`git-${source.host}`, source.path);
 	}

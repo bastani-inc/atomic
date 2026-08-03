@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
@@ -66,7 +66,10 @@ describe("resolveConfigValue", () => {
 	test("caches successful and failed commands until explicitly cleared", () => {
 		const counterFile = join(tempDir, "counter");
 		writeFileSync(counterFile, "0");
-		const escapedPath = counterFile.replace(/\\/g, "/").replace(/"/g, '\\"');
+		// Slashes first (sh-friendly on Windows), then one escaping pass covering
+		// both backslash and quote: escaping quotes alone is the incomplete
+		// sanitization CodeQL flags (js/incomplete-sanitization).
+		const escapedPath = counterFile.replace(/\\/g, "/").replace(/[\\"]/g, "\\$&");
 		const success = `!sh -c 'count=$(cat "${escapedPath}"); echo $((count + 1)) > "${escapedPath}"; echo value'`;
 
 		expect(resolveConfigValue(success)).toBe("value");
@@ -97,7 +100,8 @@ describe("resolveConfigValue", () => {
 	test("uncached resolution executes a command on every call", () => {
 		const counterFile = join(tempDir, "uncached-counter");
 		writeFileSync(counterFile, "0");
-		const escapedPath = counterFile.replace(/\\/g, "/").replace(/"/g, '\\"');
+		// Same complete escaping pass as above (CodeQL js/incomplete-sanitization).
+		const escapedPath = counterFile.replace(/\\/g, "/").replace(/[\\"]/g, "\\$&");
 		const command = `!sh -c 'count=$(cat "${escapedPath}"); echo $((count + 1)) > "${escapedPath}"; echo value'`;
 		expect(resolveConfigValueUncached(command)).toBe("value");
 		expect(resolveConfigValueUncached(command)).toBe("value");

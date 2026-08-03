@@ -130,10 +130,22 @@ export const REFERENCE_DESIGN_SITES: readonly { readonly name: string; readonly 
 export const NO_REFERENCES_BRIEF =
   "Reference discovery was skipped. Generate from the project design system and the prompt; do not fabricate external references.";
 
+/** Artifact filenames for large stage-to-stage context handoffs (issue #2121). */
+export const DESIGN_CONTEXT_FILENAME = "design-context.md";
+export const REFERENCES_BRIEF_FILENAME = "references.md";
+
+export function designContextPath(artifactDir: string): string {
+  return join(artifactDir, DESIGN_CONTEXT_FILENAME);
+}
+
+export function referencesBriefPath(artifactDir: string): string {
+  return join(artifactDir, REFERENCES_BRIEF_FILENAME);
+}
+
 export function buildReferenceDiscoveryPrompt(args: {
   readonly prompt: string;
   readonly outputType: string;
-  readonly designContextHint: string;
+  readonly designContextFile: string;
   readonly artifactDir: string;
   readonly browserBootstrapRules: string;
 }): string {
@@ -142,7 +154,10 @@ export function buildReferenceDiscoveryPrompt(args: {
   ).join("\n");
   return taggedPrompt([
     ["reference_galleries", siteList],
-    ["design_context", args.designContextHint],
+    [
+      "design_context_file",
+      `Read the file at ${args.designContextFile} for the project design context (PRODUCT.md/DESIGN.md summary) and the ds-* discovery evidence before curating. Do not proceed from assumptions when the file is readable; if it is missing, say so and curate from the brief alone.`,
+    ],
     ["browser_use_guidelines", args.browserBootstrapRules],
     ["screenshot_dir", args.artifactDir],
     [
@@ -161,7 +176,7 @@ export function buildReferenceDiscoveryPrompt(args: {
         `Capture motion across the entire page: start \`playwright-cli video-start ${join(args.artifactDir, "ref-<site>-<n>.webm")}\`, scroll smoothly in small increments with waits (using \`playwright-cli run-code\` or repeated \`playwright-cli mousewheel 0 600\`) so animations fire and lazy content loads, then run \`playwright-cli video-stop\`.`,
         `Also run \`playwright-cli screenshot --full-page --filename=${join(args.artifactDir, "ref-<site>-<n>.png")}\`; this still is the minimum when video is unavailable.`,
         "Record the actual destination URL, title, and author. For each reference, cite observed layout, typography, color, spacing, and motion traits rather than inferred traits.",
-        "Assess fit against DESIGN.md, PRODUCT.md, and the ds-* discovery evidence in <design_context>; prefer on-brand references and flag departures.",
+        "Assess fit against DESIGN.md, PRODUCT.md, and the ds-* discovery evidence in the design-context file; prefer on-brand references and flag departures.",
         "Use ask_user_question to ask which reference direction they prefer, offering 2-4 strongest options plus `None of these fit`. If none fit, ask them to provide a reference image, screenshot, URL, or local file path and record the answer.",
         "If `playwright-cli` is unavailable or automation is blocked, use web search / page fetch to reach actual pages and mark missing recordings or screenshots. Never fabricate references or visual claims; report galleries with no usable result.",
       ].join("\n"),
@@ -181,14 +196,51 @@ export function buildReferenceDiscoveryPrompt(args: {
   ]);
 }
 
-/** Persist the curated references brief to `<artifactDir>/references.md`. Best-effort. */
-export function persistReferencesBrief(artifactDir: string, brief: string): void {
+/**
+ * Write a context artifact that downstream stages consume via `reads`.
+ * These files are required stage inputs, not best-effort durability copies:
+ * a swallowed write failure would let reference-discovery, generate, and
+ * exporter stages dispatch against nonexistent design/reference context, so
+ * a failure propagates and stops the workflow (issue #2121, Greptile P1).
+ */
+function writeRequiredContextArtifact(
+  artifactDir: string,
+  filePath: string,
+  content: string,
+  label: string,
+): void {
   try {
     mkdirSync(artifactDir, { recursive: true });
-    writeFileSync(join(artifactDir, "references.md"), `${brief}\n`);
-  } catch {
-    /* best-effort durability; never block the workflow */
+    writeFileSync(filePath, `${content}\n`);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `open-claude-design: failed to write the required ${label} artifact at ${filePath}. Downstream stages read this file via \`reads\` and must not run without it (${detail})`,
+      { cause: error },
+    );
   }
+}
+
+/**
+ * Persist the curated references brief to `<artifactDir>/references.md`.
+ * Downstream generate stages consume this file via `reads` instead of an
+ * inline prompt embed; a write failure propagates (issue #2121).
+ */
+export function persistReferencesBrief(artifactDir: string, brief: string): void {
+  writeRequiredContextArtifact(artifactDir, referencesBriefPath(artifactDir), brief, "references-brief");
+}
+
+/**
+ * Persist the composed project design context (impeccable init summary plus
+ * ds-* discovery evidence) to `<artifactDir>/design-context.md`.
+ * Reference-discovery, generate, and exporter stages consume this file via
+ * `reads` instead of an inline prompt embed, so one oversized research result
+ * cannot become an oversized single prompt message. A write failure
+ * propagates rather than letting those stages run without their design
+ * context (issue #2121).
+ */
+export function persistDesignContext(artifactDir: string, content: string): void {
+  writeRequiredContextArtifact(artifactDir, designContextPath(artifactDir), content, "design-context");
 }
 
 // ---------------------------------------------------------------------------
@@ -226,9 +278,10 @@ export function buildLivePreviewDisplayPrompt(args: {
       ].join("\n")
     : [
         `1. Run \`/skill:impeccable live\` targeted at the preview file so the user can pick elements in the browser, annotate them, and compare on-brand variants. The preview is a single static HTML file at ${args.previewPath}; point live at it (configure \`.impeccable/live/config.json\` for that file or pass \`--target ${args.previewPath}\` per the live reference) and open ${args.previewFileUrl} in the browser.`,
-        "2. For each element the user picks, follow the live contract: read any annotation screenshot, extract the page identity FIRST, then generate three DISTINCT on-brand variants and let the user accept one. Accepted variants are written into the preview HTML in place; do NOT branch the artifact.",
-        "3. Also handle the live `steer` path for page-level direction the user types/speaks, and treat any freeform prompt as the ceiling on direction.",
-        "4. Keep iterating until the user signals they are done with this round.",
+        `2. The moment the live review is reachable — and BEFORE starting any long-poll wait — print the exact review URL in plain text: the live \`http://\` URL when the live server is up, plus ${args.previewFileUrl} as the manual fallback. Anyone attaching to this stage mid-run must see where the review is happening from your first lines of output.`,
+        "3. For each element the user picks, follow the live contract: read any annotation screenshot, extract the page identity FIRST, then generate three DISTINCT on-brand variants and let the user accept one. Accepted variants are written into the preview HTML in place; do NOT branch the artifact.",
+        "4. Also handle the live `steer` path for page-level direction the user types/speaks, and treat any freeform prompt as the ceiling on direction.",
+        "5. Keep iterating until the user signals they are done with this round.",
       ].join("\n");
   const outputFormat = isFinal
     ? [
@@ -264,4 +317,64 @@ export function buildLivePreviewDisplayPrompt(args: {
     ],
     ["output_format", `${outputFormat}\nKeep the report under 250 words. ${GROUNDED_REPORTING}`],
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// 3. Deterministic live-review gate (run-level HIL prompt, issue #2060)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal structural slice of `ctx.ui` the live-review gate needs. Kept
+ * structural so the runner/phases modules stay decoupled from the full
+ * WorkflowRunContext type.
+ */
+export type LiveReviewGateUi = {
+  select<T extends string>(message: string, options: readonly T[]): Promise<T>;
+};
+
+/**
+ * Choices for the deterministic gate raised before every `user-feedback-*`
+ * stage. The first entry starts the browser review round; the second accepts
+ * the current design and skips straight to export.
+ */
+export const LIVE_REVIEW_GATE_OPTIONS = [
+  "Start live review",
+  "Skip remaining review rounds and export as-is",
+] as const;
+
+/**
+ * Message for the deterministic run-level prompt raised before each
+ * `user-feedback-*` stage. The stage's browser long-poll never sets
+ * `awaiting_input`, so without this gate the run is indistinguishable from
+ * active compute while it waits on a human (issue #2060). Raising a `ctx.ui`
+ * prompt sets the run-level pending prompt, which fires the needs-attention
+ * badge and carries the preview URL to the root session deterministically.
+ */
+export function buildLiveReviewGateMessage(args: {
+  readonly iteration: number;
+  readonly maxRefinements: number;
+  readonly previewPath: string;
+  readonly previewFileUrl: string;
+}): string {
+  return [
+    `Design review round ${args.iteration} of ${args.maxRefinements} is ready for your browser review.`,
+    "",
+    `Preview file: ${args.previewPath}`,
+    `Preview URL: ${args.previewFileUrl}`,
+    "",
+    `"${LIVE_REVIEW_GATE_OPTIONS[0]}" opens an interactive browser session; the user-feedback stage prints the live http:// review URL as soon as its server is up (attach with /workflow connect to see it, or open the preview URL above directly).`,
+    `"${LIVE_REVIEW_GATE_OPTIONS[1]}" accepts the current design and proceeds to export.`,
+  ].join("\n");
+}
+
+/**
+ * True only for the executor's unavailable-UI rejections (no UI adapter, or
+ * headless/non-interactive mode; see `executor-hil.ts` `makeRejectingUIContext`
+ * and the prompt-node unavailable errors). The live-review gate degrades to
+ * running the review for exactly these; every other rejection — interruption,
+ * durable checkpoint persistence failure, exit — must propagate so the
+ * workflow stops instead of opening a review against an invalid run state.
+ */
+export function isUiUnavailableRejection(error: unknown): boolean {
+  return error instanceof Error && /ctx\.ui\.\w+ (?:prompt node )?is unavailable/.test(error.message);
 }

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { test } from "vitest";
 import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import {
-	StartupChatContainer,
 	releaseStartupChatOutput,
+	StartupChatContainer,
 } from "../src/modes/interactive/interactive-startup-chat-container.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 initTheme("dark");
 function createGateMode(): InteractiveMode {
@@ -26,7 +26,8 @@ function createGateMode(): InteractiveMode {
 }
 
 function normalizeGateOutput(container: Container, width = 220): string {
-	return container.render(width)
+	return container
+		.render(width)
 		.join("\n")
 		.replace(/\u001b\[[0-9;]*m/g, "")
 		.split("\n")
@@ -41,6 +42,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 			configurable: true,
 			value: {
 				reload: async () => {},
+				subscribe: () => () => {},
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
 				extensionRunner: {},
 				modelRuntime: { getError: () => undefined },
@@ -50,6 +52,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 	});
 	Object.assign(mode, {
 		bindCurrentSessionExtensions: async () => {},
+		pendingUserInputs: [],
 		promptTurnWorkingLoaderActive: false,
 		stopWorkingLoader() {},
 		themeController: { applyFromSettings: async () => {} },
@@ -172,7 +175,9 @@ test("prompt error paints below the disclosure rather than releasing an empty sl
 	});
 	Object.assign(mode.session, {
 		resumeQueuedMessages: async () => {},
-		prompt: async () => { throw new Error("prompt rejected"); },
+		prompt: async () => {
+			throw new Error("prompt rejected");
+		},
 		isStreaming: false,
 	});
 

@@ -91,11 +91,7 @@ export function keyHintIfBound(keybinding: Keybinding, description: string): str
 	return theme.fg("dim", text) + theme.fg("muted", ` ${formatHintLabel(description)}`);
 }
 
-export function parenthesizedKeyHint(
-	keybinding: Keybinding,
-	description: string,
-	prefix?: string,
-): string {
+export function parenthesizedKeyHint(keybinding: Keybinding, description: string, prefix?: string): string {
 	const hint = keyHintIfBound(keybinding, description);
 	if (!hint) return prefix ? theme.fg("muted", `(${prefix})`) : "";
 	return theme.fg("muted", `(${prefix ? `${prefix}, ` : ""}`) + hint + theme.fg("muted", ")");

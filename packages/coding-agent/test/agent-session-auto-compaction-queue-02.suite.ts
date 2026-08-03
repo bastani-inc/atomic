@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import { Agent } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
@@ -12,11 +12,19 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
-
 const compactionMocks = vi.hoisted(() => ({
 	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
-		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
-		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
+		text: "[User]: retained test context\n(filtered 1 lines)",
+		ranges: [{ start: 2, end: 2 }],
+		stats: {
+			linesBefore: 2,
+			linesDeleted: 1,
+			linesKept: 1,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 50,
+			percentReduction: 50,
+		},
 		rung: "planned" as const,
 		keptTail: true,
 	})),
@@ -54,13 +62,24 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	MIN_COMPACTABLE_REGION_LINES: 20,
-	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
-		firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
-		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
-		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
-		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
-	}) : undefined,
+	prepareCompactionBoundary: (entries: Array<{ id: string }>) =>
+		entries[0]
+			? {
+					firstKeptEntryId: entries[0].id,
+					region: {
+						__brand: "NumberedRegion",
+						lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)],
+						headerLineNumbers: new Set([1]),
+						priorMarkerNs: new Map(),
+						tokenEstimate: 10,
+					},
+					regionEntryIds: [entries[0].id],
+					keptTailMessageCount: 1,
+					tokensBefore: 100,
+					parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+					settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+				}
+			: undefined,
 	shouldCompact: (
 		contextTokens: number,
 		contextWindow: number,
@@ -88,11 +107,19 @@ describe("AgentSession auto-compaction queue resume", () => {
 		});
 
 		sessionManager = SessionManager.inMemory();
-		sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "existing compactable context" }],
+			timestamp: Date.now(),
+		});
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null, allowModelNetwork: false });
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
 
 		session = new AgentSession({
 			agent,
@@ -123,7 +150,12 @@ describe("AgentSession auto-compaction queue resume", () => {
 		});
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		const waitSpy = vi.spyOn(session, "waitForRetry").mockResolvedValue();
-		const drainSpy = vi.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages").mockResolvedValue();
+		const drainSpy = vi
+			.spyOn(
+				session as unknown as { _continueQueuedAgentMessages: () => Promise<void> },
+				"_continueQueuedAgentMessages",
+			)
+			.mockResolvedValue();
 
 		const runAutoCompaction = (
 			session as unknown as {

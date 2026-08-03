@@ -1,7 +1,6 @@
 import { writeRawStdout } from "../../core/output-guard.ts";
 import type { RpcOutput, RpcOutputRecord } from "./rpc-responses.ts";
 
-
 export function serializeRpcOutputRecord(record: RpcOutputRecord): string {
 	return `${JSON.stringify(record)}\n`;
 }
@@ -10,15 +9,18 @@ export class RpcOutputBuffer {
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	readonly output: RpcOutput = (record) => this.enqueue(record);
 
-	dispose(): void { this.flush(); }
+	dispose(): void {
+		this.flush();
+	}
 
 	private enqueue(record: RpcOutputRecord): void {
 		const event = record as { type?: string; toolCallId?: string };
-		const key = event.type === "message_update"
-			? "message"
-			: event.type === "tool_execution_update" && event.toolCallId
-				? `tool:${event.toolCallId}`
-				: undefined;
+		const key =
+			event.type === "message_update"
+				? "message"
+				: event.type === "tool_execution_update" && event.toolCallId
+					? `tool:${event.toolCallId}`
+					: undefined;
 		if (key) {
 			this.updates.set(key, record);
 			this.timer ??= setTimeout(() => this.flush(), 16);

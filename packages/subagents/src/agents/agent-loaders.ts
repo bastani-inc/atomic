@@ -1,20 +1,20 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { shouldPreserveAgentExtraField } from "./agent-serializer.ts";
-import { parseChain, parseJsonChain } from "./chain-serializer.ts";
-import { parseFrontmatter } from "./frontmatter.ts";
-import { buildRuntimeName, parsePackageName } from "./identity.ts";
+import { normalizeMaxSubagentDepth } from "../shared/types.ts";
 import { splitToolList } from "./agent-overrides.ts";
+import { shouldPreserveAgentExtraField } from "./agent-serializer.ts";
 import {
-	defaultInheritProjectContext,
-	defaultInheritSkills,
-	defaultSystemPromptMode,
 	type AgentConfig,
 	type AgentSource,
 	type ChainConfig,
 	type ChainDiscoveryDiagnostic,
+	defaultInheritProjectContext,
+	defaultInheritSkills,
+	defaultSystemPromptMode,
 } from "./agent-types.ts";
-import { normalizeMaxSubagentDepth } from "../shared/types.ts";
+import { parseChain, parseJsonChain } from "./chain-serializer.ts";
+import { parseFrontmatter } from "./frontmatter.ts";
+import { buildRuntimeName, parsePackageName } from "./identity.ts";
 
 function listFilesRecursive(dir: string, predicate: (fileName: string) => boolean): string[] {
 	const files: string[] = [];
@@ -51,7 +51,10 @@ function parseCommaSeparatedList(value: string | undefined): string[] | undefine
 export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
-	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md"))) {
+	for (const filePath of listFilesRecursive(
+		dir,
+		(fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md"),
+	)) {
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
@@ -78,26 +81,30 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 		const skills = parseCommaSeparatedList(skillStr);
 		const fallbackModels = parseCommaSeparatedList(frontmatter.fallbackModels);
 		const fallbackThinkingLevels = parseCommaSeparatedList(frontmatter.fallbackThinkingLevels);
-		const systemPromptMode = frontmatter.systemPromptMode === "replace"
-			? "replace"
-			: frontmatter.systemPromptMode === "append"
-				? "append"
-				: defaultSystemPromptMode(localName);
-		const inheritProjectContext = frontmatter.inheritProjectContext === "true"
-			? true
-			: frontmatter.inheritProjectContext === "false"
-				? false
-				: defaultInheritProjectContext(localName);
-		const inheritSkills = frontmatter.inheritSkills === "true"
-			? true
-			: frontmatter.inheritSkills === "false"
-				? false
-				: defaultInheritSkills();
-		const defaultContext = frontmatter.defaultContext === "fork"
-			? "fork" as const
-			: frontmatter.defaultContext === "fresh"
-				? "fresh" as const
-				: undefined;
+		const systemPromptMode =
+			frontmatter.systemPromptMode === "replace"
+				? "replace"
+				: frontmatter.systemPromptMode === "append"
+					? "append"
+					: defaultSystemPromptMode(localName);
+		const inheritProjectContext =
+			frontmatter.inheritProjectContext === "true"
+				? true
+				: frontmatter.inheritProjectContext === "false"
+					? false
+					: defaultInheritProjectContext(localName);
+		const inheritSkills =
+			frontmatter.inheritSkills === "true"
+				? true
+				: frontmatter.inheritSkills === "false"
+					? false
+					: defaultInheritSkills();
+		const defaultContext =
+			frontmatter.defaultContext === "fork"
+				? ("fork" as const)
+				: frontmatter.defaultContext === "fresh"
+					? ("fresh" as const)
+					: undefined;
 
 		let extensions: string[] | undefined;
 		if (frontmatter.extensions !== undefined) {
@@ -146,11 +153,17 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 	return agents;
 }
 
-export function loadChainsFromDir(dir: string, source: "user" | "project"): { chains: ChainConfig[]; diagnostics: ChainDiscoveryDiagnostic[] } {
+export function loadChainsFromDir(
+	dir: string,
+	source: "user" | "project",
+): { chains: ChainConfig[]; diagnostics: ChainDiscoveryDiagnostic[] } {
 	const chains = new Map<string, ChainConfig>();
 	const diagnostics: ChainDiscoveryDiagnostic[] = [];
 
-	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".chain.md") || fileName.endsWith(".chain.json"))) {
+	for (const filePath of listFilesRecursive(
+		dir,
+		(fileName) => fileName.endsWith(".chain.md") || fileName.endsWith(".chain.json"),
+	)) {
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
@@ -159,13 +172,14 @@ export function loadChainsFromDir(dir: string, source: "user" | "project"): { ch
 		}
 
 		try {
-			const chain = filePath.endsWith(".chain.json") ? parseJsonChain(content, source, filePath) : parseChain(content, source, filePath);
+			const chain = filePath.endsWith(".chain.json")
+				? parseJsonChain(content, source, filePath)
+				: parseChain(content, source, filePath);
 			const existing = chains.get(chain.name);
-			if (existing && existing.filePath.endsWith(".chain.json") && filePath.endsWith(".chain.md")) continue;
+			if (existing?.filePath.endsWith(".chain.json") && filePath.endsWith(".chain.md")) continue;
 			chains.set(chain.name, chain);
 		} catch (error) {
 			diagnostics.push({ source, filePath, error: error instanceof Error ? error.message : String(error) });
-			continue;
 		}
 	}
 

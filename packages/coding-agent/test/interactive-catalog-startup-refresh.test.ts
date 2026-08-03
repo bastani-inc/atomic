@@ -8,9 +8,7 @@ interface FakeCalls {
 	providerCounts: number[];
 }
 
-function fakeMode(overrides?: {
-	refreshRejects?: boolean;
-}): { mode: InteractiveModeBase; calls: FakeCalls } {
+function fakeMode(overrides?: { refreshRejects?: boolean }): { mode: InteractiveModeBase; calls: FakeCalls } {
 	const calls: FakeCalls = { refreshOptions: [], providerCounts: [] };
 	const mode = {
 		session: {
@@ -21,11 +19,7 @@ function fakeMode(overrides?: {
 					if (overrides?.refreshRejects) throw new Error("network refresh failed");
 					return { aborted: false, errors: new Map() };
 				},
-				getAvailableSnapshot: () => [
-					{ provider: "anthropic" },
-					{ provider: "openai" },
-					{ provider: "openai" },
-				],
+				getAvailableSnapshot: () => [{ provider: "anthropic" }, { provider: "openai" }, { provider: "openai" }],
 			},
 		},
 		footerDataProvider: {

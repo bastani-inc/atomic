@@ -86,7 +86,9 @@ export interface ContextCompactionStats {
 export interface ContextCompactionEntry extends SessionEntryBase {
 	type: "context_compaction";
 	promptVersion: 1;
-	deletedTargets: Array<{ kind: "entry"; entryId: string } | { kind: "content_block"; entryId: string; blockIndex: number }>;
+	deletedTargets: Array<
+		{ kind: "entry"; entryId: string } | { kind: "content_block"; entryId: string; blockIndex: number }
+	>;
 	protectedEntryIds: string[];
 	stats: ContextCompactionStats;
 	backupPath?: string;
@@ -156,6 +158,9 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	details?: T;
 	display: boolean;
 	excludeFromContext?: boolean;
+	/** Stable producer identity used by workflow stages to de-nominate admitted external turns. */
+	stageAdmissionKey?: string;
+	/** Runtime provenance used to distinguish stage continuation from an externally triggered response. */
 	/** Internal crash-recovery marker for a model-facing protected turn. */
 	protectedReconciliation?: ProtectedReconciliationMarker;
 }
@@ -213,7 +218,6 @@ export interface SessionInfo {
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";
 }
-
 
 export type SessionListProgress = (loaded: number, total: number) => void;
 

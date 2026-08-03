@@ -2,24 +2,28 @@ import * as path from "node:path";
 import { APP_NAME } from "@bastani/atomic";
 import {
 	ASYNC_DIR,
-	RESULTS_DIR,
 	type AsyncJobState,
 	type AsyncStatus,
 	type NestedRunSummary,
+	RESULTS_DIR,
 	type SubagentRunMode,
 	type SubagentState,
 } from "../../shared/types.ts";
 import {
+	assertSafeId,
+	containedPath,
 	MAX_NESTED_CHILDREN,
 	MAX_NESTED_STEPS,
 	NESTED_RUNS_DIR,
-	assertSafeId,
-	containedPath,
 } from "./nested-events-core.ts";
 import { projectNestedEvents } from "./nested-events-registry.ts";
 import { terminal } from "./nested-events-sanitize.ts";
 
-export function attachRootChildrenToSteps<T extends { children?: NestedRunSummary[]; index?: number }>(rootRunId: string, steps: T[] | undefined, children: NestedRunSummary[] | undefined): void {
+export function attachRootChildrenToSteps<T extends { children?: NestedRunSummary[]; index?: number }>(
+	rootRunId: string,
+	steps: T[] | undefined,
+	children: NestedRunSummary[] | undefined,
+): void {
 	if (!steps?.length) return;
 	for (const step of steps) {
 		step.children = undefined;
@@ -30,7 +34,10 @@ export function attachRootChildrenToSteps<T extends { children?: NestedRunSummar
 		const step = steps.find((candidate, index) => (candidate.index ?? index) === child.parentStepIndex);
 		if (!step) continue;
 		step.children ??= [];
-		step.children = [...step.children.filter((existing) => existing.id !== child.id), child].slice(0, MAX_NESTED_CHILDREN);
+		step.children = [...step.children.filter((existing) => existing.id !== child.id), child].slice(
+			0,
+			MAX_NESTED_CHILDREN,
+		);
 	}
 }
 
@@ -41,7 +48,9 @@ export function updateAsyncJobNestedProjection(job: AsyncJobState): void {
 	attachRootChildrenToSteps(job.asyncId, job.steps, registry.children);
 }
 
-export function updateForegroundNestedProjection(control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never): void {
+export function updateForegroundNestedProjection(
+	control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never,
+): void {
 	if (!control.nestedRoute) return;
 	const registry = projectNestedEvents(control.nestedRoute);
 	control.nestedChildren = registry.children;
@@ -57,13 +66,30 @@ export function hasLiveNestedDescendants(children: NestedRunSummary[] | undefine
 	return false;
 }
 
-export function nestedSummaryFromAsyncStatus(status: AsyncStatus, asyncDir: string, fallback: { id: string; parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }>; mode?: SubagentRunMode; ts: number }): NestedRunSummary {
+export function nestedSummaryFromAsyncStatus(
+	status: AsyncStatus,
+	asyncDir: string,
+	fallback: {
+		id: string;
+		parentRunId: string;
+		parentStepIndex?: number;
+		depth: number;
+		path?: Array<{ runId: string; stepIndex?: number; agent?: string }>;
+		mode?: SubagentRunMode;
+		ts: number;
+	},
+): NestedRunSummary {
 	return {
 		id: status.runId || fallback.id,
 		parentRunId: fallback.parentRunId,
 		...(fallback.parentStepIndex !== undefined ? { parentStepIndex: fallback.parentStepIndex } : {}),
 		depth: fallback.depth,
-		path: fallback.path ?? [{ runId: fallback.parentRunId, ...(fallback.parentStepIndex !== undefined ? { stepIndex: fallback.parentStepIndex } : {}) }],
+		path: fallback.path ?? [
+			{
+				runId: fallback.parentRunId,
+				...(fallback.parentStepIndex !== undefined ? { stepIndex: fallback.parentStepIndex } : {}),
+			},
+		],
 		asyncDir,
 		...(status.pid ? { pid: status.pid } : {}),
 		...(status.sessionId ? { sessionId: status.sessionId } : {}),
@@ -83,21 +109,29 @@ export function nestedSummaryFromAsyncStatus(status: AsyncStatus, asyncDir: stri
 		...(status.endedAt !== undefined ? { endedAt: status.endedAt } : {}),
 		lastUpdate: status.lastUpdate ?? fallback.ts,
 		...(status.sessionFile ? { sessionFile: status.sessionFile } : {}),
-		...(status.steps?.length ? { steps: status.steps.map((step) => ({
-			agent: step.agent,
-			status: step.status,
-			...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
-			...(step.activityState ? { activityState: step.activityState } : {}),
-			...(step.lastActivityAt !== undefined ? { lastActivityAt: step.lastActivityAt } : {}),
-			...(step.currentTool ? { currentTool: step.currentTool } : {}),
-			...(step.currentToolStartedAt !== undefined ? { currentToolStartedAt: step.currentToolStartedAt } : {}),
-			...(step.currentPath ? { currentPath: step.currentPath } : {}),
-			...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
-			...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
-			...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
-			...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
-			...(step.error ? { error: step.error } : {}),
-		})).slice(0, MAX_NESTED_STEPS) } : {}),
+		...(status.steps?.length
+			? {
+					steps: status.steps
+						.map((step) => ({
+							agent: step.agent,
+							status: step.status,
+							...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
+							...(step.activityState ? { activityState: step.activityState } : {}),
+							...(step.lastActivityAt !== undefined ? { lastActivityAt: step.lastActivityAt } : {}),
+							...(step.currentTool ? { currentTool: step.currentTool } : {}),
+							...(step.currentToolStartedAt !== undefined
+								? { currentToolStartedAt: step.currentToolStartedAt }
+								: {}),
+							...(step.currentPath ? { currentPath: step.currentPath } : {}),
+							...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
+							...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
+							...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
+							...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
+							...(step.error ? { error: step.error } : {}),
+						}))
+						.slice(0, MAX_NESTED_STEPS),
+				}
+			: {}),
 	};
 }
 

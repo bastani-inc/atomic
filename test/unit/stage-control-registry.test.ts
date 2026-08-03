@@ -11,410 +11,429 @@
  * cross-ref: src/runs/foreground/stage-control-registry.ts
  */
 
-import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import {
-    createStageControlRegistry,
-    type StageControlHandle,
-    type StageControlStatus,
-} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { AgentSession } from "@bastani/atomic";
+import { describe, test } from "vitest";
+import {
+	createStageControlRegistry,
+	type StageControlHandle,
+	type StageControlStatus,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 
 interface MockHandleState {
-    pauseCalls: number;
-    resumeCalls: number;
-    lastResumeMessage?: string;
+	pauseCalls: number;
+	resumeCalls: number;
+	lastResumeMessage?: string;
 }
 
 function makeHandle(
-    runId: string,
-    stageId: string,
-    opts: { status?: StageControlStatus; state?: MockHandleState } = {},
+	runId: string,
+	stageId: string,
+	opts: { status?: StageControlStatus; state?: MockHandleState } = {},
 ): StageControlHandle {
-    const state = opts.state ?? { pauseCalls: 0, resumeCalls: 0 };
-    let status: StageControlStatus = opts.status ?? "running";
-    return {
-        runId,
-        stageId,
-        stageName: `stage-${stageId}`,
-        get status() {
-            return status;
-        },
-        sessionId: undefined,
-        sessionFile: undefined,
-        isStreaming: false,
-        messages: [] as AgentSession["messages"],
-        async ensureAttached() {},
-        async prompt() {},
-        async steer() {},
-        async followUp() {},
-        async pause() {
-            state.pauseCalls += 1;
-            status = "paused";
-        },
-        async resume(message?: string) {
-            state.resumeCalls += 1;
-            state.lastResumeMessage = message;
-            status = "running";
-        },
-        subscribe() {
-            return () => {};
-        },
-    };
+	const state = opts.state ?? { pauseCalls: 0, resumeCalls: 0 };
+	let status: StageControlStatus = opts.status ?? "running";
+	return {
+		runId,
+		stageId,
+		stageName: `stage-${stageId}`,
+		get status() {
+			return status;
+		},
+		sessionId: undefined,
+		sessionFile: undefined,
+		isStreaming: false,
+		messages: [] as AgentSession["messages"],
+		async ensureAttached() {},
+		async prompt() {},
+		async steer() {},
+		async followUp() {},
+		async pause() {
+			state.pauseCalls += 1;
+			status = "paused";
+		},
+		async resume(message?: string) {
+			state.resumeCalls += 1;
+			state.lastResumeMessage = message;
+			status = "running";
+		},
+		subscribe() {
+			return () => {};
+		},
+	};
 }
 
 describe("stageControlRegistry — register/get/forRun/run", () => {
-    test("register makes the handle resolvable by runId + stageId", () => {
-        const r = createStageControlRegistry();
-        const h = makeHandle("run-1", "stage-a");
-        r.register(h);
-        assert.equal(r.get("run-1", "stage-a"), h);
-        assert.equal(r.forRun("run-1").length, 1);
-    });
+	test("register makes the handle resolvable by runId + stageId", () => {
+		const r = createStageControlRegistry();
+		const h = makeHandle("run-1", "stage-a");
+		r.register(h);
+		assert.equal(r.get("run-1", "stage-a"), h);
+		assert.equal(r.forRun("run-1").length, 1);
+	});
 
-    test("unregister callback removes only the registered handle", () => {
-        const r = createStageControlRegistry();
-        const h1 = makeHandle("run-1", "stage-a");
-        const h2 = makeHandle("run-1", "stage-b");
-        const off = r.register(h1);
-        r.register(h2);
-        off();
-        assert.equal(r.get("run-1", "stage-a"), undefined);
-        assert.equal(r.get("run-1", "stage-b"), h2);
-    });
+	test("unregister callback removes only the registered handle", () => {
+		const r = createStageControlRegistry();
+		const h1 = makeHandle("run-1", "stage-a");
+		const h2 = makeHandle("run-1", "stage-b");
+		const off = r.register(h1);
+		r.register(h2);
+		off();
+		assert.equal(r.get("run-1", "stage-a"), undefined);
+		assert.equal(r.get("run-1", "stage-b"), h2);
+	});
 
-    test("detachControl keeps chat attachment resolvable but removes run-level control", async () => {
-        const r = createStageControlRegistry();
-        const state = { pauseCalls: 0, resumeCalls: 0 };
-        const h = makeHandle("run-1", "stage-a", { status: "running", state });
-        r.register(h);
+	test("detachControl keeps chat attachment resolvable but removes run-level control", async () => {
+		const r = createStageControlRegistry();
+		const state = { pauseCalls: 0, resumeCalls: 0 };
+		const h = makeHandle("run-1", "stage-a", { status: "running", state });
+		r.register(h);
 
-        assert.equal(r.detachControl("run-1", "stage-a", h), true);
-        assert.equal(r.get("run-1", "stage-a"), h);
-        assert.equal(r.forRun("run-1")[0], h);
-        assert.deepEqual(r.run("run-1").stages(), []);
+		assert.equal(r.detachControl("run-1", "stage-a", h), true);
+		assert.equal(r.get("run-1", "stage-a"), h);
+		assert.equal(r.forRun("run-1")[0], h);
+		assert.deepEqual(r.run("run-1").stages(), []);
 
-        const paused = await r.run("run-1").pause("stage-a");
-        assert.deepEqual(paused, []);
-        assert.equal(state.pauseCalls, 0);
-    });
+		const paused = await r.run("run-1").pause("stage-a");
+		assert.deepEqual(paused, []);
+		assert.equal(state.pauseCalls, 0);
+	});
 
-    test("forRun returns empty for unknown run", () => {
-        const r = createStageControlRegistry();
-        assert.deepEqual(r.forRun("nope"), []);
-    });
+	test("forRun returns empty for unknown run", () => {
+		const r = createStageControlRegistry();
+		assert.deepEqual(r.forRun("nope"), []);
+	});
 
-    test("clear drops every registration", () => {
-        const r = createStageControlRegistry();
-        r.register(makeHandle("run-1", "stage-a"));
-        r.register(makeHandle("run-2", "stage-b"));
-        r.clear();
-        assert.equal(r.get("run-1", "stage-a"), undefined);
-        assert.equal(r.get("run-2", "stage-b"), undefined);
-    });
+	test("clear drops every registration", () => {
+		const r = createStageControlRegistry();
+		r.register(makeHandle("run-1", "stage-a"));
+		r.register(makeHandle("run-2", "stage-b"));
+		r.clear();
+		assert.equal(r.get("run-1", "stage-a"), undefined);
+		assert.equal(r.get("run-2", "stage-b"), undefined);
+	});
 
-    test("clear disposes retained direct chat handles", () => {
-        const r = createStageControlRegistry();
-        let disposeCalls = 0;
-        r.register({
-            ...makeHandle("run-1", "stage-a"),
-            dispose() {
-                disposeCalls += 1;
-            },
-        });
-        r.clear();
-        assert.equal(disposeCalls, 1);
-    });
+	test("clear disposes retained direct chat handles", () => {
+		const r = createStageControlRegistry();
+		let disposeCalls = 0;
+		r.register({
+			...makeHandle("run-1", "stage-a"),
+			dispose() {
+				disposeCalls += 1;
+			},
+		});
+		r.clear();
+		assert.equal(disposeCalls, 1);
+	});
 
-    test("clear disposes detached direct chat handles", () => {
-        const r = createStageControlRegistry();
-        let disposeCalls = 0;
-        const handle = {
-            ...makeHandle("run-1", "stage-a"),
-            dispose() {
-                disposeCalls += 1;
-            },
-        };
-        r.register(handle);
-        assert.equal(r.detachControl("run-1", "stage-a", handle), true);
+	test("clear disposes detached direct chat handles", () => {
+		const r = createStageControlRegistry();
+		let disposeCalls = 0;
+		const handle = {
+			...makeHandle("run-1", "stage-a"),
+			dispose() {
+				disposeCalls += 1;
+			},
+		};
+		r.register(handle);
+		assert.equal(r.detachControl("run-1", "stage-a", handle), true);
 
-        r.clear();
+		r.clear();
 
-        assert.equal(disposeCalls, 1);
-        assert.equal(r.get("run-1", "stage-a"), undefined);
-    });
+		assert.equal(disposeCalls, 1);
+		assert.equal(r.get("run-1", "stage-a"), undefined);
+	});
 
-    test("clear observes asynchronous dispose failures", async () => {
-        const r = createStageControlRegistry();
-        const previousWarn = console.warn;
-        let logged = false;
-        console.warn = () => {
-            logged = true;
-        };
-        try {
-            r.register({
-                ...makeHandle("run-1", "stage-a"),
-                async dispose() {
-                    throw new Error("dispose failed");
-                },
-            });
+	test("clear observes asynchronous dispose failures", async () => {
+		const r = createStageControlRegistry();
+		const previousWarn = console.warn;
+		let logged = false;
+		console.warn = () => {
+			logged = true;
+		};
+		try {
+			r.register({
+				...makeHandle("run-1", "stage-a"),
+				async dispose() {
+					throw new Error("dispose failed");
+				},
+			});
 
-            assert.doesNotThrow(() => r.clear());
-            await Promise.resolve();
+			assert.doesNotThrow(() => r.clear());
+			await Promise.resolve();
 
-            assert.equal(logged, true);
-            assert.equal(r.get("run-1", "stage-a"), undefined);
-        } finally {
-            console.warn = previousWarn;
-        }
-    });
+			assert.equal(logged, true);
+			assert.equal(r.get("run-1", "stage-a"), undefined);
+		} finally {
+			console.warn = previousWarn;
+		}
+	});
 });
 
 describe("stageControlRegistry — pause fan-out", () => {
-    test("run.pause() pauses every running/pending stage", async () => {
-        const r = createStageControlRegistry();
-        const s1 = { pauseCalls: 0, resumeCalls: 0 };
-        const s2 = { pauseCalls: 0, resumeCalls: 0 };
-        r.register(makeHandle("run-1", "a", { status: "running", state: s1 }));
-        r.register(makeHandle("run-1", "b", { status: "pending", state: s2 }));
-        const paused = await r.run("run-1").pause();
-        assert.equal(paused.length, 2);
-        assert.equal(s1.pauseCalls, 1);
-        assert.equal(s2.pauseCalls, 1);
-    });
+	test("run.pause() pauses every running/pending stage", async () => {
+		const r = createStageControlRegistry();
+		const s1 = { pauseCalls: 0, resumeCalls: 0 };
+		const s2 = { pauseCalls: 0, resumeCalls: 0 };
+		r.register(makeHandle("run-1", "a", { status: "running", state: s1 }));
+		r.register(makeHandle("run-1", "b", { status: "pending", state: s2 }));
+		const paused = await r.run("run-1").pause();
+		assert.equal(paused.length, 2);
+		assert.equal(s1.pauseCalls, 1);
+		assert.equal(s2.pauseCalls, 1);
+	});
 
-    test("run.pause(stageId) targets a single stage", async () => {
-        const r = createStageControlRegistry();
-        const s1 = { pauseCalls: 0, resumeCalls: 0 };
-        const s2 = { pauseCalls: 0, resumeCalls: 0 };
-        r.register(makeHandle("run-1", "a", { status: "running", state: s1 }));
-        r.register(makeHandle("run-1", "b", { status: "running", state: s2 }));
-        const paused = await r.run("run-1").pause("a");
-        assert.equal(paused.length, 1);
-        assert.equal(s1.pauseCalls, 1);
-        assert.equal(s2.pauseCalls, 0);
-    });
+	test("run.pause(stageId) targets a single stage", async () => {
+		const r = createStageControlRegistry();
+		const s1 = { pauseCalls: 0, resumeCalls: 0 };
+		const s2 = { pauseCalls: 0, resumeCalls: 0 };
+		r.register(makeHandle("run-1", "a", { status: "running", state: s1 }));
+		r.register(makeHandle("run-1", "b", { status: "running", state: s2 }));
+		const paused = await r.run("run-1").pause("a");
+		assert.equal(paused.length, 1);
+		assert.equal(s1.pauseCalls, 1);
+		assert.equal(s2.pauseCalls, 0);
+	});
 
-    test("run.pause() skips already-paused / settled stages", async () => {
-        const r = createStageControlRegistry();
-        const settled = { pauseCalls: 0, resumeCalls: 0 };
-        const paused = { pauseCalls: 0, resumeCalls: 0 };
-        r.register(
-            makeHandle("run-1", "done", {
-                status: "completed",
-                state: settled,
-            }),
-        );
-        r.register(
-            makeHandle("run-1", "stopped", { status: "paused", state: paused }),
-        );
-        const result = await r.run("run-1").pause();
-        assert.equal(result.length, 0);
-        assert.equal(settled.pauseCalls, 0);
-        assert.equal(paused.pauseCalls, 0);
-    });
+	test("run.pause() skips already-paused / settled stages", async () => {
+		const r = createStageControlRegistry();
+		const settled = { pauseCalls: 0, resumeCalls: 0 };
+		const paused = { pauseCalls: 0, resumeCalls: 0 };
+		r.register(
+			makeHandle("run-1", "done", {
+				status: "completed",
+				state: settled,
+			}),
+		);
+		r.register(makeHandle("run-1", "stopped", { status: "paused", state: paused }));
+		const result = await r.run("run-1").pause();
+		assert.equal(result.length, 0);
+		assert.equal(settled.pauseCalls, 0);
+		assert.equal(paused.pauseCalls, 0);
+	});
 });
 
 describe("stageControlRegistry — resume fan-out", () => {
-    test("run.resume() resumes only paused stages and forwards message", async () => {
-        const r = createStageControlRegistry();
-        const running: MockHandleState = { pauseCalls: 0, resumeCalls: 0 };
-        const paused: MockHandleState = { pauseCalls: 0, resumeCalls: 0 };
-        r.register(
-            makeHandle("run-1", "a", { status: "running", state: running }),
-        );
-        r.register(
-            makeHandle("run-1", "b", { status: "paused", state: paused }),
-        );
-        const resumed = await r.run("run-1").resume(undefined, "go on");
-        assert.equal(resumed.length, 1);
-        assert.equal(running.resumeCalls, 0);
-        assert.equal(paused.resumeCalls, 1);
-        assert.equal(paused.lastResumeMessage, "go on");
-    });
+	test("run.resume() resumes only paused stages and forwards message", async () => {
+		const r = createStageControlRegistry();
+		const running: MockHandleState = { pauseCalls: 0, resumeCalls: 0 };
+		const paused: MockHandleState = { pauseCalls: 0, resumeCalls: 0 };
+		r.register(makeHandle("run-1", "a", { status: "running", state: running }));
+		r.register(makeHandle("run-1", "b", { status: "paused", state: paused }));
+		const resumed = await r.run("run-1").resume(undefined, "go on");
+		assert.equal(resumed.length, 1);
+		assert.equal(running.resumeCalls, 0);
+		assert.equal(paused.resumeCalls, 1);
+		assert.equal(paused.lastResumeMessage, "go on");
+	});
 
-    test("run.resume() targeting unknown stage is a no-op", async () => {
-        const r = createStageControlRegistry();
-        r.register(makeHandle("run-1", "a", { status: "paused" }));
-        const resumed = await r.run("run-1").resume("missing");
-        assert.equal(resumed.length, 0);
-    });
+	test("run.resume() targeting unknown stage is a no-op", async () => {
+		const r = createStageControlRegistry();
+		r.register(makeHandle("run-1", "a", { status: "paused" }));
+		const resumed = await r.run("run-1").resume("missing");
+		assert.equal(resumed.length, 0);
+	});
 
-    test("pausedStages() returns only paused entries", () => {
-        const r = createStageControlRegistry();
-        r.register(makeHandle("run-1", "a", { status: "running" }));
-        r.register(makeHandle("run-1", "b", { status: "paused" }));
-        const stages = r.run("run-1").pausedStages();
-        assert.equal(stages.length, 1);
-        assert.equal(stages[0]!.stageId, "b");
-  });
+	test("pausedStages() returns only paused entries", () => {
+		const r = createStageControlRegistry();
+		r.register(makeHandle("run-1", "a", { status: "running" }));
+		r.register(makeHandle("run-1", "b", { status: "paused" }));
+		const stages = r.run("run-1").pausedStages();
+		assert.equal(stages.length, 1);
+		assert.equal(stages[0]!.stageId, "b");
+	});
 });
 
 describe("stageControlRegistry — getOrCreateDetached", () => {
-    test("creates a detached handle excluded from run-level control", () => {
-        const r = createStageControlRegistry();
-        let creates = 0;
-        const handle = r.getOrCreateDetached("run-1", "a", () => {
-            creates += 1;
-            return makeHandle("run-1", "a", { status: "completed" });
-        });
-        assert.equal(creates, 1);
-        assert.equal(r.get("run-1", "a"), handle);
-        assert.deepEqual(r.run("run-1").stages(), []);
-    });
+	test("creates a detached handle excluded from run-level control", () => {
+		const r = createStageControlRegistry();
+		let creates = 0;
+		const handle = r.getOrCreateDetached("run-1", "a", () => {
+			creates += 1;
+			return makeHandle("run-1", "a", { status: "completed" });
+		});
+		assert.equal(creates, 1);
+		assert.equal(r.get("run-1", "a"), handle);
+		assert.deepEqual(r.run("run-1").stages(), []);
+	});
 
-    test("reuses an existing non-disposed handle without re-invoking the factory", () => {
-        const r = createStageControlRegistry();
-        let creates = 0;
-        const factory = (): StageControlHandle => {
-            creates += 1;
-            return makeHandle("run-1", "a", { status: "completed" });
-        };
-        const first = r.getOrCreateDetached("run-1", "a", factory);
-        const second = r.getOrCreateDetached("run-1", "a", factory);
-        assert.equal(creates, 1);
-        assert.equal(first, second);
-    });
+	test("reuses an existing non-disposed handle without re-invoking the factory", () => {
+		const r = createStageControlRegistry();
+		let creates = 0;
+		const factory = (): StageControlHandle => {
+			creates += 1;
+			return makeHandle("run-1", "a", { status: "completed" });
+		};
+		const first = r.getOrCreateDetached("run-1", "a", factory);
+		const second = r.getOrCreateDetached("run-1", "a", factory);
+		assert.equal(creates, 1);
+		assert.equal(first, second);
+	});
 
-    test("replaces and disposes a disposed handle", () => {
-        const r = createStageControlRegistry();
-        let disposed = false;
-        const stale: StageControlHandle = {
-            ...makeHandle("run-1", "a", { status: "completed" }),
-            get isDisposed() { return true; },
-            dispose() { disposed = true; },
-        };
-        r.register(stale);
-        const fresh = r.getOrCreateDetached("run-1", "a", () => makeHandle("run-1", "a", { status: "completed" }));
-        assert.notEqual(fresh, stale);
-        assert.equal(disposed, true);
-        assert.equal(r.get("run-1", "a"), fresh);
-    });
+	test("replaces and disposes a disposed handle", () => {
+		const r = createStageControlRegistry();
+		let disposed = false;
+		const stale: StageControlHandle = {
+			...makeHandle("run-1", "a", { status: "completed" }),
+			get isDisposed() {
+				return true;
+			},
+			dispose() {
+				disposed = true;
+			},
+		};
+		r.register(stale);
+		const fresh = r.getOrCreateDetached("run-1", "a", () => makeHandle("run-1", "a", { status: "completed" }));
+		assert.notEqual(fresh, stale);
+		assert.equal(disposed, true);
+		assert.equal(r.get("run-1", "a"), fresh);
+	});
 });
 
 describe("stageControlRegistry — provisional detached leases", () => {
-    test("disposes an uncommitted provisional handle after its final lease releases", async () => {
-        const r = createStageControlRegistry();
-        let disposes = 0;
-        const handle = {
-            ...makeHandle("run-1", "a", { status: "completed" }),
-            async dispose() { disposes += 1; },
-        };
-        const first = r.acquireDetached("run-1", "a", () => handle);
-        const second = r.acquireDetached("run-1", "a", () => { throw new Error("must reuse"); });
+	test("disposes an uncommitted provisional handle after its final lease releases", async () => {
+		const r = createStageControlRegistry();
+		let disposes = 0;
+		const handle = {
+			...makeHandle("run-1", "a", { status: "completed" }),
+			async dispose() {
+				disposes += 1;
+			},
+		};
+		const first = r.acquireDetached("run-1", "a", () => handle);
+		const second = r.acquireDetached("run-1", "a", () => {
+			throw new Error("must reuse");
+		});
 
-        await first.release();
-        assert.equal(r.peek("run-1", "a"), handle);
-        await second.release();
+		await first.release();
+		assert.equal(r.peek("run-1", "a"), handle);
+		await second.release();
 
-        assert.equal(r.peek("run-1", "a"), undefined);
-        assert.equal(disposes, 1);
-    });
+		assert.equal(r.peek("run-1", "a"), undefined);
+		assert.equal(disposes, 1);
+	});
 
-    test("commit retains a provisionally-created detached handle", async () => {
-        const r = createStageControlRegistry();
-        let disposes = 0;
-        const handle = {
-            ...makeHandle("run-1", "a", { status: "completed" }),
-            async dispose() { disposes += 1; },
-        };
-        const lease = r.acquireDetached("run-1", "a", () => handle);
+	test("commit retains a provisionally-created detached handle", async () => {
+		const r = createStageControlRegistry();
+		let disposes = 0;
+		const handle = {
+			...makeHandle("run-1", "a", { status: "completed" }),
+			async dispose() {
+				disposes += 1;
+			},
+		};
+		const lease = r.acquireDetached("run-1", "a", () => handle);
 
-        lease.commit();
-        await lease.release();
+		lease.commit();
+		await lease.release();
 
-        assert.equal(r.peek("run-1", "a"), handle);
-        assert.equal(disposes, 0);
-    });
+		assert.equal(r.peek("run-1", "a"), handle);
+		assert.equal(disposes, 0);
+	});
 
-    test("replacement disposes a provisional handle and settles every lease", async () => {
-        const r = createStageControlRegistry();
-        const disposeStarted = Promise.withResolvers<void>();
-        const finishDispose = Promise.withResolvers<void>();
-        let disposes = 0;
-        const provisional = {
-            ...makeHandle("run-1", "a", { status: "completed" }),
-            async dispose() {
-                disposes += 1;
-                disposeStarted.resolve();
-                await finishDispose.promise;
-            },
-        };
-        const first = r.acquireDetached("run-1", "a", () => provisional);
-        const second = r.acquireDetached("run-1", "a", () => { throw new Error("must reuse"); });
-        const live = makeHandle("run-1", "a");
+	test("replacement disposes a provisional handle and settles every lease", async () => {
+		const r = createStageControlRegistry();
+		const disposeStarted = Promise.withResolvers<void>();
+		const finishDispose = Promise.withResolvers<void>();
+		let disposes = 0;
+		const provisional = {
+			...makeHandle("run-1", "a", { status: "completed" }),
+			async dispose() {
+				disposes += 1;
+				disposeStarted.resolve();
+				await finishDispose.promise;
+			},
+		};
+		const first = r.acquireDetached("run-1", "a", () => provisional);
+		const second = r.acquireDetached("run-1", "a", () => {
+			throw new Error("must reuse");
+		});
+		const live = makeHandle("run-1", "a");
 
-        r.register(live);
-        await disposeStarted.promise;
-        let firstSettled = false;
-        let secondSettled = false;
-        const firstRelease = first.release().then(() => { firstSettled = true; });
-        const secondRelease = second.release().then(() => { secondSettled = true; });
-        await Promise.resolve();
+		r.register(live);
+		await disposeStarted.promise;
+		let firstSettled = false;
+		let secondSettled = false;
+		const firstRelease = first.release().then(() => {
+			firstSettled = true;
+		});
+		const secondRelease = second.release().then(() => {
+			secondSettled = true;
+		});
+		await Promise.resolve();
 
-        assert.equal(firstSettled, false);
-        assert.equal(secondSettled, false);
-        assert.equal(r.get("run-1", "a"), live);
-        finishDispose.resolve();
-        await Promise.all([firstRelease, secondRelease]);
+		assert.equal(firstSettled, false);
+		assert.equal(secondSettled, false);
+		assert.equal(r.get("run-1", "a"), live);
+		finishDispose.resolve();
+		await Promise.all([firstRelease, secondRelease]);
 
-        assert.equal(disposes, 1);
-        assert.equal(r.get("run-1", "a"), live);
-    });
+		assert.equal(disposes, 1);
+		assert.equal(r.get("run-1", "a"), live);
+	});
 
-    test("a displaced provisional lease cannot commit and release joins disposal", async () => {
-        const r = createStageControlRegistry();
-        const disposeStarted = Promise.withResolvers<void>();
-        const finishDispose = Promise.withResolvers<void>();
-        const provisional = {
-            ...makeHandle("run-1", "a", { status: "completed" }),
-            async dispose() { disposeStarted.resolve(); await finishDispose.promise; },
-        };
-        const lease = r.acquireDetached("run-1", "a", () => provisional);
-        const live = makeHandle("run-1", "a");
+	test("a displaced provisional lease cannot commit and release joins disposal", async () => {
+		const r = createStageControlRegistry();
+		const disposeStarted = Promise.withResolvers<void>();
+		const finishDispose = Promise.withResolvers<void>();
+		const provisional = {
+			...makeHandle("run-1", "a", { status: "completed" }),
+			async dispose() {
+				disposeStarted.resolve();
+				await finishDispose.promise;
+			},
+		};
+		const lease = r.acquireDetached("run-1", "a", () => provisional);
+		const live = makeHandle("run-1", "a");
 
-        r.register(live);
-        await disposeStarted.promise;
-        assert.equal(lease.commit(), false);
-        let released = false;
-        const release = lease.release().then(() => { released = true; });
-        await Promise.resolve();
+		r.register(live);
+		await disposeStarted.promise;
+		assert.equal(lease.commit(), false);
+		let released = false;
+		const release = lease.release().then(() => {
+			released = true;
+		});
+		await Promise.resolve();
 
-        assert.equal(released, false);
-        finishDispose.resolve();
-        await release;
-        assert.equal(r.get("run-1", "a"), live);
-    });
+		assert.equal(released, false);
+		finishDispose.resolve();
+		await release;
+		assert.equal(r.get("run-1", "a"), live);
+	});
 
-    test("ordinary get does not claim a provisional handle", async () => {
-        const r = createStageControlRegistry();
-        let disposes = 0;
-        const handle = {
-            ...makeHandle("run-1", "a", { status: "completed" }),
-            async dispose() { disposes += 1; },
-        };
-        const lease = r.acquireDetached("run-1", "a", () => handle);
+	test("ordinary get does not claim a provisional handle", async () => {
+		const r = createStageControlRegistry();
+		let disposes = 0;
+		const handle = {
+			...makeHandle("run-1", "a", { status: "completed" }),
+			async dispose() {
+				disposes += 1;
+			},
+		};
+		const lease = r.acquireDetached("run-1", "a", () => handle);
 
-        assert.equal(r.get("run-1", "a"), handle);
-        await lease.release();
+		assert.equal(r.get("run-1", "a"), handle);
+		await lease.release();
 
-        assert.equal(r.peek("run-1", "a"), undefined);
-        assert.equal(disposes, 1);
-    });
+		assert.equal(r.peek("run-1", "a"), undefined);
+		assert.equal(disposes, 1);
+	});
 
-    test("ordinary claim keeps a provisional handle for attach or Intercom", async () => {
-        const r = createStageControlRegistry();
-        let disposes = 0;
-        const handle = {
-            ...makeHandle("run-1", "a", { status: "completed" }),
-            async dispose() { disposes += 1; },
-        };
-        const lease = r.acquireDetached("run-1", "a", () => handle);
+	test("ordinary claim keeps a provisional handle for attach or Intercom", async () => {
+		const r = createStageControlRegistry();
+		let disposes = 0;
+		const handle = {
+			...makeHandle("run-1", "a", { status: "completed" }),
+			async dispose() {
+				disposes += 1;
+			},
+		};
+		const lease = r.acquireDetached("run-1", "a", () => handle);
 
-        assert.equal(r.claim("run-1", "a"), handle);
-        await lease.release();
+		assert.equal(r.claim("run-1", "a"), handle);
+		await lease.release();
 
-        assert.equal(r.peek("run-1", "a"), handle);
-        assert.equal(disposes, 0);
-    });
+		assert.equal(r.peek("run-1", "a"), handle);
+		assert.equal(disposes, 0);
+	});
 });

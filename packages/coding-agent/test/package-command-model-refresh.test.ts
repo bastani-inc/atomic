@@ -44,10 +44,7 @@ describe("atomic update --models", () => {
 	});
 
 	it("uses Atomic's remote-catalog wrappers in the real forced refresh", async () => {
-		writeFileSync(
-			join(agentDir, "auth.json"),
-			JSON.stringify({ anthropic: { type: "api_key", key: "test-key" } }),
-		);
+		writeFileSync(join(agentDir, "auth.json"), JSON.stringify({ anthropic: { type: "api_key", key: "test-key" } }));
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 501 }));
 
 		await refreshModelCatalogs(agentDir);
@@ -63,21 +60,23 @@ describe("atomic update --models", () => {
 		const observedOptions: Array<{ allowNetwork: boolean; force?: boolean }> = [];
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		await expect(handlePackageCommand(["update", "--models"], {
-			extensionFactories: [
-				(pi) => {
-					factoryCalls += 1;
-					pi.registerProvider("extension-catalog", {
-						apiKey: "test-key",
-						refreshModels: async ({ allowNetwork, force }) => {
-							refreshCalls += 1;
-							observedOptions.push({ allowNetwork, force });
-							return [];
-						},
-					});
-				},
-			],
-		})).resolves.toBe(true);
+		await expect(
+			handlePackageCommand(["update", "--models"], {
+				extensionFactories: [
+					(pi) => {
+						factoryCalls += 1;
+						pi.registerProvider("extension-catalog", {
+							apiKey: "test-key",
+							refreshModels: async ({ allowNetwork, force }) => {
+								refreshCalls += 1;
+								observedOptions.push({ allowNetwork, force });
+								return [];
+							},
+						});
+					},
+				],
+			}),
+		).resolves.toBe(true);
 
 		expect(factoryCalls).toBeGreaterThanOrEqual(1);
 		expect(refreshCalls).toBeGreaterThanOrEqual(1);
@@ -98,21 +97,26 @@ describe("atomic update --models", () => {
 			const primaryDir = getAgentDir();
 			const legacyDir = getLegacyAgentDir();
 			mkdirSync(legacyDir, { recursive: true });
-			writeFileSync(join(legacyDir, "auth.json"), JSON.stringify({
-				"legacy-catalog": { type: "api_key", key: "legacy-secret" },
-			}));
+			writeFileSync(
+				join(legacyDir, "auth.json"),
+				JSON.stringify({
+					"legacy-catalog": { type: "api_key", key: "legacy-secret" },
+				}),
+			);
 			let observedKey: string | undefined;
 
 			await refreshModelCatalogs(primaryDir, {
 				cwd: home,
-				extensionFactories: [(pi) => {
-					pi.registerProvider("legacy-catalog", {
-						refreshModels: async ({ credential }) => {
-							observedKey = credential?.type === "api_key" ? credential.key : undefined;
-							return [];
-						},
-					});
-				}],
+				extensionFactories: [
+					(pi) => {
+						pi.registerProvider("legacy-catalog", {
+							refreshModels: async ({ credential }) => {
+								observedKey = credential?.type === "api_key" ? credential.key : undefined;
+								return [];
+							},
+						});
+					},
+				],
 			});
 
 			expect(observedKey).toBe("legacy-secret");
@@ -125,11 +129,16 @@ describe("atomic update --models", () => {
 		}
 	});
 
-
 	it("fails when an extension cannot load for model refresh", async () => {
-		await expect(refreshModelCatalogs(agentDir, {
-			extensionFactories: [() => { throw new Error("extension load failed"); }],
-		})).rejects.toThrow("extension load failed");
+		await expect(
+			refreshModelCatalogs(agentDir, {
+				extensionFactories: [
+					() => {
+						throw new Error("extension load failed");
+					},
+				],
+			}),
+		).rejects.toThrow("extension load failed");
 	});
 
 	it("bounds extension loading with the model refresh timeout", async () => {
@@ -143,10 +152,7 @@ describe("atomic update --models", () => {
 		await rejected;
 	});
 	it("enforces the forced refresh timeout when a provider ignores abort", async () => {
-		writeFileSync(
-			join(agentDir, "auth.json"),
-			JSON.stringify({ anthropic: { type: "api_key", key: "test-key" } }),
-		);
+		writeFileSync(join(agentDir, "auth.json"), JSON.stringify({ anthropic: { type: "api_key", key: "test-key" } }));
 		vi.useFakeTimers();
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Promise<Response>(() => {}));
 		const refresh = refreshModelCatalogs(agentDir);

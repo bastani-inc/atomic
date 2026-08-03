@@ -29,7 +29,11 @@ function contained(root: string, candidate: string): boolean {
 function canonicalRoots(fsApi: ResultStatusFs, roots: string[]): string[] {
 	const resolved: string[] = [];
 	for (const root of roots) {
-		try { resolved.push(fsApi.realpathSync(root)); } catch { /* unavailable roots cannot authorize a status path */ }
+		try {
+			resolved.push(fsApi.realpathSync(root));
+		} catch {
+			/* unavailable roots cannot authorize a status path */
+		}
 	}
 	return resolved;
 }
@@ -60,7 +64,7 @@ export function modernResultHasTerminalStatus(
 	fsApi: ResultStatusFs = fs,
 	options: ResultStatusOptions = {},
 ): boolean {
-	if (!Object.prototype.hasOwnProperty.call(data, "asyncDir")) return true;
+	if (!Object.hasOwn(data, "asyncDir")) return true;
 	const asyncDir = data.asyncDir?.trim();
 	const resultRunId = data.runId?.trim() || data.id?.trim();
 	if (!asyncDir || !resultRunId) return false;
@@ -72,9 +76,11 @@ export function modernResultHasTerminalStatus(
 		const content = readBoundedRegularFile(statusPath, fsApi, options.maxBytes ?? DEFAULT_MAX_STATUS_BYTES);
 		if (content === undefined) return false;
 		const status = JSON.parse(content) as { state?: string; runId?: string };
-		return status.runId?.trim() === resultRunId
-			&& typeof status.state === "string"
-			&& TERMINAL_ASYNC_STATES.has(status.state);
+		return (
+			status.runId?.trim() === resultRunId &&
+			typeof status.state === "string" &&
+			TERMINAL_ASYNC_STATES.has(status.state)
+		);
 	} catch {
 		return false;
 	}

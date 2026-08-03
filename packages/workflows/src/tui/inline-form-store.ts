@@ -31,30 +31,30 @@ import type { WorkflowInputEntry } from "../extension/render-result.js";
 export type FormStatus = "editing" | "submitted" | "cancelled";
 
 export interface InlineFormState {
-  formId: string;
-  workflowName: string;
-  fields: readonly WorkflowInputEntry[];
-  /** Raw string per field; mirrors `inputs-picker.ts` semantics. */
-  rawText: Record<string, string>;
-  focusedIdx: number;
-  /** Reserved for older form snapshots; Submit is now a single final action. */
-  submitChoiceIdx: number;
-  caret: number;
-  status: FormStatus;
-  /** Tick counter; bumped on every mutation so renderers can hash-dedupe. */
-  version: number;
+	formId: string;
+	workflowName: string;
+	fields: readonly WorkflowInputEntry[];
+	/** Raw string per field; mirrors `inputs-picker.ts` semantics. */
+	rawText: Record<string, string>;
+	focusedIdx: number;
+	/** Reserved for older form snapshots; Submit is now a single final action. */
+	submitChoiceIdx: number;
+	caret: number;
+	status: FormStatus;
+	/** Tick counter; bumped on every mutation so renderers can hash-dedupe. */
+	version: number;
 }
 
 const FORMS = new Map<string, InlineFormState>();
 
 export function createForm(init: Omit<InlineFormState, "version">): InlineFormState {
-  const state: InlineFormState = { ...init, version: 0 };
-  FORMS.set(state.formId, state);
-  return state;
+	const state: InlineFormState = { ...init, version: 0 };
+	FORMS.set(state.formId, state);
+	return state;
 }
 
 export function getForm(formId: string): InlineFormState | undefined {
-  return FORMS.get(formId);
+	return FORMS.get(formId);
 }
 
 /**
@@ -63,15 +63,15 @@ export function getForm(formId: string): InlineFormState | undefined {
  * path consistent — every keystroke handler closes with `touch(state)`.
  */
 export function touch(state: InlineFormState): InlineFormState {
-  state.version += 1;
-  return state;
+	state.version += 1;
+	return state;
 }
 
 export function finalizeForm(formId: string, outcome: "submit" | "cancel"): void {
-  const s = FORMS.get(formId);
-  if (!s) return;
-  s.status = outcome === "submit" ? "submitted" : "cancelled";
-  touch(s);
+	const s = FORMS.get(formId);
+	if (!s) return;
+	s.status = outcome === "submit" ? "submitted" : "cancelled";
+	touch(s);
 }
 
 /**
@@ -81,10 +81,10 @@ export function finalizeForm(formId: string, outcome: "submit" | "cancel"): void
  * then returns null and the host renders nothing).
  */
 export function clearForms(): void {
-  FORMS.clear();
+	FORMS.clear();
 }
 
 /** Test helper — clear the registry between tests. */
 export function _resetForms(): void {
-  clearForms();
+	clearForms();
 }

@@ -1,13 +1,9 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import {
-	defaultModelPerProvider,
-	findInitialModel,
-	restoreModelFromSession,
-} from "../src/core/model-resolver.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
-import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { defaultModelPerProvider, findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.ts";
+import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 const allModels: Model<"anthropic-messages">[] = [
 	{
@@ -59,7 +55,6 @@ const allModels: Model<"anthropic-messages">[] = [
 		maxTokens: 4096,
 	},
 ];
-
 
 const copilotSelectableBaseModel: Model<"openai-completions"> = {
 	id: "gpt-5.4",
@@ -128,7 +123,7 @@ describe("default model selection", () => {
 		const availableModel = allModels[1]!;
 		const registry = {
 			getModel: () => undefined,
-			getProvider: (provider: string) => provider === "openai" ? ({ id: "openai" } as never) : undefined,
+			getProvider: (provider: string) => (provider === "openai" ? ({ id: "openai" } as never) : undefined),
 			getAvailableSnapshot: () => [availableModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 		const result = await findInitialModel({
@@ -148,10 +143,7 @@ describe("default model selection", () => {
 			getAvailableSnapshot: () => [availableModel],
 		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 
-		for (const partialDefault of [
-			{ defaultProvider: "openai" },
-			{ defaultModelId: "gpt-4o" },
-		]) {
+		for (const partialDefault of [{ defaultProvider: "openai" }, { defaultModelId: "gpt-4o" }]) {
 			const result = await findInitialModel({
 				scopedModels: [],
 				isContinuing: false,
@@ -168,15 +160,17 @@ describe("default model selection", () => {
 			baseUrl: "https://custom.example/v1",
 			apiKey: "test-key",
 			api: "openai-completions",
-			models: [{
-				id: "custom-default",
-				name: "Custom default",
-				reasoning: false,
-				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 128000,
-				maxTokens: 4096,
-			}],
+			models: [
+				{
+					id: "custom-default",
+					name: "Custom default",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 4096,
+				},
+			],
 		});
 
 		const result = await findInitialModel({
@@ -194,7 +188,7 @@ describe("default model selection", () => {
 		const openaiBaseModel = allModels[1]!;
 		const registry = {
 			getModel: () => undefined,
-			getProvider: () => ({ id: "openai" } as never),
+			getProvider: () => ({ id: "openai" }) as never,
 			getAvailableSnapshot: () => [openaiBaseModel],
 			canRestoreUnknownModel: () => false,
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
@@ -240,7 +234,7 @@ describe("default model selection", () => {
 		const fallbackModel = allModels[0]!;
 		const registry = {
 			getModel: () => unauthenticatedExact,
-			getProvider: () => ({ id: unauthenticatedExact.provider } as never),
+			getProvider: () => ({ id: unauthenticatedExact.provider }) as never,
 			hasConfiguredAuth: () => false,
 			getAvailableSnapshot: () => [fallbackModel],
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
@@ -252,7 +246,7 @@ describe("default model selection", () => {
 	test("restoreModelFromSession restores missing ids from registered provider models", async () => {
 		const registry = {
 			getModel: () => undefined,
-			getProvider: () => ({ id: "github-copilot" } as never),
+			getProvider: () => ({ id: "github-copilot" }) as never,
 			canRestoreUnknownModel: () => true,
 			getAvailableSnapshot: () => [copilotSelectableBaseModel],
 			hasConfiguredAuth: () => true,

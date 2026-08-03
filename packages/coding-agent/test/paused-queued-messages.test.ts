@@ -1,14 +1,10 @@
+import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import {
-	createHarness,
-	getMessageText,
-	getUserTexts,
-	type Harness,
-} from "./suite/harness.ts";
+import { createHarness, getMessageText, getUserTexts, type Harness } from "./suite/harness.ts";
 
 type QueueHold = {
 	readonly steering: AgentMessage[];
@@ -45,16 +41,23 @@ type EscapeHost = {
 	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
 	editor: EscapeEditor;
 	lastEscapeTime: number;
-	clearAllQueues: () => { steering: string[]; followUp: string[] };
-	restoreQueuedMessagesToEditor: (options?: { abort?: boolean; currentText?: string }) => number;
+	clearAllQueues: (options?: { preserveUnprotectedCustomMessages?: boolean }) => {
+		steering: string[];
+		followUp: string[];
+	};
+	restoreQueuedMessagesToEditor: (options?: {
+		abort?: boolean;
+		currentText?: string;
+		preserveUnprotectedCustomMessages?: boolean;
+	}) => number;
 	updatePendingMessagesDisplay: () => void;
 	showWorkingLoaderNow: () => void;
 	stopWorkingLoader: () => void;
 	deferredStartupPending: boolean;
 	deferredStartupPromise: Promise<void> | undefined;
 	discardDeferredRenderedUserInput: () => void;
-  showError: (message: string) => void;
-  isExtensionCommand(text: string): boolean;
+	showError: (message: string) => void;
+	isExtensionCommand(text: string): boolean;
 };
 
 type SubmitHost = EscapeHost & {
@@ -69,16 +72,21 @@ type SubmitHost = EscapeHost & {
 	advanceStartupInputReplay(text: string): void;
 };
 
-const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandlers") as (
+const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandlers") as (this: EscapeHost) => void;
+const interruptActiveOperation = Reflect.get(InteractiveMode.prototype, "interruptActiveOperation") as (
 	this: EscapeHost,
-) => void;
-const restoreQueuedMessagesToEditor = Reflect.get(
-	InteractiveMode.prototype,
-	"restoreQueuedMessagesToEditor",
-) as (this: EscapeHost, options?: { abort?: boolean; currentText?: string }) => number;
+) => boolean;
+const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor") as (
+	this: EscapeHost,
+	options?: { abort?: boolean; currentText?: string; preserveUnprotectedCustomMessages?: boolean },
+) => number;
 const clearAllQueues = Reflect.get(InteractiveMode.prototype, "clearAllQueues") as (
 	this: EscapeHost,
-) => { steering: string[]; followUp: string[] };
+	options?: { preserveUnprotectedCustomMessages?: boolean },
+) => {
+	steering: string[];
+	followUp: string[];
+};
 const runUserPromptTurn = Reflect.get(InteractiveMode.prototype, "runUserPromptTurn") as (
 	this: EscapeHost,
 	text: string,
@@ -107,7 +115,7 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 		compactionQueuedMessages: [],
 		editor,
 		lastEscapeTime: 0,
-		clearAllQueues: () => clearAllQueues.call(host),
+		clearAllQueues: (options) => clearAllQueues.call(host, options),
 		restoreQueuedMessagesToEditor: (options) => restoreQueuedMessagesToEditor.call(host, options),
 		updatePendingMessagesDisplay() {},
 		showWorkingLoaderNow() {},
@@ -129,7 +137,6 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 	return host;
 }
 
-
 async function queueRawMessages(session: AgentSession): Promise<void> {
 	await session.steer("first raw steering");
 	await session.steer("second raw steering");
@@ -148,17 +155,11 @@ async function queueRawMessages(session: AgentSession): Promise<void> {
 
 function expectExactHeldQueue(session: AgentSession): void {
 	const hold = (session as PauseAwareSession)._activeInterruptQueueHold;
-	expect(hold?.steering.map(getMessageText)).toEqual([
-		"first raw steering",
-		"second raw steering",
-	]);
+	expect(hold?.steering.map(getMessageText)).toEqual(["first raw steering", "second raw steering"]);
 	expect(hold?.followUp).toHaveLength(3);
 	const [first, second, custom] = hold?.followUp ?? [];
 	expect(first).not.toBe(second);
-	expect([first, second].map(getMessageText)).toEqual([
-		"duplicate raw follow-up",
-		"duplicate raw follow-up",
-	]);
+	expect([first, second].map(getMessageText)).toEqual(["duplicate raw follow-up", "duplicate raw follow-up"]);
 	expect(custom).toMatchObject({
 		role: "custom",
 		customType: "pause-raw-custom",
@@ -167,15 +168,74 @@ function expectExactHeldQueue(session: AgentSession): void {
 		details: { optional: { untouched: true }, sequence: 3 },
 	});
 }
-
 describe("regular chat paused queued messages", () => {
 	const harnesses: Harness[] = [];
 
 	afterEach(() => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
+	test("Ctrl+C pause retains duplicate identity and custom-message fidelity through resume", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const providerStarted = Promise.withResolvers<void>();
+		const abortObserved = Promise.withResolvers<void>();
+		const allowAbortToSettle = Promise.withResolvers<void>();
+		harness.setResponses([
+			async (_context, options) => {
+				providerStarted.resolve();
+				await new Promise<void>((resolve) => {
+					const observeAbort = () => {
+						abortObserved.resolve();
+						void allowAbortToSettle.promise.then(resolve);
+					};
+					if (options?.signal?.aborted) observeAbort();
+					else options?.signal?.addEventListener("abort", observeAbort, { once: true });
+				});
+				return fauxAssistantMessage("interrupted by Ctrl+C");
+			},
+			fauxAssistantMessage("resume acknowledged"),
+			fauxAssistantMessage("first steering handled"),
+			fauxAssistantMessage("first duplicate handled"),
+			fauxAssistantMessage("second duplicate handled"),
+			fauxAssistantMessage("custom handled"),
+		]);
+		const activePrompt = harness.session.prompt("start Ctrl+C hold");
+		await providerStarted.promise;
+		await queueRawMessages(harness.session);
 
-	test("Escape holds raw queued messages until the next real user prompt resumes the chat", async () => {
+		const host = createEscapeHost(harness.session);
+		const restore = vi.fn(host.restoreQueuedMessagesToEditor);
+		host.restoreQueuedMessagesToEditor = restore;
+		assert.equal(interruptActiveOperation.call(host), true);
+		expect(restore).not.toHaveBeenCalled();
+		await abortObserved.promise;
+		expect((harness.session as PauseAwareSession).queuedMessagesPaused).toBe(true);
+		expectExactHeldQueue(harness.session);
+
+		allowAbortToSettle.resolve();
+		await activePrompt;
+		await runUserPromptTurn.call(host, "resume Ctrl+C hold");
+
+		expect(getUserTexts(harness)).toEqual([
+			"start Ctrl+C hold",
+			"resume Ctrl+C hold",
+			"first raw steering",
+			"second raw steering",
+			"duplicate raw follow-up",
+			"duplicate raw follow-up",
+		]);
+		const deliveredCustom = harness.session.messages.filter(
+			(message) => message.role === "custom" && message.customType === "pause-raw-custom",
+		);
+		expect(deliveredCustom).toHaveLength(1);
+		expect(deliveredCustom[0]).toMatchObject({
+			content: [{ type: "text", text: "\traw custom content  \n" }],
+			display: true,
+			details: { optional: { untouched: true }, sequence: 3 },
+		});
+		expect((harness.session as PauseAwareSession).queuedMessagesPaused).toBe(false);
+	});
+	test("Escape restores queued text while preserving an unprotected custom message for resume", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const providerStarted = Promise.withResolvers<void>();
@@ -195,81 +255,101 @@ describe("regular chat paused queued messages", () => {
 				return fauxAssistantMessage("interrupted");
 			},
 			fauxAssistantMessage("resume acknowledged"),
-			fauxAssistantMessage("first steering handled"),
-			fauxAssistantMessage("first duplicate handled"),
-			fauxAssistantMessage("second duplicate handled"),
-			fauxAssistantMessage("custom handled"),
 		]);
-		const activePrompt = harness.session.prompt("start regular chat");
+		const activePrompt = harness.session.prompt("start custom preservation");
 		await providerStarted.promise;
-		await queueRawMessages(harness.session);
-		expect(harness.session.getSteeringMessages()).toEqual([
-			"first raw steering",
-			"second raw steering",
-		]);
-		expect(harness.session.getFollowUpMessages()).toEqual([
-			"duplicate raw follow-up",
-			"duplicate raw follow-up",
-		]);
-		expect(harness.session.agent.hasQueuedMessages()).toBe(true);
+		await harness.session.steer("plain steering");
+		await harness.session.sendCustomMessage(
+			{
+				customType: "escape-unprotected-custom",
+				content: [{ type: "text", text: "\tcustom payload  \n" }],
+				display: true,
+				details: { sequence: 7 },
+			},
+			{ deliverAs: "followUp" },
+		);
 
 		const host = createEscapeHost(harness.session);
+		host.editor.setText("draft");
 		host.defaultEditor.onEscape?.();
 		await abortObserved.promise;
-		host.defaultEditor.onEscape?.();
-		await Promise.resolve();
-		expectExactHeldQueue(harness.session);
-		let resumedSubmissionSettled = false;
-		let resumedSubmissionError: Error | undefined;
 
-		const settledBeforeAbort = resumedSubmissionSettled;
-		const streamingBeforeAbort = harness.session.isStreaming;
-		const steeringBeforeAbort = [...harness.session.getSteeringMessages()];
-		const followUpBeforeAbort = [...harness.session.getFollowUpMessages()];
-		const pausedBeforeAbort = (harness.session as PauseAwareSession).queuedMessagesPaused;
-		const coreQueuedBeforeAbort = harness.session.agent.hasQueuedMessages();
-		const responsesBeforeAbort = harness.getPendingResponseCount();
-		const usersBeforeAbort = getUserTexts(harness);
+		assert.equal(host.editor.getText(), "plain steering\n\ndraft");
+		const hold = (harness.session as PauseAwareSession)._activeInterruptQueueHold;
+		assert.equal(hold?.steering.length, 0);
+		assert.equal(hold?.followUp.length, 1);
+		expect(hold?.followUp[0]).toMatchObject({
+			role: "custom",
+			customType: "escape-unprotected-custom",
+			content: [{ type: "text", text: "\tcustom payload  \n" }],
+			display: true,
+			details: { sequence: 7 },
+		});
 
 		allowAbortToSettle.resolve();
 		await activePrompt;
-		host.defaultEditor.onEscape?.();
-		await Promise.resolve();
-		expectExactHeldQueue(harness.session);
-		const resumedSubmission = runUserPromptTurn.call(host, "resume regular chat")
-			.catch((error) => { resumedSubmissionError = error instanceof Error ? error : new Error(String(error)); })
-			.finally(() => { resumedSubmissionSettled = true; });
-		await resumedSubmission;
-
-		expect(settledBeforeAbort).toBe(false);
-		expect(streamingBeforeAbort).toBe(true);
-		expect(steeringBeforeAbort).toEqual(["first raw steering", "second raw steering"]);
-		expect(followUpBeforeAbort).toEqual(["duplicate raw follow-up", "duplicate raw follow-up"]);
-		expect(pausedBeforeAbort).toBe(true);
-		expect(coreQueuedBeforeAbort).toBe(false);
-		expect(responsesBeforeAbort).toBe(5);
-		expect(usersBeforeAbort).toEqual(["start regular chat"]);
-		expect(resumedSubmissionError).toBeUndefined();
-		expect(harness.session.isStreaming).toBe(false);
-		expect((harness.session as PauseAwareSession).queuedMessagesPaused).toBe(false);
-		expect(harness.getPendingResponseCount()).toBe(0);
-		expect(getUserTexts(harness)).toEqual([
-			"start regular chat",
-			"resume regular chat",
-			"first raw steering",
-			"second raw steering",
-			"duplicate raw follow-up",
-			"duplicate raw follow-up",
-		]);
-		const deliveredCustom = harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "pause-raw-custom",
+		await runUserPromptTurn.call(host, "resume custom preservation");
+		const delivered = harness.session.messages.filter(
+			(message) => message.role === "custom" && message.customType === "escape-unprotected-custom",
 		);
-		expect(deliveredCustom).toHaveLength(1);
-		expect(deliveredCustom[0]).toMatchObject({
-			content: [{ type: "text", text: "\traw custom content  \n" }],
-			display: true,
-			details: { optional: { untouched: true }, sequence: 3 },
-		});
+		assert.equal(delivered.length, 1);
+	});
+
+	test("Escape restores queued messages to the editor while preserving the paused late-admission hold", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const providerStarted = Promise.withResolvers<void>();
+		const abortObserved = Promise.withResolvers<void>();
+		const allowAbortToSettle = Promise.withResolvers<void>();
+		harness.setResponses([
+			async (_context, options) => {
+				providerStarted.resolve();
+				await new Promise<void>((resolve) => {
+					const observeAbort = () => {
+						abortObserved.resolve();
+						void allowAbortToSettle.promise.then(resolve);
+					};
+					if (options?.signal?.aborted) observeAbort();
+					else options?.signal?.addEventListener("abort", observeAbort, { once: true });
+				});
+				return fauxAssistantMessage("interrupted");
+			},
+			fauxAssistantMessage("resume acknowledged"),
+			fauxAssistantMessage("late steering handled"),
+		]);
+		const activePrompt = harness.session.prompt("start regular chat");
+		await providerStarted.promise;
+		await harness.session.steer("first raw steering");
+		await harness.session.steer("second raw steering");
+		await harness.session.followUp("first raw follow-up");
+		await harness.session.followUp("second raw follow-up");
+
+		const host = createEscapeHost(harness.session);
+		host.editor.setText("current draft");
+		host.defaultEditor.onEscape?.();
+		await abortObserved.promise;
+
+		assert.equal(
+			host.editor.getText(),
+			"first raw steering\n\nsecond raw steering\n\nfirst raw follow-up\n\nsecond raw follow-up\n\ncurrent draft",
+		);
+		assert.deepEqual(harness.session.getSteeringMessages(), []);
+		assert.deepEqual(harness.session.getFollowUpMessages(), []);
+		assert.equal((harness.session as PauseAwareSession).queuedMessagesPaused, true);
+		assert.equal(harness.session.agent.hasQueuedMessages(), false);
+		const hold = (harness.session as PauseAwareSession)._activeInterruptQueueHold;
+		assert.deepEqual(hold, { steering: [], followUp: [] });
+
+		await harness.session.steer("late steering");
+		assert.deepEqual(hold?.steering.map(getMessageText), ["late steering"]);
+
+		allowAbortToSettle.resolve();
+		await activePrompt;
+		await runUserPromptTurn.call(host, "resume regular chat");
+
+		assert.equal((harness.session as PauseAwareSession).queuedMessagesPaused, false);
+		assert.equal(harness.session.agent.hasQueuedMessages(), false);
+		assert.deepEqual(getUserTexts(harness), ["start regular chat", "resume regular chat", "late steering"]);
 	});
 
 	test("an immediate editor submission takes the paused-resume path instead of streaming queue admission", async () => {
@@ -315,7 +395,9 @@ describe("regular chat paused queued messages", () => {
 		const resumeDriver = host.pendingUserInputs.shift() ?? "cleanup resume driver";
 		await runUserPromptTurn.call(host, resumeDriver);
 
-		expect(pendingBeforeAbortSettled).toEqual(["immediate next submission"]);
+		expect(pendingBeforeAbortSettled).toEqual([
+			{ text: "immediate next submission", draft: "immediate next submission" },
+		]);
 		expect(heldBeforeAbortSettled).not.toContain("immediate next submission");
 		expect(getUserTexts(harness).filter((text) => text === "immediate next submission")).toHaveLength(1);
 		expect(harness.session.queuedMessagesPaused).toBe(false);
@@ -329,7 +411,9 @@ describe("regular chat paused queued messages", () => {
 				(pi) => {
 					pi.registerCommand("stay-paused", {
 						description: "Handle without releasing paused work",
-						handler: async (args) => { commandArgs.push(args); },
+						handler: async (args) => {
+							commandArgs.push(args);
+						},
 					});
 				},
 			],
@@ -347,9 +431,18 @@ describe("regular chat paused queued messages", () => {
 				});
 				return fauxAssistantMessage("slash pause interrupted");
 			},
-			() => { providerCalls += 1; return fauxAssistantMessage("ordinary resume accepted"); },
-			() => { providerCalls += 1; return fauxAssistantMessage("late held trigger delivered"); },
-			() => { providerCalls += 1; return fauxAssistantMessage("unexpected duplicate delivery"); },
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("ordinary resume accepted");
+			},
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("late held trigger delivered");
+			},
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("unexpected duplicate delivery");
+			},
 		]);
 		const activePrompt = harness.session.prompt("start handled slash pause");
 		await providerStarted.promise;
@@ -375,17 +468,21 @@ describe("regular chat paused queued messages", () => {
 		expect(harness.getPendingResponseCount()).toBe(responsesBeforeCommand);
 		expect(harness.session.queuedMessagesPaused).toBe(true);
 		expect((harness.session as PauseAwareSession)._activeInterruptQueueHold).toBe(heldBeforeCommand);
-		expect(heldBeforeCommand?.steering.filter(
-			(message) => message.role === "custom" && message.customType === "late-held-slash-trigger",
-		)).toHaveLength(1);
+		expect(
+			heldBeforeCommand?.steering.filter(
+				(message) => message.role === "custom" && message.customType === "late-held-slash-trigger",
+			),
+		).toHaveLength(1);
 
 		await runUserPromptTurn.call(host, "ordinary input resumes held work");
 
 		expect(harness.session.queuedMessagesPaused).toBe(false);
 		expect(getUserTexts(harness).filter((text) => text === "ordinary input resumes held work")).toHaveLength(1);
-		expect(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "late-held-slash-trigger",
-		)).toHaveLength(1);
+		expect(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "late-held-slash-trigger",
+			),
+		).toHaveLength(1);
 		expect(providerCalls).toBe(2);
 		expect(harness.getPendingResponseCount()).toBe(2);
 	});
@@ -395,8 +492,14 @@ describe("regular chat paused queued messages", () => {
 		harnesses.push(harness);
 		let providerCalls = 0;
 		harness.setResponses([
-			() => { providerCalls += 1; return fauxAssistantMessage("ordinary built-in resume accepted"); },
-			() => { providerCalls += 1; return fauxAssistantMessage("queued steering delivered"); },
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("ordinary built-in resume accepted");
+			},
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("queued steering delivered");
+			},
 		]);
 		const exactQueuedText = "\tqueued before built-in usage  \n";
 		const exactLateTrigger = "\tlate built-in trigger payload  \n";
@@ -426,9 +529,11 @@ describe("regular chat paused queued messages", () => {
 		expect(heldBeforeCommand?.steering).toEqual(rawBeforeCommand);
 		expect(heldBeforeCommand?.steering.map(getMessageText)).toEqual([exactQueuedText, exactLateTrigger]);
 		expect(harness.session.getSteeringMessages()).toEqual(displayBeforeCommand);
-		expect(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "atomic" && message.display === true,
-		)).toHaveLength(1);
+		expect(
+			harness.session.messages.filter(
+				(message) => message.role === "custom" && message.customType === "atomic" && message.display === true,
+			),
+		).toHaveLength(1);
 
 		await runUserPromptTurn.call(host, "ordinary input resumes built-in hold");
 
@@ -436,9 +541,14 @@ describe("regular chat paused queued messages", () => {
 		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
 		expect(getUserTexts(harness).filter((text) => text === exactQueuedText)).toHaveLength(1);
 		expect(getUserTexts(harness).filter((text) => text === "ordinary input resumes built-in hold")).toHaveLength(1);
-		expect(harness.session.messages.filter(
-			(message) => message.role === "custom" && message.customType === "late-held-built-in-trigger" && getMessageText(message) === exactLateTrigger,
-		)).toHaveLength(1);
+		expect(
+			harness.session.messages.filter(
+				(message) =>
+					message.role === "custom" &&
+					message.customType === "late-held-built-in-trigger" &&
+					getMessageText(message) === exactLateTrigger,
+			),
+		).toHaveLength(1);
 		expect(providerCalls).toBe(2);
 	});
 
@@ -447,8 +557,14 @@ describe("regular chat paused queued messages", () => {
 		harnesses.push(harness);
 		let providerCalls = 0;
 		harness.setResponses([
-			() => { providerCalls += 1; return fauxAssistantMessage("unknown slash resumed"); },
-			() => { providerCalls += 1; return fauxAssistantMessage("unexpected duplicate held delivery"); },
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("unknown slash resumed");
+			},
+			() => {
+				providerCalls += 1;
+				return fauxAssistantMessage("unexpected duplicate held delivery");
+			},
 		]);
 		const exactHeldText = "\theld before unknown slash  \n";
 		const exactUnknownSlash = "/not-a-handled-command  exact args  ";

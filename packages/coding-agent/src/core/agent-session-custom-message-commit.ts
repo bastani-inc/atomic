@@ -1,26 +1,25 @@
-import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import type { CustomMessage } from "./messages.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	admitProtectedStreamingCustomMessage,
 	queueProtectedStreamingCustomMessage,
 	queueProtectedStreamingCustomMessages,
 	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
+import type { CustomMessage } from "./messages.ts";
 
 /** Commit one delivery whose source generation already granted admission. */
 export async function commitAdmittedCustomMessage<T>(
-  session: AgentSession,
-  appMessage: CustomMessage<T>,
-  options?: SendMessageOptions,
+	session: AgentSession,
+	appMessage: CustomMessage<T>,
+	options?: SendMessageOptions,
 ): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessage(owner, appMessage, options);
 	const self = session;
-	const useProtectedReconciliation = options?.persistWhenStreaming === true &&
-		options.triggerTurn === true &&
-		options.excludeFromContext !== true;
+	const useProtectedReconciliation =
+		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	if (options?.deliverAs === "nextTurn") {
 		self._pendingNextTurnMessages.push(appMessage);
 	} else if (self._queuedMessagesPaused) {
@@ -38,7 +37,12 @@ export async function commitAdmittedCustomMessage<T>(
 		const interrupt = self._enqueueInterruptCustomMessage(appMessage, options);
 		self._workflowStageAdmission?.trackAdmittedWork(interrupt);
 		void interrupt.catch(() => {});
-	} else if (self.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
+	} else if (
+		self.isStreaming &&
+		options?.excludeFromContext === true &&
+		options.triggerTurn !== true &&
+		options.deliverAs === undefined
+	) {
 		self._appendCustomMessage(appMessage);
 	} else if (self.isStreaming && useProtectedReconciliation) {
 		await queueProtectedStreamingCustomMessage(
@@ -53,21 +57,20 @@ export async function commitAdmittedCustomMessage<T>(
 	} else if (options?.triggerTurn) {
 		const promptMessage = useProtectedReconciliation
 			? await admitProtectedStreamingCustomMessage(
-				self,
-				appMessage,
-				options?.deliverAs === "followUp" ? "followUp" : "steer",
-			)
+					self,
+					appMessage,
+					options?.deliverAs === "followUp" ? "followUp" : "steer",
+				)
 			: appMessage;
 		// Durable admission may yield while another turn takes ownership.
 		if (useProtectedReconciliation && self.isStreaming) {
-			self._queueAgentMessage(
-				promptMessage,
-				options.deliverAs === "followUp" ? "followUp" : "steer",
-			);
+			self._queueAgentMessage(promptMessage, options.deliverAs === "followUp" ? "followUp" : "steer");
 			return;
 		}
 		let resolveAdmission!: () => void;
-		const admission = new Promise<void>((resolve) => { resolveAdmission = resolve; });
+		const admission = new Promise<void>((resolve) => {
+			resolveAdmission = resolve;
+		});
 		const turn = self._runAgentPrompt(promptMessage, resolveAdmission);
 		try {
 			await Promise.race([admission, turn]);
@@ -75,10 +78,7 @@ export async function commitAdmittedCustomMessage<T>(
 			if (!useProtectedReconciliation) throw error;
 			// The visible card is already durable. Retry only its hidden turn so
 			// lifecycle delivery never appends a second card for this occurrence.
-			self._queueAgentMessage(
-				promptMessage,
-				options?.deliverAs === "followUp" ? "followUp" : "steer",
-			);
+			self._queueAgentMessage(promptMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 			void self._continueQueuedAgentMessages().catch(() => {});
 		}
 	} else {
@@ -96,16 +96,15 @@ export function _commitAdmittedCustomMessage<T>(
 
 /** Commit a batch whose source generation already granted atomic admission. */
 export async function commitAdmittedCustomMessages<T>(
-  session: AgentSession,
-  appMessages: CustomMessage<T>[],
-  options?: SendMessagesOptions,
+	session: AgentSession,
+	appMessages: CustomMessage<T>[],
+	options?: SendMessagesOptions,
 ): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(session);
 	if (owner !== session) return commitAdmittedCustomMessages(owner, appMessages, options);
 	const self = session;
-	const useProtectedReconciliation = options?.persistWhenStreaming === true &&
-		options.triggerTurn === true &&
-		options.excludeFromContext !== true;
+	const useProtectedReconciliation =
+		options?.persistWhenStreaming === true && options.triggerTurn === true && options.excludeFromContext !== true;
 	const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
 	if (options?.deliverAs === "nextTurn") {
 		self._pendingNextTurnMessages.push(...appMessages);
@@ -119,7 +118,12 @@ export async function commitAdmittedCustomMessages<T>(
 		} else {
 			for (const item of appMessages) self._appendCustomMessage(item);
 		}
-	} else if (self.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
+	} else if (
+		self.isStreaming &&
+		options?.excludeFromContext === true &&
+		options.triggerTurn !== true &&
+		options.deliverAs === undefined
+	) {
 		for (const item of appMessages) self._appendCustomMessage(item);
 	} else if (self.isStreaming && useProtectedReconciliation) {
 		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);

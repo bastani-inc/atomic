@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "bun:test";
+import { describe, test } from "vitest";
 import { buildWorkflowGraphSnapshot } from "../../packages/subagents/src/runs/shared/workflow-graph.js";
 
 describe("workflow graph snapshots", () => {
@@ -79,11 +79,13 @@ describe("workflow graph snapshots", () => {
 	});
 
 	test("uses dynamic group status overrides for empty or aggregate-failure fanout states", () => {
-		const steps = [{
-			expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-			parallel: { agent: "reviewer", task: "Review {item}" },
-			collect: { as: "reviews" },
-		}];
+		const steps = [
+			{
+				expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
+				parallel: { agent: "reviewer", task: "Review {item}" },
+				collect: { as: "reviews" },
+			},
+		];
 
 		const emptySkip = buildWorkflowGraphSnapshot({
 			runId: "run-dynamic-empty",

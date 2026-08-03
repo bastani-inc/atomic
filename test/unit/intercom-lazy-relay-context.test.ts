@@ -1,8 +1,8 @@
-import { afterAll, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterAll, describe, test } from "vitest";
 
 // Isolate the heavy module's config discovery from developer/user machines
 // before the lazy import chain can snapshot config paths.
@@ -22,10 +22,11 @@ afterAll(() => {
 	else process.env.PI_INTERCOM_GROUP = previousLegacyIntercomGroup;
 });
 
+import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import intercom from "../../packages/intercom/index.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
+import { sleep } from "../helpers/runtime.js";
 
 type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => void | Promise<void>;
 
@@ -57,7 +58,9 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
-		appendEntry(type: string, data: { error?: string }) { entries.push({ type, data }); },
+		appendEntry(type: string, data: { error?: string }) {
+			entries.push({ type, data });
+		},
 		async sendMessage(message: { customType?: string }) {
 			if (message.customType === "intercom_message" && remainingLateRouteRejections > 0) {
 				remainingLateRouteRejections -= 1;
@@ -66,7 +69,10 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 			inboundMessages.push(message);
 		},
 		async sendMessages(messages: Array<{ customType?: string }>) {
-			if (messages.some((message) => message.customType === "intercom_message") && remainingLateRouteRejections > 0) {
+			if (
+				messages.some((message) => message.customType === "intercom_message") &&
+				remainingLateRouteRejections > 0
+			) {
 				remainingLateRouteRejections -= 1;
 				throw new Error("injected main-chat route failure");
 			}
@@ -101,19 +107,35 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 		},
 		emitLateStageMessage(batch = false) {
 			const details = {
-				from: { id: "sender", name: "reviewer", cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
+				from: {
+					id: "sender",
+					name: "reviewer",
+					cwd: "/repo",
+					model: "test",
+					pid: 1,
+					startedAt: 1,
+					lastActivity: 1,
+				},
 				message: { id: "late-message", timestamp: 1, content: { text: "late reviewer message" } },
 				bodyText: "late reviewer message",
 			};
-			const payload: { handled: boolean; completion?: Promise<void>; batch: boolean; messages: object[]; options: object } = {
+			const payload: {
+				handled: boolean;
+				completion?: Promise<void>;
+				batch: boolean;
+				messages: object[];
+				options: object;
+			} = {
 				handled: false,
 				batch,
-				messages: [{
-					customType: "intercom_message",
-					content: "late reviewer message",
-					display: true,
-					details,
-				}],
+				messages: [
+					{
+						customType: "intercom_message",
+						content: "late reviewer message",
+						display: true,
+						details,
+					},
+				],
 				options: { triggerTurn: true, stageAdmissionKey: "intercom:late-message" },
 			};
 			pi.events.emit("atomic:workflow-stage-late-message", payload);
@@ -127,10 +149,10 @@ function fixture(options: { rejectLateRoutes?: number } = {}) {
 }
 
 async function settle(done: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 200 && !done(); attempt++) await Bun.sleep(5);
+	for (let attempt = 0; attempt < 200 && !done(); attempt++) await sleep(5);
 	// One extra tick so any spurious follow-up work (extra acks, error
 	// entries) has a chance to surface before assertions.
-	await Bun.sleep(10);
+	await sleep(10);
 }
 
 describe("lazy relay lifecycle-context fallback", () => {
@@ -140,7 +162,12 @@ describe("lazy relay lifecycle-context fallback", () => {
 		// non-interactive in-process child sessions) skip session_start but
 		// still emit turn/tool lifecycle events.
 		await current.fire("turn_start", { type: "turn_start" });
-		await current.fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "call-1", toolName: "subagent", args: {} });
+		await current.fire("tool_execution_start", {
+			type: "tool_execution_start",
+			toolCallId: "call-1",
+			toolName: "subagent",
+			args: {},
+		});
 
 		current.emitResult("req-lifecycle-ctx");
 		await settle(() => current.deliveryAcks.length > 0);
@@ -149,7 +176,6 @@ describe("lazy relay lifecycle-context fallback", () => {
 		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
 		assert.deepEqual(current.entries, [], "no delivery-error entries are recorded");
 	});
-
 
 	test("lazy-loads parent Intercom before accepting a late stage route", async () => {
 		const current = fixture();
@@ -199,28 +225,67 @@ describe("lazy relay lifecycle-context fallback", () => {
 		const sourceEvents = new Map<string, Array<(payload: unknown) => void>>();
 		let inbound: Parameters<NonNullable<IntercomExtensionTestOverrides["captureInboundHandler"]>>[0] | undefined;
 		const sourcePi = {
-			on(name: string, handler: Handler) { const handlers = sourceHandlers.get(name) ?? []; handlers.push(handler); sourceHandlers.set(name, handlers); },
-			registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, appendEntry() {}, getSessionName: () => undefined,
+			on(name: string, handler: Handler) {
+				const handlers = sourceHandlers.get(name) ?? [];
+				handlers.push(handler);
+				sourceHandlers.set(name, handlers);
+			},
+			registerTool() {},
+			registerCommand() {},
+			registerShortcut() {},
+			registerMessageRenderer() {},
+			appendEntry() {},
+			getSessionName: () => undefined,
 			sendMessage(message: object, options?: { stageAdmissionKey?: string }) {
-				return boundary.admit(options?.stageAdmissionKey, () => { throw new Error("closed stage accepted delivery"); }, () => {
-					return parent.routeLatePayload({ handled: false, batch: false, messages: [message], options });
-				}).completion;
+				return boundary.admit(
+					options?.stageAdmissionKey,
+					() => {
+						throw new Error("closed stage accepted delivery");
+					},
+					() => {
+						return parent.routeLatePayload({ handled: false, batch: false, messages: [message], options });
+					},
+				).completion;
 			},
 			events: {
-				on(name: string, handler: (payload: unknown) => void) { const handlers = sourceEvents.get(name) ?? []; handlers.push(handler); sourceEvents.set(name, handlers); return () => {}; },
-				emit(name: string, payload: unknown) { for (const handler of sourceEvents.get(name) ?? []) handler(payload); },
+				on(name: string, handler: (payload: unknown) => void) {
+					const handlers = sourceEvents.get(name) ?? [];
+					handlers.push(handler);
+					sourceEvents.set(name, handlers);
+					return () => {};
+				},
+				emit(name: string, payload: unknown) {
+					for (const handler of sourceEvents.get(name) ?? []) handler(payload);
+				},
 			},
 		};
-		intercomHeavy(sourcePi as never, { captureInboundHandler: (handler) => { inbound = handler; } });
+		intercomHeavy(sourcePi as never, {
+			captureInboundHandler: (handler) => {
+				inbound = handler;
+			},
+		});
 		const sourceContext = {
-			hasUI: false, cwd: process.cwd(), model: { id: "test-model" }, isIdle: () => true, ui: { notify() {} },
+			hasUI: false,
+			cwd: process.cwd(),
+			model: { id: "test-model" },
+			isIdle: () => true,
+			ui: { notify() {} },
 			sessionManager: { getSessionId: () => "closed-stage-source" },
-			orchestrationContext: { kind: "workflow-stage" as const, messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() } },
+			orchestrationContext: {
+				kind: "workflow-stage" as const,
+				messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
+			},
 		};
-		for (const handler of sourceHandlers.get("session_start") ?? []) await handler({ type: "session_start", reason: "startup" }, sourceContext);
+		for (const handler of sourceHandlers.get("session_start") ?? [])
+			await handler({ type: "session_start", reason: "startup" }, sourceContext);
 		assert.ok(inbound);
-		inbound(sourceContext as never, { id: "sender", name: "reviewer", cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 }, { id: "closed-late", timestamp: 1, content: { text: "late" } });
-		for (const handler of sourceHandlers.get("session_shutdown") ?? []) await handler({ type: "session_shutdown", reason: "quit" }, sourceContext);
+		inbound(
+			sourceContext as never,
+			{ id: "sender", name: "reviewer", cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
+			{ id: "closed-late", timestamp: 1, content: { text: "late" } },
+		);
+		for (const handler of sourceHandlers.get("session_shutdown") ?? [])
+			await handler({ type: "session_shutdown", reason: "quit" }, sourceContext);
 		await settle(() => parent.inboundMessages.length === 1);
 		assert.equal(parent.inboundMessages.length, 1);
 	});
