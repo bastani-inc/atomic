@@ -44,6 +44,7 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 
 		renderCall(args, theme) {
 			const { query } = args as { query?: string };
+			// This status-line preview is built and dropped within the same turn, so a bare slice is sufficient.
 			const display = !query
 				? "(no query)"
 				: query.length > 70 ? query.slice(0, 67) + "..." : query;

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import type { ExtractedContent } from "./extract.js";
+import { flattenTruncatedString } from "./flat-string.js";
 import type { GitHubUrlInfo } from "./github-extract.js";
 
 const MAX_TREE_ENTRIES = 200;
@@ -97,7 +98,7 @@ async function fetchReadmeViaApi(owner: string, repo: string, ref: string): Prom
 				}
 				try {
 					const decoded = Buffer.from(stdout.trim(), "base64").toString("utf-8");
-					resolve(decoded.length > 8192 ? decoded.slice(0, 8192) + "\n\n[README truncated at 8K chars]" : decoded);
+					resolve(decoded.length > 8192 ? flattenTruncatedString(decoded.slice(0, 8192) + "\n\n[README truncated at 8K chars]") : decoded);
 				} catch {
 					resolve(null);
 				}
