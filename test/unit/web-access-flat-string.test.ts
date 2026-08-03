@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import v8 from "node:v8";
@@ -72,19 +72,30 @@ function writeLargeReadme(localPath: string): void {
 	writeFileSync(join(localPath, "README.md"), parent, "utf-8");
 }
 
+function readBareReadmeInFrame(localPath: string): string {
+	const content = readFileSync(join(localPath, "README.md"), "utf-8");
+	return content.length > README_LIMIT ? content.slice(0, README_LIMIT) + README_SUFFIX : content;
+}
+
 function readReadmeInFrame(localPath: string): string {
 	const readme = readReadme(localPath);
 	if (readme === null) throw new Error("expected readReadme to find README.md");
 	return readme;
 }
 
-function retainedReadme(): { retained: number; summary: string } {
+function externalMemoryAfterCollection(): number {
+	collect();
+	collect();
+	return v8.getHeapStatistics().external_memory;
+}
+
+function retainedReadme(read: (localPath: string) => string): { retained: number; summary: string } {
 	const localPath = mkdtempSync(join(tmpdir(), "web-access-flat-string-"));
 	try {
 		writeLargeReadme(localPath);
-		const baseline = heapUsedAfterCollection();
-		const summary = readReadmeInFrame(localPath);
-		const retained = heapUsedAfterCollection() - baseline;
+		const baseline = externalMemoryAfterCollection();
+		const summary = read(localPath);
+		const retained = externalMemoryAfterCollection() - baseline;
 		// Read the summary after measuring so it is not collected early.
 		assert.equal(summary.length, README_LIMIT + README_SUFFIX.length);
 		return { retained, summary };
@@ -117,12 +128,22 @@ describe("web-access flattenTruncatedString", () => {
 		}
 	});
 
-	test("readReadme returns exact text and releases the README source", () => {
-		const { retained, summary } = retainedReadme();
+	test("a bare file-backed slice keeps its parent alive — the external probe can observe retention", () => {
+		const { retained, summary } = retainedReadme(readBareReadmeInFrame);
 		assert.equal(summary, "r".repeat(README_LIMIT) + README_SUFFIX);
 		assert.ok(
+			retained > RETAINED_PARENT_BYTES,
+			`expected a bare file-backed slice to pin its parent, retained ${retained} external bytes`,
+		);
+	});
+
+	test("readReadme returns exact text and releases the README source", () => {
+		const { retained, summary } = retainedReadme(readReadmeInFrame);
+		assert.equal(summary, "r".repeat(README_LIMIT) + README_SUFFIX);
+		// A release can make the signed delta negative when external memory is reclaimed during the measurement.
+		assert.ok(
 			retained < RETAINED_PARENT_BYTES,
-			`expected readReadme to release its README source, retained ${retained} bytes`,
+			`expected readReadme to release its README source, retained ${retained} external bytes`,
 		);
 	});
 });
