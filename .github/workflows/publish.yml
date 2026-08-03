@@ -325,17 +325,23 @@ jobs:
           if ($output -match "Failed to load extension") { exit 1 }
           if ($status -ne 0 -and $output -notmatch "No models available|No model selected|No API key found") { exit $status }
 
-  # The one leg that proves musl at runtime rather than at link time. Docker is the
-  # only way to reach a musl userspace from a Blacksmith Ubuntu runner, and the
-  # native binding is downloaded rather than rebuilt so this job costs an archive
-  # build instead of a second zig cross-compile.
+  # Build and run each musl archive on the matching stock Alpine architecture.
+  # The native binding is downloaded rather than rebuilt, so these legs prove
+  # the complete release payload without a second Zig cross-compile.
   alpine-binary-smoke:
-    name: Smoke Alpine musl binary
+    name: Smoke Alpine musl binary (${{ matrix.arch }})
     needs: [integrity, native-artifacts]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 12
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: blacksmith-4vcpu-ubuntu-2404, arch: x64, slug: linux-x64-musl, platform: linux-x64-musl, docker_platform: linux/amd64 }
+          - { runner: blacksmith-4vcpu-ubuntu-2404-arm, arch: arm64, slug: linux-arm64-musl, platform: linux-arm64-musl, docker_platform: linux/arm64 }
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+        if: runner.os == 'Linux'
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
@@ -345,47 +351,30 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+      - name: Install musl archive tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
       - name: Download musl native binding
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: atomic-natives-linux-x64-musl
+          name: atomic-natives-${{ matrix.slug }}
           path: packages/natives/native
-      - name: Build Linux x64 musl archive
-        run: ./scripts/build-binaries.sh --skip-deps --platform linux-x64-musl
-      - name: Smoke musl release archive on Alpine
-        shell: bash
-        run: |
-          set -euo pipefail
-          smoke="$RUNNER_TEMP/atomic-alpine-smoke"
-          rm -rf "$smoke"
-          mkdir -p "$smoke"
-          tar -xzf packages/coding-agent/binaries/atomic-linux-x64-musl.tar.gz -C "$smoke"
-          cat > "$smoke/smoke.sh" <<'SMOKE'
-          set -eu
-          apk add --no-cache libgcc libstdc++
-          atomic=/smoke/atomic/atomic
-          "$atomic" --version
-          mkdir -p /tmp/atomic-alpine-cwd
-          cd /tmp/atomic-alpine-cwd
-          set +e
-          output=$(printf '' | "$atomic" --no-session 2>&1)
-          status=$?
-          set -e
-          echo "$output"
-          if echo "$output" | grep -q 'Failed to load extension'; then exit 1; fi
-          if [ "$status" -ne 0 ] && ! echo "$output" | grep -Eq 'No models available|No model selected|No API key found'; then
-            exit "$status"
-          fi
-          SMOKE
-          docker run --rm -v "$smoke:/smoke" alpine:3.22 /bin/sh /smoke/smoke.sh
+      - name: Build Linux musl archive
+        run: ./scripts/build-binaries.sh --skip-deps --platform "${{ matrix.platform }}"
+      - name: Smoke real musl release archive on stock Alpine
+        run: ./scripts/test-musl-release-archive.sh "packages/coding-agent/binaries/atomic-${{ matrix.platform }}.tar.gz" "${{ matrix.platform }}"
       - name: Load the musl native binding under musl libc
         shell: bash
         run: |
           set -euo pipefail
-          smoke="$RUNNER_TEMP/atomic-alpine-smoke"
+          smoke="$RUNNER_TEMP/atomic-alpine-native-smoke"
+          rm -rf "$smoke"
+          mkdir -p "$smoke"
+          tar -xzf "packages/coding-agent/binaries/atomic-${{ matrix.platform }}.tar.gz" -C "$smoke"
           # `atomic` catches a failed binding load and degrades to the JS search
           # paths, so starting is not proof the addon dlopen'd. Require it here.
-          docker run --rm -v "$smoke:/smoke" node:22-alpine node -e '
+          docker run --rm --platform "${{ matrix.docker_platform }}" -v "$smoke:/smoke:ro" node:22-alpine node -e '
             const binding = require("/smoke/atomic/node_modules/@bastani/atomic-natives");
             for (const name of ["glob", "grep"]) {
               if (typeof binding[name] !== "function") throw new Error(`musl binding is missing ${name}()`);
@@ -424,6 +413,10 @@ jobs:
           bun run --cwd packages/natives create-npm-dirs
           bun run --cwd packages/natives artifacts
           bun run --cwd packages/natives prepublish:native -- --skip-optional-publish
+      - name: Install musl archive tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
       - name: Build release archives
         run: ./scripts/build-binaries.sh --skip-install
       - name: Validate package metadata and prepare payload

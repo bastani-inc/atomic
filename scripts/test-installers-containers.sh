@@ -83,6 +83,12 @@ for container in alpine:3.22 debian:bookworm-slim; do
         "$container" \
         /bin/sh -c '
             set -eu
+            if [ -f /etc/alpine-release ]; then
+                /bin/ln -sf /usr/bin/sha256sum /fixture/bin/sha256sum
+                PATH=/fixture/bin:/bin
+                export PATH
+                ! command -v ldd >/dev/null 2>&1
+            fi
             /bin/sh /repo/install.sh --ref 1.0.0
             test -L "$ATOMIC_INSTALL_DIR/current"
             test -L "$ATOMIC_BIN_DIR/atomic"

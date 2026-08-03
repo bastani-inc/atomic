@@ -114,7 +114,7 @@ Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.
 
 Archive smoke tests verify bundled builtins, native modules, runtime dependencies, `--version`, and startup far enough to reject extension-load failures.
 
-The static job also runs `scripts/test-installers-containers.sh`. It executes `install.sh` with a restricted PATH and local release fixture inside `alpine:3.22` BusyBox `sh` and `debian:bookworm-slim`, checks the full payload and launcher, and gives the installer no JavaScript runtime or package manager.
+The static job also runs `scripts/test-installers-containers.sh`. It executes `install.sh` with a restricted PATH and local release fixture inside `alpine:3.22` BusyBox `sh` and `debian:bookworm-slim`, checks the full payload and launcher, and gives the installer no JavaScript runtime or package manager. The Alpine fixture omits `ldd` from `PATH`, proving the `/etc/alpine-release` musl path.
 
 ## Direct release trigger and recovery
 
@@ -299,7 +299,7 @@ pins are supply-chain hygiene, not a fix for this incident.
 
 Linux and Windows x64 each run `scripts/build-binaries.sh` for their platform, extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
 
-The `alpine-binary-smoke` job downloads the x64 musl binding, builds `atomic-linux-x64-musl.tar.gz`, and runs it in an `alpine:3.22` Docker container. The container installs `libgcc` and `libstdc++`, runs `--version` and the clean-cwd `--no-session` smoke, and rejects extension-load failures. A separate `node:22-alpine` container directly requires the extracted native package and checks its search exports. This currently exercises the x64 archive; the native matrix builds and publishes both musl architectures.
+The `alpine-binary-smoke` matrix downloads each x64/arm64 musl binding, builds the matching archive, and passes it to `scripts/test-musl-release-archive.sh` on a matching runner. That script uses stock `alpine:3.22` with no package installation, checks the full payload and bundled `libgcc`/`libstdc++`, and runs `atomic --version`. A separate matching-architecture `node:22-alpine` container directly requires each extracted native package and checks its search exports.
 
 ### Release payload
 
@@ -308,6 +308,7 @@ After native and smoke jobs pass, `build`:
 1. Installs with `npm ci --ignore-scripts` and runs `npm run check:shrinkwrap`.
 2. Generates native platform package directories and the native root manifest.
 3. Runs `scripts/build-binaries.sh --skip-install` for all eight archives.
+   Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
 5. Packs exactly ten npm tarballs.
 6. Extracts release notes from `packages/coding-agent/CHANGELOG.md`.

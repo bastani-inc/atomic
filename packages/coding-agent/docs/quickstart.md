@@ -52,7 +52,7 @@ Atomic does not require package install scripts. Add `--ignore-scripts` if you w
 
 ### Alpine and musl Linux archives
 
-The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. Install the required runtime libraries with `apk add --no-cache libgcc libstdc++`, then see the [Alpine and musl Linux archive notes](/index#alpine-and-musl-linux-archives) for the clipboard fallback and external Postgres or Docker requirement for durable workflows.
+The shell installer detects Alpine and selects `atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`. These archives bundle payload-local `libgcc` and `libstdc++`, so stock Alpine needs no runtime package install. See the [Alpine and musl Linux archive notes](/index#alpine-and-musl-linux-archives) for the clipboard fallback and external Postgres or Docker requirement for durable workflows.
 
 Then start Atomic in the project directory you want it to work on:
 
@@ -63,7 +63,7 @@ atomic
 
 ## Uninstall
 
-For a default archive install on macOS or Linux, remove `~/.local/share/atomic` and the `~/.local/bin/atomic` link. On Windows, remove `%LOCALAPPDATA%\atomic`; if you set `ATOMIC_BIN_DIR`, also remove `atomic.cmd` from that directory and remove the directory from your User PATH.
+For a default archive install on macOS or Linux, remove `~/.local/share/atomic` and the `~/.local/bin/atomic` link. On Windows, remove `%LOCALAPPDATA%\atomic`; if you set `ATOMIC_BIN_DIR`, also remove `atomic.cmd` and the `atomic-current` junction from that directory, then remove the directory from your User PATH.
 
 For a package install, remove the global package with the same package manager:
 

@@ -169,6 +169,18 @@ function Remove-AtomicDirectoryLinkOrTree {
     Remove-Item -LiteralPath $item.FullName -Recurse -Force
 }
 
+function Remove-AtomicEmptyDirectory {
+    param([string]$Path)
+
+    $item = Get-AtomicDirectoryEntry $Path
+    if ($null -eq $item -or -not $item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return
+    }
+
+    [IO.Directory]::Delete($item.FullName, $false)
+}
+
 $requestedRef = $null
 if ($PSBoundParameters.ContainsKey("Ref")) {
     if ([string]::IsNullOrWhiteSpace($Ref)) {
@@ -256,7 +268,12 @@ $payloadPath = Join-Path $tempDir "payload"
 
 $versionStagePath = $null
 $currentNextPath = $null
+$atomicCurrentNextPath = $null
 $shimNextPath = $null
+$transactionFailed = $false
+$installRootCreated = $false
+$versionsDirCreated = $false
+$binDirCreated = $false
 
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 try {
@@ -301,18 +318,24 @@ try {
     $versionDirectoryName = [Uri]::EscapeDataString($releaseTag)
     $versionPath = Join-Path $versionsDir $versionDirectoryName
     $currentPath = Join-Path $installRoot "current"
+    $atomicCurrentPath = Join-Path $binDir "atomic-current"
     $shimPath = Join-Path $binDir "atomic.cmd"
     $transactionId = [Guid]::NewGuid().ToString("N")
     $versionStagePath = Join-Path $versionsDir (".stage-" + $transactionId)
     $versionBackupPath = Join-Path $versionsDir (".backup-" + $transactionId)
     $currentNextPath = Join-Path $installRoot (".current-" + $transactionId)
     $currentBackupPath = Join-Path $installRoot (".current-backup-" + $transactionId)
+    $atomicCurrentNextPath = Join-Path $binDir (".atomic-current-" + $transactionId)
+    $atomicCurrentBackupPath = Join-Path $binDir (".atomic-current-backup-" + $transactionId)
     $shimNextPath = Join-Path $binDir (".atomic-" + $transactionId + ".cmd")
     $shimBackupPath = Join-Path $binDir (".atomic-backup-" + $transactionId + ".cmd")
 
     $installRootExisted = Test-Path -LiteralPath $installRoot
     $versionsDirExisted = Test-Path -LiteralPath $versionsDir
     $binDirExisted = Test-Path -LiteralPath $binDir
+    $installRootCreated = $false
+    $versionsDirCreated = $false
+    $binDirCreated = $false
     $oldUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $oldCurrentPath = $env:Path
 
@@ -320,6 +343,8 @@ try {
     $versionInstalled = $false
     $previousCurrentMoved = $false
     $currentInstalled = $false
+    $previousAtomicCurrentMoved = $false
+    $atomicCurrentInstalled = $false
     $previousShimMoved = $false
     $shimInstalled = $false
     $userPathChanged = $false
@@ -327,6 +352,8 @@ try {
 
     try {
         New-Item -ItemType Directory -Path $versionsDir -Force | Out-Null
+        $installRootCreated = -not $installRootExisted -and [IO.Directory]::Exists($installRoot)
+        $versionsDirCreated = -not $versionsDirExisted -and [IO.Directory]::Exists($versionsDir)
         New-Item -ItemType Directory -Path $versionStagePath | Out-Null
         foreach ($payloadItem in (Get-ChildItem -LiteralPath $payloadPath -Force)) {
             Copy-Item -LiteralPath $payloadItem.FullName -Destination $versionStagePath -Recurse -Force
@@ -349,14 +376,22 @@ try {
         $currentInstalled = $true
 
         New-Item -ItemType Directory -Path $binDir -Force | Out-Null
-        $currentAtomic = Join-Path $currentPath "atomic.exe"
-        $shimAtomic = $currentAtomic.Replace("%", "%%")
-        $shimContent = "@echo off`r`n`"$shimAtomic`" %*`r`nexit /b %ERRORLEVEL%`r`n"
-        Set-Content -LiteralPath $shimNextPath -Value $shimContent -Encoding Unicode -NoNewline
+        $binDirCreated = -not $binDirExisted -and [IO.Directory]::Exists($binDir)
+        New-Item -ItemType Junction -Path $atomicCurrentNextPath -Target $versionPath | Out-Null
+        $shimContent = "@echo off`r`n`"%~dp0atomic-current\atomic.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
+        Set-Content -LiteralPath $shimNextPath -Value $shimContent -Encoding ASCII -NoNewline
+
+        if ($null -ne (Get-AtomicDirectoryEntry $atomicCurrentPath)) {
+            Move-Item -LiteralPath $atomicCurrentPath -Destination $atomicCurrentBackupPath
+            $previousAtomicCurrentMoved = $true
+        }
         if (Test-Path -LiteralPath $shimPath) {
             Move-Item -LiteralPath $shimPath -Destination $shimBackupPath
             $previousShimMoved = $true
         }
+        Move-Item -LiteralPath $atomicCurrentNextPath -Destination $atomicCurrentPath
+        $atomicCurrentNextPath = $null
+        $atomicCurrentInstalled = $true
         Move-Item -LiteralPath $shimNextPath -Destination $shimPath
         $shimNextPath = $null
         $shimInstalled = $true
@@ -371,7 +406,8 @@ try {
             $currentPathChanged = $true
         }
 
-        & $shimPath "--version"
+        $shimCommand = '"' + $shimPath + '" --version'
+        & $env:ComSpec /d /c $shimCommand
         $finalExitCode = $LASTEXITCODE
         if ($finalExitCode -ne 0) {
             throw "Installed atomic.cmd --version failed with exit code $finalExitCode."
@@ -383,6 +419,13 @@ try {
                 $previousShimMoved = $false
             }
             catch { Write-Warning "Installed successfully, but could not remove the previous shim backup: $_" }
+        }
+        if ($previousAtomicCurrentMoved) {
+            try {
+                Remove-AtomicDirectoryLinkOrTree $atomicCurrentBackupPath
+                $previousAtomicCurrentMoved = $false
+            }
+            catch { Write-Warning "Installed successfully, but could not remove the previous atomic-current backup: $_" }
         }
         if ($previousCurrentMoved) {
             try {
@@ -401,6 +444,7 @@ try {
     }
     catch {
         $commitError = $_
+        $transactionFailed = $true
 
         if ($currentPathChanged) {
             $env:Path = $oldCurrentPath
@@ -417,11 +461,18 @@ try {
         if ($shimInstalled) {
             Remove-Item -LiteralPath $shimPath -Force -ErrorAction SilentlyContinue
         }
+        if ($atomicCurrentInstalled) {
+            try { Remove-AtomicDirectoryLinkOrTree $atomicCurrentPath }
+            catch { Write-Warning "Failed to remove the unsuccessful atomic-current pointer: $_" }
+        }
+        if ($previousAtomicCurrentMoved) {
+            try { Move-Item -LiteralPath $atomicCurrentBackupPath -Destination $atomicCurrentPath }
+            catch { Write-Warning "Failed to restore the previous atomic-current pointer: $_" }
+        }
         if ($previousShimMoved) {
             try { Move-Item -LiteralPath $shimBackupPath -Destination $shimPath }
             catch { Write-Warning "Failed to restore the previous atomic.cmd shim: $_" }
         }
-
         if ($currentInstalled) {
             try { Remove-AtomicDirectoryLinkOrTree $currentPath }
             catch { Write-Warning "Failed to remove the unsuccessful current pointer: $_" }
@@ -438,16 +489,6 @@ try {
             catch { Write-Warning "Failed to restore the previous current pointer: $_" }
         }
 
-        if (-not $binDirExisted -and (Test-Path -LiteralPath $binDir)) {
-            Remove-Item -LiteralPath $binDir -Force -ErrorAction SilentlyContinue
-        }
-        if (-not $versionsDirExisted -and (Test-Path -LiteralPath $versionsDir)) {
-            Remove-Item -LiteralPath $versionsDir -Force -ErrorAction SilentlyContinue
-        }
-        if (-not $installRootExisted -and (Test-Path -LiteralPath $installRoot)) {
-            Remove-Item -LiteralPath $installRoot -Force -ErrorAction SilentlyContinue
-        }
-
         throw $commitError
     }
 
@@ -459,6 +500,10 @@ finally {
     if ($null -ne $shimNextPath -and (Test-Path -LiteralPath $shimNextPath)) {
         Remove-Item -LiteralPath $shimNextPath -Force -ErrorAction SilentlyContinue
     }
+    if ($null -ne $atomicCurrentNextPath -and $null -ne (Get-AtomicDirectoryEntry $atomicCurrentNextPath)) {
+        try { Remove-AtomicDirectoryLinkOrTree $atomicCurrentNextPath }
+        catch { Write-Warning "Failed to remove temporary atomic-current pointer ${atomicCurrentNextPath}: $_" }
+    }
     if ($null -ne $currentNextPath -and $null -ne (Get-AtomicDirectoryEntry $currentNextPath)) {
         try { Remove-AtomicDirectoryLinkOrTree $currentNextPath }
         catch { Write-Warning "Failed to remove temporary current pointer ${currentNextPath}: $_" }
@@ -468,5 +513,20 @@ finally {
     }
     if (Test-Path -LiteralPath $tempDir) {
         Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($transactionFailed) {
+        if ($binDirCreated) {
+            try { Remove-AtomicEmptyDirectory $binDir }
+            catch { Write-Warning "Failed to remove the empty bin directory created by the unsuccessful transaction: $_" }
+        }
+        if ($versionsDirCreated) {
+            try { Remove-AtomicEmptyDirectory $versionsDir }
+            catch { Write-Warning "Failed to remove the empty versions directory created by the unsuccessful transaction: $_" }
+        }
+        if ($installRootCreated) {
+            try { Remove-AtomicEmptyDirectory $installRoot }
+            catch { Write-Warning "Failed to remove the empty install root created by the unsuccessful transaction: $_" }
+        }
     }
 }

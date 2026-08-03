@@ -93,6 +93,7 @@ interface RunOptions {
 	arch?: string;
 	arm64Sysctl?: string;
 	libc?: string;
+	ldd?: boolean;
 	environment?: Record<string, string | undefined>;
 }
 
@@ -298,6 +299,7 @@ function createFixture(): InstallerFixture {
 			mkdirSync(runTools);
 			for (const entry of readdirSync(tools)) {
 				if ((entry === "curl" || entry === "wget") && entry !== downloader) continue;
+				if (entry === "ldd" && options.ldd === false) continue;
 				symlinkSync(realpathSync(join(tools, entry)), join(runTools, entry));
 			}
 			for (const release of releases.values()) {
@@ -325,7 +327,7 @@ function createFixture(): InstallerFixture {
 				ATOMIC_FIXTURE_OS: options.os ?? "Linux",
 				ATOMIC_FIXTURE_ARCH: options.arch ?? "x86_64",
 				ATOMIC_FIXTURE_ARM64_SYSCTL: options.arm64Sysctl ?? "0",
-				ATOMIC_FIXTURE_LIBC: options.libc ?? "glibc",
+				ATOMIC_FIXTURE_LIBC: options.libc ?? "ldd (GNU libc) 2.36",
 				...options.environment,
 			};
 			return spawnSyncCollect(["/bin/sh", installerPath, ...(options.args ?? [])], {
@@ -492,8 +494,11 @@ unixTest("shell installer selects every Darwin and Linux archive, including Rose
 	const cases = [
 		[{ os: "Darwin", arch: "x86_64", arm64Sysctl: "1" }, "atomic-darwin-arm64.tar.gz"],
 		[{ os: "Darwin", arch: "x86_64", arm64Sysctl: "0" }, "atomic-darwin-x64.tar.gz"],
-		[{ os: "Linux", arch: "x86_64", libc: "glibc" }, "atomic-linux-x64.tar.gz"],
-		[{ os: "Linux", arch: "aarch64", libc: "glibc" }, "atomic-linux-arm64.tar.gz"],
+		[{ os: "Linux", arch: "x86_64", libc: "ldd (GNU libc) 2.36" }, "atomic-linux-x64.tar.gz"],
+		[
+			{ os: "Linux", arch: "aarch64", libc: "GNU C Library stable release version 2.39" },
+			"atomic-linux-arm64.tar.gz",
+		],
 		[{ os: "Linux", arch: "x86_64", libc: "musl libc" }, "atomic-linux-x64-musl.tar.gz"],
 		[{ os: "Linux", arch: "arm64", libc: "musl libc" }, "atomic-linux-arm64-musl.tar.gz"],
 	] as const;
@@ -513,6 +518,11 @@ unixTest("shell installer rejects unsupported hosts and malformed invocations wi
 	for (const [options, message] of [
 		[{ os: "FreeBSD" }, "unsupported operating system: FreeBSD"],
 		[{ arch: "riscv64" }, "unsupported architecture: riscv64"],
+		[{ libc: "uClibc 1.0.43" }, "unsupported Linux libc: uClibc"],
+		[{ libc: "Android bionic libc" }, "unsupported Linux libc: bionic"],
+		[{ libc: "mystery libc 9" }, "unsupported Linux libc: unknown"],
+		[{ ldd: false }, "unable to identify Linux libc: ldd not found"],
+		[{ environment: { ANDROID_ROOT: "/system" } }, "unsupported Linux libc: bionic"],
 		[{ args: ["--ref"] }, "--ref requires a release tag"],
 		[{ args: ["--ref="] }, "--ref requires a non-empty release tag"],
 		[{ args: ["--unknown"] }, "unknown option: --unknown"],

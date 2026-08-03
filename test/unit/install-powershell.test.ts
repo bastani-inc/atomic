@@ -55,7 +55,7 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.match(source, /New-Item\s+-ItemType\s+Junction/u);
 	assert.match(source, /\[Environment\]::SetEnvironmentVariable\("Path",\s*\$newUserPath,\s*"User"\)/u);
 	assert.match(source, /&\s+\$stagedAtomic\s+"--version"[\s\S]*\$LASTEXITCODE/u);
-	assert.match(source, /&\s+\$shimPath\s+"--version"[\s\S]*\$LASTEXITCODE/u);
+	assert.match(source, /&\s+\$env:ComSpec\s+\/d\s+\/c\s+\$shimCommand[\s\S]*\$LASTEXITCODE/u);
 
 	assert.match(source, /LOCALAPPDATA[\\/]atomic/u);
 	assert.match(source, /Default bin directory:[^\r\n]*LOCALAPPDATA[\\/]atomic[\\/]bin/u);
@@ -90,11 +90,17 @@ test("Windows installer uses a successful latest redirect without querying the G
 	assert.doesNotMatch(assetDownload, /-Headers/u);
 });
 
-test("Windows installer writes the command shim with a PowerShell 5.1 Unicode-safe encoding", () => {
+test("Windows installer writes an exact ASCII shim through a sibling atomic-current junction", () => {
 	const source = installerSource();
+	const expectedShimAssignment =
+		'$shimContent = "@echo off`r`n`"%~dp0atomic-current\\atomic.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"';
+	assert.ok(source.includes(expectedShimAssignment), "shim source is not the exact relative atomic-current command");
+
 	const shimWrite = source.match(/Set-Content\s+-LiteralPath\s+\$shimNextPath[^\r\n]*/u)?.[0] ?? "";
-	assert.match(shimWrite, /-Encoding\s+Unicode/u);
-	assert.doesNotMatch(shimWrite, /-Encoding\s+ASCII/iu);
+	assert.match(shimWrite, /-Encoding\s+ASCII/u);
+	assert.doesNotMatch(shimWrite, /-Encoding\s+Unicode/iu);
+	assert.match(source, /\$atomicCurrentPath\s*=\s*Join-Path\s+\$binDir\s+"atomic-current"/u);
+	assert.match(source, /New-Item\s+-ItemType\s+Junction\s+-Path\s+\$atomicCurrentNextPath\s+-Target\s+\$versionPath/u);
 });
 
 test("Windows installer finds and removes junctions through their parent directory entries", () => {
@@ -117,7 +123,59 @@ test("Windows installer finds and removes junctions through their parent directo
 	assert.match(source, /Remove-AtomicDirectoryLinkOrTree\s+\$currentBackupPath/u);
 	assert.doesNotMatch(source, /Test-Path\s+-LiteralPath\s+\$(?:currentPath|currentNextPath|currentBackupPath)\b/u);
 });
+
+test("Windows installer removes staged children before only empty transaction-created parents", () => {
+	const source = installerSource();
+	const emptyDirectoryRemoval = source.slice(
+		source.indexOf("function Remove-AtomicEmptyDirectory"),
+		source.indexOf("$requestedRef = $null"),
+	);
+	assert.match(emptyDirectoryRemoval, /\[IO\.Directory\]::Delete\(\$item\.FullName,\s*\$false\)/u);
+	assert.doesNotMatch(emptyDirectoryRemoval, /Remove-Item|-Recurse/u);
+
+	const cleanup = source.slice(source.indexOf("finally {"));
+	const shimStageCleanup = cleanup.indexOf("$shimNextPath");
+	const junctionStageCleanup = cleanup.indexOf("$atomicCurrentNextPath", shimStageCleanup);
+	const versionStageCleanup = cleanup.indexOf("$versionStagePath", junctionStageCleanup);
+	const downloadCleanup = cleanup.indexOf("$tempDir", versionStageCleanup);
+	const binParentCleanup = cleanup.indexOf("Remove-AtomicEmptyDirectory $binDir", downloadCleanup);
+	const versionsParentCleanup = cleanup.indexOf("Remove-AtomicEmptyDirectory $versionsDir", binParentCleanup);
+	const rootParentCleanup = cleanup.indexOf("Remove-AtomicEmptyDirectory $installRoot", versionsParentCleanup);
+	assert.ok(
+		shimStageCleanup >= 0 &&
+			junctionStageCleanup > shimStageCleanup &&
+			versionStageCleanup > junctionStageCleanup &&
+			downloadCleanup > versionStageCleanup &&
+			binParentCleanup > downloadCleanup &&
+			versionsParentCleanup > binParentCleanup &&
+			rootParentCleanup > versionsParentCleanup,
+		"cleanup does not remove staged children and downloads before parent directories",
+	);
+	assert.match(cleanup, /if \(\$binDirCreated\)[\s\S]*if \(\$versionsDirCreated\)[\s\S]*if \(\$installRootCreated\)/u);
+	assert.doesNotMatch(source, /Remove-Item\s+-LiteralPath\s+\$(?:binDir|versionsDir|installRoot)\b/u);
+
+	const versionsCreation = source.indexOf("New-Item -ItemType Directory -Path $versionsDir -Force");
+	const versionsCreatedFlag = source.indexOf("$versionsDirCreated = -not $versionsDirExisted", versionsCreation);
+	const versionStageCreation = source.indexOf(
+		"New-Item -ItemType Directory -Path $versionStagePath",
+		versionsCreatedFlag,
+	);
+	const binCreation = source.indexOf("New-Item -ItemType Directory -Path $binDir -Force", versionStageCreation);
+	const binCreatedFlag = source.indexOf("$binDirCreated = -not $binDirExisted", binCreation);
+	const junctionCreation = source.indexOf("New-Item -ItemType Junction -Path $atomicCurrentNextPath", binCreatedFlag);
+	assert.ok(
+		versionsCreation >= 0 &&
+			versionsCreatedFlag > versionsCreation &&
+			versionStageCreation > versionsCreatedFlag &&
+			binCreation > versionStageCreation &&
+			binCreatedFlag > binCreation &&
+			junctionCreation > binCreatedFlag,
+		"transaction-created parent flags are recorded too late for failure cleanup",
+	);
+});
+
 function findWindowsPowerShell(): string | undefined {
+	if (process.platform !== "win32") return undefined;
 	const candidates = ["powershell.exe", "powershell"];
 	for (const directory of (process.env.PATH ?? "").split(delimiter)) {
 		if (!directory) continue;
@@ -131,7 +189,8 @@ function findWindowsPowerShell(): string | undefined {
 
 const powershellExecutable = findWindowsPowerShell();
 const powershellTest = powershellExecutable === undefined ? test.skip : test;
-const POWERSHELL_FIXTURE_TIMEOUT_MS = 25_000;
+const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
+const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 130_000;
 
 const fixtureHarness = String.raw`
 param(
@@ -187,10 +246,41 @@ function Assert-NoTransactionResidue {
     }
 }
 
+function Test-ByteSequence {
+    param([byte[]]$Bytes, [byte[]]$Sequence)
+    if ($Sequence.Length -eq 0 -or $Bytes.Length -lt $Sequence.Length) { return $false }
+    for ($offset = 0; $offset -le $Bytes.Length - $Sequence.Length; $offset++) {
+        $matches = $true
+        for ($index = 0; $index -lt $Sequence.Length; $index++) {
+            if ($Bytes[$offset + $index] -ne $Sequence[$index]) {
+                $matches = $false
+                break
+            }
+        }
+        if ($matches) { return $true }
+    }
+    return $false
+}
+
+function Invoke-FixtureShim {
+    param([string]$ShimPath, [string]$ArgumentText)
+    $commandLine = '"' + $ShimPath + '"'
+    if (-not [string]::IsNullOrWhiteSpace($ArgumentText)) {
+        $commandLine += " $ArgumentText"
+    }
+    $cmdExe = Join-Path $env:SystemRoot "System32\cmd.exe"
+    $output = & $cmdExe /d /c $commandLine
+    $exitCode = $LASTEXITCODE
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = (($output | Out-String).Trim())
+    }
+}
+
 $workspace = Split-Path -Parent $MyInvocation.MyCommand.Path
 $assetRoot = Join-Path $workspace "releases"
 $installRoot = if ($Scenario -eq "unicode") { Join-Path $workspace "安装-Δοκιμή" } else { Join-Path $workspace "install root" }
-$binDir = if ($Scenario -eq "unicode") { Join-Path $installRoot "bin" } else { Join-Path $workspace "bin root" }
+$binDir = if ($Scenario -eq "unicode") { Join-Path $workspace "自訂-bin-Δ" } else { Join-Path $workspace "bin root" }
 $fixtureTemp = Join-Path $workspace "temp"
 New-Item -ItemType Directory -Path $assetRoot, $fixtureTemp -Force | Out-Null
 
@@ -216,6 +306,10 @@ public static class Program
         {
             Console.WriteLine(version);
             return 0;
+        }
+        if (args.Length == 2 && args[0] == "--exit")
+        {
+            return Int32.Parse(args[1]);
         }
         Console.WriteLine(version + ":" + String.Join("|", args));
         return 0;
@@ -315,7 +409,76 @@ function global:Invoke-WebRequest {
     throw "Unexpected fixture request: $Uri"
 }
 
-$global:AtomicFixtureFailCurrentNextMove = $false
+$global:AtomicFixturePayloadCopyCount = 0
+$global:AtomicFixtureFailurePoint = $null
+
+function global:New-Item {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$ItemType,
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string]$Target,
+        [switch]$Force
+    )
+
+    $leafName = [IO.Path]::GetFileName($Path)
+    if ($global:AtomicFixtureFailurePoint -eq "current-create" -and
+        $ItemType -eq "Junction" -and $leafName -match '^\.current-[0-9a-f]{32}$') {
+        Microsoft.PowerShell.Management\New-Item -ItemType $ItemType -Path $Path -Target $Target -Force:$Force | Out-Null
+        throw "Injected transaction failure: current-create"
+    }
+    if ($global:AtomicFixtureFailurePoint -eq "atomic-current-create" -and
+        $ItemType -eq "Junction" -and $leafName -match '^\.atomic-current-[0-9a-f]{32}$') {
+        Microsoft.PowerShell.Management\New-Item -ItemType $ItemType -Path $Path -Target $Target -Force:$Force | Out-Null
+        throw "Injected transaction failure: atomic-current-create"
+    }
+    if ($ItemType -eq "Junction") {
+        return Microsoft.PowerShell.Management\New-Item -ItemType $ItemType -Path $Path -Target $Target -Force:$Force
+    }
+    return Microsoft.PowerShell.Management\New-Item -ItemType $ItemType -Path $Path -Force:$Force
+}
+
+function global:Copy-Item {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$LiteralPath,
+        [Parameter(Mandatory=$true)][string]$Destination,
+        [switch]$Recurse,
+        [switch]$Force
+    )
+
+    $destinationLeaf = [IO.Path]::GetFileName($Destination)
+    if ($global:AtomicFixtureFailurePoint -eq "payload-copy" -and
+        $destinationLeaf -match '^\.stage-[0-9a-f]{32}$') {
+        $global:AtomicFixturePayloadCopyCount++
+        if ($global:AtomicFixturePayloadCopyCount -ge 2) {
+            throw "Injected transaction failure: payload-copy"
+        }
+    }
+    Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Recurse:$Recurse -Force:$Force
+}
+
+function global:Set-Content {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$LiteralPath,
+        [Parameter(Mandatory=$true)]$Value,
+        [string]$Encoding,
+        [switch]$NoNewline
+    )
+
+    $leafName = [IO.Path]::GetFileName($LiteralPath)
+    if ($global:AtomicFixtureFailurePoint -eq "shim-stage" -and
+        $leafName -match '^\.atomic-[0-9a-f]{32}\.cmd$') {
+        Microsoft.PowerShell.Management\Set-Content -LiteralPath $LiteralPath -Value "partial-shim" -Encoding ASCII -NoNewline
+        throw "Injected transaction failure: shim-stage"
+    }
+    if ([string]::IsNullOrWhiteSpace($Encoding)) {
+        return Microsoft.PowerShell.Management\Set-Content -LiteralPath $LiteralPath -Value $Value -NoNewline:$NoNewline
+    }
+    Microsoft.PowerShell.Management\Set-Content -LiteralPath $LiteralPath -Value $Value -Encoding $Encoding -NoNewline:$NoNewline
+}
+
 function global:Move-Item {
     [CmdletBinding()]
     param(
@@ -324,8 +487,13 @@ function global:Move-Item {
     )
 
     $leafName = [IO.Path]::GetFileName($LiteralPath)
-    if ($global:AtomicFixtureFailCurrentNextMove -and $leafName -match '^\.current-[0-9a-f]{32}$') {
-        throw "Injected failure while committing temporary current junction: $LiteralPath"
+    if ($global:AtomicFixtureFailurePoint -eq "current-move" -and
+        $leafName -match '^\.current-[0-9a-f]{32}$') {
+        throw "Injected transaction failure: current-move"
+    }
+    if ($global:AtomicFixtureFailurePoint -eq "atomic-current-move" -and
+        $leafName -match '^\.atomic-current-[0-9a-f]{32}$') {
+        throw "Injected transaction failure: atomic-current-move"
     }
     Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
 }
@@ -363,16 +531,21 @@ try {
 
         $versionOne = Join-Path $installRoot "versions\1.0.0"
         $current = Join-Path $installRoot "current"
+        $atomicCurrent = Join-Path $binDir "atomic-current"
         $shim = Join-Path $binDir "atomic.cmd"
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne "nested\full-payload.txt")) "flat ZIP full payload was not retained"
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $current "atomic.exe")) "current pointer does not resolve atomic.exe"
         Assert-Fixture (((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "current is not a junction"
-        $expectedShimCommand = '"' + (Join-Path $current "atomic.exe") + '" %*'
-        Assert-Fixture ((Get-Content -LiteralPath $shim -Raw).Contains($expectedShimCommand)) "shim is not absolute and quoted"
-        $probeOutput = & $shim "--probe" "hello world"
-        $probeExitCode = $LASTEXITCODE
-        Assert-Fixture ($probeExitCode -eq 0) "shim execution failed"
-        Assert-Fixture (($probeOutput -join [Environment]::NewLine) -eq "1.0.0:--probe|hello world") "shim did not forward arguments"
+        Assert-Fixture (((Get-Item -LiteralPath $atomicCurrent -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "atomic-current is not a sibling junction"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $atomicCurrent "version.txt") -Raw) -eq "1.0.0") "atomic-current does not target the installed version"
+        $expectedShimContent = '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
+        Assert-Fixture ((Get-Content -LiteralPath $shim -Raw) -ceq $expectedShimContent) "shim source is not the exact relative atomic-current command"
+        $versionProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($versionProbe.ExitCode -eq 0 -and $versionProbe.Output -eq "1.0.0") "cmd.exe shim --version failed"
+        $argumentProbe = Invoke-FixtureShim $shim '--probe "hello world"'
+        Assert-Fixture ($argumentProbe.ExitCode -eq 0 -and $argumentProbe.Output -eq "1.0.0:--probe|hello world") "cmd.exe shim did not forward arguments"
+        $exitProbe = Invoke-FixtureShim $shim "--exit 37"
+        Assert-Fixture ($exitProbe.ExitCode -eq 37) "shim did not preserve atomic.exe exit status"
         Assert-Fixture (Test-ExactPathEntry ([Environment]::GetEnvironmentVariable("Path", "User")) $binDir) "User PATH was not persisted"
         Assert-Fixture (Test-ExactPathEntry $env:Path $binDir) "current PATH was not refreshed"
 
@@ -454,6 +627,7 @@ try {
         Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -eq $beforeUserPath) "failed final smoke did not restore User PATH"
         Assert-Fixture ($env:Path -eq $beforeProcessPath) "failed final smoke did not restore current PATH"
         Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "failed final smoke left a new installation"
+        Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "failed final smoke left a new bin directory"
     }
     elseif ($Scenario -eq "unicode") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
@@ -461,15 +635,29 @@ try {
         & $InstallerPath -Ref "1.0.0" | Out-Null
 
         $current = Join-Path $installRoot "current"
+        $atomicCurrent = Join-Path $binDir "atomic-current"
         $shim = Join-Path $binDir "atomic.cmd"
-        $expectedAtomicPath = Join-Path $current "atomic.exe"
-        $shimContent = Get-Content -LiteralPath $shim -Raw
+        $expectedShimContent = '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
+        $shimBytes = [IO.File]::ReadAllBytes($shim)
         Assert-Fixture ($installRoot.Contains("安装") -and $installRoot.Contains("Δοκιμή")) "Unicode fixture root lost CJK or Greek text"
-        Assert-Fixture ($shimContent.Contains($expectedAtomicPath)) "shim did not retain the complete Unicode atomic.exe path"
-        Assert-Fixture ($shimContent -notmatch '\?') "shim replaced Unicode path characters with question marks"
-        $versionOutput = (& $shim "--version" | Out-String).Trim()
-        Assert-Fixture ($LASTEXITCODE -eq 0 -and $versionOutput -eq "1.0.0") "Unicode-path shim --version failed"
+        Assert-Fixture ($binDir.Contains("自訂") -and -not $binDir.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase)) "Unicode fixture did not use a separate custom bin directory"
+        Assert-Fixture (-not (Test-ByteSequence $shimBytes ([byte[]]@(0xFF, 0xFE)))) "shim retained a UTF-16LE BOM"
+        Assert-Fixture (-not (Test-ByteSequence $shimBytes ([byte[]]@(0xEF, 0xBB, 0xBF)))) "shim retained a UTF-8 BOM"
+        Assert-Fixture (@($shimBytes | Where-Object { $_ -eq 0 }).Count -eq 0) "shim contains NUL bytes"
+        Assert-Fixture (@($shimBytes | Where-Object { $_ -gt 0x7F }).Count -eq 0) "shim contains non-ASCII bytes"
+        Assert-Fixture (([Text.Encoding]::ASCII.GetString($shimBytes)) -ceq $expectedShimContent) "shim bytes do not decode to the exact relative command"
+        Assert-Fixture (((Get-Item -LiteralPath $atomicCurrent -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "custom bin atomic-current is not a junction"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $atomicCurrent "version.txt") -Raw) -eq "1.0.0") "custom bin atomic-current does not target the installed version"
+        $versionProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($versionProbe.ExitCode -eq 0 -and $versionProbe.Output -eq "1.0.0") "Unicode install shim --version failed through cmd.exe"
+        $argumentProbe = Invoke-FixtureShim $shim '--probe "hello world"'
+        Assert-Fixture ($argumentProbe.ExitCode -eq 0 -and $argumentProbe.Output -eq "1.0.0:--probe|hello world") "Unicode install shim did not forward arguments through cmd.exe"
 
+        $oldShimContent = '@rem rollback-marker' + [Environment]::NewLine + $expectedShimContent
+        Set-Content -LiteralPath $shim -Value $oldShimContent -Encoding ASCII -NoNewline
+        $oldShimBytes = [IO.File]::ReadAllBytes($shim)
+        $oldPairProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($oldPairProbe.ExitCode -eq 0 -and $oldPairProbe.Output -eq "1.0.0") "old shim and junction pair was not executable before rollback test"
         $beforeUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
         $beforeProcessPath = $env:Path
         $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "2.0.0"
@@ -480,9 +668,11 @@ try {
         Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -eq $beforeUserPath) "Unicode-path rollback changed User PATH"
         Assert-Fixture ($env:Path -eq $beforeProcessPath) "Unicode-path rollback changed current PATH"
         Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "version.txt") -Raw) -eq "1.0.0") "Unicode-path rollback did not restore current"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $atomicCurrent "version.txt") -Raw) -eq "1.0.0") "Unicode-path rollback did not restore the old atomic-current junction"
+        Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes($shim)) -ceq [Convert]::ToBase64String($oldShimBytes)) "Unicode-path rollback did not restore the old shim bytes"
         Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions\2.0.0"))) "Unicode-path rollback retained the failed version"
-        $rollbackOutput = (& $shim "--version" | Out-String).Trim()
-        Assert-Fixture ($LASTEXITCODE -eq 0 -and $rollbackOutput -eq "1.0.0") "Unicode-path rollback did not restore the working shim"
+        $rollbackProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "1.0.0") "Unicode-path rollback did not restore the executable shim and junction pair"
         Assert-NoTransactionResidue $installRoot $binDir
     }
     elseif ($Scenario -eq "dangling-junction") {
@@ -492,6 +682,7 @@ try {
 
         $versionOne = Join-Path $installRoot "versions\1.0.0"
         $current = Join-Path $installRoot "current"
+        $atomicCurrent = Join-Path $binDir "atomic-current"
         $shim = Join-Path $binDir "atomic.cmd"
         Remove-Item -LiteralPath $versionOne -Recurse -Force
         $danglingCurrent = @(Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -eq "current" })
@@ -499,26 +690,89 @@ try {
         Assert-Fixture (($danglingCurrent[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "dangling current entry is not a junction"
         Assert-Fixture (-not [IO.Directory]::Exists($current)) "current junction target was not deleted"
 
+        $danglingAtomicCurrent = @(Get-ChildItem -LiteralPath $binDir -Force | Where-Object { $_.Name -eq "atomic-current" })
+        Assert-Fixture ($danglingAtomicCurrent.Count -eq 1 -and ($danglingAtomicCurrent[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "deleting the version did not leave the atomic-current junction dangling"
+
         & $InstallerPath -Ref "1.0.0" | Out-Null
         $repairedCurrent = @(Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -eq "current" })
         Assert-Fixture ($repairedCurrent.Count -eq 1) "same-version reinstall did not leave one current entry"
         Assert-Fixture (($repairedCurrent[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "same-version reinstall did not recreate current as a junction"
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $current "atomic.exe")) "recreated current junction does not resolve atomic.exe"
-        $reinstallOutput = (& $shim "--version" | Out-String).Trim()
-        Assert-Fixture ($LASTEXITCODE -eq 0 -and $reinstallOutput -eq "1.0.0") "shim failed after dangling junction recovery"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $atomicCurrent "version.txt") -Raw) -eq "1.0.0") "recreated atomic-current junction does not resolve the installed version"
+        $reinstallProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($reinstallProbe.ExitCode -eq 0 -and $reinstallProbe.Output -eq "1.0.0") "shim failed through cmd.exe after dangling junction recovery"
         Assert-NoTransactionResidue $installRoot $binDir
-
-        $global:AtomicFixtureFailCurrentNextMove = $true
+        $global:AtomicFixtureFailurePoint = "current-move"
         $failure = $null
         try { & $InstallerPath -Ref "2.0.0" | Out-Null }
         catch { $failure = $_ }
-        $global:AtomicFixtureFailCurrentNextMove = $false
-        Assert-Fixture ($null -ne $failure -and $failure.Exception.Message -match 'Injected failure while committing temporary current junction') "temporary current failure was not injected"
+        $global:AtomicFixtureFailurePoint = $null
+        Assert-Fixture ($null -ne $failure -and $failure.Exception.Message -match 'Injected transaction failure: current-move') "temporary current failure was not injected"
         Assert-Fixture ((Get-Content -LiteralPath (Join-Path $current "version.txt") -Raw) -eq "1.0.0") "failed transaction did not restore current"
         Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions\2.0.0"))) "failed transaction retained the new version"
-        $rollbackOutput = (& $shim "--version" | Out-String).Trim()
-        Assert-Fixture ($LASTEXITCODE -eq 0 -and $rollbackOutput -eq "1.0.0") "shim failed after temporary dangling junction cleanup"
+        $rollbackProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "1.0.0") "shim failed through cmd.exe after temporary dangling junction cleanup"
         Assert-NoTransactionResidue $installRoot $binDir
+    }
+
+    elseif ($Scenario -eq "transaction-failures") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $failurePoints = @("payload-copy", "current-create", "current-move", "atomic-current-create", "atomic-current-move", "shim-stage")
+        foreach ($state in @("fresh", "existing")) {
+            foreach ($failurePoint in $failurePoints) {
+                $installRoot = Join-Path $workspace ("transaction-" + $state + "-" + $failurePoint + "-install")
+                $binDir = Join-Path $workspace ("transaction-" + $state + "-" + $failurePoint + "-bin")
+                $env:ATOMIC_INSTALL_DIR = $installRoot
+                $env:ATOMIC_BIN_DIR = $binDir
+                $global:AtomicFixturePayloadCopyCount = 0
+                $global:AtomicFixtureFailurePoint = $null
+                $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+
+                $oldShimBytes = $null
+                if ($state -eq "existing") {
+                    & $InstallerPath -Ref "1.0.0" | Out-Null
+                    Set-Content -LiteralPath (Join-Path $installRoot "preserve-root.txt") -Value "old-root" -Encoding ASCII -NoNewline
+                    Set-Content -LiteralPath (Join-Path $binDir "preserve-bin.txt") -Value "old-bin" -Encoding ASCII -NoNewline
+                    Set-Content -LiteralPath (Join-Path $installRoot "versions\1.0.0\preserve-version.txt") -Value "old-version" -Encoding ASCII -NoNewline
+                    $oldShim = Join-Path $binDir "atomic.cmd"
+                    $oldShimContent = '@rem old-pair-' + $failurePoint + [Environment]::NewLine + '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
+                    Set-Content -LiteralPath $oldShim -Value $oldShimContent -Encoding ASCII -NoNewline
+                    $oldShimBytes = [IO.File]::ReadAllBytes($oldShim)
+                    $oldProbe = Invoke-FixtureShim $oldShim "--version"
+                    Assert-Fixture ($oldProbe.ExitCode -eq 0 -and $oldProbe.Output -eq "1.0.0") "old pair was not executable before $failurePoint failure"
+                }
+
+                $global:AtomicFixtureFailurePoint = $failurePoint
+                $failure = $null
+                try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+                catch { $failure = $_ }
+                $global:AtomicFixtureFailurePoint = $null
+                Assert-Fixture ($null -ne $failure -and $failure.Exception.Message -match ("Injected transaction failure: " + $failurePoint)) "$state $failurePoint failure was not injected"
+
+                if ($state -eq "fresh") {
+                    Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "fresh $failurePoint failure left the install root"
+                    Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions"))) "fresh $failurePoint failure left versions"
+                    Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "fresh $failurePoint failure left the bin directory"
+                }
+                else {
+                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "preserve-root.txt") -Raw) -eq "old-root") "existing $failurePoint failure recursed into the install root"
+                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $binDir "preserve-bin.txt") -Raw) -eq "old-bin") "existing $failurePoint failure recursed into the bin directory"
+                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "versions\1.0.0\preserve-version.txt") -Raw) -eq "old-version") "existing $failurePoint failure did not preserve the old version"
+                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "current\version.txt") -Raw) -eq "1.0.0") "existing $failurePoint failure did not preserve current"
+                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $binDir "atomic-current\version.txt") -Raw) -eq "1.0.0") "existing $failurePoint failure did not preserve atomic-current"
+                    Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $binDir "atomic.cmd"))) -ceq [Convert]::ToBase64String($oldShimBytes)) "existing $failurePoint failure did not preserve the old shim"
+                    Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions\2.0.0"))) "existing $failurePoint failure retained the failed version"
+                    $rollbackProbe = Invoke-FixtureShim (Join-Path $binDir "atomic.cmd") "--version"
+                    Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "1.0.0") "existing $failurePoint failure did not leave the old pair executable"
+                }
+
+                Assert-NoTransactionResidue $installRoot $binDir
+                Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "$state $failurePoint failure left a temporary download directory"
+                Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
     else {
         throw "Unknown fixture scenario: $Scenario"
@@ -537,13 +791,34 @@ finally {
 }
 `;
 
-test("Windows PowerShell 5.1 fixtures cover Unicode paths and dangling junction recovery", () => {
+test("Windows PowerShell 5.1 fixtures enforce shim bytes, cmd execution, rollback, and failure cleanup", () => {
 	assert.match(fixtureHarness, /安装-Δοκιμή/u);
-	assert.match(fixtureHarness, /\$shimContent\.Contains\(\$expectedAtomicPath\)/u);
-	assert.match(fixtureHarness, /\$shimContent\s+-notmatch\s+'\\\?'/u);
-	assert.match(fixtureHarness, /Remove-Item\s+-LiteralPath\s+\$versionOne[\s\S]+& \$InstallerPath -Ref "1\.0\.0"/u);
-	assert.match(fixtureHarness, /Get-ChildItem\s+-LiteralPath\s+\$installRoot\s+-Force[\s\S]+ReparsePoint/u);
-	assert.match(fixtureHarness, /AtomicFixtureFailCurrentNextMove[\s\S]+Assert-NoTransactionResidue/u);
+	assert.match(fixtureHarness, /自訂-bin-Δ/u);
+	assert.match(fixtureHarness, /\[IO\.File\]::ReadAllBytes\(\$shim\)/u);
+	assert.match(fixtureHarness, /0xFF,\s*0xFE/u);
+	assert.match(fixtureHarness, /0xEF,\s*0xBB,\s*0xBF/u);
+	assert.match(fixtureHarness, /Where-Object\s*\{\s*\$_\s+-eq\s+0\s*\}/u);
+	assert.match(fixtureHarness, /Where-Object\s*\{\s*\$_\s+-gt\s+0x7F\s*\}/u);
+	assert.doesNotMatch(fixtureHarness, /&\s+\$shim\b/u);
+	assert.match(fixtureHarness, /&\s+\$cmdExe\s+\/d\s+\/c\s+\$commandLine/u);
+	assert.match(fixtureHarness, /--probe "hello world"/u);
+	assert.match(fixtureHarness, /--exit 37/u);
+	assert.match(fixtureHarness, /rollback-marker[\s\S]+old atomic-current junction[\s\S]+old shim bytes/u);
+	assert.match(
+		fixtureHarness,
+		/@\("payload-copy", "current-create", "current-move", "atomic-current-create", "atomic-current-move", "shim-stage"\)/u,
+	);
+	assert.match(fixtureHarness, /FailurePoint\s+-eq\s+"current-create"[\s\S]+\\\.current-/u);
+	assert.match(fixtureHarness, /FailurePoint\s+-eq\s+"current-move"[\s\S]+\\\.current-/u);
+	assert.match(fixtureHarness, /FailurePoint\s+-eq\s+"atomic-current-create"[\s\S]+\\\.atomic-current-/u);
+	assert.match(fixtureHarness, /FailurePoint\s+-eq\s+"atomic-current-move"[\s\S]+\\\.atomic-current-/u);
+	assert.doesNotMatch(fixtureHarness, /"junction-(?:create|move)"/u);
+	assert.match(fixtureHarness, /foreach \(\$state in @\("fresh", "existing"\)\)/u);
+	assert.match(fixtureHarness, /fresh \$failurePoint failure left the install root/u);
+	assert.match(fixtureHarness, /existing \$failurePoint failure recursed into the bin directory/u);
+	assert.match(fixtureHarness, /existing \$failurePoint failure did not preserve the old version/u);
+	assert.match(fixtureHarness, /existing \$failurePoint failure did not leave the old pair executable/u);
+	assert.match(fixtureHarness, /Assert-NoTransactionResidue \$installRoot \$binDir/u);
 	assert.match(
 		fixtureHarness,
 		/AtomicFixtureFailApi\s*=\s*\$true[\s\S]+successful stable redirect queried the GitHub API/u,
@@ -551,7 +826,7 @@ test("Windows PowerShell 5.1 fixtures cover Unicode paths and dangling junction 
 });
 
 function runPowerShellFixture(
-	scenario: "install" | "checksum" | "final-smoke" | "unicode" | "dangling-junction",
+	scenario: "install" | "checksum" | "final-smoke" | "unicode" | "dangling-junction" | "transaction-failures",
 ): string {
 	assert.ok(powershellExecutable);
 	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
@@ -608,3 +883,11 @@ powershellTest("PowerShell 5.1 fixture preserves Unicode install paths and rolls
 powershellTest("PowerShell 5.1 fixture repairs and cleans up dangling junctions", () => {
 	runPowerShellFixture("dangling-junction");
 });
+
+powershellTest(
+	"PowerShell 5.1 fixture rolls back fresh and existing installs at every staged transaction failure",
+	() => {
+		runPowerShellFixture("transaction-failures");
+	},
+	TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS,
+);

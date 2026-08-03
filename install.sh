@@ -108,13 +108,22 @@ case $HOST_OS in
         esac
         ;;
     Linux)
-        LIBC_SUFFIX=
+        if [ -n "${ANDROID_ROOT:-}" ] || [ -n "${ANDROID_DATA:-}" ] || [ -n "${TERMUX_VERSION:-}" ] ||
+            [ -e /system/bin/linker ] || [ -e /system/bin/linker64 ]; then
+            fail "unsupported Linux libc: bionic"
+        fi
+
         if [ -f /etc/alpine-release ]; then
             LIBC_SUFFIX=-musl
-        elif command -v ldd >/dev/null 2>&1; then
+        else
+            command -v ldd >/dev/null 2>&1 || fail "unable to identify Linux libc: ldd not found"
             ldd_version=$(ldd --version 2>&1 || :)
             case $ldd_version in
+                *uClibc*|*uclibc*|*UCLIBC*) fail "unsupported Linux libc: uClibc" ;;
+                *bionic*|*Bionic*|*BIONIC*) fail "unsupported Linux libc: bionic" ;;
                 *musl*|*Musl*|*MUSL*) LIBC_SUFFIX=-musl ;;
+                *GLIBC*|*glibc*|*GNU\ libc*|*GNU\ C\ Library*) LIBC_SUFFIX= ;;
+                *) fail "unsupported Linux libc: unknown" ;;
             esac
         fi
         case "$HOST_ARCH$LIBC_SUFFIX" in

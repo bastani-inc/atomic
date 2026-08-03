@@ -40,9 +40,15 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.quickstart, /~\/\.local\/share\/atomic/u);
 	assert.match(docs.quickstart, /~\/\.local\/bin\/atomic/u);
 	assert.match(docs.windows, /%LOCALAPPDATA%\\atomic\\bin/u);
+	assert.match(docs.windows, /ASCII-only `atomic\.cmd` plus an `atomic-current` junction/u);
+	assert.match(docs.quickstart, /remove `atomic\.cmd` and the `atomic-current` junction/u);
 	assert.match(docs.quickstart, /does not require Node\.js|Node\.js and a package manager are not required/u);
 	assert.match(docs.quickstart, /Package installs still require Node\.js/u);
-	assert.match(docs.quickstart, /apk add --no-cache libgcc libstdc\+\+/u);
+	assert.match(docs.quickstart, /bundle payload-local `libgcc` and `libstdc\+\+`/u);
+	assert.match(docs.quickstart, /stock Alpine needs no runtime package install/u);
+	assert.doesNotMatch(docs.quickstart, /apk add/u);
+	assert.match(docs.index, /stock Alpine without installing runtime packages/u);
+	assert.match(docs.readme, /run on stock Alpine without an `apk add` step/u);
 	assert.match(docs.containerization, /without Node\.js or npm/u);
 	assert.match(docs.termux, /Do not run the root `install\.sh`/u);
 	assert.match(docs.termux, /bionic libc/u);
@@ -57,4 +63,5 @@ test("CI runs the POSIX installer smoke in Alpine and Debian slim", async () => 
 	assert.match(smoke, /alpine:3\.22/u);
 	assert.match(smoke, /debian:bookworm-slim/u);
 	assert.match(smoke, /\/bin\/sh \/repo\/install\.sh --ref 1\.0\.0/u);
+	assert.match(smoke, /! command -v ldd/u);
 });

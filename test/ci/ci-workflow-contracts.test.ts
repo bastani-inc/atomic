@@ -278,15 +278,34 @@ test("native release matrix pins all shipped targets and the Linux glibc floor",
 	);
 });
 
-test("Alpine smoke consumes the x64 musl artifact and installs its runtime libraries", async () => {
-	const workflow = await readText(publishPath);
+test("Alpine smoke covers both musl archives on stock Alpine without runtime package installation", async () => {
+	const [workflow, smoke] = await Promise.all([
+		readText(publishPath),
+		readText(join(root, "scripts/test-musl-release-archive.sh")),
+	]);
 	const alpine = jobBlock(workflow, "alpine-binary-smoke", "build");
 	assert.match(alpine, /needs: \[integrity, native-artifacts\]/u);
-	assert.match(alpine, /name: atomic-natives-linux-x64-musl/u);
-	assert.match(alpine, /atomic-linux-x64-musl\.tar\.gz/u);
-	assert.match(alpine, /apk add --no-cache libgcc libstdc\+\+/u);
-	assert.match(alpine, /node:22-alpine/u);
-	assert.match(alpine, /require\("\/smoke\/atomic\/node_modules\/@bastani\/atomic-natives"\)/u);
+	assert.match(alpine, /atomic-natives-\$\{\{ matrix\.slug \}\}/u);
+	assert.match(alpine, /linux-x64-musl[\s\S]*linux-arm64-musl/u);
+	assert.match(alpine, /blacksmith-4vcpu-ubuntu-2404[\s\S]*blacksmith-4vcpu-ubuntu-2404-arm/u);
+	assert.match(alpine, /test-musl-release-archive\.sh/u);
+	assert.doesNotMatch(alpine, /apk add/u);
+	assert.match(smoke, /alpine:3\.22/u);
+	assert.match(smoke, /docker run --rm --platform/u);
+	assert.match(smoke, /atomic --version|"\$atomic" --version/u);
+	assert.match(smoke, /app\.js[\s\S]*builtin[\s\S]*node_modules/u);
+	assert.doesNotMatch(smoke, /apk add/u);
+});
+
+test("musl archive build bundles pinned C++ runtimes and patches payload-local search paths", async () => {
+	const buildScript = await readText(join(root, "scripts/build-binaries.sh"));
+	assert.match(buildScript, /ALPINE_MUSL_RUNTIME_VERSION="14\.2\.0-r6"/u);
+	assert.match(buildScript, /libgcc_s\.so\.1/u);
+	assert.match(buildScript, /libstdc\+\+\.so\.6/u);
+	assert.match(buildScript, /sha256sum -c/u);
+	assert.match(buildScript, /patchelf --print-needed/u);
+	assert.match(buildScript, /patchelf --set-rpath/u);
+	assert.match(buildScript, /\$ORIGIN/u);
 });
 
 test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asset contracts", async () => {
@@ -299,8 +318,8 @@ test("release build retains Atomic native, smoke, shrinkwrap, metadata, and asse
 	assert.match(workflow, /Failed to load extension/);
 	assert.match(workflow, /native optionalDependencies must be the eight exact-version platform packages/u);
 	assert.match(workflow, /test .* = 10/u);
-	assert.match(workflow, /Build Linux x64 musl archive[\s\S]*--platform linux-x64-musl/u);
-	assert.match(workflow, /apk add --no-cache libgcc libstdc\+\+/u);
+	assert.match(workflow, /Build Linux musl archive[\s\S]*--platform "\$\{\{ matrix\.platform \}\}"/u);
+	assert.match(workflow, /Install musl archive tooling[\s\S]*patchelf/u);
 	assert.doesNotMatch(
 		workflow,
 		/Release-base-ref|Release-base-sha|RELEASE_BASE_REFS|deterministic release tree|create-event binding/iu,
