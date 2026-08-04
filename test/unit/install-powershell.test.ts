@@ -1011,7 +1011,7 @@ function global:Get-ChildItem {
 }
 
 function global:New-Item {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param(
         [Alias("Type")]
         [Parameter(Mandatory=$true)][string]$ItemType,
@@ -2153,6 +2153,7 @@ test("Windows PowerShell 5.1 fixtures enforce shim bytes, cmd execution, rollbac
 	assert.match(fixtureHarness, /安装-Δοκιμή/u);
 	assert.match(fixtureHarness, /自訂-bin-Δ/u);
 	assert.match(fixtureHarness, /\[Alias\("Type"\)\]/u);
+	assert.match(fixtureHarness, /SupportsShouldProcess=\$true/u);
 	assert.match(fixtureHarness, /\[IO\.File\]::ReadAllBytes\(\$shim\)/u);
 	assert.match(fixtureHarness, /0xFF,\s*0xFE/u);
 	assert.match(fixtureHarness, /0xEF,\s*0xBB,\s*0xBF/u);
