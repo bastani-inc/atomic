@@ -57,7 +57,7 @@
 
 ### Prerequisites
 
-- **Release archive install:** macOS and Linux need `curl` or `wget` plus `tar`. Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
+- **Release archive install:** macOS and Linux need `awk`, `tar`, and either `curl` or `wget`. Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
 - **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.3.14+ for Bun installs or workflow-authoring examples.
 - **Model-provider access** — use a supported subscription login or API key.
 

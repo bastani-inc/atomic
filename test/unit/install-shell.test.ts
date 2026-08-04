@@ -23,6 +23,16 @@ import { spawnSyncCollect } from "../helpers/runtime.js";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const installerPath = join(root, "install.sh");
 const unixTest = process.platform === "win32" ? test.skip : test;
+const systemSysctl = "/usr/sbin/sysctl";
+const darwinRosettaFallbackTest =
+	process.platform === "darwin" &&
+	existsSync(systemSysctl) &&
+	spawnSyncCollect([systemSysctl, "-in", "hw.optional.arm64"]).stdout.toString().trim() === "1"
+		? test
+		: test.skip;
+const LARGE_RELEASE_JSON_BYTES = 42_322;
+const JSON_PARSER_CPU_LIMIT_SECONDS = 4;
+const JSON_PARSER_WALL_TIMEOUT_MS = 5_000;
 
 const unixAssets = [
 	"atomic-darwin-arm64.tar.gz",
@@ -47,9 +57,13 @@ test("POSIX installer has valid sh syntax and declares the archive install contr
 	for (const asset of unixAssets) assert.equal(source.split(asset).length - 1, 1, asset);
 	for (const tool of ["curl", "wget", "sha256sum", "shasum", "openssl"])
 		assert.match(source, new RegExp(`command -v ${tool}`, "u"));
-	assert.doesNotMatch(source, /\[\[|\]\]|\b(?:local|function)\s|pipefail|\$BASH|<\(|>\(/u);
+	assert.match(source, /for required_command in [^\n]*\bawk\b/u);
+	const shellSource = source.replace(/\| awk '\n[\s\S]*?\n {4}'/u, "| awk '<embedded POSIX awk>'");
+	assert.notEqual(shellSource, source);
+	assert.doesNotMatch(shellSource, /\[\[|\]\]|\b(?:local|function)\s|pipefail|\$BASH|<\(|>\(/u);
 	assert.doesNotMatch(source, /\b(?:npm|pnpm|yarn|bun|node|git|jq)(?:\.exe)?\b/iu);
 	assert.match(source, /sysctl -in hw\.optional\.arm64/u);
+	assert.match(source, /\/usr\/sbin\/sysctl -in hw\.optional\.arm64/u);
 	assert.match(source, /\/etc\/alpine-release/u);
 	assert.match(source, /ldd --version/u);
 	assert.match(source, /CHECKSUM_MATCHES.*-eq 1/u);
@@ -108,6 +122,9 @@ interface RunOptions {
 	arch?: string;
 	arm64Sysctl?: string;
 	libc?: string;
+	sysctl?: boolean;
+	cpuLimitSeconds?: number;
+	timeout?: number;
 	ldd?: boolean;
 	environment?: Record<string, string | undefined>;
 	pathEntries?: readonly string[];
@@ -192,7 +209,11 @@ const curlWrapper = [
 	"            percent%25tag) canonical='percent%tag' ;;",
 	`            *) canonical=${shellExpansion("ATOMIC_FIXTURE_CANONICAL_TAG:-$tag")} ;;`,
 	"        esac",
-	`        printf '{"tag_name":"%s"}\n' "$canonical"`,
+	`        if [ "${shellExpansion("ATOMIC_FIXTURE_RELEASE_JSON+x")}" = x ]; then`,
+	`            printf '%s\\n' "$ATOMIC_FIXTURE_RELEASE_JSON"`,
+	"        else",
+	`            printf '{"tag_name":"%s"}\\n' "$canonical"`,
+	"        fi",
 	"        ;;",
 	"    https://github.com/bastani-inc/atomic/releases/download/*/*)",
 	`        name=${shellExpansion("url##*/")}`,
@@ -240,7 +261,11 @@ const wgetWrapper = [
 	"            percent%25tag) canonical='percent%tag' ;;",
 	`            *) canonical=${shellExpansion("ATOMIC_FIXTURE_CANONICAL_TAG:-$tag")} ;;`,
 	"        esac",
-	`        printf '{"tag_name":"%s"}\n' "$canonical"`,
+	`        if [ "${shellExpansion("ATOMIC_FIXTURE_RELEASE_JSON+x")}" = x ]; then`,
+	`            printf '%s\\n' "$ATOMIC_FIXTURE_RELEASE_JSON"`,
+	"        else",
+	`            printf '{"tag_name":"%s"}\\n' "$canonical"`,
+	"        fi",
 	"        ;;",
 	"    https://github.com/bastani-inc/atomic/releases/download/*/*)",
 	`        name=${shellExpansion("url##*/")}`,
@@ -268,7 +293,7 @@ function createFixture(): InstallerFixture {
 	mkdirSync(releasesRoot);
 	writeFileSync(requestLog, "");
 
-	for (const command of ["tar", "mkdir", "chmod", "ln", "rm", "rmdir", "cat", "gzip"]) {
+	for (const command of ["awk", "tar", "mkdir", "chmod", "ln", "rm", "rmdir", "cat", "gzip"]) {
 		const source = resolveExecutable(command);
 		symlinkSync(source, join(tools, command));
 	}
@@ -327,6 +352,7 @@ function createFixture(): InstallerFixture {
 			for (const entry of readdirSync(tools)) {
 				if ((entry === "curl" || entry === "wget") && entry !== downloader) continue;
 				if (entry === "ldd" && options.ldd === false) continue;
+				if (entry === "sysctl" && options.sysctl === false) continue;
 				symlinkSync(realpathSync(join(tools, entry)), join(runTools, entry));
 			}
 			for (const release of releases.values()) {
@@ -357,10 +383,22 @@ function createFixture(): InstallerFixture {
 				ATOMIC_FIXTURE_LIBC: options.libc ?? "ldd (GNU libc) 2.36",
 				...options.environment,
 			};
-			return spawnSyncCollect(["/bin/sh", installerPath, ...(options.args ?? [])], {
+			const installerCommand = ["/bin/sh", installerPath, ...(options.args ?? [])];
+			const command =
+				options.cpuLimitSeconds === undefined
+					? installerCommand
+					: [
+							"/bin/sh",
+							"-c",
+							'ulimit -t "$1"; shift; exec "$@"',
+							"atomic-installer-timeout",
+							String(options.cpuLimitSeconds),
+							...installerCommand,
+						];
+			return spawnSyncCollect(command, {
 				cwd: workspace,
 				env,
-				timeout: 15_000,
+				timeout: options.timeout ?? 15_000,
 			});
 		},
 	};
@@ -627,6 +665,47 @@ unixTest("shell installer percent-encodes exact refs once for API, downloads, an
 	}
 });
 
+unixTest("shell installer parses a 42,322-byte escaped release response within five seconds", () => {
+	const rawTag = 'release/🚀"v1';
+	const encodedTag = encodeURIComponent(rawTag);
+	const releaseJsonPrefix = String.raw`{"url":"${"x".repeat(512)}","assets_url":"${"x".repeat(512)}","upload_url":"${"x".repeat(512)}","html_url":"${"x".repeat(512)}","id":1,"author":{"login":"tag_name","nested":[{"quoted":"\"tag_name\"","bio":"${"x".repeat(512)}"}]},"node_id":"${"x".repeat(512)}","name":"decoy \"tag_name\":\"wrong\"","tag_name":"\u0072elease\/\uD83D\uDE80\"v1","body":"`;
+	const releaseJsonSuffix = '"}';
+	const paddingBytes = LARGE_RELEASE_JSON_BYTES - Buffer.byteLength(releaseJsonPrefix + releaseJsonSuffix);
+	assert.ok(paddingBytes > 0);
+	const releaseJson = releaseJsonPrefix + "x".repeat(paddingBytes) + releaseJsonSuffix;
+	assert.equal(Buffer.byteLength(releaseJson), LARGE_RELEASE_JSON_BYTES);
+
+	for (const downloader of ["curl", "wget"] as const) {
+		const fixture = createFixture();
+		try {
+			addRelease(fixture, rawTag);
+			const result = fixture.run({
+				downloader,
+				args: ["--ref", "requested-alias"],
+				cpuLimitSeconds: JSON_PARSER_CPU_LIMIT_SECONDS,
+				timeout: JSON_PARSER_WALL_TIMEOUT_MS,
+				environment: { ATOMIC_FIXTURE_RELEASE_JSON: releaseJson },
+			});
+			assertSuccess(result);
+			assert.ok(existsSync(join(fixture.installRoot, "versions", encodedTag, "atomic")));
+			assert.equal(readlinkSync(join(fixture.installRoot, "current")), `versions/${encodedTag}`);
+			assert.ok(result.stdout.toString().includes(`Atomic ${rawTag} installed successfully.`));
+			const requests = readFileSync(fixture.requestLog, "utf8");
+			assert.match(requests, /releases\/tags\/requested-alias/u);
+			assert.ok(requests.includes(`/releases/download/${encodedTag}/atomic-linux-x64.tar.gz`));
+			assert.doesNotMatch(requests, /%255Cu0072|%255C%2F|%2522/u);
+			const installed = spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"], {
+				env: { PATH: fixture.tools },
+			});
+			assert.equal(installed.exitCode, 0, installed.stderr.toString());
+			assert.equal(installed.stdout.toString().trim(), rawTag);
+			assertNoTemporaryState(fixture);
+		} finally {
+			fixture.cleanup();
+		}
+	}
+});
+
 unixTest("shell installer rejects only the impossible install-root and launcher-path equality before requests", () => {
 	for (const paths of [
 		{ install: "collision/atomic", bin: "collision" },
@@ -736,6 +815,27 @@ unixTest("shell installer resolves symlink aliases before collision preflight wi
 		} finally {
 			fixture.cleanup();
 		}
+	}
+});
+
+darwinRosettaFallbackTest("shell installer detects Rosetta with /usr/sbin/sysctl outside restricted PATH", () => {
+	const fixture = createFixture();
+	try {
+		const result = fixture.run({
+			args: ["--ref", "1.0.0"],
+			os: "Darwin",
+			arch: "x86_64",
+			sysctl: false,
+		});
+		assertSuccess(result);
+		assert.equal(
+			readFileSync(join(fixture.installRoot, "current", "asset.txt"), "utf8"),
+			"atomic-darwin-arm64.tar.gz",
+		);
+		assert.match(readFileSync(fixture.requestLog, "utf8"), /atomic-darwin-arm64\.tar\.gz$/mu);
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
 	}
 });
 unixTest("shell installer selects every Darwin and Linux archive, including Rosetta and musl", () => {

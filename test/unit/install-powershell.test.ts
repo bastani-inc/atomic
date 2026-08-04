@@ -49,6 +49,7 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.doesNotMatch(source, /\?\?|ForEach-Object\s+-Parallel|\?\s+[^:\r\n]+\s+:/u);
 	assert.doesNotMatch(source, /\b(?:npm|pnpm|yarn|bun|node|git|jq)(?:\.exe)?\b/iu);
 	assert.match(source, /\^\(\[A-Fa-f0-9\]\{64\}\) \(\[ \*\]\)\(\[\^\\\\\/\\r\\n\]\+\)\$/u);
+	assert.ok(source.includes("$assetRowPattern = '(^|[ \\t*])'"));
 	assert.match(source, /\$checksumAssetRows\.Count\s+-ne\s+1/u);
 
 	const checksumComparison = source.indexOf("Checksum verification failed");
@@ -650,7 +651,8 @@ function New-FixtureRelease {
         $archivePath = Join-Path $releaseDir $assetName
         Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $archivePath -CompressionLevel Optimal
         $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $rows += "$hash  $assetName"
+        $marker = if ($assetName -eq "atomic-windows-arm64.zip") { " *" } else { "  " }
+        $rows += "$hash$marker$assetName"
     }
     Set-Content -LiteralPath (Join-Path $releaseDir "SHA256SUMS") -Value ($rows -join [Environment]::NewLine) -Encoding ASCII -NoNewline
     Remove-Item -LiteralPath $payloadDir -Recurse -Force

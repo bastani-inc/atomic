@@ -84,6 +84,7 @@ for container in alpine:3.22 debian:bookworm-slim; do
         /bin/sh -c '
             set -eu
             if [ -f /etc/alpine-release ]; then
+                /bin/ln -sf /usr/bin/awk /fixture/bin/awk
                 /bin/ln -sf /usr/bin/sha256sum /fixture/bin/sha256sum
                 PATH=/fixture/bin:/bin
                 export PATH

@@ -554,7 +554,7 @@ try {
     Invoke-AtomicDownload "$releaseBase/SHA256SUMS" $checksumsPath
 
     $checksumAssetRows = @()
-    $assetRowPattern = '(^|[ \t])' + [regex]::Escape($assetName) + '[ \t]*$'
+    $assetRowPattern = '(^|[ \t*])' + [regex]::Escape($assetName) + '[ \t]*$'
     foreach ($line in (Get-Content -LiteralPath $checksumsPath)) {
         if ($line -match $assetRowPattern) {
             $checksumAssetRows += $line

@@ -4,7 +4,7 @@ This page gets you from install to a useful first Atomic session. Atomic is the 
 
 ## Prerequisites
 
-- **Release archive install:** macOS and Linux need `curl` or `wget` plus `tar`; Windows uses built-in PowerShell commands. Node.js and a package manager are not required.
+- **Release archive install:** macOS and Linux need `awk`, `tar`, and either `curl` or `wget`; Windows uses built-in PowerShell commands. Node.js and a package manager are not required.
 - **Package install:** Node.js 24 LTS or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.3.14+ for Bun installs or workflow-authoring examples.
 - **Model-provider access** — Use `/login` after startup. Supports provider subscriptions and APIs.
 

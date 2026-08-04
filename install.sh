@@ -212,7 +212,7 @@ PHYSICAL_BIN_PATH=$(canonicalize_existing_prefix "$BIN_PATH") ||
 [ "$PHYSICAL_BIN_PATH" != "$PHYSICAL_INSTALL_ROOT" ] ||
     fail "ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR/atomic: $INSTALL_ROOT"
 
-for required_command in uname tar mkdir mv chmod ln rm rmdir; do
+for required_command in uname awk tar mkdir mv chmod ln rm rmdir; do
     command -v "$required_command" >/dev/null 2>&1 || fail "required command not found: $required_command"
 done
 
@@ -237,8 +237,15 @@ fi
 HOST_OS=$(uname -s 2>/dev/null) || fail "unable to determine the host operating system"
 HOST_MACHINE=$(uname -m 2>/dev/null) || fail "unable to determine the host architecture"
 
-if [ "$HOST_OS" = Darwin ] && command -v sysctl >/dev/null 2>&1; then
-    if [ "$(sysctl -in hw.optional.arm64 2>/dev/null || :)" = 1 ]; then
+if [ "$HOST_OS" = Darwin ]; then
+    if command -v sysctl >/dev/null 2>&1; then
+        arm64_capable=$(sysctl -in hw.optional.arm64 2>/dev/null || :)
+    elif [ -x /usr/sbin/sysctl ]; then
+        arm64_capable=$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null || :)
+    else
+        arm64_capable=
+    fi
+    if [ "$arm64_capable" = 1 ]; then
         HOST_MACHINE=arm64
     fi
 fi
@@ -459,20 +466,192 @@ resolve_redirect_tag() {
 
 parse_release_tag() {
     release_json=$1
-    case $release_json in
-        *\"tag_name\"*) ;;
-        *) return 1 ;;
-    esac
-    release_json_tail=${release_json#*\"tag_name\"}
-    release_json_tail=${release_json_tail#*:}
-    case $release_json_tail in
-        *\"*) ;;
-        *) return 1 ;;
-    esac
-    release_json_tail=${release_json_tail#*\"}
-    parsed_release_tag=${release_json_tail%%\"*}
-    [ -n "$parsed_release_tag" ] || return 1
-    printf '%s\n' "$parsed_release_tag"
+    printf '%s\n' "$release_json" | awk '
+        function reject() {
+            exit 1
+        }
+
+        function hex_digit(character) {
+            if (character >= "0" && character <= "9") return character + 0
+            if (character == "a" || character == "A") return 10
+            if (character == "b" || character == "B") return 11
+            if (character == "c" || character == "C") return 12
+            if (character == "d" || character == "D") return 13
+            if (character == "e" || character == "E") return 14
+            if (character == "f" || character == "F") return 15
+            return -1
+        }
+
+        function hex_quad(    count, digit, value) {
+            if (position + 3 > line_length) return -1
+            value = 0
+            for (count = 0; count < 4; count++) {
+                digit = hex_digit(substr(line, position, 1))
+                if (digit < 0) return -1
+                value = value * 16 + digit
+                position++
+            }
+            return value
+        }
+
+        function utf8(codepoint) {
+            if (codepoint <= 0 || codepoint > 1114111) return ""
+            if (codepoint <= 127) return sprintf("%c", codepoint)
+            if (codepoint <= 2047) {
+                return sprintf("%c%c", 192 + int(codepoint / 64), 128 + codepoint % 64)
+            }
+            if (codepoint <= 65535) {
+                return sprintf("%c%c%c", 224 + int(codepoint / 4096),
+                    128 + int(codepoint / 64) % 64, 128 + codepoint % 64)
+            }
+            return sprintf("%c%c%c%c", 240 + int(codepoint / 262144),
+                128 + int(codepoint / 4096) % 64,
+                128 + int(codepoint / 64) % 64, 128 + codepoint % 64)
+        }
+
+        function json_string(    character, codepoint, escape, low, output, scalar) {
+            output = ""
+            position++
+            while (position <= line_length) {
+                character = substr(line, position, 1)
+                position++
+                if (character == "\"") {
+                    decoded_string = output
+                    return 1
+                }
+                if (character != "\\") {
+                    if (character < " ") return 0
+                    output = output character
+                    continue
+                }
+
+                if (position > line_length) return 0
+                escape = substr(line, position, 1)
+                position++
+                if (escape == "\"" || escape == "\\" || escape == "/") {
+                    output = output escape
+                } else if (escape == "b") {
+                    output = output sprintf("%c", 8)
+                } else if (escape == "f") {
+                    output = output sprintf("%c", 12)
+                } else if (escape == "n") {
+                    output = output sprintf("%c", 10)
+                } else if (escape == "r") {
+                    output = output sprintf("%c", 13)
+                } else if (escape == "t") {
+                    output = output sprintf("%c", 9)
+                } else if (escape == "u") {
+                    codepoint = hex_quad()
+                    if (codepoint < 0) return 0
+                    if (codepoint >= 55296 && codepoint <= 56319) {
+                        if (substr(line, position, 2) != "\\u") return 0
+                        position += 2
+                        low = hex_quad()
+                        if (low < 56320 || low > 57343) return 0
+                        codepoint = 65536 + (codepoint - 55296) * 1024 + low - 56320
+                    } else if (codepoint >= 56320 && codepoint <= 57343) {
+                        return 0
+                    }
+                    scalar = utf8(codepoint)
+                    if (scalar == "") return 0
+                    output = output scalar
+                } else {
+                    return 0
+                }
+            }
+            return 0
+        }
+
+        BEGIN {
+            depth = 0
+            root_started = 0
+            top_level_key = 0
+            need_colon = 0
+            need_tag_value = 0
+            found = 0
+        }
+
+        {
+            line = $0 "\n"
+            line_length = length(line)
+            position = 1
+            while (position <= line_length) {
+                character = substr(line, position, 1)
+                if (character == " " || character == "\t" || character == "\r" || character == "\n") {
+                    position++
+                    continue
+                }
+
+                if (!root_started) {
+                    if (character != "{") reject()
+                    root_started = 1
+                    depth = 1
+                    stack[depth] = character
+                    top_level_key = 1
+                    position++
+                    continue
+                }
+
+                if (depth == 1 && top_level_key) {
+                    if (character == "}") reject()
+                    if (character != "\"") reject()
+                    if (!json_string()) reject()
+                    wanted_key = (decoded_string == "tag_name")
+                    top_level_key = 0
+                    need_colon = 1
+                    continue
+                }
+
+                if (depth == 1 && need_colon) {
+                    if (character != ":") reject()
+                    need_colon = 0
+                    need_tag_value = wanted_key
+                    position++
+                    continue
+                }
+
+                if (depth == 1 && need_tag_value) {
+                    if (character != "\"") reject()
+                    if (!json_string()) reject()
+                    if (decoded_string == "") reject()
+                    print decoded_string
+                    found = 1
+                    exit 0
+                }
+
+                if (character == "\"") {
+                    if (!json_string()) reject()
+                    continue
+                }
+                if (character == "{" || character == "[") {
+                    depth++
+                    stack[depth] = character
+                    position++
+                    continue
+                }
+                if (character == "}" || character == "]") {
+                    if ((character == "}" && stack[depth] != "{") ||
+                        (character == "]" && stack[depth] != "[")) reject()
+                    delete stack[depth]
+                    depth--
+                    if (depth == 0) root_finished = 1
+                    position++
+                    continue
+                }
+                if (depth == 1 && character == ",") {
+                    top_level_key = 1
+                    position++
+                    continue
+                }
+                if (root_finished) reject()
+                position++
+            }
+        }
+
+        END {
+            if (!found) exit 1
+        }
+    '
 }
 
 TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags

@@ -33,6 +33,9 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 		assert.ok(docs[name].includes(pinnedPowerShell), `${name} is missing the literal pinned PowerShell form`);
 	}
 
+	for (const name of ["readme", "quickstart"] as const) {
+		assert.match(docs[name], /need `awk`, `tar`, and either `curl` or `wget`/u);
+	}
 	for (const knob of ["ATOMIC_INSTALL_DIR", "ATOMIC_BIN_DIR", "ATOMIC_VERSION", "GITHUB_TOKEN", "GH_TOKEN"]) {
 		assert.ok(docs.quickstart.includes(knob), `quickstart is missing ${knob}`);
 		assert.ok(docs.windows.includes(knob), `windows docs are missing ${knob}`);
@@ -68,5 +71,6 @@ test("CI runs the POSIX installer smoke in Alpine and Debian slim", async () => 
 	assert.match(smoke, /alpine:3\.22/u);
 	assert.match(smoke, /debian:bookworm-slim/u);
 	assert.match(smoke, /\/bin\/sh \/repo\/install\.sh --ref 1\.0\.0/u);
+	assert.match(smoke, /ln -sf \/usr\/bin\/awk \/fixture\/bin\/awk/u);
 	assert.match(smoke, /! command -v ldd/u);
 });
