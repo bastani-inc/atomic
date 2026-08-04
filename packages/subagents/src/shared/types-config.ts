@@ -60,6 +60,8 @@ export interface RunSyncOptions {
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;
 	allowIntercomDetach?: boolean;
+	/** Start the admitted child and settle this call with a continued result immediately. */
+	backgroundContinuation?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onDetachedExit?: (result: SingleResult) => void;
 	/** Shared foreground-group signal used to release sibling supervision after one exact child commits Intercom detach. */

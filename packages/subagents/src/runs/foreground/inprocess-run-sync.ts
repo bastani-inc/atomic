@@ -219,6 +219,62 @@ export async function runSingleInProcess(
 			interrupt: options.interruptSignal ?? neverAbort,
 		},
 	);
+	if (options.backgroundContinuation) {
+		control.continueInBackground(running, "async-requested");
+		void running.promise.then(
+			async (backgroundOutcome) => {
+				const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths);
+				if (artifactPaths) {
+					await control.deliverChildResult(
+						{
+							path: backgroundOutcome.path,
+							status: backgroundOutcome.status,
+							...(backgroundOutcome.status === "error" ? { cause: backgroundOutcome.cause } : {}),
+							stats: backgroundOutcome.stats,
+							envelope: backgroundOutcome.envelope,
+							sessionFile: backgroundOutcome.sessionFile,
+							timestamp: Date.now(),
+							artifactsDir: options.artifactsDir,
+						},
+						{ artifactsDir: options.artifactsDir, maxOutput: options.maxOutput },
+					);
+					writeArtifact(artifactPaths.outputPath, recovered.envelope ?? recovered.finalOutput ?? "");
+					writeMetadata(artifactPaths.metadataPath, recovered);
+				}
+				options.onDetachedExit?.(recovered);
+			},
+			() => undefined,
+		);
+		const continuedResult: SingleResult = {
+			agent: agent.name,
+			task,
+			status: "continued",
+			path: admission.admitted.identity.path,
+			envelope: "Child continued in background.",
+			exitCode: 0,
+			detached: true,
+			detachedReason: "async-requested",
+			messages: [],
+			usage: emptyUsage(),
+			progress: {
+				index: options.index ?? 0,
+				agent: agent.name,
+				status: "running",
+				task,
+				recentTools: [],
+				recentOutput: [],
+				toolCount: 0,
+				tokens: 0,
+				durationMs: Math.max(0, Date.now() - startedAt),
+				lastActivityAt: Date.now(),
+			},
+		};
+		options.onUpdate?.({
+			content: [{ type: "text", text: continuedResult.envelope ?? "" }],
+			details: { mode: "single", runId: options.runId, results: [continuedResult] } satisfies Details,
+		});
+		return continuedResult;
+	}
 	let detached = false;
 	let resolveContinuation!: () => void;
 	const continuation = new Promise<void>((resolve) => {

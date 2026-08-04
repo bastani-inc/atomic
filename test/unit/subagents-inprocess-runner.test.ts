@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
+import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import {
 	type AttemptOutcome,
 	type ChildSpec,
@@ -92,6 +93,33 @@ test("background continuation rejects an attempt that is no longer running", () 
 		};
 		assert.throws(() => continue_in_background(control, running, "async-requested"), /requires a running attempt/);
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("background continuation returns the child identity before the in-process session finishes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-background-"));
+	const gate = Promise.withResolvers<void>();
+	const terminal = Promise.withResolvers<Awaited<ReturnType<typeof runSingleInProcess>>>();
+	try {
+		const result = await runSingleInProcess(root, sampleAgent(), "continue this task", {
+			cwd: root,
+			runId: "background-run",
+			sessionDir: join(root, "sessions"),
+			backgroundContinuation: true,
+			testSession: { promptGate: gate.promise },
+			onDetachedExit: (completed) => terminal.resolve(completed),
+		});
+		assert.equal(result.status, "continued");
+		assert.equal(result.detached, true);
+		assert.equal(result.detachedReason, "async-requested");
+		assert.match(result.path ?? "", /^background-run\//);
+
+		gate.resolve();
+		const completed = await terminal.promise;
+		assert.equal(completed.status, "ok");
+	} finally {
+		gate.resolve();
 		rmSync(root, { recursive: true, force: true });
 	}
 });
