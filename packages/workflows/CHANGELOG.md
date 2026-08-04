@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed thrown retryable stage failures to retry the current model with bounded exponential backoff from `settings.retry` before advancing through `fallbackModels`; disabling retry keeps immediate candidate advancement ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
 - Fixed a same-candidate stage retry losing the stage prompt. The retry resumed the existing session turn with a transcript that no longer ended in the prompt it was resuming, which the agent rejects; the prompt is now retained for that path and still re-sent on the re-prompt path ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+- Fixed a same-candidate stage retry stopping outright when the failed attempt had already streamed a completed assistant message. Resuming the existing turn is now attempted only when the transcript still ends in a message the agent can continue from; otherwise the retry re-sends the prompt, which recovers instead of failing ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
 
 ## [0.9.12] - 2026-08-04
 
