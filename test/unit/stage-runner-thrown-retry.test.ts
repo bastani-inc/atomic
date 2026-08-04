@@ -587,3 +587,148 @@ describe("shared retry policy", () => {
 		assert.equal(workflowsNextRetryDecision({ enabled: true, maxRetries: 3, baseDelayMs: 250 }, 0, false), undefined);
 	});
 });
+
+/**
+ * Real-AgentSession-shaped probe: `asAgentSession()`/`retryableAgentSession()`
+ * accept it, so tests reach the `_runAgentContinue()` continuation branch that
+ * lightweight adapters skip.
+ */
+function realSessionProbe(
+	settings: ReturnType<typeof retrySettings>,
+	options: {
+		readonly failCalls: number;
+		/** Extra messages the failing attempt admits after its user prompt. */
+		readonly admit?: (messages: StageSessionRuntime["messages"], call: number) => void;
+	},
+): {
+	readonly agentSession: AgentSessionAdapter;
+	readonly messages: StageSessionRuntime["messages"];
+	readonly continuedTranscripts: Array<StageSessionRuntime["messages"]>;
+	readonly promptTexts: string[];
+} {
+	const messages: StageSessionRuntime["messages"] = [];
+	const continuedTranscripts: Array<StageSessionRuntime["messages"]> = [];
+	const promptTexts: string[] = [];
+	let call = 0;
+	const agentSession: AgentSessionAdapter = {
+		async create() {
+			return sessionWithSettings(
+				settings,
+				async (text) => {
+					call += 1;
+					promptTexts.push(text);
+					messages.push({ role: "user", content: text, timestamp: Date.now() } as never);
+					options.admit?.(messages, call);
+					if (call > options.failCalls) return "ok";
+					messages.push({
+						role: "assistant",
+						stopReason: "error",
+						errorMessage: "503 service unavailable",
+						content: [],
+					} as never);
+					throw new Error("503 service unavailable");
+				},
+				{
+					messages,
+					getLastAssistantText: () => "ok",
+					state: { messages },
+					sessionManager: {},
+					modelRuntime: {},
+					getContextUsage: () => ({}),
+					_runAgentContinue: async () => {
+						continuedTranscripts.push([...messages]);
+						messages.push({
+							role: "assistant",
+							stopReason: "stop",
+							content: [{ type: "text", text: "ok" }],
+						} as never);
+					},
+				} as unknown as Partial<StageSessionRuntime>,
+			);
+		},
+	};
+	return { agentSession, messages, continuedTranscripts, promptTexts };
+}
+
+function userMessagesWithText(messages: StageSessionRuntime["messages"], text: string): number {
+	return messages.filter((message) => message.role === "user" && message.content === text).length;
+}
+
+describe("createStageContext — continuation eligibility across admitted orderings", () => {
+	test("a tool-result tail is a valid continuation and keeps the same turn", async () => {
+		const probe = realSessionProbe(retrySettings(), {
+			failCalls: 1,
+			admit: (messages, call) => {
+				if (call === 1) messages.push({ role: "toolResult", content: "tool output" } as never);
+			},
+		});
+		const ctx = createStageContext(
+			makeOpts({ adapters: { agentSession: probe.agentSession }, stageOptions: { model: "anthropic/primary" } }),
+		) as InternalStageContext;
+
+		assert.equal(await ctx.prompt("do it"), "ok");
+		assert.deepEqual(probe.promptTexts, ["do it"], "a valid tail must not re-prompt");
+		assert.equal(probe.continuedTranscripts.length, 1);
+		const observed = probe.continuedTranscripts[0]!;
+		assert.equal(observed[observed.length - 1]?.role, "toolResult");
+	});
+
+	test("a retained non-error assistant tail re-prompts instead of an invalid continuation", async () => {
+		// pi-agent-core rejects continue() with "Cannot continue from message
+		// role: assistant", so the retry must not take the continuation path.
+		const probe = realSessionProbe(retrySettings(), {
+			failCalls: 1,
+			admit: (messages, call) => {
+				if (call === 1) {
+					messages.push({
+						role: "assistant",
+						stopReason: "stop",
+						content: [{ type: "text", text: "partial" }],
+					} as never);
+				}
+			},
+		});
+		const ctx = createStageContext(
+			makeOpts({ adapters: { agentSession: probe.agentSession }, stageOptions: { model: "anthropic/primary" } }),
+		) as InternalStageContext;
+
+		assert.equal(await ctx.prompt("do it"), "ok");
+		assert.deepEqual(probe.continuedTranscripts, [], "an assistant tail is not a valid continuation");
+		assert.deepEqual(probe.promptTexts, ["do it", "do it"], "the retry must re-send the prompt instead");
+		assert.equal(userMessagesWithText(probe.messages, "do it"), 1, "the re-prompt must not duplicate the input");
+	});
+
+	test("a pause during backoff drops the retained prompt and uses the resumed text", async () => {
+		const probe = realSessionProbe(retrySettings({ baseDelayMs: 1000 }), { failCalls: 1 });
+		const ctx = createStageContext(
+			makeOpts({ adapters: { agentSession: probe.agentSession }, stageOptions: { model: "anthropic/primary" } }),
+		) as InternalStageContext;
+
+		const prompt = ctx.prompt("do it");
+		await flushMicrotasks();
+		await ctx.__requestPause();
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		await ctx.__resume("resumed");
+		await flushMicrotasks();
+
+		assert.equal(await prompt, "ok");
+		assert.deepEqual(probe.continuedTranscripts, [], "a resumed prompt does not continue the old turn");
+		assert.deepEqual(probe.promptTexts, ["do it", "resumed"]);
+		assert.equal(userMessagesWithText(probe.messages, "do it"), 0, "the abandoned input must not survive the resume");
+	});
+
+	test("ctx.abort during backoff stops before any continuation", async () => {
+		const probe = realSessionProbe(retrySettings({ baseDelayMs: 1000 }), { failCalls: 1 });
+		const ctx = createStageContext(
+			makeOpts({ adapters: { agentSession: probe.agentSession }, stageOptions: { model: "anthropic/primary" } }),
+		) as InternalStageContext;
+
+		const prompt = ctx.prompt("do it");
+		await flushMicrotasks();
+		await ctx.abort();
+
+		await assert.rejects(prompt, /stage aborted/);
+		assert.deepEqual(probe.promptTexts, ["do it"]);
+		assert.deepEqual(probe.continuedTranscripts, [], "an aborted retry must not resume the turn");
+	});
+});

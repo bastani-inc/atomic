@@ -116,6 +116,17 @@ function retryableAgentSession(activeSession: StageSessionRuntime): RetryableAge
 	return typeof candidate._runAgentContinue === "function" ? (session as RetryableAgentSession) : undefined;
 }
 
+/**
+ * pi-agent-core's `Agent.continue()` rejects an empty transcript and an
+ * assistant tail. A retry that restored live state may leave either — a
+ * non-error assistant admitted during the failed attempt is retained — so the
+ * continuation path is only eligible when the tail satisfies that contract.
+ */
+function canContinueFromTranscript(activeSession: StageSessionRuntime): boolean {
+	const last = activeSession.messages[activeSession.messages.length - 1];
+	return last !== undefined && last.role !== "assistant";
+}
+
 class ThrownErrorRetryPaused extends Error {
 	constructor(readonly resume: RetryPauseResume) {
 		super("atomic-workflows: thrown-error retry paused");
@@ -635,7 +646,15 @@ export class StageSessionController {
 				if (this.disposed)
 					throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
 				if (this.opts.signal?.aborted) throw this.workflowAbortReason();
-				retryAdmittedPrompt = willContinue;
+				// Only resume the existing turn when the restored transcript still
+				// satisfies pi-agent-core's continuation contract. A retained
+				// non-error assistant tail would otherwise be rejected, so fall back
+				// to re-prompting and drop the input that path re-sends.
+				retryAdmittedPrompt = willContinue && canContinueFromTranscript(activeSession);
+				if (!retryAdmittedPrompt) {
+					this.dropRetainedPrompt(activeSession, retainedPrompt);
+					retainedPrompt = undefined;
+				}
 			}
 		}
 	}

@@ -2,18 +2,40 @@
 date: 2026-08-04 09:27:05 PDT
 researcher: GPT-5.6 Luna
 git_commit: 226eacfa71793cd561c9e86724f67ecbf00a2fdc
-branch: atomic-issue-2170
+branch: fix/2170-model-fallback-convergence
 repository: atomic-issue-2170
 topic: "Issue #2170 model fallback convergence"
 tags: [research, codebase, model-fallback, main-chat, workflows, retries]
-status: complete
+status: superseded
 last_updated: 2026-08-04
-last_updated_by: GPT-5.6 Luna
+last_updated_by: Claude Opus 5
 breaking_changes_allowed: false
 compatibility_context: "The repository publishes @bastani/atomic and raw-TypeScript companion packages. Preserve existing public APIs, session history behavior, workflow controls, and provider retry semantics unless the issue explicitly changes them."
 ---
 
 # Research
+
+> **Status: superseded by the delivered change.** This document is the research
+> snapshot that preceded implementation, kept for the seams and rationale it
+> records. Everything below it describing the work as uncommitted, listing a
+> worktree inventory, or reporting validation counts is a snapshot of that
+> moment and no longer describes the repository.
+>
+> What actually shipped, on branch `fix/2170-model-fallback-convergence`:
+>
+> - The classifier lives in `packages/coding-agent/src/core/model-fallback-failures.ts`;
+>   workflows and subagents re-export it.
+> - The retry decision and backoff live in `packages/coding-agent/src/core/retry-policy.ts`
+>   as `nextRetryDecision`, exported from the package index and re-exported by
+>   `packages/workflows/src/runs/shared/retry.ts`. The `thrownRetryDecision` helper
+>   named below was replaced by it and no longer exists.
+> - The durable `atomic:retry-rollback` session entry described below was dropped as
+>   out of scope; workflow retry restores live state only, matching main-chat retry.
+> - Context overflow advances the fallback chain once compaction is disabled, fails,
+>   or reports it unresolved.
+> - All three gates pass: `npm run check`, `npm run test:unit`, and
+>   `npm run test --workspace=@bastani/atomic` (the last after
+>   `npm run build --workspace=@bastani/atomic-natives`).
 
 ## Research Question
 

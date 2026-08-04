@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { test } from "vitest";
-import { _checkCompaction } from "../../packages/coding-agent/src/core/agent-session-auto-compaction.js";
+import {
+	_checkCompaction,
+	_runAutoCompaction,
+} from "../../packages/coding-agent/src/core/agent-session-auto-compaction.js";
 import {
 	_createRetryPromiseForAgentEnd,
 	_processAgentEvent,
@@ -671,5 +674,93 @@ test("compaction disabled leaves an ordinary provider error resolvable by same-m
 		} as unknown as Partial<AssistantMessage>),
 	);
 
+	assert.equal(session._contextOverflowUnresolved, false);
+});
+
+test("a failed overflow compaction advances the real fallback chain end to end", async () => {
+	// Runs the production compaction path — _checkCompaction into
+	// _runAutoCompaction — and the production fallback switch, rather than
+	// injecting the unresolved flag.
+	const primary = model("openai-codex", "gpt-5.5");
+	const fallback = model("anthropic", "claude-opus-4-8");
+	const overflow = overflowMessage();
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	let continued = 0;
+	const session: Record<string, unknown> = {
+		model: primary,
+		thinkingLevel: "high" as ThinkingLevel,
+		_lastAssistantMessage: overflow,
+		_protectedStreamingCustomMessages: [],
+		_postToolCompactionPreflightError: undefined,
+		_pendingPostToolCompactionGuard: undefined,
+		_pendingPostCompactionContinuation: undefined,
+		_contextOverflowUnresolved: false,
+		_overflowRecoveryAttempted: false,
+		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_retryAttempt: 0,
+		settingsManager: {
+			getCompactionSettings: () => ({ enabled: true }),
+			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
+			getDefaultProvider: () => "openai-codex",
+		},
+		_modelRuntime: {
+			getAvailableSnapshot: () => [primary, fallback],
+			getModel: (provider: string, id: string) =>
+				provider === fallback.provider && id === fallback.id ? fallback : undefined,
+			hasConfiguredAuth: () => true,
+		},
+		agent: {
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [overflow] },
+			continue: async () => {
+				continued += 1;
+			},
+		},
+		sessionManager: {
+			getBranch: () => [],
+			appendModelChange: (provider: string, id: string) => events.push({ type: "session_model", provider, id }),
+			appendThinkingLevelChange: () => undefined,
+		},
+		// The compaction planner fails, which is what makes the overflow unresolved.
+		_applyVerbatimCompaction: async () => {
+			throw new Error("planner unavailable");
+		},
+		_getRequiredRequestAuth: async () => ({}),
+		_dropTrailingAutoCompactionRetryAssistantIfPresent: () => undefined,
+		_schedulePostAutoCompactionContinuationProbe: () => undefined,
+		_withContextWindowForModelSwitch: (candidate: Model<Api>) => candidate,
+		_refreshBaseSystemPromptFromActiveTools: () => undefined,
+		_applyInterruptAbortMessage: () => undefined,
+		_applyProviderErrorGuidance: () => undefined,
+		_emitExtensionEvent: async () => undefined,
+		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
+		_emitModelChanged: () => undefined,
+		_emitModelSelect: async () => undefined,
+		_resolveRetry: () => undefined,
+		_isFallbackableError,
+		_isRetryableError,
+		_isEmptyCompletion: () => false,
+		_isSafetyRefusal: () => false,
+		_handleRetryableError: async () => false,
+		_restoreFallbackModel: async () => false,
+		// Production compaction and fallback implementations.
+		_checkCompaction,
+		_runAutoCompaction,
+		_trySwitchToFallbackModel,
+	};
+
+	await _processAgentEvent.call(session as never, { type: "agent_end" } as never);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+
+	assert.ok(
+		events.some((event) => event.type === "compaction_end" && event.unresolvedOverflow === true),
+		"a failed overflow compaction must report the overflow unresolved",
+	);
+	assert.ok(
+		events.some((event) => event.type === "model_fallback_start" && event.to === "anthropic/claude-opus-4-8"),
+		"the unresolved overflow must reach the fallback chain",
+	);
+	assert.equal((session.agent as { state: { model: Model<Api> } }).state.model, fallback);
+	assert.equal(continued, 1);
 	assert.equal(session._contextOverflowUnresolved, false);
 });
