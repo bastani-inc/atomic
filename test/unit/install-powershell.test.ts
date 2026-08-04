@@ -1375,7 +1375,7 @@ try {
         $danglingCurrent = @(Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -eq "current" })
         Assert-Fixture ($danglingCurrent.Count -eq 1) "deleting the version also removed the current junction entry"
         Assert-Fixture (($danglingCurrent[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "dangling current entry is not a junction"
-        Assert-Fixture (-not [IO.Directory]::Exists($current)) "current junction target was not deleted"
+        Assert-Fixture (-not [IO.Directory]::Exists($versionOne)) "version target was not deleted"
 
         $danglingAtomicCurrent = @(Get-ChildItem -LiteralPath $binDir -Force | Where-Object { $_.Name -eq "atomic-current" })
         Assert-Fixture ($danglingAtomicCurrent.Count -eq 1 -and ($danglingAtomicCurrent[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "deleting the version did not leave the atomic-current junction dangling"

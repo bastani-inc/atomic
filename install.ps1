@@ -63,11 +63,16 @@ function Get-AtomicRedirectTag {
 
     $response = $null
     try {
-        $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -MaximumRedirection 0 -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -MaximumRedirection 0 -ErrorAction SilentlyContinue
     }
     catch {
-        if ($null -ne $_.Exception -and $null -ne $_.Exception.PSObject.Properties["Response"]) {
-            $response = $_.Exception.Response
+        if ($null -ne $_.Exception) {
+            try {
+                $response = $_.Exception.Response
+            }
+            catch {
+                $response = $null
+            }
         }
     }
 
