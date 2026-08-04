@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
+import {
+	resolveRunIndicatorStatuses,
+	runIndicatorStatus,
+} from "../../packages/workflows/src/shared/run-indicator-status.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 function makeRun(id: string, status: RunSnapshot["status"], stages: StageSnapshot[] = []): RunSnapshot {
@@ -79,5 +82,25 @@ describe("runIndicatorStatus", () => {
 			run.pendingPrompt = { id: `${status}-prompt`, kind: "confirm", message: "Continue?", createdAt: 1 };
 			assert.equal(runIndicatorStatus(run), status);
 		}
+	});
+});
+
+describe("resolveRunIndicatorStatuses", () => {
+	test("resolves each listed run against the complete collection into serializable data", () => {
+		const root = makeRun("root", "running");
+		const child = { ...makeRun("child", "running", [awaitingStage()]), parentRunId: root.id };
+		const unrelated = makeRun("unrelated", "running");
+		const statuses = resolveRunIndicatorStatuses([root, unrelated], [root, child, unrelated]);
+		assert.deepEqual(statuses, { root: "awaiting_input", unrelated: "running" });
+		// The record must survive a JSON round-trip: it is persisted with the
+		// /workflow status chat payload and consumed after a session restore.
+		assert.deepEqual(JSON.parse(JSON.stringify(statuses)), statuses);
+	});
+
+	test("keeps terminal precedence and covers only the listed runs", () => {
+		const done = makeRun("done", "completed", [awaitingStage()]);
+		const hidden = makeRun("hidden", "running", [awaitingStage()]);
+		const statuses = resolveRunIndicatorStatuses([done], [done, hidden]);
+		assert.deepEqual(statuses, { done: "completed" });
 	});
 });

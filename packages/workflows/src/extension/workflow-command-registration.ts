@@ -1,9 +1,10 @@
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
+import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
 import { schemaIsRequired } from "../shared/schema-introspection.js";
 import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
-import { emitChatSurface, setStatusPayloadRenderRuns } from "../tui/chat-surface-message.js";
+import { emitChatSurface } from "../tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { openHostInputsForm } from "../tui/host-input-form.js";
 import { openInlineInputsForm } from "../tui/inline-form-overlay.js";
@@ -160,9 +161,12 @@ async function workflowSlashHandler(
 		}
 		const capturedRuns = store.graphSnapshot().runs;
 		const rows = selectRunsForPicker(capturedRuns, "", true, Date.now());
-		const payload = { kind: "status" as const, runs: rows.map((r) => r.run) };
-		setStatusPayloadRenderRuns(payload, capturedRuns);
-		emitChatSurface(pi, payload);
+		const visibleRuns = rows.map((r) => r.run);
+		emitChatSurface(pi, {
+			kind: "status",
+			runs: visibleRuns,
+			indicatorStatuses: resolveRunIndicatorStatuses(visibleRuns, capturedRuns),
+		});
 		return;
 	}
 	if (subcommand === "reload") {

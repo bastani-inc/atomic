@@ -29,6 +29,22 @@ export function runIndicatorStatus(run: RunSnapshot, allRuns: readonly RunSnapsh
 	return status;
 }
 
+/**
+ * Precompute the indicator status of each listed run against the complete
+ * run collection. The result is plain serializable data, so a surface whose
+ * payload is persisted and re-rendered after a session restore (e.g. the
+ * `/workflow status` chat entry) keeps hidden-descendant prompt attribution
+ * without serializing the hidden run snapshots themselves.
+ */
+export function resolveRunIndicatorStatuses(
+	runs: readonly RunSnapshot[],
+	allRuns: readonly RunSnapshot[],
+): Readonly<Record<string, RunIndicatorStatus>> {
+	const statuses: Record<string, RunIndicatorStatus> = {};
+	for (const run of runs) statuses[run.id] = runIndicatorStatus(run, allRuns);
+	return statuses;
+}
+
 function runHasPendingInput(run: RunSnapshot): boolean {
 	if (run.pendingPrompt !== undefined) return true;
 	return run.stages.some(

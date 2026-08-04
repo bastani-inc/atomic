@@ -22,6 +22,7 @@
  */
 
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
@@ -46,6 +47,13 @@ export interface RenderStatusListOpts {
 	width?: number;
 	/** Point-in-time run collection used to attribute hidden child prompts. */
 	allRuns?: readonly RunSnapshot[];
+	/**
+	 * Emit-time indicator status per run id, taking precedence over deriving
+	 * from `allRuns`. Lets persisted payloads (e.g. the `/workflow status`
+	 * chat entry) keep hidden-descendant prompt attribution after a session
+	 * restore, when the full run collection is no longer available.
+	 */
+	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>;
 }
 
 function isQuitRun(run: RunSnapshot): boolean {
@@ -77,7 +85,9 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	} else {
 		for (let i = 0; i < sorted.length; i++) {
 			if (i > 0) body.push("");
-			body.push(...renderRunEntry(sorted[i]!, now, cardWidth, opts.theme, opts.allRuns ?? runs));
+			body.push(
+				...renderRunEntry(sorted[i]!, now, cardWidth, opts.theme, opts.allRuns ?? runs, opts.indicatorStatuses),
+			);
 		}
 	}
 	if (opts.showDetailHint !== false && sorted.length > 0) {
@@ -103,11 +113,13 @@ function renderRunEntry(
 	width: number,
 	theme: GraphTheme | undefined,
 	allRuns: readonly RunSnapshot[],
+	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>,
 ): string[] {
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
-	const glyph = statusIconForRun(run, allRuns);
-	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, allRuns)) : "";
+	const indicatorStatus = indicatorStatuses?.[run.id] ?? runIndicatorStatus(run, allRuns);
+	const glyph = statusIconForRun(run, indicatorStatus);
+	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, indicatorStatus)) : "";
 	const accent = theme ? hexToAnsi(theme.accent) : "";
 	const text = theme ? hexToAnsi(theme.text) : "";
 	const muted = theme ? hexToAnsi(theme.textMuted) : "";
@@ -150,10 +162,10 @@ function renderRunEntry(
 	return [...identityRows, identity, metaLine];
 }
 
-function runAccent(run: RunSnapshot, theme?: GraphTheme, allRuns: readonly RunSnapshot[] = [run]): string {
+function runAccent(run: RunSnapshot, theme: GraphTheme | undefined, indicatorStatus: RunIndicatorStatus): string {
 	if (!theme) return "#000000";
 	if (isQuitRun(run)) return theme.warning;
-	return statusColor(runIndicatorStatus(run, allRuns), theme);
+	return statusColor(indicatorStatus, theme);
 }
 
 function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?: string } | undefined {
@@ -426,9 +438,9 @@ function emptyStateLine(theme?: GraphTheme): string {
 	return `  ${hexToAnsi(theme.dim)}no workflow runs in current session${RESET}`;
 }
 
-function statusIconForRun(run: RunSnapshot, allRuns: readonly RunSnapshot[] = [run]): string {
+function statusIconForRun(run: RunSnapshot, indicatorStatus: RunIndicatorStatus): string {
 	if (isQuitRun(run)) return statusIcon("pending");
-	return statusIcon(runIndicatorStatus(run, allRuns));
+	return statusIcon(indicatorStatus);
 }
 
 // Re-export for callers that need to inspect width budgeting.

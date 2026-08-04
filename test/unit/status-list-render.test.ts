@@ -188,6 +188,21 @@ describe("renderStatusList — populated", () => {
 		assert.match(plain, /single\s+\[●\]/);
 	});
 
+	test("precomputed indicatorStatuses drive the indicator without the full run collection (restored payloads)", () => {
+		const theme = deriveGraphTheme({});
+		const root = makeRun({ id: "root-restored", name: "root-restored", status: "running" });
+		const out = renderStatusList([root], {
+			theme,
+			width: 100,
+			indicatorStatuses: { [root.id]: "awaiting_input" },
+			showDetailHint: false,
+		});
+		const plain = stripAnsi(out);
+		const idLine = plain.split("\n").find((line) => line.includes(root.id));
+		assert.ok(idLine?.includes(statusIcon("awaiting_input")));
+		assert.ok(out.includes(hexToAnsi(statusColor("awaiting_input", theme))));
+	});
+
 	test("legacy completed snapshots with incomplete returned status render blocked", () => {
 		const now = 1_000_000;
 		const out = renderStatusList(

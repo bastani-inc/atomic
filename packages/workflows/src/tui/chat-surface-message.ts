@@ -27,6 +27,7 @@
 
 import type { ExtensionAPI } from "../extension/index.js";
 import type { RunDetail } from "../runs/background/status.js";
+import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowInputValues } from "../shared/types.js";
 import { renderDispatchConfirm } from "./dispatch-confirm.js";
@@ -67,17 +68,15 @@ export interface DispatchPayload {
 export interface StatusPayload {
 	kind: "status";
 	runs: readonly RunSnapshot[];
-}
-
-const statusPayloadRenderRuns = new WeakMap<StatusPayload, readonly RunSnapshot[]>();
-
-/** Attach a point-in-time full run collection without exposing it in message details. */
-export function setStatusPayloadRenderRuns(payload: StatusPayload, runs: readonly RunSnapshot[]): void {
-	statusPayloadRenderRuns.set(payload, runs);
-}
-
-function statusRunsForRender(payload: StatusPayload): readonly RunSnapshot[] {
-	return statusPayloadRenderRuns.get(payload) ?? payload.runs;
+	/**
+	 * Emit-time indicator status per visible run id, resolved against the
+	 * complete point-in-time run collection (including hidden nested
+	 * descendants). Persisted with the payload because chat entries are
+	 * re-rendered from `details` after a session restore, where the full
+	 * collection is gone; storing only the derived statuses keeps hidden
+	 * run snapshots out of the serialized message.
+	 */
+	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>;
 }
 
 /** Workflow catalogue after `/workflow list`. */
@@ -179,7 +178,7 @@ export function renderChatSurfacePlainText(
 				width,
 				now,
 				...themed,
-				allRuns: statusRunsForRender(payload),
+				indicatorStatuses: payload.indicatorStatuses,
 			});
 			if (payload.runs.length === 0) return rendered;
 			return [
@@ -308,7 +307,7 @@ function renderPayload(payload: ChatSurfacePayload, theme: GraphTheme, width: nu
 				theme,
 				width,
 				now,
-				allRuns: statusRunsForRender(payload),
+				indicatorStatuses: payload.indicatorStatuses,
 			});
 		case "list":
 			return renderWorkflowList(payload.entries, { theme, width });
