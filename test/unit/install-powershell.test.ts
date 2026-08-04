@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +92,39 @@ test("Windows installer uses a successful latest redirect without querying the G
 	assert.doesNotMatch(assetDownload, /-Headers/u);
 });
 
+test("Windows installer extracts PS7 and PS5.1 redirect response shapes in compatibility order", () => {
+	const source = installerSource();
+	const redirect = source.slice(
+		source.indexOf("function Get-AtomicRedirectTag"),
+		source.indexOf("function Invoke-AtomicApiRequest"),
+	);
+	const exceptionResponse = redirect.indexOf("$response = $_.Exception.Response");
+	const typedLocation = redirect.indexOf("$response.Headers.Location");
+	const tryGetValues = redirect.indexOf("TryGetValues", typedLocation);
+	const getValues = redirect.indexOf("GetValues", tryGetValues + "TryGetValues".length);
+	const stringIndexer = redirect.indexOf('$response.Headers["Location"]', getValues);
+	const baseResponse = redirect.indexOf("$response.BaseResponse.ResponseUri.AbsoluteUri", stringIndexer);
+
+	assert.ok(exceptionResponse >= 0, "redirect failures do not inspect Exception.Response");
+	assert.ok(
+		typedLocation >= 0 &&
+			tryGetValues > typedLocation &&
+			getValues > tryGetValues &&
+			stringIndexer > getValues &&
+			baseResponse > stringIndexer,
+		"redirect locations are not extracted as typed, TryGetValues/GetValues, PS5 indexer, then BaseResponse",
+	);
+	assert.match(redirect, /\[Uri\]::UnescapeDataString\(\$Matches\[1\]\)/u);
+	assert.equal(
+		(redirect.match(/\[Uri\]::UnescapeDataString\(\$Matches\[1\]\)/gu) ?? []).length,
+		1,
+		"redirect tags are not decoded exactly once",
+	);
+	const laterEncode = source.indexOf("$encodedReleaseTag = [Uri]::EscapeDataString($releaseTag)");
+	assert.ok(laterEncode > source.indexOf("$redirectTag = Get-AtomicRedirectTag"));
+	assert.doesNotMatch(redirect, /-SkipHttpErrorCheck/u);
+});
+
 test("Windows installer writes an exact ASCII shim through a sibling atomic-current junction", () => {
 	const source = installerSource();
 	const expectedShimAssignment =
@@ -146,6 +181,22 @@ test("Windows installer records move intent and idempotently rolls back from cat
 		/Get-AtomicDirectoryEntry\s+\$Transaction\.(?:Shim|AtomicCurrent|Current|Version)BackupPath/u,
 	);
 	assert.doesNotMatch(rollback, /throw\s+\$_/u);
+	assert.doesNotMatch(rollback, /\$Transaction\.RollbackCompleted\s*=\s*\$true/u);
+	assert.match(rollback, /\$Transaction\.RollbackCompleted\s*=\s*-not\s+\$rollbackIncomplete/u);
+	for (const intent of [
+		"VersionBackupIntended",
+		"VersionInstallIntended",
+		"CurrentBackupIntended",
+		"CurrentInstallIntended",
+		"AtomicCurrentBackupIntended",
+		"AtomicCurrentInstallIntended",
+		"ShimBackupIntended",
+		"ShimInstallIntended",
+		"UserPathChangeIntended",
+		"CurrentPathChangeIntended",
+	]) {
+		assert.match(rollback, new RegExp(`\\$Transaction\\.${intent}\\s*=\\s*\\$false`, "u"));
+	}
 
 	for (const intent of [
 		"VersionBackupIntended",
@@ -174,11 +225,24 @@ test("Windows installer records move intent and idempotently rolls back from cat
 		source.indexOf("    Write-Output", finalSmoke),
 	);
 	assert.match(catchBlock, /if \(-not \$transactionCommitted\)[\s\S]+Invoke-AtomicTransactionRollback/u);
+	assert.equal((catchBlock.match(/Invoke-AtomicTransactionRollback/gu) ?? []).length, 1);
 	const finalBlock = source.slice(source.indexOf("finally {"));
 	assert.match(
 		finalBlock,
 		/if \(\$null -ne \$transaction -and -not \$transactionCommitted\)[\s\S]+Invoke-AtomicTransactionRollback/u,
 	);
+	assert.match(source, /\$rollbackRetryLimit\s*=\s*[2-9]/u);
+	assert.match(
+		finalBlock,
+		/while \(\$rollbackAttempt -lt \$rollbackRetryLimit -and -not \$transaction\.RollbackCompleted\)/u,
+	);
+	assert.match(finalBlock, /Write-Warning[^\r\n]+rollback[^\r\n]+incomplete/iu);
+	const committedFinally = finalBlock.slice(
+		finalBlock.indexOf("if ($null -ne $transaction -and $transactionCommitted)"),
+		finalBlock.indexOf("if ($null -ne $shimNextPath"),
+	);
+	assert.match(committedFinally, /Remove-AtomicTransactionBackups/u);
+	assert.doesNotMatch(committedFinally, /Invoke-AtomicTransactionRollback/u);
 });
 
 test("Windows installer cleans staged children before only snapshotted empty transaction-created parents", () => {
@@ -230,24 +294,218 @@ test("Windows installer cleans staged children before only snapshotted empty tra
 	assert.doesNotMatch(source, /Remove-Item\s+-LiteralPath\s+\$(?:binDir|versionsDir|installRoot)\b/u);
 });
 
-function findWindowsPowerShell(): string | undefined {
-	if (process.platform !== "win32") return undefined;
-	const candidates = ["powershell.exe", "powershell"];
-	for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+interface PowerShellEngine {
+	executable: string;
+	major: number;
+	label: string;
+}
+
+function findPowerShellEngines(): PowerShellEngine[] {
+	const candidates = ["powershell.exe", "powershell", "pwsh.exe", "pwsh"];
+	const engines: PowerShellEngine[] = [];
+	const visited = new Set<string>();
+	for (const directoryEntry of (process.env.PATH ?? "").split(delimiter)) {
+		const directory = directoryEntry.trim().replace(/^"(.*)"$/u, "$1");
 		if (!directory) continue;
 		for (const candidate of candidates) {
 			const path = join(directory, candidate);
-			if (existsSync(path)) return path;
+			const identity = process.platform === "win32" ? path.toLowerCase() : path;
+			if (!existsSync(path) || visited.has(identity)) continue;
+			visited.add(identity);
+			const probe = spawnSyncCollect(
+				[
+					path,
+					"-NoLogo",
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					'[Console]::Write("ENGINE:" + $PSVersionTable.PSVersion.Major)',
+				],
+				{ timeout: 10_000 },
+			);
+			const match = probe.stdout.toString().match(/ENGINE:(\d+)/u);
+			if (probe.exitCode === 0 && match) {
+				const major = Number.parseInt(match[1] ?? "", 10);
+				if (major === 5 || major >= 7) {
+					engines.push({
+						executable: path,
+						major,
+						label: major === 5 ? "Windows PowerShell 5.1" : `PowerShell ${major}`,
+					});
+				}
+			}
 		}
 	}
-	return undefined;
+	return engines;
 }
 
-const powershellExecutable = findWindowsPowerShell();
+const powershellEngines = findPowerShellEngines();
+const powershellExecutable = powershellEngines.find(
+	(engine) => process.platform === "win32" && engine.major === 5,
+)?.executable;
 const powershellTest = powershellExecutable === undefined ? test.skip : test;
 const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
 const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 240_000;
+const ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS = 300_000;
 const CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS = 360_000;
+
+interface AsyncProcessResult {
+	exitCode: number | null;
+	stdout: string;
+	stderr: string;
+}
+
+function spawnCollectAsync(command: string, args: string[], timeout: number): Promise<AsyncProcessResult> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+		const stdout: Buffer[] = [];
+		const stderr: Buffer[] = [];
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGKILL");
+		}, timeout);
+		child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+		child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+		child.once("error", (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+		child.once("close", (exitCode) => {
+			clearTimeout(timer);
+			const result = {
+				exitCode,
+				stdout: Buffer.concat(stdout).toString(),
+				stderr: Buffer.concat(stderr).toString(),
+			};
+			if (timedOut) {
+				reject(
+					new Error(
+						`PowerShell redirect fixture timed out.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+					),
+				);
+				return;
+			}
+			resolve(result);
+		});
+	});
+}
+
+function redirectFunctionSource(): string {
+	const source = installerSource();
+	return source.slice(
+		source.indexOf("function Get-AtomicRedirectTag"),
+		source.indexOf("function Invoke-AtomicApiRequest"),
+	);
+}
+
+async function runRealRedirectFixture(engine: PowerShellEngine): Promise<void> {
+	let apiRequests = 0;
+	const server = createServer((request, response) => {
+		response.setHeader("Connection", "close");
+		if (request.url === "/latest") {
+			response.writeHead(302, {
+				Location: "/bastani-inc/atomic/releases/tag/release%2F1.0",
+			});
+			response.end();
+			return;
+		}
+		if (request.url === "/api") {
+			apiRequests += 1;
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end('{"tag_name":"fallback"}');
+			return;
+		}
+		response.writeHead(200, { "Content-Type": "text/plain" });
+		response.end("not a redirect");
+	});
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	const address = server.address();
+	assert.ok(address && typeof address !== "string");
+	const baseUri = `http://127.0.0.1:${address.port}`;
+	const workspace = mkdtempSync(join(tmpdir(), "atomic-ps-redirect-"));
+	const harnessPath = join(workspace, "redirect-fixture.ps1");
+	const harness = String.raw`
+param(
+    [Parameter(Mandatory=$true)][string]$BaseUri,
+    [Parameter(Mandatory=$true)][string]$Mode
+)
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+Set-StrictMode -Version Latest
+${redirectFunctionSource()}
+
+function Invoke-WebRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [switch]$UseBasicParsing,
+        [int]$MaximumRedirection
+    )
+    return [pscustomobject]@{
+        StatusCode = 302
+        Headers = [pscustomobject]@{ Location = [Uri]"/bastani-inc/atomic/releases/tag/returned%2Ftag" }
+    }
+}
+$returnedTag = Get-AtomicRedirectTag "mock://returned-response"
+Remove-Item -LiteralPath "Function:\Invoke-WebRequest" -Force
+if ($returnedTag -cne "returned/tag") {
+    throw "Returned 302 response did not yield its redirect tag: $returnedTag"
+}
+Write-Output ("RETURNED_REDIRECT_TAG:" + $returnedTag)
+
+
+$redirectUri = if ($Mode -eq "success") { "$BaseUri/latest" } else { "$BaseUri/not-a-redirect" }
+$tag = Get-AtomicRedirectTag $redirectUri
+if ([string]::IsNullOrWhiteSpace($tag)) {
+    Invoke-WebRequest -Uri "$BaseUri/api" -UseBasicParsing -ErrorAction Stop | Out-Null
+    Write-Output "API_FALLBACK"
+}
+else {
+    Write-Output ("REDIRECT_TAG:" + $tag)
+}
+`;
+	writeFileSync(harnessPath, `\uFEFF${harness}`, "utf8");
+
+	try {
+		const commonArgs = ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", harnessPath, "-BaseUri", baseUri];
+		const success = await spawnCollectAsync(engine.executable, [...commonArgs, "-Mode", "success"], 20_000);
+		assert.equal(
+			success.exitCode,
+			0,
+			`${engine.label} real 302 fixture failed.\nstdout:\n${success.stdout}\nstderr:\n${success.stderr}`,
+		);
+		assert.match(success.stdout, /REDIRECT_TAG:release\/1\.0/u);
+		assert.match(success.stdout, /RETURNED_REDIRECT_TAG:returned\/tag/u);
+		assert.equal(apiRequests, 0, `${engine.label} queried the API after a successful real 302`);
+
+		const fallback = await spawnCollectAsync(engine.executable, [...commonArgs, "-Mode", "fallback"], 20_000);
+		assert.equal(
+			fallback.exitCode,
+			0,
+			`${engine.label} redirect fallback fixture failed.\nstdout:\n${fallback.stdout}\nstderr:\n${fallback.stderr}`,
+		);
+		assert.match(fallback.stdout, /API_FALLBACK/u);
+		assert.equal(apiRequests, 1, `${engine.label} did not make exactly one API fallback request`);
+	} finally {
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		rmSync(workspace, { recursive: true, force: true });
+	}
+}
+
+if (powershellEngines.length === 0) {
+	test.skip("available PowerShell engines extract tags from a real local HTTP 302 and fall back only on failure", () => {});
+}
+for (const engine of powershellEngines) {
+	test(
+		`${engine.label} extracts a tag from a real local HTTP 302 and falls back only on failure`,
+		async () => runRealRedirectFixture(engine),
+		45_000,
+	);
+}
 
 const fixtureHarness = String.raw`
 param(
@@ -474,6 +732,42 @@ function global:Invoke-WebRequest {
 
 $global:AtomicFixturePayloadCopyCount = 0
 $global:AtomicFixtureFailurePoint = $null
+$global:AtomicFixtureRollbackFailurePoint = $null
+$global:AtomicFixtureRollbackFailureDelivered = $false
+$global:AtomicFixtureRollbackArmed = $false
+
+function global:Get-ChildItem {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$LiteralPath,
+        [string]$Filter,
+        [switch]$Force
+    )
+
+    if ($global:AtomicFixtureRollbackArmed -and
+        -not $global:AtomicFixtureRollbackFailureDelivered -and
+        $global:AtomicFixtureRollbackFailurePoint -like "*-remove") {
+        $requestedLeaf = $null
+        try { $requestedLeaf = [string](Get-Variable -Name leafName -Scope 1 -ValueOnly -ErrorAction Stop) }
+        catch { $requestedLeaf = $null }
+        $failureLeaf = switch ($global:AtomicFixtureRollbackFailurePoint) {
+            "shim-remove" { "atomic.cmd" }
+            "atomic-current-remove" { "atomic-current" }
+            "current-remove" { "current" }
+            "version-remove" { "2.0.0" }
+            default { $null }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($failureLeaf) -and $requestedLeaf -ieq $failureLeaf) {
+            $global:AtomicFixtureRollbackFailureDelivered = $true
+            throw "Injected one-shot rollback removal failure: $($global:AtomicFixtureRollbackFailurePoint)"
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Filter)) {
+        return Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Force:$Force
+    }
+    return Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Filter $Filter -Force:$Force
+}
 
 function global:New-Item {
     [CmdletBinding()]
@@ -550,6 +844,7 @@ function global:Move-Item {
     )
 
     $leafName = [IO.Path]::GetFileName($LiteralPath)
+    $destinationLeaf = [IO.Path]::GetFileName($Destination)
     if ($global:AtomicFixtureFailurePoint -eq "current-move" -and
         $leafName -match '^\.current-[0-9a-f]{32}$') {
         throw "Injected transaction failure: current-move"
@@ -558,7 +853,24 @@ function global:Move-Item {
         $leafName -match '^\.atomic-current-[0-9a-f]{32}$') {
         throw "Injected transaction failure: atomic-current-move"
     }
+
+    $restoreName = $null
+    if ($leafName -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd") { $restoreName = "shim-restore" }
+    elseif ($leafName -match '^\.atomic-current-backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "atomic-current") { $restoreName = "atomic-current-restore" }
+    elseif ($leafName -match '^\.current-backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "current") { $restoreName = "current-restore" }
+    elseif ($leafName -match '^\.backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "2.0.0") { $restoreName = "version-restore" }
+    if ($global:AtomicFixtureRollbackArmed -and
+        -not $global:AtomicFixtureRollbackFailureDelivered -and
+        $global:AtomicFixtureRollbackFailurePoint -eq $restoreName) {
+        $global:AtomicFixtureRollbackFailureDelivered = $true
+        throw "Injected one-shot rollback restore failure: $restoreName"
+    }
+
     Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+    if (-not [string]::IsNullOrWhiteSpace($global:AtomicFixtureRollbackFailurePoint) -and
+        $leafName -match '^\.atomic-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd") {
+        $global:AtomicFixtureRollbackArmed = $true
+    }
 }
 
 $environmentNames = @(
@@ -837,6 +1149,83 @@ try {
         Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "1.0.0") "shim failed through cmd.exe after temporary dangling junction cleanup"
         Assert-NoTransactionResidue $installRoot $binDir
     }
+    elseif ($Scenario -eq "rollback-retries") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $rollbackFailurePoints = @(
+            "shim-remove", "shim-restore",
+            "atomic-current-remove", "atomic-current-restore",
+            "current-remove", "current-restore",
+            "version-remove", "version-restore"
+        )
+        $caseIndex = 0
+        foreach ($rollbackFailurePoint in $rollbackFailurePoints) {
+            $caseIndex++
+            $caseRoot = Join-Path $workspace ("rollback-retry-" + $rollbackFailurePoint)
+            $installRoot = Join-Path $caseRoot "install-root"
+            $binDir = Join-Path $caseRoot "bin-root"
+            $caseTemp = Join-Path $caseRoot "temp"
+            New-Item -ItemType Directory -Path $caseTemp -Force | Out-Null
+            $env:ATOMIC_INSTALL_DIR = $installRoot
+            $env:ATOMIC_BIN_DIR = $binDir
+            $env:TEMP = $caseTemp
+            $env:TMP = $caseTemp
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+            $global:AtomicFixtureRollbackFailurePoint = $null
+            $global:AtomicFixtureRollbackFailureDelivered = $false
+            $global:AtomicFixtureRollbackArmed = $false
+
+            $beforeCaseUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            $beforeCaseProcessPath = $env:Path
+            & $InstallerPath -Ref "2.0.0" | Out-Null
+            $versionPath = Join-Path $installRoot "versions\2.0.0"
+            $currentPath = Join-Path $installRoot "current"
+            $atomicCurrentPath = Join-Path $binDir "atomic-current"
+            $shimPath = Join-Path $binDir "atomic.cmd"
+            $payloadMarker = Join-Path $versionPath "rollback-payload.bin"
+            [IO.File]::WriteAllBytes($payloadMarker, [byte[]]@(0, 3, 17, 127, 128, 244, 255))
+            $oldPayloadBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($payloadMarker))
+            $oldAtomicBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $versionPath "atomic.exe")))
+            $oldShimContent = '@rem rollback-retry-' + $rollbackFailurePoint + [Environment]::NewLine + '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
+            Set-Content -LiteralPath $shimPath -Value $oldShimContent -Encoding ASCII -NoNewline
+            $oldShimBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($shimPath))
+            $oldUserPath = "C:\AtomicRollbackUser-$caseIndex"
+            $oldProcessPath = "C:\AtomicRollbackProcess-$caseIndex"
+            [Environment]::SetEnvironmentVariable("Path", $oldUserPath, "User")
+            $env:Path = $oldProcessPath
+
+            $global:AtomicFixtureRollbackFailurePoint = $rollbackFailurePoint
+            $global:AtomicFixtureRollbackFailureDelivered = $false
+            $global:AtomicFixtureRollbackArmed = $false
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "2.0.0"
+            $failure = $null
+            try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+            catch { $failure = $_ }
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+
+            Assert-Fixture ($null -ne $failure -and $failure.Exception.Message -match 'Installed atomic\.cmd --version failed') "$rollbackFailurePoint did not reach the real final smoke failure"
+            Assert-Fixture ($global:AtomicFixtureRollbackFailureDelivered) "$rollbackFailurePoint one-shot rollback failure was not delivered"
+            Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -ceq $oldUserPath) "$rollbackFailurePoint did not restore User PATH on a later rollback attempt"
+            Assert-Fixture ($env:Path -ceq $oldProcessPath) "$rollbackFailurePoint did not restore current PATH on a later rollback attempt"
+            Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes($payloadMarker)) -ceq $oldPayloadBytes) "$rollbackFailurePoint changed old payload bytes"
+            Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $currentPath "rollback-payload.bin"))) -ceq $oldPayloadBytes) "$rollbackFailurePoint did not restore current payload bytes"
+            Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $atomicCurrentPath "rollback-payload.bin"))) -ceq $oldPayloadBytes) "$rollbackFailurePoint did not restore atomic-current payload bytes"
+            Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $versionPath "atomic.exe"))) -ceq $oldAtomicBytes) "$rollbackFailurePoint changed old executable bytes"
+            Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes($shimPath)) -ceq $oldShimBytes) "$rollbackFailurePoint did not restore old shim bytes"
+            Assert-Fixture (((Get-Item -LiteralPath $currentPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "$rollbackFailurePoint did not restore the current junction"
+            Assert-Fixture (((Get-Item -LiteralPath $atomicCurrentPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "$rollbackFailurePoint did not restore the atomic-current junction"
+            $rollbackProbe = Invoke-FixtureShim $shimPath "--version"
+            Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "2.0.0") "$rollbackFailurePoint did not leave the old shim pair executable"
+            Assert-NoTransactionResidue $installRoot $binDir
+            Assert-Fixture (@(Get-ChildItem -LiteralPath $caseTemp -Filter "atomic-install-*" -Force).Count -eq 0) "$rollbackFailurePoint left a temporary download directory"
+
+            $global:AtomicFixtureRollbackFailurePoint = $null
+            $global:AtomicFixtureRollbackArmed = $false
+            [Environment]::SetEnvironmentVariable("Path", $beforeCaseUserPath, "User")
+            $env:Path = $beforeCaseProcessPath
+            Remove-Item -LiteralPath $caseRoot -Recurse -Force
+        }
+    }
     elseif ($Scenario -eq "ctrl-c") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "AMD64"
@@ -846,16 +1235,23 @@ try {
         Add-Type -Path $ctrlHelperSourcePath -OutputAssembly $ctrlHelperPath -OutputType ConsoleApplication
         $powershellPath = Join-Path $PSHOME "powershell.exe"
 
-        $caseSpecs = @()
-        foreach ($move in @("version-install", "current-install", "atomic-current-install", "shim-install")) {
-            $caseSpecs += [pscustomobject]@{ State = "fresh"; Move = $move }
-        }
-        foreach ($move in @("version-backup", "version-install", "current-backup", "current-install", "atomic-current-backup", "atomic-current-install", "shim-backup", "shim-install")) {
-            $caseSpecs += [pscustomobject]@{ State = "existing"; Move = $move }
-        }
+        $caseSpecs = @(
+            [pscustomobject]@{ State = "fresh"; Move = "version-install"; RollbackFailure = "version-remove" },
+            [pscustomobject]@{ State = "fresh"; Move = "current-install"; RollbackFailure = "current-remove" },
+            [pscustomobject]@{ State = "fresh"; Move = "atomic-current-install"; RollbackFailure = "atomic-current-remove" },
+            [pscustomobject]@{ State = "fresh"; Move = "shim-install"; RollbackFailure = "shim-remove" },
+            [pscustomobject]@{ State = "existing"; Move = "version-backup"; RollbackFailure = "version-restore" },
+            [pscustomobject]@{ State = "existing"; Move = "version-install"; RollbackFailure = "version-remove" },
+            [pscustomobject]@{ State = "existing"; Move = "current-backup"; RollbackFailure = "current-restore" },
+            [pscustomobject]@{ State = "existing"; Move = "current-install"; RollbackFailure = "current-remove" },
+            [pscustomobject]@{ State = "existing"; Move = "atomic-current-backup"; RollbackFailure = "atomic-current-restore" },
+            [pscustomobject]@{ State = "existing"; Move = "atomic-current-install"; RollbackFailure = "atomic-current-remove" },
+            [pscustomobject]@{ State = "existing"; Move = "shim-backup"; RollbackFailure = "shim-restore" },
+            [pscustomobject]@{ State = "existing"; Move = "shim-install"; RollbackFailure = "shim-remove" }
+        )
 
         foreach ($case in $caseSpecs) {
-            $caseName = $case.State + "-" + $case.Move
+            $caseName = $case.State + "-" + $case.Move + "-" + $case.RollbackFailure
             $caseRoot = Join-Path $workspace ("ctrl-c-" + $caseName)
             $installContainer = Join-Path $caseRoot "created-install-parent"
             $binContainer = Join-Path $caseRoot "created-bin-parent"
@@ -884,7 +1280,7 @@ try {
                 $oldPayloadBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($payloadMarker))
                 $oldAtomicBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $versionPath "atomic.exe")))
                 $shimPath = Join-Path $binDir "atomic.cmd"
-                $oldShimContent = '@rem ctrl-c-' + $case.Move + [Environment]::NewLine + '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
+                $oldShimContent = '@rem ctrl-c-' + $case.Move + '-' + $case.RollbackFailure + [Environment]::NewLine + '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
                 Set-Content -LiteralPath $shimPath -Value $oldShimContent -Encoding ASCII -NoNewline
                 $oldShimBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($shimPath))
             }
@@ -903,6 +1299,7 @@ try {
                 "-BinDir", $binDir,
                 "-TempRoot", $caseTemp,
                 "-PauseMove", $case.Move,
+                "-RollbackFailure", $case.RollbackFailure,
                 "-ReadyPath", $readyPath,
                 "-MoveLogPath", $moveLogPath,
                 "-ObservedProcessPath", $observedProcessPath,
@@ -913,6 +1310,7 @@ try {
             Assert-Fixture ($helperExitCode -eq 0) "$caseName console Ctrl+C helper failed: $helperOutput"
             Assert-Fixture ((Get-Content -LiteralPath $readyPath -Raw) -eq ("READY:" + $case.Move)) "$caseName did not pause after the requested move"
             Assert-Fixture ((Get-Content -LiteralPath $moveLogPath -Raw) -match ([regex]::Escape("MOVED:" + $case.Move))) "$caseName did not record the state-changing move"
+            Assert-Fixture ((Get-Content -LiteralPath $moveLogPath -Raw) -match ([regex]::Escape("ROLLBACK_FAILURE:" + $case.RollbackFailure))) "$caseName did not deliver the one-shot rollback failure"
             Assert-Fixture ((Get-Content -LiteralPath $childFinallyPath -Raw) -eq "CHILD_FINALLY") "$caseName did not execute the child finally block"
             Assert-Fixture ((Get-Content -LiteralPath $observedProcessPath -Raw -Encoding Unicode) -ceq $expectedProcessPath) "$caseName did not restore the child process PATH"
             Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -ceq $expectedUserPath) "$caseName changed the User PATH"
@@ -1056,6 +1454,7 @@ param(
     [Parameter(Mandatory=$true)][string]$BinDir,
     [Parameter(Mandatory=$true)][string]$TempRoot,
     [Parameter(Mandatory=$true)][string]$PauseMove,
+    [Parameter(Mandatory=$true)][string]$RollbackFailure,
     [Parameter(Mandatory=$true)][string]$ReadyPath,
     [Parameter(Mandatory=$true)][string]$MoveLogPath,
     [Parameter(Mandatory=$true)][string]$ObservedProcessPath,
@@ -1093,6 +1492,42 @@ function global:Invoke-WebRequest {
     throw "Unexpected Ctrl+C fixture request: $Uri"
 }
 
+$global:AtomicCtrlCRollbackArmed = $false
+$global:AtomicCtrlCRollbackFailureDelivered = $false
+function global:Get-ChildItem {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$LiteralPath,
+        [string]$Filter,
+        [switch]$Force
+    )
+
+    if ($global:AtomicCtrlCRollbackArmed -and
+        -not $global:AtomicCtrlCRollbackFailureDelivered -and
+        $RollbackFailure -like "*-remove") {
+        $requestedLeaf = $null
+        try { $requestedLeaf = [string](Get-Variable -Name leafName -Scope 1 -ValueOnly -ErrorAction Stop) }
+        catch { $requestedLeaf = $null }
+        $failureLeaf = switch ($RollbackFailure) {
+            "shim-remove" { "atomic.cmd" }
+            "atomic-current-remove" { "atomic-current" }
+            "current-remove" { "current" }
+            "version-remove" { "2.0.0" }
+            default { $null }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($failureLeaf) -and $requestedLeaf -ieq $failureLeaf) {
+            $global:AtomicCtrlCRollbackFailureDelivered = $true
+            [IO.File]::AppendAllText($MoveLogPath, "ROLLBACK_FAILURE:$RollbackFailure" + [Environment]::NewLine)
+            throw "Injected one-shot rollback removal failure: $RollbackFailure"
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Filter)) {
+        return Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Force:$Force
+    }
+    return Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Filter $Filter -Force:$Force
+}
+
 $global:AtomicCtrlCPauseDelivered = $false
 function global:Move-Item {
     [CmdletBinding()]
@@ -1113,11 +1548,25 @@ function global:Move-Item {
     elseif ($sourceLeaf -eq "atomic.cmd" -and $destinationLeaf -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$') { $moveName = "shim-backup" }
     elseif ($sourceLeaf -match '^\.atomic-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd") { $moveName = "shim-install" }
 
+    $restoreName = $null
+    if ($sourceLeaf -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd") { $restoreName = "shim-restore" }
+    elseif ($sourceLeaf -match '^\.atomic-current-backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "atomic-current") { $restoreName = "atomic-current-restore" }
+    elseif ($sourceLeaf -match '^\.current-backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "current") { $restoreName = "current-restore" }
+    elseif ($sourceLeaf -match '^\.backup-[0-9a-f]{32}$' -and $destinationLeaf -eq "2.0.0") { $restoreName = "version-restore" }
+    if ($global:AtomicCtrlCRollbackArmed -and
+        -not $global:AtomicCtrlCRollbackFailureDelivered -and
+        $RollbackFailure -eq $restoreName) {
+        $global:AtomicCtrlCRollbackFailureDelivered = $true
+        [IO.File]::AppendAllText($MoveLogPath, "ROLLBACK_FAILURE:$RollbackFailure" + [Environment]::NewLine)
+        throw "Injected one-shot rollback restore failure: $RollbackFailure"
+    }
+
     Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
     if ($null -ne $moveName) {
         [IO.File]::AppendAllText($MoveLogPath, "MOVED:$moveName" + [Environment]::NewLine)
         if (-not $global:AtomicCtrlCPauseDelivered -and $moveName -eq $PauseMove) {
             $global:AtomicCtrlCPauseDelivered = $true
+            $global:AtomicCtrlCRollbackArmed = $true
             [IO.File]::WriteAllText($ReadyPath, "READY:$moveName")
             while ($true) { Start-Sleep -Milliseconds 200 }
         }
@@ -1346,6 +1795,19 @@ test("Windows PowerShell 5.1 fixtures enforce shim bytes, cmd execution, rollbac
 	);
 	assert.match(fixtureHarness, /@\("separate", "bin-parent", "install-parent"\)/u);
 	assert.match(fixtureHarness, /pre-existing-dangling-junction/u);
+	assert.match(
+		fixtureHarness,
+		/"shim-remove", "shim-restore",[\s\S]+"atomic-current-remove", "atomic-current-restore",[\s\S]+"current-remove", "current-restore",[\s\S]+"version-remove", "version-restore"/u,
+	);
+	assert.match(fixtureHarness, /one-shot rollback failure was not delivered/u);
+	assert.match(
+		fixtureHarness,
+		/did not restore User PATH on a later rollback attempt[\s\S]+did not restore current PATH on a later rollback attempt/u,
+	);
+	assert.match(
+		fixtureHarness,
+		/changed old payload bytes[\s\S]+restore current payload bytes[\s\S]+restore atomic-current payload bytes[\s\S]+restore old shim bytes/u,
+	);
 });
 
 test("Windows PowerShell 5.1 escaped-ref fixture covers one-pass URL and directory encoding", () => {
@@ -1372,14 +1834,28 @@ test("Windows PowerShell 5.1 Ctrl+C fixture uses a real isolated console event a
 	assert.match(ctrlCChildHarness, /while \(\$true\) \{ Start-Sleep -Milliseconds 200 \}/u);
 	assert.match(ctrlCChildHarness, /finally[\s\S]+CHILD_FINALLY/u);
 	assert.doesNotMatch(ctrlCChildHarness, /Injected transaction failure|throw "Ctrl\+C"/u);
-	assert.match(
-		fixtureHarness,
-		/@\("version-backup", "version-install", "current-backup", "current-install", "atomic-current-backup", "atomic-current-install", "shim-backup", "shim-install"\)/u,
-	);
-	assert.match(
-		fixtureHarness,
-		/foreach \(\$move in @\("version-install", "current-install", "atomic-current-install", "shim-install"\)\)/u,
-	);
+	assert.match(ctrlCChildHarness, /Injected one-shot rollback removal failure/u);
+	assert.match(ctrlCChildHarness, /Injected one-shot rollback restore failure/u);
+	for (const [state, move, failure] of [
+		["fresh", "version-install", "version-remove"],
+		["fresh", "current-install", "current-remove"],
+		["fresh", "atomic-current-install", "atomic-current-remove"],
+		["fresh", "shim-install", "shim-remove"],
+		["existing", "version-backup", "version-restore"],
+		["existing", "version-install", "version-remove"],
+		["existing", "current-backup", "current-restore"],
+		["existing", "current-install", "current-remove"],
+		["existing", "atomic-current-backup", "atomic-current-restore"],
+		["existing", "atomic-current-install", "atomic-current-remove"],
+		["existing", "shim-backup", "shim-restore"],
+		["existing", "shim-install", "shim-remove"],
+	] as const) {
+		assert.ok(
+			fixtureHarness.includes(`State = "${state}"; Move = "${move}"; RollbackFailure = "${failure}"`),
+			`${state} ${move} does not pair real Ctrl+C with ${failure}`,
+		);
+	}
+	assert.match(fixtureHarness, /"ROLLBACK_FAILURE:" \+ \$case\.RollbackFailure/u);
 	assert.match(
 		fixtureHarness,
 		/changed old version bytes[\s\S]+changed old current bytes[\s\S]+changed old atomic-current bytes[\s\S]+changed old shim bytes/u,
@@ -1394,6 +1870,7 @@ function runPowerShellFixture(
 		| "final-smoke"
 		| "unicode"
 		| "dangling-junction"
+		| "rollback-retries"
 		| "transaction-failures"
 		| "ctrl-c",
 ): string {
@@ -1409,9 +1886,11 @@ function runPowerShellFixture(
 		const fixtureTimeout =
 			scenario === "ctrl-c"
 				? CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS
-				: scenario === "transaction-failures"
-					? TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS
-					: POWERSHELL_FIXTURE_TIMEOUT_MS;
+				: scenario === "rollback-retries"
+					? ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS
+					: scenario === "transaction-failures"
+						? TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS
+						: POWERSHELL_FIXTURE_TIMEOUT_MS;
 		const result = spawnSyncCollect(
 			[
 				powershellExecutable,
@@ -1468,7 +1947,15 @@ powershellTest("PowerShell 5.1 fixture repairs and cleans up dangling junctions"
 });
 
 powershellTest(
-	"PowerShell 5.1 fixture rolls back every applicable move after a real console Ctrl+C",
+	"PowerShell 5.1 fixture retries one-shot rollback removal and restore failures for every installed resource",
+	() => {
+		runPowerShellFixture("rollback-retries");
+	},
+	ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS,
+);
+
+powershellTest(
+	"PowerShell 5.1 fixture retries one-shot rollback failures after every applicable real console Ctrl+C move",
 	() => {
 		runPowerShellFixture("ctrl-c");
 	},

@@ -16,6 +16,11 @@ test("POSIX configurable paths are absolute and the impossible launcher collisio
 	assert.match(shell, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT"\)/u);
 	assert.match(shell, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR"\)/u);
 	assert.match(shell, /BIN_PATH=\$BIN_DIR\/atomic/u);
+	assert.match(shell, /canonical_physical=\$\(CDPATH= cd -P "\$canonical_probe"[^\n]+&& pwd\)/u);
+	assert.match(shell, /PHYSICAL_INSTALL_ROOT=\$\(canonicalize_existing_prefix "\$INSTALL_ROOT"\)/u);
+	assert.match(shell, /PHYSICAL_BIN_PATH=\$\(canonicalize_existing_prefix "\$BIN_PATH"\)/u);
+	assert.match(shell, /\[ "\$PHYSICAL_BIN_PATH" != "\$PHYSICAL_INSTALL_ROOT" \]/u);
+	assert.match(shell, /\*:"\$BIN_DIR":\*\) ;;/u);
 	const collision = shell.indexOf("ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR/atomic");
 	assert.ok(collision >= 0);
 	assert.ok(collision < shell.indexOf("for required_command"));
@@ -39,7 +44,8 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 	const { powershell } = await installers();
 	assert.match(powershell, /function Invoke-AtomicTransactionRollback/u);
 	assert.match(powershell, /\$null -eq \$Transaction -or \$Transaction\.RollbackCompleted/u);
-	assert.match(powershell, /\$Transaction\.RollbackCompleted = \$true/u);
+	assert.doesNotMatch(powershell, /\$Transaction\.RollbackCompleted\s*=\s*\$true/u);
+	assert.match(powershell, /\$Transaction\.RollbackCompleted\s*=\s*-not\s+\$rollbackIncomplete/u);
 	assert.match(powershell, /RollbackCompleted = \$false/u);
 	assert.match(powershell, /\$transactionCommitted = \$false/u);
 	assert.match(powershell, /\$transactionCommitted = \$true[\s\S]+Remove-AtomicTransactionBackups/u);
@@ -63,6 +69,9 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 	assert.match(powershell.slice(transactionCatch, successOutput), /Invoke-AtomicTransactionRollback \$transaction/u);
 	const finallyBlock = powershell.slice(powershell.lastIndexOf("finally {"));
 	assert.match(finallyBlock, /-not \$transactionCommitted[\s\S]+Invoke-AtomicTransactionRollback \$transaction/u);
+	assert.match(powershell, /\$rollbackRetryLimit\s*=\s*[2-9]/u);
+	assert.match(finallyBlock, /while \(\$rollbackAttempt -lt \$rollbackRetryLimit/u);
+	assert.match(finallyBlock, /Write-Warning[^\n]+rollback[^\n]+incomplete/iu);
 	assert.match(powershell, /function Add-AtomicMissingDirectoryPaths/u);
 	assert.match(powershell, /Sort-Object -Property Length -Descending/u);
 	assert.match(powershell, /do \{[\s\S]+\} while \(\$removedDirectory\)/u);

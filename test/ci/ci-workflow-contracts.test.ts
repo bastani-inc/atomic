@@ -295,6 +295,12 @@ test("Alpine smoke covers both musl archives on stock Alpine without runtime pac
 	assert.match(smoke, /atomic --version|"\$atomic" --version/u);
 	assert.match(smoke, /app\.js[\s\S]*builtin[\s\S]*node_modules/u);
 	assert.doesNotMatch(smoke, /apk add/u);
+	const nativeLoad = namedStep(jobSteps(alpine), "Load the musl native binding under musl libc");
+	assert.match(nativeLoad, /^name: Load the musl native binding under musl libc$/mu);
+	assert.match(nativeLoad, /node:22-alpine/u);
+	assert.match(nativeLoad, /require\("\/smoke\/atomic\/node_modules\/@bastani\/atomic-natives"\)/u);
+	assert.match(nativeLoad, /\["glob", "grep"\]/u);
+	assert.match(nativeLoad, /typeof binding\[name\] !== "function"/u);
 });
 
 test("musl archive build bundles pinned C++ runtimes and patches payload-local search paths", async () => {

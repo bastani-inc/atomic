@@ -74,6 +74,32 @@ normalize_absolute_path() {
     fi
 }
 
+canonicalize_existing_prefix() {
+    canonical_input=$1
+    canonical_probe=$canonical_input
+    canonical_suffix=
+
+    while [ ! -d "$canonical_probe" ]; do
+        canonical_segment=${canonical_probe##*/}
+        if [ -n "$canonical_suffix" ]; then
+            canonical_suffix=$canonical_segment/$canonical_suffix
+        else
+            canonical_suffix=$canonical_segment
+        fi
+        canonical_parent=${canonical_probe%/*}
+        [ -n "$canonical_parent" ] || canonical_parent=/
+        [ "$canonical_parent" != "$canonical_probe" ] || break
+        canonical_probe=$canonical_parent
+    done
+
+    canonical_physical=$(CDPATH= cd -P "$canonical_probe" 2>/dev/null && pwd) || return 1
+    if [ -n "$canonical_suffix" ]; then
+        normalize_absolute_path "$canonical_physical/$canonical_suffix"
+    else
+        normalize_absolute_path "$canonical_physical"
+    fi
+}
+
 percent_encode() {
     percent_input=$1
     percent_output=
@@ -179,7 +205,12 @@ esac
 INSTALL_ROOT=$(normalize_absolute_path "$INSTALL_ROOT")
 BIN_DIR=$(normalize_absolute_path "$BIN_DIR")
 BIN_PATH=$BIN_DIR/atomic
-[ "$BIN_PATH" != "$INSTALL_ROOT" ] || fail "ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR/atomic: $INSTALL_ROOT"
+PHYSICAL_INSTALL_ROOT=$(canonicalize_existing_prefix "$INSTALL_ROOT") ||
+    fail "unable to resolve ATOMIC_INSTALL_DIR: $INSTALL_ROOT"
+PHYSICAL_BIN_PATH=$(canonicalize_existing_prefix "$BIN_PATH") ||
+    fail "unable to resolve ATOMIC_BIN_DIR/atomic: $BIN_PATH"
+[ "$PHYSICAL_BIN_PATH" != "$PHYSICAL_INSTALL_ROOT" ] ||
+    fail "ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR/atomic: $INSTALL_ROOT"
 
 for required_command in uname tar mkdir mv chmod ln rm rmdir; do
     command -v "$required_command" >/dev/null 2>&1 || fail "required command not found: $required_command"
@@ -604,7 +635,7 @@ fi
 printf 'Atomic %s installed successfully.\n' "$RELEASE_TAG"
 printf 'Binary: %s\n' "$BIN_PATH"
 case :${PATH:-}: in
-    *:$BIN_DIR:*) ;;
+    *:"$BIN_DIR":*) ;;
     *)
         printf 'Add Atomic to PATH for this shell:\n'
         printf '  export PATH="%s:$PATH"\n' "$BIN_DIR"

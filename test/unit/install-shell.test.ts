@@ -59,6 +59,11 @@ test("POSIX installer has valid sh syntax and declares the archive install contr
 	assert.equal(source.match(/pwd -P/gu)?.length, 1);
 	assert.match(source, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT"\)/u);
 	assert.match(source, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR"\)/u);
+	assert.match(source, /canonical_physical=\$\(CDPATH= cd -P "\$canonical_probe"[^\n]+&& pwd\)/u);
+	assert.match(source, /PHYSICAL_INSTALL_ROOT=\$\(canonicalize_existing_prefix "\$INSTALL_ROOT"\)/u);
+	assert.match(source, /PHYSICAL_BIN_PATH=\$\(canonicalize_existing_prefix "\$BIN_PATH"\)/u);
+	assert.match(source, /\[ "\$PHYSICAL_BIN_PATH" != "\$PHYSICAL_INSTALL_ROOT" \]/u);
+	assert.match(source, /\*:"\$BIN_DIR":\*\) ;;/u);
 	assert.match(source, /REQUESTED_REF_ENCODED=\$\(percent_encode "\$REQUESTED_REF"\)/u);
 	assert.match(source, /RELEASE_TAG_ENCODED=\$\(percent_encode "\$RELEASE_TAG"\)/u);
 	assert.match(source, /percent_decode "\$resolved_url_tag"/u);
@@ -105,6 +110,7 @@ interface RunOptions {
 	libc?: string;
 	ldd?: boolean;
 	environment?: Record<string, string | undefined>;
+	pathEntries?: readonly string[];
 }
 
 function writeExecutable(path: string, source: string): void {
@@ -332,7 +338,7 @@ function createFixture(): InstallerFixture {
 			}
 			const env: Record<string, string | undefined> = {
 				...process.env,
-				PATH: runTools,
+				PATH: [...(options.pathEntries ?? []), runTools].join(delimiter),
 				HOME: home,
 				TMPDIR: tempRoot,
 				ATOMIC_INSTALL_DIR: installRoot,
@@ -519,6 +525,42 @@ unixTest("shell installer resolves relative install and bin roots against one ph
 	}
 });
 
+unixTest("shell installer compares metacharacters in PATH entries literally", () => {
+	const fixture = createFixture();
+	try {
+		const relativeBin = "literal[7]*? bin";
+		const absoluteBin = join(realpathSync(fixture.workspace), relativeBin);
+		const nearMatch = join(realpathSync(fixture.workspace), "literal7-many-q bin");
+		const first = fixture.run({
+			args: ["--ref", "1.0.0"],
+			pathEntries: [nearMatch],
+			environment: { ATOMIC_BIN_DIR: relativeBin },
+		});
+		assertSuccess(first);
+		assert.ok(first.stdout.toString().includes(`export PATH="${absoluteBin}:$PATH"`));
+
+		const second = fixture.run({
+			args: ["--ref", "1.0.0"],
+			pathEntries: [absoluteBin],
+			environment: { ATOMIC_BIN_DIR: relativeBin },
+		});
+		assertSuccess(second);
+		assert.doesNotMatch(second.stdout.toString(), /Add Atomic to PATH|export PATH=/u);
+
+		const otherDirectory = join(fixture.workspace, "path literal other cwd");
+		mkdirSync(otherDirectory);
+		const installed = spawnSyncCollect(["/bin/sh", "-c", "command -v atomic && atomic --version"], {
+			cwd: otherDirectory,
+			env: { PATH: `${absoluteBin}${delimiter}${fixture.tools}` },
+		});
+		assert.equal(installed.exitCode, 0, installed.stderr.toString());
+		assert.equal(installed.stdout.toString().trim(), `${join(absoluteBin, "atomic")}\n1.0.0`);
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
 unixTest("shell installer percent-encodes exact refs once for API, downloads, and version directories", () => {
 	for (const downloader of ["curl", "wget"] as const) {
 		for (const tag of ["release/1.0", "hash#tag", "percent%tag"] as const) {
@@ -635,6 +677,65 @@ unixTest("shell installer rejects only the impossible install-root and launcher-
 		assert.deepEqual(readdirSync(fixture.tempRoot), []);
 	} finally {
 		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer resolves symlink aliases before collision preflight without mutation", () => {
+	for (const existing of [false, true]) {
+		const fixture = createFixture();
+		try {
+			const physicalParent = join(
+				realpathSync(fixture.workspace),
+				`physical collision ${existing ? "existing" : "fresh"}`,
+			);
+			const installRoot = join(physicalParent, "atomic");
+			const binAlias = join(realpathSync(fixture.workspace), `bin alias ${existing ? "existing" : "fresh"}`);
+			const workingBin = join(realpathSync(fixture.workspace), "working collision bin");
+			mkdirSync(physicalParent);
+			writeFileSync(join(physicalParent, "parent-marker.txt"), "keep-parent");
+			symlinkSync(physicalParent, binAlias);
+
+			if (existing) {
+				assertSuccess(
+					fixture.run({
+						args: ["--ref", "1.0.0"],
+						environment: { ATOMIC_INSTALL_DIR: installRoot, ATOMIC_BIN_DIR: workingBin },
+					}),
+				);
+				writeFileSync(join(installRoot, "versions", "1.0.0", "preserve.txt"), "old-state");
+				writeFileSync(fixture.requestLog, "");
+			}
+
+			const beforeParentEntries = readdirSync(physicalParent).sort();
+			const rejected = fixture.run({
+				args: ["--ref", "2.0.0"],
+				environment: {
+					ATOMIC_INSTALL_DIR: join(physicalParent, ".", "missing", "..", "atomic"),
+					ATOMIC_BIN_DIR: join(binAlias, ".", "missing", ".."),
+				},
+			});
+			assert.notEqual(rejected.exitCode, 0);
+			assert.match(output(rejected), /ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR\/atomic/u);
+			assert.equal(readFileSync(fixture.requestLog, "utf8"), "");
+			assert.deepEqual(readdirSync(fixture.tempRoot), []);
+			assert.deepEqual(readdirSync(physicalParent).sort(), beforeParentEntries);
+			assert.equal(readFileSync(join(physicalParent, "parent-marker.txt"), "utf8"), "keep-parent");
+			assert.ok(lstatSync(binAlias).isSymbolicLink());
+
+			if (existing) {
+				assert.equal(readFileSync(join(installRoot, "versions", "1.0.0", "preserve.txt"), "utf8"), "old-state");
+				assert.equal(basename(realpathSync(join(installRoot, "current"))), "1.0.0");
+				const oldLauncher = spawnSyncCollect([join(workingBin, "atomic"), "--version"], {
+					env: { PATH: fixture.tools },
+				});
+				assert.equal(oldLauncher.exitCode, 0, oldLauncher.stderr.toString());
+				assert.equal(oldLauncher.stdout.toString().trim(), "1.0.0");
+			} else {
+				assert.ok(!existsSync(installRoot));
+			}
+		} finally {
+			fixture.cleanup();
+		}
 	}
 });
 unixTest("shell installer selects every Darwin and Linux archive, including Rosetta and musl", () => {
