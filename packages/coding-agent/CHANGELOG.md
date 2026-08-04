@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Union-rooted tool parameter schemas are now advertised with real parameters. A provider builds a tool's `input_schema` from the root `properties`/`required` keywords alone, and a `Type.Union` root serializes to `{anyOf}` carrying neither, so such a tool shipped as `{"type":"object","properties":{},"required":[]}`. Any client that types tool arguments from the advertised schema then sent every argument as a string — arrays and objects arrived as JSON text — while validation still enforced the union and rejected them, so a schema-backed `structured_output` step could not complete at all and exhausted its corrective attempts. A union root whose branches are all object-rooted is now rewritten once, in the single adapter every tool passes through, into an equivalent object root: branch properties are merged, a discriminator that differs across branches becomes a union of its literals, a property is required only when every branch requires it, and the original branches are retained under `anyOf` so validation stays exactly as strict — the set of accepted arguments is unchanged. The rewritten root also restores the in-place argument coercion that `Value.Convert` cannot apply to a union. A root that is neither object-rooted nor a union of object roots cannot be advertised at all; it is left untouched and now warns once at registration instead of silently producing an argument-less tool at turn time ([#2189](https://github.com/bastani-inc/atomic/issues/2189)).
+
 ## [0.9.12] - 2026-08-04
 
 Cumulative release of the `0.9.12-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
