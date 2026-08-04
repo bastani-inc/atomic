@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the in-process subagent control-plane doors and `InProcessChildRunner` foundation backed by the Rust N-API registry, typed statuses, session statistics, and bounded result envelopes ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
 ### Fixed
 
 - Fixed model-failure classification sharing so subagent fallback decisions stay aligned with main chat and workflow candidates for auth, unavailable-model, request-incompatible, quota, and transport failures ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
