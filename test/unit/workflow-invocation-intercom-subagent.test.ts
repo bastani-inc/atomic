@@ -107,7 +107,7 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 	const childGroups: Array<string | undefined> = [];
 	const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (_cwd, _agents, agent, task, options) => {
 		childGroups.push(options.intercomGroup);
-		return { agent, task, exitCode: 0, messages: [], usage, finalOutput: "done" };
+		return { agent, task, status: "ok", exitCode: 0, messages: [], usage, finalOutput: "done" };
 	};
 	const pi: Pick<ExecutorDeps["pi"], "events" | "getSessionName"> = {
 		events: { on: () => () => {}, emit: () => {} },
@@ -202,7 +202,7 @@ test("foreground chain children inherit the workflow group and keep explicit ove
 	const childGroups: Array<string | undefined> = [];
 	const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (_cwd, _agents, agent, task, options) => {
 		childGroups.push(options.intercomGroup);
-		return { agent, task, exitCode: 0, messages: [], usage, finalOutput: "done" };
+		return { agent, task, status: "ok", exitCode: 0, messages: [], usage, finalOutput: "done" };
 	};
 	const pi: Pick<ExecutorDeps["pi"], "events" | "getSessionName"> = {
 		events: { on: () => () => {}, emit: () => {} },

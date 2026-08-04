@@ -1,8 +1,9 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	type AgentSessionEventListener,
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	DefaultResourceLoader,
@@ -21,7 +22,12 @@ import {
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agent-types.ts";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
-import { DEFAULT_MAX_OUTPUT, type MaxOutputConfig, truncateOutput } from "../../shared/types.ts";
+import { DEFAULT_MAX_OUTPUT, type JsonSchemaObject, type MaxOutputConfig, truncateOutput } from "../../shared/types.ts";
+import {
+	formatStructuredOutputCorrectionPrompt,
+	readStructuredOutput,
+	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
+} from "../shared/structured-output.ts";
 
 export type ChildStatus = NativeAgentStatus;
 export type ContinuationReason = "async-requested" | "intercom-coordination";
@@ -34,6 +40,12 @@ export interface ParentContext {
 	readonly sessionId?: string;
 	readonly intercomGroup?: string;
 	readonly orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
+}
+
+export interface TestSessionOptions {
+	readonly output?: string;
+	readonly structuredOutputAfterPrompt?: number;
+	readonly promptLogPath?: string;
 }
 
 export interface ChildSpec {
@@ -49,6 +61,9 @@ export interface ChildSpec {
 	readonly model?: Model<Api>;
 	readonly thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
 	readonly parent?: ParentContext;
+	readonly sessionFile?: string;
+	readonly testSession?: boolean | TestSessionOptions;
+	readonly structuredOutput?: { readonly schema: JsonSchemaObject; readonly outputPath: string };
 	readonly artifactJsonlPath?: string;
 }
 
@@ -86,6 +101,7 @@ export type AttemptOutcome =
 			readonly path: string;
 			readonly envelope: string;
 			readonly sessionFile?: string;
+			readonly structuredOutput?: unknown;
 	  }
 	| {
 			readonly status: "error";
@@ -153,6 +169,87 @@ const EMPTY_STATS: AttemptStats = {
 	cost: 0,
 };
 
+function workflowMetadataFromContext(
+	context: CreateAgentSessionOptions["orchestrationContext"] | undefined,
+): { runId: string; stageId: string; stageName: string } | undefined {
+	if (context?.kind !== "workflow-stage") return undefined;
+	return {
+		runId: context.workflowRunId,
+		stageId: context.workflowStageId,
+		stageName: context.workflowStageName,
+	};
+}
+
+function createTestSession(sessionManager: SessionManager, spec: ChildSpec): AgentSession {
+	const listeners = new Set<AgentSessionEventListener>();
+	const testOptions = typeof spec.testSession === "object" ? spec.testSession : {};
+	let lastAssistantText = "";
+	let aborted = false;
+	let promptCount = 0;
+	let userMessages = 0;
+	let assistantMessages = 0;
+	const zeroTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+	const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+	return {
+		sessionFile: sessionManager.getSessionFile(),
+		abort: async () => {
+			aborted = true;
+		},
+		subscribe(listener: AgentSessionEventListener) {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		prompt: async (text: string) => {
+			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
+			if (aborted) throw new Error("aborted");
+			promptCount += 1;
+			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
+			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+			userMessages += 1;
+			if (
+				spec.structuredOutput &&
+				testOptions.structuredOutputAfterPrompt !== undefined &&
+				promptCount >= testOptions.structuredOutputAfterPrompt
+			) {
+				writeFileSync(spec.structuredOutput.outputPath, JSON.stringify({ answer: "ok" }), "utf8");
+			}
+			lastAssistantText = testOptions.output ?? "done";
+			sessionManager.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: lastAssistantText }],
+				api: "openai-responses",
+				provider: "openai",
+				model: "gpt-5.4",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: zeroCost,
+				},
+				stopReason: "stop",
+				timestamp: Date.now(),
+			});
+			assistantMessages += 1;
+			return lastAssistantText;
+		},
+		getLastAssistantText: () => lastAssistantText,
+		getSessionStats: () => ({
+			sessionFile: sessionManager.getSessionFile(),
+			sessionId: sessionManager.getSessionId(),
+			userMessages,
+			assistantMessages,
+			toolCalls: 0,
+			toolResults: 0,
+			totalMessages: userMessages + assistantMessages,
+			tokens: zeroTokens,
+			cost: 0,
+		}),
+		dispose: () => {},
+	} as unknown as AgentSession;
+}
+
 function nativeStatus(value: ChildStatus): NativeAgentStatus {
 	return value;
 }
@@ -177,7 +274,11 @@ function statsFor(session: AgentSession | undefined, fallbackSessionId: string):
 	try {
 		return session.getSessionStats();
 	} catch {
-		return { ...EMPTY_STATS, sessionId: fallbackSessionId, sessionFile: session.sessionFile };
+		return {
+			...EMPTY_STATS,
+			sessionId: fallbackSessionId,
+			sessionFile: session.sessionFile,
+		};
 	}
 }
 
@@ -305,7 +406,12 @@ export class SubagentControlRuntime {
 
 	admitChildSession(spec: ChildSpec, parent: ParentContext = this.parent): AdmittedResult {
 		if (!existsSync(spec.cwd) || !statSync(spec.cwd).isDirectory()) {
-			return { refusal: { kind: "invalidCwd", reason: `cwd is not a directory: ${spec.cwd}` } };
+			return {
+				refusal: {
+					kind: "invalidCwd",
+					reason: `cwd is not a directory: ${spec.cwd}`,
+				},
+			};
 		}
 		const native = this.native.admitChildSession(
 			{ taskName: spec.taskName, agentName: spec.agent.name, cwd: spec.cwd },
@@ -333,6 +439,7 @@ export class SubagentControlRuntime {
 					depth: identity.depth,
 				},
 				sessionDir,
+				sessionFile: spec.sessionFile,
 				control: this,
 			}),
 		};
@@ -359,6 +466,7 @@ export class SubagentControlRuntime {
 		let session: AgentSession | undefined;
 		let termination: TerminationCauseName | undefined;
 		let terminating: Promise<void> | undefined;
+		let unsubscribe: (() => void) | undefined;
 		const terminate = async (cause: TerminationCauseName): Promise<void> => {
 			if (terminating) return terminating;
 			termination = cause;
@@ -379,11 +487,19 @@ export class SubagentControlRuntime {
 		const abortListener = () => void terminate("abort");
 		const interruptListener = () => void terminate("interrupt");
 		signals.abort.addEventListener("abort", abortListener, { once: true });
-		signals.interrupt.addEventListener("abort", interruptListener, { once: true });
+		signals.interrupt.addEventListener("abort", interruptListener, {
+			once: true,
+		});
 		try {
+			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
 			const sessionManager = admitted.sessionFile
 				? SessionManager.open(admitted.sessionFile, admitted.sessionDir, admitted.policy.cwd)
-				: SessionManager.create(admitted.policy.cwd, admitted.sessionDir, { internal: true });
+				: SessionManager.create(
+						admitted.policy.cwd,
+						admitted.sessionDir,
+						workflow ? { internal: true, workflow } : { internal: true },
+					);
+			if (workflow) sessionManager.markSessionInternal(workflow);
 			const settingsManager = SettingsManager.create(admitted.policy.cwd, getAgentDir());
 			const resourceLoader = new DefaultResourceLoader({
 				cwd: admitted.policy.cwd,
@@ -391,30 +507,52 @@ export class SubagentControlRuntime {
 				settingsManager,
 			});
 			await resourceLoader.reload();
-			const created = await createAgentSession({
-				cwd: admitted.policy.cwd,
-				model: candidate.model ?? admitted.policy.model,
-				thinkingLevel: candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
-				tools: admitted.policy.tools ? [...admitted.policy.tools] : undefined,
-				excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
-				customTools: admitted.policy.customTools,
-				resourceLoader,
-				sessionManager,
-				settingsManager,
-				orchestrationContext: admitted.spec.parent?.orchestrationContext,
-			});
+			const created = admitted.spec.testSession
+				? { session: createTestSession(sessionManager, admitted.spec) }
+				: await createAgentSession({
+						cwd: admitted.policy.cwd,
+						model: candidate.model ?? admitted.policy.model,
+						thinkingLevel: candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
+						tools: admitted.policy.tools ? [...admitted.policy.tools] : undefined,
+						excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
+						customTools: admitted.policy.customTools,
+						resourceLoader,
+						sessionManager,
+						settingsManager,
+						orchestrationContext: admitted.spec.parent?.orchestrationContext,
+					});
 			session = created.session;
 			this.sessions.set(admitted.identity.path, session);
-			const unsubscribe = session.subscribe((event) => {
+			unsubscribe = session.subscribe((event) => {
 				writeEvent(admitted.spec.artifactJsonlPath, event);
 				if (event.type === "agent_start")
 					this.native.publishChildStatus(admitted.identity.path, nativeStatus("running"));
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
-			await session.prompt(admitted.spec.task);
+			let structuredOutput: unknown;
+			let prompt = admitted.spec.task;
+			for (let correction = 0; ; correction += 1) {
+				await session.prompt(prompt);
+				if (!admitted.spec.structuredOutput) break;
+				const structured = readStructuredOutput({
+					schema: admitted.spec.structuredOutput.schema,
+					schemaPath: "",
+					outputPath: admitted.spec.structuredOutput.outputPath,
+				});
+				if (structured.value !== undefined) {
+					structuredOutput = structured.value;
+					break;
+				}
+				const error = structured.error ?? "Structured output contract failed.";
+				if (correction >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) throw new Error(error);
+				prompt = formatStructuredOutputCorrectionPrompt({
+					originalTask: admitted.spec.task,
+					error,
+					attempt: correction + 1,
+				});
+			}
 			await terminating;
-			unsubscribe();
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
 			const output = outputFor(session);
@@ -423,7 +561,16 @@ export class SubagentControlRuntime {
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));
 			const envelope = boundedEnvelope(output || termination || "(no output)", undefined);
-			if (status === "ok") return { status, output, stats, path: admitted.identity.path, envelope, sessionFile };
+			if (status === "ok")
+				return {
+					status,
+					output,
+					stats,
+					path: admitted.identity.path,
+					envelope,
+					sessionFile,
+					...(structuredOutput === undefined ? {} : { structuredOutput }),
+				};
 			return {
 				status,
 				cause: termination ?? "agent session ended without a successful completion",
@@ -461,6 +608,16 @@ export class SubagentControlRuntime {
 		} finally {
 			signals.abort.removeEventListener("abort", abortListener);
 			signals.interrupt.removeEventListener("abort", interruptListener);
+			try {
+				unsubscribe?.();
+			} catch {
+				// Listener teardown must not replace the attempt result.
+			}
+			try {
+				session?.dispose();
+			} catch {
+				// Session teardown must not replace the attempt result.
+			}
 			this.sessions.delete(admitted.identity.path);
 			if (this.attemptTokens.get(admitted.identity.path) === token)
 				this.attemptTokens.delete(admitted.identity.path);
@@ -508,16 +665,36 @@ export class SubagentControlRuntime {
 		try {
 			sessionDir = sessionDirectory(this.sessionRoot, pathValue);
 		} catch (error) {
-			return { refusal: { kind: "invalidCwd", reason: error instanceof Error ? error.message : String(error) } };
+			return {
+				refusal: {
+					kind: "invalidCwd",
+					reason: error instanceof Error ? error.message : String(error),
+				},
+			};
 		}
 		const identity = this.native.listChildren().find((child) => child.path === pathValue);
-		if (!identity) return { refusal: { kind: "unknownAgent", reason: "unknown child identity" } };
+		if (!identity)
+			return {
+				refusal: { kind: "unknownAgent", reason: "unknown child identity" },
+			};
 		const sessionFile = this.findSessionFile(sessionDir);
-		if (!sessionFile) return { refusal: { kind: "invalidCwd", reason: "child session file is missing" } };
+		if (!sessionFile)
+			return {
+				refusal: {
+					kind: "invalidCwd",
+					reason: "child session file is missing",
+				},
+			};
 		const native = this.native.reloadColdChild(pathValue, message);
 		if (!native.child) return refusal(native);
 		const previous = this.specs.get(pathValue);
-		if (!previous) return { refusal: { kind: "unknownAgent", reason: "child policy is not resident" } };
+		if (!previous)
+			return {
+				refusal: {
+					kind: "unknownAgent",
+					reason: "child policy is not resident",
+				},
+			};
 		const spec: ChildSpec = { ...previous, task: message };
 		this.specs.set(pathValue, spec);
 		return {
@@ -540,7 +717,10 @@ export class SubagentControlRuntime {
 
 	async deliverChildResult(
 		envelope: ResultEnvelope,
-		options?: { readonly artifactsDir?: string; readonly maxOutput?: MaxOutputConfig },
+		options?: {
+			readonly artifactsDir?: string;
+			readonly maxOutput?: MaxOutputConfig;
+		},
 	): Promise<void> {
 		if (this.delivered.has(envelope.path)) return;
 		this.delivered.add(envelope.path);
@@ -551,7 +731,11 @@ export class SubagentControlRuntime {
 		const paths = getArtifactPaths(artifactDir, envelope.path.replaceAll("/", "_"), envelope.path);
 		const bounded = boundedEnvelope(envelope.envelope, paths.outputPath, options?.maxOutput);
 		writeArtifact(paths.outputPath, envelope.envelope);
-		writeMetadata(paths.metadataPath, { ...envelope, envelope: bounded, outputPath: paths.outputPath });
+		writeMetadata(paths.metadataPath, {
+			...envelope,
+			envelope: bounded,
+			outputPath: paths.outputPath,
+		});
 		appendFileSync(
 			join(artifactDir, "run-history.jsonl"),
 			`${JSON.stringify({ ...envelope, envelope: bounded })}\n`,
@@ -657,7 +841,10 @@ export function terminate_child_attempt(
 export function deliver_child_result(
 	control: SubagentControlRuntime,
 	envelope: ResultEnvelope,
-	options?: { readonly artifactsDir?: string; readonly maxOutput?: MaxOutputConfig },
+	options?: {
+		readonly artifactsDir?: string;
+		readonly maxOutput?: MaxOutputConfig;
+	},
 ): Promise<void> {
 	return control.deliverChildResult(envelope, options);
 }

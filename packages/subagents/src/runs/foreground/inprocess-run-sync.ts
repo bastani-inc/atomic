@@ -1,3 +1,4 @@
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig } from "../../agents/agent-types.ts";
 import { getArtifactPaths } from "../../shared/artifacts.ts";
@@ -5,15 +6,26 @@ import type {
 	AgentProgress,
 	ArtifactPaths,
 	Details,
+	ModelAttempt,
 	RunSyncOptions,
 	SingleResult,
 	SubagentToolResult,
 	Usage,
 } from "../../shared/types.ts";
+import { buildModelCandidates } from "../shared/model-fallback.ts";
+import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { type AttemptOutcome, type ChildSpec, createSubagentControl, type ParentContext } from "../inprocess/runner.ts";
+import { registerExecutionIntercomDetach } from "./execution-intercom-detach.ts";
 
 function emptyUsage(): Usage {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: 0,
+		turns: 0,
+	};
 }
 
 function usageFromStats(stats: AttemptOutcome["stats"]): Usage {
@@ -24,6 +36,22 @@ function usageFromStats(stats: AttemptOutcome["stats"]): Usage {
 		cacheWrite: stats.tokens.cacheWrite,
 		cost: stats.cost,
 		turns: stats.assistantMessages,
+	};
+}
+
+function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["orchestrationContext"] | undefined {
+	const workflow = options.workflowSessionMetadata;
+	if (!workflow) return undefined;
+	return {
+		kind: "workflow-stage",
+		workflowRunId: workflow.runId,
+		workflowStageId: workflow.stageId,
+		workflowStageName: workflow.stageName,
+		constraints: {
+			disableWorkflowTool: true,
+			maxSubagentDepth: options.maxSubagentDepth ?? 5,
+		},
+		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 	};
 }
 
@@ -41,6 +69,7 @@ function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, 
 		tokens: outcome.stats.tokens.total,
 		durationMs: Math.max(0, Date.now() - startedAt),
 		lastActivityAt: Date.now(),
+		...(outcome.status === "error" ? { error: outcome.cause } : {}),
 	};
 }
 
@@ -68,6 +97,9 @@ function resultFromOutcome(
 		model: undefined,
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
+		...(outcome.status === "ok" && outcome.structuredOutput !== undefined
+			? { structuredOutput: outcome.structuredOutput }
+			: {}),
 		progress: progressFor(agent, task, outcome, startedAt),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,
@@ -105,6 +137,11 @@ function refusedResult(agent: AgentConfig, task: string, reason: string): Single
 	};
 }
 
+function noSpawnableCandidatesResult(agent: AgentConfig, task: string, skippedAttempts: ModelAttempt[]): SingleResult {
+	const reason = "No spawnable subagent model candidates after pre-spawn filtering.";
+	return { ...refusedResult(agent, task, reason), modelAttempts: skippedAttempts };
+}
+
 export async function runSingleInProcess(
 	runtimeCwd: string,
 	agent: AgentConfig,
@@ -112,7 +149,32 @@ export async function runSingleInProcess(
 	options: RunSyncOptions,
 ): Promise<SingleResult> {
 	const cwd = options.cwd ?? runtimeCwd;
-	const parent: ParentContext = { path: options.runId, depth: 0 };
+	if (!existsSync(cwd)) return refusedResult(agent, task, `cwd does not exist: ${cwd}`);
+	if (!statSync(cwd).isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
+	const rawCandidates = buildModelCandidates(
+		options.modelOverride ?? agent.model,
+		agent.fallbackModels,
+		options.availableModels,
+		options.preferredModelProvider,
+		options.currentModel,
+		agent.fallbackThinkingLevels,
+	);
+	const filteredCandidates = filterSpawnableModelCandidates({
+		candidates: rawCandidates,
+		availableModels: options.availableModels,
+		knownModelProviders: options.knownModelProviders,
+		currentModel: options.currentModel,
+	});
+	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
+		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
+	const candidate = filteredCandidates.candidates[0];
+	const orchestrationContext = workflowOrchestrationContext(options);
+	const parent: ParentContext = {
+		path: options.runId,
+		depth: 0,
+		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
+		...(orchestrationContext ? { orchestrationContext } : {}),
+	};
 	const sessionRoot = options.sessionDir ?? join(options.artifactsDir ?? cwd, ".atomic", "subagents");
 	const control = createSubagentControl(parent, sessionRoot);
 	control.registerAgents([agent]);
@@ -120,11 +182,18 @@ export async function runSingleInProcess(
 		options.artifactsDir && options.artifactConfig?.enabled !== false
 			? getArtifactPaths(options.artifactsDir, options.runId, agent.name, options.index)
 			: undefined;
+	const testSession =
+		options.testSession ?? (process.env.NODE_TEST_CONTEXT !== undefined || process.env.NODE_ENV === "test");
 	const spec: ChildSpec = {
 		taskName: agent.name,
 		task,
 		agent,
 		cwd,
+		testSession: testSession,
+		sessionFile: options.sessionFile,
+		structuredOutput: options.structuredOutput
+			? { schema: options.structuredOutput.schema, outputPath: options.structuredOutput.outputPath }
+			: undefined,
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,
@@ -135,16 +204,71 @@ export async function runSingleInProcess(
 	};
 	const admission = control.admitChildSession(spec, parent);
 	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");
-	const neverAbort = new AbortController().signal;
 	const startedAt = Date.now();
-	const outcome = await control.runChildAttempt(
+	const neverAbort = new AbortController().signal;
+	const running = control.startAttempt(
 		admission.admitted,
-		{ modelId: options.modelOverride, thinkingLevel: spec.thinkingLevel },
+		{ modelId: candidate, thinkingLevel: spec.thinkingLevel },
 		{
 			abort: options.signal ?? neverAbort,
 			interrupt: options.interruptSignal ?? neverAbort,
 		},
 	);
+	let detached = false;
+	let resolveContinuation!: () => void;
+	const continuation = new Promise<void>((resolve) => {
+		resolveContinuation = resolve;
+	});
+	const detachCleanup = registerExecutionIntercomDetach(options, {
+		isUnavailable: () => running.status !== "running",
+		isDetached: () => detached,
+		detach: () => {
+			if (detached) return;
+			detached = true;
+			control.continueInBackground(running, "intercom-coordination");
+			resolveContinuation();
+		},
+	});
+	const terminal = running.promise.then((value) => ({ kind: "terminal" as const, value }));
+	const winner = await Promise.race([terminal, continuation.then(() => ({ kind: "continued" as const }))]);
+	if (winner.kind === "continued") {
+		detachCleanup();
+		void running.promise.then((backgroundOutcome) => {
+			const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths);
+			options.onDetachedExit?.(recovered);
+		});
+		const continuedResult: SingleResult = {
+			agent: agent.name,
+			task,
+			status: "continued",
+			path: admission.admitted.identity.path,
+			envelope: "Child continued in background.",
+			exitCode: 0,
+			detached: true,
+			detachedReason: "intercom-coordination",
+			messages: [],
+			usage: emptyUsage(),
+			progress: {
+				index: options.index ?? 0,
+				agent: agent.name,
+				status: "running",
+				task,
+				recentTools: [],
+				recentOutput: [],
+				toolCount: 0,
+				tokens: 0,
+				durationMs: Math.max(0, Date.now() - startedAt),
+				lastActivityAt: Date.now(),
+			},
+		};
+		options.onUpdate?.({
+			content: [{ type: "text", text: continuedResult.envelope ?? "" }],
+			details: { mode: "single", runId: options.runId, results: [continuedResult] } satisfies Details,
+		});
+		return continuedResult;
+	}
+	detachCleanup();
+	const outcome = winner.value;
 	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths);
 	if (artifactPaths) {
 		await control.deliverChildResult(

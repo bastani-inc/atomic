@@ -106,6 +106,12 @@ export interface RunSyncOptions {
 		schemaPath: string;
 		outputPath: string;
 	};
+	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */
+	testSession?: {
+		output?: string;
+		structuredOutputAfterPrompt?: number;
+		promptLogPath?: string;
+	};
 }
 
 export type IntercomBridgeMode = "off" | "fork-only" | "always";
