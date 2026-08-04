@@ -12,9 +12,9 @@ import type {
 	SubagentToolResult,
 	Usage,
 } from "../../shared/types.ts";
-import { buildModelCandidates } from "../shared/model-fallback.ts";
-import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { type AttemptOutcome, type ChildSpec, createSubagentControl, type ParentContext } from "../inprocess/runner.ts";
+import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
+import { buildModelCandidates } from "../shared/model-fallback.ts";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.ts";
 
 function emptyUsage(): Usage {
