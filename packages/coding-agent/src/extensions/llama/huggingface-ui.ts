@@ -1,6 +1,6 @@
 import { Container, type Focusable, fuzzyFilter, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
-import type { KeybindingsManager } from "../../core/keybindings.js";
-import type { Theme } from "../../modes/interactive/theme/theme.js";
+import type { KeybindingsManager } from "../../core/keybindings.ts";
+import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { HuggingFaceModel } from "./huggingface.js";
 
 function compactCount(value: number): string {

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-08-04
+
+### Fixed
+
+- Fixed bundled subagent resources failing to load on Windows when shared modules used mixed `.ts` and `.js` import spellings.
+
+## [0.9.12-alpha.1] - 2026-08-04
+
+### Fixed
+
+- Fixed bundled subagent resources failing to load on Windows when shared modules used mixed `.ts` and `.js` import spellings.
+
 ## [0.9.11] - 2026-08-03
 
 ### Changed

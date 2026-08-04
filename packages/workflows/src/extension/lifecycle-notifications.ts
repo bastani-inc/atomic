@@ -17,6 +17,7 @@ import type {
 	StageSnapshot,
 	StageStatus,
 	StoreSnapshot,
+	WorkflowActor,
 } from "../shared/store-types.js";
 import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
 import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workflow-notice-card.js";
@@ -26,13 +27,33 @@ import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery
 export const LIFECYCLE_NOTICE_CUSTOM_TYPE = "workflows:lifecycle-notice";
 export const LIFECYCLE_NOTICE_SNIPPET_LIMIT = 240;
 
-export type WorkflowLifecycleNoticeKind = "completed" | "failed" | "blocked" | "awaiting_input";
+export type WorkflowLifecycleNoticeKind =
+	| "started"
+	| "completed"
+	| "failed"
+	| "blocked"
+	| "awaiting_input"
+	| "paused"
+	| "quit"
+	| "resumed";
+
+/**
+ * Control-action kinds. Unlike terminal outcomes these are reversible and can
+ * repeat, so their dedupe keys carry the occurrence timestamp rather than the
+ * run id alone, and they are reported only when a control path attributed the
+ * action to a user.
+ */
+type WorkflowControlNoticeKind = "started" | "paused" | "quit" | "resumed";
 
 export const WORKFLOW_LIFECYCLE_NOTICE_KINDS = [
+	"started",
 	"completed",
 	"failed",
 	"blocked",
 	"awaiting_input",
+	"paused",
+	"quit",
+	"resumed",
 ] as const satisfies readonly WorkflowLifecycleNoticeKind[];
 
 export interface WorkflowLifecycleNotificationConfig {
@@ -57,6 +78,14 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly toolName?: string;
 	readonly durationMs?: number;
 	readonly active?: boolean;
+	/** Whether a quit run advertises itself as resumable. */
+	readonly resumable?: boolean;
+	/** Who performed this lifecycle action, when a control path attributed it. */
+	readonly actor?: WorkflowActor;
+	/** Who launched the run, when the launch was attributed. */
+	readonly origin?: WorkflowActor;
+	/** Source run this run continues, for a resumed continuation with a fresh id. */
+	readonly continuedFromRunId?: string;
 	readonly createdAt: number;
 }
 
@@ -116,6 +145,12 @@ export function seedWorkflowLifecycleNotificationState(
 			const key = terminalRunKey(noticeKind, run);
 			if (!state.pendingTerminalRuns.has(key) && !state.retryableTerminalRuns.has(key)) {
 				state.deliveredTerminalRuns.add(key);
+			}
+		}
+		for (const occurrence of controlOccurrences(run)) {
+			const controlKey = controlOccurrenceKey(run, occurrence);
+			if (!state.pendingTerminalRuns.has(controlKey) && !state.retryableTerminalRuns.has(controlKey)) {
+				state.deliveredTerminalRuns.add(controlKey);
 			}
 		}
 		if (run.pendingPrompt !== undefined) {
@@ -227,6 +262,26 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		delivery.deliver(key, makeTerminalNotice(run, kind));
 	};
 
+	const emitControlNoticesOnce = (run: RunSnapshot): void => {
+		for (const occurrence of controlOccurrences(run)) {
+			if (!notifyOn.has(occurrence.kind)) continue;
+			const key = controlOccurrenceKey(run, occurrence);
+			if (
+				state.deliveredTerminalRuns.has(key) ||
+				state.pendingTerminalRuns.has(key) ||
+				state.retryableTerminalRuns.has(key)
+			)
+				continue;
+			if (state.suppressionDepth > 0) {
+				state.deliveredTerminalRuns.add(key);
+				state.retryableTerminalRuns.delete(key);
+				state.retryableTerminalNotices.delete(key);
+				continue;
+			}
+			delivery.deliver(key, makeControlNotice(run, occurrence));
+		}
+	};
+
 	const emitStageAwaitingInputNoticeOnce = (run: RunSnapshot, stage: StageSnapshot): void => {
 		if (stage.status !== "awaiting_input") return;
 
@@ -256,6 +311,7 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 			emitTerminalNoticeOnce(run, "completed");
 			emitTerminalNoticeOnce(run, "failed");
 			emitTerminalNoticeOnce(run, "blocked");
+			emitControlNoticesOnce(run);
 
 			if (!notifyOn.has("awaiting_input")) continue;
 			emitRunAwaitingInputNoticeOnce(run);
@@ -298,20 +354,51 @@ export function registerLifecycleNoticeRenderer(
 
 export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoticeDetails): string {
 	const workflowName = escapeQuotedText(details.workflowName);
+	// "which you started" / "which the user started". Omitted entirely when the
+	// run carries no recorded origin, rather than guessing one.
+	const origin =
+		details.origin === undefined
+			? ""
+			: details.origin === "agent"
+				? ", which you started"
+				: ", which the user started";
+	const actor = details.actor === "agent" ? "You" : "The user";
+	if (details.kind === "started") {
+		return `▶ ${actor} started workflow "${workflowName}" (run ${details.runId}). It is running in the background; you will be notified when it completes.`;
+	}
 	if (details.kind === "completed") {
-		return `✓ Workflow "${workflowName}" completed (run ${details.runId}). Inspect: /workflow status ${details.runId}`;
+		return `✓ Workflow "${workflowName}" completed (run ${details.runId})${origin}. Inspect: /workflow status ${details.runId}`;
 	}
 	if (details.kind === "failed") {
 		const stage = details.stageName ?? details.failedStageId ?? details.stageId;
 		const tool = lifecycleToolOrigin(details);
-		const originText = stage ? `, stage ${stage}` : tool !== undefined ? `, tool ${tool}` : "";
+		const failureSite = stage ? `, stage ${stage}` : tool !== undefined ? `, tool ${tool}` : "";
 		const errorText = details.error ? `: ${details.error}` : "";
-		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${originText})${errorText}. Inspect: /workflow status ${details.runId}`;
+		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}. Inspect: /workflow status ${details.runId}`;
 	}
 	if (details.kind === "blocked") {
 		const errorText = details.error ? `: ${details.error}` : "";
 		const stateText = details.active === true ? "is blocked" : "ended blocked";
-		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${errorText}. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Inspect: /workflow status ${details.runId}`;
+	}
+	if (details.kind === "paused" || details.kind === "quit") {
+		const stopStage = details.stageName ?? details.stageId;
+		// "(run 8c31), which you started, at stage review" — the stage clause takes a
+		// separating comma only when an origin clause precedes it.
+		const stageText = stopStage ? `${origin === "" ? "" : ","} at stage ${stopStage}` : "";
+		const scopeText = details.scope === "stage" ? "stage of workflow" : "workflow";
+		const verb = details.kind === "paused" ? "paused" : "quit";
+		const noun = details.kind === "paused" ? "pause" : "stop";
+		const glyph = details.kind === "paused" ? "⏸" : "⏹";
+		return `${glyph} ${actor} ${verb} the ${scopeText} "${workflowName}" (run ${details.runId})${origin}${stageText}. This ${noun} was deliberate and user-requested; do not resume it or take over the work unless asked. Resume: /workflow resume ${details.runId}`;
+	}
+	if (details.kind === "resumed") {
+		const resumedStage = details.stageName ?? details.stageId;
+		const stageText = resumedStage ? `${origin === "" ? "" : ","} at stage ${resumedStage}` : "";
+		const scopeText = details.scope === "stage" ? "stage of workflow" : "workflow";
+		const continues =
+			details.continuedFromRunId === undefined ? "" : `, continuing run ${details.continuedFromRunId}`;
+		return `▶ ${actor} resumed the ${scopeText} "${workflowName}" (run ${details.runId}${continues})${origin}${stageText}. It is running again in the background.`;
 	}
 	const prompt = details.promptMessage ? ` Prompt: ${details.promptMessage}` : "";
 	if (details.scope === "run") {
@@ -349,8 +436,40 @@ function makeTerminalNotice(
 		...(failedToolNodeId !== undefined ? { toolNodeId: failedToolNodeId } : {}),
 		...(failedTool !== undefined ? { toolName: failedTool.name } : {}),
 		...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),
+		// Attribution renders on every kind, and is omitted for a run that never
+		// recorded an origin rather than guessed at.
+		...(run.origin !== undefined ? { origin: run.origin } : {}),
 		createdAt: lifecycleOccurrenceAt(run, kind) ?? Date.now(),
 	};
+}
+
+function makeControlNotice(run: RunSnapshot, occurrence: ControlOccurrence): WorkflowLifecycleNoticeDetails {
+	const stage = occurrence.stage ?? restingStage(run);
+	const elapsedMs = run.durationMs ?? (occurrence.at >= run.startedAt ? occurrence.at - run.startedAt : undefined);
+	return {
+		kind: occurrence.kind,
+		scope: occurrence.scope,
+		runId: run.id,
+		workflowName: run.name,
+		status: occurrence.stage !== undefined ? occurrence.stage.status : run.status,
+		...(stage !== undefined ? { stageId: stage.id, stageName: stage.name } : {}),
+		...(elapsedMs !== undefined ? { durationMs: elapsedMs } : {}),
+		...(occurrence.kind === "quit" && run.resumable !== undefined ? { resumable: run.resumable } : {}),
+		...(occurrence.actor !== undefined ? { actor: occurrence.actor } : {}),
+		// The origin clause is omitted entirely for a run that never recorded one.
+		...(occurrence.kind !== "started" && run.origin !== undefined ? { origin: run.origin } : {}),
+		...(occurrence.kind === "resumed" && run.resumedFromRunId !== undefined
+			? { continuedFromRunId: run.resumedFromRunId }
+			: {}),
+		createdAt: occurrence.at,
+	};
+}
+
+/** The stage a run currently rests on, preferring an explicitly paused one. */
+function restingStage(run: RunSnapshot): StageSnapshot | undefined {
+	return (
+		run.stages.find((stage) => stage.status === "paused") ?? run.stages.find((stage) => stage.status === "running")
+	);
 }
 
 function warnLifecycleSendFailure(error: unknown): void {
@@ -400,6 +519,87 @@ function terminalRunKey(kind: "completed" | "failed" | "blocked", run: RunSnapsh
 	return occurrence === undefined ? `${kind}:${run.id}` : `${kind}:${run.id}:${occurrence}`;
 }
 
+/** One deliberate control action a run currently carries. */
+interface ControlOccurrence {
+	readonly kind: WorkflowControlNoticeKind;
+	readonly scope: "run" | "stage";
+	readonly at: number;
+	readonly actor: WorkflowActor;
+	readonly stage?: StageSnapshot;
+}
+
+/**
+ * Every control action this run currently carries that a user actually asked
+ * for.
+ *
+ * Attribution, not the status transition, is the trigger. A run passes through
+ * paused on its way to a quit, and the engine resumes a run whenever a
+ * human-in-the-loop prompt is answered or a stage control acknowledges; none of
+ * those record an actor, so none of them reach the chat. Only a control path
+ * that names its caller does, and it names exactly one scope per request, which
+ * is what keeps a stage card and a run card from reporting the same event.
+ */
+function controlOccurrences(run: RunSnapshot): ControlOccurrence[] {
+	const occurrences: ControlOccurrence[] = [];
+	// Whether this run exists because someone resumed work, whoever asked for it.
+	// A durable resume reuses the original run id (issue #1498) and a failed-run
+	// continuation takes a fresh one; both re-enter `recordRunStart`, and neither
+	// is a new run to the user. Keying the start suppression on the resume itself
+	// rather than on who requested it is what keeps an agent-requested resume of a
+	// user-started run from being announced as a fresh launch.
+	const resumedRun = run.resumeSource === "run_control" || run.resumedFromRunId !== undefined;
+	const userResumed = run.resumeSource === "run_control" && run.resumeActor === "user";
+	// A resumed run that never paused in this session reports its start timestamp:
+	// the re-dispatch is the occurrence.
+	const continuation = userResumed && run.resumedAt === undefined;
+	if (run.origin === "user" && !resumedRun) {
+		occurrences.push({ kind: "started", scope: "run", at: run.startedAt, actor: "user" });
+	}
+	if (userResumed && run.status === "running") {
+		occurrences.push({
+			kind: "resumed",
+			scope: "run",
+			at: continuation ? run.startedAt : (run.resumedAt ?? run.startedAt),
+			actor: "user",
+		});
+	}
+	if (run.endedAt === undefined && run.status === "paused" && run.pauseActor === "user") {
+		if (run.exitReason === "quit") {
+			const quitAt = run.quitAt ?? run.pausedAt;
+			if (quitAt !== undefined) occurrences.push({ kind: "quit", scope: "run", at: quitAt, actor: "user" });
+		} else if (run.pausedAt !== undefined) {
+			occurrences.push({ kind: "paused", scope: "run", at: run.pausedAt, actor: "user" });
+		}
+	}
+	const runScoped = new Set(occurrences.map((occurrence) => occurrence.kind));
+	if (run.endedAt !== undefined) return occurrences;
+	for (const stage of run.stages) {
+		if (stage.status === "paused" && stage.pauseActor === "user" && stage.pausedAt !== undefined) {
+			if (!runScoped.has("paused") && !runScoped.has("quit")) {
+				occurrences.push({ kind: "paused", scope: "stage", at: stage.pausedAt, actor: "user", stage });
+			}
+		}
+		if (stage.status === "running" && stage.resumeActor === "user" && stage.resumedAt !== undefined) {
+			if (!runScoped.has("resumed")) {
+				occurrences.push({ kind: "resumed", scope: "stage", at: stage.resumedAt, actor: "user", stage });
+			}
+		}
+	}
+	return occurrences;
+}
+
+/**
+ * Control actions are repeatable, so the occurrence timestamp is part of the
+ * key: resuming clears `pausedAt`/`quitAt`, and the next pause mints a new key
+ * while repeated invalidations at one unchanged state reuse the delivered one.
+ */
+function controlOccurrenceKey(run: RunSnapshot, occurrence: ControlOccurrence): string {
+	if (occurrence.scope === "stage" && occurrence.stage !== undefined) {
+		return `${occurrence.kind}:${run.id}:stage:${occurrence.stage.id}:${occurrence.at}`;
+	}
+	return `${occurrence.kind}:${run.id}:${occurrence.at}`;
+}
+
 function awaitingInputKey(runId: string, stage: StageSnapshot): string {
 	const promptId = stage.pendingPrompt?.id ?? stage.inputRequest?.id;
 	if (promptId) return `awaiting_input:${runId}:stage:${stage.id}:${promptId}`;
@@ -439,38 +639,12 @@ function renderLifecycleNoticeCard(
 	details: WorkflowLifecycleNoticeDetails,
 	opts: { width: number; theme?: GraphTheme; fallbackText: string },
 ): string[] {
-	const tone: WorkflowNoticeTone =
-		details.kind === "failed"
-			? "error"
-			: details.kind === "awaiting_input" || details.kind === "blocked"
-				? "warning"
-				: "success";
-	const title =
-		details.kind === "failed"
-			? "WORKFLOW FAILED"
-			: details.kind === "awaiting_input"
-				? "WORKFLOW INPUT"
-				: details.kind === "blocked"
-					? "WORKFLOW BLOCKED"
-					: "WORKFLOW COMPLETE";
-	const glyph =
-		details.kind === "failed"
-			? "✗"
-			: details.kind === "awaiting_input"
-				? "？"
-				: details.kind === "blocked"
-					? "!"
-					: "✓";
+	const tone: WorkflowNoticeTone = lifecycleNoticeTone(details.kind);
+	const title = lifecycleNoticeTitle(details.kind);
+	const glyph = lifecycleNoticeGlyph(details.kind);
 	const stage = details.stageName ?? details.failedStageId ?? details.stageId;
 	const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
-	const headline =
-		details.kind === "failed"
-			? `Workflow "${details.workflowName}" failed`
-			: details.kind === "awaiting_input"
-				? `Workflow "${details.workflowName}" needs input`
-				: details.kind === "blocked"
-					? `Workflow "${details.workflowName}" ${details.active === true ? "is blocked" : "ended blocked"}`
-					: `Workflow "${details.workflowName}" completed`;
+	const headline = lifecycleNoticeHeadline(details);
 	return renderWorkflowNoticeCard({
 		title,
 		glyph,
@@ -479,19 +653,110 @@ function renderLifecycleNoticeCard(
 		fields: [
 			{ label: "workflow", value: details.workflowName },
 			{ label: "run", value: details.runId },
+			{ label: "continues", value: details.continuedFromRunId },
 			{ label: "stage", value: stage },
 			{ label: "tool", value: tool },
+			{ label: "actor", value: details.actor, tone: "muted" },
+			{ label: "launched", value: details.origin, tone: "muted" },
 			{ label: "prompt", value: details.promptMessage, tone: "muted" },
 			{ label: "error", value: details.error, tone: "error" },
+			{ label: "resumable", value: resumableFieldValue(details), tone: "muted" },
 			{ label: "duration", value: formatDurationMs(details.durationMs), tone: "muted" },
 		],
-		hints: [
-			details.kind === "awaiting_input" ? `/workflow connect ${details.runId}` : `/workflow status ${details.runId}`,
-		],
+		hints: [lifecycleNoticeHint(details)],
 		fallbackText: opts.fallbackText,
 		width: opts.width,
 		...(opts.theme ? { theme: opts.theme } : {}),
 	});
+}
+
+function lifecycleNoticeTone(kind: WorkflowLifecycleNoticeKind): WorkflowNoticeTone {
+	switch (kind) {
+		case "failed":
+			return "error";
+		case "blocked":
+		case "awaiting_input":
+		case "paused":
+		case "quit":
+			return "warning";
+		default:
+			return "success";
+	}
+}
+
+function lifecycleNoticeTitle(kind: WorkflowLifecycleNoticeKind): string {
+	switch (kind) {
+		case "started":
+			return "WORKFLOW STARTED";
+		case "failed":
+			return "WORKFLOW FAILED";
+		case "awaiting_input":
+			return "WORKFLOW INPUT";
+		case "blocked":
+			return "WORKFLOW BLOCKED";
+		case "paused":
+			return "WORKFLOW PAUSED";
+		case "quit":
+			return "WORKFLOW QUIT";
+		case "resumed":
+			return "WORKFLOW RESUMED";
+		default:
+			return "WORKFLOW COMPLETE";
+	}
+}
+
+function lifecycleNoticeGlyph(kind: WorkflowLifecycleNoticeKind): string {
+	switch (kind) {
+		case "failed":
+			return "✗";
+		case "awaiting_input":
+			return "？";
+		case "blocked":
+			return "!";
+		case "paused":
+			return "⏸";
+		case "quit":
+			return "⏹";
+		case "started":
+		case "resumed":
+			return "▶";
+		default:
+			return "✓";
+	}
+}
+
+function lifecycleNoticeHeadline(details: WorkflowLifecycleNoticeDetails): string {
+	const name = details.workflowName;
+	const scope = details.scope === "stage" ? "Stage of workflow" : "Workflow";
+	switch (details.kind) {
+		case "started":
+			return `Workflow "${name}" started`;
+		case "failed":
+			return `Workflow "${name}" failed`;
+		case "awaiting_input":
+			return `Workflow "${name}" needs input`;
+		case "blocked":
+			return `Workflow "${name}" ${details.active === true ? "is blocked" : "ended blocked"}`;
+		case "paused":
+			return `${scope} "${name}" paused`;
+		case "quit":
+			return `Workflow "${name}" quit`;
+		case "resumed":
+			return `${scope} "${name}" resumed`;
+		default:
+			return `Workflow "${name}" completed`;
+	}
+}
+
+function lifecycleNoticeHint(details: WorkflowLifecycleNoticeDetails): string {
+	if (details.kind === "awaiting_input") return `/workflow connect ${details.runId}`;
+	if (details.kind === "paused" || details.kind === "quit") return `/workflow resume ${details.runId}`;
+	return `/workflow status ${details.runId}`;
+}
+
+function resumableFieldValue(details: WorkflowLifecycleNoticeDetails): string | undefined {
+	if (details.resumable === undefined) return undefined;
+	return details.resumable ? "yes" : "no";
 }
 
 function formatDurationMs(durationMs: number | undefined): string | undefined {

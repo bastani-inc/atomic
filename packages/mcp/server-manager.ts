@@ -14,10 +14,10 @@ import type {
 import { serverStreamResultPatchNotificationSchema } from "./types.ts";
 import { resolveNpxBinary } from "./npx-resolver.ts";
 import { logger } from "./logger.ts";
-import { McpOAuthProvider } from "./mcp-oauth-provider.ts";
-import { supportsOAuth } from "./mcp-auth-flow.ts";
+import { McpOAuthProvider } from "./mcp-oauth-provider.js";
+import { supportsOAuth } from "./mcp-auth-flow.js";
 import { registerSamplingHandler, type ServerSamplingConfig } from "./sampling-handler.ts";
-import { interpolateEnvRecord, resolveBearerToken, resolveConfigPath } from "./utils.ts";
+import { interpolateEnvRecord, resolveBearerToken, resolveConfigPath } from "./utils.js";
 
 interface ServerConnection {
   client: Client;

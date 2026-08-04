@@ -1,9 +1,9 @@
 import type { AsyncJobManager } from "../async/job-manager.js";
 import type { AsyncJobDeliveryHandler } from "../async/types.js";
-import type { BashOperations, BashToolDetails } from "./bash.js";
+import type { BashOperations, BashToolDetails } from "./bash.ts";
 import { createManagedBashJob, discardManagedBashJob, formatAsyncJobError } from "./bash-async-jobs.js";
 import { createAsyncOutputAppender } from "./bash-async-output.js";
-import { invalidateNativeSearchCache } from "./search-native.js";
+import { invalidateNativeSearchCache } from "./search-native.ts";
 
 interface StartAsyncBashCommandOptions {
 	command: string;

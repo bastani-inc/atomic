@@ -186,7 +186,7 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
 	resumeInFlight: "ask" as const,
 	workflowNotifications: {
 		enabled: true,
-		notifyOn: ["completed", "failed", "blocked", "awaiting_input"] as const,
+		notifyOn: ["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"] as const,
 	},
 	worktree: {
 		symlinkDirectories: ["node_modules"] as readonly string[],

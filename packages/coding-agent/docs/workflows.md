@@ -633,6 +633,60 @@ While implementing:
 
 At the end, report three things: what the contract was, evidence each criterion passes, and the deferred list. Scope changes belong in the report, never in the diff.
 
+### Protect the contract from compaction
+
+A long-running stage gets compacted, and compaction ranks lines individually rather than preserving whole instructions. That ranking has a bias worth knowing: an objective is verbose and restated, while the constraint that bounds it is usually one line. Rank them independently and the constraint is the cheaper deletion — so what survives is coherent, actionable, and missing its boundary conditions. A prohibition removed from context reads as permission.
+
+Wrap contract text in `keepContext` so it survives verbatim regardless of the compression ratio:
+
+```ts
+import { keepContext, workflow } from "@bastani/workflows";
+
+const prompt = [
+  keepContext("Research only. Do not implement code changes."),
+  `Investigate: ${ctx.inputs.question}`,
+].join("\n\n");
+```
+
+Every line of the span is protected, tag lines included. The guarantee is mechanical rather than advisory: protected lines are removed from the planner's deletion ranges after it responds. Because the tag lines are protected too, the span is re-detected on each later boundary — which matters, since every compaction re-ranks the previous compaction's output, so a constraint must survive every cycle rather than only the first. Tags must sit on their own line, and a span is scoped to one message. User and assistant messages may both protect — stage prompts, run inputs, and steering arrive as user messages, and a stage may pin its own core information — while tags inside tool results are inert, so file, page, or command output a stage reads cannot mark itself unreclaimable.
+
+`keepContext` is a pure string helper, not a `ctx.*` primitive: it creates no graph node and has no side effect, so call it anywhere a prompt is assembled. It is idempotent, so composing already-wrapped text will not nest.
+
+Tag:
+
+- role constraints that bound a stage to part of the work — "research only", "review and report, do not repair";
+- acceptance criteria and immutable contracts a later stage is judged against;
+- explicit prohibitions;
+- identifiers a stage must not lose, such as a target branch, worktree path, or run ID.
+
+Do not tag bulk context. Protected lines count against the keep target rather than raising it, so a large protected span makes the surrounding transcript compress harder. Tag the constraint, not the material it applies to — pass that through files and `reads`.
+
+Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all protected. See [Compaction](/compaction#keepcontext-tags) for the retention mechanism.
+
+#### Tagging is not only for workflow authors
+
+The tags are plain text, so they work anywhere text becomes a stage prompt — you do not need to be writing a workflow definition to use them. Two cases matter in everyday use, and both apply to an agent driving the `workflow` tool on your behalf.
+
+**Run inputs.** Workflows inject their inputs into stage prompts, so anything you tag in an input is inherited by the stages that receive it:
+
+```
+workflow({ action: "run", workflow: "ralph", inputs: {
+  prompt: "<keepContext>\nResearch and implement issue #2170. Do not touch the release pipeline.\n</keepContext>\n\n" + issueBody,
+  acceptance_criteria: "<keepContext>\n1. ...\n2. ...\n</keepContext>",
+}})
+```
+
+Note what is tagged and what is not: the constraint and the criteria are protected, the quoted issue body is not. A launch prompt is usually mostly reference material, and protecting all of it would raise the keep target so far that stages lose the transcript evidence they need.
+
+**Steering.** A `send` amendment is authoritative and stages must carry it forward, but it is one short message arriving late into an already-long session, competing against the entire transcript for retention. Tagging it keeps it alive until the stage acts on it:
+
+```
+workflow({ action: "send", runId, text:
+  "<keepContext>\nNew requirement: the fix must not change the public API.\n</keepContext>" })
+```
+
+An agent launching or steering a run should make this call per message rather than tagging by habit — protect the clause that must hold, and leave the surrounding explanation to be compacted normally.
+
 ### Practical consequences
 
 - **Steer freely — it is the supported amendment channel.** You do not need to restart a run to add a requirement.
@@ -927,6 +981,8 @@ Also document the context that stages pass to one another:
 - Prefer a clean context window for reviewer stages so earlier implementation stages do not bias the reviewer. Reviewers should evaluate the supplied artifacts, changed files, tests, and explicit criteria as independently as possible.
 
 See [Context Engineering](#context-engineering) for details.
+
+Protect a stage's role constraints, acceptance criteria, and prohibitions with `keepContext` so compaction cannot delete them out from under a long-running stage — see [Protect the contract from compaction](#protect-the-contract-from-compaction).
 
 ### Inputs
 
@@ -3056,7 +3112,15 @@ The visible card preserves the lifecycle custom type, raw notice text, exact det
 
 When an active recoverable block is resumed in-process, Atomic dispatches a fresh-ID continuation that replays the source's completed stages and re-runs the failed one. The durable source is left untouched (stays `blocked`/resumable) so it remains discoverable and recoverable — including a zero-checkpoint first-stage block — if the process dies before the continuation settles; the local source snapshot is killed so the same session will not re-resume it. A process-local claim prevents a concurrent same-session double-dispatch.
 
-Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["completed", "failed", "blocked", "awaiting_input"]`).
+Deliberate control actions on a top-level run report themselves too. `/workflow <name>` emits a `WORKFLOW STARTED` notice (`▶`), `/workflow pause` a `WORKFLOW PAUSED` notice (`⏸`, warning tone), `/workflow quit` a `WORKFLOW QUIT` notice (`⏹`, warning tone, carrying a `resumable` field), and `/workflow resume` a `WORKFLOW RESUMED` notice (`▶`). All four travel the same steer delivery, capped-backoff retry, and notice-card path as the failure notice. The paused and quit text states that the stop was deliberate and user-requested and tells the model not to resume the run or take the work over unless asked, with `/workflow resume <run-id>` as the card hint; the resumed text does not, because the run is progressing again.
+
+**Only user actions notify.** The equivalent `workflow({ action: "run" | "pause" | "quit" | "resume" })` tool calls stay silent: the tool result already tells the agent what it just did, and a second steer would spend a turn repeating it. `/workflow interrupt` raises no notice at all. Engine-internal transitions are silent for the same reason a notice must name an actor to exist — answering a human-in-the-loop prompt resumes the run internally, and reporting that would both flood the chat and defeat the deliberate decision that `awaiting_input` never wakes the model.
+
+**Two attributions.** *Origin* is who launched the run and renders on every kind as "which you started" or "which the user started"; it is set once at dispatch, persisted through session restore and durable resume, and inherited by a continuation from the run it continues. *Actor* is who performed this one event and renders as "The user paused" or "You paused". They differ routinely — the agent starts a run and the user quits it. A run with no recorded origin, including a legacy or restored snapshot, omits the clause entirely rather than guessing.
+
+**One notice per request.** A whole-run pause or resume reports at run scope. A stage-scoped `/workflow pause <run> <stage>` that leaves other stages running reports at stage scope, and one that stops the last active stage reports the run instead — never a stage card and a run card for the same request. A quit reports only the quit, never the pause it publishes on the way. Because control actions are reversible, these notices are deduplicated by run id *and* the occurrence timestamp, so pause → resume → pause → resume emits four notices while repeated snapshot invalidations at one unchanged state emit one. Resuming reports a resume and never a start, whoever asked for it — a resumed run re-enters the dispatch path, so keying that on the resume rather than on the requester is what stops an agent-requested resume of a user-started run from being announced as a fresh launch. Resuming a failed or blocked run launches a continuation under a fresh run id, and its notice names both ("run 4d7e, continuing run 8c31"); resuming a quit run reuses the original workflow id so durable checkpoints replay, so that notice names the one id. A run that is already started, paused, or quit when notifications install — restore, replay, `/reload`, or a session-preserving reinstall — is seeded as delivered and stays silent, and nested `ctx.workflow(...)` child runs never notify at top level.
+
+Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]`). A config that pins `notifyOn` explicitly keeps exactly the kinds it lists, so `notifyOn: ["failed"]` suppresses every control notice.
 
 Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, or `ctx.ui.custom<T>` when the workflow needs a decision. No builder-level declaration is required or supported.
 
@@ -3351,7 +3415,7 @@ Example config:
   "resumeInFlight": "ask",
   "workflowNotifications": {
     "enabled": true,
-    "notifyOn": ["completed", "failed", "blocked", "awaiting_input"]
+    "notifyOn": ["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]
   },
   "worktree": {
     "symlinkDirectories": ["node_modules"]
@@ -3369,7 +3433,7 @@ Runtime config defaults:
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
 | `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
 | `workflowNotifications.enabled` | `true` | Emit workflow lifecycle notices into the active main chat |
-| `workflowNotifications.notifyOn` | `["completed", "failed", "blocked", "awaiting_input"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes and active recoverable blocks create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
+| `workflowNotifications.notifyOn` | `["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` outcomes, active recoverable blocks, and the user-initiated `started`/`paused`/`quit`/`resumed` control actions on a top-level run create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
 | `worktree.symlinkDirectories` | `["node_modules"]` | Main-root directories symlinked into each runner-managed temporary worktree during post-creation setup |
 
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.

@@ -1,14 +1,13 @@
-<h1 align="center">Atomic — The Verifiable Coding Agent Runtime</h1>
+<h1 align="center">Atomic</h1>
 
 <p align="center"><img width="800" height="450" alt="Atomic coding agent runtime" src="./assets/atomic-promo.gif" /></p>
 
 <p align="center">
-  <b>Run verifiable engineering loops with control, alignment, and confidence.</b>
+  <b>The verifiable coding agent runtime. Build your engineering process as explicit, checkable execution graphs.</b>
 </p>
 
 <p align="center">
-  Build agent work as explicit execution graphs with scoped context, specialized agents, structured handoffs, bounded stages, parallel branches, executable checks, evidence artifacts, review gates, and human approvals.<br>
-  Build the foundations of your own software factory without turning engineering into a black box.
+  <b>Run verifiable engineering loops with control, alignment, and confidence.</b>
 </p>
 
 <p align="center">
@@ -35,21 +34,34 @@
   If Atomic is useful to you, star the repository ⭐
 </p>
 
----
+**Users are reporting:**
 
-## Built for developers who want assurance
+- ⚡ A 1–1.5 hour reduction in manual verification per task compared to traditional coding agents, not including time saved from fewer follow-up fixes and reverts
+- 🔀 ~95% merge rate on Atomic-generated PRs, with reduced follow-ups and a 0% revert rate
+- 🛡️ Production incidents caught that CI did not cover
 
- Your engineering process should be yours, not tied to any single tool, agent, or model. A harness encodes that process: how work is scoped, divided, checked, verified, and approved.
+**Core capabilities:**
 
- Atomic is the first verifiable coding agent runtime for building your own harness. A set of composable, verifiable harnesses can form the foundation of your software factory.
- 
- Build your process as workflows with scoped context, model choice, tools, handoffs, artifacts, retries, executable checks, review gates, and human approvals. 
-  
- Atomic’s primitives are built for the software engineering lifecycle. Verification is built into the exeuction model. 
- 
- Atomic is open so you can inspect and adapt it. You own the workflow, the evidence, and the rules for completion.
+- **Workflows as versioned TypeScript** — stages, branches, parallelism, retries, and gates are code you review, not per-run model improvisation
+- **Verification built into the execution model** — stages declare outputs against schemas; the runtime validates them before the next stage starts
+- **Author/verifier separation** — fresh-context verifiers derive checks from requirements, not from the implementation's claims
+- **Evidence, not self-report** — builds, typechecks, tests, and browser checks run as tracked tool calls, checkpointed and auditable after the run
+- **Deterministic ship/repair decisions** — completion is decided by code from structured verifier output, with human approval gates where you put them
+- **Model-agnostic** — subscription login for Claude, Codex, Copilot, xAI, and more; swap providers without rewriting workflows
+- **Specialized subagents** — nine bundled agents with scoped context and tools; fan out research, keep implementation contexts small
+- **Agent Skills standard** — bring existing Claude Code or Codex skills without rewriting them
+- **MCP support** — connect Jira, GitHub, databases, and the rest of your stack as agent tools
+- **Durable, resumable runs** — attach to any running stage, watch, steer, pause, or resume; checkpoints survive interruption
+- **Author workflows in natural language** — Atomic knows its own runtime and writes the TypeScript definition; you refine it
+- **Open source (MIT)** — inspect, version, and own the workflow, the evidence, and the rules for completion
 
- Own your intelligence. Build in the open. Question the defaults. Keep control of the process. ☠︎
+Build your process as workflows with scoped context, model choice, tools, handoffs, artifacts, retries, executable checks, review gates, and human approvals.
+
+Atomic’s primitives are built for the software engineering lifecycle. Verification is built into the execution model.
+
+Atomic is open so you can inspect and adapt it. You own the workflow, the evidence, and the rules for completion.
+
+Own your intelligence. Build in the open. Question the defaults. Keep control of the process. ☠︎
 
 ---
 

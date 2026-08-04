@@ -2,6 +2,15 @@ import type { ConfigDiagnostic, WorkflowExtensionConfig } from "./config-loader.
 import { WORKFLOW_LIFECYCLE_NOTICE_KINDS, type WorkflowLifecycleNoticeKind } from "./lifecycle-notifications.js";
 
 const WORKFLOW_LIFECYCLE_NOTICE_KIND_SET = new Set<string>(WORKFLOW_LIFECYCLE_NOTICE_KINDS);
+/**
+ * Every accepted lifecycle kind, quoted for the rejection message, so adding a
+ * kind can never leave the error naming a stale subset of what validates.
+ */
+const WORKFLOW_LIFECYCLE_NOTICE_KIND_LIST = ((): string => {
+	const quoted = WORKFLOW_LIFECYCLE_NOTICE_KINDS.map((kind) => JSON.stringify(kind));
+	const last = quoted[quoted.length - 1] ?? "";
+	return quoted.length <= 1 ? last : `${quoted.slice(0, -1).join(", ")}, or ${last}`;
+})();
 
 async function tryReadFile(filePath: string): Promise<string | null> {
 	const { readFile } = await import("node:fs/promises");
@@ -73,7 +82,7 @@ function validateConfig(value: unknown): string | null {
 			}
 			for (const item of notifyOn) {
 				if (!isWorkflowLifecycleNoticeKind(item)) {
-					return `"workflowNotifications.notifyOn" entries must be "completed", "failed", "blocked", or "awaiting_input", got ${JSON.stringify(item)}`;
+					return `"workflowNotifications.notifyOn" entries must be ${WORKFLOW_LIFECYCLE_NOTICE_KIND_LIST}, got ${JSON.stringify(item)}`;
 				}
 			}
 		}

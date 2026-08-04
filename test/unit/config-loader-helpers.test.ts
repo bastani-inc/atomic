@@ -173,7 +173,7 @@ describe("withWorkflowDefaults — WORKFLOW_CONFIG_DEFAULTS constants", () => {
 	test("WORKFLOW_CONFIG_DEFAULTS.workflowNotifications enables all lifecycle steer notices", () => {
 		assert.deepEqual(WORKFLOW_CONFIG_DEFAULTS.workflowNotifications, {
 			enabled: true,
-			notifyOn: ["completed", "failed", "blocked", "awaiting_input"],
+			notifyOn: ["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"],
 		});
 	});
 });

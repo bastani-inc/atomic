@@ -269,7 +269,26 @@ export interface StageSnapshot {
 	pausedAt?: number;
 	/** Timestamp recorded on the most recent resume from a paused state. */
 	resumedAt?: number;
+	/** Who paused this stage. Set only by a deliberate control action. */
+	pauseActor?: WorkflowActor;
+	/** Who resumed this stage. Set only by a deliberate control action. */
+	resumeActor?: WorkflowActor;
 }
+
+/**
+ * Who performed a workflow lifecycle action. A run's `origin` answers "who
+ * launched it"; an actor on a pause, quit, or resume answers "who did this one
+ * thing". They differ routinely — the agent starts a run and the user quits it.
+ */
+export type WorkflowActor = "user" | "agent";
+
+/**
+ * Which code path resumed a run. Only `run_control` is a deliberate control
+ * action; the rest continue work already in progress — answering a
+ * human-in-the-loop prompt, per-stage control, and the acknowledgement pass —
+ * and must never be reported as a lifecycle event of their own.
+ */
+export type RunResumeSource = "run_control" | "prompt_answer" | "stage_control" | "acknowledgement";
 
 export interface RunSnapshot {
 	readonly id: string;
@@ -294,6 +313,21 @@ export interface RunSnapshot {
 	pausedAt?: number;
 	/** Timestamp when the run entered resumable quit state; display-only expiry marker. */
 	quitAt?: number;
+	/**
+	 * Who paused or quit this run, and who resumed it. A control path records
+	 * these; the engine's own pauses and resumes leave them unset, which is what
+	 * keeps an internal continuation from being reported as a user action.
+	 */
+	pauseActor?: WorkflowActor;
+	resumeActor?: WorkflowActor;
+	/** Which path performed the most recent resume. */
+	resumeSource?: RunResumeSource;
+	/**
+	 * Who launched this run. Set once at dispatch and inherited by a continuation
+	 * from the run it continues. Absent on legacy and restored runs that never
+	 * recorded it, in which case attribution is omitted rather than guessed.
+	 */
+	origin?: WorkflowActor;
 	/** Timestamp recorded on the most recent resume from a paused state. */
 	resumedAt?: number;
 	result?: WorkflowOutputValues;

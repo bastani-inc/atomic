@@ -121,7 +121,7 @@ export async function handleDurableResume(
 			fail(completedAttempt.message);
 			return true;
 		}
-		const result = await runtime.resumeDurableWorkflow(target, { policy });
+		const result = await runtime.resumeDurableWorkflow(target, { policy, actor: "user" });
 		fail(
 			allOpenable.length === 0 ? result.message : `${result.message}\n\n${formatResumableWorkflowList(allOpenable)}`,
 		);
@@ -216,7 +216,10 @@ async function resumeDurableTarget(
 	deps: WorkflowRunControlDeps,
 	runtime: ExtensionRuntime,
 ): Promise<boolean> {
-	const result = await runtime.resumeDurableWorkflow(workflowId, { policy: workflowPolicyFromContext(ctx) });
+	const result = await runtime.resumeDurableWorkflow(workflowId, {
+		policy: workflowPolicyFromContext(ctx),
+		actor: "user",
+	});
 	if (!result.ok) reporter.error(result.message);
 	else {
 		reporter.info(result.message);

@@ -410,6 +410,27 @@ describe("single planned compaction rung", () => {
 		expect(targetKeepLines(prep)).toBe(expected);
 	});
 
+	it("counts protected lines against the keep target instead of raising it", () => {
+		const prep = preparation();
+		const expected = Math.round(prep.region.lines.length * prep.parameters.compression_ratio);
+		const protectedPrep = {
+			...prep,
+			region: { ...prep.region, protectedLineNumbers: new Set(prep.region.lines.map((_, index) => index + 1)) },
+		};
+
+		// Protecting every line must not enlarge the target; the compression ratio stays a real
+		// bound on output size and the unprotected remainder compresses harder instead.
+		expect(targetKeepLines(protectedPrep)).toBe(expected);
+	});
+
+	it("tells the planner how much of the keep target protection already consumed", () => {
+		const region = createNumberedRegion("[User]: <keepContext>\nrule\n</keepContext>\na\nb\nc\nd\ne\nf\ng");
+		const prompt = buildRangePlannerPrompt(region, { compression_ratio: 0.5, preserve_recent: 2, query: "q" }, 5);
+
+		expect(prompt).toContain("Protected lines already consuming the keep target: 3");
+		expect(prompt).toContain("Additional unprotected lines you may keep: 2");
+	});
+
 	it("honors abort before the request", async () => {
 		const controller = new AbortController();
 		controller.abort();

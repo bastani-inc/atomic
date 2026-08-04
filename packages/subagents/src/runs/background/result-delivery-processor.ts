@@ -7,12 +7,12 @@ import {
 	compactNestedResultChildren,
 	deliverSubagentResultIntercomEvent,
 	resolveSubagentResultStatus,
-} from "../../intercom/result-intercom.js";
-import type { IntercomEventBus, SubagentResultIntercomChild, SubagentState } from "../../shared/types.js";
-import { projectNestedRegistryForRoot } from "../shared/nested-events.js";
+} from "../../intercom/result-intercom.ts";
+import type { IntercomEventBus, SubagentResultIntercomChild, SubagentState } from "../../shared/types.ts";
+import { projectNestedRegistryForRoot } from "../shared/nested-events.ts";
 import { type CompletionClaimSnapshot, deliverClaimedCompletion } from "./completion-claims.js";
-import { buildCompletionKey, lookupSeenWithTtl, recordSeen } from "./completion-dedupe.js";
-import { deliverLocalCompletionNotification } from "./completion-notification.js";
+import { buildCompletionKey, lookupSeenWithTtl, recordSeen } from "./completion-dedupe.ts";
+import { deliverLocalCompletionNotification } from "./completion-notification.ts";
 import {
 	claimIdFromScheduleKey,
 	claimPublicResult,

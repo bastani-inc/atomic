@@ -108,9 +108,28 @@ describe("loadWorkflowConfig — workflowNotifications", () => {
 		});
 
 		const result = await loadWorkflowConfig({ homeDir: tmpHome, projectRoot: tmpProject });
+		// An explicitly pinned subset is preserved verbatim rather than widened to
+		// the default set, which is what lets `notifyOn` suppress control notices.
 		assert.deepEqual(result.config?.workflowNotifications, {
 			enabled: false,
 			notifyOn: ["failed", "awaiting_input"],
+		});
+		assert.equal(result.diagnostics.length, 0);
+	});
+
+	test("accepts the control notice kinds", async () => {
+		const dir = await makeDir(tmpProject, ".atomic", "extensions", "workflow");
+		await writeJson(dir, "config.json", {
+			workflowNotifications: {
+				enabled: true,
+				notifyOn: ["started", "paused", "quit", "resumed"],
+			},
+		});
+
+		const result = await loadWorkflowConfig({ homeDir: tmpHome, projectRoot: tmpProject });
+		assert.deepEqual(result.config?.workflowNotifications, {
+			enabled: true,
+			notifyOn: ["started", "paused", "quit", "resumed"],
 		});
 		assert.equal(result.diagnostics.length, 0);
 	});
@@ -127,7 +146,10 @@ describe("loadWorkflowConfig — workflowNotifications", () => {
 			const result = await loadWorkflowConfig({ homeDir: home, projectRoot: project });
 			assert.equal(result.config, null);
 			assert.equal(result.diagnostics.length, 1);
-			assert.match(result.diagnostics[0]?.message ?? "", /workflowNotifications\.notifyOn/);
+			assert.equal(
+				result.diagnostics[0]?.message,
+				'Invalid config shape: "workflowNotifications.notifyOn" entries must be "started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", or "resumed", got "killed"',
+			);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 			await rm(project, { recursive: true, force: true });

@@ -341,6 +341,9 @@ class Atomic(BaseInstalledAgent):
 
     def _has_subscription_auth(self, provider: str) -> bool:
         if provider == "anthropic":
+            # Atomic exposes no way to tell an Anthropic subscription apart from
+            # an API key: both route through the same `anthropic` provider, so
+            # either credential keeps `anthropic` as the primary candidate.
             return bool(
                 self._get_env("ANTHROPIC_API_KEY")
                 or self._get_env("ANTHROPIC_OAUTH_TOKEN")
@@ -354,26 +357,55 @@ class Atomic(BaseInstalledAgent):
     def _openrouter_anthropic_model(model: str) -> str:
         return re.sub(r"-(\d+)-(\d+)$", r"-\1.\2", model)
 
-    def _fallback_model(self, provider: str, model: str) -> tuple[str, str] | None:
-        if not self._get_env("OPENROUTER_API_KEY"):
-            return None
-        if provider == "anthropic":
-            return "openrouter", f"anthropic/{self._openrouter_anthropic_model(model)}"
-        if provider == self._OPENAI_CODEX_PROVIDER:
-            return "openrouter", f"openai/{model}"
-        return None
+    def _model_chain(self, provider: str, model: str) -> list[tuple[str, str]]:
+        """Ordered `(provider, model)` candidates for the requested model.
 
-    def _select_provider_model(self, provider: str, model: str) -> tuple[str, str]:
-        # The Atomic CLI has no top-level subscription->OpenRouter retry flag; its
-        # `fallbackModels` support is scoped to workflow/subagent attempts. For
-        # eval runs we therefore select the OpenRouter mirror before launch only
-        # when the subscription credential is absent, preserving subscription-first
-        # behavior while avoiding a failed primary attempt that cannot recover.
-        if not self._has_subscription_auth(provider):
-            fallback = self._fallback_model(provider, model)
-            if fallback:
-                return fallback
-        return provider, model
+        Codex walks `openai-codex` -> `openai` -> `openrouter`; Anthropic walks
+        `anthropic` -> `openrouter`. A candidate is listed only when its
+        credential is present, so the chain never names a provider the sandbox
+        cannot authenticate.
+        """
+        chain: list[tuple[str, str]] = []
+        if self._has_subscription_auth(provider):
+            chain.append((provider, model))
+        if provider == self._OPENAI_CODEX_PROVIDER:
+            if self._get_env("OPENAI_API_KEY"):
+                chain.append(("openai", model))
+            if self._get_env("OPENROUTER_API_KEY"):
+                chain.append(("openrouter", f"openai/{model}"))
+        elif provider == "anthropic" and self._get_env("OPENROUTER_API_KEY"):
+            chain.append(
+                ("openrouter", f"anthropic/{self._openrouter_anthropic_model(model)}")
+            )
+        return chain or [(provider, model)]
+
+    @staticmethod
+    def _fallback_settings_command(chain: list[tuple[str, str]]) -> str:
+        """Seed main-chat `settings.fallbackModels` with the chain after the primary.
+
+        Atomic only starts a session on a model it can authenticate, so the
+        first credentialed candidate is selected before launch. The rest become
+        `fallbackModels`, which main-chat turns walk on rate limits, quota
+        exhaustion, and provider errors.
+
+        The adapter owns this file. Each trial provisions a fresh sandbox agent
+        directory, and nothing else in the image writes `settings.json`, so a
+        whole-document write has nothing to preserve. Atomic's own writes go the
+        other way safely: `persistScopedSettings` re-reads the file and replaces
+        only the fields it modified, so a `defaultModel` write during the run
+        does not drop these entries.
+        """
+        fallback_models = [
+            f"{candidate_provider}/{candidate_model}"
+            for candidate_provider, candidate_model in chain[1:]
+        ]
+        if not fallback_models:
+            return ""
+        settings = json.dumps({"fallbackModels": fallback_models}, indent=2)
+        return (
+            f"printf '%s\\n' {shlex.quote(settings)} "
+            '> "$HOME/.atomic/agent/settings.json"; '
+        )
 
     async def _provision_subscription_auth(
         self,
@@ -384,6 +416,8 @@ class Atomic(BaseInstalledAgent):
         auth_data = self._load_provider_auths()
         if env is None:
             keys = list(self._PROVIDER_AUTH_ENV_KEYS.get(provider, ()))
+            if provider == self._OPENAI_CODEX_PROVIDER:
+                keys.append("OPENAI_API_KEY")
             if provider in {"anthropic", self._OPENAI_CODEX_PROVIDER}:
                 keys.append("OPENROUTER_API_KEY")
             environment_keys = {
@@ -483,10 +517,9 @@ class Atomic(BaseInstalledAgent):
             raise ValueError("Model name must be in the format provider/model_name")
 
         requested_provider, requested_model = self.model_name.split("/", 1)
-        provider, model = self._select_provider_model(
-            requested_provider,
-            requested_model,
-        )
+        chain = self._model_chain(requested_provider, requested_model)
+        provider, model = chain[0]
+        fallback_settings_command = self._fallback_settings_command(chain)
         # Forward credentials for every Atomic-supported provider, not just the
         # top-level Pier --model provider: nested workflow/subagent model
         # assignments can select other providers (e.g. kimi-coding under an
@@ -527,6 +560,7 @@ class Atomic(BaseInstalledAgent):
         command = (
             f"rm -rf {session_dir} {log_session_dir} && mkdir -p {session_dir} && "
             f"{self._agent_state_setup_command()}"
+            f"{fallback_settings_command}"
             f"{self._session_sync_trap_command(session_dir, log_session_dir)}"
             f"{copilot_config_command}"
             f"{atomic_runtime_environment_command()} && "

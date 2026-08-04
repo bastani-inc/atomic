@@ -107,3 +107,37 @@ test("restoreOnSessionStart reads real Atomic custom workflow entries for termin
 	assert.equal(run?.stages[0]?.status, "completed");
 	assert.equal(run?.stages[0]?.result, "done");
 });
+
+test("restoreOnSessionStart preserves the recorded origin of a terminal run", () => {
+	const store = createStore();
+	const entries: SessionEntry[] = [
+		{
+			id: "e1",
+			type: "workflow.run.start",
+			payload: { runId: "r-origin", name: "wf", inputs: {}, origin: "agent", ts: 1 },
+		},
+		{
+			id: "e2",
+			type: "workflow.run.end",
+			payload: { runId: "r-origin", status: "failed", error: "boom", endedAt: 20, ts: 20 },
+		},
+		{
+			id: "e3",
+			type: "workflow.run.start",
+			payload: { runId: "r-legacy", name: "wf", inputs: {}, ts: 1 },
+		},
+		{
+			id: "e4",
+			type: "workflow.run.end",
+			payload: { runId: "r-legacy", status: "failed", error: "boom", endedAt: 20, ts: 20 },
+		},
+	];
+
+	restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, store);
+	const restored = store.runs().find((run) => run.id === "r-origin");
+	// A terminal run outlives the session that produced it, and resuming it later
+	// must still attribute the run to whoever launched it.
+	assert.equal(restored?.origin, "agent");
+	const legacy = store.runs().find((run) => run.id === "r-legacy");
+	assert.equal(legacy?.origin, undefined, "a run that never recorded an origin restores without one");
+});

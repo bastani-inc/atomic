@@ -250,7 +250,9 @@ async function workflowSlashHandler(
 
 	await ensureWorkflowResourcesVisible();
 	const result = await deps.runWithLifecycleSuppressedForPolicy(policy, () =>
-		deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: mergedInputs, action: "run" }, { policy }),
+		deps
+			.runtimeForContext(ctx)
+			.dispatch({ workflow: workflowName, inputs: mergedInputs, action: "run" }, { policy, origin: "user" }),
 	);
 	if (result.action !== "run" || !("runId" in result)) return;
 	const runResult = result as Extract<WorkflowToolResult, { action: "run"; runId: string }>;

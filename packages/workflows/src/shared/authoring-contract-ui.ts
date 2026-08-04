@@ -9,6 +9,7 @@ import type {
 	StageContext,
 	StageOptions,
 	WorkflowAction,
+	WorkflowActor,
 	WorkflowArtifact,
 	WorkflowChainOptions,
 	WorkflowChildResult,
@@ -298,6 +299,10 @@ export interface RunOpts {
 	readonly toolAdmissionBoundary?: object;
 	readonly runId?: string;
 	readonly continuation?: RunContinuationOpts;
+	/** Who launched this run. A continuation inherits its source run's origin instead. */
+	readonly origin?: WorkflowActor;
+	/** Who requested the resume that produced this continuation run. */
+	readonly resumeActor?: WorkflowActor;
 	readonly parentRun?: WorkflowParentRunLink;
 	readonly onRunStart?: (snapshot: RunSnapshot) => void;
 	readonly onStageStart?: (runId: string, snapshot: StageSnapshot) => void;

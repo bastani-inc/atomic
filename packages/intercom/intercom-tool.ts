@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import type { IntercomClient } from "./broker/client.ts";
+import type { IntercomClient } from "./broker/client.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
 import {
@@ -12,7 +12,7 @@ import {
   previewText,
   toError,
 } from "./intercom-utils.js";
-import type { ReplyTracker } from "./reply-tracker.ts";
+import type { ReplyTracker } from "./reply-tracker.js";
 import { resolveSessionTargetId } from "./session-target.js";
 import { normalizeGroup } from "./group.js";
 

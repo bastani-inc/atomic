@@ -206,6 +206,7 @@ export async function resumeDurableWorkflow(
 	const resumeRunOpts: RunOpts = {
 		...deps.baseRunOpts,
 		...(handle.invocationCwd !== undefined ? { cwd: handle.invocationCwd } : {}),
+		...(handle.origin !== undefined ? { origin: handle.origin } : {}),
 		runId: resolved.workflowId,
 		durableBackend: backend,
 	};

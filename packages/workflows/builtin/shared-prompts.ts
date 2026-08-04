@@ -1,3 +1,9 @@
+// Builtin prompts use the same public `keepContext` helper workflow authors do, so the
+// protection semantics cannot drift between builtin and user-authored workflows.
+import { keepContext } from "../src/authoring/keep-context.js";
+
+export { keepContext };
+
 /**
  * Steering propagation is a whole-repository pattern, not a per-workflow
  * option: every builtin stage prompt carries STEERING_PROPAGATION_CONTRACT
@@ -29,10 +35,15 @@ export const STEERING_PROPAGATION_CONTRACT = [
  * section, which carries the strongest positional weight. The contract is
  * inserted immediately before that closing section rather than after it, so a
  * stage's final words remain its instruction.
+ *
+ * The contract is `keepContext`-protected because only the user may amend a run's contract,
+ * and an amendment reaches later stages solely through this restatement duty. Compacted away,
+ * the run silently reverts to the launch contract while the implementer builds to the amended
+ * one — the exact split this pattern exists to prevent.
  */
 export function withSteeringPropagation(prompt: string): string {
   if (prompt.includes("<steering_propagation>")) return prompt;
-  const tagged = `<steering_propagation>\n${STEERING_PROPAGATION_CONTRACT}\n</steering_propagation>`;
+  const tagged = `<steering_propagation>\n${keepContext(STEERING_PROPAGATION_CONTRACT)}\n</steering_propagation>`;
   const instructionAt = prompt.lastIndexOf("\n\n<instruction>");
   if (instructionAt === -1) return `${prompt}\n\n${tagged}`;
   return `${prompt.slice(0, instructionAt)}\n\n${tagged}${prompt.slice(instructionAt)}`;
@@ -69,7 +80,12 @@ export function renderE2eQaVideoReviewGuidance(
   ].join("\n");
 }
 
-export const LITERAL_OBJECTIVE_CONTRACT = [
+/**
+ * `keepContext`-protected: this is the run's immutable contract and its central prohibition
+ * ("You may never widen the contract yourself"). A prohibition deleted from context reads as
+ * permission, so losing it turns scope creep into apparently sanctioned work.
+ */
+export const LITERAL_OBJECTIVE_CONTRACT = keepContext([
   "Literal objective contract:",
   "- The objective and acceptance criteria are the sole literal source of required behavior; the run objective must not contradict them.",
   "- Only the user may change the contract. A mid-run user message — steering, a follow-up, or resume text — is authoritative: adopt it as required behavior from that point on, and carry it forward under the steering propagation contract. You may never widen the contract yourself; an improvement you thought of is deferred work, not a new criterion.",
@@ -78,7 +94,7 @@ export const LITERAL_OBJECTIVE_CONTRACT = [
   "- That loud-error preference applies only to enumerated errors. Otherwise accept permissively: do not invent behavior, restrictions, validation errors, required fields, uniqueness/format constraints, or follow-up requirements.",
   "- Produce named types, shapes, and formats exactly; do not substitute proxies, frozen collections, tuples-for-lists, or wrappers unless required because consumers may check identity.",
   "- Where behavior is unspecified, preserve input verbatim rather than normalizing, deduplicating, reordering, or rewriting it.",
-].join("\n");
+].join("\n"));
 
 export const REVIEWER_SPEC_VS_OBJECTIVE_GUARD =
   "External spec/standard conformance alone does not make a wide trigger for an enumerated error defective; classify that spec-vs-objective tension as beyond_objective, not blocking.";
@@ -129,7 +145,12 @@ export const FINDINGS_CONSOLIDATION_CONTRACT = [
   "Defer only a genuinely blocked or contract-contradicting finding, recording the reason in the receipt.",
 ].join("\n");
 
-export const SCOPE_DISCIPLINE_CONTRACT = [
+/**
+ * `keepContext`-protected: every clause here is a prohibition, and prohibitions are the class
+ * compaction erodes first — they are terse, stated once, and low-density next to the objective
+ * they bound. Losing this reads as license to keep going.
+ */
+export const SCOPE_DISCIPLINE_CONTRACT = keepContext([
   "Scope discipline:",
   "- Before writing code, state the goal in one sentence and list the acceptance criteria. That list is the contract. Freeze it.",
   "- Done means the contract, not \"good.\" When all criteria pass, stop. Polish, refactors, and \"while I'm here\" fixes are new work, not this work.",
@@ -139,7 +160,7 @@ export const SCOPE_DISCIPLINE_CONTRACT = [
   "- Watch for the tells. \"It would be cleaner if...\", \"we should also...\", \"this really ought to...\" mean you are about to move the goalpost. Stop and check the contract.",
   "- Prefer the smallest diff that satisfies the contract: fewer files touched, fewer abstractions introduced, no speculative generality for futures nobody asked for.",
   "- Report three things at the end: what the contract was, evidence each criterion passes, and the deferred list. Scope changes belong in the report, never in the diff.",
-].join("\n");
+].join("\n"));
 
 export const EVIDENCE_CLOSURE_POLICY = [
   "Convergence flag (stop_review_loop):",
@@ -149,10 +170,16 @@ export const EVIDENCE_CLOSURE_POLICY = [
   "- If the bounded loop ends first, preserve unresolved findings and remaining work for a human rather than relabeling them.",
 ].join("\n");
 
-export const WORKTREE_DISCIPLINE_CONTRACT = [
+/**
+ * `keepContext`-protected: this binds the stage to a specific checkout, and a checkout is
+ * exactly the kind of identifier a stage must not lose. Compacted away during a long run, an
+ * agent hitting a lock or dirty state invents a second worktree and the delivered delta lands
+ * somewhere the reviewers never look. It is two lines, so protection costs almost nothing.
+ */
+export const WORKTREE_DISCIPLINE_CONTRACT = keepContext([
   "Work in the workflow-designated checkout. Do not create another worktree, clone, or repository copy unless the task requests it; conflicts, locks, dirty state, and failed commands do not authorize one.",
   "Bring required work found elsewhere into this checkout by applying, cherry-picking, or replaying it before continuing.",
-].join("\n");
+].join("\n"));
 
 export const REVIEW_CODE_DELTA_CONTRACT = [
   "Code delta integrity:",

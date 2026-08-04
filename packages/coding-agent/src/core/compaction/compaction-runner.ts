@@ -67,6 +67,10 @@ interface FreshWindowBuild {
 /**
  * Calculate the single global line threshold from the prepared setting.
  *
+ * Protected lines count *against* this target rather than raising it: keeping 40% under a 0.5
+ * ratio leaves the remaining 60% to compress harder to hit the same total. That keeps the
+ * compression ratio a real bound on output size, so protection can never enlarge the result.
+ *
  * This is the untrimmed target. Overflow trimming does NOT reuse it:
  * `planWithTrimming` recomputes the threshold against each trimmed view, so the
  * planner is always asked to keep a proportion of the lines it actually
@@ -77,10 +81,7 @@ interface FreshWindowBuild {
  */
 export function targetKeepLines(preparation: VerbatimCompactionPreparation): number {
 	const region = preparation.region;
-	return Math.max(
-		region.protectedLineNumbers?.size ?? 0,
-		Math.round(region.lines.length * preparation.parameters.compression_ratio),
-	);
+	return Math.round(region.lines.length * preparation.parameters.compression_ratio);
 }
 
 function hardInputLimitFor(model: Model<Api>): number {

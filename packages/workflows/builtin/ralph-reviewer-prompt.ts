@@ -10,6 +10,7 @@ import {
   REVIEWER_OVERIMPLEMENTATION_GUARD,
   REVIEWER_SPEC_VS_OBJECTIVE_GUARD,
   WORKTREE_DISCIPLINE_CONTRACT,
+  keepContext,
   renderE2eQaVideoReviewGuidance,
 } from "./shared-prompts.js";
 import { taggedPrompt, type PromptSection } from "./ralph-core.js";
@@ -26,7 +27,7 @@ export function renderRalphReviewerPrompt(args: {
   readonly createPr: boolean;
 }): string {
   return taggedPrompt([
-    ["acceptance_criteria", args.acceptanceCriteria],
+    ["acceptance_criteria", keepContext(args.acceptanceCriteria)],
     [
       "review_context",
       [

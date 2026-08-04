@@ -8,11 +8,11 @@ import type {
   CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { ConsentManager } from "./consent-manager.js";
-import { ServerError, wrapError } from "./errors.js";
+import { ServerError, wrapError } from "./errors.ts";
 import { buildHostHtmlTemplate, buildCspMetaContent, applyCspMeta } from "./host-html-template.js";
-import { logger } from "./logger.js";
+import { logger } from "./logger.ts";
 import { parseBody, sendJson, validateTokenBody, validateTokenQuery } from "./ui-server-http.js";
-import type { McpServerManager } from "./server-manager.js";
+import type { McpServerManager } from "./server-manager.ts";
 import { callToolWithConfiguredTimeout } from "./tool-call-timeout.js";
 import {
   extractUiPromptText,
@@ -27,7 +27,7 @@ import {
   type UiResourceContent,
   type UiSessionMessages,
   type UiStreamSummary,
-} from "./types.js";
+} from "./types.ts";
 
 const ABANDONED_GRACE_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 5_000;

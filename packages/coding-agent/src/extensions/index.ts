@@ -1,4 +1,4 @@
-import type { InlineExtension } from "../core/extensions/types.js";
+import type { InlineExtension } from "../core/extensions/types.ts";
 import llamaExtension from "./llama/index.js";
 
 export const builtInExtensions: InlineExtension[] = [

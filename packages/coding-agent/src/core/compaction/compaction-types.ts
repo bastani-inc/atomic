@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import type { CompactionSettings } from "./compaction.js";
+import type { CompactionSettings } from "./compaction.ts";
 
 export const VERBATIM_COMPACTION_PROMPT_VERSION = 3 as const;
 export const VERBATIM_COMPACTION_STRATEGY = "verbatim-lines" as const;
@@ -48,6 +48,12 @@ export type ValidatedRanges = readonly LineRange[] & { readonly __brand: "Valida
 export interface CompactedTranscript {
 	text: string;
 	ranges: LineRange[];
+	/**
+	 * Ranges force-preserved by `<keepContext>` protection; empty when nothing was protected.
+	 * Reported so protection that fired unexpectedly — a transcript that quotes tag text, say —
+	 * is diagnosable rather than a silent reduction in what compaction reclaimed.
+	 */
+	keptRanges: LineRange[];
 	stats: VerbatimCompactionStats;
 }
 

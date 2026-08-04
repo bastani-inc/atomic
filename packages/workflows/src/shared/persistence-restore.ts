@@ -209,6 +209,7 @@ export function restoreOnSessionStart(
 				...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
 				...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
 				...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
+				...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
 				...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
@@ -244,6 +245,7 @@ export function restoreOnSessionStart(
 				...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
 				...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
 				...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
+				...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
 				...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
@@ -268,6 +270,7 @@ export function restoreOnSessionStart(
 				...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
 				...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
 				...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
+				...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
 				...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
 				...(runMeta.accumulatedDurationMs !== undefined
 					? { accumulatedDurationMs: runMeta.accumulatedDurationMs }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { NestedRunSummary } from "../../shared/types.js";
-import { sanitizeSummary } from "../shared/nested-events.js";
+import type { NestedRunSummary } from "../../shared/types.ts";
+import { sanitizeSummary } from "../shared/nested-events.ts";
 
 export interface ResultFileChild {
 	agent?: string;

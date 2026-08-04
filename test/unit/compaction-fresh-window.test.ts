@@ -61,7 +61,7 @@ test("the public door returns exactly a CompactedTranscript", () => {
 	// extra field observable at runtime. `keptTail` is runner bookkeeping and
 	// travels on `CompactionRungResult`, not on this door.
 	const transcript: CompactedTranscript = fresh;
-	assert.deepEqual(Object.keys(transcript).sort(), ["ranges", "stats", "text"]);
+	assert.deepEqual(Object.keys(transcript).sort(), ["keptRanges", "ranges", "stats", "text"]);
 	assert.equal("keptTail" in (fresh as object), false);
 });
 

@@ -1,6 +1,6 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.js";
-import type { DirectToolSpec, McpContent } from "./types.js";
+import type { DirectToolSpec, McpContent } from "./types.ts";
 import { getFailureAgeSeconds, lazyConnect } from "./init.js";
 import { formatSchema } from "./tool-metadata.js";
 import { transformMcpContent } from "./tool-registrar.js";

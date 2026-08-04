@@ -182,7 +182,9 @@ export function buildPromptNodeUiAdapter(input: {
 			},
 			async resume() {
 				input.activeStore.recordStageResumed(input.runId, stageId);
-				input.activeStore.recordRunResumed(input.runId);
+				// Answering a human-in-the-loop prompt continues work already in flight.
+				// It is not a control action and must never reach the main chat.
+				input.activeStore.recordRunResumed(input.runId, undefined, { source: "prompt_answer" });
 				const currentPauseGate = pauseGate;
 				pauseGate = undefined;
 				currentPauseGate?.resolve();

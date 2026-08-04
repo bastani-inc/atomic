@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { GroupedResultIntercomMessageInput } from "../../intercom/result-intercom.js";
+import type { GroupedResultIntercomMessageInput } from "../../intercom/result-intercom.ts";
 import type { ResultFileData } from "./result-watcher-data.js";
 
 const CLAIMS_DIR = ".claims";

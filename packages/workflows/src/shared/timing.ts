@@ -19,6 +19,16 @@ interface RunTimerSnapshot {
 function nonNegative(ms: number): number {
 	return Math.max(0, ms);
 }
+/**
+ * Return an occurrence timestamp that remains ordered when a clock tick is
+ * shared by two deliberate control transitions. Lifecycle notice keys use
+ * these timestamps as occurrence identities, so a later transition must not
+ * reuse the prior transition's key.
+ */
+export function nextControlTimestamp(requestedAt: number | undefined, previousAt: number | undefined): number {
+	const candidate = requestedAt ?? Date.now();
+	return previousAt === undefined || candidate > previousAt ? candidate : previousAt + 1;
+}
 
 export function rebasedStageStartedAt(accumulatedDurationMs: number | undefined, resumedAt: number): number {
 	return resumedAt - nonNegative(accumulatedDurationMs ?? 0);

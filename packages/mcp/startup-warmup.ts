@@ -1,10 +1,10 @@
-import type { McpExtensionState } from "./state.ts";
+import type { McpExtensionState } from "./state.js";
 import { getMissingConfiguredDirectToolServers } from "./direct-tools.ts";
-import { loadMetadataCache } from "./metadata-cache.ts";
-import { buildToolMetadata } from "./tool-metadata.ts";
-import { parallelLimit } from "./utils.ts";
+import { loadMetadataCache } from "./metadata-cache.js";
+import { buildToolMetadata } from "./tool-metadata.js";
+import { parallelLimit } from "./utils.js";
 import { logger } from "./logger.ts";
-import { updateMetadataCache, updateStatusBar } from "./init.ts";
+import { updateMetadataCache, updateStatusBar } from "./init.js";
 
 export interface McpStartupWarmupOptions {
   shouldContinue?: () => boolean;

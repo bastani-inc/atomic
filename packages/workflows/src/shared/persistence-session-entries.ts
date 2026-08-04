@@ -8,6 +8,7 @@
 
 import type {
 	ToolNodeSnapshot,
+	WorkflowActor,
 	WorkflowFailureCode,
 	WorkflowFailureDisposition,
 	WorkflowFailureKind,
@@ -40,6 +41,8 @@ export interface RunStartPayload {
 	readonly parentStageId?: string;
 	readonly rootRunId?: string;
 	readonly resumedFromRunId?: string;
+	/** Who launched this run, when the launcher was attributable. */
+	readonly origin?: WorkflowActor;
 	readonly resumeFromStageId?: string;
 	/** Elapsed ms inherited from prior sessions of a resumed run. */
 	readonly accumulatedDurationMs?: number;
@@ -151,6 +154,7 @@ export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): v
 		...(payload.parentStageId !== undefined ? { parentStageId: payload.parentStageId } : {}),
 		...(payload.rootRunId !== undefined ? { rootRunId: payload.rootRunId } : {}),
 		...(payload.resumedFromRunId !== undefined ? { resumedFromRunId: payload.resumedFromRunId } : {}),
+		...(payload.origin !== undefined ? { origin: payload.origin } : {}),
 		...(payload.resumeFromStageId !== undefined ? { resumeFromStageId: payload.resumeFromStageId } : {}),
 		...(payload.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: payload.accumulatedDurationMs } : {}),
 		ts: payload.ts,

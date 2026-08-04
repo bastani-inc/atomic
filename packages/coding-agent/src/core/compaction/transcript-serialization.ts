@@ -5,6 +5,21 @@ export const FILTERED_MARKER_RE = /^\(filtered (\d+) lines\)$/;
 export const LINE_NUMBER_SEPARATOR = "→";
 export const ROLE_HEADER_RE = /^\[(User|Assistant|Assistant thinking|Assistant tool calls|Tool result)\]: /;
 
+/**
+ * Callers wrap never-compressible content in `<keepContext>` / `</keepContext>`. Every line of
+ * such a span, tag lines included, becomes a protected line, so the span survives verbatim
+ * regardless of the compression ratio. Protecting the tags themselves is what makes the span
+ * re-detectable on the next boundary, since each compaction re-ranks the previous output.
+ *
+ * The region is untrusted: it is serialized user, assistant, and tool-result payload, and a
+ * message may quote or document the tag text. Detection is therefore deliberately narrow — a
+ * marker must be the entire line once an optional role header is stripped, and only a matched
+ * open/close pair protects anything. Prose that merely mentions a tag matches nothing, and an
+ * unmatched opener protects nothing rather than swallowing the rest of the region.
+ */
+const KEEP_CONTEXT_OPEN_LINE_RE = /^<keepContext>$/i;
+const KEEP_CONTEXT_CLOSE_LINE_RE = /^<\/keepContext>$/i;
+
 const TOOL_RESULT_MAX_CHARS = 16_000;
 
 /** One piece of a serialized transcript: literal text, or an image kept at its position. */
@@ -137,6 +152,85 @@ export function serializeRetainedTranscript(messages: Message[]): TranscriptChun
 	return serializeTranscriptChunks(messages, "retained");
 }
 
+/**
+ * Classify a line as a `keepContext` marker.
+ *
+ * The serializer prefixes the first line of a message with its role header, so a span opened at
+ * the start of a stage prompt arrives as `[User]: <keepContext>`. The header is stripped before
+ * matching, and the remainder must be the whole line — prose that mentions a tag mid-sentence is
+ * payload, not syntax.
+ */
+function keepContextMarker(line: string): "open" | "close" | undefined {
+	const body = line.replace(ROLE_HEADER_RE, "").trim();
+	if (KEEP_CONTEXT_OPEN_LINE_RE.test(body)) return "open";
+	if (KEEP_CONTEXT_CLOSE_LINE_RE.test(body)) return "close";
+	return undefined;
+}
+
+/** Message roles whose payload is external, so its tag text is data rather than syntax. */
+const UNTRUSTED_MARKER_ROLE = "Tool result";
+
+/**
+ * Whether a message role may declare protection.
+ *
+ * User and assistant messages both may. Prompt construction — stage prompts, run inputs, and
+ * steering — arrives as user messages, and agents need protection in their own output too, to
+ * restate a contract amendment in a handoff report or pin a decision that changes later
+ * behavior. A user-only rule would make those inert while still looking correct at the call site.
+ *
+ * Tool results may not. Their payload is file contents, fetched pages, and command output —
+ * bytes an attacker can choose — and honoring tags there would let read material mark itself
+ * unreclaimable and persist through compaction ahead of real transcript content. An agent that
+ * wants to keep something it read can restate it in its own message, which is also the more
+ * selective habit.
+ *
+ * An undefined role is the prior compaction summary prepended ahead of the first role header.
+ * That is compaction's own output, and honoring it is what lets a span re-arm on later
+ * boundaries after its header line has itself been compacted away.
+ */
+function roleMayProtect(role: string | undefined): boolean {
+	return role !== UNTRUSTED_MARKER_ROLE;
+}
+
+/**
+ * One-based line numbers covered by `<keepContext>` spans, inclusive of the tag lines.
+ *
+ * Spans are scoped to a single message: a role header ends any span still open, and an unclosed
+ * span protects through the end of its own message rather than the end of the region. Together
+ * with the whole-line marker rule and the tool-result exclusion, that keeps the permissive
+ * unclosed case safe — quoted or injected tag text costs at most its own message instead of
+ * everything after it. Compaction that cannot reclaim is an overflow, not a safe failure.
+ *
+ * Nested openers flatten into the outermost span, and a closing tag with no opener is inert.
+ */
+export function keepContextLineNumbers(lines: readonly string[]): Set<number> {
+	const protectedLines = new Set<number>();
+	let openIndex: number | undefined;
+	let role: string | undefined;
+	const protectThrough = (endIndex: number): void => {
+		if (openIndex === undefined) return;
+		for (let line = openIndex; line <= endIndex; line++) protectedLines.add(line + 1);
+		openIndex = undefined;
+	};
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		const header = ROLE_HEADER_RE.exec(line);
+		if (header) {
+			protectThrough(index - 1);
+			role = header[1];
+		}
+		if (!roleMayProtect(role)) continue;
+		const marker = keepContextMarker(line);
+		if (marker === "open") {
+			if (openIndex === undefined) openIndex = index;
+			continue;
+		}
+		if (marker === "close") protectThrough(index);
+	}
+	protectThrough(lines.length - 1);
+	return protectedLines;
+}
+
 export function createNumberedRegion(text: string, protectedLineNumbers?: ReadonlySet<number>): NumberedRegion {
 	const lines = text.split("\n");
 	const headerLineNumbers = new Set<number>();
@@ -147,12 +241,15 @@ export function createNumberedRegion(text: string, protectedLineNumbers?: Readon
 		const markerMatch = FILTERED_MARKER_RE.exec(lines[index]);
 		if (markerMatch) priorMarkerNs.set(lineNumber, Number(markerMatch[1]));
 	}
+	const detected = keepContextLineNumbers(lines);
+	const merged =
+		protectedLineNumbers === undefined ? detected : new Set<number>([...protectedLineNumbers, ...detected]);
 	return {
 		__brand: "NumberedRegion",
 		lines,
 		headerLineNumbers,
 		priorMarkerNs,
-		protectedLineNumbers,
+		protectedLineNumbers: merged.size > 0 ? merged : undefined,
 		tokenEstimate: Math.ceil(text.length / 4),
 	};
 }

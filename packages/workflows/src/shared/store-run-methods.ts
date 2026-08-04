@@ -6,9 +6,15 @@ import {
 	type StoreContext,
 	TERMINAL_STATUSES,
 } from "./store-internal.js";
-import type { RunBlockedMetadata, RunEndMetadata, RunPauseMetadata, Store } from "./store-public-types.js";
+import type {
+	RunBlockedMetadata,
+	RunEndMetadata,
+	RunPauseMetadata,
+	RunResumeMetadata,
+	Store,
+} from "./store-public-types.js";
 import type { RunSnapshot, RunStatus, StoreSnapshot, WorkflowNotice } from "./store-types.js";
-import { accumulatePausedDurationMs, elapsedRunMs } from "./timing.js";
+import { accumulatePausedDurationMs, elapsedRunMs, nextControlTimestamp } from "./timing.js";
 import type { WorkflowOutputValues } from "./types.js";
 
 type RunStoreMethods = Pick<
@@ -181,32 +187,60 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			const wasPaused = run.status === "paused";
-			const enteringQuit = metadata?.exitReason === "quit" && run.exitReason !== "quit";
 			if (!wasPaused) {
 				run.status = "paused";
-				run.pausedAt = pausedAt ?? Date.now();
+				run.pausedAt = nextControlTimestamp(pausedAt, run.resumedAt);
 				run.resumedAt = undefined;
+				delete run.pauseActor;
+				delete run.resumeActor;
+				delete run.resumeSource;
 			}
 			if (metadata?.resumable !== undefined) run.resumable = metadata.resumable;
 			if (metadata?.exitReason !== undefined) run.exitReason = metadata.exitReason;
-			if (enteringQuit) run.quitAt = Date.now();
+			if (metadata?.exitReason === "quit" && run.quitAt === undefined)
+				run.quitAt = nextControlTimestamp(undefined, run.pausedAt);
+			// A control path claims the stop it just performed, even when the engine
+			// already published the paused state on its way there.
+			if (metadata?.actor !== undefined) run.pauseActor = metadata.actor;
 			if (wasPaused && metadata === undefined) return false;
 			context.bumpAndNotify();
 			return true;
 		},
 
-		recordRunResumed(runId: string, resumedAt?: number): boolean {
+		recordRunResumed(runId: string, resumedAt?: number, metadata?: RunResumeMetadata): boolean {
 			const run = context.findRun(runId);
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
-			if (run.status !== "paused") return false;
-			const resumedTs = resumedAt ?? Date.now();
+			// Run control is the last step of a resume, by which point stage control
+			// or the acknowledgement pass has usually flipped the status already.
+			// Recording its attribution anyway is what distinguishes a deliberate
+			// resume from the engine continuing work on its own.
+			const claimsRunControl = metadata?.source === "run_control";
+			if (run.status !== "paused") {
+				if (!claimsRunControl || run.status !== "running" || run.resumedAt === undefined) return false;
+				if (run.resumeSource === "run_control" && run.resumeActor === metadata?.actor) return false;
+				run.resumeSource = "run_control";
+				if (metadata?.actor === undefined) delete run.resumeActor;
+				else run.resumeActor = metadata.actor;
+				context.bumpAndNotify();
+				return false;
+			}
+			const resumedTs = nextControlTimestamp(resumedAt, run.pausedAt);
 			run.status = "running";
 			run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, resumedTs);
 			run.resumedAt = resumedTs;
 			run.pausedAt = undefined;
 			delete run.quitAt;
 			delete run.exitReason;
+			delete run.pauseActor;
+			if (metadata === undefined) {
+				delete run.resumeActor;
+				delete run.resumeSource;
+			} else {
+				run.resumeSource = metadata.source;
+				if (metadata.actor === undefined) delete run.resumeActor;
+				else run.resumeActor = metadata.actor;
+			}
 			context.bumpAndNotify();
 			return true;
 		},

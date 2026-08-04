@@ -193,7 +193,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 					await runtime.scheduler.cascadeResumeFrom(runtime.stageId);
 					// Preserve manual per-stage semantics: once this acknowledged
 					// resume succeeds, the run is active even if sibling stages remain paused.
-					runtime.activeStore.recordRunResumed(runtime.runId);
+					runtime.activeStore.recordRunResumed(runtime.runId, undefined, { source: "stage_control" });
 				}
 				if (wakeReleasedIdleStageChat) runtime.state.wakeWaitingForStageChatTurn?.();
 				if (resumesIdleStageChat && hasMessage) {

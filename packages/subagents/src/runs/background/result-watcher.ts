@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isSafeFsWatchPathError, watchWithErrorHandler } from "@bastani/atomic";
 import { createFileCoalescer } from "../../shared/file-coalescer.js";
-import type { IntercomEventBus, SubagentState } from "../../shared/types.js";
+import type { IntercomEventBus, SubagentState } from "../../shared/types.ts";
 import { processResultEntry, type ResultProcessorFs } from "./result-delivery-processor.js";
 import { claimIdFromScheduleKey, claimScheduleKey, listResultClaims } from "./result-file-claims.js";
 import { createRetryScheduler } from "./result-retry-scheduler.js";
