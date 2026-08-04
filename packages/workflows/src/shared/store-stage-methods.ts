@@ -9,7 +9,7 @@ import {
 import type { StageControlMetadata, Store } from "./store-public-types.js";
 import { nextExecutionOrder } from "./store-tool-node-methods.js";
 import type { StageInputRequest, StageNotice, StageSnapshot, ToolEvent, WorkflowChildRunRef } from "./store-types.js";
-import { accumulatePausedDurationMs } from "./timing.js";
+import { accumulatePausedDurationMs, nextControlTimestamp } from "./timing.js";
 
 type StageStoreMethods = Pick<
 	Store,
@@ -285,7 +285,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				return false;
 			}
 			stage.status = "paused";
-			stage.pausedAt = pausedAt ?? Date.now();
+			stage.pausedAt = nextControlTimestamp(pausedAt, stage.resumedAt);
 			stage.resumedAt = undefined;
 			delete stage.awaitingInputSince;
 			delete stage.resumeActor;
@@ -311,7 +311,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				context.bumpAndNotify();
 				return false;
 			}
-			const resumedTs = resumedAt ?? Date.now();
+			const resumedTs = nextControlTimestamp(resumedAt, stage.pausedAt);
 			stage.status = "running";
 			if (stage.startedAt !== undefined) {
 				stage.pausedDurationMs = accumulatePausedDurationMs(stage.pausedDurationMs, stage.pausedAt, resumedTs);

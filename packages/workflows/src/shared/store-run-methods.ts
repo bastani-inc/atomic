@@ -14,7 +14,7 @@ import type {
 	Store,
 } from "./store-public-types.js";
 import type { RunSnapshot, RunStatus, StoreSnapshot, WorkflowNotice } from "./store-types.js";
-import { accumulatePausedDurationMs, elapsedRunMs } from "./timing.js";
+import { accumulatePausedDurationMs, elapsedRunMs, nextControlTimestamp } from "./timing.js";
 import type { WorkflowOutputValues } from "./types.js";
 
 type RunStoreMethods = Pick<
@@ -187,10 +187,9 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			const wasPaused = run.status === "paused";
-			const enteringQuit = metadata?.exitReason === "quit" && run.exitReason !== "quit";
 			if (!wasPaused) {
 				run.status = "paused";
-				run.pausedAt = pausedAt ?? Date.now();
+				run.pausedAt = nextControlTimestamp(pausedAt, run.resumedAt);
 				run.resumedAt = undefined;
 				delete run.pauseActor;
 				delete run.resumeActor;
@@ -198,7 +197,8 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			}
 			if (metadata?.resumable !== undefined) run.resumable = metadata.resumable;
 			if (metadata?.exitReason !== undefined) run.exitReason = metadata.exitReason;
-			if (enteringQuit) run.quitAt = Date.now();
+			if (metadata?.exitReason === "quit" && run.quitAt === undefined)
+				run.quitAt = nextControlTimestamp(undefined, run.pausedAt);
 			// A control path claims the stop it just performed, even when the engine
 			// already published the paused state on its way there.
 			if (metadata?.actor !== undefined) run.pauseActor = metadata.actor;
@@ -225,7 +225,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				context.bumpAndNotify();
 				return false;
 			}
-			const resumedTs = resumedAt ?? Date.now();
+			const resumedTs = nextControlTimestamp(resumedAt, run.pausedAt);
 			run.status = "running";
 			run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, resumedTs);
 			run.resumedAt = resumedTs;

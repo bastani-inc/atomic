@@ -256,7 +256,15 @@ export async function resumeRun(
 			// stage-scoped resume leaves siblings paused, the run otherwise. The
 			// aggregate root is reconciled without attribution so one request never
 			// reports twice.
-			const attributeStage = opts?.stageId !== undefined && hasPausedDescendant;
+			//
+			// A run only carries the actor when it has a resume transition to attach
+			// it to. A stage-scoped resume of a run that never paused — because a
+			// sibling stage kept it running — leaves `resumedAt` unset, and
+			// `recordRunResumed` refuses an attribution-only claim against a run that
+			// never resumed. Attributing the run there would report nothing at all,
+			// so the stage carries it instead.
+			const attributeStage =
+				opts?.stageId !== undefined && (hasPausedDescendant || currentRun?.resumedAt === undefined);
 			activeStore.recordRunResumed(runId, undefined, {
 				source: "run_control",
 				...(opts?.actor === undefined || attributeStage ? {} : { actor: opts.actor }),

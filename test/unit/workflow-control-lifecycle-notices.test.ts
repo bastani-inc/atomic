@@ -12,6 +12,7 @@ import {
 	type WorkflowLifecycleNotificationState,
 	withWorkflowLifecycleNotificationsSuppressed,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+import { reconcileDurableResumeShadow } from "../../packages/workflows/src/extension/workflow-resume-shadow.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { interruptRun, pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import {
@@ -537,21 +538,66 @@ describe("workflow control lifecycle notices", () => {
 		const registry = createStageControlRegistry();
 		liveRun(store, registry, "run-cycle", { origin: "user" });
 		const { sent, unsubscribe } = installOn(store, { notifyOn: ["paused", "resumed"] });
+		const originalNow = Date.now;
+		Date.now = () => 100;
 		try {
 			for (let cycle = 0; cycle < 2; cycle += 1) {
 				assert.equal(
 					(await pauseRun("run-cycle", { store, stageControlRegistry: registry, actor: "user" })).ok,
 					true,
 				);
-				await new Promise<void>((resolve) => setTimeout(resolve, 2));
 				assert.equal(
 					(await resumeRun("run-cycle", { store, stageControlRegistry: registry, actor: "user" })).ok,
 					true,
 				);
-				await new Promise<void>((resolve) => setTimeout(resolve, 2));
 			}
 			assert.deepEqual(kinds(sent), ["paused", "resumed", "paused", "resumed"]);
 		} finally {
+			Date.now = originalNow;
+			unsubscribe();
+		}
+	});
+
+	test("stage pause and resume re-arm at one clock tick", async () => {
+		const store = createStore();
+		const registry = createStageControlRegistry();
+		startRun(store, "run-stage-cycle", { name: "goal", origin: "user" });
+		addStage(store, "run-stage-cycle", "stage-1", "review");
+		addStage(store, "run-stage-cycle", "stage-2", "implement");
+		registry.register(executorStyleHandle({ store, runId: "run-stage-cycle", stageId: "stage-1" }));
+		registry.register(executorStyleHandle({ store, runId: "run-stage-cycle", stageId: "stage-2" }));
+		const { sent, unsubscribe } = installOn(store, { notifyOn: ["paused", "resumed"] });
+		const originalNow = Date.now;
+		Date.now = () => 100;
+		try {
+			for (let cycle = 0; cycle < 2; cycle += 1) {
+				assert.equal(
+					(
+						await pauseRun("run-stage-cycle", {
+							store,
+							stageControlRegistry: registry,
+							stageId: "stage-1",
+							actor: "user",
+						})
+					).ok,
+					true,
+				);
+				assert.equal(
+					(
+						await resumeRun("run-stage-cycle", {
+							store,
+							stageControlRegistry: registry,
+							stageId: "stage-1",
+							actor: "user",
+						})
+					).ok,
+					true,
+				);
+			}
+			assert.deepEqual(kinds(sent), ["paused", "resumed", "paused", "resumed"]);
+			assert.deepEqual(scopes(sent), ["stage", "stage", "stage", "stage"]);
+		} finally {
+			Date.now = originalNow;
 			unsubscribe();
 		}
 	});
@@ -572,6 +618,70 @@ describe("workflow control lifecycle notices", () => {
 			);
 			for (let index = 0; index < 3; index += 1) invalidate(store, `quit-storm-${index}`);
 			assert.deepEqual(kinds(sent), ["paused", "quit"]);
+		} finally {
+			unsubscribe();
+		}
+	});
+	test("a restored quit shadow stays QUIT when a user quits it again", async () => {
+		const workflowId = "run-restored-quit-no-timestamp";
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		backend.registerWorkflow({
+			workflowId,
+			name: "goal",
+			inputs: {},
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 1,
+			resumable: true,
+		});
+		const store = createStore();
+		store.recordRunStart({
+			id: workflowId,
+			name: "goal",
+			inputs: {},
+			status: "paused",
+			stages: [],
+			startedAt: 1,
+			pausedAt: 100,
+			exitReason: "quit",
+			resumable: true,
+		});
+		const restored = store.runs().find((run) => run.id === workflowId);
+		assert.ok(restored);
+		assert.equal(reconcileDurableResumeShadow(restored, store, { backend }), true);
+
+		const registry = createStageControlRegistry();
+		const originalNow = Date.now;
+		Date.now = () => 100;
+		const { sent, unsubscribe } = installOn(store, { notifyOn: ["paused", "quit"] });
+		try {
+			const result = await quitRun(workflowId, { store, stageControlRegistry: registry, actor: "user" });
+			assert.equal(result.ok, true);
+			assert.deepEqual(kinds(sent), ["quit"]);
+			assert.equal(sent[0]?.details?.createdAt, 101, "quit falls back to pausedAt and re-arms its timestamp");
+			invalidate(store, "restored-quit-repeat");
+			assert.deepEqual(kinds(sent), ["quit"], "repeated invalidations keep one restored quit notice");
+		} finally {
+			Date.now = originalNow;
+			unsubscribe();
+		}
+	});
+
+	test("exitReason quit selects QUIT when quitAt is absent", () => {
+		const store = createStore();
+		startRun(store, "run-quit-without-quit-at", { name: "goal", origin: "user" });
+		const run = store.runs().find((candidate) => candidate.id === "run-quit-without-quit-at");
+		assert.ok(run);
+		run.status = "paused";
+		run.pausedAt = 200;
+		run.exitReason = "quit";
+		run.pauseActor = "user";
+		const { sent, unsubscribe } = installOn(store, { seedExisting: false, notifyOn: ["paused", "quit"] });
+		try {
+			invalidate(store, "quit-without-quit-at");
+			assert.deepEqual(kinds(sent), ["quit"]);
+			assert.equal(sent[0]?.details?.createdAt, 200);
 		} finally {
 			unsubscribe();
 		}
@@ -714,6 +824,80 @@ describe("workflow control lifecycle notices", () => {
 
 			invalidate(store, "post-reinstall");
 			assert.equal(replacement.length, 1, "the recovered notice is delivered exactly once");
+		} finally {
+			replacementUnsubscribe?.();
+			firstUnsubscribe?.();
+			timers.restore();
+		}
+	});
+
+	test("a rejected quit notice retries and survives reinstall exactly once", async () => {
+		const timers = installTimerHarness();
+		const store = createStore();
+		const state = createWorkflowLifecycleNotificationState();
+		const rejected: CapturedNotice[] = [];
+		const replacement: CapturedNotice[] = [];
+		let firstUnsubscribe: (() => void) | undefined;
+		let replacementUnsubscribe: (() => void) | undefined;
+		try {
+			firstUnsubscribe = installWorkflowLifecycleNotifications({
+				store,
+				state,
+				seedExisting: false,
+				config: { enabled: true, notifyOn: ["quit"] },
+				sendMessage(message) {
+					rejected.push(asNotice(message));
+					return Promise.reject(new Error("quit admission rejected"));
+				},
+			});
+			startRun(store, "run-retry-quit", { name: "goal", origin: "user" });
+			assert.equal(
+				store.recordRunPaused("run-retry-quit", 100, {
+					exitReason: "quit",
+					resumable: true,
+					actor: "user",
+				}),
+				true,
+			);
+			await flushMicrotasks();
+
+			assert.equal(rejected.length, 1);
+			assert.equal(rejected[0]?.details?.kind, "quit");
+			assert.equal(rejected[0]?.details?.resumable, true);
+			const originalDetails = rejected[0]?.details;
+			assert.ok(originalDetails);
+
+			for (const expectedDelay of [20, 40, 80]) {
+				assert.equal(timers.delays().at(-1), expectedDelay);
+				timers.runNext();
+				await flushMicrotasks();
+			}
+			assert.deepEqual(timers.delays(), [20, 40, 80, 160]);
+			assert.equal(rejected.length, 4);
+			assert.equal(state.deliveredTerminalRuns.size, 0);
+			assert.equal(state.retryableTerminalNotices.size, 1);
+
+			assert.equal(store.removeRun("run-retry-quit"), true);
+			firstUnsubscribe();
+			firstUnsubscribe = undefined;
+			assert.equal(timers.activeCount(), 0);
+
+			replacementUnsubscribe = installWorkflowLifecycleNotifications({
+				store,
+				state,
+				config: { enabled: true, notifyOn: ["quit"] },
+				sendMessage(message) {
+					replacement.push(asNotice(message));
+				},
+			});
+
+			assert.equal(replacement.length, 1);
+			assert.equal(replacement[0]?.details, originalDetails);
+			assert.equal(state.retryableTerminalNotices.size, 0);
+			assert.equal(state.deliveredTerminalRuns.size, 1);
+
+			invalidate(store, "post-quit-reinstall");
+			assert.equal(replacement.length, 1, "the recovered quit notice is delivered exactly once");
 		} finally {
 			replacementUnsubscribe?.();
 			firstUnsubscribe?.();

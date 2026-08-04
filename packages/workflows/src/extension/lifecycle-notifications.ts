@@ -564,8 +564,9 @@ function controlOccurrences(run: RunSnapshot): ControlOccurrence[] {
 		});
 	}
 	if (run.endedAt === undefined && run.status === "paused" && run.pauseActor === "user") {
-		if (run.exitReason === "quit" && run.quitAt !== undefined) {
-			occurrences.push({ kind: "quit", scope: "run", at: run.quitAt, actor: "user" });
+		if (run.exitReason === "quit") {
+			const quitAt = run.quitAt ?? run.pausedAt;
+			if (quitAt !== undefined) occurrences.push({ kind: "quit", scope: "run", at: quitAt, actor: "user" });
 		} else if (run.pausedAt !== undefined) {
 			occurrences.push({ kind: "paused", scope: "run", at: run.pausedAt, actor: "user" });
 		}
