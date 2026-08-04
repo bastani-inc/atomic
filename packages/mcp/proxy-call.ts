@@ -1,7 +1,7 @@
 import type { ToolInfo } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.js";
-import type { McpContent, ToolMetadata } from "./types.js";
-import { getServerPrefix } from "./types.js";
+import type { McpContent, ToolMetadata } from "./types.ts";
+import { getServerPrefix } from "./types.ts";
 import { lazyConnect, updateServerMetadata, updateMetadataCache, getFailureAgeSeconds, updateStatusBar } from "./init.js";
 import { getToolNames, findToolByName, formatSchema } from "./tool-metadata.js";
 import { transformMcpContent } from "./tool-registrar.js";

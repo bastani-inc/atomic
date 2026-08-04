@@ -7,7 +7,7 @@ import type {
 	ValidatedRanges,
 } from "./compaction-types.js";
 import { filteredMarker } from "./transcript-serialization.js";
-import { contiguousRanges } from "./utils.js";
+import { contiguousRanges } from "./utils.ts";
 
 function coerceEndpoint(value: RawLineEndpoint | undefined): number | undefined {
 	if (value === undefined) return undefined;

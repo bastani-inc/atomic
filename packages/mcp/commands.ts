@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import type { McpExtensionState } from "./state.ts";
+import type { McpExtensionState } from "./state.js";
 import type { McpAuthResult, McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult, ImportKind } from "./types.ts";
 import {
   ensureCompatibilityImports,
@@ -12,13 +12,13 @@ import {
   writeSharedServerEntry,
   writeStarterProjectConfig,
 } from "./config.ts";
-import { lazyConnect, updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.ts";
-import { loadMetadataCache } from "./metadata-cache.ts";
-import { buildToolMetadata } from "./tool-metadata.ts";
-import { supportsOAuth, authenticate, removeAuth } from "./mcp-auth-flow.ts";
-import { getAuthForUrl } from "./mcp-auth.ts";
+import { lazyConnect, updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
+import { loadMetadataCache } from "./metadata-cache.js";
+import { buildToolMetadata } from "./tool-metadata.js";
+import { supportsOAuth, authenticate, removeAuth } from "./mcp-auth-flow.js";
+import { getAuthForUrl } from "./mcp-auth.js";
 import { loadOnboardingState, markSetupCompleted as persistSetupCompleted, markSharedConfigHintShown } from "./onboarding-state.ts";
-import { openPath } from "./utils.ts";
+import { openPath } from "./utils.js";
 
 export async function showStatus(state: McpExtensionState, ctx: ExtensionContext): Promise<void> {
   if (!ctx.hasUI) return;

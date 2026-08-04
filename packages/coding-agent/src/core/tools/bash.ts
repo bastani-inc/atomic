@@ -22,7 +22,7 @@ import type { AsyncJobDeliveryMessage } from "../async/types.js";
 import type { BashResult } from "../bash-executor.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { startAsyncBashCommand } from "./bash-async-execution.js";
-import { abortManagedBashJob, getManagedBashJob } from "./bash-async-jobs.ts";
+import { abortManagedBashJob, getManagedBashJob } from "./bash-async-jobs.js";
 import {
 	type BashInterceptorRule,
 	checkBashInterceptionCandidates,

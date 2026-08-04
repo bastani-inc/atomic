@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { randomUUID } from "crypto";
-import type { IntercomClient } from "./broker/client.ts";
-import type { SessionInfo, Message } from "./types.ts";
+import type { IntercomClient } from "./broker/client.js";
+import type { SessionInfo, Message } from "./types.js";
 import {
   SUBAGENT_CONTROL_INTERCOM_EVENT,
   SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,

@@ -6,7 +6,7 @@ import {
   McpError,
   type CallToolRequest,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { ServerEntry } from "./types.js";
+import type { ServerEntry } from "./types.ts";
 
 export const MCP_TIMEOUT_MS_CONFIG_ERROR =
   "timeoutMs must be a finite number greater than 0 milliseconds";

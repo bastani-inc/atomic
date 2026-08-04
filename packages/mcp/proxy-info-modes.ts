@@ -1,6 +1,6 @@
 import type { McpExtensionState } from "./state.js";
-import type { ToolMetadata } from "./types.js";
-import { getServerPrefix, parseUiPromptHandoff } from "./types.js";
+import type { ToolMetadata } from "./types.ts";
+import { getServerPrefix, parseUiPromptHandoff } from "./types.ts";
 import { getFailureAgeSeconds } from "./init.js";
 import { findToolByName, formatSchema } from "./tool-metadata.js";
 import { truncateAtWord } from "./utils.js";

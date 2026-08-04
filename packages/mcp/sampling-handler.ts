@@ -1,6 +1,6 @@
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import { complete, type Api, type AssistantMessage, type Message, type Model, type TextContent } from "@earendil-works/pi-ai/compat";
-import { truncateAtWord } from "./utils.ts";
+import { truncateAtWord } from "./utils.js";
 import type { ExtensionUIContext, ModelRegistry } from "@bastani/atomic";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {

@@ -12,7 +12,7 @@ import {
   getOAuthCallbackPort,
   setOAuthCallbackPort,
 } from "./mcp-oauth-provider.js"
-import { logger } from "./logger.js"
+import { logger } from "./logger.ts"
 
 // HTML templates for callback responses
 const HTML_SUCCESS = `<!DOCTYPE html>

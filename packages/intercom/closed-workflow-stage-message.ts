@@ -3,7 +3,7 @@ import type { InboundMessageAdmission } from "./inbound-message-admission.js";
 import type { InboundMessageEntry } from "./intercom-utils.js";
 import { routeIncomingReply } from "./reply-routing.js";
 import type { ReplyTracker } from "./reply-tracker.js";
-import type { ReplyWaiterRecord } from "./reply-waiter.js";
+import type { ReplyWaiterRecord } from "./reply-waiter.ts";
 import { retryStableDelivery } from "./stable-delivery-retry.js";
 import { sendWorkflowStageDeliveryFailure } from "./workflow-stage-delivery-failure.js";
 

@@ -10,9 +10,9 @@ import {
   type UiMessageParams,
   type UiModelContextParams,
   type UiStreamMode,
-} from "./types.js";
-import { logger } from "./logger.js";
-import { startUiServer, type UiServerHandle } from "./ui-server.js";
+} from "./types.ts";
+import { logger } from "./logger.ts";
+import { startUiServer, type UiServerHandle } from "./ui-server.ts";
 import { isGlimpseAvailable, openGlimpseWindow } from "./glimpse-ui.js";
 import { escapeHtmlAttribute } from "./host-html-template.js";
 

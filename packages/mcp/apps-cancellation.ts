@@ -1,5 +1,5 @@
 import type { UiSessionRuntime } from "./ui-session.js";
-import { logger } from "./logger.js";
+import { logger } from "./logger.ts";
 
 function formatCancellationReason(signal: AbortSignal): string {
   const reason = signal.reason;

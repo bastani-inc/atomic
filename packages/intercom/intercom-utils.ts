@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { APP_NAME, getEnvValue } from "@bastani/atomic";
-import type { Attachment, Message, SessionInfo, SupervisorRegistration } from "./types.ts";
+import type { Attachment, Message, SessionInfo, SupervisorRegistration } from "./types.js";
 import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
 

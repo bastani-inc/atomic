@@ -18,7 +18,7 @@ import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";
-import { resolvePlannerRequest } from "./range-planner.ts";
+import { resolvePlannerRequest } from "./range-planner.js";
 import {
 	computeFileLists,
 	createFileOps,

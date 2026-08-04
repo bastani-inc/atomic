@@ -50,7 +50,7 @@ import type { ModelRuntime } from "./model-runtime.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, SessionManager } from "./session-manager.js";
+import type { BranchSummaryEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
 import type { BashOperations } from "./tools/bash.ts";

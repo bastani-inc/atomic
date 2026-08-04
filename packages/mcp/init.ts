@@ -1,10 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.js";
-import type { ToolMetadata } from "./types.js";
+import type { ToolMetadata } from "./types.ts";
 import { existsSync } from "node:fs";
-import { loadMcpConfig } from "./config.js";
+import { loadMcpConfig } from "./config.ts";
 import { ConsentManager } from "./consent-manager.js";
-import { McpLifecycleManager } from "./lifecycle.js";
+import { McpLifecycleManager } from "./lifecycle.ts";
 import {
   computeServerHash,
   getMetadataCachePath,
@@ -16,11 +16,11 @@ import {
   serializeTools,
   type ServerCacheEntry,
 } from "./metadata-cache.js";
-import { McpServerManager } from "./server-manager.js";
+import { McpServerManager } from "./server-manager.ts";
 import { buildToolMetadata, totalToolCount } from "./tool-metadata.js";
-import { UiResourceHandler } from "./ui-resource-handler.js";
+import { UiResourceHandler } from "./ui-resource-handler.ts";
 import { openUrl, parallelLimit } from "./utils.js";
-import { logger } from "./logger.js";
+import { logger } from "./logger.ts";
 
 const FAILURE_BACKOFF_MS = 60 * 1000;
 

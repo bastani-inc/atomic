@@ -49,7 +49,7 @@ import type {
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { SessionManager } from "./session-manager.js";
+import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
