@@ -102,6 +102,17 @@ export interface WorkflowStatusListing {
 	readonly snapshots: RunSnapshot[];
 }
 
+const workflowStatusRenderRuns = new WeakMap<object, readonly RunSnapshot[]>();
+
+/** Keep the full point-in-time run collection out of agent-facing result JSON. */
+export function setWorkflowStatusRenderRuns(result: object, runs: readonly RunSnapshot[]): void {
+	workflowStatusRenderRuns.set(result, runs);
+}
+
+export function getWorkflowStatusRenderRuns(result: object): readonly RunSnapshot[] | undefined {
+	return workflowStatusRenderRuns.get(result);
+}
+
 function stageIsActive(stage: StageSnapshot): boolean {
 	return stage.status === "running" || stage.status === "awaiting_input";
 }

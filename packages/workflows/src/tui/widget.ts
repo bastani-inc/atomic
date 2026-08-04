@@ -22,6 +22,7 @@
  */
 
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -31,7 +32,7 @@ import { hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { deriveGraphTheme } from "./graph-theme.js";
 import { renderRunIdentityRows } from "./run-identity-rows.js";
-import { statusIcon } from "./status-helpers.js";
+import { statusColor, statusIcon } from "./status-helpers.js";
 import type { PiTheme } from "./store-widget-installer.js";
 
 // ---------------------------------------------------------------------------
@@ -96,23 +97,8 @@ interface RunCounts {
 	awaiting: number;
 }
 
-function runAwaitsInput(run: RunSnapshot): boolean {
-	return (
-		run.endedAt === undefined &&
-		(run.pendingPrompt !== undefined || run.stages.some((s) => s.status === "awaiting_input"))
-	);
-}
-
-/**
- * A top-level run "needs attention" when it OR any of its nested
- * `ctx.workflow()` descendants is awaiting human input. Nested child runs are
- * hidden from the widget, but each carries `rootRunId` pointing at the ultimate
- * top-level run, so a hidden child's awaiting (HiL) state surfaces on the
- * visible ancestor instead of vanishing with it.
- */
 function subtreeAwaitsInput(root: RunSnapshot, allRuns: readonly RunSnapshot[]): boolean {
-	if (runAwaitsInput(root)) return true;
-	return allRuns.some((run) => run.rootRunId === root.id && runAwaitsInput(run));
+	return runIndicatorStatus(root, allRuns) === "awaiting_input";
 }
 
 function countRuns(runs: readonly RunSnapshot[], allRuns: readonly RunSnapshot[] = runs): RunCounts {
@@ -125,7 +111,7 @@ function countRuns(runs: readonly RunSnapshot[], allRuns: readonly RunSnapshot[]
 		else if (r.endedAt === undefined) counts.active++;
 		else if (status === "completed" || status === "skipped" || status === "cancelled") counts.done++;
 		else if (status === "failed" || status === "killed") counts.failed++;
-		if (r.endedAt === undefined && subtreeAwaitsInput(r, allRuns)) counts.awaiting++;
+		if (r.endedAt === undefined && !isQuitRun(r) && subtreeAwaitsInput(r, allRuns)) counts.awaiting++;
 	}
 	return counts;
 }
@@ -175,31 +161,15 @@ function selectDisplayRuns(snap: StoreSnapshot, now: number): RunSnapshot[] {
 // Per-run derived strings
 // ---------------------------------------------------------------------------
 
-function statusGlyph(run: RunSnapshot): string {
-	if (isQuitRun(run)) return "○";
-	switch (effectiveRunStatus(run)) {
-		case "running":
-			return "●";
-		case "paused":
-			return "❚❚";
-		case "completed":
-			return "✓";
-		case "skipped":
-		case "cancelled":
-			return "⊘";
-		case "blocked":
-			return "↑";
-		case "failed":
-			return "✗";
-		case "killed":
-			return "⊘";
-		default:
-			return "○";
-	}
+function statusGlyph(run: RunSnapshot, allRuns: readonly RunSnapshot[]): string {
+	if (isQuitRun(run)) return statusIcon("pending");
+	return statusIcon(runIndicatorStatus(run, allRuns));
 }
 
-function statusFg(run: RunSnapshot, theme: GraphTheme): string {
+function statusFg(run: RunSnapshot, theme: GraphTheme, allRuns: readonly RunSnapshot[]): string {
 	if (isQuitRun(run)) return theme.warning;
+	const indicatorStatus = runIndicatorStatus(run, allRuns);
+	if (indicatorStatus === "awaiting_input") return statusColor(indicatorStatus, theme);
 	switch (effectiveRunStatus(run)) {
 		case "running":
 		case "paused":
@@ -307,7 +277,7 @@ function formatTitleBadges(badges: readonly FlatBandBadge[], theme: GraphTheme, 
 // Themed rendering (ANSI + Catppuccin)
 // ---------------------------------------------------------------------------
 
-function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme): string[] {
+function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme, allRuns: readonly RunSnapshot[]): string[] {
 	const meta = metaLine(run, now);
 	// Render the meta line in muted while running so the elapsed-time
 	// gradient stays readable; dim it once the run has terminated.
@@ -316,19 +286,19 @@ function themedRunLines(run: RunSnapshot, now: number, theme: GraphTheme): strin
 		runId: run.id,
 		name: run.name,
 		meta,
-		glyph: statusGlyph(run),
-		glyphColor: statusFg(run, theme),
+		glyph: statusGlyph(run, allRuns),
+		glyphColor: statusFg(run, theme, allRuns),
 		metaColor,
 		theme,
 	});
 }
 
-function plainRunLines(run: RunSnapshot, now: number): string[] {
+function plainRunLines(run: RunSnapshot, now: number, allRuns: readonly RunSnapshot[]): string[] {
 	return renderRunIdentityRows({
 		runId: run.id,
 		name: run.name,
 		meta: metaLine(run, now),
-		glyph: statusGlyph(run),
+		glyph: statusGlyph(run, allRuns),
 	});
 }
 
@@ -415,7 +385,7 @@ export function buildThemedWidgetLines(
 
 	for (let i = 0; i < display.length; i++) {
 		const run = display[i]!;
-		const runLines = themed ? themedRunLines(run, now, graphTheme) : plainRunLines(run, now);
+		const runLines = themed ? themedRunLines(run, now, graphTheme, snap.runs) : plainRunLines(run, now, snap.runs);
 		body.push(...runLines);
 		if (i < display.length - 1) body.push("");
 	}

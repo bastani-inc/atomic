@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow runs awaiting human input now use the blue `？` indicator in the BACKGROUND panel, `/workflow connect` picker, and `/workflow status` listing, including prompts raised by hidden nested workflow children; the indicator returns to the run's current state when the prompt resolves.
+
 ## [0.9.12] - 2026-08-04
 
 Cumulative release of the `0.9.12-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

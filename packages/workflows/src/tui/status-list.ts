@@ -22,6 +22,7 @@
  */
 
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -29,7 +30,7 @@ import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-sur
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
-import { fmtDuration } from "./status-helpers.js";
+import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 const STAGE_LABEL_BUDGET = 24;
@@ -43,6 +44,8 @@ export interface RenderStatusListOpts {
 	showDetailHint?: boolean;
 	/** Render width (cells). Defaults to `process.stdout.columns`. */
 	width?: number;
+	/** Point-in-time run collection used to attribute hidden child prompts. */
+	allRuns?: readonly RunSnapshot[];
 }
 
 function isQuitRun(run: RunSnapshot): boolean {
@@ -74,7 +77,7 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 	} else {
 		for (let i = 0; i < sorted.length; i++) {
 			if (i > 0) body.push("");
-			body.push(...renderRunEntry(sorted[i]!, now, cardWidth, opts.theme));
+			body.push(...renderRunEntry(sorted[i]!, now, cardWidth, opts.theme, opts.allRuns ?? runs));
 		}
 	}
 	if (opts.showDetailHint !== false && sorted.length > 0) {
@@ -94,11 +97,17 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 // Run card
 // ---------------------------------------------------------------------------
 
-function renderRunEntry(run: RunSnapshot, now: number, width: number, theme?: GraphTheme): string[] {
+function renderRunEntry(
+	run: RunSnapshot,
+	now: number,
+	width: number,
+	theme: GraphTheme | undefined,
+	allRuns: readonly RunSnapshot[],
+): string[] {
 	const bodyWidth = effectiveWidth(width);
 	const interior = Math.max(8, bodyWidth - 4);
-	const glyph = statusIconForRun(run);
-	const glyphFg = theme ? hexToAnsi(runAccent(run, theme)) : "";
+	const glyph = statusIconForRun(run, allRuns);
+	const glyphFg = theme ? hexToAnsi(runAccent(run, theme, allRuns)) : "";
 	const accent = theme ? hexToAnsi(theme.accent) : "";
 	const text = theme ? hexToAnsi(theme.text) : "";
 	const muted = theme ? hexToAnsi(theme.textMuted) : "";
@@ -141,29 +150,10 @@ function renderRunEntry(run: RunSnapshot, now: number, width: number, theme?: Gr
 	return [...identityRows, identity, metaLine];
 }
 
-function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
+function runAccent(run: RunSnapshot, theme?: GraphTheme, allRuns: readonly RunSnapshot[] = [run]): string {
 	if (!theme) return "#000000";
 	if (isQuitRun(run)) return theme.warning;
-	switch (effectiveRunStatus(run)) {
-		case "completed":
-			return theme.success;
-		case "running":
-			return theme.warning;
-		case "paused":
-			return theme.warning;
-		case "skipped":
-			return theme.dim;
-		case "cancelled":
-			return theme.dim;
-		case "blocked":
-			return theme.dim;
-		case "failed":
-			return theme.error;
-		case "killed":
-			return theme.error;
-		default:
-			return theme.dim;
-	}
+	return statusColor(runIndicatorStatus(run, allRuns), theme);
 }
 
 function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?: string } | undefined {
@@ -436,27 +426,9 @@ function emptyStateLine(theme?: GraphTheme): string {
 	return `  ${hexToAnsi(theme.dim)}no workflow runs in current session${RESET}`;
 }
 
-function statusIconForRun(run: RunSnapshot): string {
-	if (isQuitRun(run)) return "○";
-	switch (effectiveRunStatus(run)) {
-		case "completed":
-			return "✓";
-		case "skipped":
-		case "cancelled":
-			return "⊘";
-		case "blocked":
-			return "↑";
-		case "running":
-			return "●";
-		case "paused":
-			return "❚❚";
-		case "failed":
-			return "✗";
-		case "killed":
-			return "⊘";
-		default:
-			return "○";
-	}
+function statusIconForRun(run: RunSnapshot, allRuns: readonly RunSnapshot[] = [run]): string {
+	if (isQuitRun(run)) return statusIcon("pending");
+	return statusIcon(runIndicatorStatus(run, allRuns));
 }
 
 // Re-export for callers that need to inspect width budgeting.

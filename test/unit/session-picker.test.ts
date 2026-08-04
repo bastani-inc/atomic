@@ -14,6 +14,7 @@ import {
 } from "../../packages/workflows/src/durable/resume-eligibility.ts";
 import type { RunSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.ts";
+import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import {
 	createSessionPickerResumeCandidateCache,
@@ -22,6 +23,7 @@ import {
 	renderSessionPicker,
 	selectRunsForPicker,
 } from "../../packages/workflows/src/tui/session-picker.ts";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
 
 function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
@@ -313,6 +315,68 @@ test("renderSessionPicker emits header, sections, and footer hints", () => {
 	assert.match(joined, /Navigate/);
 	assert.match(joined, /Connect/);
 	assert.doesNotMatch(joined, /Kill/);
+});
+
+test("renderSessionPicker uses the awaiting-input glyph and info colour for a prompted run", () => {
+	const theme = deriveGraphTheme({});
+	const awaiting = makeRun({
+		id: "awaiting111-0000-0000-0000-000000000000",
+		name: "awaiting-workflow",
+		stages: [
+			{
+				id: "ask",
+				name: "ask",
+				status: "awaiting_input",
+				parentIds: [],
+				toolEvents: [],
+			},
+		],
+	});
+	const rows = [
+		{ run: makeRun({ id: "other111-0000-0000-0000-000000000000" }), bucket: "active" as const },
+		{ run: awaiting, bucket: "active" as const },
+	];
+	const state = createSessionPickerState();
+	const joined = renderSessionPicker({ width: 100, theme, rows, state, allRuns: [rows[0]!.run, awaiting] })
+		.join("\n")
+		.replace(/\x1b\[[0-9;]*m/g, "");
+	assert.match(joined, new RegExp(`${statusIcon("awaiting_input")} awaiting111`));
+	assert.ok(
+		renderSessionPicker({ width: 100, theme, rows, state, allRuns: [rows[0]!.run, awaiting] })
+			.join("\n")
+			.includes(hexToAnsi(statusColor("awaiting_input", theme))),
+	);
+});
+
+test("renderSessionPicker keeps paused quit treatment when the run carries a pending prompt", () => {
+	const theme = deriveGraphTheme({});
+	const quit: RunSnapshot = {
+		...makeRun({
+			id: "quit-picker-prompt",
+			name: "resume-me",
+			status: "paused",
+			exitReason: "quit",
+			resumable: true,
+		}),
+		pendingPrompt: {
+			id: "quit-picker-prompt-id",
+			kind: "confirm",
+			message: "Continue?",
+			createdAt: 900,
+		},
+	};
+	const other = makeRun({ id: "other-picker-run", name: "other-workflow" });
+	const rows = [
+		{ run: other, bucket: "active" as const },
+		{ run: quit, bucket: "active" as const },
+	];
+	const state = createSessionPickerState();
+	const rendered = renderSessionPicker({ width: 100, theme, rows, state, allRuns: [other, quit] }).join("\n");
+	const plain = rendered.replace(/\x1b\[[0-9;]*m/g, "");
+	assert.match(plain, new RegExp(`${statusIcon(quit.status)}\\s+${quit.id}`));
+	assert.ok(rendered.includes(hexToAnsi(statusColor(quit.status, theme))));
+	assert.doesNotMatch(plain, new RegExp(statusIcon("awaiting_input")));
+	assert.equal(rendered.includes(hexToAnsi(statusColor("awaiting_input", theme))), false);
 });
 
 test("renderSessionPicker shows empty state when no rows", () => {

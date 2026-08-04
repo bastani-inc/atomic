@@ -32,6 +32,7 @@ import { truncateToWidth } from "../tui/text-helpers.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import type { WorkflowRunStatusFilter, WorkflowRunStatusSummary } from "./workflow-status-summary.js";
+import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 
 // ---------------------------------------------------------------------------
 // Result variants
@@ -240,6 +241,8 @@ export interface RenderResultOpts {
 	 * not implement synchronized output (e.g. mosh).
 	 */
 	now?: number;
+	/** Point-in-time full run collection used only to resolve hidden nested indicators. */
+	allRuns?: readonly RunSnapshot[];
 }
 
 /**
@@ -335,6 +338,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 				theme: themed ? deriveGraphTheme({}) : undefined,
 				width: opts?.width,
 				now: opts?.now,
+				allRuns: opts?.allRuns ?? getWorkflowStatusRenderRuns(r) ?? r.snapshots,
 			});
 		}
 

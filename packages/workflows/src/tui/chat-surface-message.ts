@@ -69,6 +69,17 @@ export interface StatusPayload {
 	runs: readonly RunSnapshot[];
 }
 
+const statusPayloadRenderRuns = new WeakMap<StatusPayload, readonly RunSnapshot[]>();
+
+/** Attach a point-in-time full run collection without exposing it in message details. */
+export function setStatusPayloadRenderRuns(payload: StatusPayload, runs: readonly RunSnapshot[]): void {
+	statusPayloadRenderRuns.set(payload, runs);
+}
+
+function statusRunsForRender(payload: StatusPayload): readonly RunSnapshot[] {
+	return statusPayloadRenderRuns.get(payload) ?? payload.runs;
+}
+
 /** Workflow catalogue after `/workflow list`. */
 export interface ListPayload {
 	kind: "list";
@@ -164,7 +175,12 @@ export function renderChatSurfacePlainText(
 			return [rendered, `run id: ${payload.runId}`, `inputs: ${formatPlainRecord(payload.inputs)}`].join("\n");
 		}
 		case "status": {
-			const rendered = renderStatusList(payload.runs, { width, now, ...themed });
+			const rendered = renderStatusList(payload.runs, {
+				width,
+				now,
+				...themed,
+				allRuns: statusRunsForRender(payload),
+			});
 			if (payload.runs.length === 0) return rendered;
 			return [
 				rendered,
@@ -288,7 +304,12 @@ function renderPayload(payload: ChatSurfacePayload, theme: GraphTheme, width: nu
 				width,
 			});
 		case "status":
-			return renderStatusList(payload.runs, { theme, width, now });
+			return renderStatusList(payload.runs, {
+				theme,
+				width,
+				now,
+				allRuns: statusRunsForRender(payload),
+			});
 		case "list":
 			return renderWorkflowList(payload.entries, { theme, width });
 		case "detail":

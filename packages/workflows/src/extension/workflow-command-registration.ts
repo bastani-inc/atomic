@@ -3,7 +3,7 @@ import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { schemaIsRequired } from "../shared/schema-introspection.js";
 import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
-import { emitChatSurface } from "../tui/chat-surface-message.js";
+import { emitChatSurface, setStatusPayloadRenderRuns } from "../tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { openHostInputsForm } from "../tui/host-input-form.js";
 import { openInlineInputsForm } from "../tui/inline-form-overlay.js";
@@ -158,8 +158,11 @@ async function workflowSlashHandler(
 			emitChatSurface(pi, { kind: "detail", detail: inspected.detail });
 			return;
 		}
-		const rows = selectRunsForPicker(store.runs(), "", true, Date.now());
-		emitChatSurface(pi, { kind: "status", runs: rows.map((r) => r.run) });
+		const capturedRuns = store.graphSnapshot().runs;
+		const rows = selectRunsForPicker(capturedRuns, "", true, Date.now());
+		const payload = { kind: "status" as const, runs: rows.map((r) => r.run) };
+		setStatusPayloadRenderRuns(payload, capturedRuns);
+		emitChatSurface(pi, payload);
 		return;
 	}
 	if (subcommand === "reload") {
