@@ -77,6 +77,8 @@ irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 
 The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links its launcher from `~/.local/bin/atomic` on macOS/Linux or `%LOCALAPPDATA%\atomic\bin\atomic.cmd` on Windows. It prints PATH guidance when needed. Set `ATOMIC_VERSION` to pin a release, `ATOMIC_INSTALL_DIR` or `ATOMIC_BIN_DIR` to change those locations, and `GITHUB_TOKEN` or `GH_TOKEN` if shared GitHub API limits are a concern.
 
+On macOS/Linux, relative install and bin directories resolve against the physical directory where the installer starts; the install root cannot also be the `ATOMIC_BIN_DIR/atomic` launcher. Exact tags containing `/`, `#`, or `%` are encoded safely for release URLs and version directories.
+
 The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step. Android and Termux use bionic rather than musl and remain unsupported by the release archives.
 
 Package installs still require Node.js and a package manager. With npm:

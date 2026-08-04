@@ -120,58 +120,114 @@ test("Windows installer finds and removes junctions through their parent directo
 	assert.match(linkRemoval, /\[IO\.Directory\]::Delete\(\$item\.FullName\)/u);
 	assert.match(source, /Get-AtomicDirectoryEntry\s+\$currentPath/u);
 	assert.match(source, /Get-AtomicDirectoryEntry\s+\$currentNextPath/u);
-	assert.match(source, /Remove-AtomicDirectoryLinkOrTree\s+\$currentBackupPath/u);
+	assert.match(source, /Get-AtomicDirectoryEntry\s+\$Transaction\.CurrentBackupPath/u);
 	assert.doesNotMatch(source, /Test-Path\s+-LiteralPath\s+\$(?:currentPath|currentNextPath|currentBackupPath)\b/u);
 });
 
-test("Windows installer removes staged children before only empty transaction-created parents", () => {
+test("Windows installer records move intent and idempotently rolls back from catch and finally before commit", () => {
+	const source = installerSource();
+	const rollbackStart = source.indexOf("function Invoke-AtomicTransactionRollback");
+	const rollbackEnd = source.indexOf("function Remove-AtomicTransactionBackups", rollbackStart);
+	assert.ok(rollbackStart >= 0 && rollbackEnd > rollbackStart, "transaction rollback routine was not found");
+	const rollback = source.slice(rollbackStart, rollbackEnd);
+	const shimRollback = rollback.indexOf("ShimInstallIntended");
+	const atomicCurrentRollback = rollback.indexOf("AtomicCurrentInstallIntended", shimRollback);
+	const currentRollback = rollback.indexOf("CurrentInstallIntended", atomicCurrentRollback);
+	const versionRollback = rollback.indexOf("VersionInstallIntended", currentRollback);
+	assert.ok(
+		shimRollback >= 0 &&
+			atomicCurrentRollback > shimRollback &&
+			currentRollback > atomicCurrentRollback &&
+			versionRollback > currentRollback,
+		"rollback is not ordered shim, atomic-current, current, then version",
+	);
+	assert.match(
+		rollback,
+		/Get-AtomicDirectoryEntry\s+\$Transaction\.(?:Shim|AtomicCurrent|Current|Version)BackupPath/u,
+	);
+	assert.doesNotMatch(rollback, /throw\s+\$_/u);
+
+	for (const intent of [
+		"VersionBackupIntended",
+		"VersionInstallIntended",
+		"CurrentBackupIntended",
+		"CurrentInstallIntended",
+		"AtomicCurrentBackupIntended",
+		"AtomicCurrentInstallIntended",
+		"ShimBackupIntended",
+		"ShimInstallIntended",
+	]) {
+		const intentAssignment = source.indexOf(`$transaction.${intent} = $true`);
+		const move = source.indexOf("Move-Item", intentAssignment);
+		assert.ok(intentAssignment >= 0 && move > intentAssignment, `${intent} is not recorded before its move`);
+	}
+
+	const finalSmoke = source.indexOf("Installed atomic.cmd --version failed");
+	const commit = source.indexOf("$transactionCommitted = $true", finalSmoke);
+	const committedCleanup = source.indexOf("Remove-AtomicTransactionBackups", commit);
+	assert.ok(
+		finalSmoke >= 0 && commit > finalSmoke && committedCleanup > commit,
+		"transaction commits before final smoke succeeds",
+	);
+	const catchBlock = source.slice(
+		source.indexOf("    catch {", finalSmoke),
+		source.indexOf("    Write-Output", finalSmoke),
+	);
+	assert.match(catchBlock, /if \(-not \$transactionCommitted\)[\s\S]+Invoke-AtomicTransactionRollback/u);
+	const finalBlock = source.slice(source.indexOf("finally {"));
+	assert.match(
+		finalBlock,
+		/if \(\$null -ne \$transaction -and -not \$transactionCommitted\)[\s\S]+Invoke-AtomicTransactionRollback/u,
+	);
+});
+
+test("Windows installer cleans staged children before only snapshotted empty transaction-created parents", () => {
 	const source = installerSource();
 	const emptyDirectoryRemoval = source.slice(
 		source.indexOf("function Remove-AtomicEmptyDirectory"),
-		source.indexOf("$requestedRef = $null"),
+		source.indexOf("function Add-AtomicMissingDirectoryPaths"),
 	);
 	assert.match(emptyDirectoryRemoval, /\[IO\.Directory\]::Delete\(\$item\.FullName,\s*\$false\)/u);
 	assert.doesNotMatch(emptyDirectoryRemoval, /Remove-Item|-Recurse/u);
 
-	const cleanup = source.slice(source.indexOf("finally {"));
-	const shimStageCleanup = cleanup.indexOf("$shimNextPath");
-	const junctionStageCleanup = cleanup.indexOf("$atomicCurrentNextPath", shimStageCleanup);
-	const versionStageCleanup = cleanup.indexOf("$versionStagePath", junctionStageCleanup);
-	const downloadCleanup = cleanup.indexOf("$tempDir", versionStageCleanup);
-	const binParentCleanup = cleanup.indexOf("Remove-AtomicEmptyDirectory $binDir", downloadCleanup);
-	const versionsParentCleanup = cleanup.indexOf("Remove-AtomicEmptyDirectory $versionsDir", binParentCleanup);
-	const rootParentCleanup = cleanup.indexOf("Remove-AtomicEmptyDirectory $installRoot", versionsParentCleanup);
-	assert.ok(
-		shimStageCleanup >= 0 &&
-			junctionStageCleanup > shimStageCleanup &&
-			versionStageCleanup > junctionStageCleanup &&
-			downloadCleanup > versionStageCleanup &&
-			binParentCleanup > downloadCleanup &&
-			versionsParentCleanup > binParentCleanup &&
-			rootParentCleanup > versionsParentCleanup,
-		"cleanup does not remove staged children and downloads before parent directories",
+	const missingSnapshot = source.slice(
+		source.indexOf("function Add-AtomicMissingDirectoryPaths"),
+		source.indexOf("function Remove-AtomicCreatedEmptyDirectories"),
 	);
-	assert.match(cleanup, /if \(\$binDirCreated\)[\s\S]*if \(\$versionsDirCreated\)[\s\S]*if \(\$installRootCreated\)/u);
-	assert.doesNotMatch(source, /Remove-Item\s+-LiteralPath\s+\$(?:binDir|versionsDir|installRoot)\b/u);
+	assert.match(missingSnapshot, /Get-AtomicDirectoryEntry\s+\$candidate/u);
+	assert.match(missingSnapshot, /\$MissingPaths\.Add\(\$candidate\)/u);
+	assert.match(source, /Add-AtomicMissingDirectoryPaths\s+\$transactionMissingDirectories\s+\$versionsDir/u);
+	assert.match(source, /Add-AtomicMissingDirectoryPaths\s+\$transactionMissingDirectories\s+\$binDir/u);
 
-	const versionsCreation = source.indexOf("New-Item -ItemType Directory -Path $versionsDir -Force");
-	const versionsCreatedFlag = source.indexOf("$versionsDirCreated = -not $versionsDirExisted", versionsCreation);
-	const versionStageCreation = source.indexOf(
-		"New-Item -ItemType Directory -Path $versionStagePath",
-		versionsCreatedFlag,
+	const createdCleanup = source.slice(
+		source.indexOf("function Remove-AtomicCreatedEmptyDirectories"),
+		source.indexOf("function Invoke-AtomicTransactionRollback"),
 	);
-	const binCreation = source.indexOf("New-Item -ItemType Directory -Path $binDir -Force", versionStageCreation);
-	const binCreatedFlag = source.indexOf("$binDirCreated = -not $binDirExisted", binCreation);
-	const junctionCreation = source.indexOf("New-Item -ItemType Junction -Path $atomicCurrentNextPath", binCreatedFlag);
+	assert.match(createdCleanup, /Sort-Object[\s\S]+Descending/u);
+	assert.match(createdCleanup, /Remove-AtomicEmptyDirectory/u);
+	assert.doesNotMatch(createdCleanup, /Remove-Item|-Recurse/u);
+
+	const cleanup = source.slice(source.indexOf("finally {"));
+	const rollback = cleanup.indexOf("Invoke-AtomicTransactionRollback");
+	const shimStageCleanup = cleanup.indexOf("$shimNextPath", rollback);
+	const atomicJunctionStageCleanup = cleanup.indexOf("$atomicCurrentNextPath", shimStageCleanup);
+	const currentJunctionStageCleanup = cleanup.indexOf("$currentNextPath", atomicJunctionStageCleanup);
+	const versionStageCleanup = cleanup.indexOf("$versionStagePath", currentJunctionStageCleanup);
+	const downloadCleanup = cleanup.indexOf("$tempDir", versionStageCleanup);
+	const parentCleanup = cleanup.indexOf(
+		"Remove-AtomicCreatedEmptyDirectories $transactionMissingDirectories",
+		downloadCleanup,
+	);
 	assert.ok(
-		versionsCreation >= 0 &&
-			versionsCreatedFlag > versionsCreation &&
-			versionStageCreation > versionsCreatedFlag &&
-			binCreation > versionStageCreation &&
-			binCreatedFlag > binCreation &&
-			junctionCreation > binCreatedFlag,
-		"transaction-created parent flags are recorded too late for failure cleanup",
+		rollback >= 0 &&
+			shimStageCleanup > rollback &&
+			atomicJunctionStageCleanup > shimStageCleanup &&
+			currentJunctionStageCleanup > atomicJunctionStageCleanup &&
+			versionStageCleanup > currentJunctionStageCleanup &&
+			parentCleanup > downloadCleanup,
+		"cleanup does not roll back and remove staged children/downloads before empty parent directories",
 	);
+	assert.doesNotMatch(source, /Remove-Item\s+-LiteralPath\s+\$(?:binDir|versionsDir|installRoot)\b/u);
 });
 
 function findWindowsPowerShell(): string | undefined {
@@ -190,7 +246,8 @@ function findWindowsPowerShell(): string | undefined {
 const powershellExecutable = findWindowsPowerShell();
 const powershellTest = powershellExecutable === undefined ? test.skip : test;
 const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
-const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 130_000;
+const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 240_000;
+const CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS = 360_000;
 
 const fixtureHarness = String.raw`
 param(
@@ -343,6 +400,11 @@ function New-FixtureRelease {
 
 New-FixtureRelease "1.0.0"
 New-FixtureRelease "2.0.0"
+if ($Scenario -eq "escaped-refs") {
+    New-FixtureRelease "release/1.0"
+    New-FixtureRelease "hash#tag"
+    New-FixtureRelease "percent%tag"
+}
 
 $global:AtomicFixtureAssetRoot = $assetRoot
 $global:AtomicFixtureRequests = New-Object System.Collections.ArrayList
@@ -350,6 +412,7 @@ $global:AtomicFixtureBadChecksumTag = $null
 $global:AtomicFixtureLastAssetName = $null
 $global:AtomicFixtureFailApi = $false
 $global:AtomicFixtureRedirectFails = $false
+$global:AtomicFixtureRedirectTag = "2.0.0"
 
 function global:Invoke-WebRequest {
     [CmdletBinding()]
@@ -375,7 +438,7 @@ function global:Invoke-WebRequest {
             }
         }
         return [pscustomobject]@{
-            Headers = @{ Location = "/bastani-inc/atomic/releases/tag/2.0.0" }
+            Headers = @{ Location = "/bastani-inc/atomic/releases/tag/" + $global:AtomicFixtureRedirectTag }
             BaseResponse = [pscustomobject]@{ ResponseUri = [Uri]"https://github.com/bastani-inc/atomic/releases/latest" }
         }
     }
@@ -597,6 +660,66 @@ try {
         Assert-Fixture (@(Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -like ".current-*" }).Count -eq 0) "current transaction artifacts were not cleaned"
         Assert-Fixture (@(Get-ChildItem -LiteralPath $binDir -Force | Where-Object { $_.Name -like ".atomic-*" }).Count -eq 0) "shim transaction artifacts were not cleaned"
     }
+    elseif ($Scenario -eq "escaped-refs") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $versionsDir = Join-Path $installRoot "versions"
+        $caseSpecs = @(
+            [pscustomobject]@{ Tag = "release/1.0"; EncodedTag = "release%2F1.0"; DoubleEncodedTag = "release%252F1.0" },
+            [pscustomobject]@{ Tag = "hash#tag"; EncodedTag = "hash%23tag"; DoubleEncodedTag = "hash%2523tag" },
+            [pscustomobject]@{ Tag = "percent%tag"; EncodedTag = "percent%25tag"; DoubleEncodedTag = "percent%2525tag" }
+        )
+
+        foreach ($case in $caseSpecs) {
+            $tag = $case.Tag
+            $encodedTag = $case.EncodedTag
+            $requestStart = $global:AtomicFixtureRequests.Count
+            $installOutput = & $InstallerPath -Ref $tag | Out-String
+            $caseRequests = @($global:AtomicFixtureRequests | Select-Object -Skip $requestStart)
+            $expectedApiUri = "https://api.github.com/repos/bastani-inc/atomic/releases/tags/" + $encodedTag
+            $expectedArchiveUri = "https://github.com/bastani-inc/atomic/releases/download/" + $encodedTag + "/atomic-windows-x64.zip"
+            $expectedChecksumsUri = "https://github.com/bastani-inc/atomic/releases/download/" + $encodedTag + "/SHA256SUMS"
+
+            Assert-Fixture ($caseRequests.Count -eq 3) "$tag install made requests beyond the exact API and download URLs"
+            Assert-Fixture (@($caseRequests | Where-Object { $_.Uri -ceq $expectedApiUri }).Count -eq 1) "$tag API URL was not escaped exactly once"
+            Assert-Fixture (@($caseRequests | Where-Object { $_.Uri -ceq $expectedArchiveUri }).Count -eq 1) "$tag archive URL was not escaped exactly once"
+            Assert-Fixture (@($caseRequests | Where-Object { $_.Uri -ceq $expectedChecksumsUri }).Count -eq 1) "$tag checksum URL was not escaped exactly once"
+            Assert-Fixture (@($caseRequests | Where-Object { $_.Uri.Contains($case.DoubleEncodedTag) }).Count -eq 0) "$tag was escaped more than once"
+            Assert-Fixture ($installOutput.Contains("Atomic $tag installed successfully.")) "$tag success output did not retain the raw canonical tag"
+            Assert-Fixture (-not $installOutput.Contains("Atomic $encodedTag installed successfully.")) "$tag success output used the encoded directory identity"
+
+            $versionPath = Join-Path $versionsDir $encodedTag
+            $versionEntry = @(Get-ChildItem -LiteralPath $versionsDir -Force | Where-Object { $_.Name -ceq $encodedTag })
+            Assert-Fixture ($encodedTag -notmatch '[\\/]') "$tag encoded version identity contains a directory separator"
+            Assert-Fixture ($versionEntry.Count -eq 1 -and $versionEntry[0].FullName -ceq $versionPath) "$tag encoded value was not the direct version-directory identity"
+            Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionPath "version.txt") -Raw) -ceq $tag) "$tag version directory did not retain the raw canonical tag"
+            Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionsDir $tag))) "$tag raw canonical value was used as a version path"
+        }
+
+        $env:ATOMIC_VERSION = $null
+        $redirectTag = "release/1.0"
+        $encodedRedirectTag = "release%2F1.0"
+        $global:AtomicFixtureRedirectTag = $encodedRedirectTag
+        $global:AtomicFixtureFailApi = $true
+        $redirectRequestStart = $global:AtomicFixtureRequests.Count
+        $redirectOutput = & $InstallerPath | Out-String
+        $redirectRequests = @($global:AtomicFixtureRequests | Select-Object -Skip $redirectRequestStart)
+        $expectedRedirectArchiveUri = "https://github.com/bastani-inc/atomic/releases/download/release%2F1.0/atomic-windows-x64.zip"
+        $expectedRedirectChecksumsUri = "https://github.com/bastani-inc/atomic/releases/download/release%2F1.0/SHA256SUMS"
+
+        Assert-Fixture ($redirectRequests.Count -eq 3) "encoded latest redirect made requests beyond the redirect and exact download URLs"
+        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -ceq 'https://github.com/bastani-inc/atomic/releases/latest' }).Count -eq 1) "encoded latest redirect was not requested exactly once"
+        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "encoded latest redirect queried the GitHub API"
+        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -ceq $expectedRedirectArchiveUri }).Count -eq 1) "encoded latest redirect archive URL was not normalized to one escape"
+        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -ceq $expectedRedirectChecksumsUri }).Count -eq 1) "encoded latest redirect checksum URL was not normalized to one escape"
+        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri.Contains('release%252F1.0') }).Count -eq 0) "encoded latest redirect produced release%252F1.0"
+        Assert-Fixture ($redirectOutput.Contains("Atomic $redirectTag installed successfully.")) "encoded latest redirect success output did not retain the raw canonical tag"
+        Assert-Fixture (-not $redirectOutput.Contains("Atomic $encodedRedirectTag installed successfully.")) "encoded latest redirect success output retained the encoded tag"
+        $redirectVersionPath = Join-Path $versionsDir $encodedRedirectTag
+        $redirectVersionEntry = @(Get-ChildItem -LiteralPath $versionsDir -Force | Where-Object { $_.Name -ceq $encodedRedirectTag })
+        Assert-Fixture ($redirectVersionEntry.Count -eq 1 -and $redirectVersionEntry[0].FullName -ceq $redirectVersionPath) "encoded latest redirect did not use the once-encoded version-directory identity"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $redirectVersionPath "version.txt") -Raw) -ceq $redirectTag) "encoded latest redirect version directory lost the raw canonical tag"
+    }
     elseif ($Scenario -eq "checksum") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "AMD64"
@@ -714,63 +837,197 @@ try {
         Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "1.0.0") "shim failed through cmd.exe after temporary dangling junction cleanup"
         Assert-NoTransactionResidue $installRoot $binDir
     }
+    elseif ($Scenario -eq "ctrl-c") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $ctrlChildPath = Join-Path $workspace "ctrl-c-child.ps1"
+        $ctrlHelperSourcePath = Join-Path $workspace "ctrl-c-helper.cs"
+        $ctrlHelperPath = Join-Path $workspace "ctrl-c-helper.exe"
+        Add-Type -Path $ctrlHelperSourcePath -OutputAssembly $ctrlHelperPath -OutputType ConsoleApplication
+        $powershellPath = Join-Path $PSHOME "powershell.exe"
 
+        $caseSpecs = @()
+        foreach ($move in @("version-install", "current-install", "atomic-current-install", "shim-install")) {
+            $caseSpecs += [pscustomobject]@{ State = "fresh"; Move = $move }
+        }
+        foreach ($move in @("version-backup", "version-install", "current-backup", "current-install", "atomic-current-backup", "atomic-current-install", "shim-backup", "shim-install")) {
+            $caseSpecs += [pscustomobject]@{ State = "existing"; Move = $move }
+        }
+
+        foreach ($case in $caseSpecs) {
+            $caseName = $case.State + "-" + $case.Move
+            $caseRoot = Join-Path $workspace ("ctrl-c-" + $caseName)
+            $installContainer = Join-Path $caseRoot "created-install-parent"
+            $binContainer = Join-Path $caseRoot "created-bin-parent"
+            $installRoot = Join-Path $installContainer "install-root"
+            $binDir = Join-Path $binContainer "bin-root"
+            $caseTemp = Join-Path $caseRoot "temp"
+            New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+            New-Item -ItemType Directory -Path $caseTemp -Force | Out-Null
+            $parentMarker = Join-Path $caseRoot "pre-existing-parent.txt"
+            Set-Content -LiteralPath $parentMarker -Value ("keep-" + $caseName) -Encoding ASCII -NoNewline
+            $env:ATOMIC_INSTALL_DIR = $installRoot
+            $env:ATOMIC_BIN_DIR = $binDir
+            $env:TEMP = $caseTemp
+            $env:TMP = $caseTemp
+            $beforeCaseUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            $beforeCaseProcessPath = $env:Path
+
+            $oldPayloadBytes = $null
+            $oldAtomicBytes = $null
+            $oldShimBytes = $null
+            if ($case.State -eq "existing") {
+                & $InstallerPath -Ref "2.0.0" | Out-Null
+                $versionPath = Join-Path $installRoot "versions\2.0.0"
+                $payloadMarker = Join-Path $versionPath "preserve.bin"
+                [IO.File]::WriteAllBytes($payloadMarker, [byte[]]@(0, 1, 2, 127, 128, 255))
+                $oldPayloadBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($payloadMarker))
+                $oldAtomicBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $versionPath "atomic.exe")))
+                $shimPath = Join-Path $binDir "atomic.cmd"
+                $oldShimContent = '@rem ctrl-c-' + $case.Move + [Environment]::NewLine + '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
+                Set-Content -LiteralPath $shimPath -Value $oldShimContent -Encoding ASCII -NoNewline
+                $oldShimBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($shimPath))
+            }
+
+            $expectedUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            $expectedProcessPath = $env:Path
+            $readyPath = Join-Path $caseRoot "move-ready.txt"
+            $moveLogPath = Join-Path $caseRoot "moves.log"
+            $observedProcessPath = Join-Path $caseRoot "observed-process-path.txt"
+            $childFinallyPath = Join-Path $caseRoot "child-finally.txt"
+            $ctrlArguments = @(
+                $powershellPath, $readyPath, $ctrlChildPath,
+                "-InstallerPath", $InstallerPath,
+                "-AssetRoot", $assetRoot,
+                "-InstallRoot", $installRoot,
+                "-BinDir", $binDir,
+                "-TempRoot", $caseTemp,
+                "-PauseMove", $case.Move,
+                "-ReadyPath", $readyPath,
+                "-MoveLogPath", $moveLogPath,
+                "-ObservedProcessPath", $observedProcessPath,
+                "-FinallyPath", $childFinallyPath
+            )
+            $helperOutput = & $ctrlHelperPath $ctrlArguments 2>&1 | Out-String
+            $helperExitCode = $LASTEXITCODE
+            Assert-Fixture ($helperExitCode -eq 0) "$caseName console Ctrl+C helper failed: $helperOutput"
+            Assert-Fixture ((Get-Content -LiteralPath $readyPath -Raw) -eq ("READY:" + $case.Move)) "$caseName did not pause after the requested move"
+            Assert-Fixture ((Get-Content -LiteralPath $moveLogPath -Raw) -match ([regex]::Escape("MOVED:" + $case.Move))) "$caseName did not record the state-changing move"
+            Assert-Fixture ((Get-Content -LiteralPath $childFinallyPath -Raw) -eq "CHILD_FINALLY") "$caseName did not execute the child finally block"
+            Assert-Fixture ((Get-Content -LiteralPath $observedProcessPath -Raw -Encoding Unicode) -ceq $expectedProcessPath) "$caseName did not restore the child process PATH"
+            Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -ceq $expectedUserPath) "$caseName changed the User PATH"
+            Assert-NoTransactionResidue $installRoot $binDir
+            Assert-Fixture ((Get-Content -LiteralPath $parentMarker -Raw) -eq ("keep-" + $caseName)) "$caseName removed the pre-existing parent marker"
+            Assert-Fixture (@(Get-ChildItem -LiteralPath $caseTemp -Filter "atomic-install-*" -Force).Count -eq 0) "$caseName left a temporary download directory"
+
+            if ($case.State -eq "fresh") {
+                Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "$caseName left a fresh install root"
+                Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "$caseName left a fresh bin directory"
+                Assert-Fixture (-not (Test-Path -LiteralPath $installContainer)) "$caseName left a transaction-created install parent"
+                Assert-Fixture (-not (Test-Path -LiteralPath $binContainer)) "$caseName left a transaction-created bin parent"
+            }
+            else {
+                $versionPath = Join-Path $installRoot "versions\2.0.0"
+                $currentPath = Join-Path $installRoot "current"
+                $atomicCurrentPath = Join-Path $binDir "atomic-current"
+                $shimPath = Join-Path $binDir "atomic.cmd"
+                Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $versionPath "preserve.bin"))) -ceq $oldPayloadBytes) "$caseName changed old version bytes"
+                Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $currentPath "preserve.bin"))) -ceq $oldPayloadBytes) "$caseName changed old current bytes"
+                Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $atomicCurrentPath "preserve.bin"))) -ceq $oldPayloadBytes) "$caseName changed old atomic-current bytes"
+                Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $versionPath "atomic.exe"))) -ceq $oldAtomicBytes) "$caseName changed old executable bytes"
+                Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes($shimPath)) -ceq $oldShimBytes) "$caseName changed old shim bytes"
+                Assert-Fixture (((Get-Item -LiteralPath $currentPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "$caseName did not restore the current junction"
+                Assert-Fixture (((Get-Item -LiteralPath $atomicCurrentPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "$caseName did not restore the atomic-current junction"
+                $rollbackProbe = Invoke-FixtureShim $shimPath "--version"
+                Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "2.0.0") "$caseName did not leave the old shim pair executable"
+            }
+
+            [Environment]::SetEnvironmentVariable("Path", $beforeCaseUserPath, "User")
+            $env:Path = $beforeCaseProcessPath
+            Remove-Item -LiteralPath $caseRoot -Recurse -Force
+        }
+    }
     elseif ($Scenario -eq "transaction-failures") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "AMD64"
         $failurePoints = @("payload-copy", "current-create", "current-move", "atomic-current-create", "atomic-current-move", "shim-stage")
         foreach ($state in @("fresh", "existing")) {
-            foreach ($failurePoint in $failurePoints) {
-                $installRoot = Join-Path $workspace ("transaction-" + $state + "-" + $failurePoint + "-install")
-                $binDir = Join-Path $workspace ("transaction-" + $state + "-" + $failurePoint + "-bin")
-                $env:ATOMIC_INSTALL_DIR = $installRoot
-                $env:ATOMIC_BIN_DIR = $binDir
-                $global:AtomicFixturePayloadCopyCount = 0
-                $global:AtomicFixtureFailurePoint = $null
-                $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+            $topologies = if ($state -eq "fresh") { @("separate", "bin-parent", "install-parent") } else { @("separate") }
+            foreach ($topology in $topologies) {
+                foreach ($failurePoint in $failurePoints) {
+                    $caseRoot = Join-Path $workspace ("transaction-" + $state + "-" + $topology + "-" + $failurePoint)
+                    New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+                    $parentMarker = Join-Path $caseRoot "pre-existing-parent.txt"
+                    Set-Content -LiteralPath $parentMarker -Value "keep-parent" -Encoding ASCII -NoNewline
+                    $preExistingJunctionTarget = Join-Path $caseRoot "pre-existing-junction-target"
+                    $preExistingJunction = Join-Path $caseRoot "pre-existing-dangling-junction"
+                    New-Item -ItemType Directory -Path $preExistingJunctionTarget -Force | Out-Null
+                    New-Item -ItemType Junction -Path $preExistingJunction -Target $preExistingJunctionTarget | Out-Null
+                    Remove-Item -LiteralPath $preExistingJunctionTarget -Recurse -Force
+                    if ($topology -eq "bin-parent") {
+                        $binDir = Join-Path $caseRoot "bin-parent"
+                        $installRoot = Join-Path $binDir "install-root"
+                    }
+                    elseif ($topology -eq "install-parent") {
+                        $installRoot = Join-Path $caseRoot "install-parent"
+                        $binDir = Join-Path $installRoot "bin-root"
+                    }
+                    else {
+                        $installRoot = Join-Path $caseRoot "install-root"
+                        $binDir = Join-Path $caseRoot "bin-root"
+                    }
+                    $env:ATOMIC_INSTALL_DIR = $installRoot
+                    $env:ATOMIC_BIN_DIR = $binDir
+                    $global:AtomicFixturePayloadCopyCount = 0
+                    $global:AtomicFixtureFailurePoint = $null
+                    $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
 
-                $oldShimBytes = $null
-                if ($state -eq "existing") {
-                    & $InstallerPath -Ref "1.0.0" | Out-Null
-                    Set-Content -LiteralPath (Join-Path $installRoot "preserve-root.txt") -Value "old-root" -Encoding ASCII -NoNewline
-                    Set-Content -LiteralPath (Join-Path $binDir "preserve-bin.txt") -Value "old-bin" -Encoding ASCII -NoNewline
-                    Set-Content -LiteralPath (Join-Path $installRoot "versions\1.0.0\preserve-version.txt") -Value "old-version" -Encoding ASCII -NoNewline
-                    $oldShim = Join-Path $binDir "atomic.cmd"
-                    $oldShimContent = '@rem old-pair-' + $failurePoint + [Environment]::NewLine + '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
-                    Set-Content -LiteralPath $oldShim -Value $oldShimContent -Encoding ASCII -NoNewline
-                    $oldShimBytes = [IO.File]::ReadAllBytes($oldShim)
-                    $oldProbe = Invoke-FixtureShim $oldShim "--version"
-                    Assert-Fixture ($oldProbe.ExitCode -eq 0 -and $oldProbe.Output -eq "1.0.0") "old pair was not executable before $failurePoint failure"
+                    $oldShimBytes = $null
+                    if ($state -eq "existing") {
+                        & $InstallerPath -Ref "1.0.0" | Out-Null
+                        Set-Content -LiteralPath (Join-Path $installRoot "preserve-root.txt") -Value "old-root" -Encoding ASCII -NoNewline
+                        Set-Content -LiteralPath (Join-Path $binDir "preserve-bin.txt") -Value "old-bin" -Encoding ASCII -NoNewline
+                        Set-Content -LiteralPath (Join-Path $installRoot "versions\1.0.0\preserve-version.txt") -Value "old-version" -Encoding ASCII -NoNewline
+                        $oldShim = Join-Path $binDir "atomic.cmd"
+                        $oldShimContent = '@rem old-pair-' + $failurePoint + [Environment]::NewLine + '@echo off' + [Environment]::NewLine + '"%~dp0atomic-current\atomic.exe" %*' + [Environment]::NewLine + 'exit /b %ERRORLEVEL%' + [Environment]::NewLine
+                        Set-Content -LiteralPath $oldShim -Value $oldShimContent -Encoding ASCII -NoNewline
+                        $oldShimBytes = [IO.File]::ReadAllBytes($oldShim)
+                        $oldProbe = Invoke-FixtureShim $oldShim "--version"
+                        Assert-Fixture ($oldProbe.ExitCode -eq 0 -and $oldProbe.Output -eq "1.0.0") "old pair was not executable before $failurePoint failure"
+                    }
+
+                    $global:AtomicFixtureFailurePoint = $failurePoint
+                    $failure = $null
+                    try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+                    catch { $failure = $_ }
+                    $global:AtomicFixtureFailurePoint = $null
+                    Assert-Fixture ($null -ne $failure -and $failure.Exception.Message -match ("Injected transaction failure: " + $failurePoint)) "$state $topology $failurePoint failure was not injected"
+
+                    Assert-Fixture ((Get-Content -LiteralPath $parentMarker -Raw) -eq "keep-parent") "$state $topology $failurePoint removed a pre-existing parent marker"
+                    $preservedJunction = @(Get-ChildItem -LiteralPath $caseRoot -Force | Where-Object { $_.Name -eq "pre-existing-dangling-junction" })
+                    Assert-Fixture ($preservedJunction.Count -eq 1 -and ($preservedJunction[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "$state $topology $failurePoint removed a pre-existing dangling junction"
+                    if ($state -eq "fresh") {
+                        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "fresh $topology $failurePoint failure left the install root"
+                        Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "fresh $topology $failurePoint failure left the bin directory"
+                        Assert-Fixture (@(Get-ChildItem -LiteralPath $caseRoot -Force).Count -eq 2) "fresh $topology $failurePoint left transaction-created parent entries"
+                    }
+                    else {
+                        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "preserve-root.txt") -Raw) -eq "old-root") "existing $failurePoint failure recursed into the install root"
+                        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $binDir "preserve-bin.txt") -Raw) -eq "old-bin") "existing $failurePoint failure recursed into the bin directory"
+                        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "versions\1.0.0\preserve-version.txt") -Raw) -eq "old-version") "existing $failurePoint failure did not preserve the old version"
+                        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "current\version.txt") -Raw) -eq "1.0.0") "existing $failurePoint failure did not preserve current"
+                        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $binDir "atomic-current\version.txt") -Raw) -eq "1.0.0") "existing $failurePoint failure did not preserve atomic-current"
+                        Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $binDir "atomic.cmd"))) -ceq [Convert]::ToBase64String($oldShimBytes)) "existing $failurePoint failure did not preserve the old shim"
+                        Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions\2.0.0"))) "existing $failurePoint failure retained the failed version"
+                        $rollbackProbe = Invoke-FixtureShim (Join-Path $binDir "atomic.cmd") "--version"
+                        Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "1.0.0") "existing $failurePoint failure did not leave the old pair executable"
+                    }
+
+                    Assert-NoTransactionResidue $installRoot $binDir
+                    Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "$state $topology $failurePoint failure left a temporary download directory"
+                    [IO.Directory]::Delete($preExistingJunction)
+                    Remove-Item -LiteralPath $caseRoot -Recurse -Force -ErrorAction SilentlyContinue
                 }
-
-                $global:AtomicFixtureFailurePoint = $failurePoint
-                $failure = $null
-                try { & $InstallerPath -Ref "2.0.0" | Out-Null }
-                catch { $failure = $_ }
-                $global:AtomicFixtureFailurePoint = $null
-                Assert-Fixture ($null -ne $failure -and $failure.Exception.Message -match ("Injected transaction failure: " + $failurePoint)) "$state $failurePoint failure was not injected"
-
-                if ($state -eq "fresh") {
-                    Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "fresh $failurePoint failure left the install root"
-                    Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions"))) "fresh $failurePoint failure left versions"
-                    Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "fresh $failurePoint failure left the bin directory"
-                }
-                else {
-                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "preserve-root.txt") -Raw) -eq "old-root") "existing $failurePoint failure recursed into the install root"
-                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $binDir "preserve-bin.txt") -Raw) -eq "old-bin") "existing $failurePoint failure recursed into the bin directory"
-                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "versions\1.0.0\preserve-version.txt") -Raw) -eq "old-version") "existing $failurePoint failure did not preserve the old version"
-                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "current\version.txt") -Raw) -eq "1.0.0") "existing $failurePoint failure did not preserve current"
-                    Assert-Fixture ((Get-Content -LiteralPath (Join-Path $binDir "atomic-current\version.txt") -Raw) -eq "1.0.0") "existing $failurePoint failure did not preserve atomic-current"
-                    Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $binDir "atomic.cmd"))) -ceq [Convert]::ToBase64String($oldShimBytes)) "existing $failurePoint failure did not preserve the old shim"
-                    Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions\2.0.0"))) "existing $failurePoint failure retained the failed version"
-                    $rollbackProbe = Invoke-FixtureShim (Join-Path $binDir "atomic.cmd") "--version"
-                    Assert-Fixture ($rollbackProbe.ExitCode -eq 0 -and $rollbackProbe.Output -eq "1.0.0") "existing $failurePoint failure did not leave the old pair executable"
-                }
-
-                Assert-NoTransactionResidue $installRoot $binDir
-                Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "$state $failurePoint failure left a temporary download directory"
-                Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
-                Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
     }
@@ -788,6 +1045,270 @@ finally {
     }
     Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+
+const ctrlCChildHarness = String.raw`
+param(
+    [Parameter(Mandatory=$true)][string]$InstallerPath,
+    [Parameter(Mandatory=$true)][string]$AssetRoot,
+    [Parameter(Mandatory=$true)][string]$InstallRoot,
+    [Parameter(Mandatory=$true)][string]$BinDir,
+    [Parameter(Mandatory=$true)][string]$TempRoot,
+    [Parameter(Mandatory=$true)][string]$PauseMove,
+    [Parameter(Mandatory=$true)][string]$ReadyPath,
+    [Parameter(Mandatory=$true)][string]$MoveLogPath,
+    [Parameter(Mandatory=$true)][string]$ObservedProcessPath,
+    [Parameter(Mandatory=$true)][string]$FinallyPath
+)
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+Set-StrictMode -Version Latest
+$env:ATOMIC_INSTALL_DIR = $InstallRoot
+$env:ATOMIC_BIN_DIR = $BinDir
+$env:TEMP = $TempRoot
+$env:TMP = $TempRoot
+$env:PROCESSOR_ARCHITEW6432 = "AMD64"
+$env:PROCESSOR_ARCHITECTURE = "AMD64"
+
+function global:Invoke-WebRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [string]$OutFile,
+        [hashtable]$Headers,
+        [switch]$UseBasicParsing,
+        [int]$MaximumRedirection
+    )
+
+    if ($Uri -match '/repos/bastani-inc/atomic/releases/tags/([^/]+)$') {
+        return [pscustomobject]@{ Content = '{"tag_name":"2.0.0"}'; Headers = @{} }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($OutFile) -and $Uri -match '/releases/download/([^/]+)/([^/]+)$') {
+        $tag = [Uri]::UnescapeDataString($Matches[1])
+        Copy-Item -LiteralPath (Join-Path (Join-Path $AssetRoot $tag) $Matches[2]) -Destination $OutFile
+        return [pscustomobject]@{ StatusCode = 200; Headers = @{} }
+    }
+    throw "Unexpected Ctrl+C fixture request: $Uri"
+}
+
+$global:AtomicCtrlCPauseDelivered = $false
+function global:Move-Item {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$LiteralPath,
+        [Parameter(Mandatory=$true)][string]$Destination
+    )
+
+    $sourceLeaf = [IO.Path]::GetFileName($LiteralPath)
+    $destinationLeaf = [IO.Path]::GetFileName($Destination)
+    $moveName = $null
+    if ($sourceLeaf -eq "2.0.0" -and $destinationLeaf -match '^\.backup-[0-9a-f]{32}$') { $moveName = "version-backup" }
+    elseif ($sourceLeaf -match '^\.stage-[0-9a-f]{32}$' -and $destinationLeaf -eq "2.0.0") { $moveName = "version-install" }
+    elseif ($sourceLeaf -eq "current" -and $destinationLeaf -match '^\.current-backup-[0-9a-f]{32}$') { $moveName = "current-backup" }
+    elseif ($sourceLeaf -match '^\.current-[0-9a-f]{32}$' -and $destinationLeaf -eq "current") { $moveName = "current-install" }
+    elseif ($sourceLeaf -eq "atomic-current" -and $destinationLeaf -match '^\.atomic-current-backup-[0-9a-f]{32}$') { $moveName = "atomic-current-backup" }
+    elseif ($sourceLeaf -match '^\.atomic-current-[0-9a-f]{32}$' -and $destinationLeaf -eq "atomic-current") { $moveName = "atomic-current-install" }
+    elseif ($sourceLeaf -eq "atomic.cmd" -and $destinationLeaf -match '^\.atomic-backup-[0-9a-f]{32}\.cmd$') { $moveName = "shim-backup" }
+    elseif ($sourceLeaf -match '^\.atomic-[0-9a-f]{32}\.cmd$' -and $destinationLeaf -eq "atomic.cmd") { $moveName = "shim-install" }
+
+    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+    if ($null -ne $moveName) {
+        [IO.File]::AppendAllText($MoveLogPath, "MOVED:$moveName" + [Environment]::NewLine)
+        if (-not $global:AtomicCtrlCPauseDelivered -and $moveName -eq $PauseMove) {
+            $global:AtomicCtrlCPauseDelivered = $true
+            [IO.File]::WriteAllText($ReadyPath, "READY:$moveName")
+            while ($true) { Start-Sleep -Milliseconds 200 }
+        }
+    }
+}
+
+try {
+    & $InstallerPath -Ref "2.0.0" | Out-Null
+    throw "Installer unexpectedly completed before Ctrl+C"
+}
+finally {
+    [IO.File]::WriteAllText($ObservedProcessPath, [string]$env:Path, [Text.Encoding]::Unicode)
+    [IO.File]::WriteAllText($FinallyPath, "CHILD_FINALLY", [Text.Encoding]::ASCII)
+}
+`;
+
+// CREATE_NEW_CONSOLE isolates the child. The helper then attaches to that console, ignores
+// Ctrl+C in only its own process, and broadcasts a kernel CTRL_C_EVENT to the attached
+// console with GenerateConsoleCtrlEvent(..., 0). This is a real console event, not a
+// PowerShell exception or a test-only production hook.
+const ctrlCHelperSource = String.raw`
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+
+public static class CtrlCConsoleDriver
+{
+    private const uint CREATE_NEW_CONSOLE = 0x00000010;
+    private const uint CTRL_C_EVENT = 0;
+    private const uint WAIT_OBJECT_0 = 0;
+    private const uint WAIT_TIMEOUT = 258;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public uint dwX;
+        public uint dwY;
+        public uint dwXSize;
+        public uint dwYSize;
+        public uint dwXCountChars;
+        public uint dwYCountChars;
+        public uint dwFillAttribute;
+        public uint dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public uint dwProcessId;
+        public uint dwThreadId;
+    }
+
+    private delegate bool ConsoleCtrlDelegate(uint ctrlType);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(
+        string applicationName, StringBuilder commandLine, IntPtr processAttributes,
+        IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FreeConsole();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate handler, bool add);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private static string Quote(string value)
+    {
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
+    }
+
+    public static int Main(string[] args)
+    {
+        if (args.Length < 3)
+        {
+            Console.Error.WriteLine("usage: ctrl-helper <powershell> <ready-file> <child-script> [child args]");
+            return 64;
+        }
+
+        StringBuilder command = new StringBuilder();
+        command.Append(Quote(args[0]));
+        command.Append(" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ");
+        command.Append(Quote(args[2]));
+        for (int i = 3; i < args.Length; i++)
+        {
+            command.Append(" ");
+            command.Append(Quote(args[i]));
+        }
+
+        // Do not let an inherited ignore-CTRL_C attribute flow into the child.
+        SetConsoleCtrlHandler(null, false);
+        STARTUPINFO startup = new STARTUPINFO();
+        startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+        PROCESS_INFORMATION process;
+        if (!CreateProcess(null, command, IntPtr.Zero, IntPtr.Zero, false, CREATE_NEW_CONSOLE,
+            IntPtr.Zero, null, ref startup, out process))
+        {
+            Console.Error.WriteLine(new Win32Exception(Marshal.GetLastWin32Error()).Message);
+            return 65;
+        }
+
+        try
+        {
+            DateTime markerDeadline = DateTime.UtcNow.AddSeconds(45);
+            while (!File.Exists(args[1]))
+            {
+                if (WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0)
+                {
+                    Console.Error.WriteLine("child exited before the move marker");
+                    return 66;
+                }
+                if (DateTime.UtcNow >= markerDeadline)
+                {
+                    TerminateProcess(process.hProcess, 67);
+                    Console.Error.WriteLine("timed out waiting for the move marker");
+                    return 67;
+                }
+                Thread.Sleep(25);
+            }
+
+            Thread.Sleep(100);
+            FreeConsole();
+            if (!AttachConsole(process.dwProcessId))
+            {
+                TerminateProcess(process.hProcess, 68);
+                Console.Error.WriteLine("AttachConsole failed: " + new Win32Exception(Marshal.GetLastWin32Error()).Message);
+                return 68;
+            }
+            if (!SetConsoleCtrlHandler(null, true) || !GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0))
+            {
+                int error = Marshal.GetLastWin32Error();
+                FreeConsole();
+                TerminateProcess(process.hProcess, 69);
+                Console.Error.WriteLine("GenerateConsoleCtrlEvent failed: " + new Win32Exception(error).Message);
+                return 69;
+            }
+            Thread.Sleep(100);
+            FreeConsole();
+
+            uint wait = WaitForSingleObject(process.hProcess, 45000);
+            if (wait == WAIT_TIMEOUT)
+            {
+                TerminateProcess(process.hProcess, 70);
+                Console.Error.WriteLine("child did not exit after Ctrl+C");
+                return 70;
+            }
+            uint childExitCode;
+            GetExitCodeProcess(process.hProcess, out childExitCode);
+            Console.WriteLine("CTRL_C_CHILD_EXIT:" + childExitCode);
+            return 0;
+        }
+        finally
+        {
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+        }
+    }
 }
 `;
 
@@ -814,7 +1335,7 @@ test("Windows PowerShell 5.1 fixtures enforce shim bytes, cmd execution, rollbac
 	assert.match(fixtureHarness, /FailurePoint\s+-eq\s+"atomic-current-move"[\s\S]+\\\.atomic-current-/u);
 	assert.doesNotMatch(fixtureHarness, /"junction-(?:create|move)"/u);
 	assert.match(fixtureHarness, /foreach \(\$state in @\("fresh", "existing"\)\)/u);
-	assert.match(fixtureHarness, /fresh \$failurePoint failure left the install root/u);
+	assert.match(fixtureHarness, /fresh \$topology \$failurePoint failure left the install root/u);
 	assert.match(fixtureHarness, /existing \$failurePoint failure recursed into the bin directory/u);
 	assert.match(fixtureHarness, /existing \$failurePoint failure did not preserve the old version/u);
 	assert.match(fixtureHarness, /existing \$failurePoint failure did not leave the old pair executable/u);
@@ -823,16 +1344,74 @@ test("Windows PowerShell 5.1 fixtures enforce shim bytes, cmd execution, rollbac
 		fixtureHarness,
 		/AtomicFixtureFailApi\s*=\s*\$true[\s\S]+successful stable redirect queried the GitHub API/u,
 	);
+	assert.match(fixtureHarness, /@\("separate", "bin-parent", "install-parent"\)/u);
+	assert.match(fixtureHarness, /pre-existing-dangling-junction/u);
+});
+
+test("Windows PowerShell 5.1 escaped-ref fixture covers one-pass URL and directory encoding", () => {
+	for (const [rawTag, encodedTag] of [
+		["release/1.0", "release%2F1.0"],
+		["hash#tag", "hash%23tag"],
+		["percent%tag", "percent%25tag"],
+	]) {
+		assert.ok(fixtureHarness.includes(`Tag = "${rawTag}"; EncodedTag = "${encodedTag}"`));
+	}
+	assert.match(fixtureHarness, /Atomic \$tag installed successfully\./u);
+	assert.match(fixtureHarness, /Atomic \$redirectTag installed successfully\./u);
+	assert.match(fixtureHarness, /release%2F1\.0/u);
+	assert.match(fixtureHarness, /release%252F1\.0/u);
+	assert.match(fixtureHarness, /encoded latest redirect queried the GitHub API/u);
+});
+
+test("Windows PowerShell 5.1 Ctrl+C fixture uses a real isolated console event after actual moves", () => {
+	assert.match(ctrlCHelperSource, /CREATE_NEW_CONSOLE/u);
+	assert.match(ctrlCHelperSource, /AttachConsole\(process\.dwProcessId\)/u);
+	assert.match(ctrlCHelperSource, /SetConsoleCtrlHandler\(null, true\)/u);
+	assert.match(ctrlCHelperSource, /GenerateConsoleCtrlEvent\(CTRL_C_EVENT, 0\)/u);
+	assert.match(ctrlCChildHarness, /Microsoft\.PowerShell\.Management\\Move-Item[\s\S]+WriteAllText\(\$ReadyPath/u);
+	assert.match(ctrlCChildHarness, /while \(\$true\) \{ Start-Sleep -Milliseconds 200 \}/u);
+	assert.match(ctrlCChildHarness, /finally[\s\S]+CHILD_FINALLY/u);
+	assert.doesNotMatch(ctrlCChildHarness, /Injected transaction failure|throw "Ctrl\+C"/u);
+	assert.match(
+		fixtureHarness,
+		/@\("version-backup", "version-install", "current-backup", "current-install", "atomic-current-backup", "atomic-current-install", "shim-backup", "shim-install"\)/u,
+	);
+	assert.match(
+		fixtureHarness,
+		/foreach \(\$move in @\("version-install", "current-install", "atomic-current-install", "shim-install"\)\)/u,
+	);
+	assert.match(
+		fixtureHarness,
+		/changed old version bytes[\s\S]+changed old current bytes[\s\S]+changed old atomic-current bytes[\s\S]+changed old shim bytes/u,
+	);
 });
 
 function runPowerShellFixture(
-	scenario: "install" | "checksum" | "final-smoke" | "unicode" | "dangling-junction" | "transaction-failures",
+	scenario:
+		| "install"
+		| "escaped-refs"
+		| "checksum"
+		| "final-smoke"
+		| "unicode"
+		| "dangling-junction"
+		| "transaction-failures"
+		| "ctrl-c",
 ): string {
 	assert.ok(powershellExecutable);
 	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
 	const harnessPath = join(workspace, "fixture.ps1");
+	if (scenario === "ctrl-c") {
+		writeFileSync(join(workspace, "ctrl-c-child.ps1"), `\uFEFF${ctrlCChildHarness}`, "utf16le");
+		writeFileSync(join(workspace, "ctrl-c-helper.cs"), ctrlCHelperSource, "utf8");
+	}
 	writeFileSync(harnessPath, `\uFEFF${fixtureHarness}`, "utf16le");
 	try {
+		const fixtureTimeout =
+			scenario === "ctrl-c"
+				? CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS
+				: scenario === "transaction-failures"
+					? TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS
+					: POWERSHELL_FIXTURE_TIMEOUT_MS;
 		const result = spawnSyncCollect(
 			[
 				powershellExecutable,
@@ -848,7 +1427,7 @@ function runPowerShellFixture(
 				"-Scenario",
 				scenario,
 			],
-			{ timeout: POWERSHELL_FIXTURE_TIMEOUT_MS },
+			{ timeout: fixtureTimeout },
 		);
 		const stdout = result.stdout.toString();
 		const stderr = result.stderr.toString();
@@ -868,6 +1447,10 @@ powershellTest("PowerShell 5.1 fixture installs exact refs for both architecture
 	runPowerShellFixture("install");
 });
 
+powershellTest("PowerShell 5.1 fixture escapes exact refs and normalizes an encoded latest redirect once", () => {
+	runPowerShellFixture("escaped-refs");
+});
+
 powershellTest("PowerShell 5.1 fixture rejects a checksum mismatch without mutating the old install", () => {
 	runPowerShellFixture("checksum");
 });
@@ -883,6 +1466,14 @@ powershellTest("PowerShell 5.1 fixture preserves Unicode install paths and rolls
 powershellTest("PowerShell 5.1 fixture repairs and cleans up dangling junctions", () => {
 	runPowerShellFixture("dangling-junction");
 });
+
+powershellTest(
+	"PowerShell 5.1 fixture rolls back every applicable move after a real console Ctrl+C",
+	() => {
+		runPowerShellFixture("ctrl-c");
+	},
+	CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS,
+);
 
 powershellTest(
 	"PowerShell 5.1 fixture rolls back fresh and existing installs at every staged transaction failure",

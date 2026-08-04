@@ -28,6 +28,8 @@ The default macOS/Linux paths are `~/.local/share/atomic` for versioned payloads
 
 Use `ATOMIC_INSTALL_DIR` and `ATOMIC_BIN_DIR` to change those paths. Set `ATOMIC_VERSION` to an exact release tag, or pass a flag that overrides it:
 
+Relative `ATOMIC_INSTALL_DIR` and `ATOMIC_BIN_DIR` values on macOS/Linux resolve against the physical directory where the installer starts, and printed PATH guidance uses the resulting absolute bin path. The install root cannot be the launcher itself (`ATOMIC_INSTALL_DIR` must not equal `ATOMIC_BIN_DIR/atomic`); that impossible layout fails before any download or filesystem change. Exact tags may contain characters such as `/`, `#`, or `%`: installers encode URL and version-directory segments while reporting the original tag.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh -s -- --ref 0.9.11
 ```

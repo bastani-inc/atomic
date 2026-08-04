@@ -3,6 +3,9 @@
 set -eu
 set -f
 
+LC_ALL=C
+export LC_ALL
+
 REPOSITORY=bastani-inc/atomic
 GITHUB_WEB=https://github.com
 GITHUB_API=https://api.github.com
@@ -31,6 +34,105 @@ Environment:
 fail() {
     printf 'error: %s\n' "$*" >&2
     exit 1
+}
+
+normalize_absolute_path() {
+    normalize_remaining=${1#/}
+    normalize_result=
+    while [ -n "$normalize_remaining" ]; do
+        case $normalize_remaining in
+            */*)
+                normalize_segment=${normalize_remaining%%/*}
+                normalize_remaining=${normalize_remaining#*/}
+                ;;
+            *)
+                normalize_segment=$normalize_remaining
+                normalize_remaining=
+                ;;
+        esac
+        case $normalize_segment in
+            ''|.) ;;
+            ..)
+                case $normalize_result in
+                    */*) normalize_result=${normalize_result%/*} ;;
+                    *) normalize_result= ;;
+                esac
+                ;;
+            *)
+                if [ -n "$normalize_result" ]; then
+                    normalize_result=$normalize_result/$normalize_segment
+                else
+                    normalize_result=$normalize_segment
+                fi
+                ;;
+        esac
+    done
+    if [ -n "$normalize_result" ]; then
+        printf '/%s\n' "$normalize_result"
+    else
+        printf '/\n'
+    fi
+}
+
+percent_encode() {
+    percent_input=$1
+    percent_output=
+    while [ -n "$percent_input" ]; do
+        percent_character=${percent_input%"${percent_input#?}"}
+        percent_input=${percent_input#?}
+        case $percent_character in
+            [abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~-])
+                percent_output=$percent_output$percent_character
+                ;;
+            *)
+                percent_decimal=$(printf '%d' "'$percent_character")
+                if [ "$percent_decimal" -lt 0 ]; then
+                    percent_decimal=$((percent_decimal + 256))
+                fi
+                percent_output=$percent_output%$(printf '%02X' "$percent_decimal")
+                ;;
+        esac
+    done
+    printf '%s\n' "$percent_output"
+}
+
+hex_nibble() {
+    case $1 in
+        0|1|2|3|4|5|6|7|8|9) printf '%s' "$1" ;;
+        A|a) printf 10 ;;
+        B|b) printf 11 ;;
+        C|c) printf 12 ;;
+        D|d) printf 13 ;;
+        E|e) printf 14 ;;
+        F|f) printf 15 ;;
+        *) return 1 ;;
+    esac
+}
+
+percent_decode() {
+    decode_input=$1
+    decode_output=
+    while [ -n "$decode_input" ]; do
+        decode_character=${decode_input%"${decode_input#?}"}
+        if [ "$decode_character" = % ]; then
+            decode_after_percent=${decode_input#?}
+            decode_high=${decode_after_percent%"${decode_after_percent#?}"}
+            decode_after_high=${decode_after_percent#?}
+            decode_low=${decode_after_high%"${decode_after_high#?}"}
+            [ -n "$decode_high" ] && [ -n "$decode_low" ] || return 1
+            decode_high_value=$(hex_nibble "$decode_high") || return 1
+            decode_low_value=$(hex_nibble "$decode_low") || return 1
+            decode_decimal=$((decode_high_value * 16 + decode_low_value))
+            [ "$decode_decimal" -ne 0 ] || return 1
+            decode_octal=$(printf '%03o' "$decode_decimal")
+            decode_output=$decode_output$(printf "\\$decode_octal")
+            decode_input=${decode_after_high#?}
+        else
+            decode_output=$decode_output$decode_character
+            decode_input=${decode_input#?}
+        fi
+    done
+    printf '%s\n' "$decode_output"
 }
 
 REQUESTED_REF=${ATOMIC_VERSION:-}
@@ -62,6 +164,22 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
+
+START_WORKING_DIR=$(pwd -P) || fail "unable to resolve the current working directory"
+INSTALL_ROOT=${ATOMIC_INSTALL_DIR:-${HOME:?HOME is not set}/.local/share/atomic}
+BIN_DIR=${ATOMIC_BIN_DIR:-${HOME:?HOME is not set}/.local/bin}
+case $INSTALL_ROOT in
+    /*) ;;
+    *) INSTALL_ROOT=$START_WORKING_DIR/$INSTALL_ROOT ;;
+esac
+case $BIN_DIR in
+    /*) ;;
+    *) BIN_DIR=$START_WORKING_DIR/$BIN_DIR ;;
+esac
+INSTALL_ROOT=$(normalize_absolute_path "$INSTALL_ROOT")
+BIN_DIR=$(normalize_absolute_path "$BIN_DIR")
+BIN_PATH=$BIN_DIR/atomic
+[ "$BIN_PATH" != "$INSTALL_ROOT" ] || fail "ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR/atomic: $INSTALL_ROOT"
 
 for required_command in uname tar mkdir mv chmod ln rm rmdir; do
     command -v "$required_command" >/dev/null 2>&1 || fail "required command not found: $required_command"
@@ -138,11 +256,8 @@ case $HOST_OS in
         ;;
 esac
 
-INSTALL_ROOT=${ATOMIC_INSTALL_DIR:-${HOME:?HOME is not set}/.local/share/atomic}
-BIN_DIR=${ATOMIC_BIN_DIR:-${HOME:?HOME is not set}/.local/bin}
 VERSIONS_DIR=
 CURRENT_PATH=
-BIN_PATH=
 
 TOKEN=${GITHUB_TOKEN:-}
 if [ -z "$TOKEN" ]; then
@@ -275,7 +390,7 @@ tag_from_release_url() {
             resolved_url_tag=${resolved_url_tag%%\?*}
             resolved_url_tag=${resolved_url_tag%%\#*}
             [ -n "$resolved_url_tag" ] || return 1
-            printf '%s\n' "$resolved_url_tag"
+            percent_decode "$resolved_url_tag"
             ;;
         *) return 1 ;;
     esac
@@ -331,9 +446,11 @@ parse_release_tag() {
 
 TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags
 RELEASE_TAG=
+RELEASE_TAG_ENCODED=
 API_URL=
 if [ -n "$REQUESTED_REF" ]; then
-    API_URL=$TAGS_API/$REQUESTED_REF
+    REQUESTED_REF_ENCODED=$(percent_encode "$REQUESTED_REF")
+    API_URL=$TAGS_API/$REQUESTED_REF_ENCODED
 else
     REDIRECT_TAG=
     if REDIRECT_TAG=$(resolve_redirect_tag); then
@@ -351,11 +468,12 @@ if [ -z "$RELEASE_TAG" ]; then
         fail "GitHub release response did not contain a valid tag_name"
     fi
 fi
-case $RELEASE_TAG in
-    ''|.|..|*/*|*\\*) fail "release tag cannot be used as a version directory: $RELEASE_TAG" ;;
+RELEASE_TAG_ENCODED=$(percent_encode "$RELEASE_TAG")
+case $RELEASE_TAG_ENCODED in
+    ''|.|..) fail "release tag cannot be used as a version directory: $RELEASE_TAG" ;;
 esac
 
-RELEASE_BASE=$GITHUB_WEB/$REPOSITORY/releases/download/$RELEASE_TAG
+RELEASE_BASE=$GITHUB_WEB/$REPOSITORY/releases/download/$RELEASE_TAG_ENCODED
 if ! download_file "$RELEASE_BASE/$ASSET_NAME" "$ARCHIVE_PATH"; then
     fail "failed to download release asset: $ASSET_NAME"
 fi
@@ -413,16 +531,8 @@ if ! "$PAYLOAD_ROOT/atomic" --version >/dev/null; then
     fail "staged atomic --version check failed"
 fi
 
-case $INSTALL_ROOT in
-    /*) ;;
-    *)
-        INSTALL_WORKING_DIR=$(pwd -P) || fail "unable to resolve the current working directory"
-        INSTALL_ROOT=$INSTALL_WORKING_DIR/$INSTALL_ROOT
-        ;;
-esac
 VERSIONS_DIR=$INSTALL_ROOT/versions
 CURRENT_PATH=$INSTALL_ROOT/current
-BIN_PATH=$BIN_DIR/atomic
 
 if [ ! -d "$INSTALL_ROOT" ]; then
     mkdir -p "$INSTALL_ROOT"
@@ -437,7 +547,7 @@ if [ ! -d "$BIN_DIR" ]; then
     CREATED_BIN_DIR=1
 fi
 
-VERSION_PATH=$VERSIONS_DIR/$RELEASE_TAG
+VERSION_PATH=$VERSIONS_DIR/$RELEASE_TAG_ENCODED
 VERSION_STAGE=$VERSIONS_DIR/.stage-$TRANSACTION_ID
 VERSION_BACKUP=$VERSIONS_DIR/.backup-$TRANSACTION_ID
 CURRENT_NEXT=$INSTALL_ROOT/.current-$TRANSACTION_ID
@@ -455,7 +565,7 @@ VERSION_INSTALLED=1
 mv "$VERSION_STAGE" "$VERSION_PATH"
 VERSION_STAGE=
 
-ln -s "versions/$RELEASE_TAG" "$CURRENT_NEXT"
+ln -s "versions/$RELEASE_TAG_ENCODED" "$CURRENT_NEXT"
 if path_exists "$CURRENT_PATH"; then
     CURRENT_BACKED_UP=1
     mv "$CURRENT_PATH" "$CURRENT_BACKUP"

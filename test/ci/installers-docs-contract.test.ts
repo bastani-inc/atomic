@@ -42,6 +42,11 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.windows, /%LOCALAPPDATA%\\atomic\\bin/u);
 	assert.match(docs.windows, /ASCII-only `atomic\.cmd` plus an `atomic-current` junction/u);
 	assert.match(docs.quickstart, /remove `atomic\.cmd` and the `atomic-current` junction/u);
+	assert.match(docs.quickstart, /Relative `ATOMIC_INSTALL_DIR` and `ATOMIC_BIN_DIR` values/u);
+	assert.match(docs.quickstart, /must not equal `ATOMIC_BIN_DIR\/atomic`/u);
+	assert.match(docs.quickstart, /Exact tags may contain characters such as `\/`, `#`, or `%`/u);
+	assert.match(docs.windows, /Exact release tags may contain characters such as `\/`, `#`, or `%`/u);
+	assert.match(docs.readme, /relative install and bin directories resolve against the physical directory/u);
 	assert.match(docs.quickstart, /does not require Node\.js|Node\.js and a package manager are not required/u);
 	assert.match(docs.quickstart, /Package installs still require Node\.js/u);
 	assert.match(docs.quickstart, /bundle payload-local `libgcc` and `libstdc\+\+`/u);

@@ -56,6 +56,15 @@ test("POSIX installer has valid sh syntax and declares the archive install contr
 	assert.match(source, /staged atomic --version check failed/u);
 	assert.match(source, /installed atomic --version check failed/u);
 	assert.ok(source.indexOf("checksum verification failed") < source.indexOf('mkdir -p "$INSTALL_ROOT"'));
+	assert.equal(source.match(/pwd -P/gu)?.length, 1);
+	assert.match(source, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT"\)/u);
+	assert.match(source, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR"\)/u);
+	assert.match(source, /REQUESTED_REF_ENCODED=\$\(percent_encode "\$REQUESTED_REF"\)/u);
+	assert.match(source, /RELEASE_TAG_ENCODED=\$\(percent_encode "\$RELEASE_TAG"\)/u);
+	assert.match(source, /percent_decode "\$resolved_url_tag"/u);
+	assert.match(source, /VERSION_PATH=\$VERSIONS_DIR\/\$RELEASE_TAG_ENCODED/u);
+	assert.match(source, /ln -s "versions\/\$RELEASE_TAG_ENCODED"/u);
+	assert.ok(source.indexOf("ATOMIC_INSTALL_DIR conflicts") < source.indexOf("for required_command"));
 });
 
 function resolveExecutable(name: string): string {
@@ -69,6 +78,7 @@ function resolveExecutable(name: string): string {
 
 interface FixtureRelease {
 	tag: string;
+	encodedTag: string;
 	assets: Map<string, string>;
 	checksums: string;
 }
@@ -103,7 +113,8 @@ function writeExecutable(path: string, source: string): void {
 }
 
 function createArchive(workspace: string, tag: string, asset: string): { path: string; checksum: string } {
-	const sourceRoot = join(workspace, `payload-${tag}-${asset}`);
+	const encodedTag = encodeURIComponent(tag);
+	const sourceRoot = join(workspace, `payload-${encodedTag}-${asset}`);
 	const payload = join(sourceRoot, "atomic");
 	mkdirSync(join(payload, "builtin"), { recursive: true });
 	mkdirSync(join(payload, "node_modules", "fixture"), { recursive: true });
@@ -117,7 +128,7 @@ function createArchive(workspace: string, tag: string, asset: string): { path: s
 	writeFileSync(join(payload, "node_modules", "fixture", "payload.txt"), `modules-${tag}`);
 	writeFileSync(join(payload, "asset.txt"), asset);
 
-	const archive = join(workspace, `${tag}-${asset}`);
+	const archive = join(workspace, `${encodedTag}-${asset}`);
 	const result = spawnSyncCollect([resolveExecutable("tar"), "-czf", archive, "-C", sourceRoot, "atomic"]);
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	const checksum = createHash("sha256").update(readFileSync(archive)).digest("hex");
@@ -133,7 +144,7 @@ function addRelease(fixture: InstallerFixture, tag: string): FixtureRelease {
 		assets.set(asset, archive.path);
 		rows.push(`${archive.checksum}  ${asset}`);
 	}
-	const release = { tag, assets, checksums: `${rows.join("\n")}\n` };
+	const release = { tag, encodedTag: encodeURIComponent(tag), assets, checksums: `${rows.join("\n")}\n` };
 	fixture.releases.set(tag, release);
 	return release;
 }
@@ -169,8 +180,13 @@ const curlWrapper = [
 	"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 22`,
 	`        tag=${shellExpansion("url##*/")}`,
-	`        canonical=${shellExpansion("ATOMIC_FIXTURE_CANONICAL_TAG:-$tag")}`,
-	`        printf '{"tag_name":"%s"}\\n' "$canonical"`,
+	"        case $tag in",
+	"            release%2F1.0) canonical='release/1.0' ;;",
+	"            hash%23tag) canonical='hash#tag' ;;",
+	"            percent%25tag) canonical='percent%tag' ;;",
+	`            *) canonical=${shellExpansion("ATOMIC_FIXTURE_CANONICAL_TAG:-$tag")} ;;`,
+	"        esac",
+	`        printf '{"tag_name":"%s"}\n' "$canonical"`,
 	"        ;;",
 	"    https://github.com/bastani-inc/atomic/releases/download/*/*)",
 	`        name=${shellExpansion("url##*/")}`,
@@ -212,8 +228,13 @@ const wgetWrapper = [
 	"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 1`,
 	`        tag=${shellExpansion("url##*/")}`,
-	`        canonical=${shellExpansion("ATOMIC_FIXTURE_CANONICAL_TAG:-$tag")}`,
-	`        printf '{"tag_name":"%s"}\\n' "$canonical"`,
+	"        case $tag in",
+	"            release%2F1.0) canonical='release/1.0' ;;",
+	"            hash%23tag) canonical='hash#tag' ;;",
+	"            percent%25tag) canonical='percent%tag' ;;",
+	`            *) canonical=${shellExpansion("ATOMIC_FIXTURE_CANONICAL_TAG:-$tag")} ;;`,
+	"        esac",
+	`        printf '{"tag_name":"%s"}\n' "$canonical"`,
 	"        ;;",
 	"    https://github.com/bastani-inc/atomic/releases/download/*/*)",
 	`        name=${shellExpansion("url##*/")}`,
@@ -303,7 +324,7 @@ function createFixture(): InstallerFixture {
 				symlinkSync(realpathSync(join(tools, entry)), join(runTools, entry));
 			}
 			for (const release of releases.values()) {
-				const releaseDir = join(releasesRoot, release.tag);
+				const releaseDir = join(releasesRoot, release.encodedTag);
 				rmSync(releaseDir, { recursive: true, force: true });
 				mkdirSync(releaseDir, { recursive: true });
 				for (const [asset, archive] of release.assets) symlinkSync(archive, join(releaseDir, asset));
@@ -465,27 +486,153 @@ unixTest("shell installer supports curl and wget fallback, API fallback, every r
 	}
 });
 
-unixTest("shell installer resolves a relative install root before creating launcher links", () => {
+unixTest("shell installer resolves relative install and bin roots against one physical working directory", () => {
 	const fixture = createFixture();
 	try {
+		const relativeBin = "relative bin";
+		const absoluteBin = join(realpathSync(fixture.workspace), relativeBin);
 		const result = fixture.run({
 			args: ["--ref", "1.0.0"],
-			environment: { ATOMIC_INSTALL_DIR: "install root" },
+			environment: { ATOMIC_INSTALL_DIR: "install root", ATOMIC_BIN_DIR: relativeBin },
 		});
 		assertSuccess(result);
 		assert.equal(currentVersion(fixture), "1.0.0");
-		const binTarget = readlinkSync(join(fixture.binDir, "atomic"));
+		const binTarget = readlinkSync(join(absoluteBin, "atomic"));
 		assert.ok(binTarget.startsWith("/"), `bin target is not absolute: ${binTarget}`);
 		assert.equal(
-			realpathSync(join(fixture.binDir, "atomic")),
+			realpathSync(join(absoluteBin, "atomic")),
 			realpathSync(join(fixture.installRoot, "current", "atomic")),
 		);
-		const installed = spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"], {
-			env: { PATH: fixture.tools },
+		assert.ok(result.stdout.toString().includes(`export PATH="${absoluteBin}:$PATH"`));
+
+		const otherDirectory = join(fixture.workspace, "other working directory");
+		mkdirSync(otherDirectory);
+		const installed = spawnSyncCollect(["/bin/sh", "-c", "command -v atomic && atomic --version"], {
+			cwd: otherDirectory,
+			env: { PATH: `${absoluteBin}${delimiter}${fixture.tools}` },
 		});
 		assert.equal(installed.exitCode, 0, installed.stderr.toString());
-		assert.equal(installed.stdout.toString().trim(), "1.0.0");
+		assert.equal(installed.stdout.toString().trim(), `${join(absoluteBin, "atomic")}\n1.0.0`);
 		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer percent-encodes exact refs once for API, downloads, and version directories", () => {
+	for (const downloader of ["curl", "wget"] as const) {
+		for (const tag of ["release/1.0", "hash#tag", "percent%tag"] as const) {
+			const fixture = createFixture();
+			try {
+				addRelease(fixture, tag);
+				const encodedTag = encodeURIComponent(tag);
+				const result = fixture.run({ downloader, args: ["--ref", tag] });
+				assertSuccess(result);
+				assert.ok(existsSync(join(fixture.installRoot, "versions", encodedTag, "atomic")));
+				assert.equal(readlinkSync(join(fixture.installRoot, "current")), `versions/${encodedTag}`);
+				assert.match(
+					result.stdout.toString(),
+					new RegExp(`Atomic ${tag.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")} installed`, "u"),
+				);
+				const requests = readFileSync(fixture.requestLog, "utf8");
+				assert.match(
+					requests,
+					new RegExp(`GET https://api\\.github\\.com/repos/bastani-inc/atomic/releases/tags/${encodedTag}`, "u"),
+				);
+				assert.match(
+					requests,
+					new RegExp(
+						`GET https://github\\.com/bastani-inc/atomic/releases/download/${encodedTag}/atomic-linux-x64\\.tar\\.gz`,
+						"u",
+					),
+				);
+				assert.match(
+					requests,
+					new RegExp(
+						`GET https://github\\.com/bastani-inc/atomic/releases/download/${encodedTag}/SHA256SUMS`,
+						"u",
+					),
+				);
+				const installed = spawnSyncCollect([join(fixture.binDir, "atomic"), "--version"], {
+					env: { PATH: fixture.tools },
+				});
+				assert.equal(installed.exitCode, 0, installed.stderr.toString());
+				assert.equal(installed.stdout.toString().trim(), tag);
+				assertNoTemporaryState(fixture);
+			} finally {
+				fixture.cleanup();
+			}
+		}
+	}
+
+	const redirectFixture = createFixture();
+	try {
+		const rawTag = "release/1.0";
+		const encodedTag = encodeURIComponent(rawTag);
+		addRelease(redirectFixture, rawTag);
+		const result = redirectFixture.run({
+			downloader: "curl",
+			environment: { ATOMIC_FIXTURE_LATEST_TAG: encodedTag, ATOMIC_FIXTURE_FAIL_API: "1" },
+		});
+		assertSuccess(result);
+		assert.ok(existsSync(join(redirectFixture.installRoot, "versions", encodedTag, "atomic")));
+		assert.match(result.stdout.toString(), /Atomic release\/1\.0 installed/u);
+		const requests = readFileSync(redirectFixture.requestLog, "utf8");
+		assert.doesNotMatch(requests, /api\.github\.com|release%252F1\.0/u);
+		assert.match(requests, /releases\/download\/release%2F1\.0\/atomic-linux-x64\.tar\.gz/u);
+	} finally {
+		redirectFixture.cleanup();
+	}
+});
+
+unixTest("shell installer rejects only the impossible install-root and launcher-path equality before requests", () => {
+	for (const paths of [
+		{ install: "collision/atomic", bin: "collision" },
+		{ install: "collision/./atomic", bin: "collision/nested/.." },
+	]) {
+		const fixture = createFixture();
+		try {
+			const result = fixture.run({
+				args: ["--ref", "1.0.0"],
+				environment: { ATOMIC_INSTALL_DIR: paths.install, ATOMIC_BIN_DIR: paths.bin },
+			});
+			assert.notEqual(result.exitCode, 0);
+			assert.match(output(result), /ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR\/atomic/u);
+			assert.equal(readFileSync(fixture.requestLog, "utf8"), "");
+			assert.deepEqual(readdirSync(fixture.tempRoot), []);
+			assert.ok(!existsSync(join(fixture.workspace, "collision")));
+		} finally {
+			fixture.cleanup();
+		}
+	}
+
+	const fixture = createFixture();
+	try {
+		const installRoot = "collision/atomic";
+		assertSuccess(
+			fixture.run({
+				args: ["--ref", "1.0.0"],
+				environment: { ATOMIC_INSTALL_DIR: installRoot, ATOMIC_BIN_DIR: "working-bin" },
+			}),
+		);
+		const absoluteInstallRoot = join(fixture.workspace, installRoot);
+		writeFileSync(join(absoluteInstallRoot, "versions", "1.0.0", "preserve.txt"), "old-state");
+		writeFileSync(fixture.requestLog, "");
+		const rejected = fixture.run({
+			args: ["--ref", "2.0.0"],
+			environment: { ATOMIC_INSTALL_DIR: "collision/./atomic", ATOMIC_BIN_DIR: "collision/nested/.." },
+		});
+		assert.notEqual(rejected.exitCode, 0);
+		assert.match(output(rejected), /ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR\/atomic/u);
+		assert.equal(readFileSync(fixture.requestLog, "utf8"), "");
+		assert.equal(readFileSync(join(absoluteInstallRoot, "versions", "1.0.0", "preserve.txt"), "utf8"), "old-state");
+		assert.equal(basename(realpathSync(join(absoluteInstallRoot, "current"))), "1.0.0");
+		const oldLauncher = spawnSyncCollect([join(fixture.workspace, "working-bin", "atomic"), "--version"], {
+			env: { PATH: fixture.tools },
+		});
+		assert.equal(oldLauncher.exitCode, 0, oldLauncher.stderr.toString());
+		assert.equal(oldLauncher.stdout.toString().trim(), "1.0.0");
+		assert.deepEqual(readdirSync(fixture.tempRoot), []);
 	} finally {
 		fixture.cleanup();
 	}
