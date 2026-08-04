@@ -39,53 +39,32 @@ function withFakeCli<T>(script: string, fn: (dir: string, scriptPath: string) =>
 
 describe("subagent acceptance removal", () => {
 	test("foreground runs do not inject, evaluate, or strip acceptance reports", async () => {
-		await withFakeCli(
-			`
-			const fs = require("node:fs");
-			const path = require("node:path");
-			const prompt = process.argv[process.argv.length - 1] || "";
-			fs.writeFileSync(path.join(process.cwd(), "prompt.log"), prompt, "utf8");
-			const text = [
-				"done",
-				"\`\`\`acceptance-report",
-				"{not-valid-json}",
-				"\`\`\`"
-			].join("\\n");
-			console.log(JSON.stringify({
-				type: "message_end",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text }],
-					stopReason: "stop",
-					usage: { input: 1, output: 1 },
-					timestamp: Date.now()
-				}
-			}));
-		`,
-			async (dir) => {
-				const result = await runSync(dir, [agentConfig()], "fake-worker", "Preserve reports", {
-					cwd: dir,
-					runId: "no-acceptance-gates",
-					artifactsDir: dir,
-				});
+		const reportOutput = ["done", "```acceptance-report", "{not-valid-json}", "```"].join("\n");
+		await withFakeCli("", async (dir) => {
+			const promptLogPath = join(dir, "prompt.log");
+			const result = await runSync(dir, [agentConfig()], "fake-worker", "Preserve reports", {
+				cwd: dir,
+				runId: "no-acceptance-gates",
+				artifactsDir: dir,
+				testSession: { output: reportOutput, promptLogPath },
+			});
 
-				assert.equal(result.exitCode, 0);
-				assert.equal(result.error, undefined);
-				assert.equal("acceptance" in result, false);
-				assert.match(result.finalOutput ?? "", /```acceptance-report/);
-				assert.match(result.finalOutput ?? "", /\{not-valid-json\}/);
+			assert.equal(result.status, "ok");
+			assert.equal(result.error, undefined);
+			assert.equal("acceptance" in result, false);
+			assert.match(result.finalOutput ?? "", /```acceptance-report/);
+			assert.match(result.finalOutput ?? "", /\{not-valid-json\}/);
 
-				const prompt = readFileSync(join(dir, "prompt.log"), "utf8");
-				assert.match(prompt, /Task: Preserve reports/);
-				assert.doesNotMatch(prompt, /Acceptance Contract|Acceptance level|acceptance-report/);
+			const prompt = readFileSync(promptLogPath, "utf8");
+			assert.match(prompt, /Preserve reports/);
+			assert.doesNotMatch(prompt, /Acceptance Contract|Acceptance level|acceptance-report/);
 
-				const artifactInput = result.artifactPaths?.inputPath
-					? readFileSync(result.artifactPaths.inputPath, "utf8")
-					: "";
-				assert.match(artifactInput, /Preserve reports/);
-				assert.doesNotMatch(artifactInput, /Acceptance Contract|Acceptance level|acceptance-report/);
-			},
-		);
+			const artifactInput = result.artifactPaths?.inputPath
+				? readFileSync(result.artifactPaths.inputPath, "utf8")
+				: "";
+			assert.match(artifactInput, /Preserve reports/);
+			assert.doesNotMatch(artifactInput, /Acceptance Contract|Acceptance level|acceptance-report/);
+		});
 	});
 
 	test("foreground reports missing cwd as a cwd problem before spawning", async () => {
@@ -164,47 +143,34 @@ describe("subagent acceptance removal", () => {
 		}
 	}, 20_000);
 	test("foreground investigation/debugger runs can complete successfully without edits", async () => {
-		await withFakeCli(
-			`
-			console.log(JSON.stringify({
-				type: "message_end",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "Likely fix: make cache writes atomic." }],
-					stopReason: "stop",
-					usage: { input: 1, output: 1 },
-					timestamp: Date.now()
-				}
-			}));
-		`,
-			async (dir) => {
-				const debuggerAgent: AgentConfig = {
-					...agentConfig(),
-					name: "debugger",
-					description: "Investigates issues",
-					filePath: "debugger.md",
-					systemPrompt: "Investigate and report findings.",
-					tools: ["bash"],
-				};
-				const result = await runSync(
-					dir,
-					[debuggerAgent],
-					"debugger",
-					"Investigate the likely fix for the cache race",
-					{
-						cwd: dir,
-						runId: "no-edit-investigation",
-						artifactsDir: dir,
-					},
-				);
+		await withFakeCli("", async (dir) => {
+			const debuggerAgent: AgentConfig = {
+				...agentConfig(),
+				name: "debugger",
+				description: "Investigates issues",
+				filePath: "debugger.md",
+				systemPrompt: "Investigate and report findings.",
+				tools: ["bash"],
+			};
+			const result = await runSync(
+				dir,
+				[debuggerAgent],
+				"debugger",
+				"Investigate the likely fix for the cache race",
+				{
+					cwd: dir,
+					runId: "no-edit-investigation",
+					artifactsDir: dir,
+					testSession: { output: "Likely fix: make cache writes atomic." },
+				},
+			);
 
-				assert.equal(result.exitCode, 0);
-				assert.equal(result.error, undefined);
-				assert.match(result.finalOutput ?? "", /Likely fix/);
-				assert.equal(result.progress?.status, "completed");
-				assert.doesNotMatch(JSON.stringify(result.controlEvents ?? []), /completion_guard/);
-			},
-		);
+			assert.equal(result.status, "ok");
+			assert.equal(result.error, undefined);
+			assert.match(result.finalOutput ?? "", /Likely fix/);
+			assert.equal(result.progress?.status, "completed");
+			assert.doesNotMatch(JSON.stringify(result.controlEvents ?? []), /completion_guard/);
+		});
 	});
 
 	test("background investigation/debugger runner can complete successfully without edits", async () => {

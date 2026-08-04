@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig } from "../../agents/agent-types.ts";
-import { getArtifactPaths } from "../../shared/artifacts.ts";
+import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.ts";
 import type {
 	AgentProgress,
 	ArtifactPaths,
@@ -178,10 +178,15 @@ export async function runSingleInProcess(
 	const sessionRoot = options.sessionDir ?? join(options.artifactsDir ?? cwd, ".atomic", "subagents");
 	const control = createSubagentControl(parent, sessionRoot);
 	control.registerAgents([agent]);
-	const artifactPaths =
-		options.artifactsDir && options.artifactConfig?.enabled !== false
-			? getArtifactPaths(options.artifactsDir, options.runId, agent.name, options.index)
-			: undefined;
+	const artifactsDir =
+		options.artifactsDir && options.artifactConfig?.enabled !== false ? options.artifactsDir : undefined;
+	const artifactPaths = artifactsDir
+		? getArtifactPaths(artifactsDir, options.runId, agent.name, options.index)
+		: undefined;
+	if (artifactsDir && artifactPaths && options.artifactConfig?.includeInput !== false) {
+		ensureArtifactsDir(artifactsDir);
+		writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
+	}
 	const testSession =
 		options.testSession ?? (process.env.NODE_TEST_CONTEXT !== undefined || process.env.NODE_ENV === "test");
 	const spec: ChildSpec = {
