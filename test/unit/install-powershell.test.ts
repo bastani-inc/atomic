@@ -78,7 +78,10 @@ test("Windows installer rejects PATHEXT launchers that shadow atomic.cmd before 
 		source.includes('".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"'),
 		"the default PATHEXT order is not used as a fallback",
 	);
-	assert.match(source, /foreach \(\$pathExtValue in @\(\$env:PATHEXT, "\.COM;/u);
+	assert.match(source, /\$pathExtValue = \$env:PATHEXT/u);
+	assert.match(source, /if \(\[string\]::IsNullOrWhiteSpace\(\$pathExtValue\)\) \{[\s\S]+\$pathExtValue = "\.COM;/u);
+	assert.doesNotMatch(source, /foreach \(\$pathExtValue in @\(\$env:PATHEXT,/u);
+	assert.match(source, /foreach \(\$pathExtEntry in \(\$pathExtValue -split ';'\)/u);
 	assert.match(source, /if \(\$extension -eq "\.CMD"\) \{\r?\n\s+break\r?\n\s+\}/u);
 	assert.match(source, /\$extension = \$extension\.ToUpperInvariant\(\)/u);
 
@@ -854,6 +857,20 @@ public static class Program
 '@
 Add-Type -TypeDefinition $fixtureSource -OutputAssembly $fixtureExecutable -OutputType ConsoleApplication
 
+function Get-FixtureSha256 {
+    param([string]$Path)
+
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $stream.Dispose()
+        $algorithm.Dispose()
+    }
+}
+
 function New-FixtureRelease {
     param([string]$Tag)
 
@@ -870,7 +887,7 @@ function New-FixtureRelease {
         Set-Content -LiteralPath (Join-Path $payloadDir "asset.txt") -Value $assetName -Encoding ASCII -NoNewline
         $archivePath = Join-Path $releaseDir $assetName
         Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $archivePath -CompressionLevel Optimal
-        $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hash = Get-FixtureSha256 $archivePath
         $marker = if ($assetName -eq "atomic-windows-arm64.zip") { " *" } else { "  " }
         $rows += "$hash$marker$assetName"
     }
@@ -1751,6 +1768,33 @@ try {
         Assert-Fixture ($resolvedExit -eq 0 -and $resolvedOutput -eq "1.0.0") "PATHEXT resolution of atomic did not run the installed shim: $resolvedOutput"
         Assert-NoTransactionResidue $installRoot $binDir
     }
+    elseif ($Scenario -eq "custom-pathext") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $env:PATHEXT = ".CMD;.EXE"
+        New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+        $allowedStalePath = Join-Path $binDir "atomic.exe"
+        Copy-Item -LiteralPath $fixtureExecutable -Destination $allowedStalePath
+        $requestsBeforeInstall = @($global:AtomicFixtureRequests).Count
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        $shim = Join-Path $binDir "atomic.cmd"
+        Assert-Fixture (Test-Path -LiteralPath $shim) "custom PATHEXT prevented the shim from being installed"
+        Assert-Fixture (@($global:AtomicFixtureRequests).Count -gt $requestsBeforeInstall) "custom PATHEXT install did not reach the release request"
+
+        $previousProcessPath = $env:Path
+        try {
+            $env:Path = $binDir
+            $cmdExe = Join-Path $env:SystemRoot "System32\cmd.exe"
+            $resolvedOutput = (& $cmdExe /d /c "atomic --version" | Out-String).Trim()
+            $resolvedExit = $LASTEXITCODE
+        }
+        finally {
+            $env:Path = $previousProcessPath
+        }
+        Assert-Fixture ($resolvedExit -eq 0 -and $resolvedOutput -eq "1.0.0") "custom PATHEXT did not resolve atomic.cmd ahead of atomic.exe: $resolvedOutput"
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
     else {
         throw "Unknown fixture scenario: $Scenario"
     }
@@ -2197,7 +2241,8 @@ function runPowerShellFixture(
 		| "ctrl-c"
 		| "ref-identity"
 		| "semicolon-bin"
-		| "shadowed-shim",
+		| "shadowed-shim"
+		| "custom-pathext",
 ): string {
 	assert.ok(powershellExecutable);
 	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
@@ -2305,4 +2350,8 @@ powershellTest("PowerShell 5.1 fixture never appends a semicolon-containing bin 
 
 powershellTest("PowerShell 5.1 fixture refuses same-stem launchers that PATHEXT resolves before the shim", () => {
 	runPowerShellFixture("shadowed-shim");
+});
+
+powershellTest("PowerShell 5.1 fixture honors custom PATHEXT order when .CMD precedes .EXE", () => {
+	runPowerShellFixture("custom-pathext");
 });

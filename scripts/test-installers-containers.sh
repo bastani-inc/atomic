@@ -38,7 +38,7 @@ mkdir -p "$release_dir" "$workspace/bin"
 : > "$release_dir/SHA256SUMS"
 for asset in atomic-linux-x64.tar.gz atomic-linux-arm64.tar.gz atomic-linux-x64-musl.tar.gz atomic-linux-arm64-musl.tar.gz; do
     cp "$workspace/payload.tar.gz" "$release_dir/$asset"
-    printf '%s  %s\n' "$archive_hash" "$asset" >> "$release_dir/SHA256SUMS"
+    printf '%s *%s\n' "$archive_hash" "$asset" >> "$release_dir/SHA256SUMS"
 done
 
 cat > "$workspace/bin/wget" <<'WGET'
@@ -73,6 +73,7 @@ for container in alpine:3.22 debian:bookworm-slim; do
     name=${container%%:*}
     mkdir -p "$workspace/$name-home" "$workspace/$name-tmp"
     docker run --rm \
+        --user "$(id -u):$(id -g)" \
         -v "$PWD:/repo:ro" \
         -v "$workspace:/fixture" \
         -e HOME="/fixture/$name-home" \

@@ -16,6 +16,9 @@ test("POSIX path conflicts and unexpected launcher directories fail before I/O",
 	assert.match(shell, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT" && printf '_'\)/u);
 	assert.match(shell, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR" && printf '_'\)/u);
 	assert.match(shell, /BIN_PATH=\$BIN_DIR\/atomic/u);
+	assert.match(shell, /reject_dangling_symlink_path\(\) \{/u);
+	assert.match(shell, /\[ -L "\$dangling_probe" \] && \[ ! -d "\$dangling_probe" \]/u);
+	assert.match(shell, /reject_dangling_symlink_path "\$BIN_DIR"/u);
 	assert.match(shell, /canonical_physical=\$\(CDPATH= cd -P "\$canonical_probe"[^\n]+&& pwd && printf '_'\)/u);
 	assert.match(shell, /PHYSICAL_INSTALL_ROOT=\$\(canonicalize_existing_prefix "\$INSTALL_ROOT" && printf '_'\)/u);
 	assert.match(shell, /PHYSICAL_BIN_PATH=\$\(canonicalize_existing_prefix "\$BIN_PATH" && printf '_'\)/u);
@@ -42,6 +45,8 @@ test("POSIX bin paths under transaction-owned install paths fail before any requ
 	assert.match(shell, /\/\) owned_path=\/\$owned_child ;;/u);
 	assert.match(shell, /"\$owned_path"\|"\$owned_path"\/\*\)/u);
 	assert.match(shell, /the installer replaces that path: \$BIN_DIR/u);
+	const danglingPreflight = shell.indexOf('reject_dangling_symlink_path "$BIN_DIR"');
+	assert.ok(danglingPreflight >= 0);
 
 	const preflight = shell.indexOf("for owned_child in current versions; do");
 	assert.ok(preflight >= 0);
@@ -55,6 +60,7 @@ test("POSIX bin paths under transaction-owned install paths fail before any requ
 	]) {
 		const boundaryIndex = shell.indexOf(boundary);
 		assert.ok(boundaryIndex >= 0, boundary);
+		assert.ok(danglingPreflight < boundaryIndex, `the dangling-symlink preflight runs after: ${boundary}`);
 		assert.ok(preflight < boundaryIndex, `the transaction-owned preflight runs after: ${boundary}`);
 	}
 });
@@ -86,11 +92,22 @@ test("POSIX owner-only modes cover temporary state only and both checksum row fo
 	assert.match(shell, /\\\*\*\) checksum_name=\$\{checksum_name#\\\*\} ;;/u);
 });
 
+test("POSIX container installer keeps bind-mounted fixture trees host-owned", async () => {
+	const smoke = await readText(`${root}/scripts/test-installers-containers.sh`);
+	assert.match(smoke, /docker run --rm \\\n\s+--user "\$\(id -u\):\$\(id -g\)" \\\n/u);
+	assert.match(smoke, /printf '%s \*%s\\n' "\$archive_hash" "\$asset"/u);
+});
+
 test("Windows same-stem PATHEXT launchers are rejected before any request", async () => {
 	const { powershell } = await installers();
 	assert.match(powershell, /function Get-AtomicShimShadowingExtensions/u);
-	assert.ok(powershell.includes('".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"'));
-	assert.match(powershell, /foreach \(\$pathExtValue in @\(\$env:PATHEXT, "\.COM;/u);
+	assert.match(powershell, /\$pathExtValue = \$env:PATHEXT/u);
+	assert.match(
+		powershell,
+		/if \(\[string\]::IsNullOrWhiteSpace\(\$pathExtValue\)\) \{[\s\S]+\$pathExtValue = "\.COM;/u,
+	);
+	assert.doesNotMatch(powershell, /foreach \(\$pathExtValue in @\(\$env:PATHEXT,/u);
+	assert.match(powershell, /foreach \(\$pathExtEntry in \(\$pathExtValue -split ';'\)/u);
 	assert.match(powershell, /if \(\$extension -eq "\.CMD"\) \{\r?\n\s+break/u);
 	assert.match(powershell, /which PATHEXT resolves before atomic\.cmd; remove it and rerun the installer\./u);
 

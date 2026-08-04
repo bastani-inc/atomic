@@ -1237,6 +1237,33 @@ unixTest("shell installer rejects bin directories inside transaction-owned insta
 		fixture.cleanup();
 	}
 
+	for (const ownedChild of ["current", "versions"]) {
+		const fixture = createFixture();
+		try {
+			const aliasParent = join(fixture.workspace, `${ownedChild} alias parent`);
+			const alias = join(aliasParent, `${ownedChild} alias`);
+			mkdirSync(aliasParent);
+			symlinkSync(join(fixture.installRoot, ownedChild), alias);
+			for (const binSuffix of ["bin", "bin/"]) {
+				const rejected = fixture.run({
+					args: ["--ref", "1.0.0"],
+					environment: { ATOMIC_BIN_DIR: `${alias}/${binSuffix}` },
+				});
+				assert.notEqual(rejected.exitCode, 0, `${ownedChild}/${binSuffix}`);
+				assert.match(
+					output(rejected),
+					/ATOMIC_BIN_DIR contains an unresolved symbolic link; refusing an unresolvable path/u,
+					`${ownedChild}/${binSuffix}`,
+				);
+				assert.equal(readFileSync(fixture.requestLog, "utf8"), "", `${ownedChild}/${binSuffix}`);
+				assert.deepEqual(readdirSync(fixture.tempRoot), [], `${ownedChild}/${binSuffix}`);
+				assert.ok(!existsSync(fixture.installRoot), `${ownedChild}/${binSuffix}`);
+			}
+			assert.ok(lstatSync(alias).isSymbolicLink(), ownedChild);
+		} finally {
+			fixture.cleanup();
+		}
+	}
 	const acceptedFixture = createFixture();
 	try {
 		const nestedBin = join(acceptedFixture.installRoot, "bin");

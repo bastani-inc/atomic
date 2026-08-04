@@ -104,6 +104,45 @@ canonicalize_existing_prefix() {
     fi
 }
 
+reject_dangling_symlink_path() {
+    dangling_input=$1
+    dangling_probe=/
+    dangling_remaining=${dangling_input#/}
+    while [ -n "$dangling_remaining" ]; do
+        case $dangling_remaining in
+            */*)
+                dangling_segment=${dangling_remaining%%/*}
+                dangling_remaining=${dangling_remaining#*/}
+                ;;
+            *)
+                dangling_segment=$dangling_remaining
+                dangling_remaining=
+                ;;
+        esac
+        case $dangling_segment in
+            ''|.) ;;
+            ..)
+                case $dangling_probe in
+                    /) ;;
+                    *)
+                        dangling_probe=${dangling_probe%/*}
+                        [ -n "$dangling_probe" ] || dangling_probe=/
+                        ;;
+                esac
+                ;;
+            *)
+                case $dangling_probe in
+                    /) dangling_probe=/$dangling_segment ;;
+                    *) dangling_probe=$dangling_probe/$dangling_segment ;;
+                esac
+                if [ -L "$dangling_probe" ] && [ ! -d "$dangling_probe" ]; then
+                    fail "ATOMIC_BIN_DIR contains an unresolved symbolic link; refusing an unresolvable path: $dangling_probe"
+                fi
+                ;;
+        esac
+    done
+}
+
 percent_encode() {
     percent_input=$1
     percent_output=
@@ -212,6 +251,7 @@ INSTALL_ROOT=$(normalize_absolute_path "$INSTALL_ROOT" && printf '_')
 INSTALL_ROOT=${INSTALL_ROOT%_}
 BIN_DIR=$(normalize_absolute_path "$BIN_DIR" && printf '_')
 BIN_DIR=${BIN_DIR%_}
+reject_dangling_symlink_path "$BIN_DIR"
 BIN_PATH=$BIN_DIR/atomic
 PHYSICAL_INSTALL_ROOT=$(canonicalize_existing_prefix "$INSTALL_ROOT" && printf '_') ||
     fail "unable to resolve ATOMIC_INSTALL_DIR: $INSTALL_ROOT"

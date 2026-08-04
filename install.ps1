@@ -48,7 +48,7 @@ function Get-AtomicRedirectTag {
         $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -MaximumRedirection 0 -ErrorAction Stop
     }
     catch {
-        if ($null -ne $_.Exception -and $null -ne $_.Exception.Response) {
+        if ($null -ne $_.Exception -and $null -ne $_.Exception.PSObject.Properties["Response"]) {
             $response = $_.Exception.Response
         }
     }
@@ -196,25 +196,24 @@ function Get-AtomicDirectoryEntry {
 
 function Get-AtomicShimShadowingExtensions {
     $shadowing = New-Object System.Collections.ArrayList
-    foreach ($pathExtValue in @($env:PATHEXT, ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC")) {
-        if ([string]::IsNullOrWhiteSpace($pathExtValue)) {
+    $pathExtValue = $env:PATHEXT
+    if ([string]::IsNullOrWhiteSpace($pathExtValue)) {
+        $pathExtValue = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+    }
+    foreach ($pathExtEntry in ($pathExtValue -split ';')) {
+        $extension = $pathExtEntry.Trim().Trim('"')
+        if ([string]::IsNullOrWhiteSpace($extension)) {
             continue
         }
-        foreach ($pathExtEntry in ($pathExtValue -split ';')) {
-            $extension = $pathExtEntry.Trim().Trim('"')
-            if ([string]::IsNullOrWhiteSpace($extension)) {
-                continue
-            }
-            if (-not $extension.StartsWith(".")) {
-                $extension = "." + $extension
-            }
-            $extension = $extension.ToUpperInvariant()
-            if ($extension -eq ".CMD") {
-                break
-            }
-            if (-not $shadowing.Contains($extension)) {
-                [void]$shadowing.Add($extension)
-            }
+        if (-not $extension.StartsWith(".")) {
+            $extension = "." + $extension
+        }
+        $extension = $extension.ToUpperInvariant()
+        if ($extension -eq ".CMD") {
+            break
+        }
+        if (-not $shadowing.Contains($extension)) {
+            [void]$shadowing.Add($extension)
         }
     }
     return $shadowing
