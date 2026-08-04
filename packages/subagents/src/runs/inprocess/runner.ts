@@ -288,6 +288,7 @@ export class SubagentControlRuntime {
 	private readonly specs = new Map<string, ChildSpec>();
 	private readonly runningAttempts = new Map<number, RunningAttempt>();
 	private readonly attemptTokens = new Map<string, number>();
+	private readonly attemptTerminators = new Map<string, (cause: TerminationCauseName) => Promise<void>>();
 	private readonly delivered = new Set<string>();
 	private readonly deliveredEnvelopes = new Map<string, ResultEnvelope>();
 	private nextAttemptId = 1;
@@ -374,6 +375,7 @@ export class SubagentControlRuntime {
 			})();
 			return terminating;
 		};
+		this.attemptTerminators.set(admitted.identity.path, terminate);
 		const abortListener = () => void terminate("abort");
 		const interruptListener = () => void terminate("interrupt");
 		signals.abort.addEventListener("abort", abortListener, { once: true });
@@ -462,6 +464,8 @@ export class SubagentControlRuntime {
 			this.sessions.delete(admitted.identity.path);
 			if (this.attemptTokens.get(admitted.identity.path) === token)
 				this.attemptTokens.delete(admitted.identity.path);
+			if (this.attemptTerminators.get(admitted.identity.path) === terminate)
+				this.attemptTerminators.delete(admitted.identity.path);
 		}
 	}
 
@@ -579,6 +583,11 @@ export class SubagentControlRuntime {
 	}
 
 	private async terminateRunningAttempt(running: RunningAttempt, cause: TerminationCauseName): Promise<void> {
+		const terminate = this.attemptTerminators.get(running.child.identity.path);
+		if (terminate) {
+			await terminate(cause);
+			return;
+		}
 		const token = running.attemptToken ?? this.attemptTokens.get(running.child.identity.path);
 		if (token === undefined) {
 			await running.promise;
