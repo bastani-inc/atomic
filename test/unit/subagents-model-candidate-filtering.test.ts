@@ -1,13 +1,66 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
+import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleStep } from "../../packages/subagents/src/runs/background/subagent-runner-step.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runForegroundParallelTasks } from "../../packages/subagents/src/runs/foreground/subagent-executor-parallel-task.js";
 import { filterSpawnableModelCandidates } from "../../packages/subagents/src/runs/shared/model-candidate-filter.js";
-import { agentConfig, successEvent, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
+
+function agentConfig(): AgentConfig {
+	return {
+		name: "fake-worker",
+		description: "Fake worker",
+		source: "project",
+		filePath: "fake-worker.md",
+		systemPrompt: "Work.",
+		systemPromptMode: "replace",
+		inheritProjectContext: false,
+		inheritSkills: false,
+		model: "provider-a/stalled",
+		fallbackModels: ["provider-b/working"],
+	};
+}
+
+const successEvent = (text: string) =>
+	JSON.stringify({
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			stopReason: "stop",
+			usage: { input: 1, output: 1 },
+			timestamp: Date.now(),
+		},
+	});
+
+async function withFakeCli<T>(script: string, fn: (dir: string) => Promise<T>): Promise<T> {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-model-filter-"));
+	const scriptPath = join(dir, "fake-pi.js");
+	const previousArgv1 = process.argv[1];
+	const previousIdle = process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS;
+	const previousWall = process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS;
+	const previousKill = process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS;
+	writeFileSync(scriptPath, script, { mode: 0o700 });
+	process.argv[1] = scriptPath;
+	process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = "1000";
+	process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "4000";
+	process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS = "20";
+	try {
+		return await fn(dir);
+	} finally {
+		process.argv[1] = previousArgv1;
+		if (previousIdle === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS;
+		else process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = previousIdle;
+		if (previousWall === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS;
+		else process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = previousWall;
+		if (previousKill === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS;
+		else process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS = previousKill;
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
 describe("subagent pre-spawn model candidate filtering", () => {
 	test("pre-spawn filtering skips known keyless providers but keeps unknowns and current model", () => {

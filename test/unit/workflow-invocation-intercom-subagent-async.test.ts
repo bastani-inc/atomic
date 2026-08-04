@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
 import { executeAsyncChain } from "../../packages/subagents/src/runs/background/async-execution-chain.js";
 import { executeAsyncSingle } from "../../packages/subagents/src/runs/background/async-execution-single.js";
-import { runSingleStep } from "../../packages/subagents/src/runs/background/subagent-runner-step.js";
+import { runSync as runInProcessSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { successEvent, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
 
 interface CapturedRunnerStep {
 	intercomGroup?: string;
@@ -113,6 +112,7 @@ test("async single, parallel, and chain children inherit the workflow group with
 				runSync: async (_cwd, _agents, agent, task) => ({
 					agent,
 					task,
+					status: "ok",
 					exitCode: 0,
 					messages: [],
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
@@ -225,51 +225,32 @@ test("async single, parallel, and chain children inherit the workflow group with
 	]);
 });
 
-test("the async runner clears a serialized group when the child lacks Intercom access", async () => {
+test("in-process child resolves intercom group through typed admission without an env bridge", async () => {
 	const previousGroup = process.env.ATOMIC_INTERCOM_GROUP;
 	process.env.ATOMIC_INTERCOM_GROUP = "ambient-group";
+	const dir = mkdtempSync(join(tmpdir(), "atomic-workflow-group-inprocess-"));
 	try {
-		await withFakeCli(
-			`
-      import { writeFileSync } from "node:fs";
-      writeFileSync(new URL("./intercom-group.txt", import.meta.url), process.env.ATOMIC_INTERCOM_GROUP ?? "missing");
-      console.log(${JSON.stringify(successEvent("done"))});
-    `,
-			async (dir) => {
-				const step = {
-					agent: "worker",
-					task: "work",
-					intercomGroup: "workflow:root",
-					inheritProjectContext: false,
-					inheritSkills: false,
-				};
-				const context = {
-					previousOutput: "",
-					placeholder: "{previous}",
-					cwd: dir,
-					sessionEnabled: false,
-					id: "async-group-runner",
-					flatIndex: 0,
-					flatStepCount: 1,
-					outputFile: join(dir, "output.txt"),
-				};
-				const grouped = await runSingleStep(step, {
-					...context,
-					childIntercomTarget: "async-child",
-				});
-				assert.equal(grouped.exitCode, 0);
-				assert.equal(readFileSync(join(dir, "intercom-group.txt"), "utf8"), "workflow:root");
-
-				const ungrouped = await runSingleStep(step, {
-					...context,
-					outputFile: join(dir, "ungrouped-output.txt"),
-				});
-				assert.equal(ungrouped.exitCode, 0);
-				assert.equal(readFileSync(join(dir, "intercom-group.txt"), "utf8"), "");
-			},
-			{ idleMs: 4_000, wallMs: 8_000 },
-		);
+		const agent = {
+			name: "worker",
+			description: "test worker",
+			systemPromptMode: "replace" as const,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			systemPrompt: "work",
+			source: "project" as const,
+			filePath: join(dir, "worker.md"),
+		};
+		const result = await runInProcessSync(dir, [agent], "worker", "work", {
+			cwd: dir,
+			runId: "inprocess-group",
+			intercomGroup: "workflow:root",
+			testSession: { output: "done" },
+		});
+		assert.equal(result.status, "ok");
+		assert.equal(result.finalOutput, "done");
+		assert.equal(process.env.ATOMIC_INTERCOM_GROUP, "ambient-group");
 	} finally {
+		rmSync(dir, { recursive: true, force: true });
 		if (previousGroup === undefined) delete process.env.ATOMIC_INTERCOM_GROUP;
 		else process.env.ATOMIC_INTERCOM_GROUP = previousGroup;
 	}

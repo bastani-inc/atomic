@@ -46,6 +46,8 @@ export interface TestSessionOptions {
 	readonly output?: string;
 	readonly structuredOutputAfterPrompt?: number;
 	readonly promptLogPath?: string;
+	/** Hold a test prompt open until the caller releases the supplied promise. */
+	readonly promptGate?: Promise<void>;
 }
 
 export interface ChildSpec {
@@ -206,6 +208,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
 			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 			userMessages += 1;
+			if (testOptions.promptGate) await testOptions.promptGate;
 			if (
 				spec.structuredOutput &&
 				testOptions.structuredOutputAfterPrompt !== undefined &&

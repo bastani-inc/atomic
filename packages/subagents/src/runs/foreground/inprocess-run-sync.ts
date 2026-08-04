@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig } from "../../agents/agent-types.ts";
-import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.ts";
+import { ensureArtifactsDir, getArtifactPaths, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
 import type {
 	AgentProgress,
 	ArtifactPaths,
@@ -240,6 +240,10 @@ export async function runSingleInProcess(
 		detachCleanup();
 		void running.promise.then((backgroundOutcome) => {
 			const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths);
+			if (artifactPaths) {
+				writeArtifact(artifactPaths.outputPath, recovered.envelope ?? recovered.finalOutput ?? "");
+				writeMetadata(artifactPaths.metadataPath, recovered);
+			}
 			options.onDetachedExit?.(recovered);
 		});
 		const continuedResult: SingleResult = {

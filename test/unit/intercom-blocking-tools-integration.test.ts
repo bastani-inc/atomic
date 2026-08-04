@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import { registerContactSupervisorTool } from "../../packages/intercom/contact-supervisor-tool.js";
@@ -13,9 +14,33 @@ import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
-import { agentConfig, successEvent, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
+
+function agentConfig(): AgentConfig {
+	return {
+		name: "fake-worker",
+		description: "Fake worker",
+		source: "project",
+		filePath: "fake-worker.md",
+		systemPrompt: "Work.",
+		systemPromptMode: "replace",
+		inheritProjectContext: false,
+		inheritSkills: false,
+		model: "provider-a/stalled",
+		fallbackModels: ["provider-b/working"],
+	};
+}
+
+function deferred(): { promise: Promise<void>; release: () => void } {
+	let release!: () => void;
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
 
 type Tool = {
 	execute(
@@ -227,174 +252,174 @@ function joinedBus(emitter: EventEmitter, order: string[]) {
 
 for (const kind of ["intercom", "supervisor"] as const) {
 	test(`joined production inbound handoff resumes ${kind === "intercom" ? "generic ask" : "contact_supervisor need_decision"}`, async () => {
-		const gateName = `reply-gate-${kind}`;
-		const fakeScript = `import { existsSync } from "node:fs";\nimport { join } from "node:path";\nconst gate = join(process.cwd(), ${JSON.stringify(gateName)});\nconst timer = setInterval(() => { if (!existsSync(gate)) return; clearInterval(timer); console.log(${JSON.stringify(successEvent("eventual recovered child result"))}); }, 5);`;
-		await withFakeCli(
-			fakeScript,
-			async (dir) => {
-				const emitter = new EventEmitter();
-				const order: string[] = [];
-				const bus = joinedBus(emitter, order);
-				const piForHandoff = { events: bus };
-				const childTarget = "subagent-worker-joined-1";
-				const recovered: Array<{ finalOutput?: string; exitCode: number }> = [];
-				const recoveredExit = Promise.withResolvers<{ finalOutput?: string; exitCode: number }>();
-				const foreground = runSync(
-					dir,
-					[{ ...agentConfig(), systemPrompt: "Intercom orchestration channel" }],
-					"fake-worker",
-					"task",
-					{
-						cwd: dir,
-						runId: "joined",
-						index: 0,
-						intercomSessionName: childTarget,
-						allowIntercomDetach: true,
-						intercomEvents: bus,
-						onDetachedExit: (value) => {
-							recovered.push(value);
-							recoveredExit.resolve(value);
-						},
+		const dir = mkdtempSync(join(tmpdir(), `atomic-intercom-joined-${kind}-`));
+		const gate = deferred();
+		try {
+			const emitter = new EventEmitter();
+			const order: string[] = [];
+			const bus = joinedBus(emitter, order);
+			const piForHandoff = { events: bus };
+			const childTarget = "subagent-worker-joined-1";
+			const recovered: SingleResult[] = [];
+			const recoveredExit = Promise.withResolvers<SingleResult>();
+			const foreground = runSync(
+				dir,
+				[{ ...agentConfig(), systemPrompt: "Intercom orchestration channel" }],
+				"fake-worker",
+				"task",
+				{
+					cwd: dir,
+					runId: "joined",
+					index: 0,
+					intercomSessionName: childTarget,
+					allowIntercomDetach: true,
+					intercomEvents: bus,
+					testSession: { output: "eventual recovered child result", promptGate: gate.promise },
+					onDetachedExit: (value) => {
+						recovered.push(value);
+						recoveredExit.resolve(value);
 					},
-				);
+				},
+			);
 
-				let registered: Tool | undefined;
-				const slot = new ReplyWaiterSlot();
-				const surfaced: Message[] = [];
-				const handoff = new ForegroundDetachHandoff(piForHandoff as never, 1000);
-				const from: SessionInfo = {
-					id: "child-id",
-					name: childTarget,
+			let registered: Tool | undefined;
+			const slot = new ReplyWaiterSlot();
+			const surfaced: Message[] = [];
+			const handoff = new ForegroundDetachHandoff(piForHandoff as never, 1000);
+			const from: SessionInfo = {
+				id: "child-id",
+				name: childTarget,
+				cwd: dir,
+				model: "test",
+				pid: 1,
+				startedAt: 1,
+				lastActivity: 1,
+				status: "thinking",
+			};
+			const client = {
+				sessionId: "child-id",
+				async listSessions() {
+					return [];
+				},
+				async send(
+					_to: string,
+					outgoing: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string },
+				) {
+					const message: Message = {
+						id: outgoing.messageId ?? "missing",
+						timestamp: Date.now(),
+						expectsReply: outgoing.expectsReply,
+						replyTo: outgoing.replyTo,
+						content: { text: outgoing.text },
+					};
+					await handleForegroundInboundDelivery({
+						handoff,
+						from,
+						message,
+						generation: 7,
+						isCurrent: () => true,
+						surface: () => {
+							order.push("surface");
+							surfaced.push(message);
+						},
+						onUnclaimed: () => {
+							throw new Error("exact foreground owner was not found");
+						},
+					});
+					return { id: message.id, delivered: true };
+				},
+				async sendToSupervisor(
+					_to: string,
+					outgoing: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string },
+				) {
+					return this.send(_to, outgoing);
+				},
+			};
+			const common = {
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				resolveSessionTarget: async () => "parent-id",
+				beginReplyWait(from: string, replyTo: string, signal?: AbortSignal) {
+					return slot.begin(from, replyTo, signal);
+				},
+				hasReplyWaiter: () => slot.has(),
+			};
+			const toolPi = {
+				registerTool(value: Tool) {
+					registered = value;
+				},
+				appendEntry() {},
+			};
+			if (kind === "intercom")
+				registerIntercomTool(
+					toolPi as never,
+					{ ...common, confirmSend: false, replyTracker: new ReplyTracker() } as never,
+				);
+			else
+				registerContactSupervisorTool(
+					toolPi as never,
+					{
+						...common,
+						childOrchestratorMetadata: {
+							orchestratorTarget: "parent",
+							runId: "joined",
+							agent: "worker",
+							index: 0,
+						},
+					} as never,
+				);
+			assert.ok(registered);
+			const toolExecution =
+				kind === "intercom"
+					? registered.execute(
+							"call",
+							{ action: "ask", to: "parent", message: "Choose" },
+							undefined,
+							undefined,
+							context,
+						)
+					: registered.execute(
+							"call",
+							{ reason: "need_decision", message: "Choose" },
+							undefined,
+							undefined,
+							context,
+						);
+
+			const detached = await foreground;
+			assert.equal(detached.status, "continued");
+			assert.equal(detached.detached, true);
+			assert.equal(surfaced.length, 1);
+			assert.deepEqual(order.slice(0, 3), ["probe", "commit", "surface"]);
+			assert.equal(slot.current()?.replyTo, surfaced[0]?.id);
+			order.push("reply");
+			const routed = routeIncomingReply(
+				slot.current(),
+				{
+					id: "parent-id",
+					name: "parent",
 					cwd: dir,
 					model: "test",
-					pid: 1,
+					pid: 2,
 					startedAt: 1,
 					lastActivity: 1,
-					status: "thinking",
-				};
-				const client = {
-					sessionId: "child-id",
-					async listSessions() {
-						return [];
-					},
-					async send(
-						_to: string,
-						outgoing: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string },
-					) {
-						const message: Message = {
-							id: outgoing.messageId ?? "missing",
-							timestamp: Date.now(),
-							expectsReply: outgoing.expectsReply,
-							replyTo: outgoing.replyTo,
-							content: { text: outgoing.text },
-						};
-						await handleForegroundInboundDelivery({
-							handoff,
-							from,
-							message,
-							generation: 7,
-							isCurrent: () => true,
-							surface: () => {
-								order.push("surface");
-								surfaced.push(message);
-							},
-							onUnclaimed: () => {
-								throw new Error("exact foreground owner was not found");
-							},
-						});
-						return { id: message.id, delivered: true };
-					},
-					async sendToSupervisor(
-						_to: string,
-						outgoing: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string },
-					) {
-						return this.send(_to, outgoing);
-					},
-				};
-				const common = {
-					ensureConnected: async () => client,
-					syncPresenceIdentity() {},
-					resolveSessionTarget: async () => "parent-id",
-					beginReplyWait(from: string, replyTo: string, signal?: AbortSignal) {
-						return slot.begin(from, replyTo, signal);
-					},
-					hasReplyWaiter: () => slot.has(),
-				};
-				const toolPi = {
-					registerTool(value: Tool) {
-						registered = value;
-					},
-					appendEntry() {},
-				};
-				if (kind === "intercom")
-					registerIntercomTool(
-						toolPi as never,
-						{ ...common, confirmSend: false, replyTracker: new ReplyTracker() } as never,
-					);
-				else
-					registerContactSupervisorTool(
-						toolPi as never,
-						{
-							...common,
-							childOrchestratorMetadata: {
-								orchestratorTarget: "parent",
-								runId: "joined",
-								agent: "worker",
-								index: 0,
-							},
-						} as never,
-					);
-				assert.ok(registered);
-				const toolExecution =
-					kind === "intercom"
-						? registered.execute(
-								"call",
-								{ action: "ask", to: "parent", message: "Choose" },
-								undefined,
-								undefined,
-								context,
-							)
-						: registered.execute(
-								"call",
-								{ reason: "need_decision", message: "Choose" },
-								undefined,
-								undefined,
-								context,
-							);
-
-				const detached = await foreground;
-				assert.equal(detached.detached, true);
-				assert.equal(surfaced.length, 1);
-				assert.deepEqual(order.slice(0, 3), ["probe", "commit", "surface"]);
-				assert.equal(slot.current()?.replyTo, surfaced[0]?.id);
-				order.push("reply");
-				const routed = routeIncomingReply(
-					slot.current(),
-					{
-						id: "parent-id",
-						name: "parent",
-						cwd: dir,
-						model: "test",
-						pid: 2,
-						startedAt: 1,
-						lastActivity: 1,
-						status: "waiting",
-					},
-					{ id: "parent-reply", timestamp: Date.now(), replyTo: surfaced[0]?.id, content: { text: "Approved" } },
-				);
-				assert.equal(routed, true, "production routing seam accepts the exact threaded parent reply");
-				const resumed = await toolExecution;
-				assert.equal(resumed.isError, false);
-				assert.match(resumed.content[0]?.text ?? "", /Approved/);
-				order.push("continued");
-				writeFileSync(join(dir, gateName), "reply received");
-				const recoveredResult = await recoveredExit.promise;
-				assert.equal(recovered.length, 1);
-				assert.equal(recoveredResult.exitCode, 0);
-				assert.match(recoveredResult.finalOutput ?? "", /eventual recovered child result/);
-				assert.ok(order.indexOf("continued") > order.indexOf("reply"));
-			},
-			{ idleMs: 4_000, wallMs: 4_000 },
-		);
+					status: "waiting",
+				},
+				{ id: "parent-reply", timestamp: Date.now(), replyTo: surfaced[0]?.id, content: { text: "Approved" } },
+			);
+			assert.equal(routed, true, "production routing seam accepts the exact threaded parent reply");
+			const resumed = await toolExecution;
+			assert.equal(resumed.isError, false);
+			assert.match(resumed.content[0]?.text ?? "", /Approved/);
+			order.push("continued");
+			gate.release();
+			const recoveredResult = await recoveredExit.promise;
+			assert.equal(recovered.length, 1);
+			assert.equal(recoveredResult.status, "ok");
+			assert.match(recoveredResult.finalOutput ?? "", /eventual recovered child result/);
+			assert.ok(order.indexOf("continued") > order.indexOf("reply"));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 }

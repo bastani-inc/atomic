@@ -111,6 +111,8 @@ export interface RunSyncOptions {
 		output?: string;
 		structuredOutputAfterPrompt?: number;
 		promptLogPath?: string;
+		/** Hold a test prompt open until the caller releases the supplied promise. */
+		promptGate?: Promise<void>;
 	};
 }
 
