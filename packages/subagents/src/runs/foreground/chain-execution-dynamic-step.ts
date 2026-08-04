@@ -222,7 +222,7 @@ export async function runDynamicParallelChainStep(input: {
 	}
 	const failures = parallelResults
 		.map((result, originalIndex) => ({ ...result, originalIndex }))
-		.filter((result) => result.exitCode !== 0 && result.exitCode !== -1);
+		.filter((result) => result.status !== "ok" && result.status !== "skipped" && result.exitCode !== -1);
 	if (failures.length > 0) {
 		const failureSummary = failures
 			.map(

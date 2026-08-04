@@ -234,7 +234,12 @@ export async function runParallelPath(
 		});
 		for (let i = 0; i < results.length; i++) {
 			const run = results[i]!;
-			recordRun(run.agent, taskTexts[i]!, run.exitCode, run.progressSummary?.durationMs ?? 0);
+			recordRun(
+				run.agent,
+				taskTexts[i]!,
+				run.status ?? (run.exitCode === 0 ? "ok" : "error"),
+				run.progressSummary?.durationMs ?? 0,
+			);
 		}
 
 		for (const result of results) {

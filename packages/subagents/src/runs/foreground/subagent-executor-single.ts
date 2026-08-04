@@ -238,7 +238,12 @@ export async function runSinglePath(
 		foregroundControl.toolCount = r.progress?.toolCount;
 		foregroundControl.updatedAt = Date.now();
 	}
-	recordRun(params.agent!, cleanTask, r.exitCode, r.progressSummary?.durationMs ?? 0);
+	recordRun(
+		params.agent!,
+		cleanTask,
+		r.status ?? (r.exitCode === 0 ? "ok" : "error"),
+		r.progressSummary?.durationMs ?? 0,
+	);
 
 	if (r.progress) allProgress.push(r.progress);
 	if (r.artifactPaths) allArtifactPaths.push(r.artifactPaths);

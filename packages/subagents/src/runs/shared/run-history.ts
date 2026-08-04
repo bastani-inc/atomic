@@ -7,9 +7,8 @@ export interface RunEntry {
 	agent: string;
 	task: string;
 	ts: number;
-	status: "ok" | "error";
+	status: "ok" | "error" | "skipped" | "interrupted" | "continued";
 	duration: number;
-	exit?: number;
 }
 
 const HISTORY_PATH =
@@ -18,15 +17,14 @@ const HISTORY_READ_PATHS = getAgentConfigPaths("run-history.jsonl");
 const ROTATE_READ_THRESHOLD = 1200;
 const ROTATE_KEEP = 1000;
 
-export function recordRun(agent: string, task: string, exitCode: number, durationMs: number): void {
+export function recordRun(agent: string, task: string, status: RunEntry["status"], durationMs: number): void {
 	try {
 		const entry: RunEntry = {
 			agent,
 			task: task.slice(0, 200),
 			ts: Math.floor(Date.now() / 1000),
-			status: exitCode === 0 ? "ok" : "error",
+			status,
 			duration: durationMs,
-			...(exitCode !== 0 ? { exit: exitCode } : {}),
 		};
 		fs.mkdirSync(path.dirname(HISTORY_PATH), { recursive: true });
 		fs.appendFileSync(HISTORY_PATH, `${JSON.stringify(entry)}\n`);
