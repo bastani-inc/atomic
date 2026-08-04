@@ -1,4 +1,4 @@
-import type { Message, SessionInfo } from "./types.ts";
+import type { Message, SessionInfo } from "./types.js";
 import { resolveSessionTarget, sessionTargetFailureReason } from "./session-target.js";
 
 export interface IntercomContext {

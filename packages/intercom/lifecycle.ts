@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import type { IntercomClient } from "./broker/client.ts";
+import type { IntercomClient } from "./broker/client.js";
 import type { IntercomConfig } from "./config.ts";
 import { buildPresenceIdentity } from "./intercom-utils.js";
 import type { InboundIdleQueue } from "./inbound-idle-queue.js";
-import type { ReplyTracker } from "./reply-tracker.ts";
+import type { ReplyTracker } from "./reply-tracker.js";
 
 interface LifecycleDeps {
   config: IntercomConfig;

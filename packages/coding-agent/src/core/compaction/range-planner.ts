@@ -16,7 +16,7 @@ import type { DiagnosticFailureCategory } from "./range-planner-diagnostics.js";
 import { writeDiagnosticSidecar, writeRecoveryDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import { numberRegionLines } from "./transcript-serialization.js";
 import { parseRangeRecords, recoverTruncatedRecords } from "./truncated-range-recovery.js";
-import { contiguousRanges } from "./utils.js";
+import { contiguousRanges } from "./utils.ts";
 
 export const RANGE_PLANNER_SYSTEM_PROMPT = `You are a context compaction assistant. Your task is to globally rank the continuation value of every unprotected numbered transcript line, apply the stated keep threshold once, and output only the lines to DELETE as bare deletion records.
 

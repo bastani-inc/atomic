@@ -1,5 +1,5 @@
 import { isToolExcluded } from "./types.ts";
-import type { MetadataCache, ServerCacheEntry, CachedTool } from "./metadata-cache.ts";
+import type { MetadataCache, ServerCacheEntry, CachedTool } from "./metadata-cache.js";
 import { resourceNameToToolName } from "./resource-tools.ts";
 import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.ts";
 import type { ServerState, ToolState, VisibleItem } from "./mcp-panel-types.ts";

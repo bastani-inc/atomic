@@ -1,6 +1,6 @@
 import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext, ToolInfo } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.js";
-import type { McpConfig } from "./types.js";
+import type { McpConfig } from "./types.ts";
 import type { MetadataCache } from "./metadata-cache.js";
 import type { ProxyToolResult } from "./proxy-types.js";
 import { waitForCaller } from "./caller-wait.js";
@@ -8,7 +8,7 @@ import { McpSessionCleanupBarrier } from "./session-cleanup-barrier.js";
 import { McpStateChangedError } from "./state-lease.js";
 import { registerMcpCommands } from "./command-registration.js";
 import { Type } from "typebox";
-import { loadMcpConfig } from "./config.js";
+import { loadMcpConfig } from "./config.ts";
 import { getConfigPathFromArgv } from "./utils.js";
 import { renderMcpToolResult } from "./tool-result-renderer.js";
 
@@ -57,7 +57,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     cache: MetadataCache | null,
   ): Promise<{ directToolCount: number; missingConfiguredDirectToolServers: string[] }> {
     const [{ resolveDirectTools, createDirectToolExecutor, getMissingConfiguredDirectToolServers }, { truncateAtWord }] = await Promise.all([
-      import("./direct-tools.js"),
+      import("./direct-tools.ts"),
       import("./utils.js"),
     ]);
     const prefix = config.settings?.toolPrefix ?? "server";

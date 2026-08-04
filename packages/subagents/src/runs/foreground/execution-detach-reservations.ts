@@ -1,4 +1,4 @@
-import type { IntercomDetachRoute } from "./execution-detach-route.js";
+import type { IntercomDetachRoute } from "./execution-detach-route.ts";
 
 interface Reservation {
 	route: IntercomDetachRoute;

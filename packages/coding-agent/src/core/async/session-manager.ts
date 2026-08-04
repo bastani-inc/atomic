@@ -1,4 +1,4 @@
-import type { SendMessageOptions } from "../extensions/index.js";
+import type { SendMessageOptions } from "../extensions/index.ts";
 import { AsyncJobManager } from "./job-manager.js";
 import type { AsyncJobDeliveryHandler, AsyncJobDeliveryMessage } from "./types.js";
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
-import { APP_NAME } from "../../config.js";
+import { APP_NAME } from "../../config.ts";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_CLOSING_TAG,

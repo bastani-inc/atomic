@@ -379,7 +379,7 @@ export interface McpPanelCallbacks {
   canAuthenticate: (serverName: string) => boolean;
   authenticate: (serverName: string) => Promise<McpAuthResult>;
   getConnectionStatus: (serverName: string) => "connected" | "idle" | "failed" | "needs-auth";
-  refreshCacheAfterReconnect: (serverName: string) => import("./metadata-cache.ts").ServerCacheEntry | null;
+  refreshCacheAfterReconnect: (serverName: string) => import("./metadata-cache.js").ServerCacheEntry | null;
 }
 
 export interface McpPanelResult {

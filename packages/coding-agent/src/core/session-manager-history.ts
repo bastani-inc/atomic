@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
-import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.ts";
+import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.js";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,

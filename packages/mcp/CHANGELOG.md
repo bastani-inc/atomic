@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed bundled MCP resources failing to load on Windows when shared modules used mixed `.ts` and `.js` import spellings.
+
 ## [0.9.11] - 2026-08-03
 
 ### Removed

@@ -1,4 +1,4 @@
-import type { UiHostContext, UiResourceContent, UiResourceCsp } from "./types.js";
+import type { UiHostContext, UiResourceContent, UiResourceCsp } from "./types.ts";
 
 // Use locally bundled AppBridge to avoid CDN Zod bundling issues
 const DEFAULT_APP_BRIDGE_MODULE_URL = "/app-bridge.bundle.js";

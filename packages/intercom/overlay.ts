@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import type { IntercomClient } from "./broker/client.ts";
+import type { IntercomClient } from "./broker/client.js";
 import type { ComposeResult } from "./ui/compose.ts";
 import { ComposeOverlay } from "./ui/compose.ts";
 import { SessionListOverlay } from "./ui/session-list.ts";
-import type { SessionInfo } from "./types.ts";
+import type { SessionInfo } from "./types.js";
 import { duplicateSessionNames, formatSessionLabel, getErrorMessage } from "./intercom-utils.js";
 
 interface OverlayDeps {

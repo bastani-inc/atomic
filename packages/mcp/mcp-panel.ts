@@ -1,5 +1,5 @@
 import { matchesKey } from "@earendil-works/pi-tui";
-import type { MetadataCache } from "./metadata-cache.ts";
+import type { MetadataCache } from "./metadata-cache.js";
 import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.ts";
 import {
   buildMcpPanelResult,

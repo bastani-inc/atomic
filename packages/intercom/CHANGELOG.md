@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed bundled Intercom resources failing to load on Windows when shared modules used mixed `.ts` and `.js` import spellings.
+
 ## [0.9.11] - 2026-08-03
 
 ### Changed
