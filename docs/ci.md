@@ -42,9 +42,15 @@ The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, a
 | --- | --- | --- | ---: | ---: |
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
 | `agent-suite` | both | build native bindings -> coding-agent vitest (Node), then its Bun-hosted SQLite selector project | 126 s | 232 s |
-| `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s |
+| `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s warm / 4m04s healthy p100 |
 | `static-checks` | Linux only | typecheck, docs links, Mintlify, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
+
+The release-archive Windows samples above are warm-toolchain measurements. A cold
+run reached 6m12s and 6m13s before cancellation: `rust-toolchain` took 152s and
+140s (versus 12s and 36s warm), checkout took 71s and 64s, and the native build
+and archive smoke add roughly 110s and 40s. The 9-minute cap covers that observed
+near-6m50s tail rather than only the healthy 4m04s p100.
 
 Those are the per-step costs sampled from four sequential-job runs, which put the critical path on the Windows `agent-suite` chain at about 247 s against the 452 s (434–483 s, n=3 healthy) the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
 
@@ -53,11 +59,16 @@ Those are the per-step costs sampled from four sequential-job runs, which put th
 | Job | run 1 | run 2 |
 | --- | ---: | ---: |
 | `static-checks (linux-x64)` | 32 s | 50 s |
-| `release-archive` Linux / Windows | 84 s / 162 s | 83 s / 175 s |
+| `release-archive` Linux / Windows | 84 s / 162 s (warm) | 83 s / 175 s (warm) |
 | `suites` Linux / Windows | 230 s / 348 s | 147 s / 238 s |
 | `agent-suite` Linux / Windows | 138 s / **349 s** | 203 s / **380 s** |
 | `test` gate, both legs | 3 s / 4 s | 4 s / 5 s |
 | **whole run** | **433 s** | **440 s** |
+
+The older split-run release-archive values in this table are warm samples; later
+healthy Windows runs reached 4m04s, while two cold runs reached 6m12s and 6m13s
+and were cancelled by the former 6-minute cap. The Windows cap is therefore 9
+minutes to cover the cold toolchain and checkout tail.
 
 Read this carefully before planning further work, because it says two different things.
 
@@ -108,7 +119,7 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 
 ### Per-job time limits
 
-The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang detector at roughly 2x measured p100, with room for the one bounded flake retry it owns: `suites` 8/12, `agent-suite` 6/12, `release-archive` 5/6, `static-checks` 6, gate 5. The two Windows caps are 12 rather than the 8 and 9 that the sequential-job sampling implied, because the first split run measured 348 s and 349 s there; a cap that cancels a passing retried run is worse than a late hang detection. Every cap still sits under the 15-minute Windows blanket it replaced, and the contract test enforces that.
+The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang detector at roughly 2x measured p100, with room for the one bounded flake retry it owns: `suites` 8/12, `agent-suite` 6/12, `release-archive` 5/9, `static-checks` 6, gate 5. The two Windows caps are 12 rather than the 8 and 9 that the sequential-job sampling implied, because the first split run measured 348 s and 349 s there; a cap that cancels a passing retried run is worse than a late hang detection. The release-archive Windows cap is 9 because cold setup observed a 152 s Rust toolchain acquisition and 71 s checkout before the roughly 110 s native build and 40 s archive smoke. Every cap still sits under the 15-minute Windows blanket it replaced, and the contract test enforces that.
 
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
 

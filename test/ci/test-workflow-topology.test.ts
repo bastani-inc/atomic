@@ -64,7 +64,10 @@ test("every work job the gate names exists and is otherwise independent", async 
  * Per-job wall-clock caps replace the blanket 10/15 minute pair. A cap is a hang
  * detector at roughly 2x measured p100 and must leave room for the one bounded
  * flake retry the job owns: the first split run fired that retry on both
- * platforms and took 230 s / 348 s in `suites` alone.
+ * platforms and took 230 s / 348 s in `suites` alone. The Windows
+ * `release-archive` cap is 9 minutes because cold setup observed 152 s for
+ * `rust-toolchain` and 71 s for checkout, followed by roughly 110 s native
+ * build and 40 s archive smoke (near 6m50s versus a healthy 4m04s p100).
  */
 test("each split job declares its own measured timeout", async () => {
 	const workflow = await readText(testPath);
@@ -72,7 +75,7 @@ test("each split job declares its own measured timeout", async () => {
 	const caps: Record<string, [number, number]> = {
 		suites: [8, 12],
 		"agent-suite": [6, 12],
-		"release-archive": [5, 6],
+		"release-archive": [5, 9],
 	};
 	for (const [job, [linux, windows]] of Object.entries(caps)) {
 		const block = blocks.get(job) as string;
