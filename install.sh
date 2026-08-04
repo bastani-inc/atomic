@@ -209,10 +209,16 @@ PHYSICAL_INSTALL_ROOT=$(canonicalize_existing_prefix "$INSTALL_ROOT") ||
     fail "unable to resolve ATOMIC_INSTALL_DIR: $INSTALL_ROOT"
 PHYSICAL_BIN_PATH=$(canonicalize_existing_prefix "$BIN_PATH") ||
     fail "unable to resolve ATOMIC_BIN_DIR/atomic: $BIN_PATH"
-[ "$PHYSICAL_BIN_PATH" != "$PHYSICAL_INSTALL_ROOT" ] ||
-    fail "ATOMIC_INSTALL_DIR conflicts with ATOMIC_BIN_DIR/atomic: $INSTALL_ROOT"
+case $PHYSICAL_INSTALL_ROOT/ in
+    "$PHYSICAL_BIN_PATH/"*)
+        fail "ATOMIC_INSTALL_DIR cannot equal ATOMIC_BIN_DIR/atomic or be inside that launcher path: $INSTALL_ROOT"
+        ;;
+esac
+if [ -d "$BIN_PATH" ] && [ ! -L "$BIN_PATH" ]; then
+    fail "ATOMIC_BIN_DIR/atomic is an unexpected directory; refusing to replace it: $BIN_PATH"
+fi
 
-for required_command in uname awk tar mkdir mv chmod ln rm rmdir; do
+for required_command in uname tar mkdir mv chmod ln rm rmdir; do
     command -v "$required_command" >/dev/null 2>&1 || fail "required command not found: $required_command"
 done
 
@@ -297,10 +303,20 @@ esac
 VERSIONS_DIR=
 CURRENT_PATH=
 
-TOKEN=${GITHUB_TOKEN:-}
+set -- "${GITHUB_TOKEN:-}" "${GH_TOKEN:-}"
+unset GITHUB_TOKEN GH_TOKEN TOKEN
+TOKEN=$1
 if [ -z "$TOKEN" ]; then
-    TOKEN=${GH_TOKEN:-}
+    TOKEN=$2
 fi
+set --
+token_line_feed=$(printf '\n_')
+token_line_feed=${token_line_feed%_}
+token_carriage_return=$(printf '\r_')
+token_carriage_return=${token_carriage_return%_}
+case $TOKEN in
+    *"$token_line_feed"*|*"$token_carriage_return"*) fail "GitHub API token contains a forbidden newline" ;;
+esac
 
 umask 077
 TEMP_BASE=${TMPDIR:-/tmp}/atomic-install.$$
@@ -315,6 +331,7 @@ done
 TRANSACTION_ID=$$.$TEMP_ATTEMPT
 ARCHIVE_PATH=$TEMP_DIR/$ASSET_NAME
 CHECKSUM_PATH=$TEMP_DIR/$CHECKSUM_FILE
+API_AUTH_PATH=$TEMP_DIR/github-api-auth
 EXTRACT_ROOT=$TEMP_DIR/extract
 PAYLOAD_ROOT=
 VERSION_PATH=
@@ -334,9 +351,119 @@ INSTALL_COMMITTED=0
 CREATED_INSTALL_ROOT=0
 CREATED_VERSIONS_DIR=0
 CREATED_BIN_DIR=0
+INSTALL_DIRECTORY_STOP=
+BIN_DIRECTORY_STOP=
+ROLLBACK_RETRY_LIMIT=3
 
 path_exists() {
     [ -e "$1" ] || [ -L "$1" ]
+}
+
+nearest_existing_directory() {
+    existing_candidate=$1
+    while [ ! -d "$existing_candidate" ]; do
+        existing_parent=${existing_candidate%/*}
+        [ -n "$existing_parent" ] || existing_parent=/
+        [ "$existing_parent" != "$existing_candidate" ] || return 1
+        existing_candidate=$existing_parent
+    done
+    printf '%s\n' "$existing_candidate"
+}
+
+remove_created_empty_path() {
+    created_candidate=$1
+    created_stop=$2
+    while [ -n "$created_candidate" ] && [ "$created_candidate" != "$created_stop" ]; do
+        if ! rmdir "$created_candidate" 2>/dev/null; then
+            return
+        fi
+        created_parent=${created_candidate%/*}
+        [ -n "$created_parent" ] || created_parent=/
+        [ "$created_parent" != "$created_candidate" ] || return
+        created_candidate=$created_parent
+    done
+}
+
+rollback_once() {
+    rollback_incomplete=0
+
+    if [ "$BIN_INSTALLED" -eq 1 ]; then
+        if ! path_exists "$BIN_PATH"; then
+            BIN_INSTALLED=0
+        elif rm -rf "$BIN_PATH"; then
+            BIN_INSTALLED=0
+        else
+            printf 'warning: failed to remove the unsuccessful atomic launcher: %s\n' "$BIN_PATH" >&2
+            rollback_incomplete=1
+        fi
+    fi
+    if [ "$BIN_BACKED_UP" -eq 1 ]; then
+        if path_exists "$BIN_BACKUP" && ! path_exists "$BIN_PATH"; then
+            if mv "$BIN_BACKUP" "$BIN_PATH"; then
+                BIN_BACKED_UP=0
+            else
+                printf 'warning: failed to restore the previous atomic launcher: %s\n' "$BIN_PATH" >&2
+                rollback_incomplete=1
+            fi
+        elif ! path_exists "$BIN_BACKUP" && path_exists "$BIN_PATH"; then
+            BIN_BACKED_UP=0
+        else
+            printf 'warning: previous atomic launcher restore remains incomplete: %s\n' "$BIN_PATH" >&2
+            rollback_incomplete=1
+        fi
+    fi
+
+    if [ "$CURRENT_INSTALLED" -eq 1 ]; then
+        if ! path_exists "$CURRENT_PATH"; then
+            CURRENT_INSTALLED=0
+        elif rm -rf "$CURRENT_PATH"; then
+            CURRENT_INSTALLED=0
+        else
+            printf 'warning: failed to remove the unsuccessful current pointer: %s\n' "$CURRENT_PATH" >&2
+            rollback_incomplete=1
+        fi
+    fi
+    if [ "$CURRENT_BACKED_UP" -eq 1 ]; then
+        if path_exists "$CURRENT_BACKUP" && ! path_exists "$CURRENT_PATH"; then
+            if mv "$CURRENT_BACKUP" "$CURRENT_PATH"; then
+                CURRENT_BACKED_UP=0
+            else
+                printf 'warning: failed to restore the previous current pointer: %s\n' "$CURRENT_PATH" >&2
+                rollback_incomplete=1
+            fi
+        elif ! path_exists "$CURRENT_BACKUP" && path_exists "$CURRENT_PATH"; then
+            CURRENT_BACKED_UP=0
+        else
+            printf 'warning: previous current pointer restore remains incomplete: %s\n' "$CURRENT_PATH" >&2
+            rollback_incomplete=1
+        fi
+    fi
+
+    if [ "$VERSION_INSTALLED" -eq 1 ]; then
+        if ! path_exists "$VERSION_PATH"; then
+            VERSION_INSTALLED=0
+        elif rm -rf "$VERSION_PATH"; then
+            VERSION_INSTALLED=0
+        else
+            printf 'warning: failed to remove the unsuccessful version: %s\n' "$VERSION_PATH" >&2
+            rollback_incomplete=1
+        fi
+    fi
+    if [ "$VERSION_BACKED_UP" -eq 1 ]; then
+        if path_exists "$VERSION_BACKUP" && ! path_exists "$VERSION_PATH"; then
+            if mv "$VERSION_BACKUP" "$VERSION_PATH"; then
+                VERSION_BACKED_UP=0
+            else
+                printf 'warning: failed to restore the previous version: %s\n' "$VERSION_PATH" >&2
+                rollback_incomplete=1
+            fi
+        elif ! path_exists "$VERSION_BACKUP" && path_exists "$VERSION_PATH"; then
+            VERSION_BACKED_UP=0
+        else
+            printf 'warning: previous version restore remains incomplete: %s\n' "$VERSION_PATH" >&2
+            rollback_incomplete=1
+        fi
+    fi
 }
 
 cleanup() {
@@ -344,44 +471,35 @@ cleanup() {
     set +e
 
     if [ "$INSTALL_COMMITTED" -ne 1 ]; then
-        if [ "$BIN_INSTALLED" -eq 1 ] && path_exists "$BIN_PATH"; then
-            rm -rf "$BIN_PATH"
-        fi
-        if [ "$BIN_BACKED_UP" -eq 1 ] && path_exists "$BIN_BACKUP"; then
-            mv "$BIN_BACKUP" "$BIN_PATH"
-        fi
-        if [ -n "$BIN_NEXT" ] && path_exists "$BIN_NEXT"; then
-            rm -rf "$BIN_NEXT"
+        rollback_attempt=0
+        rollback_incomplete=1
+        while [ "$rollback_attempt" -lt "$ROLLBACK_RETRY_LIMIT" ] && [ "$rollback_incomplete" -eq 1 ]; do
+            rollback_attempt=$((rollback_attempt + 1))
+            rollback_once
+        done
+        if [ "$rollback_incomplete" -eq 1 ]; then
+            printf 'warning: installation rollback remains incomplete after %s attempts; backups were retained for recovery.\n' "$ROLLBACK_RETRY_LIMIT" >&2
+            cleanup_status=1
         fi
 
-        if [ "$CURRENT_INSTALLED" -eq 1 ] && path_exists "$CURRENT_PATH"; then
-            rm -rf "$CURRENT_PATH"
-        fi
-        if [ "$CURRENT_BACKED_UP" -eq 1 ] && path_exists "$CURRENT_BACKUP"; then
-            mv "$CURRENT_BACKUP" "$CURRENT_PATH"
+        if [ -n "$BIN_NEXT" ] && path_exists "$BIN_NEXT"; then
+            rm -rf "$BIN_NEXT" || printf 'warning: failed to remove temporary launcher: %s\n' "$BIN_NEXT" >&2
         fi
         if [ -n "$CURRENT_NEXT" ] && path_exists "$CURRENT_NEXT"; then
-            rm -rf "$CURRENT_NEXT"
-        fi
-
-        if [ "$VERSION_INSTALLED" -eq 1 ] && path_exists "$VERSION_PATH"; then
-            rm -rf "$VERSION_PATH"
-        fi
-        if [ "$VERSION_BACKED_UP" -eq 1 ] && path_exists "$VERSION_BACKUP"; then
-            mv "$VERSION_BACKUP" "$VERSION_PATH"
+            rm -rf "$CURRENT_NEXT" || printf 'warning: failed to remove temporary current pointer: %s\n' "$CURRENT_NEXT" >&2
         fi
         if [ -n "$VERSION_STAGE" ] && path_exists "$VERSION_STAGE"; then
-            rm -rf "$VERSION_STAGE"
+            rm -rf "$VERSION_STAGE" || printf 'warning: failed to remove staged version: %s\n' "$VERSION_STAGE" >&2
         fi
 
         if [ "$CREATED_BIN_DIR" -eq 1 ]; then
-            rmdir "$BIN_DIR" 2>/dev/null
+            remove_created_empty_path "$BIN_DIR" "$BIN_DIRECTORY_STOP"
         fi
         if [ "$CREATED_VERSIONS_DIR" -eq 1 ]; then
-            rmdir "$VERSIONS_DIR" 2>/dev/null
+            rmdir "$VERSIONS_DIR" 2>/dev/null || :
         fi
         if [ "$CREATED_INSTALL_ROOT" -eq 1 ]; then
-            rmdir "$INSTALL_ROOT" 2>/dev/null
+            remove_created_empty_path "$INSTALL_ROOT" "$INSTALL_DIRECTORY_STOP"
         fi
     fi
 
@@ -393,17 +511,37 @@ cleanup() {
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
+prepare_api_auth() {
+    [ -n "$TOKEN" ] || return 0
+    if [ "$DOWNLOADER" = curl ]; then
+        printf 'Authorization: Bearer %s\n' "$TOKEN" > "$API_AUTH_PATH"
+    else
+        wget_version=$(wget --version 2>/dev/null || :)
+        case $wget_version in
+            *'GNU Wget'*) ;;
+            *) fail "authenticated GitHub API requests require curl or GNU Wget; this wget cannot protect the token" ;;
+        esac
+        printf 'header = Authorization: Bearer %s\n' "$TOKEN" > "$API_AUTH_PATH"
+    fi
+    chmod 600 "$API_AUTH_PATH"
+}
+
+clear_api_auth() {
+    rm -f "$API_AUTH_PATH"
+    unset TOKEN
+}
+
 http_get() {
     http_url=$1
     if [ "$DOWNLOADER" = curl ]; then
         if [ -n "$TOKEN" ]; then
-            curl -fsSL -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer $TOKEN" "$http_url"
+            curl -fsSL -H 'Accept: application/vnd.github+json' -H "@$API_AUTH_PATH" "$http_url"
         else
             curl -fsSL -H 'Accept: application/vnd.github+json' "$http_url"
         fi
     else
         if [ -n "$TOKEN" ]; then
-            wget -q -O - --header='Accept: application/vnd.github+json' --header="Authorization: Bearer $TOKEN" "$http_url"
+            WGETRC="$API_AUTH_PATH" wget -q -O - --header='Accept: application/vnd.github+json' "$http_url"
         else
             wget -q -O - --header='Accept: application/vnd.github+json' "$http_url"
         fi
@@ -464,194 +602,80 @@ resolve_redirect_tag() {
     tag_from_release_url "$latest_location"
 }
 
+is_release_number() {
+    case $1 in
+        ''|*[!0123456789]*) return 1 ;;
+        0|[123456789]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_atomic_release_tag() {
+    release_version=$1
+    case $release_version in
+        *-alpha.*)
+            release_revision=${release_version##*-alpha.}
+            release_core=${release_version%-alpha.*}
+            is_release_number "$release_revision" || return 1
+            [ "$release_revision" != 0 ] || return 1
+            ;;
+        *-*) return 1 ;;
+        *) release_core=$release_version ;;
+    esac
+
+    release_ifs=$IFS
+    IFS=.
+    set -- $release_core
+    IFS=$release_ifs
+    [ "$#" -eq 3 ] || return 1
+    is_release_number "$1" && is_release_number "$2" && is_release_number "$3"
+}
+
 parse_release_tag() {
     release_json=$1
-    printf '%s\n' "$release_json" | awk '
-        function reject() {
-            exit 1
-        }
+    case $release_json in
+        *\"tag_name\"*) release_json_tail=${release_json#*\"tag_name\"} ;;
+        *) return 1 ;;
+    esac
 
-        function hex_digit(character) {
-            if (character >= "0" && character <= "9") return character + 0
-            if (character == "a" || character == "A") return 10
-            if (character == "b" || character == "B") return 11
-            if (character == "c" || character == "C") return 12
-            if (character == "d" || character == "D") return 13
-            if (character == "e" || character == "E") return 14
-            if (character == "f" || character == "F") return 15
-            return -1
-        }
-
-        function hex_quad(    count, digit, value) {
-            if (position + 3 > line_length) return -1
-            value = 0
-            for (count = 0; count < 4; count++) {
-                digit = hex_digit(substr(line, position, 1))
-                if (digit < 0) return -1
-                value = value * 16 + digit
-                position++
-            }
-            return value
-        }
-
-        function utf8(codepoint) {
-            if (codepoint <= 0 || codepoint > 1114111) return ""
-            if (codepoint <= 127) return sprintf("%c", codepoint)
-            if (codepoint <= 2047) {
-                return sprintf("%c%c", 192 + int(codepoint / 64), 128 + codepoint % 64)
-            }
-            if (codepoint <= 65535) {
-                return sprintf("%c%c%c", 224 + int(codepoint / 4096),
-                    128 + int(codepoint / 64) % 64, 128 + codepoint % 64)
-            }
-            return sprintf("%c%c%c%c", 240 + int(codepoint / 262144),
-                128 + int(codepoint / 4096) % 64,
-                128 + int(codepoint / 64) % 64, 128 + codepoint % 64)
-        }
-
-        function json_string(    character, codepoint, escape, low, output, scalar) {
-            output = ""
-            position++
-            while (position <= line_length) {
-                character = substr(line, position, 1)
-                position++
-                if (character == "\"") {
-                    decoded_string = output
-                    return 1
-                }
-                if (character != "\\") {
-                    if (character < " ") return 0
-                    output = output character
-                    continue
-                }
-
-                if (position > line_length) return 0
-                escape = substr(line, position, 1)
-                position++
-                if (escape == "\"" || escape == "\\" || escape == "/") {
-                    output = output escape
-                } else if (escape == "b") {
-                    output = output sprintf("%c", 8)
-                } else if (escape == "f") {
-                    output = output sprintf("%c", 12)
-                } else if (escape == "n") {
-                    output = output sprintf("%c", 10)
-                } else if (escape == "r") {
-                    output = output sprintf("%c", 13)
-                } else if (escape == "t") {
-                    output = output sprintf("%c", 9)
-                } else if (escape == "u") {
-                    codepoint = hex_quad()
-                    if (codepoint < 0) return 0
-                    if (codepoint >= 55296 && codepoint <= 56319) {
-                        if (substr(line, position, 2) != "\\u") return 0
-                        position += 2
-                        low = hex_quad()
-                        if (low < 56320 || low > 57343) return 0
-                        codepoint = 65536 + (codepoint - 55296) * 1024 + low - 56320
-                    } else if (codepoint >= 56320 && codepoint <= 57343) {
-                        return 0
-                    }
-                    scalar = utf8(codepoint)
-                    if (scalar == "") return 0
-                    output = output scalar
-                } else {
-                    return 0
-                }
-            }
-            return 0
-        }
-
-        BEGIN {
-            depth = 0
-            root_started = 0
-            top_level_key = 0
-            need_colon = 0
-            need_tag_value = 0
-            found = 0
-        }
-
-        {
-            line = $0 "\n"
-            line_length = length(line)
-            position = 1
-            while (position <= line_length) {
-                character = substr(line, position, 1)
-                if (character == " " || character == "\t" || character == "\r" || character == "\n") {
-                    position++
-                    continue
-                }
-
-                if (!root_started) {
-                    if (character != "{") reject()
-                    root_started = 1
-                    depth = 1
-                    stack[depth] = character
-                    top_level_key = 1
-                    position++
-                    continue
-                }
-
-                if (depth == 1 && top_level_key) {
-                    if (character == "}") reject()
-                    if (character != "\"") reject()
-                    if (!json_string()) reject()
-                    wanted_key = (decoded_string == "tag_name")
-                    top_level_key = 0
-                    need_colon = 1
-                    continue
-                }
-
-                if (depth == 1 && need_colon) {
-                    if (character != ":") reject()
-                    need_colon = 0
-                    need_tag_value = wanted_key
-                    position++
-                    continue
-                }
-
-                if (depth == 1 && need_tag_value) {
-                    if (character != "\"") reject()
-                    if (!json_string()) reject()
-                    if (decoded_string == "") reject()
-                    print decoded_string
-                    found = 1
-                    exit 0
-                }
-
-                if (character == "\"") {
-                    if (!json_string()) reject()
-                    continue
-                }
-                if (character == "{" || character == "[") {
-                    depth++
-                    stack[depth] = character
-                    position++
-                    continue
-                }
-                if (character == "}" || character == "]") {
-                    if ((character == "}" && stack[depth] != "{") ||
-                        (character == "]" && stack[depth] != "[")) reject()
-                    delete stack[depth]
-                    depth--
-                    if (depth == 0) root_finished = 1
-                    position++
-                    continue
-                }
-                if (depth == 1 && character == ",") {
-                    top_level_key = 1
-                    position++
-                    continue
-                }
-                if (root_finished) reject()
-                position++
-            }
-        }
-
-        END {
-            if (!found) exit 1
-        }
-    '
+    release_tab=$(printf '\t_')
+    release_tab=${release_tab%_}
+    release_line_feed=$(printf '\n_')
+    release_line_feed=${release_line_feed%_}
+    release_carriage_return=$(printf '\r_')
+    release_carriage_return=${release_carriage_return%_}
+    while [ -n "$release_json_tail" ]; do
+        release_character=${release_json_tail%"${release_json_tail#?}"}
+        case $release_character in
+            ' '|"$release_tab"|"$release_line_feed"|"$release_carriage_return")
+                release_json_tail=${release_json_tail#?}
+                ;;
+            *) break ;;
+        esac
+    done
+    case $release_json_tail in
+        :*) release_json_tail=${release_json_tail#?} ;;
+        *) return 1 ;;
+    esac
+    while [ -n "$release_json_tail" ]; do
+        release_character=${release_json_tail%"${release_json_tail#?}"}
+        case $release_character in
+            ' '|"$release_tab"|"$release_line_feed"|"$release_carriage_return")
+                release_json_tail=${release_json_tail#?}
+                ;;
+            *) break ;;
+        esac
+    done
+    case $release_json_tail in
+        \"*) release_json_tail=${release_json_tail#?} ;;
+        *) return 1 ;;
+    esac
+    case $release_json_tail in
+        *\"*) parsed_release_tag=${release_json_tail%%\"*} ;;
+        *) return 1 ;;
+    esac
+    is_atomic_release_tag "$parsed_release_tag" || return 1
+    printf '%s\n' "$parsed_release_tag"
 }
 
 TAGS_API=$GITHUB_API/repos/$REPOSITORY/releases/tags
@@ -659,11 +683,15 @@ RELEASE_TAG=
 RELEASE_TAG_ENCODED=
 API_URL=
 if [ -n "$REQUESTED_REF" ]; then
+    is_atomic_release_tag "$REQUESTED_REF" ||
+        fail "unsupported release tag: expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION"
     REQUESTED_REF_ENCODED=$(percent_encode "$REQUESTED_REF")
     API_URL=$TAGS_API/$REQUESTED_REF_ENCODED
 else
     REDIRECT_TAG=
     if REDIRECT_TAG=$(resolve_redirect_tag); then
+        is_atomic_release_tag "$REDIRECT_TAG" ||
+            fail "latest release redirect returned an unsupported Atomic release tag"
         RELEASE_TAG=$REDIRECT_TAG
     else
         API_URL=$GITHUB_API/repos/$REPOSITORY/releases/latest
@@ -671,6 +699,7 @@ else
 fi
 
 if [ -z "$RELEASE_TAG" ]; then
+    prepare_api_auth
     if ! RELEASE_JSON=$(http_get "$API_URL"); then
         fail "failed to resolve the GitHub release"
     fi
@@ -678,6 +707,7 @@ if [ -z "$RELEASE_TAG" ]; then
         fail "GitHub release response did not contain a valid tag_name"
     fi
 fi
+clear_api_auth
 RELEASE_TAG_ENCODED=$(percent_encode "$RELEASE_TAG")
 case $RELEASE_TAG_ENCODED in
     ''|.|..) fail "release tag cannot be used as a version directory: $RELEASE_TAG" ;;
@@ -743,6 +773,11 @@ fi
 
 VERSIONS_DIR=$INSTALL_ROOT/versions
 CURRENT_PATH=$INSTALL_ROOT/current
+
+INSTALL_DIRECTORY_STOP=$(nearest_existing_directory "$INSTALL_ROOT") ||
+    fail "unable to find an existing parent for ATOMIC_INSTALL_DIR: $INSTALL_ROOT"
+BIN_DIRECTORY_STOP=$(nearest_existing_directory "$BIN_DIR") ||
+    fail "unable to find an existing parent for ATOMIC_BIN_DIR: $BIN_DIR"
 
 if [ ! -d "$INSTALL_ROOT" ]; then
     mkdir -p "$INSTALL_ROOT"
@@ -811,12 +846,39 @@ if [ "$VERSION_BACKED_UP" -eq 1 ]; then
     VERSION_BACKED_UP=0
 fi
 
+shell_quote() {
+    shell_quote_input=$1
+    printf '%s' "'"
+    while [ -n "$shell_quote_input" ]; do
+        shell_quote_character=${shell_quote_input%"${shell_quote_input#?}"}
+        shell_quote_input=${shell_quote_input#?}
+        case $shell_quote_character in
+            "'") printf '%s' "'\\''" ;;
+            *) printf '%s' "$shell_quote_character" ;;
+        esac
+    done
+    printf '%s' "'"
+}
+
 printf 'Atomic %s installed successfully.\n' "$RELEASE_TAG"
 printf 'Binary: %s\n' "$BIN_PATH"
-case :${PATH:-}: in
-    *:"$BIN_DIR":*) ;;
+case $BIN_DIR in
+    *:*)
+        printf '%s\n' "ATOMIC_BIN_DIR contains ':' and cannot be represented as one POSIX PATH entry."
+        printf 'Run Atomic directly: '
+        shell_quote "$BIN_PATH"
+        printf '\n'
+        printf '%s\n' "Choose a colon-free ATOMIC_BIN_DIR to add Atomic to PATH."
+        ;;
     *)
-        printf 'Add Atomic to PATH for this shell:\n'
-        printf '  export PATH="%s:$PATH"\n' "$BIN_DIR"
+        case :${PATH:-}: in
+            *:"$BIN_DIR":*) ;;
+            *)
+                printf 'Add Atomic to PATH for this shell:\n'
+                printf '  export PATH='
+                shell_quote "$BIN_DIR"
+                printf ':"$PATH"\n'
+                ;;
+        esac
         ;;
 esac

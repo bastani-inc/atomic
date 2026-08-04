@@ -63,6 +63,25 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.match(source, /LOCALAPPDATA[\\/]atomic/u);
 	assert.match(source, /Default bin directory:[^\r\n]*LOCALAPPDATA[\\/]atomic[\\/]bin/u);
 	assert.match(source, /Restart your terminal/u);
+	const unexpectedShim = source.indexOf("unexpected atomic.cmd directory");
+	const unexpectedPointer = source.indexOf("unexpected atomic-current entry");
+	const apiHeaders = source.indexOf('$apiHeaders = @{ Accept = "application/vnd.github+json" }');
+	assert.ok(unexpectedShim >= 0 && unexpectedShim < apiHeaders);
+	assert.ok(unexpectedPointer >= 0 && unexpectedPointer < apiHeaders);
+});
+
+test("Windows installer isolates IEX state and scopes TLS 1.2 to controlled requests", () => {
+	const source = installerSource();
+	assert.match(source, /& \{\r?\nparam\(/u);
+	assert.ok(source.trimEnd().endsWith("} @args"));
+	assert.match(
+		source,
+		/\$previousSecurityProtocol = \[Net\.ServicePointManager\]::SecurityProtocol[\s\S]+-bor \[Net\.SecurityProtocolType\]::Tls12/u,
+	);
+	const requestStart = source.indexOf('$redirectTag = Get-AtomicRedirectTag "https://github.com');
+	const tlsEnable = source.indexOf("[Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol -bor");
+	const tlsRestore = source.lastIndexOf("[Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol");
+	assert.ok(tlsEnable >= 0 && tlsEnable < requestStart && tlsRestore > requestStart);
 });
 
 test("Windows installer uses a successful latest redirect without querying the GitHub API", () => {
@@ -349,6 +368,50 @@ const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
 const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 240_000;
 const ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS = 300_000;
 const CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS = 360_000;
+
+if (powershellEngines.length === 0) {
+	test.skip("available PowerShell engines isolate literal IEX failure state", () => {});
+}
+for (const engine of powershellEngines) {
+	test(`${engine.label} isolates literal IEX failure state`, () => {
+		const workspace = mkdtempSync(join(tmpdir(), "atomic-ps-scope-"));
+		const probePath = join(workspace, "scope-probe.ps1");
+		const quotedInstallerPath = installerPath.replaceAll("'", "''");
+		writeFileSync(
+			probePath,
+			[
+				'$ErrorActionPreference = "Continue"',
+				'$ProgressPreference = "Continue"',
+				"Set-StrictMode -Off",
+				'$Ref = "caller-ref"',
+				'$Help = "caller-help"',
+				'$helpText = "caller-help-text"',
+				"$beforeTls = [Net.ServicePointManager]::SecurityProtocol",
+				"$oldWow = $env:PROCESSOR_ARCHITEW6432",
+				"$oldArch = $env:PROCESSOR_ARCHITECTURE",
+				'$env:PROCESSOR_ARCHITEW6432 = "unsupported"',
+				'$env:PROCESSOR_ARCHITECTURE = "unsupported"',
+				`$source = [IO.File]::ReadAllText('${quotedInstallerPath}')`,
+				'try { Invoke-Expression $source } catch { if ($_ -notmatch "Unsupported Windows processor architecture") { throw } }',
+				"$env:PROCESSOR_ARCHITEW6432 = $oldWow",
+				"$env:PROCESSOR_ARCHITECTURE = $oldArch",
+				"$missingReadWorked = $true; try { $null = $AtomicInstallerMissingScopeProbe } catch { $missingReadWorked = $false }",
+				'if ($ErrorActionPreference -ne "Continue" -or $ProgressPreference -ne "Continue" -or $Ref -ne "caller-ref" -or $Help -ne "caller-help" -or $helpText -ne "caller-help-text" -or -not $missingReadWorked -or [Net.ServicePointManager]::SecurityProtocol -ne $beforeTls) { throw "caller scope changed" }',
+				'Write-Output "IEX_SCOPE_OK"',
+			].join("\n"),
+		);
+		try {
+			const result = spawnSyncCollect(
+				[engine.executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", probePath],
+				{ timeout: 30_000 },
+			);
+			assert.equal(result.exitCode, 0, `${result.stdout.toString()}${result.stderr.toString()}`);
+			assert.match(result.stdout.toString(), /IEX_SCOPE_OK/u);
+		} finally {
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+}
 
 interface AsyncProcessResult {
 	exitCode: number | null;

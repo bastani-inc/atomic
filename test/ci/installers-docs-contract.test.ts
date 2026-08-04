@@ -34,7 +34,8 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	}
 
 	for (const name of ["readme", "quickstart"] as const) {
-		assert.match(docs[name], /need `awk`, `tar`, and either `curl` or `wget`/u);
+		assert.match(docs[name], /need `tar` and either `curl` or `wget`/u);
+		assert.doesNotMatch(docs[name], /need `awk`/u);
 	}
 	for (const knob of ["ATOMIC_INSTALL_DIR", "ATOMIC_BIN_DIR", "ATOMIC_VERSION", "GITHUB_TOKEN", "GH_TOKEN"]) {
 		assert.ok(docs.quickstart.includes(knob), `quickstart is missing ${knob}`);
@@ -46,9 +47,11 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.windows, /ASCII-only `atomic\.cmd` plus an `atomic-current` junction/u);
 	assert.match(docs.quickstart, /remove `atomic\.cmd` and the `atomic-current` junction/u);
 	assert.match(docs.quickstart, /Relative `ATOMIC_INSTALL_DIR` and `ATOMIC_BIN_DIR` values/u);
-	assert.match(docs.quickstart, /must not equal `ATOMIC_BIN_DIR\/atomic`/u);
-	assert.match(docs.quickstart, /Exact tags may contain characters such as `\/`, `#`, or `%`/u);
-	assert.match(docs.windows, /Exact release tags may contain characters such as `\/`, `#`, or `%`/u);
+	assert.match(docs.quickstart, /cannot equal or sit inside the launcher path/u);
+	assert.match(docs.quickstart, /MAJOR\.MINOR\.PATCH-alpha\.REVISION/u);
+	assert.match(docs.windows, /MAJOR\.MINOR\.PATCH-alpha\.REVISION/u);
+	assert.match(docs.quickstart, /protected temporary file instead of process arguments/u);
+	assert.match(docs.windows, /downloaded script cannot repair the connection used to fetch itself/u);
 	assert.match(docs.readme, /relative install and bin directories resolve against the physical directory/u);
 	assert.match(docs.quickstart, /does not require Node\.js|Node\.js and a package manager are not required/u);
 	assert.match(docs.quickstart, /Package installs still require Node\.js/u);
@@ -71,6 +74,5 @@ test("CI runs the POSIX installer smoke in Alpine and Debian slim", async () => 
 	assert.match(smoke, /alpine:3\.22/u);
 	assert.match(smoke, /debian:bookworm-slim/u);
 	assert.match(smoke, /\/bin\/sh \/repo\/install\.sh --ref 1\.0\.0/u);
-	assert.match(smoke, /ln -sf \/usr\/bin\/awk \/fixture\/bin\/awk/u);
 	assert.match(smoke, /! command -v ldd/u);
 });

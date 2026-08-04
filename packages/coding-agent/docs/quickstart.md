@@ -4,7 +4,7 @@ This page gets you from install to a useful first Atomic session. Atomic is the 
 
 ## Prerequisites
 
-- **Release archive install:** macOS and Linux need `awk`, `tar`, and either `curl` or `wget`; Windows uses built-in PowerShell commands. Node.js and a package manager are not required.
+- **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`; Windows uses built-in PowerShell commands. Node.js and a package manager are not required.
 - **Package install:** Node.js 24 LTS or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.3.14+ for Bun installs or workflow-authoring examples.
 - **Model-provider access** — Use `/login` after startup. Supports provider subscriptions and APIs.
 
@@ -24,11 +24,11 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 ```
 
-The default macOS/Linux paths are `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The Windows defaults are `%LOCALAPPDATA%\atomic` and `%LOCALAPPDATA%\atomic\bin\atomic.cmd`. The Unix installer prints an `export PATH=...` command if needed. The Windows installer updates the User PATH and current process, then asks you to restart the terminal.
+The default macOS/Linux paths are `~/.local/share/atomic` for versioned payloads and `~/.local/bin/atomic` for the launcher. The Windows defaults are `%LOCALAPPDATA%\atomic` and `%LOCALAPPDATA%\atomic\bin\atomic.cmd`. The Unix installer prints a paste-safe `export PATH=...` command if needed. A custom Unix `ATOMIC_BIN_DIR` containing `:` cannot be one PATH entry, so the installer prints direct-run guidance instead. The Windows installer updates the User PATH and current process, then asks you to restart the terminal.
 
 Use `ATOMIC_INSTALL_DIR` and `ATOMIC_BIN_DIR` to change those paths. Set `ATOMIC_VERSION` to an exact release tag, or pass a flag that overrides it:
 
-Relative `ATOMIC_INSTALL_DIR` and `ATOMIC_BIN_DIR` values on macOS/Linux resolve against the physical directory where the installer starts, and printed PATH guidance uses the resulting absolute bin path. The install root cannot be the launcher itself (`ATOMIC_INSTALL_DIR` must not equal `ATOMIC_BIN_DIR/atomic`); that impossible layout fails before any download or filesystem change. Exact tags may contain characters such as `/`, `#`, or `%`: installers encode URL and version-directory segments while reporting the original tag.
+Relative `ATOMIC_INSTALL_DIR` and `ATOMIC_BIN_DIR` values on macOS/Linux resolve against the physical directory where the installer starts. The install root cannot equal or sit inside the launcher path (`ATOMIC_BIN_DIR/atomic`); impossible layouts fail before any download or filesystem change. Exact pins use Atomic's `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-alpha.REVISION` release tag form.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh | sh -s -- --ref 0.9.11
@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/bastani-inc/atomic/main/install.sh 
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1))) -Ref 0.9.11
 ```
 
-`GITHUB_TOKEN` or `GH_TOKEN` is optional and raises GitHub API limits on shared networks. The installer downloads only the matching GitHub Release archive and `SHA256SUMS`, verifies the checksum, and keeps the complete payload in a versioned directory.
+`GITHUB_TOKEN` or `GH_TOKEN` is optional and raises GitHub API limits on shared networks. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token. The installer downloads only the matching GitHub Release archive and `SHA256SUMS`, verifies the checksum, and keeps the complete payload in a versioned directory.
 
 ### Package managers
 

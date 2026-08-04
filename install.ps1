@@ -4,6 +4,7 @@
 #   irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1))) -Ref 0.9.11
 
+& {
 param(
     [string]$Ref,
     [switch]$Help
@@ -454,6 +455,9 @@ function Remove-AtomicTransactionBackups {
     }
 }
 
+$previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+try {
+    [Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $requestedRef = $null
 if ($PSBoundParameters.ContainsKey("Ref")) {
     if ([string]::IsNullOrWhiteSpace($Ref)) {
@@ -494,6 +498,17 @@ if ([string]::IsNullOrWhiteSpace($binDir)) {
     $binDir = Join-Path $installRoot "bin"
 }
 $binDir = [IO.Path]::GetFullPath($binDir)
+$atomicCurrentPath = Join-Path $binDir "atomic-current"
+$shimPath = Join-Path $binDir "atomic.cmd"
+$existingShimItem = Get-AtomicDirectoryEntry $shimPath
+if ($null -ne $existingShimItem -and $existingShimItem.PSIsContainer) {
+    throw "ATOMIC_BIN_DIR contains an unexpected atomic.cmd directory; refusing to replace it."
+}
+$existingAtomicCurrentItem = Get-AtomicDirectoryEntry $atomicCurrentPath
+if ($null -ne $existingAtomicCurrentItem -and
+    ($existingAtomicCurrentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+    throw "ATOMIC_BIN_DIR contains an unexpected atomic-current entry; refusing to replace it."
+}
 
 $apiHeaders = @{ Accept = "application/vnd.github+json" }
 $token = $env:GITHUB_TOKEN
@@ -745,3 +760,13 @@ finally {
         Remove-AtomicCreatedEmptyDirectories $transactionMissingDirectories
     }
 }
+}
+finally {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol
+    }
+    catch {
+        Write-Warning "Failed to restore the caller's TLS protocol setting: $_"
+    }
+}
+} @args
