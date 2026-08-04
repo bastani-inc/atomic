@@ -731,4 +731,198 @@ describe("createStageContext — continuation eligibility across admitted orderi
 		assert.deepEqual(probe.promptTexts, ["do it"]);
 		assert.deepEqual(probe.continuedTranscripts, [], "an aborted retry must not resume the turn");
 	});
+
+	test("a tail that converts away is not a valid continuation", async () => {
+		// pi-agent-core requires the CONVERTED tail to be user/toolResult. A custom
+		// message excluded from context is dropped by convertToLlm(), exposing the
+		// retained assistant beneath it, so the raw role alone cannot decide.
+		const probe = realSessionProbe(retrySettings(), {
+			failCalls: 1,
+			admit: (messages, call) => {
+				if (call !== 1) return;
+				messages.push({
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "partial" }],
+				} as never);
+				messages.push({
+					role: "custom",
+					customType: "workflow:note",
+					content: "hidden note",
+					excludeFromContext: true,
+				} as never);
+			},
+		});
+		const ctx = createStageContext(
+			makeOpts({ adapters: { agentSession: probe.agentSession }, stageOptions: { model: "anthropic/primary" } }),
+		) as InternalStageContext;
+
+		assert.equal(await ctx.prompt("do it"), "ok");
+		assert.deepEqual(probe.continuedTranscripts, [], "a converted assistant tail is not a valid continuation");
+		assert.deepEqual(probe.promptTexts, ["do it", "do it"], "the retry must re-send the prompt instead");
+		assert.equal(userMessagesWithText(probe.messages, "do it"), 1, "the re-prompt must not duplicate the input");
+	});
+});
+
+describe("createStageContext — eager session creation walks the candidate chain", () => {
+	const eagerSettingsManager = (settings: ReturnType<typeof retrySettings>): WorkflowFastModeSettingsManager => ({
+		getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+		getRetrySettings: () => settings,
+	});
+
+	test("an eagerly created session advances to a fallback candidate", async () => {
+		// ctx.__ensureSession() has no prompt to drive promptWithFallback(), so the
+		// creation path must walk the chain itself.
+		const created: string[] = [];
+		const settings = retrySettings();
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				const model = modelFor(options);
+				created.push(model);
+				if (model === "anthropic/primary") throw new Error("503 service unavailable during create");
+				return sessionWithSettings(settings, async () => "fallback answer", {
+					getLastAssistantText: () => "fallback answer",
+				});
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					settingsManager: eagerSettingsManager(settings) as never,
+				},
+			}),
+		) as InternalStageContext;
+
+		await ctx.__ensureSession();
+
+		assert.deepEqual(created, ["anthropic/primary", "anthropic/primary", "anthropic/primary", "openai/fallback"]);
+		assert.equal(await ctx.prompt("go"), "fallback answer");
+	});
+
+	test("a terminal creation failure is not replayed to a later ensureSession", async () => {
+		let creates = 0;
+		const settings = retrySettings();
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				creates += 1;
+				// Three attempts on the primary plus three on the fallback exhaust
+				// the first walk; anything after that succeeds.
+				if (creates <= 6) throw new Error(`503 service unavailable during create ${modelFor(options)}`);
+				return sessionWithSettings(settings, async () => "late answer", {
+					getLastAssistantText: () => "late answer",
+				});
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					settingsManager: eagerSettingsManager(settings) as never,
+				},
+			}),
+		) as InternalStageContext;
+
+		await assert.rejects(ctx.__ensureSession(), /503 service unavailable during create/);
+		assert.equal(creates, 6);
+
+		// The cached rejection must not be handed to the next caller.
+		await ctx.__ensureSession();
+		assert.equal(creates, 7);
+	});
+
+	test("a paused eager creation resumes with the replacement objective", async () => {
+		const promptTexts: string[] = [];
+		let creates = 0;
+		const settings = retrySettings({ baseDelayMs: 1000 });
+		const agentSession: AgentSessionAdapter = {
+			async create() {
+				creates += 1;
+				if (creates === 1) throw new Error("503 service unavailable during create");
+				return sessionWithSettings(
+					settings,
+					async (text) => {
+						promptTexts.push(text);
+						return "resumed answer";
+					},
+					{ getLastAssistantText: () => "resumed answer" },
+				);
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					settingsManager: eagerSettingsManager(settings) as never,
+				},
+			}),
+		) as InternalStageContext;
+
+		const eager = ctx.__ensureSession();
+		await flushMicrotasks();
+		await ctx.__requestPause();
+		await ctx.__resume("replacement objective");
+		await eager;
+
+		assert.equal(await ctx.prompt("stale original objective"), "resumed answer");
+		assert.deepEqual(promptTexts, ["replacement objective"], "the replacement objective is authoritative");
+	});
+});
+
+describe("createStageContext — unresolved overflow is terminal for its candidate", () => {
+	test("an already-unresolved overflow advances without retrying the same model", async () => {
+		const prompts: string[] = [];
+		const settings = retrySettings({ maxRetries: 2 });
+		const settingsManager: WorkflowFastModeSettingsManager = {
+			getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+			getRetrySettings: () => settings,
+		};
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				const model = String(options.model);
+				const mock = makeMockSession({
+					async prompt() {
+						prompts.push(model);
+						if (model === "anthropic/primary") {
+							mock.emit({
+								type: "compaction_end",
+								reason: "overflow",
+								result: undefined,
+								aborted: false,
+								willRetry: false,
+								unresolvedOverflow: true,
+								errorMessage: "Context overflow recovery failed after one compact-and-retry attempt.",
+							});
+						}
+						return undefined;
+					},
+					getLastAssistantText() {
+						return model === "openai/fallback" ? "fallback answer" : undefined;
+					},
+				});
+				return mock.session;
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					settingsManager: settingsManager as never,
+				},
+			}),
+		) as InternalStageContext;
+
+		assert.equal(await ctx.prompt("go"), "fallback answer");
+		// Compaction already ran and failed, so re-sending the same request cannot
+		// help: one attempt per candidate, not one per retry budget.
+		assert.deepEqual(prompts, ["anthropic/primary", "openai/fallback"]);
+	});
 });

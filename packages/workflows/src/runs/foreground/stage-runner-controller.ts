@@ -1,6 +1,7 @@
 import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
+	convertToLlm,
 	type PromptOptions,
 	type StructuredOutputCapture,
 	shouldApplyCodexFastModeForScope,
@@ -56,6 +57,7 @@ import type {
 	WorkflowRetrySettings,
 } from "./stage-runner-types.js";
 import {
+	isUnresolvedContextOverflowFailure,
 	nextResumedContextOverflowFallbackIndex,
 	terminatingToolCallId,
 	unresolvedContextOverflowFailure,
@@ -117,14 +119,20 @@ function retryableAgentSession(activeSession: StageSessionRuntime): RetryableAge
 }
 
 /**
- * pi-agent-core's `Agent.continue()` rejects an empty transcript and an
- * assistant tail. A retry that restored live state may leave either — a
- * non-error assistant admitted during the failed attempt is retained — so the
- * continuation path is only eligible when the tail satisfies that contract.
+ * pi-agent-core requires the last message of a continued transcript to convert
+ * to a `user` or `toolResult` provider message (`agent-loop.js` `agentLoopContinue`);
+ * anything else is rejected once the request reaches the provider.
+ *
+ * The raw tail is not enough to answer that. A retry that restored live state
+ * can leave a retained non-error assistant, or a `custom`/`bashExecution`/
+ * `branchSummary` message that Atomic's converter drops when it is excluded
+ * from context or empty — leaving an assistant as the converted tail. Evaluate
+ * the same `convertToLlm()` result Atomic sends.
  */
 function canContinueFromTranscript(activeSession: StageSessionRuntime): boolean {
-	const last = activeSession.messages[activeSession.messages.length - 1];
-	return last !== undefined && last.role !== "assistant";
+	const converted = convertToLlm([...activeSession.messages]);
+	const last = converted[converted.length - 1];
+	return last !== undefined && (last.role === "user" || last.role === "toolResult");
 }
 
 class ThrownErrorRetryPaused extends Error {
@@ -235,7 +243,16 @@ export class StageSessionController {
 	async ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
 		if (this.disposed) throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
 		if (this.session !== undefined) return this.session;
-		if (!this.sessionPromise) this.sessionPromise = this.createInitialSession(consumer);
+		if (!this.sessionPromise) {
+			const pending = this.createInitialSession(consumer);
+			this.sessionPromise = pending;
+			// A terminal creation failure must not be replayed to every later
+			// caller. Clear by identity so a walk that replaced the promise, or a
+			// cancellation that already cleared it, is left alone.
+			pending.catch(() => {
+				if (this.sessionPromise === pending) this.sessionPromise = undefined;
+			});
+		}
 		return this.sessionPromise;
 	}
 
@@ -349,9 +366,13 @@ export class StageSessionController {
 			return;
 		}
 
-		if (await this.tryResumeCurrentSession(text, sdkOptions, candidates)) return;
+		// A paused eager creation resumed with a replacement objective: that text
+		// is authoritative for this prompt and must not be dropped here.
+		const resumedText = this.pendingCreationResumeMessage;
+		this.pendingCreationResumeMessage = undefined;
+		let promptText = resumedText ?? text;
+		if (await this.tryResumeCurrentSession(promptText, sdkOptions, candidates)) return;
 		let index = this.activeCandidateIndex ?? 0;
-		let promptText = text;
 		while (index < candidates.length) {
 			const candidate = candidates[index]!;
 			try {
@@ -595,10 +616,14 @@ export class StageSessionController {
 			} catch (error) {
 				const errorSettingsManager = retrySettingsManagerFromError(error);
 				if (errorSettingsManager !== undefined) this.sessionSettingsManager = errorSettingsManager;
-				const decision = nextRetryDecision(this.retrySettings(), retryAttempt, isRetryableModelFailure(error));
+				// An already-unresolved context overflow is terminal for this model:
+				// compaction has run and failed, so another identical request cannot
+				// help. It stays fallbackable so `handleCandidateFailure()` advances.
+				const retryableFailure = isRetryableModelFailure(error);
+				const sameCandidateRetryable = retryableFailure && !isUnresolvedContextOverflowFailure(error);
+				const decision = nextRetryDecision(this.retrySettings(), retryAttempt, sameCandidateRetryable);
 				const continuationSession = retryableAgentSession(activeSession);
 				const admittedMessages = activeSession.messages.length > messagesBeforeAttempt.length;
-				const retryableFailure = isRetryableModelFailure(error);
 				const willRetry =
 					decision !== undefined &&
 					!this.disposed &&
@@ -708,8 +733,57 @@ export class StageSessionController {
 		this.activeCandidateIndex = 0;
 		this.selectedModel = first.id;
 		return this.createSession(first, consumer).catch((error) =>
-			this.createInitialSessionWithRetry(first, consumer, { error }),
+			this.createInitialSessionCandidateWalk(candidates, consumer, 0, { error }),
 		);
+	}
+
+	/**
+	 * Creation-only version of the prompt candidate walk.
+	 *
+	 * An eagerly created session (`ctx.__ensureSession()`, an eager stage call, a
+	 * control attach) has no prompt to drive `promptWithFallback()`, so without
+	 * this a candidate whose creation keeps failing would exhaust its retries and
+	 * throw while the configured fallbacks were never tried.
+	 */
+	private async createInitialSessionCandidateWalk(
+		candidates: readonly WorkflowResolvedModelCandidate[],
+		consumer: AgentSessionConsumer,
+		startIndex: number,
+		initialFailure: { readonly error: unknown } | undefined,
+	): Promise<StageSessionRuntime> {
+		let index = startIndex;
+		let pendingFailure = initialFailure;
+		let lastError: unknown = initialFailure?.error;
+		while (index < candidates.length) {
+			const candidate = candidates[index]!;
+			this.activeCandidateIndex = index;
+			this.selectedModel = candidate.id;
+			try {
+				const created = await this.createSessionWithThrownErrorRetry(candidate, consumer, pendingFailure);
+				pendingFailure = undefined;
+				if (!isSessionCreationPauseResult(created)) {
+					this.notifyModelFallbackMetaChange();
+					return created;
+				}
+				if (created.resumeMessage === undefined) {
+					// A pause without a replacement objective cancels this pending
+					// creation. Let the next prompt start a fresh creation attempt.
+					this.pendingCreationResumeMessage = undefined;
+					this.sessionPromise = undefined;
+					throw new StageSessionCreationCancelled();
+				}
+				// The replacement objective belongs to the next prompt; this
+				// candidate is still the one being created.
+				this.pendingCreationResumeMessage = created.resumeMessage;
+			} catch (error) {
+				if (error instanceof StageSessionCreationCancelled) throw error;
+				pendingFailure = undefined;
+				lastError = error;
+				if ((await this.handleCandidateFailure(error, candidate, candidates, index)) !== "retry") throw error;
+				index += 1;
+			}
+		}
+		throw lastError ?? new Error(`atomic-workflows: stage "${this.opts.stageName}" has no usable model candidate`);
 	}
 
 	private async createInitialSessionWithRetry(

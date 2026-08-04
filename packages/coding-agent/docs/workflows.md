@@ -2299,6 +2299,10 @@ readonly fallbackThinkingLevels?: readonly string[];
 
 Request/context incompatibility also advances it, including HTTP 400/413/422 bad, unprocessable, or payload-too-large requests; unsupported tools or parameters; context-length or context-window overflow; and `too large`, `invalid_request`, or `bad_request` errors. This lets the chain reach the current selected user model when no configured candidate can serve the request.
 
+A context overflow that the stage session's compaction has already failed to resolve is terminal for its candidate: it skips the same-candidate retry, because re-sending an identical request cannot fit a context compaction could not shrink, and advances straight to the next candidate.
+
+The chain also covers session creation. A stage session created eagerly — by `ctx.__ensureSession()`, an eager stage call, or a control attach — retries its candidate under `settings.retry` and then walks to the next configured candidate, so a provider that cannot even open a session does not strand the stage. A creation failure that exhausts the whole chain is not cached: the next call starts a fresh attempt.
+
 Workflow-code errors, tool failures, validation failures, refusals, content-filter or safety blocks, cancellations, and task failures do not advance the chain. A reattached finished stage starts on the model that last succeeded; if that model fails retryably, the full chain restarts from the primary.
 
 ### `thinkingLevel` (deprecated)
