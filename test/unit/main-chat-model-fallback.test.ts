@@ -2,10 +2,17 @@ import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { test } from "vitest";
-import { _createRetryPromiseForAgentEnd } from "../../packages/coding-agent/src/core/agent-session-events.js";
+import { _checkCompaction } from "../../packages/coding-agent/src/core/agent-session-auto-compaction.js";
 import {
+	_createRetryPromiseForAgentEnd,
+	_processAgentEvent,
+} from "../../packages/coding-agent/src/core/agent-session-events.js";
+import {
+	_clearFallbackModelScope,
 	_handleRetryableError,
+	_isFallbackableError,
 	_isRetryableError,
+	_restoreFallbackModel,
 	_trySwitchToFallbackModel,
 } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import type { CreateAgentSessionFromServicesOptions } from "../../packages/coding-agent/src/core/agent-session-services.js";
@@ -49,14 +56,42 @@ test("main-chat retry classifies structured provider transport diagnostics", () 
 	assert.equal(_isRetryableError.call(session as never, message), true);
 	assert.equal(_isRetryableError.call(session as never, diagnosticOnlyMessage), true);
 	assert.equal(_isRetryableError.call(session as never, retryableMessage({ errorMessage: "Tool not found" })), false);
-	assert.equal(_isRetryableError.call(session as never, retryableMessage({ errorMessage: "model not found" })), true);
+	assert.equal(
+		_isRetryableError.call(
+			session as never,
+			retryableMessage({
+				errorMessage: "The model refused to complete the request",
+				diagnostics: [{ type: "provider_transport_failure", error: { name: "AbortError", message: "aborted" } }],
+			} as unknown as Partial<AssistantMessage>),
+		),
+		false,
+	);
+	assert.equal(_isRetryableError.call(session as never, retryableMessage({ errorMessage: "model not found" })), false);
+	assert.equal(
+		_isFallbackableError.call(session as never, retryableMessage({ errorMessage: "model not found" })),
+		true,
+	);
 	assert.equal(
 		_isRetryableError.call(
 			session as never,
 			retryableMessage({ errorMessage: undefined, code: "model_not_found" } as unknown as Partial<AssistantMessage>),
 		),
+		false,
+	);
+	assert.equal(
+		_isFallbackableError.call(
+			session as never,
+			retryableMessage({ errorMessage: undefined, code: "model_not_found" } as unknown as Partial<AssistantMessage>),
+		),
 		true,
 	);
+});
+test("main chat treats rejected credentials as fallbackable but not same-model retryable", () => {
+	const session = { model: model("openai-codex", "gpt-5.5") };
+	const message = retryableMessage({ errorMessage: "OAuth token invalidated" });
+
+	assert.equal(_isFallbackableError.call(session as never, message), true);
+	assert.equal(_isRetryableError.call(session as never, message), false);
 });
 
 test("main-chat fallback switches models after same-model retry exhaustion", async () => {
@@ -125,6 +160,54 @@ test("main-chat fallback switches models after same-model retry exhaustion", asy
 	assert.ok(events.some((event) => event.type === "model_fallback_start" && event.to === "anthropic/claude-opus-4-8"));
 	assert.ok(events.some((event) => event.type === "model_changed" && event.source === "fallback"));
 	assert.ok(events.some((event) => event.type === "session_model" && event.provider === "anthropic"));
+});
+
+test("main-chat fallback restores the primary model at the next turn boundary", async () => {
+	const primary = model("openai-codex", "gpt-5.5");
+	const fallback = model("anthropic", "claude-opus-4-8");
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	const session = {
+		model: primary,
+		thinkingLevel: "high" as ThinkingLevel,
+		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_retryAttempt: 0,
+		settingsManager: {
+			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
+			getDefaultProvider: () => "openai-codex",
+		},
+		_modelRuntime: {
+			getAvailableSnapshot: () => [primary, fallback],
+			getModel: (provider: string, id: string) =>
+				provider === fallback.provider && id === fallback.id ? fallback : undefined,
+			hasConfiguredAuth: () => true,
+		},
+		agent: {
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [retryableMessage()] },
+			continue: async () => undefined,
+		},
+		sessionManager: {
+			appendModelChange: (provider: string, id: string) => events.push({ type: "session_model", provider, id }),
+			appendThinkingLevelChange: (level: ThinkingLevel) => events.push({ type: "session_thinking", level }),
+		},
+		_withContextWindowForModelSwitch: (candidate: Model<Api>) => candidate,
+		_refreshBaseSystemPromptFromActiveTools: () => undefined,
+		_emitModelChanged: (next: Model<Api>, previous: Model<Api> | undefined, source: string) =>
+			events.push({ type: "model_changed", next: next.id, previous: previous?.id, source }),
+		_emitModelSelect: async () => undefined,
+		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
+	};
+
+	assert.equal(await _trySwitchToFallbackModel.call(session as never, retryableMessage()), true);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(session.agent.state.model, fallback);
+
+	assert.equal(await _restoreFallbackModel.call(session as never), true);
+	assert.equal(session.agent.state.model, primary);
+	assert.equal(session.agent.state.thinkingLevel, "high");
+	assert.ok(events.some((event) => event.type === "model_changed" && event.source === "restore"));
+	assert.ok(events.some((event) => event.type === "model_fallback_end" && event.success === true));
+	assert.equal(await _restoreFallbackModel.call(session as never), false);
 });
 
 test("main-chat fallback can change reasoning on the same provider/model", async () => {
@@ -361,4 +444,232 @@ test("main-chat fallback continuation resolution does not mark assistant errors 
 		events.some((event) => event.type === "model_fallback_end" && event.success === true),
 		false,
 	);
+});
+
+test("a rejected codex credential advances to the next candidate without re-requesting the same model", async () => {
+	const primary = model("openai-codex", "gpt-5.5");
+	const fallback = model("anthropic", "claude-opus-4-8");
+	const invalidated = retryableMessage({ errorMessage: "OAuth token invalidated" });
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	let continued = 0;
+	const session = {
+		model: primary,
+		thinkingLevel: "high" as ThinkingLevel,
+		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_retryAttempt: 0,
+		settingsManager: {
+			// Same-model retry is enabled and generously budgeted; a dead credential
+			// must still skip it entirely.
+			getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 1000 }),
+			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
+			getDefaultProvider: () => "openai-codex",
+		},
+		_modelRuntime: {
+			getAvailableSnapshot: () => [primary, fallback],
+			getModel: (provider: string, id: string) =>
+				provider === fallback.provider && id === fallback.id ? fallback : undefined,
+			hasConfiguredAuth: () => true,
+		},
+		agent: {
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [invalidated] },
+			continue: async () => {
+				continued += 1;
+			},
+		},
+		sessionManager: {
+			appendModelChange: (provider: string, id: string) => events.push({ type: "session_model", provider, id }),
+			appendThinkingLevelChange: () => undefined,
+		},
+		_withContextWindowForModelSwitch: (candidate: Model<Api>) => candidate,
+		_refreshBaseSystemPromptFromActiveTools: () => undefined,
+		_emitModelChanged: () => undefined,
+		_emitModelSelect: async () => undefined,
+		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
+		_resolveRetry: () => undefined,
+		_isRetryableError,
+		_isFallbackableError,
+		_trySwitchToFallbackModel,
+	};
+
+	const handled = await _handleRetryableError.call(session as never, invalidated);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+
+	assert.equal(handled, true);
+	assert.equal(
+		events.some((event) => event.type === "auto_retry_start"),
+		false,
+		"a revoked credential must not be re-requested on the same model",
+	);
+	assert.ok(events.some((event) => event.type === "model_fallback_start" && event.to === "anthropic/claude-opus-4-8"));
+	assert.equal(session.agent.state.model, fallback);
+	assert.equal(continued, 1);
+});
+
+test("an explicit /model choice during a fallback is not overwritten by the restore", async () => {
+	const primary = model("openai-codex", "gpt-5.5");
+	const fallback = model("anthropic", "claude-opus-4-8");
+	const chosen = model("openai", "gpt-5-mini");
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	const session = {
+		model: primary,
+		thinkingLevel: "high" as ThinkingLevel,
+		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_retryAttempt: 0,
+		settingsManager: {
+			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
+			getDefaultProvider: () => "openai-codex",
+		},
+		_modelRuntime: {
+			getAvailableSnapshot: () => [primary, fallback, chosen],
+			getModel: (provider: string, id: string) =>
+				provider === fallback.provider && id === fallback.id ? fallback : undefined,
+			hasConfiguredAuth: () => true,
+		},
+		agent: {
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [retryableMessage()] },
+			continue: async () => undefined,
+		},
+		sessionManager: {
+			appendModelChange: (provider: string, id: string) => events.push({ type: "session_model", provider, id }),
+			appendThinkingLevelChange: () => undefined,
+		},
+		_withContextWindowForModelSwitch: (candidate: Model<Api>) => candidate,
+		_refreshBaseSystemPromptFromActiveTools: () => undefined,
+		_emitModelChanged: (next: Model<Api>, previous: Model<Api> | undefined, source: string) =>
+			events.push({ type: "model_changed", next: next.id, previous: previous?.id, source }),
+		_emitModelSelect: async () => undefined,
+		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
+	};
+
+	assert.equal(await _trySwitchToFallbackModel.call(session as never, retryableMessage()), true);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(session.agent.state.model, fallback);
+
+	// setModel()/cycleModel() cancel the pending restore before applying the
+	// user's explicit choice.
+	_clearFallbackModelScope.call(session as never);
+	session.agent.state.model = chosen;
+
+	assert.equal(await _restoreFallbackModel.call(session as never), false);
+	assert.equal(session.agent.state.model, chosen, "the explicit choice must survive the turn boundary");
+	assert.equal(
+		events.some((event) => event.type === "model_changed" && event.source === "restore"),
+		false,
+	);
+	assert.ok(events.some((event) => event.type === "model_fallback_end"));
+});
+
+function overflowMessage(): AssistantMessage {
+	return retryableMessage({
+		errorMessage: "context_length_exceeded: prompt is too long for this model",
+		provider: "openai-codex",
+		model: "gpt-5.5",
+		timestamp: Date.now(),
+	} as unknown as Partial<AssistantMessage>);
+}
+
+/** Session double for the `agent_end` branch of `_processAgentEvent`. */
+function overflowTurnSession(checkCompaction: (session: Record<string, unknown>) => void): {
+	session: Record<string, unknown>;
+	switched: AssistantMessage[];
+	restored: number;
+} {
+	const switched: AssistantMessage[] = [];
+	const counters = { restored: 0 };
+	const session: Record<string, unknown> = {
+		model: model("openai-codex", "gpt-5.5"),
+		_lastAssistantMessage: overflowMessage(),
+		_protectedStreamingCustomMessages: [],
+		_postToolCompactionPreflightError: undefined,
+		_pendingPostCompactionContinuation: undefined,
+		_contextOverflowUnresolved: false,
+		_applyInterruptAbortMessage: () => undefined,
+		_applyProviderErrorGuidance: () => undefined,
+		_emitExtensionEvent: async () => undefined,
+		_emit: () => undefined,
+		_isFallbackableError,
+		_isRetryableError,
+		_isEmptyCompletion: () => false,
+		_isSafetyRefusal: () => false,
+		_handleRetryableError: async () => false,
+		_resolveRetry: () => undefined,
+		_checkCompaction: async () => checkCompaction(session),
+		_trySwitchToFallbackModel: async (message: AssistantMessage) => {
+			switched.push(message);
+			return true;
+		},
+		_restoreFallbackModel: async () => {
+			counters.restored += 1;
+			return false;
+		},
+	};
+	return {
+		session,
+		switched,
+		get restored() {
+			return counters.restored;
+		},
+	};
+}
+
+test("a compactable context overflow does not spend a fallback candidate", async () => {
+	// Compaction recovers the turn, so it must keep the current model.
+	const probe = overflowTurnSession(() => undefined);
+
+	await _processAgentEvent.call(probe.session as never, { type: "agent_end" } as never);
+
+	assert.deepEqual(probe.switched, []);
+	assert.equal(probe.session._contextOverflowUnresolved, false);
+});
+
+test("an unresolved context overflow advances to the next fallback candidate", async () => {
+	const probe = overflowTurnSession((session) => {
+		session._contextOverflowUnresolved = true;
+	});
+
+	await _processAgentEvent.call(probe.session as never, { type: "agent_end" } as never);
+
+	assert.equal(probe.switched.length, 1, "an overflow compaction cannot fix must reach the fallback chain");
+	assert.equal(probe.switched[0]?.errorMessage, overflowMessage().errorMessage);
+	assert.equal(probe.session._contextOverflowUnresolved, false);
+	assert.equal(probe.restored, 0, "a successful switch owns the turn and must not restore yet");
+});
+
+test("compaction disabled marks a same-model context overflow unresolved", async () => {
+	const session = {
+		model: model("openai-codex", "gpt-5.5"),
+		_contextOverflowUnresolved: false,
+		_pendingPostToolCompactionGuard: undefined,
+		_postToolCompactionPreflightError: undefined,
+		settingsManager: { getCompactionSettings: () => ({ enabled: false }) },
+		_emit: () => undefined,
+	};
+
+	await _checkCompaction.call(session as never, overflowMessage());
+
+	assert.equal(session._contextOverflowUnresolved, true);
+});
+
+test("compaction disabled leaves an ordinary provider error resolvable by same-model retry", async () => {
+	const session = {
+		model: model("openai-codex", "gpt-5.5"),
+		_contextOverflowUnresolved: false,
+		_pendingPostToolCompactionGuard: undefined,
+		_postToolCompactionPreflightError: undefined,
+		settingsManager: { getCompactionSettings: () => ({ enabled: false }) },
+		_emit: () => undefined,
+	};
+
+	await _checkCompaction.call(
+		session as never,
+		retryableMessage({
+			errorMessage: "rate limit",
+			provider: "openai-codex",
+			model: "gpt-5.5",
+		} as unknown as Partial<AssistantMessage>),
+	);
+
+	assert.equal(session._contextOverflowUnresolved, false);
 });

@@ -253,10 +253,14 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	reload(options?: AgentSessionReloadOptions): Promise<void>;
 
 	_isRetryableError(message: AssistantMessage): boolean;
+	_isFallbackableError(message: AssistantMessage): boolean;
 	_isEmptyCompletion(message: AssistantMessage): boolean;
 	_isSafetyRefusal(message: AssistantMessage): boolean;
 	_handleRetryableError(message: AssistantMessage): Promise<boolean>;
 	_trySwitchToFallbackModel(message: AssistantMessage): Promise<boolean>;
+	_beginFallbackModelScope(): void;
+	_clearFallbackModelScope(): void;
+	_restoreFallbackModel(): Promise<boolean>;
 	abortRetry(): void;
 	waitForRetry(): Promise<void>;
 	setAutoRetryEnabled(enabled: boolean): void;
@@ -389,6 +393,11 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	_fallbackModels: string[];
 	_fallbackAttemptedKeys: Set<string>;
+	_fallbackOriginModel: Model<Api> | undefined;
+	_fallbackOriginThinkingLevel: ThinkingLevel | undefined;
+	_fallbackScopeGeneration: number;
+	_fallbackOriginGeneration: number | undefined;
+	_fallbackRestoreError: string | undefined;
 
 	_unsubscribeAgent?: () => void;
 	_eventListeners: AgentSessionEventListener[];
@@ -420,6 +429,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_autoCompactionAbortController: AbortController | undefined;
 	_compactionReason: import("./agent-session-types.ts").CompactionReason | undefined;
 	_overflowRecoveryAttempted: boolean;
+	_contextOverflowUnresolved: boolean;
 	_branchSummaryAbortController: AbortController | undefined;
 	_retryAbortController: AbortController | undefined;
 	_retryAttempt: number;

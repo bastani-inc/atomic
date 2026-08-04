@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed model-failure classification sharing so subagent fallback decisions stay aligned with main chat and workflow candidates for auth, unavailable-model, request-incompatible, quota, and transport failures ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+
 ## [0.9.12] - 2026-08-04
 
 ### Fixed

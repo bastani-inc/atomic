@@ -2295,7 +2295,7 @@ readonly fallbackModels?: readonly string[];
 readonly fallbackThinkingLevels?: readonly string[];
 ```
 
-`fallbackModels` tries the primary first, each fallback in order, and then the current Atomic-selected model when available. It advances for rate limits and quota or usage-limit exhaustion, including messages such as `The usage limit has been reached` and codes such as `usage_limit_reached` or `insufficient_quota`. Auth/provider outages, unavailable models, network timeouts, generic transport errors such as `Connection error.` or `fetch failed`, and 5xx responses also advance the chain.
+`fallbackModels` tries the primary first, each fallback in order, and then the current Atomic-selected model when available. It advances for rate limits and quota or usage-limit exhaustion, including messages such as `The usage limit has been reached` and codes such as `usage_limit_reached` or `insufficient_quota`. Auth/provider outages, unavailable models, network timeouts, generic transport errors such as `Connection error.` or `fetch failed`, and 5xx responses also advance the chain. A thrown retryable failure is retried on the same candidate with exponential backoff from `settings.retry` before the chain advances; `retry.enabled: false` keeps immediate advancement.
 
 Request/context incompatibility also advances it, including HTTP 400/413/422 bad, unprocessable, or payload-too-large requests; unsupported tools or parameters; context-length or context-window overflow; and `too large`, `invalid_request`, or `bad_request` errors. This lets the chain reach the current selected user model when no configured candidate can serve the request.
 

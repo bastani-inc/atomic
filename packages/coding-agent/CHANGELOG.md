@@ -4,7 +4,12 @@
 
 ### Fixed
 
+<<<<<<< HEAD
 - Workflow runs awaiting human input now use the blue `？` indicator in the BACKGROUND panel, `/workflow connect` picker, and `/workflow status` listing, including prompts raised by hidden nested workflow children; the indicator returns to the run's current state when the prompt resolves.
+=======
+- Fixed main-chat model fallback to classify provider failures consistently with workflows, advance rejected credentials and incompatible or unavailable models to the next candidate, and restore the user-selected model at the next turn without overriding an explicit `/model` choice ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+- Fixed a context overflow that compaction cannot resolve to advance the configured `fallbackModels` chain instead of ending the turn, so a larger-context candidate can answer. Compaction still runs first, and a compactable overflow spends no fallback candidate ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+>>>>>>> d51dd122a (fix(fallback): converge main-chat and workflow model fallback (#2170))
 
 ## [0.9.12] - 2026-08-04
 
@@ -30,7 +35,6 @@ Cumulative release of the `0.9.12-alpha.1` prerelease. The summary below covers 
 
 - The compaction relevance query is no longer truncated to 1,000 characters. Truncation made prompt section order the retention policy: for a long structured prompt only the leading section reached the planner, so a constraint stated later could not influence what was kept, while the objective it qualified survived and was acted on. Long queries are safe — an oversized planner request surfaces as an explicit provider-overflow failure rather than silent truncation ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
 - Cleared three advisories in the shipped dependency tree. `undici` moves 8.5.0 → 8.9.0, which covers five advisories against 8.0.0–8.8.0 — response desynchronization via the retry interceptor, two cross-user cache-directive disclosures, CRLF injection through a blob body `type`, and cookie-attribute injection — and it is the dispatcher behind `fetch_url` and every agent HTTP request. Transitively under `@modelcontextprotocol/sdk`, `ip-address` is pinned to 10.3.1 for three SSRF and trust-boundary bypasses (octal-decoded leading-zero octets, CIDR suffixes suppressing special-use classification, and misclassified IPv4-mapped/NAT64 addresses), and `hono` to 4.12.34 for a CORS-middleware ReDoS. `npm audit` is clean.
-
 - Fixed bundled builtin extensions failing to load on Windows when shared modules were evaluated twice, so bundled workflows and tools initialize correctly.
 
 ## [0.9.11] - 2026-08-03

@@ -75,6 +75,11 @@ class AgentSessionBase {
 	protected _scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	protected _fallbackModels: string[];
 	protected _fallbackAttemptedKeys: Set<string> = new Set();
+	protected _fallbackOriginModel: Model<Api> | undefined;
+	protected _fallbackOriginThinkingLevel: ThinkingLevel | undefined;
+	protected _fallbackScopeGeneration = 0;
+	protected _fallbackOriginGeneration: number | undefined;
+	protected _fallbackRestoreError: string | undefined;
 	protected _unsubscribeAgent?: () => void;
 	protected _eventListeners: AgentSessionEventListener[] = [];
 	protected _agentEventQueue: Promise<void> = Promise.resolve();
@@ -98,6 +103,8 @@ class AgentSessionBase {
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
+	/** Set when compaction cannot recover a context overflow on the current model. */
+	protected _contextOverflowUnresolved = false;
 	protected _pendingPostCompactionContinuation: Promise<void> | undefined = undefined;
 	protected _postCompactionContinuationToken = 0;
 	protected _lengthContinuationAttempts = 0;

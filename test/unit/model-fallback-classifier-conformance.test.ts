@@ -9,23 +9,9 @@ import {
 	normalizeModelFailureSignal as workflowsNormalize,
 } from "../../packages/workflows/src/runs/shared/model-fallback.js";
 
-// The subagents and workflows model-failure classifiers are maintained as parallel
-// copies (packages/subagents/src/runs/shared/model-fallback.ts and
-// packages/workflows/src/runs/shared/model-fallback-failures.ts). This conformance
-// suite runs a shared corpus of failure fixtures through both and asserts they
-// agree, so a change to one copy that silently diverges the other fails here.
-//
-// Limitations: this enforces BEHAVIORAL parity over a finite corpus only — the two
-// copies are structurally different (e.g. the subagents copy combines regex
-// alternations that the workflows copy keeps separate), and a divergence on an
-// input outside this corpus would pass CI silently. When adding or changing a
-// classification rule, update BOTH copies and add a fixture here that exercises
-// the new rule. (Extracting a single shared module is blocked by the mandated
-// package split; the copies must not import each other.)
-//
-// Known intentional difference (not covered by the shared corpus): the workflows
-// classifier has an extra `transport_error` kind for bare "connection error." /
-// "fetch failed." wrapper messages that the subagents classifier does not model.
+// Both companion packages re-export the classifier implemented by the published
+// Atomic package. The identity assertion below protects the single-source
+// contract; the corpus keeps the public wrappers covered as well.
 
 type Fixture = { label: string; failure: unknown; kind: string; retryable: boolean };
 
@@ -204,6 +190,24 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		kind: "task_failure",
 		retryable: false,
 	},
+	{
+		label: "provider transport diagnostic wrapping cancellation",
+		failure: {
+			diagnostics: [
+				{ type: "provider_transport_failure", error: { name: "AbortError", message: "aborted by user" } },
+			],
+		},
+		kind: "cancelled",
+		retryable: false,
+	},
+	{
+		label: "provider transport diagnostic wrapping safety refusal",
+		failure: {
+			diagnostics: [{ type: "provider_transport_failure", error: { message: "blocked by safety policy" } }],
+		},
+		kind: "task_failure",
+		retryable: false,
+	},
 	{ label: "abort cause under invalid request", failure: abortWrappedError(), kind: "cancelled", retryable: false },
 	{
 		label: "cancel cause under 400 wrapper",
@@ -369,6 +373,10 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 ];
 
 describe("model fallback classifier conformance (subagents vs workflows)", () => {
+	test("companion packages expose the one shared classifier implementation", () => {
+		assert.strictEqual(subagentsNormalize, workflowsNormalize);
+		assert.strictEqual(subagentsIsRetryable, workflowsIsRetryable);
+	});
 	test("both classifiers agree on the shared failure corpus", () => {
 		for (const fixture of CONFORMANCE_FIXTURES) {
 			const subagentsSignal = subagentsNormalize(fixture.failure);

@@ -134,22 +134,64 @@ function isTestContext(): boolean {
 	return process.env.NODE_TEST_CONTEXT !== undefined || process.env.NODE_ENV === "test";
 }
 
+type StageSettingsManager = ReturnType<PiCodingAgentSdk["SettingsManager"]["create"]>;
+
+function attachSettingsManager(error: unknown, settingsManager: StageSettingsManager): unknown {
+	if (error !== null && (typeof error === "object" || typeof error === "function")) {
+		try {
+			if (Object.isExtensible(error)) {
+				Object.defineProperty(error, "settingsManager", {
+					configurable: true,
+					enumerable: false,
+					value: settingsManager,
+					writable: false,
+				});
+				return error;
+			}
+		} catch {
+			// Frozen or proxy errors cannot carry the private retry hint. Wrap them
+			// without replacing the original failure as the cause.
+		}
+	}
+	const wrapped = new Error(error instanceof Error ? error.message : String(error), { cause: error });
+	Object.defineProperty(wrapped, "settingsManager", {
+		configurable: true,
+		enumerable: false,
+		value: settingsManager,
+		writable: false,
+	});
+	return wrapped;
+}
+
 async function createPiSdkAgentSession(
 	options?: CreateAgentSessionOptions,
 	prepareOptions?: PrepareAtomicStageSessionOptions,
 ): Promise<StageSessionCreateResult> {
 	const sdk = (await import("@bastani/atomic")) as PiCodingAgentSdk;
-	const sessionOptions = await prepareAtomicStageSessionOptions(options, sdk, prepareOptions);
-	const result = await sdk.createAgentSession(sessionOptions);
-	// `CreateAgentSessionResult` is `{ session, extensionsResult, modelFallbackMessage? }`;
-	// workflow stages only consume `.session` (structurally an `AgentSession`,
-	// which is a superset of our `StageSessionRuntime` projection).
-	const resultSettingsManager = result.session.settingsManager;
-	const settingsManager = sessionOptions?.settingsManager ?? resultSettingsManager;
-	return {
-		session: result.session,
-		...(settingsManager?.getCodexFastModeSettings !== undefined ? { settingsManager } : {}),
-	};
+	let settingsManager: ReturnType<PiCodingAgentSdk["SettingsManager"]["create"]> | undefined;
+	try {
+		const sessionOptions = await prepareAtomicStageSessionOptions(options, sdk, {
+			...prepareOptions,
+			onSettingsManager: (manager) => {
+				settingsManager = manager;
+				prepareOptions?.onSettingsManager?.(manager);
+			},
+		});
+		settingsManager = sessionOptions?.settingsManager ?? settingsManager;
+		const result = await sdk.createAgentSession(sessionOptions);
+		// `CreateAgentSessionResult` is `{ session, extensionsResult, modelFallbackMessage? }`;
+		// workflow stages only consume `.session` (structurally an `AgentSession`,
+		// which is a superset of our `StageSessionRuntime` projection).
+		const resultSettingsManager = result.session.settingsManager;
+		settingsManager = sessionOptions?.settingsManager ?? resultSettingsManager ?? settingsManager;
+		return {
+			session: result.session,
+			...(settingsManager?.getCodexFastModeSettings !== undefined ? { settingsManager } : {}),
+		};
+	} catch (error) {
+		if (settingsManager !== undefined) throw attachSettingsManager(error, settingsManager);
+		throw error;
+	}
 }
 
 async function createTestAgentSession(_options?: CreateAgentSessionOptions): Promise<StageSessionCreateResult> {

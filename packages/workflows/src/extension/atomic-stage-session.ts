@@ -8,6 +8,7 @@ import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 
 export interface PiSdkSettingsManager {
 	getCodexFastModeSettings(): { readonly chat: boolean; readonly workflow: boolean };
+	getRetrySettings?(): { readonly enabled: boolean; readonly maxRetries: number; readonly baseDelayMs: number };
 }
 
 export interface PiSdkResourceLoader {
@@ -45,6 +46,7 @@ export type AtomicCreateAgentSessionOptions = Omit<
 
 export interface PrepareAtomicStageSessionOptions {
 	resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
+	onSettingsManager?: (settingsManager: PiSdkSettingsManager) => void;
 }
 
 function resolveSessionCwd(options: AtomicCreateAgentSessionOptions | undefined): string {
@@ -87,6 +89,7 @@ export async function prepareAtomicStageSessionOptions(
 				? undefined
 				: { projectTrusted: inheritanceSnapshot.projectTrusted },
 		);
+	prepareOptions.onSettingsManager?.(settingsManager);
 	const inheritedBuiltinPackagePaths = inheritanceSnapshot?.builtinPackagePaths;
 	const builtinPackagePaths =
 		inheritedBuiltinPackagePaths === undefined
