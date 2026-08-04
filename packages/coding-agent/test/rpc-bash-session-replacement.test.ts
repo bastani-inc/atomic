@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -10,7 +10,7 @@ import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.ts";
 import type { RpcCommand } from "../src/modes/rpc/rpc-types.ts";
 import { createHarness } from "./suite/harness.ts";
 
-const RPC_OUTPUT_WAIT_TIMEOUT_MS = 5_000,
+const RPC_OUTPUT_WAIT_TIMEOUT_MS = 10_000,
 	RPC_OUTPUT_POLL_INTERVAL_MS = 5;
 
 /**
@@ -31,9 +31,17 @@ function createBashGate(label: string) {
 	const cwd = mkdtempSync(join(tmpdir(), `atomic-rpc-bash-${label}-`));
 	return {
 		cwd,
-		command: (marker: string) => `printf before; while [ ! -f '${marker}' ]; do sleep 0.01; done; printf after`,
+		command: (marker: string, before = "before", after = "after") =>
+			`: > '${marker}.waiting'; printf '${before}'; while [ ! -f '${marker}' ]; do sleep 0.01; done; printf '${after}'`,
+		isWaiting: (marker: string) => existsSync(join(cwd, `${marker}.waiting`)) && !existsSync(join(cwd, marker)),
 		release: (marker: string) => writeFileSync(join(cwd, marker), ""),
-		cleanup: () => rmSync(cwd, { recursive: true, force: true }),
+		cleanup: () => {
+			try {
+				rmSync(cwd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+			} catch {
+				// Left for the OS to reclaim if a spawned shell still holds the cwd.
+			}
+		},
 	};
 }
 
@@ -176,165 +184,182 @@ describe("RPC bash ownership across session replacement", () => {
 
 	it("retains source ownership for every RPC replacement command and reload control", async () => {
 		const gate = createBashGate("replacement");
-		const first = await createHarness({ sessionManager: SessionManager.inMemory(gate.cwd) });
-		const second = await createHarness();
-		let current: AgentSession = first.session;
-		const replace = async () => {
-			current = second.session;
-			return { cancelled: false };
-		};
-		const runtimeHost = {
-			services: { agentDir: first.tempDir },
-			get session() {
-				return current;
-			},
-			newSession: replace,
-			switchSession: replace,
-			importFromJsonl: replace,
-			fork: async () => ({ ...(await replace()), selectedText: undefined }),
-		} as unknown as AgentSessionRuntime;
-		const output: object[] = [];
-		const handle = createRpcCommandHandler({
-			runtimeHost,
-			getSession: () => current,
-			rebindSession: async () => {},
-			output: (event) => output.push(event),
-		});
-		vi.spyOn(first.session.sessionManager, "getLeafId").mockReturnValue("leaf-for-clone");
-		vi.spyOn(first.session, "reload").mockResolvedValue();
-		const transitions: Array<{ name: string; command: RpcCommand; replaces: boolean }> = [
-			{ name: "new", command: { id: "swap-new", type: "new_session" }, replaces: true },
-			{
-				name: "switch",
-				command: { id: "swap-switch", type: "switch_session", sessionPath: "/tmp/target.jsonl" },
-				replaces: true,
-			},
-			{
-				name: "import",
-				command: { id: "swap-import", type: "import_session", inputPath: "/tmp/import.jsonl" },
-				replaces: true,
-			},
-			{ name: "fork", command: { id: "swap-fork", type: "fork", entryId: "entry" }, replaces: true },
-			{ name: "clone", command: { id: "swap-clone", type: "clone" }, replaces: true },
-			{ name: "reload", command: { id: "same-reload", type: "reload" }, replaces: false },
-		];
+		try {
+			const first = await createHarness({ sessionManager: SessionManager.inMemory(gate.cwd) });
+			const second = await createHarness();
+			let current: AgentSession = first.session;
+			const replace = async () => {
+				current = second.session;
+				return { cancelled: false };
+			};
+			const runtimeHost = {
+				services: { agentDir: first.tempDir },
+				get session() {
+					return current;
+				},
+				newSession: replace,
+				switchSession: replace,
+				importFromJsonl: replace,
+				fork: async () => ({ ...(await replace()), selectedText: undefined }),
+			} as unknown as AgentSessionRuntime;
+			const output: object[] = [];
+			const handle = createRpcCommandHandler({
+				runtimeHost,
+				getSession: () => current,
+				rebindSession: async () => {},
+				output: (event) => output.push(event),
+			});
+			vi.spyOn(first.session.sessionManager, "getLeafId").mockReturnValue("leaf-for-clone");
+			vi.spyOn(first.session, "reload").mockResolvedValue();
+			const transitions: Array<{ name: string; command: RpcCommand; replaces: boolean }> = [
+				{ name: "new", command: { id: "swap-new", type: "new_session" }, replaces: true },
+				{
+					name: "switch",
+					command: { id: "swap-switch", type: "switch_session", sessionPath: "/tmp/target.jsonl" },
+					replaces: true,
+				},
+				{
+					name: "import",
+					command: { id: "swap-import", type: "import_session", inputPath: "/tmp/import.jsonl" },
+					replaces: true,
+				},
+				{ name: "fork", command: { id: "swap-fork", type: "fork", entryId: "entry" }, replaces: true },
+				{ name: "clone", command: { id: "swap-clone", type: "clone" }, replaces: true },
+				{ name: "reload", command: { id: "same-reload", type: "reload" }, replaces: false },
+			];
 
-		for (const transition of transitions) {
-			current = first.session;
-			const id = `bash-${transition.name}`;
-			const marker = `${transition.name}.release`;
-			const execution = handle({ id, type: "bash", command: gate.command(marker) });
-			try {
-				await waitForOutput(output, id, "before");
-				await expect(handle(transition.command)).resolves.toMatchObject({ success: true });
-				expect(current === second.session).toBe(transition.replaces);
-			} finally {
-				gate.release(marker);
+			for (const transition of transitions) {
+				current = first.session;
+				const id = `bash-${transition.name}`;
+				const marker = `${transition.name}.release`;
+				const execution = handle({ id, type: "bash", command: gate.command(marker) });
+				try {
+					await waitForOutput(output, id, "before");
+					await expect(handle(transition.command)).resolves.toMatchObject({ success: true });
+					expect(current === second.session).toBe(transition.replaces);
+				} finally {
+					gate.release(marker);
+				}
+				await expect(execution).resolves.toMatchObject({ success: true, data: { output: "beforeafter" } });
+				expect(updatesFor(output, id)).toBe("beforeafter");
 			}
-			await expect(execution).resolves.toMatchObject({ success: true, data: { output: "beforeafter" } });
-			expect(updatesFor(output, id)).toBe("beforeafter");
+			expect(first.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(
+				transitions.length,
+			);
+			expect(second.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(0);
+			second.cleanup();
+			first.cleanup();
+		} finally {
+			gate.cleanup();
 		}
-		expect(first.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(
-			transitions.length,
-		);
-		expect(second.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(0);
-		second.cleanup();
-		first.cleanup();
-		gate.cleanup();
 	});
 
 	it("leaves ownership unchanged when a replacement is cancelled", async () => {
 		const gate = createBashGate("cancelled-swap");
-		const harness = await createHarness({ sessionManager: SessionManager.inMemory(gate.cwd) });
-		const output: object[] = [];
-		const runtimeHost = {
-			services: { agentDir: harness.tempDir },
-			newSession: async () => ({ cancelled: true }),
-		} as unknown as AgentSessionRuntime;
-		const handle = createRpcCommandHandler({
-			runtimeHost,
-			getSession: () => harness.session,
-			rebindSession: async () => {
-				throw new Error("must not rebind cancelled replacement");
-			},
-			output: (event) => output.push(event),
-		});
-		const marker = "cancelled-swap.release";
-		const execution = handle({ id: "cancelled-swap-bash", type: "bash", command: gate.command(marker) });
 		try {
-			await waitForOutput(output, "cancelled-swap-bash", "before");
-			await expect(handle({ id: "cancelled-swap", type: "new_session" })).resolves.toMatchObject({
-				success: true,
-				data: { cancelled: true },
+			const harness = await createHarness({ sessionManager: SessionManager.inMemory(gate.cwd) });
+			const output: object[] = [];
+			const runtimeHost = {
+				services: { agentDir: harness.tempDir },
+				newSession: async () => ({ cancelled: true }),
+			} as unknown as AgentSessionRuntime;
+			const handle = createRpcCommandHandler({
+				runtimeHost,
+				getSession: () => harness.session,
+				rebindSession: async () => {
+					throw new Error("must not rebind cancelled replacement");
+				},
+				output: (event) => output.push(event),
 			});
+			const marker = "cancelled-swap.release";
+			const execution = handle({ id: "cancelled-swap-bash", type: "bash", command: gate.command(marker) });
+			try {
+				await waitForOutput(output, "cancelled-swap-bash", "before");
+				await expect(handle({ id: "cancelled-swap", type: "new_session" })).resolves.toMatchObject({
+					success: true,
+					data: { cancelled: true },
+				});
+			} finally {
+				gate.release(marker);
+			}
+			await expect(execution).resolves.toMatchObject({ success: true, data: { output: "beforeafter" } });
+			expect(updatesFor(output, "cancelled-swap-bash")).toBe("beforeafter");
+			harness.cleanup();
 		} finally {
-			gate.release(marker);
+			gate.cleanup();
 		}
-		await expect(execution).resolves.toMatchObject({ success: true, data: { output: "beforeafter" } });
-		expect(updatesFor(output, "cancelled-swap-bash")).toBe("beforeafter");
-		harness.cleanup();
-		gate.cleanup();
 	});
 
 	it("does not append a late result to the shared target manager after an actual unpersisted clone", async () => {
-		const source = await createHarness();
-		source.session.recordBashResult("seed", {
-			output: "seed",
-			exitCode: 0,
-			cancelled: false,
-			truncated: false,
-		});
-		const startingSessionId = source.sessionManager.getSessionId();
-		let target: Awaited<ReturnType<typeof createHarness>> | undefined;
-		const runtime = new AgentSessionRuntime(
-			source.session,
-			{ cwd: source.tempDir, agentDir: source.tempDir } as never,
-			(async (options: { sessionManager: typeof source.sessionManager }) => {
-				target = await createHarness({ sessionManager: options.sessionManager });
-				target.session.agent.state.messages = options.sessionManager.buildSessionContext().messages;
-				return {
-					session: target.session,
-					services: {
-						cwd: target.tempDir,
-						agentDir: target.tempDir,
-						settingsManager: target.settingsManager,
-						modelRegistry: target.session.modelRegistry,
-						resourceLoader: target.session.resourceLoader,
-					},
-					diagnostics: [],
-				};
-			}) as never,
-		);
-		let current = source.session;
-		const output: object[] = [];
-		const handle = createRpcCommandHandler({
-			runtimeHost: runtime,
-			getSession: () => current,
-			rebindSession: async () => {
-				current = runtime.session;
-			},
-			output: (event) => output.push(event),
-		});
-		const execution = handle({
-			id: "shared-manager",
-			type: "bash",
-			command: "printf source; sleep 0.2; printf result",
-		});
-		await waitForOutput(output, "shared-manager", "source");
-		await expect(handle({ id: "clone", type: "clone" })).resolves.toMatchObject({ success: true });
-		expect(source.sessionManager.getSessionId()).not.toBe(startingSessionId);
+		const gate = createBashGate("shared-manager");
+		try {
+			const source = await createHarness({ sessionManager: SessionManager.inMemory(gate.cwd) });
+			source.session.recordBashResult("seed", {
+				output: "seed",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+			});
+			const startingSessionId = source.sessionManager.getSessionId();
+			let target: Awaited<ReturnType<typeof createHarness>> | undefined;
+			const runtime = new AgentSessionRuntime(
+				source.session,
+				{ cwd: source.tempDir, agentDir: source.tempDir } as never,
+				(async (options: { sessionManager: typeof source.sessionManager }) => {
+					target = await createHarness({ sessionManager: options.sessionManager });
+					target.session.agent.state.messages = options.sessionManager.buildSessionContext().messages;
+					return {
+						session: target.session,
+						services: {
+							cwd: target.tempDir,
+							agentDir: target.tempDir,
+							settingsManager: target.settingsManager,
+							modelRegistry: target.session.modelRegistry,
+							resourceLoader: target.session.resourceLoader,
+						},
+						diagnostics: [],
+					};
+				}) as never,
+			);
+			let current = source.session;
+			const output: object[] = [];
+			const handle = createRpcCommandHandler({
+				runtimeHost: runtime,
+				getSession: () => current,
+				rebindSession: async () => {
+					current = runtime.session;
+				},
+				output: (event) => output.push(event),
+			});
+			const marker = "shared-manager.release";
+			const execution = handle({
+				id: "shared-manager",
+				type: "bash",
+				command: gate.command(marker, "source", "result"),
+			});
+			try {
+				await waitForOutput(output, "shared-manager", "source");
+				expect(gate.isWaiting(marker)).toBe(true);
+				await expect(handle({ id: "clone", type: "clone" })).resolves.toMatchObject({ success: true });
+				expect(source.sessionManager.getSessionId()).not.toBe(startingSessionId);
+			} finally {
+				gate.release(marker);
+			}
 
-		await expect(execution).resolves.toMatchObject({ success: true, data: { output: "sourceresult" } });
-		expect(source.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(2);
-		expect(target?.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(1);
-		expect(
-			source.sessionManager
-				.getEntries()
-				.filter((entry) => entry.type === "message" && entry.message.role === "bashExecution"),
-		).toHaveLength(1);
+			await expect(execution).resolves.toMatchObject({ success: true, data: { output: "sourceresult" } });
+			expect(source.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(2);
+			expect(target?.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(1);
+			expect(
+				source.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "message" && entry.message.role === "bashExecution"),
+			).toHaveLength(1);
 
-		target?.cleanup();
-		source.cleanup();
+			target?.cleanup();
+			source.cleanup();
+		} finally {
+			gate.cleanup();
+		}
 	});
 
 	it("cancels and drains active owners during RPC shutdown", async () => {

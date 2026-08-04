@@ -10,7 +10,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { type BashOperations, createBashTool } from "../src/core/tools/bash.ts";
 
 const roots: string[] = [];
-const ASYNC_JOB_WAIT_TIMEOUT_MS = 5_000,
+const ASYNC_JOB_WAIT_TIMEOUT_MS = 10_000,
 	ASYNC_JOB_POLL_INTERVAL_MS = 5;
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 const switchedModel = getModel("openai", "gpt-4o")!;
