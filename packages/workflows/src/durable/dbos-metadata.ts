@@ -1,3 +1,4 @@
+import type { WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
 	isWorkflowFailureCode,
@@ -66,6 +67,7 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 				: {}),
 			...(metadata.failureDisposition !== undefined ? { failureDisposition: metadata.failureDisposition } : {}),
 			...(metadata.failedToolNodeId !== undefined ? { failedToolNodeId: metadata.failedToolNodeId } : {}),
+			...(metadata.origin !== undefined ? { origin: metadata.origin } : {}),
 			...(metadata.invocationCwd !== undefined ? { invocationCwd: metadata.invocationCwd } : {}),
 			...(metadata.workflowCwd !== undefined ? { workflowCwd: metadata.workflowCwd } : {}),
 			...(metadata.repositoryRoot !== undefined ? { repositoryRoot: metadata.repositoryRoot } : {}),
@@ -167,7 +169,15 @@ function parseDurableWorkflowMetadata(
 		(metadata.gitWorktreeRoot !== undefined && typeof metadata.gitWorktreeRoot !== "string")
 	)
 		return undefined;
-	return metadata as DurableWorkflowMetadata;
+	const { origin, ...metadataWithoutOrigin } = metadata;
+	return {
+		...metadataWithoutOrigin,
+		...(isWorkflowActor(origin) ? { origin } : {}),
+	} as DurableWorkflowMetadata;
+}
+
+function isWorkflowActor(value: WorkflowSerializableValue | undefined): value is WorkflowActor {
+	return value === "user" || value === "agent";
 }
 
 function isDurableWorkflowStatus(value: string): value is DurableWorkflowStatus {

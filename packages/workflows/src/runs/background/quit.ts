@@ -20,7 +20,7 @@ import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import { store as defaultStore } from "../../shared/store.js";
 import { readGraphStoreSnapshot } from "../../shared/store-observation.js";
 import type { Store } from "../../shared/store-public-types.js";
-import type { RunSnapshot, StageSnapshot } from "../../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, WorkflowActor } from "../../shared/store-types.js";
 import type { WorkflowCancelledToolNode, WorkflowToolNodeIdentity } from "../../shared/types.js";
 import {
 	stageControlRegistry as defaultStageControlRegistry,
@@ -83,6 +83,12 @@ type QuitAllRunResult =
  * It deliberately does NOT abort through the cancellation registry or append a
  * terminal `workflow.run.end` entry. Destructive cancellation remains an
  * internal lifecycle mechanism.
+ *
+ * A quit publishes its stage pauses in step 1, long before step 5 can record the
+ * quit itself, so the run passes through an ordinary paused state on the way.
+ * Only step 5 carries the caller's `actor`, so an observer that reports deliberate
+ * control actions sees one quit rather than a pause followed by a quit — and
+ * still sees nothing at all when a quit never publishes.
  */
 export async function quitRun(
 	runId: string,
@@ -91,6 +97,8 @@ export async function quitRun(
 		stageControlRegistry?: StageControlRegistry;
 		toolControlRegistry?: ToolControlRegistry;
 		jobs?: JobTracker;
+		/** Who requested this quit. Omitted for internal callers. */
+		actor?: WorkflowActor;
 	},
 ): Promise<QuitRunResult> {
 	const activeStore = opts?.store ?? defaultStore;
@@ -170,7 +178,7 @@ export async function quitRun(
 	// record, and only the publication below can report that the run stopped.
 	const suspendedByAbort = toolHandles.length > 0;
 	const publish = (resumable: boolean): void => {
-		publishLocalQuit(activeStore, runId, pausedRunIds, resumable);
+		publishLocalQuit(activeStore, runId, pausedRunIds, resumable, opts?.actor);
 		// An abandoned callback keeps its executor alive, but that executor is no
 		// longer authoritative for this run id: detach it so `/workflow resume`
 		// relaunches a fresh executor instead of adopting the stale job and
@@ -202,15 +210,28 @@ export async function quitRun(
  * process could resume from it, so it is not advertised as resumable. Recording
  * it keeps the run controllable, so a later `/workflow quit` re-attempts the
  * transition and upgrades the record.
+ *
+ * The boundary run is deliberately excluded from the descendant loop: a bare
+ * `recordRunPaused(runId)` first would publish a plain paused state, and a
+ * lifecycle observer would report this quit as a pause followed by a quit. The
+ * single metadata-carrying call below records the same end state in one step.
  */
 function publishLocalQuit(
 	activeStore: Store,
 	runId: string,
 	pausedRunIds: ReadonlySet<string>,
 	resumable: boolean,
+	actor?: WorkflowActor,
 ): void {
-	for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
-	activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable });
+	for (const pausedRunId of pausedRunIds) {
+		if (pausedRunId === runId) continue;
+		activeStore.recordRunPaused(pausedRunId);
+	}
+	activeStore.recordRunPaused(runId, undefined, {
+		exitReason: "quit",
+		resumable,
+		...(actor === undefined ? {} : { actor }),
+	});
 }
 
 /**
@@ -368,6 +389,8 @@ export async function quitAllRuns(opts?: {
 	stageControlRegistry?: StageControlRegistry;
 	toolControlRegistry?: ToolControlRegistry;
 	jobs?: JobTracker;
+	/** Who requested these quits. Omitted for internal callers. */
+	actor?: WorkflowActor;
 }): Promise<QuitAllRunResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
@@ -377,6 +400,7 @@ export async function quitAllRuns(opts?: {
 			stageControlRegistry: opts?.stageControlRegistry,
 			toolControlRegistry: opts?.toolControlRegistry,
 			jobs: opts?.jobs,
+			...(opts?.actor === undefined ? {} : { actor: opts.actor }),
 		}),
 	);
 	const settled = await Promise.allSettled(attempts);

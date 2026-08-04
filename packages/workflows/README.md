@@ -43,18 +43,26 @@ After Atomic is running, use `/workflow reload` or the workflow tool's `reload` 
 
 ### Workflow lifecycle notifications
 
-Workflow lifecycle notices are enabled by default. They send steer prompts into the main chat/model context when a run completes, fails, or ends blocked. Awaiting-input prompts are tracked for dedupe/restore, but they do not wake the main chat agent. Configure lifecycle tracking in the same extension config file:
+Workflow lifecycle notices are enabled by default. They send steer prompts into the main chat/model context when a run completes, fails, or ends blocked, and when a user starts, pauses, quits, or resumes one. Awaiting-input prompts are tracked for dedupe/restore, but they do not wake the main chat agent. Configure lifecycle tracking in the same extension config file:
 
 ```json
 {
   "workflowNotifications": {
     "enabled": true,
-    "notifyOn": ["completed", "failed", "blocked", "awaiting_input"]
+    "notifyOn": ["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]
   }
 }
 ```
 
 Set `enabled` to `false` to disable all lifecycle notices, or narrow `notifyOn` to a non-empty list of selected events. Completion, failure, and blocked lifecycle notices are emitted for top-level workflow runs, use steer delivery, and wake an idle model so the lifecycle update enters the model context when it happens. When a fulfilled workflow body leaves admitted tool failures, the engine promotes the first admission and persists that exact tool origin for the failed notice. Ordinary body rejections retain their original error and failed graph nodes without claiming a tool origin because transparent native promises do not expose the source promise; this prevents a caught tool rejection from being misattributed when body code later throws the same object or primitive. Nested child workflow completion/failure is reflected inside the expanded parent graph instead of producing separate top-level completion cards. Awaiting-input states are tracked for dedupe/restore, but workflows do not enqueue main-chat `/workflow connect` cards for them; prompt state remains visible through workflow status/connect surfaces, avoiding stale actionable cards if a prompt resolves while the main chat is streaming.
+
+Control notices report deliberate actions on a top-level run: `/workflow <name>` produces a `WORKFLOW STARTED` card (`▶`), `/workflow pause` a `WORKFLOW PAUSED` card (`⏸`, warning tone), `/workflow quit` a `WORKFLOW QUIT` card (`⏹`, warning tone, plus a `resumable` field), and `/workflow resume` a `WORKFLOW RESUMED` card (`▶`). All four travel the same steer delivery, capped-backoff retry, and card path as the failure notice. The paused and quit text says the stop was deliberate and user-requested and instructs the model not to resume the run or take the work over unless asked, hinting `/workflow resume <run-id>`; the resumed text does not, since the run is progressing again.
+
+Only user actions notify. The matching `workflow({ action: "run" | "pause" | "quit" | "resume" })` tool calls stay silent, because the tool result already reports them to the agent, and `/workflow interrupt` raises nothing. Engine-internal transitions stay silent too — a notice exists only when a control path named an actor — which is what keeps answering a human-in-the-loop prompt, per-stage control, and the resume-acknowledgement pass from flooding the chat.
+
+Each notice carries two attributions. *Origin* is who launched the run and renders on every kind as "which you started" or "which the user started"; it is recorded once at dispatch, persisted through session restore and durable resume, and inherited by a continuation from the run it continues. *Actor* is who performed this one event ("The user paused"). A run with no recorded origin omits the clause rather than guessing one.
+
+One request produces one notice. A whole-run pause or resume reports at run scope; a stage-scoped pause or resume that leaves siblings paused reports at stage scope, and one that stops or restarts the whole run reports the run instead. A quit reports the quit alone, never the pause it publishes on the way. Because control actions are reversible, they are deduplicated by run id together with the occurrence timestamp (`pausedAt`/`quitAt`/`resumedAt`), so pause → resume → pause → resume notifies four times while repeated snapshot invalidations at one unchanged state notify once. A continuation launched by resuming a quit or failed run reports the resume naming both run ids and never a start. A run already started, paused, or quit when notifications install (restore, replay, `/reload`, session-preserving reinstall) is seeded as delivered and stays silent, and nested child runs never notify at top level.
 
 When a stage human-in-the-loop prompt is answered from the workflow TUI/stage chat, workflows also emits a separate display-only `workflows:hil-answer-notice` custom message. It records the answer for user-visible audit, but it does not wake the main agent, enter LLM context, or authorize answering later workflow prompts. Answers sent by the main-chat `workflow` tool do not emit this notice because the tool result already tells the main agent what happened.
 
@@ -802,7 +810,7 @@ Config-based discovery (`~/.atomic/agent/extensions/workflow/config.json` or `.a
   },
   "workflowNotifications": {
     "enabled": true,
-    "notifyOn": ["completed", "failed", "blocked", "awaiting_input"]
+    "notifyOn": ["started", "completed", "failed", "blocked", "awaiting_input", "paused", "quit", "resumed"]
   }
 }
 ```

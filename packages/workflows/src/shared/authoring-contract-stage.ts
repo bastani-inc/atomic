@@ -33,6 +33,12 @@ export type WorkflowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high
 export type WorkflowExecutionMode = "interactive" | "non_interactive";
 export type WorkflowExitStatus = "completed" | "skipped" | "cancelled" | "blocked";
 export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
+
+/**
+ * Who performed a workflow lifecycle action. Mirrors the store-side union; the
+ * authoring contract keeps its own copy so it stays independent of store types.
+ */
+export type WorkflowActor = "user" | "agent";
 export type WorkflowDetailsMode = "named" | "inspection" | "control";
 export type WorkflowDetailsStatus = "accepted" | "running" | WorkflowExitStatus | "failed" | "killed" | "noop";
 export type WorkflowAction = "list" | "get" | "inputs" | "run" | "status" | "interrupt" | "resume";

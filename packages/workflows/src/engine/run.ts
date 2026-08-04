@@ -164,6 +164,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		opts.parentRun === undefined
 			? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
 			: undefined;
+	const continuationOrigin = opts.continuation !== undefined ? opts.continuation.source.origin : opts.origin;
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -184,6 +185,15 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 					resumedFromRunId: opts.continuation.source.id,
 					resumeFromStageId: opts.continuation.resumeFromStageId,
 				}
+			: {}),
+		// A continuation keeps the attribution of the run it continues rather than
+		// recomputing it, so resuming an agent-started run still reads as one the
+		// agent started. Only the resume itself is attributed to its requester.
+		...(continuationOrigin !== undefined ? { origin: continuationOrigin } : {}),
+		// A resumed run reports the resume that produced it, never a fresh start —
+		// whether it continues under a new id or reclaims the original one.
+		...(opts.resumeActor !== undefined
+			? { resumeActor: opts.resumeActor, resumeSource: "run_control" as const }
 			: {}),
 		...(inheritedElapsedMs !== undefined ? { accumulatedDurationMs: inheritedElapsedMs } : {}),
 	};
@@ -216,6 +226,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			...(runSnapshot.parentStageId !== undefined ? { parentStageId: runSnapshot.parentStageId } : {}),
 			...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
 			...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
+			...(runSnapshot.origin !== undefined ? { origin: runSnapshot.origin } : {}),
 			...(runSnapshot.resumeFromStageId !== undefined ? { resumeFromStageId: runSnapshot.resumeFromStageId } : {}),
 			...(runSnapshot.accumulatedDurationMs !== undefined
 				? { accumulatedDurationMs: runSnapshot.accumulatedDurationMs }
@@ -550,7 +561,12 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 					? undefined
 					: {
 							...durableRootRegistration,
-							...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache),
+							...workflowInvocationMetadata(
+								inputRuntimeDefaults,
+								workflowInvocationCwd,
+								gitWorktreeSetupCache,
+								runSnapshot.origin,
+							),
 						},
 		});
 		if (opts.deferWorkflowStart === true) opts.onWorkflowStartReady?.();

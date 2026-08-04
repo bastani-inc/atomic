@@ -18,7 +18,7 @@ import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { Store } from "../shared/store.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { discoverWorkflows } from "./discovery.js";
@@ -26,7 +26,7 @@ import { discoverWorkflows } from "./discovery.js";
 export interface DurableResumeRuntime {
 	resumeDurableWorkflow(
 		workflowId: string,
-		options?: { readonly policy?: WorkflowExecutionPolicy },
+		options?: { readonly policy?: WorkflowExecutionPolicy; readonly actor?: WorkflowActor },
 	): Promise<ResumeDurableResult>;
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
 	prepareDurableResumable(workflowId?: string): Promise<readonly ResumableWorkflowEntry[]>;
@@ -75,7 +75,10 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			if (resolved !== undefined) await backend.hydrateWorkflow(resolved.workflowId);
 			const adapterDeps: ResumeDurableDeps = {
 				registry: deps.registry,
-				baseRunOpts: deps.baseRunOpts(options?.policy),
+				baseRunOpts: {
+					...deps.baseRunOpts(options?.policy),
+					...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
+				},
 				durableBackend: backend,
 				resolveDefinition: async (name, cwd) =>
 					(await discoverWorkflows({ cwd: cwd ?? deps.runtimeCwd })).registry.get(name),

@@ -75,7 +75,8 @@ export async function settleResumeAcknowledgements(
 		if (visiblyRunning) lateFailures.push(qualified);
 		else if (controlRun?.endedAt === undefined && targetIsActuallyPaused(store, target)) failures.push(qualified);
 	});
-	for (const controlRunId of resumedRunIds) store.recordRunResumed(controlRunId);
+	for (const controlRunId of resumedRunIds)
+		store.recordRunResumed(controlRunId, undefined, { source: "acknowledgement" });
 	return { resumed, acknowledged, failures, lateFailures };
 }
 

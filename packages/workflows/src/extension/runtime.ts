@@ -18,7 +18,7 @@ import { type RunOpts, resolveAndValidateInputs } from "../runs/foreground/execu
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { Store } from "../shared/store.js";
 import { store as defaultStore } from "../shared/store.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
 import type {
 	WorkflowDefinition,
 	WorkflowExecutionPolicy,
@@ -115,6 +115,10 @@ export interface ExtensionRuntime extends DurableResumeRuntime {
 }
 export interface RuntimeDispatchOptions {
 	readonly policy?: WorkflowExecutionPolicy;
+	/** Who launched this run. Only an attributable launcher supplies it. */
+	readonly origin?: WorkflowActor;
+	/** Who requested this resume. Only an attributable requester supplies it. */
+	readonly actor?: WorkflowActor;
 }
 // ---------------------------------------------------------------------------
 // Factory
@@ -266,6 +270,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			launchDetachedUntilStartup(def, sourceInputs, {
 				...runOptions(options?.policy),
 				continuation: { source, resumeFromStageId: resolvedStage.stageId },
+				...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 				...(jobs !== undefined ? { jobs } : {}),
 			});
 		if (isActiveBlockedResumable) {
@@ -393,6 +398,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				config,
 				models,
 				policy: options?.policy,
+				...(options?.origin === undefined ? {} : { origin: options.origin }),
 				cwd: runtimeCwd,
 				...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
 			});

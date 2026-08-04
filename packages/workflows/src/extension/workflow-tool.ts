@@ -74,7 +74,9 @@ export function makeExecuteWorkflowTool(
 			}
 			case "run": {
 				await ensureWorkflowResourcesVisible();
-				return getRuntime().dispatch(args, { policy });
+				// A tool launch is the agent's own action: it is attributed as such and
+				// the tool result already reports the run, so it raises no chat notice.
+				return getRuntime().dispatch(args, { policy, origin: "agent" });
 			}
 			case "status": {
 				const target = args.runId;

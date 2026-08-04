@@ -7,6 +7,7 @@ import type {
 	StageSnapshot,
 	StageStatus,
 	ToolNodeSnapshot,
+	WorkflowActor,
 	WorkflowFailureCode,
 	WorkflowFailureDisposition,
 	WorkflowFailureKind,
@@ -481,6 +482,7 @@ export function findRunStartMetadata(
 	readonly resumedFromRunId?: string;
 	readonly resumeFromStageId?: string;
 	readonly accumulatedDurationMs?: number;
+	readonly origin?: WorkflowActor;
 } {
 	for (const entry of entries) {
 		if (entry.type !== "workflow.run.start" || entry.payload.runId !== runId) continue;
@@ -490,6 +492,7 @@ export function findRunStartMetadata(
 		const resumedFromRunId = entry.payload.resumedFromRunId;
 		const resumeFromStageId = entry.payload.resumeFromStageId;
 		const accumulatedDurationMs = entry.payload.accumulatedDurationMs;
+		const origin = entry.payload.origin;
 		return {
 			...(typeof parentRunId === "string" ? { parentRunId } : {}),
 			...(typeof parentStageId === "string" ? { parentStageId } : {}),
@@ -501,6 +504,7 @@ export function findRunStartMetadata(
 			accumulatedDurationMs > 0
 				? { accumulatedDurationMs }
 				: {}),
+			...(origin === "user" || origin === "agent" ? { origin } : {}),
 		};
 	}
 	return {};

@@ -6,7 +6,7 @@ import {
 	type StoreContext,
 	TERMINAL_STATUSES,
 } from "./store-internal.js";
-import type { Store } from "./store-public-types.js";
+import type { StageControlMetadata, Store } from "./store-public-types.js";
 import { nextExecutionOrder } from "./store-tool-node-methods.js";
 import type { StageInputRequest, StageNotice, StageSnapshot, ToolEvent, WorkflowChildRunRef } from "./store-types.js";
 import { accumulatePausedDurationMs } from "./timing.js";
@@ -269,28 +269,48 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			return true;
 		},
 
-		recordStagePaused(runId: string, stageId: string, pausedAt?: number): boolean {
+		recordStagePaused(runId: string, stageId: string, pausedAt?: number, metadata?: StageControlMetadata): boolean {
 			const run = context.findRun(runId);
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			const stage = context.findStage(run, stageId);
 			if (!stage) return false;
-			if (cannotPause(stage.status)) return false;
+			if (cannotPause(stage.status)) {
+				// Attribution-only claim: the control path paused this stage through
+				// the engine and is naming itself afterwards.
+				if (stage.status !== "paused" || metadata?.actor === undefined) return false;
+				if (stage.pauseActor === metadata.actor) return false;
+				stage.pauseActor = metadata.actor;
+				context.bumpAndNotify();
+				return false;
+			}
 			stage.status = "paused";
 			stage.pausedAt = pausedAt ?? Date.now();
 			stage.resumedAt = undefined;
 			delete stage.awaitingInputSince;
+			delete stage.resumeActor;
+			if (metadata?.actor === undefined) delete stage.pauseActor;
+			else stage.pauseActor = metadata.actor;
 			context.bumpAndNotify();
 			return true;
 		},
 
-		recordStageResumed(runId: string, stageId: string, resumedAt?: number): boolean {
+		recordStageResumed(runId: string, stageId: string, resumedAt?: number, metadata?: StageControlMetadata): boolean {
 			const run = context.findRun(runId);
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			const stage = context.findStage(run, stageId);
 			if (!stage) return false;
-			if (stage.status !== "paused" && stage.status !== "blocked") return false;
+			if (stage.status !== "paused" && stage.status !== "blocked") {
+				// Attribution-only claim, mirroring the paused path above.
+				if (stage.status !== "running" || stage.resumedAt === undefined || metadata?.actor === undefined) {
+					return false;
+				}
+				if (stage.resumeActor === metadata.actor) return false;
+				stage.resumeActor = metadata.actor;
+				context.bumpAndNotify();
+				return false;
+			}
 			const resumedTs = resumedAt ?? Date.now();
 			stage.status = "running";
 			if (stage.startedAt !== undefined) {
@@ -300,6 +320,9 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			stage.pausedAt = undefined;
 			delete stage.blockedByStageId;
 			delete stage.awaitingInputSince;
+			delete stage.pauseActor;
+			if (metadata?.actor === undefined) delete stage.resumeActor;
+			else stage.resumeActor = metadata.actor;
 			context.bumpAndNotify();
 			return true;
 		},

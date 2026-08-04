@@ -203,6 +203,11 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 				: existing?.handle.invocationCwd !== undefined
 					? { invocationCwd: existing.handle.invocationCwd }
 					: {}),
+			...(handle.origin !== undefined
+				? { origin: handle.origin }
+				: existing?.handle.origin !== undefined
+					? { origin: existing.handle.origin }
+					: {}),
 			...(handle.workflowCwd !== undefined
 				? { workflowCwd: handle.workflowCwd }
 				: existing?.handle.workflowCwd !== undefined
@@ -474,6 +479,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			...(h.resumable !== undefined ? { resumable: h.resumable } : {}),
 			...workflowFailureFields(h),
 			...(h.invocationCwd !== undefined ? { invocationCwd: h.invocationCwd } : {}),
+			...(h.origin !== undefined ? { origin: h.origin } : {}),
 			...(h.workflowCwd !== undefined ? { workflowCwd: h.workflowCwd } : {}),
 			...(h.repositoryRoot !== undefined ? { repositoryRoot: h.repositoryRoot } : {}),
 			...(h.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: h.gitWorktreeRoot } : {}),
@@ -554,6 +560,7 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
 		...workflowFailureFields(handle),
 		...(handle.invocationCwd !== undefined ? { invocationCwd: handle.invocationCwd } : {}),
+		...(handle.origin !== undefined ? { origin: handle.origin } : {}),
 		...(handle.workflowCwd !== undefined ? { workflowCwd: handle.workflowCwd } : {}),
 		...(handle.repositoryRoot !== undefined ? { repositoryRoot: handle.repositoryRoot } : {}),
 		...(handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: handle.gitWorktreeRoot } : {}),

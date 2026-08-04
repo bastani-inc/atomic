@@ -16,6 +16,7 @@ import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
 import { store as defaultStore, type Store } from "../shared/store.js";
+import type { WorkflowActor } from "../shared/store-types.js";
 import {
 	INTERACTIVE_WORKFLOW_POLICY,
 	type WorkflowExecutionPolicy,
@@ -82,6 +83,8 @@ export interface DispatcherOpts {
 	models?: WorkflowModelCatalogPort;
 	/** Runtime-derived interaction policy for this dispatch. */
 	policy?: WorkflowExecutionPolicy;
+	/** Who launched this run. Omitted when the launcher is not attributable. */
+	origin?: WorkflowActor;
 	/** Invocation cwd used for workflow execution. */
 	cwd?: string;
 	/** Host-resolved non-default session directory inherited by stages without explicit sessionDir. */
@@ -187,6 +190,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					executionMode: policy.mode,
 					cwd: opts.cwd,
 					defaultSessionDir: opts.defaultSessionDir,
+					...(opts.origin === undefined ? {} : { origin: opts.origin }),
 					runId,
 				});
 			} catch (error) {

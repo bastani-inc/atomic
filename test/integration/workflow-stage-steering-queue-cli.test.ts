@@ -363,6 +363,17 @@ async function runScenario(): Promise<Evidence> {
 	mkdirSync(sessionDir, { recursive: true });
 	mkdirSync(stateDir, { recursive: true });
 	copyFileSync(join(fixturesDir, WORKFLOW_FIXTURE), join(projectDir, ".atomic/workflows", WORKFLOW_FIXTURE));
+	// This scenario's stand-in model opens a turn and never closes it, which is
+	// the whole point: the stage has to stay mid-turn while messages queue on it.
+	// A main-chat lifecycle steer would therefore never settle either, so the run
+	// launch pins `notifyOn` to the terminal kinds. What is under test here is
+	// stage steering and queued-message state, not lifecycle notices, which have
+	// their own unit coverage.
+	mkdirSync(join(projectDir, ".atomic/extensions/workflow"), { recursive: true });
+	writeFileSync(
+		join(projectDir, ".atomic/extensions/workflow/config.json"),
+		`${JSON.stringify({ workflowNotifications: { notifyOn: ["completed", "failed", "blocked"] } }, null, 2)}\n`,
+	);
 
 	const model = await startModelServer(stateDir);
 	writeAgentConfig(agentDir, model.baseUrl);

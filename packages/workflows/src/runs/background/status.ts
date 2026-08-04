@@ -16,7 +16,7 @@ import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import { readGraphStoreSnapshot } from "../../shared/store-observation.js";
-import type { RunSnapshot, RunStatus, StageSnapshot } from "../../shared/store-types.js";
+import type { RunSnapshot, RunStatus, StageSnapshot, WorkflowActor } from "../../shared/store-types.js";
 import type { WorkflowPersistencePort } from "../../shared/types.js";
 import type { StageControlRegistry } from "../foreground/stage-control-registry.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../foreground/stage-control-registry.js";
@@ -204,6 +204,8 @@ export async function resumeRun(
 		stageId?: string;
 		/** Optional resume message forwarded to each resumed stage. */
 		message?: string;
+		/** Who requested this resume. Omitted for internal callers. */
+		actor?: WorkflowActor;
 	},
 ): Promise<ResumeResult> {
 	const activeStore = opts?.store ?? defaultStore;
@@ -250,8 +252,21 @@ export async function resumeRun(
 				!hasPausedDescendant &&
 				currentRun?.status === "paused")
 		) {
-			activeStore.recordRunResumed(runId);
-			if (aggregateRootRunId !== runId) activeStore.recordRunResumed(aggregateRootRunId);
+			// One scope carries the actor, mirroring pauseRun: the stage when a
+			// stage-scoped resume leaves siblings paused, the run otherwise. The
+			// aggregate root is reconciled without attribution so one request never
+			// reports twice.
+			const attributeStage = opts?.stageId !== undefined && hasPausedDescendant;
+			activeStore.recordRunResumed(runId, undefined, {
+				source: "run_control",
+				...(opts?.actor === undefined || attributeStage ? {} : { actor: opts.actor }),
+			});
+			if (aggregateRootRunId !== runId) {
+				activeStore.recordRunResumed(aggregateRootRunId, undefined, { source: "run_control" });
+			}
+			if (attributeStage && opts?.actor !== undefined && opts.stageId !== undefined) {
+				activeStore.recordStageResumed(runId, opts.stageId, undefined, { actor: opts.actor });
+			}
 		}
 		const reconciledRoot = activeStore.runs().find((candidate) => candidate.id === runId);
 		if (acknowledgements.failures.length > 0) {
@@ -346,7 +361,15 @@ export async function resumeRun(
 }
 
 // pauseRun
-/** Pause a run only after its live stage controls acknowledge the request. */
+/**
+ * Pause a run only after its live stage controls acknowledge the request.
+ *
+ * `actor` attributes the pause to whoever asked for it. Exactly one scope carries
+ * it: a whole-run pause attributes the run, and a stage-scoped pause attributes
+ * the run when it stops the last active stage and the stage otherwise. An
+ * observer therefore reports one event per request, never a stage and a run
+ * event for the same one.
+ */
 export async function pauseRun(
 	runId: string,
 	opts?: {
@@ -354,11 +377,14 @@ export async function pauseRun(
 		stageControlRegistry?: StageControlRegistry;
 		/** Pause only this stage. */
 		stageId?: string;
+		/** Who requested this pause. Omitted for internal callers. */
+		actor?: WorkflowActor;
 	},
 ): Promise<PauseResult> {
 	const activeStore = opts?.store ?? defaultStore;
 	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
 	const run = activeStore.runs().find((candidate) => candidate.id === runId);
+	const actorMetadata = opts?.actor === undefined ? undefined : { actor: opts.actor };
 
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
@@ -379,7 +405,9 @@ export async function pauseRun(
 				(candidate) =>
 					candidate.id !== opts.stageId && (candidate.status === "running" || candidate.status === "pending"),
 			) ?? false;
-		if (!stillActive) activeStore.recordRunPaused(runId);
+		if (!stillActive) activeStore.recordRunPaused(runId, undefined, actorMetadata);
+		else if (actorMetadata !== undefined)
+			activeStore.recordStagePaused(runId, opts.stageId, undefined, actorMetadata);
 		return { ok: true, runId, paused };
 	}
 
@@ -403,19 +431,30 @@ export async function pauseRun(
 		const stage = controlRun?.stages.find((candidate) => candidate.id === handle.stageId);
 		if (stage !== undefined) paused.push(structuredClone(stage));
 	}
-	for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
-	activeStore.recordRunPaused(runId);
+	for (const pausedRunId of pausedRunIds) {
+		if (pausedRunId === runId) continue;
+		activeStore.recordRunPaused(pausedRunId);
+	}
+	activeStore.recordRunPaused(runId, undefined, actorMetadata);
 	return { ok: true, runId, paused };
 }
 
 export async function pauseAllRuns(opts?: {
 	store?: Store;
 	stageControlRegistry?: StageControlRegistry;
+	/** Who requested these pauses. Omitted for internal callers. */
+	actor?: WorkflowActor;
 }): Promise<PauseResult[]> {
 	const activeStore = opts?.store ?? defaultStore;
 	const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
 	return Promise.all(
-		inFlight.map((run) => pauseRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry })),
+		inFlight.map((run) =>
+			pauseRun(run.id, {
+				store: activeStore,
+				stageControlRegistry: opts?.stageControlRegistry,
+				...(opts?.actor === undefined ? {} : { actor: opts.actor }),
+			}),
+		),
 	);
 }
 // ---------------------------------------------------------------------------
