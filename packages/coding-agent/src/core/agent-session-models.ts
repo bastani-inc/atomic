@@ -205,7 +205,6 @@ export async function _cycleAvailableModel(
  */
 
 export function setThinkingLevel(this: AgentSession, level: ThinkingLevel): void {
-	if (this._fallbackOriginModel !== undefined) this._clearFallbackModelScope?.();
 	const availableLevels = this.getAvailableThinkingLevels();
 	const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
@@ -216,6 +215,12 @@ export function setThinkingLevel(this: AgentSession, level: ThinkingLevel): void
 	this.agent.state.thinkingLevel = effectiveLevel;
 
 	if (isChanging) {
+		// A reasoning choice is not a model choice, so it must not strand the
+		// session on a fallback candidate: keep the pending restore. Carry the
+		// explicit level into the scope so the restore does not overwrite it.
+		// (A no-op level assignment — a registry refresh re-applying the current
+		// level — changes nothing here.)
+		if (this._fallbackOriginModel !== undefined) this._fallbackOriginThinkingLevel = effectiveLevel;
 		this.sessionManager.appendThinkingLevelChange(effectiveLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
 		if (this.supportsThinking() || effectiveLevel !== "off") {

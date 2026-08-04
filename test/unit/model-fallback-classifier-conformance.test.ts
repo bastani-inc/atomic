@@ -370,6 +370,13 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		kind: "unknown",
 		retryable: false,
 	},
+	{
+		// gRPC based providers (e.g. NVIDIA NIM); upstream pi-ai retries this.
+		label: "grpc ResourceExhausted",
+		failure: new Error("ResourceExhausted"),
+		kind: "provider_unavailable",
+		retryable: true,
+	},
 ];
 
 describe("model fallback classifier conformance (subagents vs workflows)", () => {

@@ -61,6 +61,8 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/you can retry your request/i,
 	/try your request again/i,
 	/please retry your request/i,
+	// gRPC based providers (e.g. NVIDIA NIM); upstream pi-ai retries this too.
+	/ResourceExhausted/i,
 ];
 
 const NON_RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [

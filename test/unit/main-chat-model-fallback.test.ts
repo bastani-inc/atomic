@@ -10,6 +10,7 @@ import {
 	_createRetryPromiseForAgentEnd,
 	_processAgentEvent,
 } from "../../packages/coding-agent/src/core/agent-session-events.js";
+import { setThinkingLevel } from "../../packages/coding-agent/src/core/agent-session-models.js";
 import {
 	_clearFallbackModelScope,
 	_handleRetryableError,
@@ -763,4 +764,97 @@ test("a failed overflow compaction advances the real fallback chain end to end",
 	assert.equal((session.agent as { state: { model: Model<Api> } }).state.model, fallback);
 	assert.equal(continued, 1);
 	assert.equal(session._contextOverflowUnresolved, false);
+});
+
+/** Session double sufficient for `_trySwitchToFallbackModel` and `setThinkingLevel`. */
+function thinkingLevelFallbackSession(
+	primary: Model<Api>,
+	fallback: Model<Api>,
+	events: Array<{ type: string; [key: string]: unknown }>,
+): Record<string, unknown> {
+	return {
+		model: primary,
+		thinkingLevel: "high" as ThinkingLevel,
+		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_retryAttempt: 0,
+		settingsManager: {
+			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
+			getDefaultProvider: () => "openai-codex",
+			setDefaultThinkingLevel: (level: ThinkingLevel) => events.push({ type: "settings_thinking", level }),
+		},
+		_modelRuntime: {
+			getAvailableSnapshot: () => [primary, fallback],
+			getModel: (provider: string, id: string) =>
+				provider === fallback.provider && id === fallback.id ? fallback : undefined,
+			hasConfiguredAuth: () => true,
+		},
+		agent: {
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [retryableMessage()] },
+			continue: async () => undefined,
+		},
+		sessionManager: {
+			appendModelChange: (provider: string, id: string) => events.push({ type: "session_model", provider, id }),
+			appendThinkingLevelChange: (level: ThinkingLevel) => events.push({ type: "session_thinking", level }),
+		},
+		getAvailableThinkingLevels: () => ["off", "low", "medium", "high"] as ThinkingLevel[],
+		_clampThinkingLevel: (level: ThinkingLevel) => level,
+		supportsThinking: () => true,
+		_extensionRunner: { emit: async () => undefined },
+		_withContextWindowForModelSwitch: (candidate: Model<Api>) => candidate,
+		_refreshBaseSystemPromptFromActiveTools: () => undefined,
+		_emitModelChanged: (next: Model<Api>, previous: Model<Api> | undefined, source: string) =>
+			events.push({ type: "model_changed", next: next.id, previous: previous?.id, source }),
+		_emitModelSelect: async () => undefined,
+		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
+		_clearFallbackModelScope,
+	};
+}
+
+test("a reasoning-level change during a fallback still restores the primary model", async () => {
+	const primary = model("openai-codex", "gpt-5.5");
+	const fallback = model("anthropic", "claude-opus-4-8");
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	const session = thinkingLevelFallbackSession(primary, fallback, events);
+	const state = (session.agent as { state: { model: Model<Api>; thinkingLevel: ThinkingLevel } }).state;
+
+	assert.equal(await _trySwitchToFallbackModel.call(session as never, retryableMessage()), true);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(state.model, fallback);
+
+	// A reasoning choice is not a model choice and must not cancel the restore.
+	setThinkingLevel.call(session as never, "low" as ThinkingLevel);
+
+	assert.equal(await _restoreFallbackModel.call(session as never), true);
+	assert.equal(state.model, primary, "a reasoning change must not strand the session on the fallback");
+	assert.equal(state.thinkingLevel, "low", "the explicit reasoning choice must survive the restore");
+});
+
+test("a registry refresh re-applying the current level leaves the pending restore intact", async () => {
+	const primary = model("openai-codex", "gpt-5.5");
+	const fallback = model("anthropic", "claude-opus-4-8");
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	const session = thinkingLevelFallbackSession(primary, fallback, events);
+	const state = (session.agent as { state: { model: Model<Api>; thinkingLevel: ThinkingLevel } }).state;
+
+	assert.equal(await _trySwitchToFallbackModel.call(session as never, retryableMessage()), true);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+
+	// agent-session-extension-bindings re-applies the current level on registry
+	// refresh, which must be a no-op for the fallback scope.
+	setThinkingLevel.call(session as never, state.thinkingLevel);
+
+	assert.equal(await _restoreFallbackModel.call(session as never), true);
+	assert.equal(state.model, primary);
+	assert.equal(state.thinkingLevel, "high");
+});
+
+test("a gRPC ResourceExhausted failure is both same-model retryable and fallbackable", () => {
+	// Upstream pi-ai retries this; the shared classifier must agree so a
+	// session with no fallback chain still spends its same-model retry budget.
+	const session = { model: model("openai", "gpt-5.5") };
+	const message = retryableMessage({ errorMessage: "ResourceExhausted" });
+
+	assert.equal(_isRetryableError.call(session as never, message), true);
+	assert.equal(_isFallbackableError.call(session as never, message), true);
 });
