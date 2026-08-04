@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `async: true` no longer survives parent exit. Async subagents now run as in-process children of the parent session on the same foreground executor, so quitting Atomic ends any in-flight async run. The child's canonical identity and its session file persist on disk and can be reloaded on a later start, but the running work does not continue in the background across a restart. The detached runner process that previously provided parent-exit survival has been deleted ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Removed the `ATOMIC_SUBAGENT_*` process-era environment bridge variables consumed by the deleted spawn path, along with the synthesized numeric exit-code protocol (`0/1/-1/-2/143`). Subagent results are discriminated by typed `status` (`ok | error | skipped | interrupted | continued`) instead ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
 ### Added
 
 - Added the in-process subagent control-plane doors and `InProcessChildRunner` foundation backed by the Rust N-API registry, typed statuses, session statistics, and bounded result envelopes ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
@@ -9,6 +14,11 @@
 ### Changed
 
 - Foreground subagent attempts now enter through the in-process session runner, expose typed terminal status and `SessionStats`, and record typed run-history statuses; the foreground process-attempt implementation was removed ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- `async: true` chain and parallel runs now execute on the same in-process foreground executor as their synchronous counterparts, un-awaited, instead of a separately serialized detached runner. Chain `{previous}` substitution, chain output bindings, dynamic fanout, worktree setup and cleanup, structured-output schemas, skills resolution, progress files, fail-fast, and per-step model-candidate ladders are now served by one implementation for both modes ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
+### Removed
+
+- Removed every remaining OS child-process code path from subagent execution, satisfying the spec's zero-process goal: the detached jiti async runner and its twelve `subagent-runner*` modules, the `async-execution-*` spawn layer, the async event journal, the idle/wall attempt watchdog, the stdout drain grace, the CLI spawn resolver, the environment-bridge builder, and the post-exit stdio guard ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
 ### Fixed
 
