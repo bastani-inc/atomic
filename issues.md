@@ -1,0 +1,3 @@
+# Open validation issues
+
+- The repository-wide `npm run test:unit` suite is load/environment sensitive in this checkout. Baseline had 628 files passed and 1 failure; a later full run after the issue #2188 slices had 625 files passed, 4 failed, and 16 failed tests across workflow durable/reload/tool-graph suites. Representative failures report `workflows cannot invoke workflows from workflow stages`, which points to cross-file workflow-stage state rather than the changed in-process runner. Focused changed-surface tests pass (18/18). Reproduce with `npm run test:unit`; do not alter the unrelated workflow tests while completing slices 3–5.
