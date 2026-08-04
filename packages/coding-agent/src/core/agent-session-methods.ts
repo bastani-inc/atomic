@@ -393,6 +393,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	_fallbackModels: string[];
 	_fallbackAttemptedKeys: Set<string>;
+	_fallbackBlockedModels: Array<Model<Api>>;
 	_fallbackOriginModel: Model<Api> | undefined;
 	_fallbackOriginThinkingLevel: ThinkingLevel | undefined;
 	_fallbackScopeGeneration: number;

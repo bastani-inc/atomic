@@ -108,6 +108,7 @@ test("main-chat fallback switches models after same-model retry exhaustion", asy
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		settingsManager: {
 			getRetrySettings: () => ({ enabled: true, maxRetries: 0, baseDelayMs: 1 }),
@@ -175,6 +176,7 @@ test("main-chat fallback restores the primary model at the next turn boundary", 
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -214,7 +216,10 @@ test("main-chat fallback restores the primary model at the next turn boundary", 
 	assert.equal(await _restoreFallbackModel.call(session as never), false);
 });
 
-test("main-chat fallback can change reasoning on the same provider/model", async () => {
+test("a transient failure can still change reasoning on the same provider/model", async () => {
+	// Rate limits and transport blips clear on their own, so the same model at
+	// another reasoning level stays a legitimate candidate.
+	const transient = retryableMessage({ errorMessage: "rate limit exceeded" });
 	const primary = model("openai", "gpt-5-mini");
 	const events: Array<{ type: string; [key: string]: unknown }> = [];
 	const session = {
@@ -222,6 +227,7 @@ test("main-chat fallback can change reasoning on the same provider/model", async
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["openai/gpt-5-mini:low"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -234,7 +240,7 @@ test("main-chat fallback can change reasoning on the same provider/model", async
 			hasConfiguredAuth: () => true,
 		},
 		agent: {
-			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [retryableMessage()] },
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [transient] },
 			continue: async () => undefined,
 		},
 		sessionManager: {
@@ -248,7 +254,7 @@ test("main-chat fallback can change reasoning on the same provider/model", async
 		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
 	};
 
-	const handled = await _trySwitchToFallbackModel.call(session as never, retryableMessage());
+	const handled = await _trySwitchToFallbackModel.call(session as never, transient);
 
 	assert.equal(handled, true);
 	assert.equal(session.agent.state.model, primary);
@@ -274,6 +280,7 @@ test("main-chat retry-disabled fallback keeps prompt waiting for fallback comple
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		_retryPromise: undefined as Promise<void> | undefined,
 		_retryResolve: undefined as (() => void) | undefined,
@@ -346,6 +353,7 @@ test("main-chat fallback rejection settles the retry wait", async () => {
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 1,
 		_retryPromise: retryPromise as Promise<void> | undefined,
 		_retryResolve: resolveRetry as (() => void) | undefined,
@@ -411,6 +419,7 @@ test("main-chat fallback continuation resolution does not mark assistant errors 
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -461,6 +470,7 @@ test("a rejected codex credential advances to the next candidate without re-requ
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		settingsManager: {
 			// Same-model retry is enabled and generously budgeted; a dead credential
@@ -520,6 +530,7 @@ test("an explicit /model choice during a fallback is not overwritten by the rest
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -586,6 +597,8 @@ function overflowTurnSession(checkCompaction: (session: Record<string, unknown>)
 		model: model("openai-codex", "gpt-5.5"),
 		_lastAssistantMessage: overflowMessage(),
 		_protectedStreamingCustomMessages: [],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_postToolCompactionPreflightError: undefined,
 		_pendingPostCompactionContinuation: undefined,
 		_contextOverflowUnresolved: false,
@@ -699,6 +712,7 @@ test("a failed overflow compaction advances the real fallback chain end to end",
 		_overflowRecoveryAttempted: false,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		settingsManager: {
 			getCompactionSettings: () => ({ enabled: true }),
@@ -777,6 +791,7 @@ function thinkingLevelFallbackSession(
 		thinkingLevel: "high" as ThinkingLevel,
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -857,4 +872,124 @@ test("a gRPC ResourceExhausted failure is both same-model retryable and fallback
 
 	assert.equal(_isRetryableError.call(session as never, message), true);
 	assert.equal(_isFallbackableError.call(session as never, message), true);
+});
+
+test("a terminal provider failure skips reasoning-only variants of the failed model", async () => {
+	// The credential, not the reasoning effort, is what failed. Re-requesting the
+	// same provider/model at another level would spend a candidate on the same
+	// dead credential, so the chain must reach a different provider.
+	const primary = model("openai-codex", "gpt-5.5");
+	const anthropic = model("anthropic", "claude-opus-4-8");
+	const invalidated = retryableMessage({ errorMessage: "OAuth token invalidated" });
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	const continuedOn: Array<string | undefined> = [];
+	const session = {
+		model: primary,
+		thinkingLevel: "high" as ThinkingLevel,
+		_fallbackModels: ["openai-codex/gpt-5.5:low", "anthropic/claude-opus-4-8:high"],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
+		_retryAttempt: 0,
+		settingsManager: {
+			getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 1000 }),
+			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
+			getDefaultProvider: () => "openai-codex",
+		},
+		_modelRuntime: {
+			getAvailableSnapshot: () => [primary, anthropic],
+			getModel: (provider: string, id: string) => {
+				if (provider === primary.provider && id === primary.id) return primary;
+				return provider === anthropic.provider && id === anthropic.id ? anthropic : undefined;
+			},
+			hasConfiguredAuth: () => true,
+		},
+		agent: {
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [invalidated] },
+			continue: async () => {
+				continuedOn.push(session.agent.state.model.id === primary.id ? "openai-codex" : "anthropic");
+			},
+		},
+		sessionManager: {
+			appendModelChange: (provider: string, id: string) => events.push({ type: "session_model", provider, id }),
+			appendThinkingLevelChange: () => undefined,
+		},
+		_withContextWindowForModelSwitch: (candidate: Model<Api>) => candidate,
+		_refreshBaseSystemPromptFromActiveTools: () => undefined,
+		_emitModelChanged: () => undefined,
+		_emitModelSelect: async () => undefined,
+		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
+		_resolveRetry: () => undefined,
+		_isRetryableError,
+		_isFallbackableError,
+		_trySwitchToFallbackModel,
+	};
+
+	assert.equal(await _handleRetryableError.call(session as never, invalidated), true);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+
+	assert.equal(
+		events.some((event) => event.type === "auto_retry_start"),
+		false,
+		"a rejected credential must not be re-requested on the same model",
+	);
+	const starts = events.filter((event) => event.type === "model_fallback_start");
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0]?.from, "openai-codex/gpt-5.5");
+	assert.equal(starts[0]?.to, "anthropic/claude-opus-4-8", "the reasoning-only variant must be skipped");
+	assert.notEqual(starts[0]?.from, starts[0]?.to);
+	assert.equal(session.agent.state.model, anthropic);
+	assert.deepEqual(continuedOn, ["anthropic"], "exactly one continuation, on a different provider");
+});
+
+test("a blocked model stays blocked for the rest of the turn", async () => {
+	// After moving to another provider, a later failure must not walk back into a
+	// reasoning variant of the model whose credential is already known dead.
+	const primary = model("openai-codex", "gpt-5.5");
+	const anthropic = model("anthropic", "claude-opus-4-8");
+	const invalidated = retryableMessage({ errorMessage: "OAuth token invalidated" });
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	const session = {
+		model: primary,
+		thinkingLevel: "high" as ThinkingLevel,
+		_fallbackModels: ["anthropic/claude-opus-4-8:high", "openai-codex/gpt-5.5:low"],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
+		_retryAttempt: 0,
+		settingsManager: {
+			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
+			getDefaultProvider: () => "openai-codex",
+		},
+		_modelRuntime: {
+			getAvailableSnapshot: () => [primary, anthropic],
+			getModel: (provider: string, id: string) => {
+				if (provider === primary.provider && id === primary.id) return primary;
+				return provider === anthropic.provider && id === anthropic.id ? anthropic : undefined;
+			},
+			hasConfiguredAuth: () => true,
+		},
+		agent: {
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [invalidated] },
+			continue: async () => undefined,
+		},
+		sessionManager: {
+			appendModelChange: () => undefined,
+			appendThinkingLevelChange: () => undefined,
+		},
+		_withContextWindowForModelSwitch: (candidate: Model<Api>) => candidate,
+		_refreshBaseSystemPromptFromActiveTools: () => undefined,
+		_emitModelChanged: () => undefined,
+		_emitModelSelect: async () => undefined,
+		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
+	};
+
+	// The dead credential moves the turn to Anthropic.
+	assert.equal(await _trySwitchToFallbackModel.call(session as never, invalidated), true);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(session.agent.state.model, anthropic);
+
+	// A transient Anthropic failure must not return to the blocked Codex model.
+	const transient = retryableMessage({ errorMessage: "rate limit exceeded" });
+	assert.equal(await _trySwitchToFallbackModel.call(session as never, transient), false);
+	assert.equal(session.agent.state.model, anthropic);
+	assert.equal(events.filter((event) => event.type === "model_fallback_start").length, 1);
 });

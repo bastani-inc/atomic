@@ -133,6 +133,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	if (event.type === "message_start" && event.message.role === "user") {
 		this._overflowRecoveryAttempted = false;
 		this._fallbackAttemptedKeys.clear();
+		this._fallbackBlockedModels.length = 0;
 		const messageText = this._getUserMessageText(event.message);
 		if (messageText) {
 			// Check steering queue first
@@ -218,6 +219,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			}
 			if (!assistantFailed && assistantMsg.stopReason === "stop") {
 				this._fallbackAttemptedKeys.clear();
+				this._fallbackBlockedModels.length = 0;
 			}
 
 			// A non-truncated assistant response means the length-continuation loop

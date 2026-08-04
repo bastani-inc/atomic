@@ -75,6 +75,8 @@ class AgentSessionBase {
 	protected _scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	protected _fallbackModels: string[];
 	protected _fallbackAttemptedKeys: Set<string> = new Set();
+	/** Models condemned for this turn by a failure retrying them cannot repair. */
+	protected _fallbackBlockedModels: Array<Model<Api>> = [];
 	protected _fallbackOriginModel: Model<Api> | undefined;
 	protected _fallbackOriginThinkingLevel: ThinkingLevel | undefined;
 	protected _fallbackScopeGeneration = 0;

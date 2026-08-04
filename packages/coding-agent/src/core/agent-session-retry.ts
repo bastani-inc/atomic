@@ -212,6 +212,7 @@ function clearFallbackModelScopeState(this: AgentSession): void {
 	this._fallbackOriginThinkingLevel = undefined;
 	this._fallbackRestoreError = undefined;
 	this._fallbackAttemptedKeys.clear();
+	this._fallbackBlockedModels.length = 0;
 }
 
 function finishFallbackModelScope(
@@ -307,6 +308,18 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 	const currentModel = this.agent.state.model ?? this.model;
 	if (this._fallbackModels.length === 0 || currentModel === undefined) return false;
 
+	// A failure the chain may spend a candidate on, but that requesting the same
+	// model again cannot repair — a rejected credential, an unavailable model, a
+	// request this model cannot serve — condemns that model for the rest of the
+	// turn. Reasoning level does not change any of those answers, so every
+	// reasoning variant of it is blocked too. Transient rate-limit and transport
+	// failures stay same-model retryable and keep their reasoning variants.
+	if (isRetryableModelFailure(message) && !isRetryableSameModelFailure(message)) {
+		if (!this._fallbackBlockedModels.some((blocked) => modelsAreEqual(blocked, currentModel))) {
+			this._fallbackBlockedModels.push(currentModel);
+		}
+	}
+
 	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
 	const fromModel = currentModel;
 	for (const rawCandidate of this._fallbackModels) {
@@ -323,6 +336,9 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		const key = fallbackKey(nextModel, nextLevel);
 		if (this._fallbackAttemptedKeys.has(key)) continue;
 		if (modelsAreEqual(nextModel, fromModel) && nextLevel === currentThinkingLevel) continue;
+		// Skipped before any lifecycle starts: a blocked variant emits no fallback
+		// event and opens no scope.
+		if (this._fallbackBlockedModels.some((blocked) => modelsAreEqual(blocked, nextModel))) continue;
 
 		// Do not create a fallback lifecycle until a candidate can actually be
 		// selected. An exhausted or unresolvable chain has no start to close.
