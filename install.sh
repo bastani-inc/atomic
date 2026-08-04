@@ -106,6 +106,7 @@ canonicalize_existing_prefix() {
 
 reject_dangling_symlink_path() {
     dangling_input=$1
+    dangling_label=${2:-ATOMIC_BIN_DIR}
     dangling_probe=/
     dangling_remaining=${dangling_input#/}
     while [ -n "$dangling_remaining" ]; do
@@ -136,7 +137,7 @@ reject_dangling_symlink_path() {
                     *) dangling_probe=$dangling_probe/$dangling_segment ;;
                 esac
                 if [ -L "$dangling_probe" ] && [ ! -d "$dangling_probe" ]; then
-                    fail "ATOMIC_BIN_DIR contains an unresolved symbolic link; refusing an unresolvable path: $dangling_probe"
+                    fail "$dangling_label contains an unresolved symbolic link; refusing an unresolvable path: $dangling_probe"
                 fi
                 ;;
         esac
@@ -251,7 +252,8 @@ INSTALL_ROOT=$(normalize_absolute_path "$INSTALL_ROOT" && printf '_')
 INSTALL_ROOT=${INSTALL_ROOT%_}
 BIN_DIR=$(normalize_absolute_path "$BIN_DIR" && printf '_')
 BIN_DIR=${BIN_DIR%_}
-reject_dangling_symlink_path "$BIN_DIR"
+reject_dangling_symlink_path "$INSTALL_ROOT" ATOMIC_INSTALL_DIR
+reject_dangling_symlink_path "$BIN_DIR" ATOMIC_BIN_DIR
 BIN_PATH=$BIN_DIR/atomic
 PHYSICAL_INSTALL_ROOT=$(canonicalize_existing_prefix "$INSTALL_ROOT" && printf '_') ||
     fail "unable to resolve ATOMIC_INSTALL_DIR: $INSTALL_ROOT"

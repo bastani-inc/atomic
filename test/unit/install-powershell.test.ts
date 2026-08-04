@@ -1133,6 +1133,16 @@ try {
     $env:GITHUB_TOKEN = "github-token"
     $env:GH_TOKEN = "gh-token"
     $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+    if ($Scenario -eq "hash-fallback") {
+        function global:Get-Command {
+            [CmdletBinding()]
+            param([string]$Name)
+            if ($Name -eq "Get-FileHash") {
+                return $null
+            }
+            throw "Unexpected Get-Command lookup: $Name"
+        }
+    }
 
     if ($Scenario -eq "install") {
         $helpOutput = & $InstallerPath -Help | Out-String
@@ -1669,6 +1679,15 @@ try {
                 }
             }
         }
+    }
+    elseif ($Scenario -eq "hash-fallback") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 2) "the .NET checksum fallback did not complete both release downloads"
+        $versionProbe = Invoke-FixtureShim (Join-Path $binDir "atomic.cmd") "--version"
+        Assert-Fixture ($versionProbe.ExitCode -eq 0 -and $versionProbe.Output -eq "1.0.0") ".NET checksum fallback did not leave a runnable install"
+        Assert-NoTransactionResidue $installRoot $binDir
     }
     elseif ($Scenario -eq "ref-identity") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
@@ -2241,6 +2260,7 @@ function runPowerShellFixture(
 		| "rollback-retries"
 		| "transaction-failures"
 		| "ctrl-c"
+		| "hash-fallback"
 		| "ref-identity"
 		| "semicolon-bin"
 		| "shadowed-shim"
@@ -2342,6 +2362,9 @@ powershellTest(
 	TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS,
 );
 
+powershellTest("PowerShell 5.1 fixture installs when Get-FileHash is unavailable", () => {
+	runPowerShellFixture("hash-fallback");
+});
 powershellTest("PowerShell 5.1 fixture fails closed when an exact-tag response names a different release", () => {
 	runPowerShellFixture("ref-identity");
 });

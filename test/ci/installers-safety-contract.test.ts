@@ -18,7 +18,8 @@ test("POSIX path conflicts and unexpected launcher directories fail before I/O",
 	assert.match(shell, /BIN_PATH=\$BIN_DIR\/atomic/u);
 	assert.match(shell, /reject_dangling_symlink_path\(\) \{/u);
 	assert.match(shell, /\[ -L "\$dangling_probe" \] && \[ ! -d "\$dangling_probe" \]/u);
-	assert.match(shell, /reject_dangling_symlink_path "\$BIN_DIR"/u);
+	assert.match(shell, /reject_dangling_symlink_path "\$INSTALL_ROOT" ATOMIC_INSTALL_DIR/u);
+	assert.match(shell, /reject_dangling_symlink_path "\$BIN_DIR" ATOMIC_BIN_DIR/u);
 	assert.match(shell, /canonical_physical=\$\(CDPATH= cd -P "\$canonical_probe"[^\n]+&& pwd && printf '_'\)/u);
 	assert.match(shell, /PHYSICAL_INSTALL_ROOT=\$\(canonicalize_existing_prefix "\$INSTALL_ROOT" && printf '_'\)/u);
 	assert.match(shell, /PHYSICAL_BIN_PATH=\$\(canonicalize_existing_prefix "\$BIN_PATH" && printf '_'\)/u);
@@ -45,8 +46,9 @@ test("POSIX bin paths under transaction-owned install paths fail before any requ
 	assert.match(shell, /\/\) owned_path=\/\$owned_child ;;/u);
 	assert.match(shell, /"\$owned_path"\|"\$owned_path"\/\*\)/u);
 	assert.match(shell, /the installer replaces that path: \$BIN_DIR/u);
-	const danglingPreflight = shell.indexOf('reject_dangling_symlink_path "$BIN_DIR"');
-	assert.ok(danglingPreflight >= 0);
+	const danglingInstallPreflight = shell.indexOf('reject_dangling_symlink_path "$INSTALL_ROOT" ATOMIC_INSTALL_DIR');
+	const danglingBinPreflight = shell.indexOf('reject_dangling_symlink_path "$BIN_DIR" ATOMIC_BIN_DIR');
+	assert.ok(danglingInstallPreflight >= 0 && danglingBinPreflight > danglingInstallPreflight);
 
 	const preflight = shell.indexOf("for owned_child in current versions; do");
 	assert.ok(preflight >= 0);
@@ -60,7 +62,14 @@ test("POSIX bin paths under transaction-owned install paths fail before any requ
 	]) {
 		const boundaryIndex = shell.indexOf(boundary);
 		assert.ok(boundaryIndex >= 0, boundary);
-		assert.ok(danglingPreflight < boundaryIndex, `the dangling-symlink preflight runs after: ${boundary}`);
+		assert.ok(
+			danglingInstallPreflight < boundaryIndex,
+			`the install-root dangling-symlink preflight runs after: ${boundary}`,
+		);
+		assert.ok(
+			danglingBinPreflight < boundaryIndex,
+			`the bin-root dangling-symlink preflight runs after: ${boundary}`,
+		);
 		assert.ok(preflight < boundaryIndex, `the transaction-owned preflight runs after: ${boundary}`);
 	}
 });
