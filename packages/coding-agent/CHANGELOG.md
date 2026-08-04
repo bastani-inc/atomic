@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.12-alpha.1] - 2026-08-03
+
 ### Added
 
 - Compaction honors `<keepContext>` / `</keepContext>` tags. Wrap any part of a prompt you never want compressed, and every line of the span — tag lines included — is protected verbatim regardless of the compression ratio. The guarantee is mechanical rather than advisory: deletion ranges are split around protected lines after the planner responds. Because the tag lines are protected too, a span is re-detected on each subsequent boundary and stays protected for the life of the session. Detection is bounded on three sides, because the transcript it scans is untrusted: a tag must be the whole line after any role header, a span is scoped to one message so an unclosed tag stops at the end of its own message rather than running to the end of the region, and tags inside tool results are inert — user and assistant messages may both protect, so prompts, steering, and an agent's own pinned information all work, but file, page, or command output an agent reads cannot mark itself unreclaimable or persist through compaction ahead of real content. Protected lines count against the keep target rather than raising it, so the compression ratio stays a real bound on output size and the unprotected remainder compresses harder. Results report force-preserved ranges as `keptRanges` ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.12-alpha.1] - 2026-08-03
+
 ### Added
 
 - Added `keepContext` to the public authoring surface: `import { keepContext } from "@bastani/workflows"`. It wraps prompt text so compaction protects it verbatim regardless of the compression ratio, and is a pure, idempotent string helper rather than a `ctx.*` primitive — no graph node, no side effect, callable anywhere a prompt is assembled. `KEEP_CONTEXT_OPEN_TAG` and `KEEP_CONTEXT_CLOSE_TAG` are exported alongside it. Reserve it for text whose loss silently changes behavior — role constraints, acceptance criteria, explicit prohibitions, and identifiers a stage must not lose — and not for bulk context, since protected lines count against the keep target rather than raising it ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
