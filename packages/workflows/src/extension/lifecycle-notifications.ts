@@ -541,10 +541,18 @@ interface ControlOccurrence {
  */
 function controlOccurrences(run: RunSnapshot): ControlOccurrence[] {
 	const occurrences: ControlOccurrence[] = [];
+	// Whether this run exists because someone resumed work, whoever asked for it.
+	// A durable resume reuses the original run id (issue #1498) and a failed-run
+	// continuation takes a fresh one; both re-enter `recordRunStart`, and neither
+	// is a new run to the user. Keying the start suppression on the resume itself
+	// rather than on who requested it is what keeps an agent-requested resume of a
+	// user-started run from being announced as a fresh launch.
+	const resumedRun = run.resumeSource === "run_control" || run.resumedFromRunId !== undefined;
 	const userResumed = run.resumeSource === "run_control" && run.resumeActor === "user";
-	// A continuation reports the resume that created it, never a start.
+	// A resumed run that never paused in this session reports its start timestamp:
+	// the re-dispatch is the occurrence.
 	const continuation = userResumed && run.resumedAt === undefined;
-	if (run.origin === "user" && !userResumed) {
+	if (run.origin === "user" && !resumedRun) {
 		occurrences.push({ kind: "started", scope: "run", at: run.startedAt, actor: "user" });
 	}
 	if (userResumed && run.status === "running") {

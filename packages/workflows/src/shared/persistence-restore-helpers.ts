@@ -407,6 +407,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
 			...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
 			...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
+			...(runMeta.origin !== undefined ? { origin: runMeta.origin } : {}),
 			...(runMeta.accumulatedDurationMs !== undefined
 				? { accumulatedDurationMs: runMeta.accumulatedDurationMs }
 				: {}),

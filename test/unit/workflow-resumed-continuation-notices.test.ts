@@ -135,6 +135,13 @@ describe("resumed continuation lifecycle notices", () => {
 			const agentSource = failedSourceRun(store, "src-agent-req", "user");
 			await runContinuation(store, agentSource, "cont-agent-req", "agent");
 
+			// Assert on every kind, not just the resumes: a continuation that reported
+			// a spurious `started` alongside them would otherwise pass unnoticed. The
+			// source fixtures are ordinary user-started runs and may report their own.
+			const startedContinuations = sent.filter(
+				(notice) => notice.details?.kind === "started" && notice.details.runId.startsWith("cont-"),
+			);
+			assert.deepEqual(startedContinuations, [], "a continuation is never a fresh launch, whoever requested it");
 			const resumed = sent.filter((notice) => notice.details?.kind === "resumed");
 			assert.deepEqual(
 				resumed.map((notice) => notice.details?.runId),
