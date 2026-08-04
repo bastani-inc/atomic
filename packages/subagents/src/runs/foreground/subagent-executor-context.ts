@@ -25,7 +25,11 @@ import {
 	type SubagentToolResult,
 	subagentDepthBlockedMessage,
 } from "../../shared/types.ts";
-import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
+
+function applyForceTopLevelAsyncOverride<T extends { async?: boolean }>(params: T, depth: number, force: boolean): T {
+	return depth === 0 && force ? { ...params, async: true } : params;
+}
+
 import {
 	createNestedRoute,
 	resolveInheritedNestedRouteFromEnv,

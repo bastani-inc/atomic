@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { formatAsyncStartedMessage } from "../../packages/subagents/src/runs/background/async-execution-common.js";
+import { formatAsyncStartedMessage } from "../../packages/subagents/src/runs/inprocess/background.js";
 import { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
 import { isRunningSubagentResult } from "../../packages/subagents/src/tui/render-stable-output.js";
 import { type AgentToolResult, type Details, theme } from "./subagents-render-stability-helpers.js";

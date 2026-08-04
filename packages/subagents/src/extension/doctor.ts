@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { type AgentSource, discoverAgentsAll } from "../agents/agents.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
-import { isAsyncAvailable } from "../runs/background/async-execution.ts";
+import { isAsyncAvailable } from "../runs/inprocess/background.ts";
 import {
 	ASYNC_DIR,
 	CHAIN_RUNS_DIR,

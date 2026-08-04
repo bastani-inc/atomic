@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
-import { runSingleStep } from "../../packages/subagents/src/runs/background/subagent-runner-step.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runForegroundParallelTasks } from "../../packages/subagents/src/runs/foreground/subagent-executor-parallel-task.js";
 import { filterSpawnableModelCandidates } from "../../packages/subagents/src/runs/shared/model-candidate-filter.js";
@@ -22,44 +21,6 @@ function agentConfig(): AgentConfig {
 		model: "provider-a/stalled",
 		fallbackModels: ["provider-b/working"],
 	};
-}
-
-const successEvent = (text: string) =>
-	JSON.stringify({
-		type: "message_end",
-		message: {
-			role: "assistant",
-			content: [{ type: "text", text }],
-			stopReason: "stop",
-			usage: { input: 1, output: 1 },
-			timestamp: Date.now(),
-		},
-	});
-
-async function withFakeCli<T>(script: string, fn: (dir: string) => Promise<T>): Promise<T> {
-	const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-model-filter-"));
-	const scriptPath = join(dir, "fake-pi.js");
-	const previousArgv1 = process.argv[1];
-	const previousIdle = process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS;
-	const previousWall = process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS;
-	const previousKill = process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS;
-	writeFileSync(scriptPath, script, { mode: 0o700 });
-	process.argv[1] = scriptPath;
-	process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = "1000";
-	process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "4000";
-	process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS = "20";
-	try {
-		return await fn(dir);
-	} finally {
-		process.argv[1] = previousArgv1;
-		if (previousIdle === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS;
-		else process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = previousIdle;
-		if (previousWall === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS;
-		else process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = previousWall;
-		if (previousKill === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS;
-		else process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS = previousKill;
-		rmSync(dir, { recursive: true, force: true });
-	}
 }
 
 describe("subagent pre-spawn model candidate filtering", () => {
@@ -90,112 +51,24 @@ describe("subagent pre-spawn model candidate filtering", () => {
 		);
 	});
 
-	test("does not spawn a default foreground child when every configured candidate is filtered", async () => {
-		await withFakeCli(
-			`
-      const fs = require("node:fs");
-      const path = require("node:path");
-      fs.writeFileSync(path.join(process.cwd(), "spawned"), "yes");
-      console.log(${JSON.stringify(successEvent("should not run"))});
-    `,
-			async (dir) => {
-				const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
-					cwd: dir,
-					runId: "watchdog-all-filtered",
-					availableModels: [],
-					knownModelProviders: ["provider-a", "provider-b"],
-				});
-
-				assert.equal(result.exitCode, 1);
-				assert.match(result.error ?? "", /No spawnable subagent model candidates/);
-				assert.equal(existsSync(join(dir, "spawned")), false);
-				assert.deepEqual(
-					result.modelAttempts?.map((attempt) => attempt.model),
-					["provider-a/stalled", "provider-b/working"],
-				);
-			},
-		);
-	});
-
-	test("background runner spawns one default attempt when no candidates were ever configured", async () => {
-		await withFakeCli(
-			`
-      const fs = require("node:fs");
-      const path = require("node:path");
-      const modelIndex = process.argv.indexOf("--model");
-      fs.writeFileSync(path.join(process.cwd(), "spawned-model"), modelIndex === -1 ? "default" : process.argv[modelIndex + 1]);
-      console.log(${JSON.stringify(successEvent("default ok"))});
-    `,
-			async (dir) => {
-				// No primary model, no fallbacks, no current model: buildModelCandidates()
-				// yields [] and pre-spawn filtering records no skipped attempts. The runner
-				// must mirror the foreground path and run one default-model attempt instead
-				// of silently exiting 1 with no error and no spawn.
-				const result = await runSingleStep(
-					{
-						agent: "fake-worker",
-						task: "Do work",
-						inheritProjectContext: false,
-						inheritSkills: false,
-						modelCandidates: [],
-						modelAttempts: [],
-					},
-					{
-						previousOutput: "",
-						placeholder: "{previous}",
-						cwd: dir,
-						sessionEnabled: false,
-						id: "background-default-attempt",
-						flatIndex: 0,
-						flatStepCount: 1,
-						outputFile: join(dir, "output.txt"),
-					},
-				);
-
-				assert.equal(result.exitCode, 0);
-				assert.equal(result.error, undefined);
-				assert.match(result.output, /default ok/);
-				assert.equal(readFileSync(join(dir, "spawned-model"), "utf8"), "default");
-				assert.equal(result.modelAttempts?.length, 1);
-				assert.equal(result.modelAttempts?.[0]?.success, true);
-			},
-		);
-	});
-
-	test("background runner reports a useful error when every candidate was filtered", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-background-filtered-"));
+	test("does not start a child when every configured candidate is filtered", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-model-filter-"));
 		try {
-			const result = await runSingleStep(
-				{
-					agent: "fake-worker",
-					task: "Do work",
-					inheritProjectContext: false,
-					inheritSkills: false,
-					modelCandidates: [],
-					modelAttempts: [
-						{
-							model: "provider-a/stalled",
-							success: false,
-							exitCode: null,
-							error: "Skipped provider-a/stalled: provider 'provider-a' has no configured API key/auth in the current session.",
-						},
-					],
-				},
-				{
-					previousOutput: "",
-					placeholder: "{previous}",
-					cwd: dir,
-					sessionEnabled: false,
-					id: "background-all-filtered",
-					flatIndex: 0,
-					flatStepCount: 1,
-					outputFile: join(dir, "output.txt"),
-				},
-			);
+			const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
+				cwd: dir,
+				runId: "all-filtered",
+				availableModels: [],
+				knownModelProviders: ["provider-a", "provider-b"],
+				testSession: { output: "should not run" },
+			});
 
 			assert.equal(result.exitCode, 1);
 			assert.match(result.error ?? "", /No spawnable subagent model candidates/);
-			assert.match(result.output, /Skipped provider-a\/stalled/);
+			assert.equal(existsSync(join(dir, "spawned")), false);
+			assert.deepEqual(
+				result.modelAttempts?.map((attempt) => attempt.model),
+				["provider-a/stalled", "provider-b/working"],
+			);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -254,6 +127,7 @@ describe("subagent pre-spawn model candidate filtering", () => {
 							agent: agentName,
 							task,
 							exitCode: 0,
+							status: "ok",
 							messages: [],
 							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 							finalOutput: "ok",

@@ -9,12 +9,6 @@ import {
 	SUBAGENT_ASYNC_STARTED_EVENT,
 } from "../../shared/types.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
-import {
-	formatAsyncStartError,
-	formatAsyncStartedMessage,
-	UNAVAILABLE_SUBAGENT_SKILL_ERROR,
-} from "../background/async-execution-common.ts";
-import type { AsyncExecutionResult, AsyncSingleParams } from "../background/async-execution-types.ts";
 import { runSingleInProcess } from "../foreground/inprocess-run-sync.ts";
 import { resolveChildIntercomGroup } from "../shared/intercom-group.ts";
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
@@ -25,6 +19,13 @@ import {
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
 } from "../shared/single-output.ts";
+import {
+	type AsyncExecutionResult,
+	type AsyncSingleParams,
+	formatAsyncStartError,
+	formatAsyncStartedMessage,
+	UNAVAILABLE_SUBAGENT_SKILL_ERROR,
+} from "./background.ts";
 
 /**
  * Execute a single agent asynchronously using the in-process runner.

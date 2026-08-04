@@ -289,17 +289,7 @@ describe("programmatic subagent tool boundary", () => {
 	test("async parallel execution rejects more than 50 expanded tasks before dispatch", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-async-limit-"));
 		try {
-			let dispatchCalls = 0;
-			const executor = makeExecutor(cwd, [makeAgent("worker")], {
-				isAsyncAvailable: () => true,
-				executeAsyncChain: () => {
-					dispatchCalls += 1;
-					return {
-						content: [{ type: "text", text: "background started" }],
-						details: { mode: "parallel", results: [] },
-					};
-				},
-			});
+			const executor = makeExecutor(cwd, [makeAgent("worker")], { isAsyncAvailable: () => true });
 			const result = await executor.execute(
 				"async-parallel-limit",
 				{ tasks: [{ agent: "worker", task: "repeat", count: 51 }], async: true },
@@ -312,7 +302,6 @@ describe("programmatic subagent tool boundary", () => {
 
 			assert.equal(result.isError, true);
 			assert.equal(result.content[0]?.type === "text" ? result.content[0].text : "", "Max 50 tasks");
-			assert.equal(dispatchCalls, 0);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -438,19 +427,16 @@ describe("programmatic subagent tool boundary", () => {
 		try {
 			let customCalls = 0;
 			const asyncSingle: Array<{ agent: string; task: string }> = [];
-			const asyncChains: Array<{ mode?: string; chainLength: number }> = [];
+			const runCalls: Array<{ agent: string; task: string }> = [];
 			const executor = makeExecutor(cwd, [makeAgent("alpha"), makeAgent("beta")], {
 				isAsyncAvailable: () => true,
 				executeAsyncSingle: (_id, params) => {
 					asyncSingle.push({ agent: params.agent, task: params.task ?? "" });
 					return { content: [{ type: "text", text: "single started" }], details: { mode: "single", results: [] } };
 				},
-				executeAsyncChain: (_id, params) => {
-					asyncChains.push({ mode: params.resultMode, chainLength: params.chain.length });
-					return {
-						content: [{ type: "text", text: "chain started" }],
-						details: { mode: params.resultMode ?? "chain", results: [] },
-					};
+				runSync: async (_cwd, _agents, agent, task) => {
+					runCalls.push({ agent, task });
+					return makeResult(agent, task);
 				},
 			});
 			const ctx = makeContext(cwd, () => {
@@ -460,7 +446,7 @@ describe("programmatic subagent tool boundary", () => {
 			const signal = new AbortController().signal;
 
 			await executor.execute("async-single", { agent: "alpha", task: "one", async: true }, signal, undefined, ctx);
-			await executor.execute(
+			const parallel = await executor.execute(
 				"async-parallel",
 				{
 					tasks: [
@@ -473,7 +459,7 @@ describe("programmatic subagent tool boundary", () => {
 				undefined,
 				ctx,
 			);
-			await executor.execute(
+			const chain = await executor.execute(
 				"async-chain",
 				{
 					chain: [
@@ -486,13 +472,16 @@ describe("programmatic subagent tool boundary", () => {
 				undefined,
 				ctx,
 			);
+			await new Promise<void>((resolve) => setImmediate(resolve));
 
 			assert.equal(customCalls, 0);
 			assert.deepEqual(asyncSingle, [{ agent: "alpha", task: "one" }]);
-			assert.deepEqual(asyncChains, [
-				{ mode: "parallel", chainLength: 1 },
-				{ mode: undefined, chainLength: 2 },
-			]);
+			assert.equal(parallel.details.results[0]?.status, "continued");
+			assert.equal(chain.details.results[0]?.status, "continued");
+			assert.deepEqual(
+				runCalls.map((call) => call.agent),
+				["alpha", "beta", "alpha", "beta"],
+			);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import { bunExecutable } from "../helpers/runtime.js";
@@ -180,53 +179,4 @@ describe("workflow subagent persisted session classification", () => {
 			assert.deepEqual(await SessionManager.list(root, sessionDir), []);
 		});
 	});
-
-	test("background runner persists a fresh classified child session", async () => {
-		await withChildCli(async (root, scriptPath) => {
-			const asyncDir = join(root, "async");
-			const sessionDir = join(root, "background-sessions");
-			const resultPath = join(root, "result.json");
-			const configPath = join(root, "runner-config.json");
-			writeFileSync(
-				configPath,
-				JSON.stringify({
-					id: "background-workflow-child",
-					steps: [
-						{
-							agent: "fake-worker",
-							task: "Do work",
-							cwd: root,
-							systemPrompt: "Finish immediately.",
-							systemPromptMode: "replace",
-							inheritProjectContext: false,
-							inheritSkills: false,
-						},
-					],
-					resultPath,
-					cwd: root,
-					placeholder: "{previous}",
-					asyncDir,
-					sessionDir,
-					piArgv1: scriptPath,
-					resultMode: "single",
-					workflowStageSubagentGuard: true,
-				}),
-				"utf8",
-			);
-			const runnerPath = join(process.cwd(), "packages/subagents/src/runs/background/subagent-runner.ts");
-			const proc = spawnSync(bunExecutable(), [runnerPath, configPath], {
-				cwd: process.cwd(),
-				encoding: "utf8",
-				env: { ...process.env, [WORKFLOW_SESSION_METADATA_ENV]: JSON.stringify(workflow) },
-			});
-
-			assert.equal(proc.status, 0, `${proc.stdout}\n${proc.stderr}`);
-			const sessionFiles = readdirSync(sessionDir).filter((name) => name.endsWith(".jsonl"));
-			assert.equal(sessionFiles.length, 1);
-			const sessionFile = join(sessionDir, sessionFiles[0]!);
-			assert.equal(readHeader(sessionFile).internal, true);
-			assert.deepEqual(readHeader(sessionFile).workflow, workflow);
-			assert.deepEqual(await SessionManager.list(root, sessionDir), []);
-		});
-	}, 20_000);
 });

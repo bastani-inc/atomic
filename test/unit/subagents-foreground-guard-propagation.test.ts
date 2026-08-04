@@ -11,12 +11,6 @@ interface MinimalRunSyncOptions {
 	workflowStageSubagentGuard?: boolean;
 }
 
-interface MinimalAsyncChainParams {
-	resultMode?: "chain" | "parallel";
-	maxSubagentDepth?: number;
-	workflowStageSubagentGuard?: boolean;
-}
-
 interface MinimalAsyncSingleParams {
 	maxSubagentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
@@ -25,11 +19,6 @@ interface MinimalAsyncSingleParams {
 interface CapturedRunSyncCall {
 	agentName: string;
 	options: MinimalRunSyncOptions;
-}
-
-interface CapturedAsyncChainCall {
-	id: string;
-	params: MinimalAsyncChainParams;
 }
 
 interface CapturedAsyncSingleCall {
@@ -55,9 +44,7 @@ type ExecutorContextForTest = Parameters<ExecutorForTest["execute"]>[4];
 type ExecutorResultForTest = Awaited<ReturnType<ExecutorForTest["execute"]>>;
 
 const runSyncCalls: CapturedRunSyncCall[] = [];
-const asyncChainCalls: CapturedAsyncChainCall[] = [];
 const asyncSingleCalls: CapturedAsyncSingleCall[] = [];
-
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
 const runSyncMock = vi.fn(
@@ -80,14 +67,6 @@ const runSyncMock = vi.fn(
 		};
 	},
 );
-
-const executeAsyncChainMock = vi.fn((id: string, params: MinimalAsyncChainParams) => {
-	asyncChainCalls.push({ id, params });
-	return {
-		content: [{ type: "text" as const, text: "Launching in background..." }],
-		details: { mode: params.resultMode ?? "chain", results: [] },
-	};
-});
 
 const executeAsyncSingleMock = vi.fn((id: string, params: MinimalAsyncSingleParams) => {
 	asyncSingleCalls.push({ id, params });
@@ -125,25 +104,16 @@ function makeState() {
 		completionSeen: new Map(),
 		watcher: null,
 		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
+		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 }
 
 function makeUiContext(uiResult?: unknown): ExecutorContextForTest["ui"] {
-	const ui: Pick<ExecutorContextForTest["ui"], "custom"> = {
-		custom: async <T>() => uiResult as T,
-	};
-	return ui as ExecutorContextForTest["ui"];
+	return { custom: async <T>() => uiResult as T } as unknown as ExecutorContextForTest["ui"];
 }
 
 function makeModelRegistry(): ExecutorContextForTest["modelRegistry"] {
-	const modelRegistry: Pick<ExecutorContextForTest["modelRegistry"], "getAvailable"> = {
-		getAvailable: () => [],
-	};
-	return modelRegistry as ExecutorContextForTest["modelRegistry"];
+	return { getAvailable: () => [] } as unknown as ExecutorContextForTest["modelRegistry"];
 }
 
 function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorContextForTest {
@@ -179,21 +149,13 @@ function makeWorkflowStageContext(cwd: string, uiResult?: unknown): ExecutorCont
 	} satisfies ExecutorContextForTest;
 }
 
-function makePi(): ExecutorDepsForTest["pi"] {
-	const pi: Pick<ExecutorDepsForTest["pi"], "events" | "getSessionName"> = {
-		events: {
-			on: (_channel: string, _handler: (data: unknown) => void) => () => {},
-			emit: (_channel: string, _data: unknown) => {},
-		},
-		getSessionName: () => "parent-session-name",
-	};
-	return pi as ExecutorDepsForTest["pi"];
-}
-
-function makeExecutor(_cwd: string, agents: MinimalAgentConfig[]) {
+function makeExecutor(agents: MinimalAgentConfig[]) {
 	const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-subagent-guard-"));
 	const deps = {
-		pi: makePi(),
+		pi: {
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "parent-session-name",
+		} as unknown as ExecutorDepsForTest["pi"],
 		state: makeState(),
 		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
 		asyncByDefault: false,
@@ -203,7 +165,6 @@ function makeExecutor(_cwd: string, agents: MinimalAgentConfig[]) {
 		discoverAgents: () => ({ agents }),
 		runtime: {
 			runSync: runSyncMock,
-			executeAsyncChain: executeAsyncChainMock,
 			executeAsyncSingle: executeAsyncSingleMock,
 			isAsyncAvailable: () => true,
 		},
@@ -219,10 +180,8 @@ function clearSubagentGuardEnv(): void {
 
 function resetCapturedCalls(): void {
 	runSyncCalls.length = 0;
-	asyncChainCalls.length = 0;
 	asyncSingleCalls.length = 0;
 	runSyncMock.mockClear();
-	executeAsyncChainMock.mockClear();
 	executeAsyncSingleMock.mockClear();
 }
 
@@ -251,9 +210,7 @@ afterAll(clearSubagentGuardEnv);
 describe("foreground workflow-stage subagent guard propagation", () => {
 	test("passes workflow-stage guard to sequential and parallel chain children", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-chain-guard-"));
-		const agents = [makeAgent("alpha"), makeAgent("beta"), makeAgent("gamma")];
-		const executor = makeExecutor(cwd, agents);
-
+		const executor = makeExecutor([makeAgent("alpha"), makeAgent("beta"), makeAgent("gamma")]);
 		const result = await executor.execute(
 			"subagent",
 			{
@@ -271,16 +228,13 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 			undefined,
 			makeWorkflowStageContext(cwd),
 		);
-
 		assertNoErrorFlag(result);
 		assertGuardedRunSyncCalls(["alpha", "beta", "gamma"]);
 	});
 
 	test("passes workflow-stage guard to foreground parallel children", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-parallel-guard-"));
-		const agents = [makeAgent("alpha"), makeAgent("beta")];
-		const executor = makeExecutor(cwd, agents);
-
+		const executor = makeExecutor([makeAgent("alpha"), makeAgent("beta")]);
 		const result = await executor.execute(
 			"subagent",
 			{
@@ -293,16 +247,13 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 			undefined,
 			makeWorkflowStageContext(cwd),
 		);
-
 		assertNoErrorFlag(result);
 		assertGuardedRunSyncCalls(["alpha", "beta"]);
 	});
 
-	test("passes workflow-stage guard to async parallel children", async () => {
+	test("passes workflow-stage guard to async parallel children on the foreground executor", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-parallel-async-guard-"));
-		const agents = [makeAgent("alpha"), makeAgent("beta")];
-		const executor = makeExecutor(cwd, agents);
-
+		const executor = makeExecutor([makeAgent("alpha"), makeAgent("beta")]);
 		const result = await executor.execute(
 			"subagent",
 			{
@@ -316,31 +267,22 @@ describe("foreground workflow-stage subagent guard propagation", () => {
 			undefined,
 			makeWorkflowStageContext(cwd),
 		);
-
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		assertNoErrorFlag(result);
-		assert.equal(runSyncCalls.length, 0);
-		assert.equal(asyncChainCalls.length, 1);
-		assert.equal(asyncChainCalls[0]!.params.maxSubagentDepth, 2);
-		assert.equal(asyncChainCalls[0]!.params.workflowStageSubagentGuard, true);
+		assert.equal(result.details.results[0]?.status, "continued");
+		assertGuardedRunSyncCalls(["alpha", "beta"]);
 	});
 
 	test("passes workflow-stage guard to an async single child", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-single-async-guard-"));
-		const agents = [makeAgent("alpha")];
-		const executor = makeExecutor(cwd, agents);
-
+		const executor = makeExecutor([makeAgent("alpha")]);
 		const result = await executor.execute(
 			"subagent",
-			{
-				agent: "alpha",
-				task: "single task",
-				async: true,
-			},
+			{ agent: "alpha", task: "single task", async: true },
 			new AbortController().signal,
 			undefined,
 			makeWorkflowStageContext(cwd),
 		);
-
 		assertNoErrorFlag(result);
 		assert.equal(runSyncCalls.length, 0);
 		assert.equal(asyncSingleCalls.length, 1);
