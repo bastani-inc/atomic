@@ -40,6 +40,24 @@ if ($Help) {
     return
 }
 
+function Get-AtomicFileSha256 {
+    param([string]$Path)
+
+    if ($null -ne (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    }
+
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace("-", "")
+    }
+    finally {
+        $stream.Dispose()
+        $algorithm.Dispose()
+    }
+}
+
 function Get-AtomicRedirectTag {
     param([string]$Uri)
 
@@ -619,7 +637,7 @@ try {
         throw "SHA256SUMS row for $assetName is malformed."
     }
     $expectedChecksum = $Matches[1].ToLowerInvariant()
-    $actualChecksum = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actualChecksum = (Get-AtomicFileSha256 $archivePath).ToLowerInvariant()
     if ($actualChecksum -ne $expectedChecksum) {
         throw "Checksum verification failed for $assetName (expected $expectedChecksum, got $actualChecksum)."
     }
