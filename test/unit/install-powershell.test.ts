@@ -84,6 +84,27 @@ test("Windows installer isolates IEX state and scopes TLS 1.2 to controlled requ
 	assert.ok(tlsEnable >= 0 && tlsEnable < requestStart && tlsRestore > requestStart);
 });
 
+test("Windows installer pins the requested ref and refuses an unusable PATH entry", () => {
+	const source = installerSource();
+
+	const identityCheck = source.indexOf("$releaseTag -cne $requestedRef");
+	assert.ok(identityCheck >= 0, "the resolved tag is not compared with the requested ref");
+	assert.ok(identityCheck < source.indexOf("$releaseBase ="), "the identity check runs after the download base");
+	assert.match(source, /throw "GitHub returned release \$releaseTag for requested tag \$requestedRef\."/u);
+
+	assert.match(source, /\$binDirHasPathSeparator = \$binDir\.Contains\(";"\)/u);
+	assert.equal(
+		(source.match(/if \(-not \$binDirHasPathSeparator -and -not \(Test-AtomicPathContains/gu) ?? []).length,
+		2,
+		"both PATH mutations are not guarded by the separator check",
+	);
+	assert.match(source, /cannot be represented as one Windows PATH entry/u);
+	assert.match(source, /Choose a semicolon-free ATOMIC_BIN_DIR to add Atomic to PATH\./u);
+	const separatorBranch = source.indexOf("if ($binDirHasPathSeparator) {", source.indexOf('Write-Output "Shim:'));
+	assert.ok(separatorBranch >= 0, "success output does not branch on the separator case");
+	assert.ok(source.indexOf("Restart your terminal", separatorBranch) > separatorBranch);
+});
+
 test("Windows installer uses a successful latest redirect without querying the GitHub API", () => {
 	const source = installerSource();
 	const redirectAttempt = source.indexOf("$redirectTag = Get-AtomicRedirectTag");
@@ -967,7 +988,7 @@ try {
         $env:ATOMIC_VERSION = "environment-must-not-win"
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "ARM64"
-        & $InstallerPath -Ref "requested-alias" | Out-Null
+        & $InstallerPath -Ref "1.0.0" | Out-Null
 
         $versionOne = Join-Path $installRoot "versions\1.0.0"
         $current = Join-Path $installRoot "current"
@@ -989,10 +1010,10 @@ try {
         Assert-Fixture (Test-ExactPathEntry ([Environment]::GetEnvironmentVariable("Path", "User")) $binDir) "User PATH was not persisted"
         Assert-Fixture (Test-ExactPathEntry $env:Path $binDir) "current PATH was not refreshed"
 
-        $firstApiRequest = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/requested-alias$' })[0]
+        $firstApiRequest = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })[0]
         Assert-Fixture ($null -ne $firstApiRequest) "explicit -Ref did not use the exact tag endpoint"
         Assert-Fixture ($firstApiRequest.Authorization -eq "Bearer github-token") "GITHUB_TOKEN did not win over GH_TOKEN"
-        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/download/1\.0\.0/' }).Count -eq 2) "explicit -Ref did not use canonical API tag_name for downloads"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/download/1\.0\.0/' }).Count -eq 2) "explicit -Ref did not download the requested release"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match 'environment-must-not-win' }).Count -eq 0) "ATOMIC_VERSION overrode explicit -Ref"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match 'atomic-windows-x64\.zip$' }).Count -eq 1) "WOW64 architecture did not select x64"
 
@@ -1494,6 +1515,45 @@ try {
             }
         }
     }
+    elseif ($Scenario -eq "ref-identity") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $mismatch = $null
+        try { & $InstallerPath -Ref "requested-alias" | Out-Null }
+        catch { $mismatch = $_ }
+        Assert-Fixture ($null -ne $mismatch) "a mismatched exact-tag response was accepted"
+        Assert-Fixture ($mismatch.Exception.Message -match 'GitHub returned release 1\.0\.0 for requested tag requested-alias') "mismatch failure did not name both release identities"
+        Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 0) "a mismatched exact-tag response still downloaded a release"
+        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "a mismatched exact-tag response created an installation"
+        Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "a mismatched exact-tag response created a bin directory"
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $installRoot "versions\1.0.0\atomic.exe")) "a matching exact ref did not install"
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
+    elseif ($Scenario -eq "semicolon-bin") {
+        $semicolonBinDir = Join-Path $workspace "semi;bin"
+        $env:ATOMIC_BIN_DIR = $semicolonBinDir
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $beforeUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $beforeProcessPath = $env:Path
+
+        $installOutput = & $InstallerPath -Ref "1.0.0" | Out-String
+        $shim = Join-Path $semicolonBinDir "atomic.cmd"
+        Assert-Fixture (Test-Path -LiteralPath $shim) "semicolon bin directory did not receive the shim"
+        Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -eq $beforeUserPath) "a semicolon bin directory was appended to the User PATH"
+        Assert-Fixture ($env:Path -eq $beforeProcessPath) "a semicolon bin directory was appended to the current PATH"
+        Assert-Fixture ($installOutput -match "cannot be represented as one Windows PATH entry") "semicolon bin directory did not report the PATH limitation"
+        Assert-Fixture ($installOutput -match 'Run Atomic directly') "semicolon bin directory did not print direct-run guidance"
+        Assert-Fixture ($installOutput -notmatch 'Restart your terminal') "semicolon bin directory claimed a PATH update"
+        $versionProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($versionProbe.ExitCode -eq 0 -and $versionProbe.Output -eq "1.0.0") "semicolon bin directory shim is not runnable"
+
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -eq $beforeUserPath) "a semicolon bin directory rerun appended a duplicate PATH entry"
+        Assert-NoTransactionResidue $installRoot $semicolonBinDir
+    }
     else {
         throw "Unknown fixture scenario: $Scenario"
     }
@@ -1937,7 +1997,9 @@ function runPowerShellFixture(
 		| "dangling-junction"
 		| "rollback-retries"
 		| "transaction-failures"
-		| "ctrl-c",
+		| "ctrl-c"
+		| "ref-identity"
+		| "semicolon-bin",
 ): string {
 	assert.ok(powershellExecutable);
 	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
@@ -2034,3 +2096,11 @@ powershellTest(
 	},
 	TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS,
 );
+
+powershellTest("PowerShell 5.1 fixture fails closed when an exact-tag response names a different release", () => {
+	runPowerShellFixture("ref-identity");
+});
+
+powershellTest("PowerShell 5.1 fixture never appends a semicolon-containing bin directory to PATH", () => {
+	runPowerShellFixture("semicolon-bin");
+});

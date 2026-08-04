@@ -498,6 +498,7 @@ if ([string]::IsNullOrWhiteSpace($binDir)) {
     $binDir = Join-Path $installRoot "bin"
 }
 $binDir = [IO.Path]::GetFullPath($binDir)
+$binDirHasPathSeparator = $binDir.Contains(";")
 $atomicCurrentPath = Join-Path $binDir "atomic-current"
 $shimPath = Join-Path $binDir "atomic.cmd"
 $existingShimItem = Get-AtomicDirectoryEntry $shimPath
@@ -544,6 +545,9 @@ if ([string]::IsNullOrWhiteSpace($releaseTag)) {
     $releaseTag = [string]$release.tag_name
     if ([string]::IsNullOrWhiteSpace($releaseTag)) {
         throw "GitHub release API returned an empty tag_name."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($requestedRef) -and $releaseTag -cne $requestedRef) {
+        throw "GitHub returned release $releaseTag for requested tag $requestedRef."
     }
 }
 
@@ -691,12 +695,12 @@ try {
         $transaction.ShimInstallIntended = $true
         Move-Item -LiteralPath $shimNextPath -Destination $shimPath
 
-        if (-not (Test-AtomicPathContains $oldUserPath $binDir)) {
+        if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $oldUserPath $binDir)) {
             $newUserPath = if ([string]::IsNullOrWhiteSpace($oldUserPath)) { $binDir } else { "$oldUserPath;$binDir" }
             $transaction.UserPathChangeIntended = $true
             [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
         }
-        if (-not (Test-AtomicPathContains $env:Path $binDir)) {
+        if (-not $binDirHasPathSeparator -and -not (Test-AtomicPathContains $env:Path $binDir)) {
             $transaction.CurrentPathChangeIntended = $true
             $env:Path = if ([string]::IsNullOrWhiteSpace($env:Path)) { $binDir } else { "$env:Path;$binDir" }
         }
@@ -721,7 +725,14 @@ try {
 
     Write-Output "Atomic $releaseTag installed successfully."
     Write-Output "Shim: $shimPath"
-    Write-Output "Restart your terminal so other processes pick up the updated User PATH."
+    if ($binDirHasPathSeparator) {
+        Write-Output "ATOMIC_BIN_DIR contains ';' and cannot be represented as one Windows PATH entry."
+        Write-Output "Run Atomic directly: `"$shimPath`""
+        Write-Output "Choose a semicolon-free ATOMIC_BIN_DIR to add Atomic to PATH."
+    }
+    else {
+        Write-Output "Restart your terminal so other processes pick up the updated User PATH."
+    }
 }
 finally {
     if ($null -ne $transaction -and -not $transactionCommitted) {

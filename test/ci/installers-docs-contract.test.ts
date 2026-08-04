@@ -52,6 +52,10 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.windows, /MAJOR\.MINOR\.PATCH-alpha\.REVISION/u);
 	assert.match(docs.quickstart, /protected temporary file instead of process arguments/u);
 	assert.match(docs.windows, /downloaded script cannot repair the connection used to fetch itself/u);
+	assert.match(docs.quickstart, /a pin is honored literally/u);
+	assert.match(docs.windows, /A pinned `-Ref` is honored literally/u);
+	assert.match(docs.windows, /containing `;` cannot be one Windows PATH entry/u);
+	assert.match(docs.quickstart, /including any trailing whitespace or newline/u);
 	assert.match(docs.readme, /relative install and bin directories resolve against the physical directory/u);
 	assert.match(docs.quickstart, /does not require Node\.js|Node\.js and a package manager are not required/u);
 	assert.match(docs.quickstart, /Package installs still require Node\.js/u);

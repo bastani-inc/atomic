@@ -10,6 +10,8 @@ REPOSITORY=bastani-inc/atomic
 GITHUB_WEB=https://github.com
 GITHUB_API=https://api.github.com
 CHECKSUM_FILE=SHA256SUMS
+NEWLINE=$(printf '\n_')
+NEWLINE=${NEWLINE%_}
 
 usage() {
     printf '%s\n' 'Atomic release archive installer
@@ -68,9 +70,9 @@ normalize_absolute_path() {
         esac
     done
     if [ -n "$normalize_result" ]; then
-        printf '/%s\n' "$normalize_result"
+        printf '/%s' "$normalize_result"
     else
-        printf '/\n'
+        printf '/'
     fi
 }
 
@@ -92,7 +94,9 @@ canonicalize_existing_prefix() {
         canonical_probe=$canonical_parent
     done
 
-    canonical_physical=$(CDPATH= cd -P "$canonical_probe" 2>/dev/null && pwd) || return 1
+    canonical_physical=$(CDPATH= cd -P "$canonical_probe" 2>/dev/null && pwd && printf '_') || return 1
+    canonical_physical=${canonical_physical%_}
+    canonical_physical=${canonical_physical%"$NEWLINE"}
     if [ -n "$canonical_suffix" ]; then
         normalize_absolute_path "$canonical_physical/$canonical_suffix"
     else
@@ -191,7 +195,9 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-START_WORKING_DIR=$(pwd -P) || fail "unable to resolve the current working directory"
+START_WORKING_DIR=$(pwd -P && printf '_') || fail "unable to resolve the current working directory"
+START_WORKING_DIR=${START_WORKING_DIR%_}
+START_WORKING_DIR=${START_WORKING_DIR%"$NEWLINE"}
 INSTALL_ROOT=${ATOMIC_INSTALL_DIR:-${HOME:?HOME is not set}/.local/share/atomic}
 BIN_DIR=${ATOMIC_BIN_DIR:-${HOME:?HOME is not set}/.local/bin}
 case $INSTALL_ROOT in
@@ -202,13 +208,17 @@ case $BIN_DIR in
     /*) ;;
     *) BIN_DIR=$START_WORKING_DIR/$BIN_DIR ;;
 esac
-INSTALL_ROOT=$(normalize_absolute_path "$INSTALL_ROOT")
-BIN_DIR=$(normalize_absolute_path "$BIN_DIR")
+INSTALL_ROOT=$(normalize_absolute_path "$INSTALL_ROOT" && printf '_')
+INSTALL_ROOT=${INSTALL_ROOT%_}
+BIN_DIR=$(normalize_absolute_path "$BIN_DIR" && printf '_')
+BIN_DIR=${BIN_DIR%_}
 BIN_PATH=$BIN_DIR/atomic
-PHYSICAL_INSTALL_ROOT=$(canonicalize_existing_prefix "$INSTALL_ROOT") ||
+PHYSICAL_INSTALL_ROOT=$(canonicalize_existing_prefix "$INSTALL_ROOT" && printf '_') ||
     fail "unable to resolve ATOMIC_INSTALL_DIR: $INSTALL_ROOT"
-PHYSICAL_BIN_PATH=$(canonicalize_existing_prefix "$BIN_PATH") ||
+PHYSICAL_INSTALL_ROOT=${PHYSICAL_INSTALL_ROOT%_}
+PHYSICAL_BIN_PATH=$(canonicalize_existing_prefix "$BIN_PATH" && printf '_') ||
     fail "unable to resolve ATOMIC_BIN_DIR/atomic: $BIN_PATH"
+PHYSICAL_BIN_PATH=${PHYSICAL_BIN_PATH%_}
 case $PHYSICAL_INSTALL_ROOT/ in
     "$PHYSICAL_BIN_PATH/"*)
         fail "ATOMIC_INSTALL_DIR cannot equal ATOMIC_BIN_DIR/atomic or be inside that launcher path: $INSTALL_ROOT"
@@ -367,7 +377,7 @@ nearest_existing_directory() {
         [ "$existing_parent" != "$existing_candidate" ] || return 1
         existing_candidate=$existing_parent
     done
-    printf '%s\n' "$existing_candidate"
+    printf '%s' "$existing_candidate"
 }
 
 remove_created_empty_path() {
@@ -706,6 +716,9 @@ if [ -z "$RELEASE_TAG" ]; then
     if ! RELEASE_TAG=$(parse_release_tag "$RELEASE_JSON"); then
         fail "GitHub release response did not contain a valid tag_name"
     fi
+    if [ -n "$REQUESTED_REF" ] && [ "$RELEASE_TAG" != "$REQUESTED_REF" ]; then
+        fail "GitHub returned release $RELEASE_TAG for requested tag $REQUESTED_REF"
+    fi
 fi
 clear_api_auth
 RELEASE_TAG_ENCODED=$(percent_encode "$RELEASE_TAG")
@@ -774,10 +787,12 @@ fi
 VERSIONS_DIR=$INSTALL_ROOT/versions
 CURRENT_PATH=$INSTALL_ROOT/current
 
-INSTALL_DIRECTORY_STOP=$(nearest_existing_directory "$INSTALL_ROOT") ||
+INSTALL_DIRECTORY_STOP=$(nearest_existing_directory "$INSTALL_ROOT" && printf '_') ||
     fail "unable to find an existing parent for ATOMIC_INSTALL_DIR: $INSTALL_ROOT"
-BIN_DIRECTORY_STOP=$(nearest_existing_directory "$BIN_DIR") ||
+INSTALL_DIRECTORY_STOP=${INSTALL_DIRECTORY_STOP%_}
+BIN_DIRECTORY_STOP=$(nearest_existing_directory "$BIN_DIR" && printf '_') ||
     fail "unable to find an existing parent for ATOMIC_BIN_DIR: $BIN_DIR"
+BIN_DIRECTORY_STOP=${BIN_DIRECTORY_STOP%_}
 
 if [ ! -d "$INSTALL_ROOT" ]; then
     mkdir -p "$INSTALL_ROOT"

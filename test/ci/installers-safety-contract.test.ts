@@ -13,12 +13,12 @@ async function installers(): Promise<{ shell: string; powershell: string }> {
 test("POSIX path conflicts and unexpected launcher directories fail before I/O", async () => {
 	const { shell } = await installers();
 	assert.equal(shell.match(/pwd -P/gu)?.length, 1);
-	assert.match(shell, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT"\)/u);
-	assert.match(shell, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR"\)/u);
+	assert.match(shell, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT" && printf '_'\)/u);
+	assert.match(shell, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR" && printf '_'\)/u);
 	assert.match(shell, /BIN_PATH=\$BIN_DIR\/atomic/u);
-	assert.match(shell, /canonical_physical=\$\(CDPATH= cd -P "\$canonical_probe"[^\n]+&& pwd\)/u);
-	assert.match(shell, /PHYSICAL_INSTALL_ROOT=\$\(canonicalize_existing_prefix "\$INSTALL_ROOT"\)/u);
-	assert.match(shell, /PHYSICAL_BIN_PATH=\$\(canonicalize_existing_prefix "\$BIN_PATH"\)/u);
+	assert.match(shell, /canonical_physical=\$\(CDPATH= cd -P "\$canonical_probe"[^\n]+&& pwd && printf '_'\)/u);
+	assert.match(shell, /PHYSICAL_INSTALL_ROOT=\$\(canonicalize_existing_prefix "\$INSTALL_ROOT" && printf '_'\)/u);
+	assert.match(shell, /PHYSICAL_BIN_PATH=\$\(canonicalize_existing_prefix "\$BIN_PATH" && printf '_'\)/u);
 	assert.match(shell, /case \$PHYSICAL_INSTALL_ROOT\/ in[\s\S]+"\$PHYSICAL_BIN_PATH\/"\*/u);
 	assert.match(shell, /\[ -d "\$BIN_PATH" \] && \[ ! -L "\$BIN_PATH" \]/u);
 	for (const message of [
@@ -45,6 +45,48 @@ test("POSIX release identities stay within Atomic's supported tag grammar", asyn
 	assert.match(shell, /VERSION_PATH=\$VERSIONS_DIR\/\$RELEASE_TAG_ENCODED/u);
 	assert.match(shell, /ln -s "versions\/\$RELEASE_TAG_ENCODED"/u);
 	assert.match(shell, /Atomic %s installed successfully[^\n]+"\$RELEASE_TAG"/u);
+});
+
+test("installers pin the requested exact ref and fail closed on a mismatched release identity", async () => {
+	const { shell, powershell } = await installers();
+	const shellCheck = shell.indexOf('[ "$RELEASE_TAG" != "$REQUESTED_REF" ]');
+	assert.ok(shellCheck >= 0, "POSIX installer does not compare the resolved tag with the requested ref");
+	assert.ok(shellCheck < shell.indexOf("RELEASE_BASE="), "POSIX identity check runs after the download base");
+	assert.match(shell, /GitHub returned release \$RELEASE_TAG for requested tag \$REQUESTED_REF/u);
+
+	const powershellCheck = powershell.indexOf("$releaseTag -cne $requestedRef");
+	assert.ok(powershellCheck >= 0, "PowerShell installer does not compare the resolved tag with the requested ref");
+	assert.ok(
+		powershellCheck < powershell.indexOf("$releaseBase ="),
+		"PowerShell identity check runs after the download base",
+	);
+	assert.match(powershell, /GitHub returned release \$releaseTag for requested tag \$requestedRef/u);
+});
+
+test("POSIX path normalization preserves caller-controlled trailing newlines", async () => {
+	const { shell } = await installers();
+	assert.match(shell, /NEWLINE=\$\(printf '\\n_'\)/u);
+	assert.match(shell, /START_WORKING_DIR=\$\(pwd -P && printf '_'\)/u);
+	assert.match(shell, /START_WORKING_DIR=\$\{START_WORKING_DIR%"\$NEWLINE"\}/u);
+	for (const name of ["INSTALL_ROOT", "BIN_DIR", "PHYSICAL_INSTALL_ROOT", "PHYSICAL_BIN_PATH"]) {
+		assert.match(shell, new RegExp(`${name}=\\$\\{${name}%_\\}`, "u"));
+	}
+	assert.match(shell, /printf '\/%s' "\$normalize_result"/u);
+	assert.match(shell, /printf '%s' "\$existing_candidate"/u);
+});
+
+test("Windows PATH updates refuse a bin directory that cannot be one PATH entry", async () => {
+	const { powershell } = await installers();
+	assert.match(powershell, /\$binDirHasPathSeparator = \$binDir\.Contains\(";"\)/u);
+	const userPathUpdate = powershell.indexOf('[Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")');
+	const processPathUpdate = powershell.indexOf("$env:Path = if ([string]::IsNullOrWhiteSpace($env:Path))");
+	assert.ok(userPathUpdate >= 0 && processPathUpdate >= 0);
+	for (const guard of [userPathUpdate, processPathUpdate]) {
+		const enclosing = powershell.lastIndexOf("if (-not $binDirHasPathSeparator -and", guard);
+		assert.ok(enclosing >= 0 && guard - enclosing < 400, "a PATH mutation is not guarded by the separator check");
+	}
+	assert.match(powershell, /cannot be represented as one Windows PATH entry/u);
+	assert.match(powershell, /Choose a semicolon-free ATOMIC_BIN_DIR/u);
 });
 
 test("POSIX API authentication uses protected files and never authenticates release downloads", async () => {

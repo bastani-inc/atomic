@@ -66,11 +66,11 @@ test("POSIX installer has valid sh syntax and declares the archive install contr
 	assert.match(source, /installed atomic --version check failed/u);
 	assert.ok(source.indexOf("checksum verification failed") < source.indexOf('mkdir -p "$INSTALL_ROOT"'));
 	assert.equal(source.match(/pwd -P/gu)?.length, 1);
-	assert.match(source, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT"\)/u);
-	assert.match(source, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR"\)/u);
-	assert.match(source, /canonical_physical=\$\(CDPATH= cd -P "\$canonical_probe"[^\n]+&& pwd\)/u);
-	assert.match(source, /PHYSICAL_INSTALL_ROOT=\$\(canonicalize_existing_prefix "\$INSTALL_ROOT"\)/u);
-	assert.match(source, /PHYSICAL_BIN_PATH=\$\(canonicalize_existing_prefix "\$BIN_PATH"\)/u);
+	assert.match(source, /INSTALL_ROOT=\$\(normalize_absolute_path "\$INSTALL_ROOT" && printf '_'\)/u);
+	assert.match(source, /BIN_DIR=\$\(normalize_absolute_path "\$BIN_DIR" && printf '_'\)/u);
+	assert.match(source, /canonical_physical=\$\(CDPATH= cd -P "\$canonical_probe"[^\n]+&& pwd && printf '_'\)/u);
+	assert.match(source, /PHYSICAL_INSTALL_ROOT=\$\(canonicalize_existing_prefix "\$INSTALL_ROOT" && printf '_'\)/u);
+	assert.match(source, /PHYSICAL_BIN_PATH=\$\(canonicalize_existing_prefix "\$BIN_PATH" && printf '_'\)/u);
 	assert.match(source, /case \$PHYSICAL_INSTALL_ROOT\/ in[\s\S]+"\$PHYSICAL_BIN_PATH\/"\*/u);
 	assert.match(source, /\[ -d "\$BIN_PATH" \] && \[ ! -L "\$BIN_PATH" \]/u);
 	assert.match(source, /REQUESTED_REF_ENCODED=\$\(percent_encode "\$REQUESTED_REF"\)/u);
@@ -201,7 +201,7 @@ const curlWrapper = [
 	"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 22`,
 	`        tag=${shellExpansion("url##*/")}`,
-	`        printf '{"tag_name":"%s"}\\n' "$tag"`,
+	`        printf '{"tag_name":"%s"}\\n' "${shellExpansion("ATOMIC_FIXTURE_TAGS_TAG:-$tag")}"`,
 	"        ;;",
 	"    https://github.com/bastani-inc/atomic/releases/download/*/*)",
 	`        name=${shellExpansion("url##*/")}`,
@@ -255,7 +255,7 @@ const wgetWrapper = [
 	"    https://api.github.com/repos/bastani-inc/atomic/releases/tags/*)",
 	`        [ "${shellExpansion("ATOMIC_FIXTURE_FAIL_API:-0")}" = 1 ] && exit 1`,
 	`        tag=${shellExpansion("url##*/")}`,
-	`        printf '{"tag_name":"%s"}\\n' "$tag"`,
+	`        printf '{"tag_name":"%s"}\\n' "${shellExpansion("ATOMIC_FIXTURE_TAGS_TAG:-$tag")}"`,
 	"        ;;",
 	"    https://github.com/bastani-inc/atomic/releases/download/*/*)",
 	`        name=${shellExpansion("url##*/")}`,
@@ -719,6 +719,54 @@ unixTest("shell installer accepts only Atomic stable and alpha release tag gramm
 		} finally {
 			fixture.cleanup();
 		}
+	}
+});
+
+unixTest("shell installer fails closed when the exact-tag API response names a different release", () => {
+	const fixture = createFixture();
+	try {
+		const result = fixture.run({
+			args: ["--ref", "1.0.0"],
+			environment: { ATOMIC_FIXTURE_TAGS_TAG: "2.0.0" },
+		});
+		assert.notEqual(result.exitCode, 0);
+		assert.match(output(result), /returned release 2\.0\.0 for requested tag 1\.0\.0/u);
+
+		const requests = readFileSync(fixture.requestLog, "utf8");
+		assert.match(requests, /GET https:\/\/api\.github\.com\/repos\/bastani-inc\/atomic\/releases\/tags\/1\.0\.0/u);
+		assert.doesNotMatch(requests, /releases\/download\//u);
+		assert.ok(!existsSync(fixture.installRoot));
+		assert.ok(!existsSync(fixture.binDir));
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer preserves trailing newlines in custom install and bin directories", () => {
+	const fixture = createFixture();
+	try {
+		const installRoot = join(fixture.workspace, "install-newline\n");
+		const binDir = join(fixture.workspace, "bin-newline\n");
+		assertSuccess(
+			fixture.run({
+				args: ["--ref", "1.0.0"],
+				environment: { ATOMIC_INSTALL_DIR: installRoot, ATOMIC_BIN_DIR: binDir },
+			}),
+		);
+
+		assert.ok(existsSync(join(binDir, "atomic")), "launcher was not created in the requested bin directory");
+		assert.ok(existsSync(join(installRoot, "versions", "1.0.0", "atomic")));
+		assert.ok(!existsSync(join(fixture.workspace, "bin-newline")), "installer used a newline-trimmed bin directory");
+		assert.ok(!existsSync(join(fixture.workspace, "install-newline")));
+
+		const launcher = spawnSyncCollect(["/bin/sh", "-c", '"$1" --version', "sh", join(binDir, "atomic")], {
+			env: { PATH: fixture.tools },
+		});
+		assert.equal(launcher.exitCode, 0, launcher.stderr.toString());
+		assert.equal(launcher.stdout.toString().trim(), "1.0.0");
+	} finally {
+		fixture.cleanup();
 	}
 });
 
