@@ -8,6 +8,46 @@ export declare class PtySession {
   kill(): void
 }
 
+/**
+ * N-API wrapper around the root-scoped Rust control plane. The host marker is
+ * intentionally held by the wrapper while the cloneable core stores only a
+ * weak reference to it.
+ */
+export declare class SubagentControl {
+  constructor(parentPath: string)
+  get parentPath(): string
+  registerAgent(name: string): void
+  admitChildSession(spec: NativeChildSpec, parent: NativeParentContext): NativeAdmissionResult
+  listChildren(): Array<ChildIdentity>
+  publishChildStatus(path: string, status: AgentStatus): void
+  subscribeChildStatus(path: string, callback: (status: AgentStatus) => void): void
+  tryAcquireExecutionGuard(): NativeExecutionGuardResult
+  releaseExecutionGuard(token: number): boolean
+  beginChildAttempt(path: string): NativeExecutionGuardResult
+  finishChildAttempt(token: number, status: AgentStatus): void
+  terminateChildAttempt(token: number, cause: TerminationCause): NativeTerminationResult
+  reloadColdChild(path: string, message: string): NativeAdmissionResult
+}
+export type NapiSubagentControl = SubagentControl
+
+export declare const enum AdmissionRefusalKind {
+  DepthExceeded = 'depthExceeded',
+  CapacityExhausted = 'capacityExhausted',
+  DispatchGuardBusy = 'dispatchGuardBusy',
+  InvalidCwd = 'invalidCwd',
+  UnknownAgent = 'unknownAgent'
+}
+
+/** The only statuses emitted by a child status watch. */
+export declare const enum AgentStatus {
+  Pending = 'pending',
+  Running = 'running',
+  Ok = 'ok',
+  Error = 'error',
+  Interrupted = 'interrupted',
+  Continued = 'continued'
+}
+
 export interface BlockRange {
   /** 1-indexed inclusive first line of the resolved block. */
   startLine: number
@@ -29,6 +69,16 @@ export interface BlockRangeOptions {
   path: string
   /** 1-indexed source line the block must begin on. */
   line: number
+}
+
+/** Persistent identity information returned by the registry. */
+export interface ChildIdentity {
+  path: string
+  parentPath: string
+  taskName: string
+  depth: number
+  status: AgentStatus
+  loaded: boolean
 }
 
 /** A context line (before or after a match). */
@@ -269,6 +319,39 @@ export interface Match {
   truncated?: boolean
 }
 
+export interface NativeAdmissionRefusal {
+  kind: AdmissionRefusalKind
+  reason: string
+  maxDepth?: number
+}
+
+export interface NativeAdmissionResult {
+  child?: ChildIdentity
+  refusal?: NativeAdmissionRefusal
+}
+
+export interface NativeChildSpec {
+  taskName: string
+  agentName?: string
+  cwd?: string
+}
+
+export interface NativeExecutionGuardResult {
+  token?: number
+  refusal?: NativeAdmissionRefusal
+}
+
+export interface NativeParentContext {
+  path: string
+  depth: number
+}
+
+export interface NativeTerminationResult {
+  cause: TerminationCause
+  forced: boolean
+  graceMs: number
+}
+
 export interface PtyRunResult {
   exitCode?: number
   cancelled: boolean
@@ -336,4 +419,15 @@ export interface SearchResult {
   limitReached: boolean
   /** Error message, if any. */
   error?: string
+}
+
+/**
+ * Explicit termination causes. Timer/idle/wall-clock causes are intentionally
+ * absent, making timer-driven termination unrepresentable.
+ */
+export declare const enum TerminationCause {
+  Abort = 'abort',
+  Interrupt = 'interrupt',
+  FailFastSkip = 'fail-fast-skip',
+  ParentShutdown = 'parent-shutdown'
 }
