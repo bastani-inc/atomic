@@ -11,6 +11,7 @@ import {
 	readlinkSync,
 	realpathSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -125,6 +126,7 @@ interface RunOptions {
 	ldd?: boolean;
 	environment?: Record<string, string | undefined>;
 	pathEntries?: readonly string[];
+	umask?: string;
 }
 
 function writeExecutable(path: string, source: string): void {
@@ -383,7 +385,11 @@ function createFixture(): InstallerFixture {
 				ATOMIC_FIXTURE_LIBC: options.libc ?? "ldd (GNU libc) 2.36",
 				...options.environment,
 			};
-			const installerCommand = ["/bin/sh", installerPath, ...(options.args ?? [])];
+			const installerArguments = [installerPath, ...(options.args ?? [])];
+			const installerCommand =
+				options.umask === undefined
+					? ["/bin/sh", ...installerArguments]
+					: ["/bin/sh", "-c", `umask ${options.umask}; exec /bin/sh "$0" "$@"`, ...installerArguments];
 			return spawnSyncCollect(installerCommand, {
 				cwd: workspace,
 				env,
@@ -1182,5 +1188,118 @@ unixTest("catchable signals after transaction moves restore the complete previou
 		} finally {
 			fixture.cleanup();
 		}
+	}
+});
+
+unixTest("shell installer rejects bin directories inside transaction-owned install paths before any request", () => {
+	for (const binSuffix of ["current", "current/nested", "versions", "versions/1.0.0", "versions/1.2.3/bin"]) {
+		const fixture = createFixture();
+		try {
+			const result = fixture.run({
+				args: ["--ref", "1.0.0"],
+				environment: { ATOMIC_BIN_DIR: join(fixture.installRoot, ...binSuffix.split("/")) },
+			});
+			assert.notEqual(result.exitCode, 0, binSuffix);
+			assert.match(
+				output(result),
+				/ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\/(?:current|versions); the installer replaces that path/u,
+				binSuffix,
+			);
+			assert.equal(readFileSync(fixture.requestLog, "utf8"), "", binSuffix);
+			assert.deepEqual(readdirSync(fixture.tempRoot), [], binSuffix);
+			assert.ok(!existsSync(fixture.installRoot), binSuffix);
+		} finally {
+			fixture.cleanup();
+		}
+	}
+
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		writeFileSync(join(fixture.installRoot, "versions", "1.0.0", "preserve.txt"), "old-state");
+		const currentAlias = join(fixture.workspace, "current alias");
+		symlinkSync(join(fixture.installRoot, "current"), currentAlias);
+		writeFileSync(fixture.requestLog, "");
+
+		const rejected = fixture.run({
+			args: ["--ref", "2.0.0"],
+			environment: { ATOMIC_BIN_DIR: join(currentAlias, "bin") },
+		});
+		assert.notEqual(rejected.exitCode, 0);
+		assert.match(output(rejected), /ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR\/versions/u);
+		assert.equal(readFileSync(fixture.requestLog, "utf8"), "");
+		assert.deepEqual(readdirSync(fixture.tempRoot), []);
+		assert.ok(!existsSync(join(fixture.installRoot, "versions", "2.0.0")));
+		assert.ok(!existsSync(join(fixture.installRoot, "versions", "1.0.0", "bin")));
+		assert.equal(readFileSync(join(fixture.installRoot, "versions", "1.0.0", "preserve.txt"), "utf8"), "old-state");
+		assert.equal(currentVersion(fixture), "1.0.0");
+	} finally {
+		fixture.cleanup();
+	}
+
+	const acceptedFixture = createFixture();
+	try {
+		const nestedBin = join(acceptedFixture.installRoot, "bin");
+		assertSuccess(acceptedFixture.run({ args: ["--ref", "1.0.0"], environment: { ATOMIC_BIN_DIR: nestedBin } }));
+		const installed = spawnSyncCollect([join(nestedBin, "atomic"), "--version"], {
+			env: { PATH: acceptedFixture.tools },
+		});
+		assert.equal(installed.exitCode, 0, installed.stderr.toString());
+		assert.equal(installed.stdout.toString().trim(), "1.0.0");
+	} finally {
+		acceptedFixture.cleanup();
+	}
+});
+
+unixTest("shell installer accepts GNU sha256sum binary-mode rows", () => {
+	const fixture = createFixture();
+	try {
+		for (const release of fixture.releases.values()) {
+			release.checksums = release.checksums.replace(/^([0-9a-f]{64}) {2}/gmu, "$1 *");
+		}
+		assert.match(fixture.releases.get("1.0.0")?.checksums ?? "", /^[0-9a-f]{64} \*atomic-linux-x64\.tar\.gz$/mu);
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		assert.equal(currentVersion(fixture), "1.0.0");
+		assert.ok(existsSync(join(fixture.binDir, "atomic")));
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer restricts owner-only modes to temporary state and installs with the caller's umask", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"], umask: "022" }));
+		const versionPath = join(fixture.installRoot, "versions", "1.0.0");
+		for (const directory of [
+			fixture.installRoot,
+			join(fixture.installRoot, "versions"),
+			versionPath,
+			fixture.binDir,
+		]) {
+			assert.equal((statSync(directory).mode & 0o777).toString(8), "755", directory);
+		}
+		assert.equal((statSync(join(versionPath, "package.json")).mode & 0o777).toString(8), "644");
+		assert.equal((statSync(join(versionPath, "atomic")).mode & 0o777).toString(8), "755");
+		assert.equal((statSync(join(versionPath, "builtin")).mode & 0o777).toString(8), "755");
+		const requests = readFileSync(fixture.requestLog, "utf8");
+		assert.doesNotMatch(requests, /AUTH_MODE/u);
+	} finally {
+		fixture.cleanup();
+	}
+
+	const tokenFixture = createFixture();
+	try {
+		assertSuccess(
+			tokenFixture.run({
+				args: ["--ref", "1.0.0"],
+				umask: "022",
+				environment: { ATOMIC_FIXTURE_REDIRECT_FAIL: "1", GITHUB_TOKEN: "github-token" },
+			}),
+		);
+		assert.match(readFileSync(tokenFixture.requestLog, "utf8"), /AUTH_MODE 600/u);
+		assert.equal((statSync(tokenFixture.binDir).mode & 0o777).toString(8), "755");
+	} finally {
+		tokenFixture.cleanup();
 	}
 });

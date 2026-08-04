@@ -224,6 +224,21 @@ case $PHYSICAL_INSTALL_ROOT/ in
         fail "ATOMIC_INSTALL_DIR cannot equal ATOMIC_BIN_DIR/atomic or be inside that launcher path: $INSTALL_ROOT"
         ;;
 esac
+for owned_child in current versions; do
+    for owned_root in "$INSTALL_ROOT" "$PHYSICAL_INSTALL_ROOT"; do
+        case $owned_root in
+            /) owned_path=/$owned_child ;;
+            *) owned_path=$owned_root/$owned_child ;;
+        esac
+        for owned_candidate in "$BIN_PATH" "$PHYSICAL_BIN_PATH"; do
+            case $owned_candidate in
+                "$owned_path"|"$owned_path"/*)
+                    fail "ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR/$owned_child; the installer replaces that path: $BIN_DIR"
+                    ;;
+            esac
+        done
+    done
+done
 if [ -d "$BIN_PATH" ] && [ ! -L "$BIN_PATH" ]; then
     fail "ATOMIC_BIN_DIR/atomic is an unexpected directory; refusing to replace it: $BIN_PATH"
 fi
@@ -328,6 +343,7 @@ case $TOKEN in
     *"$token_line_feed"*|*"$token_carriage_return"*) fail "GitHub API token contains a forbidden newline" ;;
 esac
 
+ORIGINAL_UMASK=$(umask)
 umask 077
 TEMP_BASE=${TMPDIR:-/tmp}/atomic-install.$$
 TEMP_DIR=$TEMP_BASE
@@ -742,7 +758,7 @@ while IFS= read -r checksum_line || [ -n "$checksum_line" ]; do
     checksum_value=$1
     checksum_name=$2
     case $checksum_name in
-        \*) checksum_name=${checksum_name#\*} ;;
+        \**) checksum_name=${checksum_name#\*} ;;
     esac
     if [ "$checksum_name" = "$ASSET_NAME" ]; then
         CHECKSUM_MATCHES=$((CHECKSUM_MATCHES + 1))
@@ -772,6 +788,7 @@ else
 fi
 [ "$ACTUAL_CHECKSUM" = "$EXPECTED_CHECKSUM" ] || fail "checksum verification failed for $ASSET_NAME"
 
+umask "$ORIGINAL_UMASK"
 mkdir "$EXTRACT_ROOT"
 if ! tar -xzf "$ARCHIVE_PATH" -C "$EXTRACT_ROOT"; then
     fail "failed to extract release asset: $ASSET_NAME"

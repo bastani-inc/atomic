@@ -194,6 +194,32 @@ function Get-AtomicDirectoryEntry {
     return $null
 }
 
+function Get-AtomicShimShadowingExtensions {
+    $shadowing = New-Object System.Collections.ArrayList
+    foreach ($pathExtValue in @($env:PATHEXT, ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC")) {
+        if ([string]::IsNullOrWhiteSpace($pathExtValue)) {
+            continue
+        }
+        foreach ($pathExtEntry in ($pathExtValue -split ';')) {
+            $extension = $pathExtEntry.Trim().Trim('"')
+            if ([string]::IsNullOrWhiteSpace($extension)) {
+                continue
+            }
+            if (-not $extension.StartsWith(".")) {
+                $extension = "." + $extension
+            }
+            $extension = $extension.ToUpperInvariant()
+            if ($extension -eq ".CMD") {
+                break
+            }
+            if (-not $shadowing.Contains($extension)) {
+                [void]$shadowing.Add($extension)
+            }
+        }
+    }
+    return $shadowing
+}
+
 function Remove-AtomicDirectoryLinkOrTree {
     param([string]$Path)
 
@@ -509,6 +535,12 @@ $existingAtomicCurrentItem = Get-AtomicDirectoryEntry $atomicCurrentPath
 if ($null -ne $existingAtomicCurrentItem -and
     ($existingAtomicCurrentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
     throw "ATOMIC_BIN_DIR contains an unexpected atomic-current entry; refusing to replace it."
+}
+foreach ($shadowingExtension in @(Get-AtomicShimShadowingExtensions)) {
+    $shadowingItem = Get-AtomicDirectoryEntry (Join-Path $binDir ("atomic" + $shadowingExtension))
+    if ($null -ne $shadowingItem) {
+        throw "ATOMIC_BIN_DIR contains $($shadowingItem.Name), which PATHEXT resolves before atomic.cmd; remove it and rerun the installer."
+    }
 }
 
 $apiHeaders = @{ Accept = "application/vnd.github+json" }

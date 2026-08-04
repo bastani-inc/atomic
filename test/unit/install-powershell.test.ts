@@ -70,6 +70,44 @@ test("Windows installer declares the PowerShell 5.1 archive installation contrac
 	assert.ok(unexpectedPointer >= 0 && unexpectedPointer < apiHeaders);
 });
 
+test("Windows installer rejects PATHEXT launchers that shadow atomic.cmd before any request", () => {
+	const source = installerSource();
+
+	assert.match(source, /function Get-AtomicShimShadowingExtensions/u);
+	assert.ok(
+		source.includes('".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"'),
+		"the default PATHEXT order is not used as a fallback",
+	);
+	assert.match(source, /foreach \(\$pathExtValue in @\(\$env:PATHEXT, "\.COM;/u);
+	assert.match(source, /if \(\$extension -eq "\.CMD"\) \{\r?\n\s+break\r?\n\s+\}/u);
+	assert.match(source, /\$extension = \$extension\.ToUpperInvariant\(\)/u);
+
+	const shadowLoop = source.indexOf("foreach ($shadowingExtension in @(Get-AtomicShimShadowingExtensions))");
+	assert.ok(shadowLoop >= 0, "the shadowing preflight loop is missing");
+	assert.match(
+		source.slice(shadowLoop),
+		/Get-AtomicDirectoryEntry \(Join-Path \$binDir \("atomic" \+ \$shadowingExtension\)\)/u,
+	);
+	assert.match(source, /which PATHEXT resolves before atomic\.cmd; remove it and rerun the installer\./u);
+	assert.doesNotMatch(
+		source.slice(shadowLoop, source.indexOf("$apiHeaders = @{")),
+		/PSIsContainer|Remove-Item|Move-Item/u,
+		"the shadowing preflight must report rather than delete or narrow to files",
+	);
+
+	for (const boundary of [
+		'$apiHeaders = @{ Accept = "application/vnd.github+json" }',
+		'$redirectTag = Get-AtomicRedirectTag "https://github.com',
+		"$releaseBase = ",
+		'Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath',
+		"New-Item -ItemType Directory -Path $tempDir",
+	]) {
+		const boundaryIndex = source.indexOf(boundary);
+		assert.ok(boundaryIndex >= 0, boundary);
+		assert.ok(shadowLoop < boundaryIndex, `the shadowing preflight runs after: ${boundary}`);
+	}
+});
+
 test("Windows installer isolates IEX state and scopes TLS 1.2 to controlled requests", () => {
 	const source = installerSource();
 	assert.match(source, /& \{\r?\nparam\(/u);
@@ -428,6 +466,104 @@ for (const engine of powershellEngines) {
 			);
 			assert.equal(result.exitCode, 0, `${result.stdout.toString()}${result.stderr.toString()}`);
 			assert.match(result.stdout.toString(), /IEX_SCOPE_OK/u);
+		} finally {
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+}
+
+const shimShadowProbeHarness = String.raw`
+param(
+    [Parameter(Mandatory=$true)][string]$InstallerPath,
+    [Parameter(Mandatory=$true)][string]$Workspace
+)
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+Set-StrictMode -Version Latest
+
+$binDir = Join-Path $Workspace "bin root"
+$installRoot = Join-Path $Workspace "install root"
+$originalPathExt = $env:PATHEXT
+$env:ATOMIC_INSTALL_DIR = $installRoot
+$env:ATOMIC_BIN_DIR = $binDir
+$env:PROCESSOR_ARCHITEW6432 = "AMD64"
+$env:PROCESSOR_ARCHITECTURE = "AMD64"
+New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $binDir "keep.txt") -Value "caller-data" -Encoding ASCII -NoNewline
+
+try {
+    foreach ($case in @(
+        @{ PathExt = $null; Stale = "atomic.exe"; Kind = "File" },
+        @{ PathExt = $null; Stale = "atomic.com"; Kind = "File" },
+        @{ PathExt = $null; Stale = "atomic.bat"; Kind = "File" },
+        @{ PathExt = $null; Stale = "ATOMIC.EXE"; Kind = "File" },
+        @{ PathExt = $null; Stale = "atomic.exe"; Kind = "Directory" },
+        @{ PathExt = ".WSF;.CMD;.EXE"; Stale = "atomic.wsf"; Kind = "File" }
+    )) {
+        $env:PATHEXT = $case.PathExt
+        $stalePath = Join-Path $binDir $case.Stale
+        if ($case.Kind -eq "Directory") {
+            New-Item -ItemType Directory -Path $stalePath -Force | Out-Null
+        }
+        else {
+            Set-Content -LiteralPath $stalePath -Value "stale launcher" -Encoding ASCII -NoNewline
+        }
+        $failure = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $failure = $_ }
+        if ($null -eq $failure) { throw "$($case.Stale) ($($case.Kind)) was accepted" }
+        if ($failure.Exception.Message -notmatch 'PATHEXT resolves before atomic\.cmd') {
+            throw "$($case.Stale) failed for the wrong reason: $($failure.Exception.Message)"
+        }
+        if ($failure.Exception.Message -notmatch [regex]::Escape($case.Stale)) {
+            throw "$($case.Stale) rejection did not name the shadowing launcher"
+        }
+        if (Test-Path -LiteralPath $installRoot) { throw "$($case.Stale) rejection created an install root" }
+        if (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) { throw "$($case.Stale) rejection created a shim" }
+        if ((Get-Content -LiteralPath (Join-Path $binDir "keep.txt") -Raw) -ne "caller-data") {
+            throw "$($case.Stale) rejection mutated the bin directory"
+        }
+        if ($case.Kind -eq "File" -and (Get-Content -LiteralPath $stalePath -Raw) -ne "stale launcher") {
+            throw "$($case.Stale) rejection replaced the pre-existing launcher"
+        }
+        Remove-Item -LiteralPath $stalePath -Recurse -Force
+    }
+    Write-Output "SHIM_SHADOW_OK"
+}
+finally {
+    $env:PATHEXT = $originalPathExt
+}
+`;
+
+if (powershellEngines.length === 0) {
+	test.skip("available PowerShell engines refuse PATHEXT launchers that shadow the shim", () => {});
+}
+for (const engine of powershellEngines) {
+	test(`${engine.label} refuses PATHEXT launchers that shadow the shim before any request`, () => {
+		const workspace = mkdtempSync(join(tmpdir(), "atomic-ps-shadow-"));
+		const probePath = join(workspace, "shim-shadow-probe.ps1");
+		writeFileSync(probePath, shimShadowProbeHarness);
+		try {
+			const result = spawnSyncCollect(
+				[
+					engine.executable,
+					"-NoLogo",
+					"-NoProfile",
+					"-NonInteractive",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					probePath,
+					"-InstallerPath",
+					installerPath,
+					"-Workspace",
+					workspace,
+				],
+				{ timeout: 60_000 },
+			);
+			assert.equal(result.exitCode, 0, `${result.stdout.toString()}${result.stderr.toString()}`);
+			assert.match(result.stdout.toString(), /SHIM_SHADOW_OK/u);
 		} finally {
 			rmSync(workspace, { recursive: true, force: true });
 		}
@@ -961,7 +1097,7 @@ function global:Move-Item {
 
 $environmentNames = @(
     "ATOMIC_INSTALL_DIR", "ATOMIC_BIN_DIR", "ATOMIC_VERSION", "GITHUB_TOKEN", "GH_TOKEN",
-    "PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE", "TEMP", "TMP",
+    "PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE", "TEMP", "TMP", "PATHEXT",
     "ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION"
 )
 $originalEnvironment = @{}
@@ -1554,6 +1690,67 @@ try {
         Assert-Fixture ([Environment]::GetEnvironmentVariable("Path", "User") -eq $beforeUserPath) "a semicolon bin directory rerun appended a duplicate PATH entry"
         Assert-NoTransactionResidue $installRoot $semicolonBinDir
     }
+    elseif ($Scenario -eq "shadowed-shim") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $env:PATHEXT = $null
+        New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+        $stalePath = Join-Path $binDir "atomic.exe"
+        Copy-Item -LiteralPath $fixtureExecutable -Destination $stalePath
+        $staleBytes = [IO.File]::ReadAllBytes($stalePath)
+
+        $shadowed = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $shadowed = $_ }
+        Assert-Fixture ($null -ne $shadowed) "a stale same-stem atomic.exe was accepted"
+        Assert-Fixture ($shadowed.Exception.Message -match 'atomic\.exe, which PATHEXT resolves before atomic\.cmd') "the stale launcher rejection did not name the shadowing entry"
+        Assert-Fixture (@($global:AtomicFixtureRequests).Count -eq 0) "the stale launcher rejection performed a network request"
+        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "the stale launcher rejection created an install root"
+        Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd"))) "the stale launcher rejection created a shim"
+        Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes($stalePath)) -ceq [Convert]::ToBase64String($staleBytes)) "the stale launcher was replaced instead of reported"
+        Remove-Item -LiteralPath $stalePath -Force
+
+        $env:PATHEXT = ".WSF;.CMD;.EXE"
+        $wsfPath = Join-Path $binDir "atomic.wsf"
+        Set-Content -LiteralPath $wsfPath -Value "stale script" -Encoding ASCII -NoNewline
+        $customShadowed = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $customShadowed = $_ }
+        Assert-Fixture ($null -ne $customShadowed) "a custom PATHEXT entry ahead of .CMD was accepted"
+        Assert-Fixture ($customShadowed.Exception.Message -match 'atomic\.wsf, which PATHEXT resolves before atomic\.cmd') "the custom PATHEXT rejection did not name the shadowing entry"
+        Assert-Fixture (@($global:AtomicFixtureRequests).Count -eq 0) "the custom PATHEXT rejection performed a network request"
+        Remove-Item -LiteralPath $wsfPath -Force
+        $env:PATHEXT = $null
+
+        $staleDirectory = Join-Path $binDir "atomic.bat"
+        New-Item -ItemType Directory -Path $staleDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $staleDirectory "keep.txt") -Value "caller-data" -Encoding ASCII -NoNewline
+        $shadowDirectory = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $shadowDirectory = $_ }
+        Assert-Fixture ($null -ne $shadowDirectory) "a stale same-stem atomic.bat directory was accepted"
+        Assert-Fixture ($shadowDirectory.Exception.Message -match 'atomic\.bat, which PATHEXT resolves before atomic\.cmd') "the stale directory rejection did not name the shadowing entry"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $staleDirectory "keep.txt") -Raw) -eq "caller-data") "the stale same-stem directory was deleted instead of reported"
+        Remove-Item -LiteralPath $staleDirectory -Recurse -Force
+
+        Set-Content -LiteralPath (Join-Path $binDir "atomic.vbs") -Value "harmless" -Encoding ASCII -NoNewline
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "an extension after .CMD blocked a valid install"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.vbs")) "a harmless same-stem entry was removed"
+
+        $previousProcessPath = $env:Path
+        try {
+            $env:Path = $binDir
+            $cmdExe = Join-Path $env:SystemRoot "System32\cmd.exe"
+            $resolvedOutput = (& $cmdExe /d /c "atomic --version" | Out-String).Trim()
+            $resolvedExit = $LASTEXITCODE
+        }
+        finally {
+            $env:Path = $previousProcessPath
+        }
+        Assert-Fixture ($resolvedExit -eq 0 -and $resolvedOutput -eq "1.0.0") "PATHEXT resolution of atomic did not run the installed shim: $resolvedOutput"
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
     else {
         throw "Unknown fixture scenario: $Scenario"
     }
@@ -1999,7 +2196,8 @@ function runPowerShellFixture(
 		| "transaction-failures"
 		| "ctrl-c"
 		| "ref-identity"
-		| "semicolon-bin",
+		| "semicolon-bin"
+		| "shadowed-shim",
 ): string {
 	assert.ok(powershellExecutable);
 	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
@@ -2103,4 +2301,8 @@ powershellTest("PowerShell 5.1 fixture fails closed when an exact-tag response n
 
 powershellTest("PowerShell 5.1 fixture never appends a semicolon-containing bin directory to PATH", () => {
 	runPowerShellFixture("semicolon-bin");
+});
+
+powershellTest("PowerShell 5.1 fixture refuses same-stem launchers that PATHEXT resolves before the shim", () => {
+	runPowerShellFixture("shadowed-shim");
 });

@@ -24,12 +24,87 @@ test("POSIX path conflicts and unexpected launcher directories fail before I/O",
 	for (const message of [
 		"ATOMIC_INSTALL_DIR cannot equal ATOMIC_BIN_DIR/atomic",
 		"ATOMIC_BIN_DIR/atomic is an unexpected directory",
+		"ATOMIC_BIN_DIR cannot be inside ATOMIC_INSTALL_DIR/$owned_child",
 	]) {
 		const failure = shell.indexOf(message);
 		assert.ok(failure >= 0);
 		assert.ok(failure < shell.indexOf("for required_command"));
 		assert.ok(failure < shell.indexOf("TEMP_BASE="));
 		assert.ok(failure < shell.indexOf("if ! RELEASE_JSON=$(http_get"));
+	}
+});
+
+test("POSIX bin paths under transaction-owned install paths fail before any request or mutation", async () => {
+	const { shell } = await installers();
+	assert.match(shell, /for owned_child in current versions; do/u);
+	assert.match(shell, /for owned_root in "\$INSTALL_ROOT" "\$PHYSICAL_INSTALL_ROOT"; do/u);
+	assert.match(shell, /for owned_candidate in "\$BIN_PATH" "\$PHYSICAL_BIN_PATH"; do/u);
+	assert.match(shell, /\/\) owned_path=\/\$owned_child ;;/u);
+	assert.match(shell, /"\$owned_path"\|"\$owned_path"\/\*\)/u);
+	assert.match(shell, /the installer replaces that path: \$BIN_DIR/u);
+
+	const preflight = shell.indexOf("for owned_child in current versions; do");
+	assert.ok(preflight >= 0);
+	for (const boundary of [
+		"for required_command",
+		"TEMP_BASE=",
+		"if ! RELEASE_JSON=$(http_get",
+		"resolve_redirect_tag",
+		'if ! download_file "$RELEASE_BASE/$ASSET_NAME"',
+		'mkdir -p "$INSTALL_ROOT"',
+	]) {
+		const boundaryIndex = shell.indexOf(boundary);
+		assert.ok(boundaryIndex >= 0, boundary);
+		assert.ok(preflight < boundaryIndex, `the transaction-owned preflight runs after: ${boundary}`);
+	}
+});
+
+test("POSIX owner-only modes cover temporary state only and both checksum row formats are accepted", async () => {
+	const { shell } = await installers();
+	assert.match(shell, /ORIGINAL_UMASK=\$\(umask\)\numask 077\n/u);
+	assert.match(shell, /umask "\$ORIGINAL_UMASK"\nmkdir "\$EXTRACT_ROOT"/u);
+	const tighten = shell.indexOf("umask 077");
+	const restore = shell.indexOf('umask "$ORIGINAL_UMASK"');
+	assert.ok(tighten >= 0 && tighten < shell.indexOf("TEMP_BASE="), "the temp directory is created before umask 077");
+	assert.ok(restore > tighten);
+	assert.ok(
+		restore > shell.indexOf('chmod 600 "$API_AUTH_PATH"'),
+		"the API token file is protected before the umask is restored",
+	);
+	assert.ok(
+		restore < shell.indexOf('tar -xzf "$ARCHIVE_PATH"'),
+		"the payload is extracted before the umask is restored",
+	);
+	assert.ok(
+		restore < shell.indexOf('mkdir -p "$INSTALL_ROOT"'),
+		"the install root is created before the umask is restored",
+	);
+	assert.ok(
+		restore < shell.indexOf('mkdir -p "$BIN_DIR"'),
+		"the bin directory is created before the umask is restored",
+	);
+	assert.match(shell, /\\\*\*\) checksum_name=\$\{checksum_name#\\\*\} ;;/u);
+});
+
+test("Windows same-stem PATHEXT launchers are rejected before any request", async () => {
+	const { powershell } = await installers();
+	assert.match(powershell, /function Get-AtomicShimShadowingExtensions/u);
+	assert.ok(powershell.includes('".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"'));
+	assert.match(powershell, /foreach \(\$pathExtValue in @\(\$env:PATHEXT, "\.COM;/u);
+	assert.match(powershell, /if \(\$extension -eq "\.CMD"\) \{\r?\n\s+break/u);
+	assert.match(powershell, /which PATHEXT resolves before atomic\.cmd; remove it and rerun the installer\./u);
+
+	const preflight = powershell.indexOf("foreach ($shadowingExtension in @(Get-AtomicShimShadowingExtensions))");
+	assert.ok(preflight >= 0);
+	for (const boundary of [
+		'$apiHeaders = @{ Accept = "application/vnd.github+json" }',
+		'$redirectTag = Get-AtomicRedirectTag "https://github.com',
+		"New-Item -ItemType Directory -Path $tempDir",
+		'Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath',
+	]) {
+		const boundaryIndex = powershell.indexOf(boundary);
+		assert.ok(boundaryIndex >= 0, boundary);
+		assert.ok(preflight < boundaryIndex, `the Windows shadowing preflight runs after: ${boundary}`);
 	}
 });
 
