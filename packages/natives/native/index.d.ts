@@ -30,23 +30,19 @@ export declare class SubagentControl {
 }
 export type NapiSubagentControl = SubagentControl
 
-export declare const enum AdmissionRefusalKind {
-  DepthExceeded = 'depthExceeded',
-  CapacityExhausted = 'capacityExhausted',
-  DispatchGuardBusy = 'dispatchGuardBusy',
-  InvalidCwd = 'invalidCwd',
-  UnknownAgent = 'unknownAgent'
-}
+export type AdmissionRefusalKind =  'depthExceeded'|
+'capacityExhausted'|
+'dispatchGuardBusy'|
+'invalidCwd'|
+'unknownAgent';
 
 /** The only statuses emitted by a child status watch. */
-export declare const enum AgentStatus {
-  Pending = 'pending',
-  Running = 'running',
-  Ok = 'ok',
-  Error = 'error',
-  Interrupted = 'interrupted',
-  Continued = 'continued'
-}
+export type AgentStatus =  'pending'|
+'running'|
+'ok'|
+'error'|
+'interrupted'|
+'continued';
 
 export interface BlockRange {
   /** 1-indexed inclusive first line of the resolved block. */
@@ -90,7 +86,7 @@ export interface ContextLine {
 }
 
 /** Resolved filesystem entry kind for glob filters and match metadata. */
-export declare const enum FileType {
+export declare enum FileType {
   /** Regular file. */
   File = 1,
   /** Directory. */
@@ -252,14 +248,12 @@ export interface GrepOptions {
 }
 
 /** Output mode for [`search`] and [`grep`] (string values match JS callers). */
-export declare const enum GrepOutputMode {
-  /** Emit matched lines (and optional context lines). */
-  Content = 'content',
-  /** Emit per-file or total counts instead of line content. */
-  Count = 'count',
-  /** Emit one row per file that matched, without line content. */
-  FilesWithMatches = 'filesWithMatches'
-}
+export type GrepOutputMode = /** Emit matched lines (and optional context lines). */
+'content'|
+/** Emit per-file or total counts instead of line content. */
+'count'|
+/** Emit one row per file that matched| without line content. */
+'filesWithMatches';
 
 /** Result of searching files. */
 export interface GrepResult {
@@ -425,9 +419,7 @@ export interface SearchResult {
  * Explicit termination causes. Timer/idle/wall-clock causes are intentionally
  * absent, making timer-driven termination unrepresentable.
  */
-export declare const enum TerminationCause {
-  Abort = 'abort',
-  Interrupt = 'interrupt',
-  FailFastSkip = 'fail-fast-skip',
-  ParentShutdown = 'parent-shutdown'
-}
+export type TerminationCause =  'abort'|
+'interrupt'|
+'fail-fast-skip'|
+'parent-shutdown';

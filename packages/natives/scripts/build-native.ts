@@ -30,6 +30,9 @@ const args = [
 	"index.js",
 	"--dts",
 	"index.d.ts",
+	// Ambient const enums cannot be consumed by TypeScript isolatedModules users.
+	// N-API string enums become literal unions under this flag.
+	"--no-const-enum",
 ];
 
 if (glibcTarget) {
