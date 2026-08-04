@@ -13,12 +13,8 @@ import type {
 	SubagentState,
 	SubagentToolResult,
 } from "../../shared/types.ts";
-import type {
-	executeAsyncChain,
-	executeAsyncSingle,
-	formatAsyncStartedMessage,
-	isAsyncAvailable,
-} from "../background/async-execution.ts";
+import type { executeAsyncChain, formatAsyncStartedMessage, isAsyncAvailable } from "../background/async-execution.ts";
+import type { AsyncExecutionResult, AsyncSingleParams } from "../background/async-execution-types.ts";
 import type { runSync } from "./execution.ts";
 
 export interface TaskParam {
@@ -73,7 +69,7 @@ export interface SubagentParamsLike {
 export interface SubagentExecutorRuntimeDeps {
 	runSync: typeof runSync;
 	executeAsyncChain: typeof executeAsyncChain;
-	executeAsyncSingle: typeof executeAsyncSingle;
+	executeAsyncSingle: (id: string, params: AsyncSingleParams) => AsyncExecutionResult | Promise<AsyncExecutionResult>;
 	isAsyncAvailable: typeof isAsyncAvailable;
 	formatAsyncStartedMessage: typeof formatAsyncStartedMessage;
 }

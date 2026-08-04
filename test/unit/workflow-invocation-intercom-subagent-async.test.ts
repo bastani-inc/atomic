@@ -5,10 +5,10 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
 import { executeAsyncChain } from "../../packages/subagents/src/runs/background/async-execution-chain.js";
-import { executeAsyncSingle } from "../../packages/subagents/src/runs/background/async-execution-single.js";
 import { runSync as runInProcessSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import { executeAsyncSingle } from "../../packages/subagents/src/runs/inprocess/background-single.js";
 
 interface CapturedRunnerStep {
 	intercomGroup?: string;
@@ -151,6 +151,8 @@ test("async single, parallel, and chain children inherit the workflow group with
 				context,
 			);
 			assert.equal(result.isError, undefined);
+			assert.equal(result.details.results[0]?.status, "continued");
+			assert.ok(result.details.results[0]?.path);
 		}
 		const parallel = await executor.execute(
 			"async-parallel",
@@ -216,12 +218,8 @@ test("async single, parallel, and chain children inherit the workflow group with
 	}
 
 	assert.deepEqual(configs.map(capturedGroups), [
-		["workflow:root"],
-		["default"],
 		["parallel-set", "default"],
 		["chain-top", "default"],
-		["workflow:root"],
-		["default"],
 	]);
 });
 

@@ -594,11 +594,11 @@ export async function resumeAsyncRun(input: {
 	const supervisorAuthorization = await requestSupervisorAuthorization(input.deps.pi.events, revivedTarget);
 	const artifactConfig: ArtifactConfig = { ...DEFAULT_ARTIFACT_CONFIG, enabled: input.params.artifacts !== false };
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
-	const result = input.deps.runtime.executeAsyncSingle(runId, {
+	const result = await input.deps.runtime.executeAsyncSingle(runId, {
 		agent: target.agent,
+		agentConfig,
 		task: buildRevivedAsyncTask(target, followUp),
 		group: input.params.group,
-		agentConfig,
 		progress: resolveSingleProgress(agentConfig, input.params.progress, followUp),
 		ctx: {
 			pi: input.deps.pi,

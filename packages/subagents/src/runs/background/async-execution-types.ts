@@ -8,6 +8,7 @@ import type {
 	MaxOutputConfig,
 	NestedRouteInfo,
 	ResolvedControlConfig,
+	RunSyncOptions,
 	SubagentRunMode,
 } from "../../shared/types.ts";
 import type { AvailableModelInfo } from "../shared/model-fallback.ts";
@@ -85,6 +86,7 @@ export interface AsyncSingleParams {
 	nestedRoute?: NestedRouteInfo;
 	/** Internal launch seam used by focused runtime tests. */
 	spawnRunner?: (config: object, suffix: string, cwd: string, env?: Record<string, string>) => AsyncSpawnResult;
+	testSession?: RunSyncOptions["testSession"];
 }
 
 export interface AsyncExecutionResult {
