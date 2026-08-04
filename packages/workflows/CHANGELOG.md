@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-08-04
+
+Cumulative release of the `0.9.12-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
+
+### Added
+
+- Added `keepContext` to the public authoring surface: `import { keepContext } from "@bastani/workflows"`. It wraps prompt text so compaction protects it verbatim regardless of the compression ratio, and is a pure, idempotent string helper rather than a `ctx.*` primitive — no graph node, no side effect, callable anywhere a prompt is assembled. `KEEP_CONTEXT_OPEN_TAG` and `KEEP_CONTEXT_CLOSE_TAG` are exported alongside it. Reserve it for text whose loss silently changes behavior — role constraints, acceptance criteria, explicit prohibitions, and identifiers a stage must not lose — and not for bulk context, since protected lines count against the keep target rather than raising it ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+- `<keepContext>` tags also work in the run inputs and steering messages sent through the `workflow` tool, not only in authored stage prompts. Workflows inject inputs into their stage prompts, so a tagged clause in `prompt` or `acceptance_criteria` is inherited and protected by every stage that receives it, and a tagged `send` amendment survives until the stage acts on it instead of competing with the whole transcript for retention. Because `keepContext` is idempotent, an already-tagged input is not double-wrapped by a workflow that protects the same field. The workflow tool description and agent guidance now say so, so an agent can decide per launch or per steering message which clauses to protect ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+
+### Fixed
+
+- Builtin workflows protect their own invariants with `keepContext`, so a long-running stage can no longer lose the rules that bound it: the steering propagation contract carried by every builtin stage prompt, the literal objective contract, scope discipline, worktree discipline, ralph's per-run acceptance criteria, ralph's research-only role constraint, and goal's reviewer "inspect and report; do not implement" constraint. Previously a research stage could be compacted past its own prohibition and start implementing, and a stage could lose the checkout it was bound to ([#2172](https://github.com/bastani-inc/atomic/issues/2172)).
+
 ## [0.9.12-alpha.1] - 2026-08-04
 
 ### Added

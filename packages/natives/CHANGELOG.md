@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-08-04
+
+### Changed
+
+- Released with Atomic 0.9.12. No native transport changes were made after 0.9.11; the package is published in sync so `@bastani/atomic` resolves a matching `@bastani/atomic-natives` version.
+
 ## [0.9.11] - 2026-08-03
 
 ### Removed
