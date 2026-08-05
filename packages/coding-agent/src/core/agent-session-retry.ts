@@ -53,10 +53,10 @@ export function _isFallbackableError(this: AgentSession, message: AssistantMessa
 	if (message.stopReason !== "error") return false;
 	const contextWindow = this.model?.contextWindow ?? 0;
 	if (isContextOverflow(message, contextWindow)) return false;
-	const signal = normalizeModelFailureSignal(message);
-	if (signal.kind === "cancelled" || signal.kind === "task_failure") return false;
 	const provider = message.provider || this.model?.provider;
 	if (provider && containsCodexTokenInvalidation(provider, message)) return true;
+	const signal = normalizeModelFailureSignal(message);
+	if (signal.kind === "cancelled" || signal.kind === "task_failure") return false;
 	return isRetryableModelFailure(message);
 }
 
