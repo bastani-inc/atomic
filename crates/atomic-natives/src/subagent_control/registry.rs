@@ -4,7 +4,8 @@ use std::{
 };
 
 use super::{
-	AdmissionRefusal, AgentStatus, ChildIdentity, ChildPath, Depth, StatusWatch, validate_task_name,
+	AdmissionRefusal, AgentStatus, ChildIdentity, ChildPath, Depth, StatusUpdate, StatusWatch,
+	validate_task_name,
 };
 
 #[derive(Clone, Debug)]
@@ -23,13 +24,14 @@ struct AgentRecord {
 }
 
 impl ChildIdentitySeed {
-	fn to_identity(&self, status: AgentStatus, loaded: bool) -> ChildIdentity {
+	fn to_identity(&self, update: StatusUpdate, loaded: bool) -> ChildIdentity {
 		ChildIdentity {
 			path: self.path.to_string(),
 			parent_path: self.parent_path.to_string(),
 			task_name: self.task_name.clone(),
 			depth: self.depth.value(),
-			status,
+			status: update.status,
+			cause: update.cause,
 			loaded,
 		}
 	}
@@ -136,7 +138,7 @@ impl AgentRegistry {
 				inner
 					.children
 					.values()
-					.map(|record| record.identity.to_identity(record.status.current(), false))
+					.map(|record| record.identity.to_identity(record.status.current_update(), false))
 					.collect()
 			})
 			.unwrap_or_default()
@@ -175,6 +177,17 @@ impl AgentRegistry {
 	pub fn set_status(&self, path: &ChildPath, status: AgentStatus) -> Result<(), String> {
 		let record = self.get_record(path).ok_or_else(|| "unknown child path".to_owned())?;
 		record.status.publish(status);
+		Ok(())
+	}
+
+	pub fn set_status_with_cause(
+		&self,
+		path: &ChildPath,
+		status: AgentStatus,
+		cause: Option<super::TerminationCause>,
+	) -> Result<(), String> {
+		let record = self.get_record(path).ok_or_else(|| "unknown child path".to_owned())?;
+		record.status.publish_with_cause(status, cause);
 		Ok(())
 	}
 
@@ -277,6 +290,6 @@ impl AdmittedChild {
 
 	pub(crate) fn identity(&self, residency: super::Residency) -> ChildIdentity {
 		let loaded = residency.is_loaded(self.path()).unwrap_or(false);
-		self.record.identity.to_identity(self.status_watch().current(), loaded)
+		self.record.identity.to_identity(self.status_watch().current_update(), loaded)
 	}
 }

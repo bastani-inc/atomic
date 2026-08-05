@@ -4,17 +4,16 @@ use std::{
 		Arc, Mutex, Weak,
 		atomic::{AtomicBool, AtomicU64, Ordering},
 	},
-	thread,
-	time::{Duration, Instant},
+	time::Duration,
 };
 
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 
 use super::{
 	AdmissionRefusal, AdmittedChild, AgentStatus, ChildPath, ExecutionGuard, ExecutionLimiter,
-	GRACEFUL_INTERRUPTION_TIMEOUT_MS, Residency, ResidencyError, StatusCallback, TerminationCause,
+	GRACEFUL_INTERRUPTION_TIMEOUT_MS, Residency, ResidencyError, StatusCallback,
+	StatusUpdateCallback, TerminationCause,
 };
-
 /// Explicit termination causes. Timer/idle/wall-clock causes are intentionally
 /// absent, making timer-driven termination unrepresentable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +28,8 @@ struct AttemptControl {
 	cooperative_cancel: AtomicBool,
 	force_abort: AtomicBool,
 	completed: AtomicBool,
+	completion_notify: tokio::sync::Notify,
+	termination_cause: Mutex<Option<TerminationCause>>,
 	guard: Mutex<Option<ExecutionGuard>>,
 }
 
@@ -39,20 +40,42 @@ impl AttemptControl {
 
 	fn complete(&self) {
 		self.completed.store(true, Ordering::SeqCst);
+		self.completion_notify.notify_waiters();
 		if let Ok(mut guard) = self.guard.lock() {
 			guard.take();
 		}
 	}
 
-	fn terminate(&self, cause: TerminationCause) -> TerminationReceipt {
-		self.cancel();
-		let started = Instant::now();
-		while !self.completed.load(Ordering::SeqCst)
-			&& started.elapsed() < Duration::from_millis(GRACEFUL_INTERRUPTION_TIMEOUT_MS)
-		{
-			thread::sleep(Duration::from_millis(1));
+	fn request_termination(&self, cause: TerminationCause) -> TerminationCause {
+		if let Ok(mut requested) = self.termination_cause.lock() {
+			if let Some(existing) = *requested {
+				return existing;
+			}
+			*requested = Some(cause);
 		}
-		let forced = !self.completed.load(Ordering::SeqCst);
+		cause
+	}
+
+	fn requested_cause(&self) -> Option<TerminationCause> {
+		self.termination_cause.lock().ok().and_then(|cause| *cause)
+	}
+
+	async fn terminate(&self, cause: TerminationCause) -> TerminationReceipt {
+		let cause = self.request_termination(cause);
+		self.cancel();
+		let completed = async {
+			while !self.completed.load(Ordering::SeqCst) {
+				self.completion_notify.notified().await;
+			}
+		};
+		let cooperative = self.completed.load(Ordering::SeqCst)
+			|| tokio::time::timeout(
+				Duration::from_millis(GRACEFUL_INTERRUPTION_TIMEOUT_MS),
+				completed,
+			)
+			.await
+			.is_ok();
+		let forced = !cooperative;
 		if forced {
 			self.force_abort.store(true, Ordering::SeqCst);
 			self.complete();
@@ -90,6 +113,7 @@ struct ControlState {
 	napi_execution_guards: Mutex<HashMap<u64, ExecutionGuard>>,
 	next_napi_guard_id: AtomicU64,
 	callbacks: Mutex<HashMap<ChildPath, Vec<Arc<StatusCallback>>>>,
+	status_update_callbacks: Mutex<HashMap<ChildPath, Vec<Arc<StatusUpdateCallback>>>>,
 }
 
 impl ControlState {
@@ -104,6 +128,7 @@ impl ControlState {
 			napi_execution_guards: Mutex::new(HashMap::new()),
 			next_napi_guard_id: AtomicU64::new(1),
 			callbacks: Mutex::new(HashMap::new()),
+			status_update_callbacks: Mutex::new(HashMap::new()),
 		}
 	}
 }
@@ -225,6 +250,8 @@ impl SubagentControl {
 			cooperative_cancel: AtomicBool::new(false),
 			force_abort: AtomicBool::new(false),
 			completed: AtomicBool::new(false),
+			completion_notify: tokio::sync::Notify::new(),
+			termination_cause: Mutex::new(None),
 			guard: Mutex::new(Some(guard)),
 		});
 		self
@@ -260,6 +287,7 @@ impl SubagentControl {
 			.map_err(|_| "attempt registry unavailable".to_owned())?
 			.remove(&id)
 			.ok_or_else(|| "unknown attempt".to_owned())?;
+		let cause = attempt.requested_cause();
 		attempt.complete();
 		self
 			.state
@@ -271,12 +299,12 @@ impl SubagentControl {
 			.residency
 			.set_terminal(&attempt.path, status.is_terminal())
 			.map_err(|error| error.to_string())?;
-		self.state.registry.set_status(&attempt.path, status)?;
+		self.state.registry.set_status_with_cause(&attempt.path, status, cause)?;
 		self.notify_status(&attempt.path, status);
 		Ok(())
 	}
 
-	pub fn terminate_child_attempt(
+	pub async fn terminate_child_attempt(
 		&self,
 		id: u64,
 		cause: TerminationCause,
@@ -286,16 +314,28 @@ impl SubagentControl {
 			.attempts
 			.lock()
 			.map_err(|_| "attempt registry unavailable".to_owned())?
-			.remove(&id)
+			.get(&id)
+			.cloned()
 			.ok_or_else(|| "unknown attempt".to_owned())?;
-		let receipt = attempt.terminate(cause);
+		let receipt = attempt.terminate(cause).await;
+		let removed = self
+			.state
+			.attempts
+			.lock()
+			.map_err(|_| "attempt registry unavailable".to_owned())?
+			.remove(&id);
+		let Some(attempt) = removed else {
+			return Ok(receipt);
+		};
+		let cause = attempt.requested_cause();
+		attempt.complete();
 		self
 			.state
 			.residency
 			.set_active_turn(&attempt.path, false)
 			.map_err(|error| error.to_string())?;
 		self.state.residency.set_terminal(&attempt.path, true).map_err(|error| error.to_string())?;
-		self.state.registry.set_status(&attempt.path, AgentStatus::Interrupted)?;
+		self.state.registry.set_status_with_cause(&attempt.path, AgentStatus::Interrupted, cause)?;
 		self.notify_status(&attempt.path, AgentStatus::Interrupted);
 		Ok(receipt)
 	}
@@ -344,7 +384,11 @@ impl SubagentControl {
 		Ok(())
 	}
 
-	fn notify_status(&self, path: &ChildPath, status: AgentStatus) {
+	fn notify_status(&self, path: &ChildPath, _status: AgentStatus) {
+		let Some(child) = self.state.registry.get(path) else {
+			return;
+		};
+		let update = child.status_watch().current_update();
 		let callbacks = self
 			.state
 			.callbacks
@@ -353,7 +397,20 @@ impl SubagentControl {
 			.and_then(|callbacks| callbacks.get(path).cloned())
 			.unwrap_or_default();
 		for callback in callbacks {
-			callback.call(status.as_str().to_owned(), ThreadsafeFunctionCallMode::NonBlocking);
+			callback.call(update.status.as_str().to_owned(), ThreadsafeFunctionCallMode::NonBlocking);
+		}
+		let update_callbacks = self
+			.state
+			.status_update_callbacks
+			.lock()
+			.ok()
+			.and_then(|callbacks| callbacks.get(path).cloned())
+			.unwrap_or_default();
+		for callback in update_callbacks {
+			callback.call(
+				super::NativeStatusUpdate { status: update.status, cause: update.cause },
+				ThreadsafeFunctionCallMode::NonBlocking,
+			);
 		}
 	}
 
@@ -378,6 +435,29 @@ impl SubagentControl {
 			.push(callback);
 		Ok(())
 	}
+
+	pub(crate) fn subscribe_status_with_cause(
+		&self,
+		path: ChildPath,
+		callback: StatusUpdateCallback,
+	) -> Result<(), String> {
+		let child = self.state.registry.get(&path).ok_or_else(|| "unknown child path".to_owned())?;
+		let callback = Arc::new(callback);
+		let update = child.status_watch().current_update();
+		callback.call(
+			super::NativeStatusUpdate { status: update.status, cause: update.cause },
+			ThreadsafeFunctionCallMode::NonBlocking,
+		);
+		self
+			.state
+			.status_update_callbacks
+			.lock()
+			.map_err(|_| "status callback registry unavailable".to_owned())?
+			.entry(path)
+			.or_default()
+			.push(callback);
+		Ok(())
+	}
 }
 
 pub(crate) fn refusal_kind(refusal: &AdmissionRefusal) -> super::AdmissionRefusalKind {
@@ -391,6 +471,8 @@ pub(crate) fn refusal_kind(refusal: &AdmissionRefusal) -> super::AdmissionRefusa
 }
 #[cfg(test)]
 mod tests {
+	use std::time::Instant;
+
 	use super::super::{
 		AgentRegistry, ChildPath, ChildSpec, Depth, LifecycleEvent, ParentContext, ReservationError,
 		StatusWatch,
@@ -534,8 +616,8 @@ mod tests {
 		assert_eq!(child.status_watch().current(), AgentStatus::Ok);
 	}
 
-	#[test]
-	fn cancellation_waits_for_literal_grace_then_forces() {
+	#[tokio::test(flavor = "current_thread")]
+	async fn cancellation_waits_for_literal_grace_then_forces() {
 		let limiter = ExecutionLimiter::default();
 		let guard = limiter.try_acquire().expect("guard");
 		let attempt = AttemptControl {
@@ -543,15 +625,69 @@ mod tests {
 			cooperative_cancel: AtomicBool::new(false),
 			force_abort: AtomicBool::new(false),
 			completed: AtomicBool::new(false),
+			completion_notify: tokio::sync::Notify::new(),
+			termination_cause: Mutex::new(None),
 			guard: Mutex::new(Some(guard)),
 		};
 		let started = Instant::now();
-		let receipt = attempt.terminate(TerminationCause::Interrupt);
+		let receipt = attempt.terminate(TerminationCause::Interrupt).await;
 		assert!(started.elapsed() >= Duration::from_millis(GRACEFUL_INTERRUPTION_TIMEOUT_MS));
 		assert_eq!(receipt.grace_ms, 100);
 		assert!(receipt.forced);
 		assert!(attempt.cooperative_cancel.load(Ordering::SeqCst));
 		assert!(attempt.force_abort.load(Ordering::SeqCst));
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn cancellation_completes_cooperatively_inside_literal_grace() {
+		let limiter = ExecutionLimiter::default();
+		let guard = limiter.try_acquire().expect("guard");
+		let attempt = Arc::new(AttemptControl {
+			path: path("parent/analysis_1"),
+			cooperative_cancel: AtomicBool::new(false),
+			force_abort: AtomicBool::new(false),
+			completed: AtomicBool::new(false),
+			completion_notify: tokio::sync::Notify::new(),
+			termination_cause: Mutex::new(None),
+			guard: Mutex::new(Some(guard)),
+		});
+		let completer = Arc::clone(&attempt);
+		let completion_task = tokio::spawn(async move {
+			tokio::time::sleep(Duration::from_millis(10)).await;
+			completer.complete();
+		});
+		let receipt = attempt.terminate(TerminationCause::Interrupt).await;
+		completion_task.await.expect("completion task");
+		assert!(!receipt.forced);
+		assert!(!attempt.force_abort.load(Ordering::SeqCst));
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn termination_cause_is_recorded_in_registry_and_status_watch() {
+		for cause in [
+			TerminationCause::Abort,
+			TerminationCause::Interrupt,
+			TerminationCause::FailFastSkip,
+			TerminationCause::ParentShutdown,
+		] {
+			let control = SubagentControl::new("parent").expect("control");
+			let parent = ParentContext::new("parent", 0).expect("parent");
+			let child =
+				control.admit_child_session(ChildSpec::new("analysis"), parent).expect("admit child");
+			let path = child.path().to_string();
+			let attempt = control.begin_child_attempt(&child).expect("begin attempt");
+			let receipt =
+				control.terminate_child_attempt(attempt, cause).await.expect("terminate child attempt");
+			assert_eq!(receipt.cause, cause);
+			let identity = control
+				.list_children()
+				.into_iter()
+				.find(|identity| identity.path == path)
+				.expect("child identity");
+			assert_eq!(identity.status, AgentStatus::Interrupted);
+			assert_eq!(identity.cause, Some(cause));
+			assert_eq!(child.status_watch().current_update().cause, Some(cause));
+		}
 	}
 
 	#[test]

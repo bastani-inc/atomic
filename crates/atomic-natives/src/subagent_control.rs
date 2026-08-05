@@ -10,6 +10,14 @@ use napi::{
 use napi_derive::napi;
 
 type StatusCallback = ThreadsafeFunction<String, Unknown<'static>, String, Status, false, true>;
+type StatusUpdateCallback = ThreadsafeFunction<
+	NativeStatusUpdate,
+	Unknown<'static>,
+	NativeStatusUpdate,
+	Status,
+	false,
+	true,
+>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[napi(string_enum)]
@@ -69,6 +77,13 @@ pub struct NativeTerminationResult {
 	pub cause: TerminationCause,
 	pub forced: bool,
 	pub grace_ms: u32,
+}
+
+#[derive(Clone, Debug)]
+#[napi(object)]
+pub struct NativeStatusUpdate {
+	pub status: AgentStatus,
+	pub cause: Option<TerminationCause>,
 }
 
 fn native_refusal(refusal: AdmissionRefusal) -> NativeAdmissionRefusal {
@@ -159,6 +174,15 @@ impl NapiSubagentControl {
 		let path = ChildPath::new(path).map_err(NapiError::from_reason)?;
 		self.inner.subscribe_status(path, callback).map_err(NapiError::from_reason)
 	}
+	#[napi]
+	pub fn subscribe_child_status_with_cause(
+		&self,
+		path: String,
+		#[napi(ts_arg_type = "(update: NativeStatusUpdate) => void")] callback: StatusUpdateCallback,
+	) -> napi::Result<()> {
+		let path = ChildPath::new(path).map_err(NapiError::from_reason)?;
+		self.inner.subscribe_status_with_cause(path, callback).map_err(NapiError::from_reason)
+	}
 
 	#[napi]
 	pub fn try_acquire_execution_guard(&self) -> NativeExecutionGuardResult {
@@ -212,20 +236,23 @@ impl NapiSubagentControl {
 	}
 
 	#[napi]
-	pub fn terminate_child_attempt(
+	pub async fn terminate_child_attempt(
 		&self,
 		token: u32,
 		cause: TerminationCause,
 	) -> napi::Result<NativeTerminationResult> {
-		self
-			.inner
+		let inner = self.inner.clone();
+		// Keep the N-API door awaitable: the 100 ms cooperative grace must not
+		// monopolize the JavaScript thread while a child flushes and completes.
+		let receipt = inner
 			.terminate_child_attempt(u64::from(token), cause)
-			.map(|receipt| NativeTerminationResult {
-				cause: receipt.cause,
-				forced: receipt.forced,
-				grace_ms: u32::try_from(receipt.grace_ms).unwrap_or(u32::MAX),
-			})
-			.map_err(NapiError::from_reason)
+			.await
+			.map_err(NapiError::from_reason)?;
+		Ok(NativeTerminationResult {
+			cause: receipt.cause,
+			forced: receipt.forced,
+			grace_ms: u32::try_from(receipt.grace_ms).unwrap_or(u32::MAX),
+		})
 	}
 
 	#[napi]
@@ -465,6 +492,7 @@ pub struct ChildIdentity {
 	pub task_name: String,
 	pub depth: u8,
 	pub status: AgentStatus,
+	pub cause: Option<TerminationCause>,
 	pub loaded: bool,
 }
 
@@ -494,4 +522,4 @@ pub(crate) use control::{HostMarker, refusal_kind};
 pub use execution::{ExecutionGuard, ExecutionLimiter};
 pub use registry::{AdmittedChild, AgentRegistry, ReservationError, SpawnReservation};
 pub use residency::{Residency, ResidencyError};
-pub use status::{LifecycleEvent, StatusWatch};
+pub use status::{LifecycleEvent, StatusUpdate, StatusWatch};

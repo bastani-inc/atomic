@@ -21,11 +21,12 @@ export declare class SubagentControl {
   listChildren(): Array<ChildIdentity>
   publishChildStatus(path: string, status: AgentStatus): void
   subscribeChildStatus(path: string, callback: (status: AgentStatus) => void): void
+  subscribeChildStatusWithCause(path: string, callback: (update: NativeStatusUpdate) => void): void
   tryAcquireExecutionGuard(): NativeExecutionGuardResult
   releaseExecutionGuard(token: number): boolean
   beginChildAttempt(path: string): NativeExecutionGuardResult
   finishChildAttempt(token: number, status: AgentStatus): void
-  terminateChildAttempt(token: number, cause: TerminationCause): NativeTerminationResult
+  terminateChildAttempt(token: number, cause: TerminationCause): Promise<NativeTerminationResult>
   reloadColdChild(path: string, message: string): NativeAdmissionResult
 }
 export type NapiSubagentControl = SubagentControl
@@ -74,6 +75,7 @@ export interface ChildIdentity {
   taskName: string
   depth: number
   status: AgentStatus
+  cause?: TerminationCause
   loaded: boolean
 }
 
@@ -338,6 +340,11 @@ export interface NativeExecutionGuardResult {
 export interface NativeParentContext {
   path: string
   depth: number
+}
+
+export interface NativeStatusUpdate {
+  status: AgentStatus
+  cause?: TerminationCause
 }
 
 export interface NativeTerminationResult {

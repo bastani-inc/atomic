@@ -9,6 +9,7 @@
 ### Changed
 
 - Generated N-API string-enum declarations as literal TypeScript unions so strict isolated-module consumers can use subagent statuses and causes without ambient const-enum errors ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Made child termination awaitable across the N-API boundary so the literal 100 ms cooperative grace does not block the JavaScript thread, and exposed termination causes on child identities and status-watch updates (#2188).
 
 ## [0.9.12] - 2026-08-04
 
