@@ -90,8 +90,7 @@ export function childOrchestratorMetadataFromPolicy(policy?: SubagentChildPolicy
 
 /** Legacy fallback for sessions not created through typed in-process admission. */
 export function readChildOrchestratorMetadata(policy?: SubagentChildPolicy): ChildOrchestratorMetadata | null {
-  const typed = childOrchestratorMetadataFromPolicy(policy);
-  if (typed) return typed;
+  if (policy !== undefined) return childOrchestratorMetadataFromPolicy(policy);
   const orchestratorTarget = getEnvValue(SUBAGENT_ORCHESTRATOR_TARGET_ENV)?.trim();
   const runId = getEnvValue(SUBAGENT_RUN_ID_ENV)?.trim();
   const agent = getEnvValue(SUBAGENT_CHILD_AGENT_ENV)?.trim();

@@ -359,6 +359,14 @@ test("typed child identity cannot inherit a parent supervisor capability from en
 			subagentAgent: "worker",
 			subagentIndex: 0,
 		});
+		const policyWithoutIdentity = {
+			managementActions: policy.managementActions,
+			fanoutAuthorized: policy.fanoutAuthorized,
+			inheritProjectContext: policy.inheritProjectContext,
+			inheritSkills: policy.inheritSkills,
+		};
+		assert.equal(readChildOrchestratorMetadata(policyWithoutIdentity), null);
+		assert.equal(readSubagentMessageSource(policyWithoutIdentity), undefined);
 	} finally {
 		for (const key of keys) {
 			const value = previous.get(key);

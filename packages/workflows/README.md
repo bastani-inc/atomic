@@ -7,6 +7,8 @@
 
 Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective; reserve direct chat for tiny deterministic low-risk work. Workflow-first is not builtin-only or monolithic: Atomic can author custom TypeScript `workflow({...})` definitions inline, import reusable project/package workflows or builtins from `@bastani/workflows/builtin`, and nest them with `ctx.workflow(...)`. Imported children may nest further workflows within `maxDepth`, so compose proven research, implementation, design, verification, and approval graphs rather than copying them. Custom parents can also use runtime classification, dynamic fan-out and synthesis, adversarial verification, candidate tournaments, HIL gates, and bounded convergence.
 
+Workflow stage sessions are created in process and receive a typed stage policy rather than inheriting subagent environment flags. Resource reload never mutates `process.env`; stage options carry the subagent management/fanout policy directly, so concurrent stage creation is race-free while existing tool allowlists and orchestration depth limits remain authoritative. Legacy child environment keys are only a compatibility path for older hosts.
+
 <p align="center">
   <a href="#authoring-api">Authoring API</a>
   &nbsp;·&nbsp;

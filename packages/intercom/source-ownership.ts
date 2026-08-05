@@ -27,7 +27,8 @@ export function buildSubagentMessageSource(
 
 export function readSubagentMessageSource(policy?: SubagentChildPolicy): Message["source"] | undefined {
   const identity = policy?.intercom;
-  if (identity) {
+  if (policy !== undefined) {
+    if (!identity) return undefined;
     return {
       subagentRunId: identity.runId,
       subagentAgent: identity.agent,

@@ -221,8 +221,8 @@ class SubagentControlNoticeComponent implements Component {
 }
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
-	if (getEnvValue(SUBAGENT_CHILD_ENV) === "1") {
-		if (getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) === "1") registerFanoutChildSubagentExtension(pi);
+	if (getEnvValue(SUBAGENT_CHILD_ENV) === "1" && getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) === "1") {
+		registerFanoutChildSubagentExtension(pi);
 		return;
 	}
 	const lifecycle = beginApiLifecycle(pi);

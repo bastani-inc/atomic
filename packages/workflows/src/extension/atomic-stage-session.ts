@@ -3,6 +3,7 @@ import type {
 	CreateAgentSessionOptions,
 	DefaultResourceLoaderInheritanceSnapshot,
 	PackageSource,
+	SubagentChildPolicy,
 } from "@bastani/atomic";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 
@@ -48,6 +49,12 @@ export interface PrepareAtomicStageSessionOptions {
 	resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
 	onSettingsManager?: (settingsManager: PiSdkSettingsManager) => void;
 }
+const WORKFLOW_STAGE_SUBAGENT_POLICY: SubagentChildPolicy = {
+	managementActions: "full",
+	fanoutAuthorized: false,
+	inheritProjectContext: true,
+	inheritSkills: true,
+};
 
 function resolveSessionCwd(options: AtomicCreateAgentSessionOptions | undefined): string {
 	return options?.cwd ?? options?.sessionManager?.getCwd() ?? process.cwd();
@@ -102,7 +109,8 @@ export async function prepareAtomicStageSessionOptions(
 		resourceLoaderInheritanceSnapshot: inheritanceSnapshot,
 		builtinPackagePaths: stageBuiltinPackagePaths(builtinPackagePaths),
 	});
-	await reloadWorkflowStageResources(resourceLoader);
+	const stageSubagentPolicy = atomicOptions?.subagentPolicy ?? WORKFLOW_STAGE_SUBAGENT_POLICY;
+	await reloadWorkflowStageResources(resourceLoader, stageSubagentPolicy);
 
 	return {
 		...atomicOptions,
@@ -110,6 +118,7 @@ export async function prepareAtomicStageSessionOptions(
 		...(hasAgentDirOverride ? { agentDir } : {}),
 		settingsManager,
 		resourceLoader,
+		subagentPolicy: stageSubagentPolicy,
 	};
 }
 
@@ -155,14 +164,16 @@ const SUBAGENT_CHILD_EXTENSION_ENV_KEYS = [
 
 let workflowStageResourceReloadQueue: Promise<void> = Promise.resolve();
 
-async function reloadWorkflowStageResources(resourceLoader: PiSdkResourceLoader): Promise<void> {
+async function reloadWorkflowStageResources(
+	resourceLoader: PiSdkResourceLoader,
+	stageSubagentPolicy?: SubagentChildPolicy,
+): Promise<void> {
 	const queuedReload = workflowStageResourceReloadQueue.then(() =>
-		reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader),
+		stageSubagentPolicy ? resourceLoader.reload() : reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader),
 	);
 	workflowStageResourceReloadQueue = queuedReload.catch(() => undefined);
 	return queuedReload;
 }
-
 async function reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader: PiSdkResourceLoader): Promise<void> {
 	// Workflow stage sessions are already governed by an orchestration context
 	// that disables recursive workflow tools and caps nested subagent depth. When
