@@ -80,7 +80,11 @@ const deletedModulePatterns = [
 ] as const;
 
 function trackedFiles(): string[] {
-	const result = spawnSyncCollect(["git", "ls-files", "-z"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+	const result = spawnSyncCollect(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	return result.stdout
 		.toString("utf8")
