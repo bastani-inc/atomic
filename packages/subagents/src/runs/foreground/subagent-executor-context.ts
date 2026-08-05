@@ -137,7 +137,7 @@ export function prepareExecutionContext(input: {
 		...DEFAULT_ARTIFACT_CONFIG,
 		enabled: effectiveParams.artifacts !== false,
 	};
-	const artifactsDir = effectiveAsync ? deps.tempArtifactsDir : getArtifactsDir(parentSessionFile);
+	const artifactsDir = getArtifactsDir(parentSessionFile);
 
 	let sessionRoot: string;
 	if (effectiveParams.sessionDir) {

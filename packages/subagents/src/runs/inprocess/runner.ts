@@ -344,7 +344,6 @@ function trustedSessionRoot(parent: ParentContext, requestedRoot?: string): stri
 	const root = resolve(requestedRoot ?? join(process.cwd(), ".atomic", "subagents"));
 	const child = resolve(root, ...parent.path.split("/"));
 	if (relative(root, child).startsWith("..")) throw new Error("subagent session root escapes trusted root");
-	mkdirSync(child, { recursive: true });
 	return root;
 }
 
@@ -457,7 +456,9 @@ export class SubagentControlRuntime {
 		if (!native.child) return refusal(native);
 		const identity = native.child;
 		const childModePolicy = resolveChildModePolicy(spec);
-		const sessionDir = sessionDirectory(this.sessionRoot, identity.path);
+		const sessionDir = spec.sessionFile
+			? dirname(spec.sessionFile)
+			: sessionDirectory(this.sessionRoot, identity.path);
 		mkdirSync(sessionDir, { recursive: true });
 		this.specs.set(identity.path, spec);
 		return {
@@ -745,6 +746,7 @@ export class SubagentControlRuntime {
 					reason: "child session file is missing",
 				},
 			};
+		sessionDir = dirname(sessionFile);
 		const native = this.native.reloadColdChild(pathValue, message);
 		if (!native.child) return refusal(native);
 		const previous = this.specs.get(pathValue);

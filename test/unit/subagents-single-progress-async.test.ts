@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { ExtensionAPI } from "@bastani/atomic";
+import { dirname, join } from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import registerSubagentNotify from "../../packages/subagents/src/runs/background/notify.js";
+import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
+import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { executeAsyncSingle } from "../../packages/subagents/src/runs/inprocess/background-single.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { ASYNC_DIR, SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
@@ -185,6 +187,101 @@ test("async completion persists artifacts and delivers one non-empty bounded ter
 		unregister();
 		clearSubagentControls();
 		rmSync(join(ASYNC_DIR, runId), { recursive: true, force: true });
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("async tool dispatch persists terminal artifacts beside the parent session without a duplicate session tree", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-subagent-async-dispatch-"));
+	const parentSessionFile = join(root, "sessions", "parent.jsonl");
+	const parentArtifactsDir = join(dirname(parentSessionFile), "subagent-artifacts");
+	const tempArtifactsDir = join(root, "temp-artifacts");
+	const childSessionsRoot = join(dirname(parentSessionFile), "parent");
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	const terminal = Promise.withResolvers<void>();
+	const events = {
+		on(event: string, handler: (data: unknown) => void) {
+			const handlers = listeners.get(event) ?? new Set();
+			handlers.add(handler);
+			listeners.set(event, handlers);
+			return () => handlers.delete(handler);
+		},
+		emit(event: string, data: unknown) {
+			for (const handler of listeners.get(event) ?? []) handler(data);
+			if (event === SUBAGENT_ASYNC_COMPLETE_EVENT) terminal.resolve();
+		},
+	};
+	const pi = {
+		events,
+		getSessionName: () => "parent",
+	} as never as ExtensionAPI;
+	const state: ExecutorDeps["state"] = {
+		baseCwd: "",
+		currentSessionId: null,
+		asyncJobs: new Map(),
+		subagentInProgress: false,
+		foregroundRuns: new Map(),
+		foregroundControls: new Map(),
+		lastForegroundControlId: null,
+		pendingForegroundControlNotices: new Map(),
+		cleanupTimers: new Map(),
+		lastUiContext: null,
+		poller: null,
+		completionSeen: new Map(),
+		watcher: null,
+		watcherRestartTimer: null,
+		resultFileCoalescer: { schedule: () => false, clear: () => {} },
+	};
+	const executor = createSubagentExecutor({
+		pi,
+		state,
+		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
+		asyncByDefault: false,
+		tempArtifactsDir,
+		getSubagentSessionRoot: () => childSessionsRoot,
+		expandTilde: (value) => value,
+		discoverAgents: () => ({ agents: [makeAgent()] }),
+	});
+	const context = {
+		cwd: root,
+		model: undefined,
+		modelRegistry: { getAvailable: () => [] },
+		sessionManager: {
+			getSessionFile: () => parentSessionFile,
+			getSessionId: () => "parent",
+			getLeafId: () => null,
+		},
+	} as never as ExtensionContext;
+	clearSubagentControls();
+	try {
+		const launched = await executor.execute(
+			"subagent",
+			{ agent: "worker", task: "implement the fix", async: true },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
+		const runId = launched.details.runId;
+		assert.ok(runId);
+		assert.equal(launched.details.results[0]?.status, "continued");
+
+		await terminal.promise;
+
+		assert.deepEqual(readdirSync(join(childSessionsRoot, runId)), ["run-0"]);
+		assert.equal(existsSync(tempArtifactsDir), false);
+		assert.equal(readFileSync(join(parentArtifactsDir, `${runId}_worker_output.md`), "utf8"), "done");
+		assert.equal(existsSync(join(parentArtifactsDir, `${runId}_worker_meta.json`)), true);
+		assert.equal(existsSync(join(parentArtifactsDir, `${runId}_worker.jsonl`)), true);
+		const history = readFileSync(join(parentArtifactsDir, "run-history.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => {
+				const entry = JSON.parse(line) as { path: string; status: string };
+				return { path: entry.path, status: entry.status };
+			});
+		assert.deepEqual(history, [{ path: `${runId}/worker_1`, status: "ok" }]);
+	} finally {
+		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
 	}
 });
