@@ -803,6 +803,24 @@ export class SubagentControlRuntime {
 	getDeliveredResult(pathValue: string): ResultEnvelope | undefined {
 		return this.deliveredEnvelopes.get(pathValue);
 	}
+	findChild(pathValue: string): ChildIdentity | undefined {
+		return this.native.listChildren().find((child) => child.path === pathValue);
+	}
+
+	listChildren(): readonly ChildIdentity[] {
+		return this.native.listChildren();
+	}
+
+	async interruptChild(pathValue: string): Promise<boolean> {
+		const running = [...this.runningAttempts.values()].find(
+			(attempt) =>
+				attempt.child.identity.path === pathValue &&
+				(attempt.status === "running" || attempt.status === "continued"),
+		);
+		if (!running) return false;
+		await this.terminateChildAttempt(running, "interrupt");
+		return true;
+	}
 
 	subscribe(pathValue: string, callback: (status: ChildStatus) => void): void {
 		this.native.subscribeChildStatus(pathValue, callback);

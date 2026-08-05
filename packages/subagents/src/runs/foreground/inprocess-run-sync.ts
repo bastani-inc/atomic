@@ -12,7 +12,8 @@ import type {
 	SubagentToolResult,
 	Usage,
 } from "../../shared/types.ts";
-import { type AttemptOutcome, type ChildSpec, createSubagentControl, type ParentContext } from "../inprocess/runner.ts";
+import { getOrCreateSubagentControl } from "../inprocess/control-registry.ts";
+import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.ts";
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { buildModelCandidates } from "../shared/model-fallback.ts";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.ts";
@@ -176,7 +177,7 @@ export async function runSingleInProcess(
 		...(orchestrationContext ? { orchestrationContext } : {}),
 	};
 	const sessionRoot = options.sessionDir ?? join(options.artifactsDir ?? cwd, ".atomic", "subagents");
-	const control = createSubagentControl(parent, sessionRoot);
+	const control = getOrCreateSubagentControl(parent, sessionRoot);
 	control.registerAgents([agent]);
 	const artifactsDir =
 		options.artifactsDir && options.artifactConfig?.enabled !== false ? options.artifactsDir : undefined;

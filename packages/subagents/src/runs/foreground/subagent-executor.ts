@@ -6,6 +6,7 @@ import { resolveIntercomSessionTarget } from "../../intercom/intercom-bridge.ts"
 import { SUBAGENT_ACTIONS, type SubagentToolResult } from "../../shared/types.ts";
 import { type ResolvedSubagentRunId, resolveSubagentRunId } from "../background/run-id-resolver.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
+import { inspectInProcessChildStatus, interruptInProcessChild } from "../inprocess/control-status.ts";
 import { runAsyncPath } from "./subagent-executor-async.ts";
 import { runChainPath } from "./subagent-executor-chain.ts";
 import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.ts";
@@ -89,6 +90,8 @@ async function handleManagementRequest(input: {
 	}
 	if (action === "status") {
 		const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
+		const inProcess = inspectInProcessChildStatus(targetRunId);
+		if (inProcess) return inProcess;
 		if (targetRunId) {
 			try {
 				const nestedScope = nestedResolutionScopeForExecutor(deps);
@@ -125,6 +128,11 @@ async function handleManagementRequest(input: {
 		return resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
 	}
 	if (action === "interrupt") {
+		const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
+		if (targetRunId) {
+			const inProcess = await interruptInProcessChild(targetRunId);
+			if (inProcess) return inProcess;
+		}
 		return handleInterruptRequest({ paramsWithResolvedCwd, deps });
 	}
 	if (!(SUBAGENT_ACTIONS as readonly string[]).includes(action)) {
