@@ -190,6 +190,14 @@ async function handleManagementRequest(input: {
 			details: { mode: "management", results: [] },
 		};
 	}
+	if (action === "list") {
+		const inProcess = inspectInProcessChildStatus();
+		if (inProcess) return inProcess;
+		return {
+			content: [{ type: "text", text: "No in-process subagents." }],
+			details: { mode: "management", results: [] },
+		};
+	}
 	if (action === "resume") {
 		const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
 		const message = paramsWithResolvedCwd.message ?? paramsWithResolvedCwd.task;
