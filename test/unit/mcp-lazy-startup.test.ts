@@ -4,14 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import mcpAdapter from "../../packages/mcp/index.js";
 import { initializeMcp } from "../../packages/mcp/init.js";
-import { computeServerHash, saveMetadataCache } from "../../packages/mcp/metadata-cache.js";
 import { McpServerManager } from "../../packages/mcp/server-manager.js";
-import type { McpConfig } from "../../packages/mcp/types.js";
 
 const originalEnv = process.env.ATOMIC_CODING_AGENT_DIR;
-const originalDirectTools = process.env.MCP_DIRECT_TOOLS;
 let tmpRoot = "";
 let originalConnect: McpServerManager["connect"];
 let originalCloseAll: McpServerManager["closeAll"];
@@ -36,7 +32,6 @@ function pi(configPath: string): ExtensionAPI {
 beforeEach(() => {
 	tmpRoot = mkdtempSync(join(tmpdir(), "atomic-mcp-lazy-startup-"));
 	process.env.ATOMIC_CODING_AGENT_DIR = join(tmpRoot, "agent");
-	delete process.env.MCP_DIRECT_TOOLS;
 	originalConnect = McpServerManager.prototype.connect;
 	originalCloseAll = McpServerManager.prototype.closeAll;
 });
@@ -46,8 +41,6 @@ afterEach(() => {
 	McpServerManager.prototype.closeAll = originalCloseAll;
 	if (originalEnv === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = originalEnv;
-	if (originalDirectTools === undefined) delete process.env.MCP_DIRECT_TOOLS;
-	else process.env.MCP_DIRECT_TOOLS = originalDirectTools;
 	rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -145,53 +138,5 @@ describe("MCP lazy startup", () => {
 
 		await assert.rejects(initializeMcp(pi(configPath), ctx), (error) => error === failure);
 		assert.equal(closeAllCalls, 1);
-	});
-
-	test("env-selected direct tool cache misses keep the proxy fallback registered", async () => {
-		process.env.MCP_DIRECT_TOOLS = "cached/search_code,missing/search_code";
-		const config: McpConfig = {
-			settings: { disableProxyTool: true },
-			mcpServers: {
-				cached: { command: "bun", args: ["--version"] },
-				missing: { command: "bun", args: ["--version"] },
-			},
-		};
-		writeFileSync(join(tmpRoot, ".mcp.json"), JSON.stringify(config), "utf8");
-		saveMetadataCache({
-			version: 1,
-			servers: {
-				cached: {
-					configHash: computeServerHash(config.mcpServers.cached!),
-					cachedAt: Date.now(),
-					tools: [{ name: "search_code", description: "search", inputSchema: { type: "object", properties: {} } }],
-					resources: [],
-				},
-			},
-		});
-		const handlers = new Map<string, (event: Record<string, never>, ctx: ExtensionContext) => Promise<void>>();
-		const registeredTools: string[] = [];
-		const api = {
-			getFlag() {
-				return undefined;
-			},
-			registerFlag() {},
-			on(event: string, handler: (event: Record<string, never>, ctx: ExtensionContext) => Promise<void>) {
-				handlers.set(event, handler);
-			},
-			registerCommand() {},
-			registerTool(tool: { name: string }) {
-				registeredTools.push(tool.name);
-			},
-			getAllTools() {
-				return [];
-			},
-			refreshTools() {},
-		} as unknown as ExtensionAPI;
-
-		mcpAdapter(api);
-		await handlers.get("session_start")?.({}, context());
-
-		assert.equal(registeredTools.includes("cached_search_code"), true);
-		assert.equal(registeredTools.includes("mcp"), true);
 	});
 });

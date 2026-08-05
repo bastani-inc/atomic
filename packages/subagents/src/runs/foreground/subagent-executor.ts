@@ -1,14 +1,33 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import { handleManagementAction } from "../../agents/agent-management.ts";
+import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
-import { resolveIntercomSessionTarget } from "../../intercom/intercom-bridge.ts";
-import { SUBAGENT_ACTIONS, type SubagentToolResult } from "../../shared/types.ts";
+import {
+	resolveIntercomBridge,
+	resolveIntercomSessionTarget,
+	resolveSubagentIntercomTarget,
+} from "../../intercom/intercom-bridge.ts";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
+import { getArtifactsDir } from "../../shared/artifacts.ts";
+import { toModelInfo } from "../../shared/model-info.ts";
+import { resolveSingleProgress } from "../../shared/settings.ts";
+import {
+	DEFAULT_ARTIFACT_CONFIG,
+	isWorkflowStageOrchestrationContext,
+	resolveWorkflowStageMaxSubagentDepth,
+	SUBAGENT_ACTIONS,
+	type SubagentToolResult,
+	workflowSessionMetadataFromContext,
+} from "../../shared/types.ts";
 import {
 	inspectInProcessChildStatus,
 	interruptInProcessChild,
 	resumeInProcessChild,
 } from "../inprocess/control-status.ts";
+import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
+import { currentModelFullId } from "../shared/model-fallback.ts";
+import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { runAsyncPath } from "./subagent-executor-async.ts";
 import { runChainPath } from "./subagent-executor-chain.ts";
 import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.ts";
@@ -29,6 +48,72 @@ import {
 	type SubagentParamsLike,
 } from "./subagent-executor-types.ts";
 
+async function resumeRetainedForegroundChild(
+	params: SubagentParamsLike,
+	message: string,
+	ctx: ExtensionContext,
+	deps: ResolvedExecutorDeps,
+): Promise<SubagentToolResult | undefined> {
+	const requested = params.id ?? params.runId;
+	if (!requested) return undefined;
+	const run = deps.state.foregroundRuns?.get(requested);
+	if (!run) return undefined;
+	const child = run.children[params.index ?? 0];
+	if (!child) return undefined;
+	const agents = deps.discoverAgents(run.cwd, resolveExecutionAgentScope(params.agentScope)).agents;
+	const agentConfig = agents.find((agent) => agent.name === child.agent);
+	if (!agentConfig) {
+		return {
+			content: [{ type: "text", text: `Unknown agent for resume: ${child.agent}` }],
+			isError: true,
+			details: { mode: "single", results: [] },
+		};
+	}
+	const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
+	const sessionName = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
+	const intercomBridge = resolveIntercomBridge({
+		config: deps.config.intercomBridge,
+		context: params.context,
+		orchestratorTarget: sessionName,
+		cwd: run.cwd,
+	});
+	const supervisedTarget = intercomBridge.active
+		? resolveSubagentIntercomTarget(run.runId, child.agent, child.index)
+		: undefined;
+	const supervisorAuthorization = await requestSupervisorAuthorization(deps.pi.events, supervisedTarget);
+	return deps.runtime.executeAsyncSingle(run.runId, {
+		agent: child.agent,
+		agentConfig,
+		task: message,
+		ctx: {
+			pi: deps.pi,
+			cwd: run.cwd,
+			currentSessionId: ctx.sessionManager.getSessionId(),
+			currentModelProvider: ctx.model?.provider,
+			currentModel: currentModelFullId(ctx.model),
+			intercomGroup: inheritedIntercomGroup(ctx),
+			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
+		},
+		cwd: run.cwd,
+		maxOutput: params.maxOutput,
+		artifactsDir: getArtifactsDir(parentSessionFile),
+		artifactConfig: { ...DEFAULT_ARTIFACT_CONFIG, enabled: params.artifacts !== false },
+		shareEnabled: params.share === true,
+		sessionRoot: deps.getSubagentSessionRoot(parentSessionFile),
+		sessionFile: child.sessionFile,
+		progress: resolveSingleProgress(agentConfig, params.progress, message),
+		modelOverride: params.model,
+		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
+		maxSubagentDepth: resolveWorkflowStageMaxSubagentDepth(ctx, deps.config.maxSubagentDepth),
+		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
+		controlConfig: resolveControlConfig(deps.config.control, params.control),
+		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
+		childIntercomTarget: intercomBridge.active
+			? (agent, index) => resolveSubagentIntercomTarget(run.runId, agent, index)
+			: undefined,
+		supervisorAuthorization,
+	});
+}
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 
 export type { SubagentExecutorRuntimeDeps, SubagentParamsLike } from "./subagent-executor-types.ts";
@@ -117,6 +202,8 @@ async function handleManagementRequest(input: {
 		}
 		const inProcess = await resumeInProcessChild(targetRunId, message, { model: ctx.model });
 		if (inProcess) return inProcess;
+		const retained = await resumeRetainedForegroundChild(paramsWithResolvedCwd, message, ctx, deps);
+		if (retained) return retained;
 		return {
 			content: [{ type: "text", text: `No in-process child found for '${targetRunId}'.` }],
 			isError: true,
