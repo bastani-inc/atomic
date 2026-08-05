@@ -3,6 +3,7 @@ import {
 	Editor,
 	type EditorOptions,
 	type EditorTheme,
+	matchesKey,
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
@@ -18,6 +19,17 @@ export interface CustomEditorOptions extends EditorOptions {
 
 const ANSI_ESCAPE_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[PX_][\s\S]*?\x1b\\/g;
 const BORDER_LINE_PATTERN = /^[─ ↑↓0-9more]+$/;
+/** Exact Empty Bracketed Paste sequence from the terminal (image-only macOS Cmd+V). */
+const EMPTY_BRACKETED_PASTE = "\x1b[200~\x1b[201~";
+
+function isMacosNativeImagePasteSignal(data: string): boolean {
+	if (process.platform !== "darwin") {
+		return false;
+	}
+	// Image-only Cmd+V: some terminals emit Empty Bracketed Paste; Kitty-protocol
+	// terminals (e.g. Ghostty) emit super+v as a CSI-u key event instead.
+	return data === EMPTY_BRACKETED_PASTE || matchesKey(data, "super+v");
+}
 
 /**
  * Custom editor that handles app-level keybindings for coding-agent.
@@ -143,8 +155,9 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		// Check for paste image keybinding
-		if (this.keybindings.matches(data, "app.clipboard.pasteImage")) {
+		// Explicit Image Paste keybinding, or macOS Native Paste (image-only Cmd+V
+		// as empty bracketed paste or Kitty-protocol super+v).
+		if (this.keybindings.matches(data, "app.clipboard.pasteImage") || isMacosNativeImagePasteSignal(data)) {
 			this.onPasteImage?.();
 			return;
 		}

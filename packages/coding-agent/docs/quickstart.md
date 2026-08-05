@@ -243,7 +243,7 @@ atomic @README.md "Summarize this"
 atomic @src/app.ts @src/app.test.ts "Review these together"
 ```
 
-Images can be pasted with CTRL+V (ALT+V on Windows) or dragged into supported terminals.
+Images can be pasted with native macOS Cmd+V, Ctrl+V (Alt+V on Windows), or dragged into supported terminals. When the clipboard has both text and an image, Cmd+V may paste the text while Ctrl+V prefers the image.
 
 ### Run shell commands
 
