@@ -320,3 +320,54 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 		/Remove-Item|-Recurse/u,
 	);
 });
+
+test("Windows temporary download directories are removed with bounded verified retries", async () => {
+	const { powershell } = await installers();
+
+	const helperStart = powershell.indexOf("function Remove-AtomicTemporaryDirectory");
+	assert.ok(helperStart >= 0, "the bounded temp-directory removal helper is missing");
+	const helper = powershell.slice(helperStart, powershell.indexOf("function Remove-AtomicEmptyDirectory"));
+	assert.ok(helper.length > 0, "the removal helper is not declared before Remove-AtomicEmptyDirectory");
+	assert.match(helper, /while \(\$attempt -lt \$RetryLimit\)/u);
+	assert.doesNotMatch(helper, /while \(\$true\)|do \{/u);
+	assert.match(helper, /Remove-Item -LiteralPath \$Path -Recurse -Force -ErrorAction Stop/u);
+	assert.doesNotMatch(helper, /SilentlyContinue/u);
+	assert.match(helper, /\[IO\.Directory\]::Delete\(\$Path, \$true\)/u);
+	assert.match(helper, /if \(-not \[IO\.Directory\]::Exists\(\$Path\)\)/u);
+	assert.match(helper, /\[IO\.FileAttributes\]::ReadOnly/u);
+	assert.match(helper, /after \$attempt attempts; last error: \$lastCleanupDetail/u);
+	assert.doesNotMatch(helper, /Remove-Item -LiteralPath (?!\$Path\b)/u);
+	assert.doesNotMatch(helper, /\[IO\.Directory\]::Delete\((?!\$Path,)/u);
+
+	assert.match(powershell, /\$tempCleanupRetryLimit = [2-9]/u);
+	assert.doesNotMatch(powershell, /Remove-Item -LiteralPath \$tempDir/u);
+	assert.match(
+		powershell,
+		/Remove-AtomicTemporaryDirectory \$tempDir \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds/u,
+	);
+	assert.doesNotMatch(
+		powershell,
+		/Remove-AtomicTemporaryDirectory \$(?:binDir|installRoot|versionsDir|currentPath|shimPath)\b/u,
+		"the bounded removal helper must only be used for the installer-owned temp directory",
+	);
+
+	const successOutput = powershell.indexOf('    Write-Output "Atomic $releaseTag installed successfully."');
+	const finallyBlock = powershell.slice(powershell.indexOf("finally {", successOutput));
+	const rollback = finallyBlock.indexOf("Invoke-AtomicTransactionRollback");
+	const tempCleanup = finallyBlock.indexOf("Remove-AtomicTemporaryDirectory $tempDir", rollback);
+	const parentCleanup = finallyBlock.indexOf(
+		"Remove-AtomicCreatedEmptyDirectories $transactionMissingDirectories",
+		tempCleanup,
+	);
+	const deferredReport = finallyBlock.indexOf("if ($null -ne $tempCleanupError)", parentCleanup);
+	assert.ok(
+		rollback >= 0 && tempCleanup > rollback && parentCleanup > tempCleanup && deferredReport > parentCleanup,
+		"a temp cleanup failure is surfaced before rollback and created-parent cleanup complete",
+	);
+	assert.match(finallyBlock.slice(tempCleanup), /catch \{\r?\n\s+\$tempCleanupError = \$_/u);
+	assert.match(
+		finallyBlock.slice(deferredReport),
+		/if \(\$null -ne \$primaryError\) \{[\s\S]{0,200}Write-Warning[^\r\n]+cleanup remains incomplete[\s\S]{0,80}else \{\r?\n\s+throw \$tempCleanupError/u,
+	);
+	assert.match(powershell, /catch \{\r?\n\s+\$primaryError = \$_\r?\n\s+throw \$primaryError\r?\n\}/u);
+});

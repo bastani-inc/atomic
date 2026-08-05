@@ -273,6 +273,75 @@ function Remove-AtomicDirectoryLinkOrTree {
     Remove-Item -LiteralPath $item.FullName -Recurse -Force
 }
 
+function Remove-AtomicTemporaryDirectory {
+    param(
+        [string]$Path,
+        [int]$RetryLimit,
+        [int]$RetryDelayMilliseconds
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Directory]::Exists($Path)) {
+        return
+    }
+
+    $attempt = 0
+    $lastCleanupError = $null
+    while ($attempt -lt $RetryLimit) {
+        $attempt++
+
+        try {
+            $readOnlyCandidates = New-Object System.Collections.ArrayList
+            [void]$readOnlyCandidates.Add($Path)
+            foreach ($entry in [IO.Directory]::GetFileSystemEntries($Path, "*", [IO.SearchOption]::AllDirectories)) {
+                [void]$readOnlyCandidates.Add($entry)
+            }
+            foreach ($candidate in $readOnlyCandidates) {
+                $candidateAttributes = [IO.File]::GetAttributes($candidate)
+                if (($candidateAttributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+                    [IO.File]::SetAttributes(
+                        $candidate,
+                        [IO.FileAttributes]([int]$candidateAttributes -band (-bnot [int][IO.FileAttributes]::ReadOnly)))
+                }
+            }
+        }
+        catch {
+            $lastCleanupError = $_
+        }
+
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            $lastCleanupError = $_
+        }
+        if (-not [IO.Directory]::Exists($Path)) {
+            return
+        }
+
+        try {
+            [IO.Directory]::Delete($Path, $true)
+        }
+        catch {
+            $lastCleanupError = $_
+        }
+        if (-not [IO.Directory]::Exists($Path)) {
+            return
+        }
+
+        if ($attempt -lt $RetryLimit) {
+            Start-Sleep -Milliseconds ($RetryDelayMilliseconds * $attempt)
+        }
+    }
+
+    $lastCleanupDetail = if ($null -eq $lastCleanupError) {
+        "the directory still existed after every verified removal attempt"
+    }
+    else {
+        [string]$lastCleanupError
+    }
+    throw "Failed to remove the temporary download directory ${Path} after $attempt attempts; last error: $lastCleanupDetail"
+}
+
 function Remove-AtomicEmptyDirectory {
     param([string]$Path)
 
@@ -527,6 +596,10 @@ $transaction = $null
 $transactionCommitted = $false
 $transactionMissingDirectories = New-Object System.Collections.ArrayList
 $rollbackRetryLimit = 3
+$tempCleanupRetryLimit = 5
+$tempCleanupRetryDelayMilliseconds = 125
+$primaryError = $null
+$tempCleanupError = $null
 
 $previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
 try {
@@ -816,6 +889,10 @@ try {
         Write-Output "Restart your terminal so other processes pick up the updated User PATH."
     }
 }
+catch {
+    $primaryError = $_
+    throw $primaryError
+}
 finally {
     if ($null -ne $transaction -and -not $transactionCommitted) {
         $rollbackAttempt = 0
@@ -846,11 +923,25 @@ finally {
         Remove-Item -LiteralPath $versionStagePath -Recurse -Force -ErrorAction SilentlyContinue
     }
     if ($null -ne $tempDir -and (Test-Path -LiteralPath $tempDir)) {
-        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            Remove-AtomicTemporaryDirectory $tempDir $tempCleanupRetryLimit $tempCleanupRetryDelayMilliseconds
+        }
+        catch {
+            $tempCleanupError = $_
+        }
     }
 
     if ($null -ne $transaction -and -not $transactionCommitted) {
         Remove-AtomicCreatedEmptyDirectories $transactionMissingDirectories
+    }
+
+    if ($null -ne $tempCleanupError) {
+        if ($null -ne $primaryError) {
+            Write-Warning "Temporary download directory cleanup remains incomplete: $tempCleanupError"
+        }
+        else {
+            throw $tempCleanupError
+        }
     }
 }
 }

@@ -141,6 +141,10 @@ test("Windows installer initializes cleanup state before preflight and API resol
 		"$transactionCommitted = $false",
 		"$transactionMissingDirectories = New-Object System.Collections.ArrayList",
 		"$rollbackRetryLimit = 3",
+		"$tempCleanupRetryLimit = 5",
+		"$tempCleanupRetryDelayMilliseconds = 125",
+		"$primaryError = $null",
+		"$tempCleanupError = $null",
 	]) {
 		const declarationIndex = source.indexOf(declaration);
 		assert.ok(declarationIndex >= 0, `${declaration} is missing`);
@@ -474,6 +478,66 @@ test("Windows installer cleans staged children before only snapshotted empty tra
 	assert.doesNotMatch(source, /Remove-Item\s+-LiteralPath\s+\$(?:binDir|versionsDir|installRoot)\b/u);
 });
 
+test("Windows installer removes its temporary download directory with bounded verified retries", () => {
+	const source = installerSource();
+	const helperStart = source.indexOf("function Remove-AtomicTemporaryDirectory");
+	assert.ok(helperStart >= 0, "the verified temporary-directory removal helper is missing");
+	const helper = source.slice(helperStart, source.indexOf("function Remove-AtomicEmptyDirectory"));
+	assert.ok(helper.length > 0, "the removal helper is not declared before Remove-AtomicEmptyDirectory");
+
+	assert.match(helper, /\[string\]\$Path,\r?\n\s+\[int\]\$RetryLimit,\r?\n\s+\[int\]\$RetryDelayMilliseconds/u);
+	assert.match(
+		helper,
+		/if \(\[string\]::IsNullOrWhiteSpace\(\$Path\) -or -not \[IO\.Directory\]::Exists\(\$Path\)\)/u,
+	);
+	assert.match(helper, /while \(\$attempt -lt \$RetryLimit\)/u);
+	assert.doesNotMatch(helper, /while \(\$true\)|do \{/u, "the removal helper must not loop without a bound");
+	assert.match(helper, /\[IO\.FileAttributes\]::ReadOnly/u);
+	assert.match(helper, /\[IO\.File\]::SetAttributes\(/u);
+	assert.match(helper, /Remove-Item -LiteralPath \$Path -Recurse -Force -ErrorAction Stop/u);
+	assert.doesNotMatch(helper, /SilentlyContinue/u, "the removal helper must not suppress deletion failures");
+	assert.match(helper, /\[IO\.Directory\]::Delete\(\$Path, \$true\)/u);
+	assert.equal(
+		(helper.match(/if \(-not \[IO\.Directory\]::Exists\(\$Path\)\) \{\r?\n\s+return\r?\n\s+\}/gu) ?? []).length,
+		2,
+		"the removal helper does not verify absence after both removal strategies",
+	);
+	assert.match(helper, /Start-Sleep -Milliseconds \(\$RetryDelayMilliseconds \* \$attempt\)/u);
+	assert.match(
+		helper,
+		/throw "Failed to remove the temporary download directory \$\{Path\} after \$attempt attempts; last error: \$lastCleanupDetail"/u,
+	);
+	assert.doesNotMatch(helper, /Remove-Item -LiteralPath (?!\$Path\b)/u, "the helper removes a path it was not given");
+	assert.doesNotMatch(helper, /\[IO\.Directory\]::Delete\((?!\$Path,)/u, "the helper deletes a path it was not given");
+
+	assert.match(source, /\$tempCleanupRetryLimit = [2-9]\r?\n/u);
+	assert.match(source, /\$tempCleanupRetryDelayMilliseconds = [1-9][0-9]*\r?\n/u);
+	assert.match(source, /catch \{\r?\n\s+\$primaryError = \$_\r?\n\s+throw \$primaryError\r?\n\}/u);
+	assert.doesNotMatch(source, /Remove-Item -LiteralPath \$tempDir/u, "the suppressed temp deletion is still present");
+
+	const cleanup = source.slice(
+		source.indexOf("finally {", source.indexOf('Write-Output "Atomic $releaseTag installed successfully."')),
+	);
+	assert.match(
+		cleanup,
+		/if \(\$null -ne \$tempDir -and \(Test-Path -LiteralPath \$tempDir\)\) \{\r?\n\s+try \{\r?\n\s+Remove-AtomicTemporaryDirectory \$tempDir \$tempCleanupRetryLimit \$tempCleanupRetryDelayMilliseconds\r?\n\s+\}\r?\n\s+catch \{\r?\n\s+\$tempCleanupError = \$_/u,
+	);
+	const tempCleanupCall = cleanup.indexOf("Remove-AtomicTemporaryDirectory $tempDir");
+	const parentCleanup = cleanup.indexOf(
+		"Remove-AtomicCreatedEmptyDirectories $transactionMissingDirectories",
+		tempCleanupCall,
+	);
+	const deferredReport = cleanup.indexOf("if ($null -ne $tempCleanupError)", tempCleanupCall);
+	assert.ok(
+		tempCleanupCall >= 0 && parentCleanup > tempCleanupCall && deferredReport > parentCleanup,
+		"the cleanup failure is surfaced before every later cleanup step completes",
+	);
+	assert.match(
+		cleanup.slice(deferredReport),
+		/if \(\$null -ne \$primaryError\) \{\r?\n\s+Write-Warning "Temporary download directory cleanup remains incomplete: \$tempCleanupError"\r?\n\s+\}\r?\n\s+else \{\r?\n\s+throw \$tempCleanupError/u,
+	);
+});
+
 interface PowerShellEngine {
 	executable: string;
 	major: number;
@@ -528,6 +592,7 @@ const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
 const TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS = 240_000;
 const ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS = 300_000;
 const CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS = 360_000;
+const TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS = 180_000;
 
 if (powershellEngines.length === 0) {
 	test.skip("available PowerShell engines isolate literal IEX failure state", () => {});
@@ -1018,6 +1083,15 @@ function Assert-NoTransactionResidue {
     }
 }
 
+function Get-TempResidueReport {
+    param([string]$Root)
+    $entries = @(Get-ChildItem -LiteralPath $Root -Filter "atomic-install-*" -Force)
+    return [pscustomobject]@{
+        Count = $entries.Count
+        Paths = (($entries | ForEach-Object { $_.FullName }) -join '; ')
+    }
+}
+
 function Test-ByteSequence {
     param([byte[]]$Bytes, [byte[]]$Sequence)
     if ($Sequence.Length -eq 0 -or $Bytes.Length -lt $Sequence.Length) { return $false }
@@ -1206,6 +1280,40 @@ $global:AtomicFixtureFailurePoint = $null
 $global:AtomicFixtureRollbackFailurePoint = $null
 $global:AtomicFixtureRollbackFailureDelivered = $false
 $global:AtomicFixtureRollbackArmed = $false
+$global:AtomicFixtureTempLockMode = $null
+$global:AtomicFixtureTempLockPath = $null
+$global:AtomicFixtureTempLockStream = $null
+$global:AtomicFixtureTempRemovalAttempts = 0
+$global:AtomicFixtureWarnings = New-Object System.Collections.ArrayList
+
+function global:Write-Warning {
+    param([string]$Message)
+
+    [void]$global:AtomicFixtureWarnings.Add($Message)
+    Microsoft.PowerShell.Utility\Write-Warning -Message $Message
+}
+
+function global:Remove-Item {
+    param(
+        [string]$LiteralPath,
+        [switch]$Recurse,
+        [switch]$Force,
+        [string]$ErrorAction
+    )
+
+    if ([IO.Path]::GetFileName($LiteralPath) -match '^atomic-install-[0-9a-f]{32}$') {
+        $global:AtomicFixtureTempRemovalAttempts++
+        if ($global:AtomicFixtureTempLockMode -eq "one-shot" -and
+            $global:AtomicFixtureTempRemovalAttempts -ge 2 -and
+            $null -ne $global:AtomicFixtureTempLockStream) {
+            $global:AtomicFixtureTempLockStream.Dispose()
+            $global:AtomicFixtureTempLockStream = $null
+        }
+    }
+
+    $effectiveErrorAction = if ([string]::IsNullOrWhiteSpace($ErrorAction)) { $ErrorActionPreference } else { $ErrorAction }
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Recurse:$Recurse -Force:$Force -ErrorAction $effectiveErrorAction
+}
 
 function global:Get-ChildItem {
     [CmdletBinding()]
@@ -1260,6 +1368,15 @@ function global:New-Item {
         $ItemType -eq "Junction" -and $leafName -match '^\.atomic-current-[0-9a-f]{32}$') {
         Microsoft.PowerShell.Management\New-Item -ItemType $ItemType -Path $Path -Target $Target -Force:$Force | Out-Null
         throw "Injected transaction failure: atomic-current-create"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($global:AtomicFixtureTempLockMode) -and
+        $ItemType -eq "Directory" -and $leafName -match '^atomic-install-[0-9a-f]{32}$') {
+        $createdTempDirectory = Microsoft.PowerShell.Management\New-Item -ItemType $ItemType -Path $Path -Force:$Force
+        $lockPath = Join-Path $Path "fixture-open-handle.bin"
+        [IO.File]::WriteAllText($lockPath, "fixture-open-handle")
+        $global:AtomicFixtureTempLockPath = $lockPath
+        $global:AtomicFixtureTempLockStream = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        return $createdTempDirectory
     }
     if ($ItemType -eq "Junction") {
         return Microsoft.PowerShell.Management\New-Item -ItemType $ItemType -Path $Path -Target $Target -Force:$Force
@@ -1530,7 +1647,8 @@ try {
         Assert-Fixture (@($global:AtomicFixtureRequests).Count -eq $requestStart) "the missing-.CMD rejection performed a request"
         Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "the missing-.CMD rejection created an install root"
         Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "the missing-.CMD rejection created a bin directory"
-        Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "the missing-.CMD rejection created transaction temp state"
+        $rejectionResidue = Get-TempResidueReport $fixtureTemp
+        Assert-Fixture ($rejectionResidue.Count -eq 0) "the missing-.CMD rejection created transaction temp state: $($rejectionResidue.Paths)"
 
         foreach ($acceptedPathExt in @(".cmd;.EXE", '  " .CMD " ; ".EXE"  ', ".EXE;.CMD;.BAT", $null)) {
             Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -2156,11 +2274,111 @@ try {
         Assert-Fixture ($resolvedExit -eq 0 -and $resolvedOutput -eq "1.0.0") "custom PATHEXT did not resolve atomic.cmd ahead of atomic.exe: $resolvedOutput"
         Assert-NoTransactionResidue $installRoot $binDir
     }
+    elseif ($Scenario -eq "temp-cleanup") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+
+        $caseRoot = Join-Path $workspace "temp-cleanup"
+        $installRoot = Join-Path $caseRoot "install-root"
+        $binDir = Join-Path $caseRoot "bin-root"
+        $caseTemp = Join-Path $caseRoot "temp"
+        New-Item -ItemType Directory -Path $caseTemp -Force | Out-Null
+        $env:ATOMIC_INSTALL_DIR = $installRoot
+        $env:ATOMIC_BIN_DIR = $binDir
+        $env:TEMP = $caseTemp
+        $env:TMP = $caseTemp
+        $resolvedTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+        Assert-Fixture ($resolvedTempRoot -ieq [IO.Path]::GetFullPath($caseTemp).TrimEnd('\')) "GetTempPath() resolved to $resolvedTempRoot instead of the isolated case temp root"
+
+        $global:AtomicFixtureTempLockPath = $null
+        $global:AtomicFixtureTempLockStream = $null
+        $global:AtomicFixtureTempRemovalAttempts = 0
+        $global:AtomicFixtureTempLockMode = "one-shot"
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        $global:AtomicFixtureTempLockMode = $null
+        Assert-Fixture ($global:AtomicFixtureTempRemovalAttempts -ge 2) "a real one-shot open handle did not force a verified cleanup retry ($($global:AtomicFixtureTempRemovalAttempts) removal calls)"
+        Assert-Fixture ($null -eq $global:AtomicFixtureTempLockStream) "the one-shot fixture handle was never released"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "the one-shot locked-handle install did not complete"
+        $oneShotResidue = Get-TempResidueReport $caseTemp
+        Assert-Fixture ($oneShotResidue.Count -eq 0) "a released one-shot handle still left temp residue: $($oneShotResidue.Paths)"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+        $global:AtomicFixtureTempRemovalAttempts = 0
+        $global:AtomicFixtureTempLockMode = "sticky"
+        $stickyFailure = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $stickyFailure = $_ }
+        $global:AtomicFixtureTempLockMode = $null
+        Assert-Fixture ($null -ne $stickyFailure) "an exhausted temp cleanup reported success"
+        $stickyMessage = [string]$stickyFailure.Exception.Message
+        $stickyTempDir = [IO.Path]::GetDirectoryName($global:AtomicFixtureTempLockPath)
+        Assert-Fixture ($stickyMessage -match 'Failed to remove the temporary download directory') "the exhausted cleanup used the wrong message: $stickyMessage"
+        Assert-Fixture ($stickyMessage -match [regex]::Escape($stickyTempDir)) "the exhausted cleanup did not name the exact temporary path: $stickyMessage"
+        Assert-Fixture ($stickyMessage -match 'after (\d+) attempts') "the exhausted cleanup did not report its attempt count: $stickyMessage"
+        $reportedAttempts = [int]$Matches[1]
+        Assert-Fixture ($reportedAttempts -ge 2) "the exhausted cleanup did not retry before giving up: $stickyMessage"
+        Assert-Fixture ($global:AtomicFixtureTempRemovalAttempts -eq $reportedAttempts) "the exhausted cleanup reported $reportedAttempts attempts but performed $($global:AtomicFixtureTempRemovalAttempts)"
+        Assert-Fixture ($stickyMessage -match 'last error: \S') "the exhausted cleanup did not report the last error: $stickyMessage"
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "the exhausted cleanup discarded a completed install"
+        $global:AtomicFixtureTempLockStream.Dispose()
+        $global:AtomicFixtureTempLockStream = $null
+        Remove-Item -LiteralPath $stickyTempDir -Recurse -Force
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+        $global:AtomicFixtureTempRemovalAttempts = 0
+        $global:AtomicFixtureWarnings.Clear()
+        $global:AtomicFixtureTempLockMode = "sticky"
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "1.0.0"
+        $primaryFailure = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $primaryFailure = $_ }
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+        $global:AtomicFixtureTempLockMode = $null
+        Assert-Fixture ($null -ne $primaryFailure) "a failing installed smoke reported success"
+        $primaryMessage = [string]$primaryFailure.Exception.Message
+        Assert-Fixture ($primaryMessage -match 'Installed atomic\.cmd --version failed') "a failing temp cleanup replaced the primary installer error: $primaryMessage"
+        Assert-Fixture ($primaryMessage -notmatch 'Failed to remove the temporary download directory') "the cleanup error was surfaced instead of the primary error: $primaryMessage"
+        $lockedTempDir = [IO.Path]::GetDirectoryName($global:AtomicFixtureTempLockPath)
+        $cleanupWarnings = @($global:AtomicFixtureWarnings | Where-Object { $_ -match 'Temporary download directory cleanup remains incomplete' })
+        Assert-Fixture ($cleanupWarnings.Count -eq 1) "the deferred cleanup failure was not warned exactly once ($($cleanupWarnings.Count))"
+        Assert-Fixture ($cleanupWarnings[0] -match [regex]::Escape($lockedTempDir)) "the cleanup warning did not name the exact temporary path: $($cleanupWarnings[0])"
+        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "a failing temp cleanup blocked rollback of the fresh install root"
+        Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "a failing temp cleanup blocked removal of the transaction-created bin directory"
+        $global:AtomicFixtureTempLockStream.Dispose()
+        $global:AtomicFixtureTempLockStream = $null
+        Remove-Item -LiteralPath $lockedTempDir -Recurse -Force
+
+        foreach ($stressTag in @("1.0.0", "2.0.0")) {
+            & $InstallerPath -Ref $stressTag | Out-Null
+            $stressResidue = Get-TempResidueReport $caseTemp
+            Assert-Fixture ($stressResidue.Count -eq 0) "installing $stressTag left temp residue: $($stressResidue.Paths)"
+            Assert-Fixture ((Get-Content -LiteralPath (Join-Path $binDir "atomic-current\version.txt") -Raw) -eq $stressTag) "installing $stressTag did not update the installed pointer"
+            Assert-NoTransactionResidue $installRoot $binDir
+        }
+
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "1.0.0"
+        $stressFailure = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $stressFailure = $_ }
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+        Assert-Fixture ($null -ne $stressFailure) "the rolled-back stress install reported success"
+        $rolledBackResidue = Get-TempResidueReport $caseTemp
+        Assert-Fixture ($rolledBackResidue.Count -eq 0) "a rolled-back install left temp residue: $($rolledBackResidue.Paths)"
+        Assert-NoTransactionResidue $installRoot $binDir
+
+        $env:TEMP = $fixtureTemp
+        $env:TMP = $fixtureTemp
+    }
     else {
         throw "Unknown fixture scenario: $Scenario"
     }
 
-    Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "temporary installer directory was not cleaned"
+    $finalResidue = Get-TempResidueReport $fixtureTemp
+    Assert-Fixture ($finalResidue.Count -eq 0) "temporary installer directory was not cleaned: $($finalResidue.Paths)"
     Write-Output "SCENARIO_OK:$Scenario"
 }
 finally {
@@ -2624,6 +2842,45 @@ test("Windows PowerShell 5.1 Ctrl+C fixture uses a real isolated console event a
 	);
 });
 
+test("Windows PowerShell 5.1 temp-cleanup fixture proves bounded removal against real open handles", () => {
+	assert.match(fixtureHarness, /function global:Remove-Item/u);
+	assert.match(
+		fixtureHarness,
+		/\[IO\.File\]::Open\(\$lockPath, \[IO\.FileMode\]::Open, \[IO\.FileAccess\]::Read, \[IO\.FileShare\]::None\)/u,
+	);
+	assert.match(fixtureHarness, /Microsoft\.PowerShell\.Management\\Remove-Item -LiteralPath \$LiteralPath/u);
+	assert.match(
+		fixtureHarness,
+		/\$global:AtomicFixtureTempLockMode -eq "one-shot" -and\r?\n\s+\$global:AtomicFixtureTempRemovalAttempts -ge 2/u,
+	);
+	assert.match(fixtureHarness, /function Get-TempResidueReport/u);
+
+	const scenario = fixtureHarness.slice(
+		fixtureHarness.indexOf('elseif ($Scenario -eq "temp-cleanup")'),
+		fixtureHarness.indexOf('throw "Unknown fixture scenario'),
+	);
+	assert.ok(scenario.length > 0, "the temp-cleanup fixture scenario is missing");
+	assert.doesNotMatch(scenario, /Start-Sleep/u, "the deterministic probe must not wait on wall-clock time");
+	assert.match(scenario, /GetTempPath\(\) resolved to \$resolvedTempRoot instead of the isolated case temp root/u);
+	assert.match(scenario, /a real one-shot open handle did not force a verified cleanup retry/u);
+	assert.match(scenario, /an exhausted temp cleanup reported success/u);
+	assert.match(scenario, /the exhausted cleanup did not name the exact temporary path/u);
+	assert.match(scenario, /the exhausted cleanup did not report its attempt count/u);
+	assert.match(scenario, /the exhausted cleanup did not report the last error/u);
+	assert.match(scenario, /the exhausted cleanup discarded a completed install/u);
+	assert.match(scenario, /a failing temp cleanup replaced the primary installer error/u);
+	assert.match(scenario, /the deferred cleanup failure was not warned exactly once/u);
+	assert.match(scenario, /a failing temp cleanup blocked rollback of the fresh install root/u);
+	assert.match(scenario, /a failing temp cleanup blocked removal of the transaction-created bin directory/u);
+	assert.match(scenario, /installing \$stressTag left temp residue/u);
+	assert.match(scenario, /a rolled-back install left temp residue/u);
+	assert.match(fixtureHarness, /temporary installer directory was not cleaned: \$\(\$finalResidue\.Paths\)/u);
+	assert.match(
+		fixtureHarness,
+		/the missing-\.CMD rejection created transaction temp state: \$\(\$rejectionResidue\.Paths\)/u,
+	);
+});
+
 function runPowerShellFixture(
 	scenario:
 		| "install"
@@ -2642,7 +2899,8 @@ function runPowerShellFixture(
 		| "ref-identity"
 		| "semicolon-bin"
 		| "shadowed-shim"
-		| "custom-pathext",
+		| "custom-pathext"
+		| "temp-cleanup",
 ): string {
 	assert.ok(powershellExecutable);
 	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
@@ -2660,7 +2918,9 @@ function runPowerShellFixture(
 					? ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS
 					: scenario === "transaction-failures"
 						? TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS
-						: POWERSHELL_FIXTURE_TIMEOUT_MS;
+						: scenario === "temp-cleanup"
+							? TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
+							: POWERSHELL_FIXTURE_TIMEOUT_MS;
 		const result = spawnSyncCollect(
 			[
 				powershellExecutable,
@@ -2770,3 +3030,11 @@ powershellTest("PowerShell 5.1 fixture refuses same-stem launchers that PATHEXT 
 powershellTest("PowerShell 5.1 fixture honors custom PATHEXT order when .CMD precedes .EXE", () => {
 	runPowerShellFixture("custom-pathext");
 });
+
+powershellTest(
+	"PowerShell 5.1 fixture removes every temporary download directory against real open handles",
+	() => {
+		runPowerShellFixture("temp-cleanup");
+	},
+	TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS,
+);
