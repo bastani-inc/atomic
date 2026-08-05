@@ -15,7 +15,7 @@ import {
 	projectNestedEvents,
 	resolveNestedAsyncDir,
 	writeNestedEvent,
-} from "../shared/nested-events.ts";
+} from "../inprocess/runtime-support/nested-api.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 
 export type PidLiveness = "alive" | "dead" | "unknown";

@@ -20,9 +20,9 @@ import {
 	wrapForkTask,
 } from "../../shared/types.ts";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
 import { recordRun } from "../shared/run-history.ts";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";

@@ -9,7 +9,7 @@ import {
 	type NestedRoute,
 	readNestedControlResults,
 	writeNestedControlRequest,
-} from "../../packages/subagents/src/runs/shared/nested-events.js";
+} from "../../packages/subagents/src/runs/inprocess/runtime-support/nested-api.js";
 import {
 	SUBAGENT_CHILD_ENV,
 	SUBAGENT_FANOUT_CHILD_ENV,
@@ -17,7 +17,7 @@ import {
 	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
 	SUBAGENT_PARENT_EVENT_SINK_ENV,
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
-} from "../../packages/subagents/src/runs/shared/pi-args.js";
+} from "../../packages/subagents/src/runs/inprocess/runtime-support/process-args.js";
 import { sleep } from "../helpers/runtime.js";
 
 interface FanoutHarness {

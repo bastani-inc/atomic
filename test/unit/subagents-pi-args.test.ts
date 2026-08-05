@@ -3,11 +3,6 @@ import { describe, test } from "vitest";
 import { ENV_CODEX_FAST_MODE } from "../../packages/coding-agent/src/config.js";
 import { WORKFLOW_SESSION_METADATA_ENV } from "../../packages/coding-agent/src/core/session-manager-classification.js";
 import {
-	inheritedIntercomGroup,
-	resolveChildIntercomGroup,
-	sharedAutoGroupForSet,
-} from "../../packages/subagents/src/runs/shared/intercom-group.js";
-import {
 	buildPiArgs,
 	FANOUT_CHILD_EXTENSION_PATH,
 	INTERCOM_GROUP_ENV,
@@ -17,7 +12,12 @@ import {
 	SUBAGENT_PARENT_MAX_DEPTH,
 	SUBAGENT_SUPERVISOR_CAPABILITY_ENV,
 	SUBAGENT_SUPERVISOR_SESSION_ID_ENV,
-} from "../../packages/subagents/src/runs/shared/pi-args.js";
+} from "../../packages/subagents/src/runs/inprocess/runtime-support/process-args.js";
+import {
+	inheritedIntercomGroup,
+	resolveChildIntercomGroup,
+	sharedAutoGroupForSet,
+} from "../../packages/subagents/src/runs/shared/intercom-group.js";
 import {
 	STRUCTURED_OUTPUT_CAPTURE_ENV,
 	STRUCTURED_OUTPUT_SCHEMA_ENV,

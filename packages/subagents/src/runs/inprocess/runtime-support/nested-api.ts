@@ -6,14 +6,14 @@ export {
 	readNestedControlResults,
 	writeNestedControlRequest,
 	writeNestedControlResult,
-} from "./nested-events-control.ts";
+} from "./nested-control.ts";
 export type {
 	NestedControlRequestRecord,
 	NestedControlResultRecord,
 	NestedEventRecord,
 	NestedRegistry,
 	NestedRoute,
-} from "./nested-events-core.ts";
+} from "./nested-core.ts";
 export {
 	assertSafeNestedId,
 	cleanupOldNestedRuntimeDirs,
@@ -31,7 +31,13 @@ export {
 	resolveNestedParentAddressFromEnv,
 	resolveNestedRouteFromEnv,
 	validateNestedRouteShape,
-} from "./nested-events-core.ts";
+} from "./nested-core.ts";
+export {
+	encodeNestedPathEnv,
+	MAX_NESTED_PATH_ENTRIES,
+	parseNestedPathEnv,
+	sanitizeNestedPath,
+} from "./nested-paths.ts";
 export {
 	attachRootChildrenToSteps,
 	hasLiveNestedDescendants,
@@ -41,8 +47,8 @@ export {
 	nestedSummaryFromAsyncStatus,
 	updateAsyncJobNestedProjection,
 	updateForegroundNestedProjection,
-} from "./nested-events-projection.ts";
-export type { NestedRunMatch, NestedRunResolutionScope } from "./nested-events-registry.ts";
+} from "./nested-projection.ts";
+export type { NestedRunMatch, NestedRunResolutionScope } from "./nested-registry.ts";
 export {
 	findNestedRouteForRootId,
 	findNestedRun,
@@ -52,7 +58,5 @@ export {
 	projectNestedRegistryForRoot,
 	readNestedRegistry,
 	writeNestedEvent,
-} from "./nested-events-registry.ts";
-export { applyNestedEvent, parseNestedEventRecords, sanitizeSummary } from "./nested-events-sanitize.ts";
-
-export { encodeNestedPathEnv, MAX_NESTED_PATH_ENTRIES, parseNestedPathEnv, sanitizeNestedPath } from "./nested-path.ts";
+} from "./nested-registry.ts";
+export { applyNestedEvent, parseNestedEventRecords, sanitizeSummary } from "./nested-sanitize.ts";

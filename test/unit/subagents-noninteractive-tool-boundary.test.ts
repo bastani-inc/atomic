@@ -14,7 +14,10 @@ import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
+import {
+	SUBAGENT_CHILD_ENV,
+	SUBAGENT_FANOUT_CHILD_ENV,
+} from "../../packages/subagents/src/runs/inprocess/runtime-support/process-args.js";
 import {
 	type SingleResult,
 	SLASH_SUBAGENT_REQUEST_EVENT,

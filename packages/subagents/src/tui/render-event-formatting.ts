@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import { flatToLogicalStepIndex } from "../runs/background/parallel-groups.ts";
-import { formatNestedAggregate } from "../runs/shared/nested-render.ts";
+import { formatNestedAggregate } from "../runs/inprocess/runtime-support/nested-rendering.ts";
 import { formatDuration, formatModelThinking, shortenPath } from "../shared/formatters.ts";
 import { formatAgentRunningLabel } from "../shared/status-format.ts";
 import {

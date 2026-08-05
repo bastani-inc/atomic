@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { parseFrontmatter } from "../../packages/subagents/src/agents/frontmatter.js";
+import {
+	applyThinkingSuffix,
+	buildPiArgs,
+} from "../../packages/subagents/src/runs/inprocess/runtime-support/process-args.js";
 import type { AvailableModelInfo } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 import {
 	buildModelCandidates,
 	resolveModelCandidate,
 } from "../../packages/subagents/src/runs/shared/model-fallback.js";
-import { applyThinkingSuffix, buildPiArgs } from "../../packages/subagents/src/runs/shared/pi-args.js";
 import {
 	getSupportedThinkingLevels,
 	resolveEffectiveThinking,

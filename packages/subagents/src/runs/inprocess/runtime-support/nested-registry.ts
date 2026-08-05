@@ -1,13 +1,9 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import type { NestedRunSummary } from "../../shared/types.ts";
-import {
-	appendInProcessNestedEvent,
-	hasInProcessNestedRoute,
-	readInProcessNestedEvents,
-} from "../inprocess/nested-routing.ts";
+import { writeAtomicJson } from "../../../shared/atomic-json.ts";
+import type { NestedRunSummary } from "../../../shared/types.ts";
+import { appendInProcessNestedEvent, hasInProcessNestedRoute, readInProcessNestedEvents } from "../nested-routing.ts";
 import {
 	assertSafeId,
 	commonRouteRoot,
@@ -21,8 +17,8 @@ import {
 	REGISTRY_FILE,
 	ROUTE_FILE,
 	validateRouteShape,
-} from "./nested-events-core.ts";
-import { applyNestedEvent, parseNestedEventRecords, parseRecord, sanitizeSummary } from "./nested-events-sanitize.ts";
+} from "./nested-core.ts";
+import { applyNestedEvent, parseNestedEventRecords, parseRecord, sanitizeSummary } from "./nested-sanitize.ts";
 
 const REGISTRY_LOCK_DIR = ".registry.lock";
 const REGISTRY_LOCK_TIMEOUT_MS = 2_000;

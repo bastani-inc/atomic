@@ -3,7 +3,7 @@ import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts
 import type { ChainStep } from "../../shared/settings.ts";
 import { resolveSubagentDepthPolicy } from "../../shared/types.ts";
 import { compactForegroundDetails } from "../../shared/utils.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
 import { executeChain } from "./chain-execution.ts";
 import { wrapChainTasksForFork } from "./subagent-executor-input.ts";
 import {

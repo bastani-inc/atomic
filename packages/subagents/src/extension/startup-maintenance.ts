@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
-import { cleanupOldNestedRuntimeDirs } from "../runs/shared/nested-events.ts";
+import { cleanupOldNestedRuntimeDirs } from "../runs/inprocess/runtime-support/nested-api.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import type { SubagentState } from "../shared/types.ts";

@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getEnvValue } from "@bastani/atomic";
-import { type NestedRouteInfo, type NestedRunSummary, TEMP_ROOT_DIR } from "../../shared/types.ts";
-import { registerInProcessNestedRoute } from "../inprocess/nested-routing.ts";
-import { isSafeNestedPathId, type NestedPathEntry, parseNestedPathEnv } from "./nested-path.ts";
+import { type NestedRouteInfo, type NestedRunSummary, TEMP_ROOT_DIR } from "../../../shared/types.ts";
+import { registerInProcessNestedRoute } from "../nested-routing.ts";
+import { isSafeNestedPathId, type NestedPathEntry, parseNestedPathEnv } from "./nested-paths.ts";
 import {
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
 	SUBAGENT_PARENT_CHILD_INDEX_ENV,
@@ -15,7 +15,7 @@ import {
 	SUBAGENT_PARENT_PATH_ENV,
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 	SUBAGENT_PARENT_RUN_ID_ENV,
-} from "./pi-args.ts";
+} from "./process-args.ts";
 
 export const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 export const NESTED_RUNS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-runs");

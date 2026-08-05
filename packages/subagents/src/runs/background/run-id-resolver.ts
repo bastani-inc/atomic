@@ -7,7 +7,7 @@ import {
 	type NestedRoute,
 	type NestedRunMatch,
 	type NestedRunResolutionScope,
-} from "../shared/nested-events.ts";
+} from "../inprocess/runtime-support/nested-api.ts";
 import { type AsyncRunLocation, findAsyncRunPrefixMatches } from "./async-resume.ts";
 
 export type ResolvedSubagentRunId =

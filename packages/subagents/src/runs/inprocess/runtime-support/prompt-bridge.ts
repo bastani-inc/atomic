@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { createStructuredOutputTool, type ExtensionAPI, getEnvValue } from "@bastani/atomic";
-import type { JsonSchemaObject } from "../../shared/types.ts";
+import type { JsonSchemaObject } from "../../../shared/types.ts";
+import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "../../shared/structured-output.ts";
 import {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
@@ -9,16 +10,15 @@ import {
 	stripParentOnlySubagentMessages as stripParentOnlySubagentMessagesForPolicy,
 	stripProjectContext,
 	stripSubagentOrchestrationSkill,
-} from "../inprocess/prompt-behavior.ts";
+} from "../prompt-behavior.ts";
 import {
 	SUBAGENT_FANOUT_CHILD_ENV,
 	SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV,
 	SUBAGENT_INHERIT_SKILLS_ENV,
 	SUBAGENT_INTERCOM_SESSION_NAME_ENV,
-} from "./pi-args.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
+} from "./process-args.ts";
 
-export { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "./pi-args.ts";
+export { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "./process-args.ts";
 export {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,

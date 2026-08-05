@@ -16,8 +16,8 @@ import {
 	attachRootChildrenToSteps,
 	findNestedRouteForRootId,
 	projectNestedRegistryForRoot,
-} from "../shared/nested-events.ts";
-import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
+} from "../inprocess/runtime-support/nested-api.ts";
+import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 

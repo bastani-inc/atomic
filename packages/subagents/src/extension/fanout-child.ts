@@ -15,8 +15,8 @@ import {
 	readNestedControlRequests,
 	resolveNestedRouteFromEnv,
 	writeNestedControlResult,
-} from "../runs/shared/nested-events.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
+} from "../runs/inprocess/runtime-support/nested-api.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/inprocess/runtime-support/process-args.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import type { Details, SubagentState } from "../shared/types.ts";
 import { beginApiLifecycle } from "./api-lifecycle.ts";

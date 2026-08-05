@@ -13,7 +13,7 @@ import {
 } from "../../shared/types.ts";
 import { readStatus } from "../../shared/utils.ts";
 import { renderWidget, widgetRenderKey } from "../../tui/render.ts";
-import { hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
 import { formatControlNoticeMessage } from "../shared/subagent-control.ts";
 import { type AsyncRunSummary, listAsyncRuns } from "./async-status.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";

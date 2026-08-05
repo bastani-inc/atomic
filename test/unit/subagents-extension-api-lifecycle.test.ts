@@ -8,7 +8,10 @@ import { beginApiLifecycle } from "../../packages/subagents/src/extension/api-li
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import registerSubagentNotify from "../../packages/subagents/src/runs/background/notify.js";
 import { createResultWatcher } from "../../packages/subagents/src/runs/background/result-watcher.js";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
+import {
+	SUBAGENT_CHILD_ENV,
+	SUBAGENT_FANOUT_CHILD_ENV,
+} from "../../packages/subagents/src/runs/inprocess/runtime-support/process-args.js";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT, type SubagentState } from "../../packages/subagents/src/shared/types.js";
 import {
 	buildSlashInitialResult,

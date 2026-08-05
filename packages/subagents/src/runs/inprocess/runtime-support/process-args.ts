@@ -11,12 +11,12 @@ import {
 	type SessionWorkflowMetadata,
 	WORKFLOW_SESSION_METADATA_ENV,
 } from "@bastani/atomic";
-import { THINKING_LEVELS } from "../../shared/model-info.ts";
-import type { JsonSchemaObject } from "../../shared/types.ts";
-import { MAX_SUBAGENT_NESTING_DEPTH } from "../../shared/types-runtime.ts";
-import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
-import { encodeNestedPathEnv, type NestedPathEntry, parseNestedPathEnv } from "./nested-path.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
+import { THINKING_LEVELS } from "../../../shared/model-info.ts";
+import type { JsonSchemaObject } from "../../../shared/types.ts";
+import { MAX_SUBAGENT_NESTING_DEPTH } from "../../../shared/types-runtime.ts";
+import { resolveMcpDirectToolNames } from "../../shared/mcp-direct-tool-allowlist.ts";
+import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "../../shared/structured-output.ts";
+import { encodeNestedPathEnv, type NestedPathEntry, parseNestedPathEnv } from "./nested-paths.ts";
 
 const TASK_ARG_LIMIT = 8000;
 export const SUBAGENT_PARENT_MAX_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;

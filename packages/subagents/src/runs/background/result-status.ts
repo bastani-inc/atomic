@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ASYNC_DIR } from "../../shared/types.ts";
-import { NESTED_RUNS_DIR } from "../shared/nested-events.ts";
+import { NESTED_RUNS_DIR } from "../inprocess/runtime-support/nested-api.ts";
 import type { ResultFileData } from "./result-watcher-data.js";
 
 const TERMINAL_ASYNC_STATES = new Set(["complete", "failed", "paused"]);

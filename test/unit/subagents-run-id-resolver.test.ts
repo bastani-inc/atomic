@@ -7,7 +7,7 @@ import {
 	nestedScopeFromState,
 	resolveSubagentRunId,
 } from "../../packages/subagents/src/runs/background/run-id-resolver.js";
-import type { NestedRoute } from "../../packages/subagents/src/runs/shared/nested-events.js";
+import type { NestedRoute } from "../../packages/subagents/src/runs/inprocess/runtime-support/nested-api.js";
 import type { SubagentState } from "../../packages/subagents/src/shared/types.js";
 
 type ForegroundControl = SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;

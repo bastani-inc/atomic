@@ -31,8 +31,6 @@ import { readStatus } from "../../shared/utils.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { type ResolvedSubagentRunId, resolveSubagentRunId } from "../background/run-id-resolver.ts";
 import { interruptInProcessNestedAttempt, resumeInProcessNestedAttempt } from "../inprocess/nested-routing.ts";
-import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
-import { currentModelFullId } from "../shared/model-fallback.ts";
 import {
 	createNestedRoute,
 	type NestedRunResolutionScope,
@@ -41,7 +39,9 @@ import {
 	resolveNestedAsyncDir,
 	resolveNestedParentAddressFromEnv,
 	writeNestedControlRequest,
-} from "../shared/nested-events.ts";
+} from "../inprocess/runtime-support/nested-api.ts";
+import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
+import { currentModelFullId } from "../shared/model-fallback.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import {
 	isManagementActionsRestricted,

@@ -21,8 +21,8 @@ import {
 } from "../../shared/types.ts";
 import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.ts";
 import { deliverLocalCompletionNotification } from "../background/completion-notification.ts";
-import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
-import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
+import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
+import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.ts";
 import {
 	formatControlIntercomMessage,
 	formatControlNoticeMessage,

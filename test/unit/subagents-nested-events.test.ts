@@ -27,7 +27,7 @@ import {
 	writeNestedControlRequest,
 	writeNestedControlResult,
 	writeNestedEvent,
-} from "../../packages/subagents/src/runs/shared/nested-events.js";
+} from "../../packages/subagents/src/runs/inprocess/runtime-support/nested-api.js";
 
 const cleanupPaths = new Set<string>();
 

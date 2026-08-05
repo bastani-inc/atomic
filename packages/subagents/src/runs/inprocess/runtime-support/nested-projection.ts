@@ -8,16 +8,10 @@ import {
 	RESULTS_DIR,
 	type SubagentRunMode,
 	type SubagentState,
-} from "../../shared/types.ts";
-import {
-	assertSafeId,
-	containedPath,
-	MAX_NESTED_CHILDREN,
-	MAX_NESTED_STEPS,
-	NESTED_RUNS_DIR,
-} from "./nested-events-core.ts";
-import { projectNestedEvents } from "./nested-events-registry.ts";
-import { terminal } from "./nested-events-sanitize.ts";
+} from "../../../shared/types.ts";
+import { assertSafeId, containedPath, MAX_NESTED_CHILDREN, MAX_NESTED_STEPS, NESTED_RUNS_DIR } from "./nested-core.ts";
+import { projectNestedEvents } from "./nested-registry.ts";
+import { terminal } from "./nested-sanitize.ts";
 
 export function attachRootChildrenToSteps<T extends { children?: NestedRunSummary[]; index?: number }>(
 	rootRunId: string,

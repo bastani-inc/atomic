@@ -9,7 +9,7 @@ import {
 	resolveSubagentResultStatus,
 } from "../../intercom/result-intercom.ts";
 import type { IntercomEventBus, SubagentResultIntercomChild, SubagentState } from "../../shared/types.ts";
-import { projectNestedRegistryForRoot } from "../shared/nested-events.ts";
+import { projectNestedRegistryForRoot } from "../inprocess/runtime-support/nested-api.ts";
 import { type CompletionClaimSnapshot, deliverClaimedCompletion } from "./completion-claims.js";
 import { buildCompletionKey, lookupSeenWithTtl, recordSeen } from "./completion-dedupe.ts";
 import { deliverLocalCompletionNotification } from "./completion-notification.ts";

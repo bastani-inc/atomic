@@ -35,8 +35,8 @@ import {
 	resolveInheritedNestedRouteFromEnv,
 	resolveNestedParentAddressFromEnv,
 	writeNestedEvent,
-} from "../shared/nested-events.ts";
-import { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../shared/pi-args.ts";
+} from "../inprocess/runtime-support/nested-api.ts";
+import { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../inprocess/runtime-support/process-args.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import {
 	applyAgentDefaultContext,

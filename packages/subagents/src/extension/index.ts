@@ -25,7 +25,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/inprocess/runtime-support/process-args.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";

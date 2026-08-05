@@ -16,8 +16,8 @@ import {
 	findNestedRouteForRootId,
 	type NestedRunResolutionScope,
 	projectNestedRegistryForRoot,
-} from "../shared/nested-events.ts";
-import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
+} from "../inprocess/runtime-support/nested-api.ts";
+import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.ts";
 import { resolveAsyncRunLocation } from "./async-resume.ts";
 import {
 	formatAsyncRunList,

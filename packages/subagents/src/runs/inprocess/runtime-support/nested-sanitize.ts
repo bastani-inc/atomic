@@ -1,4 +1,4 @@
-import type { NestedRunState, NestedRunSummary, NestedStepSummary } from "../../shared/types.ts";
+import type { NestedRunState, NestedRunSummary, NestedStepSummary } from "../../../shared/types.ts";
 import {
 	clampNumber,
 	isSafeNestedId,
@@ -10,8 +10,8 @@ import {
 	type NestedRegistry,
 	type NestedRoute,
 	stringValue,
-} from "./nested-events-core.ts";
-import { sanitizeNestedPath } from "./nested-path.ts";
+} from "./nested-core.ts";
+import { sanitizeNestedPath } from "./nested-paths.ts";
 
 function sanitizeTokenUsage(value: unknown): NestedRunSummary["totalTokens"] | undefined {
 	if (!value || typeof value !== "object") return undefined;

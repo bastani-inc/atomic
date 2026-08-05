@@ -6,7 +6,7 @@ import {
 	hasInProcessNestedRoute,
 	readInProcessControlRequests,
 	readInProcessControlResults,
-} from "../inprocess/nested-routing.ts";
+} from "../nested-routing.ts";
 import {
 	assertSafeId,
 	clampNumber,
@@ -18,14 +18,14 @@ import {
 	type NestedRoute,
 	stringValue,
 	validateRouteShape,
-} from "./nested-events-core.ts";
-import { writeRouteRecord } from "./nested-events-registry.ts";
+} from "./nested-core.ts";
+import { writeRouteRecord } from "./nested-registry.ts";
 import {
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
 	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
 	SUBAGENT_PARENT_EVENT_SINK_ENV,
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
-} from "./pi-args.ts";
+} from "./process-args.ts";
 
 export function parseNestedControlRequest(content: string, route: NestedRoute): NestedControlRequestRecord | undefined {
 	if (Buffer.byteLength(content, "utf-8") > MAX_NESTED_EVENT_BYTES) return undefined;
