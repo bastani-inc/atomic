@@ -133,6 +133,7 @@ export type {
 export {
 	errorMessage,
 	isRetryableModelFailure,
+	isRetryableSameModelFailure,
 	modelFailureMessage,
 	normalizeModelFailureSignal,
 } from "./core/model-fallback-failures.ts";

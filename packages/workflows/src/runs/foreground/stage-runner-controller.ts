@@ -19,6 +19,7 @@ import {
 	buildModelCandidatesFromCatalog,
 	errorMessage,
 	isRetryableModelFailure,
+	isRetryableSameModelFailure,
 	type WorkflowResolvedModelCandidate,
 	workflowModelId,
 } from "../shared/model-fallback.js";
@@ -705,8 +706,13 @@ export class StageSessionController {
 				// An already-unresolved context overflow is terminal for this model:
 				// compaction has run and failed, so another identical request cannot
 				// help. It stays fallbackable so `handleCandidateFailure()` advances.
+				// Same-model retry eligibility is narrower than fallback eligibility:
+				// auth, model-unavailable, and request-incompatible failures advance
+				// to the next candidate immediately instead of burning the retry
+				// budget on a request the same model has already rejected.
 				const retryableFailure = isRetryableModelFailure(error);
-				const sameCandidateRetryable = retryableFailure && !isUnresolvedContextOverflowFailure(error);
+				const sameCandidateRetryable =
+					isRetryableSameModelFailure(error) && !isUnresolvedContextOverflowFailure(error);
 				const decision = nextRetryDecision(this.retrySettings(), retryAttempt, sameCandidateRetryable);
 				const continuationSession = retryableAgentSession(activeSession);
 				const admittedMessages = activeSession.messages.length > messagesBeforeAttempt.length;
@@ -955,7 +961,7 @@ export class StageSessionController {
 			} catch (error) {
 				const errorSettingsManager = retrySettingsManagerFromError(error);
 				if (errorSettingsManager !== undefined) this.sessionSettingsManager = errorSettingsManager;
-				const decision = nextRetryDecision(this.retrySettings(), retryAttempt, isRetryableModelFailure(error));
+				const decision = nextRetryDecision(this.retrySettings(), retryAttempt, isRetryableSameModelFailure(error));
 				if (
 					decision === undefined ||
 					this.disposed ||

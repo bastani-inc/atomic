@@ -13,6 +13,7 @@ export type {
 export {
 	errorMessage,
 	isRetryableModelFailure,
+	isRetryableSameModelFailure,
 	modelFailureMessage,
 	normalizeModelFailureSignal,
 } from "@bastani/atomic";

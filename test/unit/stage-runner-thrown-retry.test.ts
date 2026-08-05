@@ -308,6 +308,40 @@ describe("createStageContext — thrown model failure retry", () => {
 		);
 	});
 
+	test("session creation advances immediately on auth and request-incompatible failures", async () => {
+		for (const failure of ["401 unauthorized during create", "400 bad request during create"]) {
+			const created: string[] = [];
+			const settings = retrySettings();
+			const settingsManager = {
+				getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+				getRetrySettings: () => settings,
+			};
+			const agentSession: AgentSessionAdapter = {
+				async create(options) {
+					const model = modelFor(options);
+					created.push(model);
+					if (model === "anthropic/primary") throw new Error(failure);
+					return sessionWithSettings(settings, async () => "fallback answer", {
+						getLastAssistantText: () => "fallback answer",
+					});
+				},
+			};
+			const ctx = createStageContext(
+				makeOpts({
+					adapters: { agentSession },
+					stageOptions: {
+						model: "anthropic/primary",
+						fallbackModels: ["openai/fallback"],
+						settingsManager: settingsManager as never,
+					},
+				}),
+			) as InternalStageContext;
+
+			assert.equal(await ctx.prompt("go"), "fallback answer");
+			assert.deepEqual(created, ["anthropic/primary", "openai/fallback"]);
+		}
+	});
+
 	test("disabled retry advances immediately without another prompt", async () => {
 		const calls: string[] = [];
 		const settings = retrySettings({ enabled: false });
@@ -337,7 +371,7 @@ describe("createStageContext — thrown model failure retry", () => {
 		assert.deepEqual(calls, ["anthropic/primary", "openai/fallback"]);
 	});
 
-	test("retries auth and request-incompatible thrown failures before advancing", async () => {
+	test("auth and request-incompatible thrown failures advance immediately without same-model retry", async () => {
 		for (const failure of ["401 unauthorized", "400 bad request"]) {
 			const calls: string[] = [];
 			const settings = retrySettings();
@@ -363,7 +397,7 @@ describe("createStageContext — thrown model failure retry", () => {
 			) as InternalStageContext;
 
 			assert.equal(await ctx.prompt("go"), "fallback answer");
-			assert.deepEqual(calls, ["anthropic/primary", "anthropic/primary", "anthropic/primary", "openai/fallback"]);
+			assert.deepEqual(calls, ["anthropic/primary", "openai/fallback"]);
 		}
 	});
 
