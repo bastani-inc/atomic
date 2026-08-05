@@ -22,8 +22,14 @@ import {
 } from "@bastani/atomic-natives";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agent-types.ts";
-import { ensureArtifactsDir, getArtifactPaths, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
-import { DEFAULT_MAX_OUTPUT, type JsonSchemaObject, type MaxOutputConfig, truncateOutput } from "../../shared/types.ts";
+import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
+import {
+	type ArtifactPaths,
+	DEFAULT_MAX_OUTPUT,
+	type JsonSchemaObject,
+	type MaxOutputConfig,
+	truncateOutput,
+} from "../../shared/types.ts";
 import {
 	formatStructuredOutputCorrectionPrompt,
 	readStructuredOutput,
@@ -152,6 +158,12 @@ export interface ResultEnvelope {
 	readonly artifactsDir?: string;
 	readonly durationMs?: number;
 	readonly timestamp: number;
+}
+
+export interface DeliverChildResultOptions {
+	readonly artifactsDir?: string;
+	readonly artifactPaths?: ArtifactPaths;
+	readonly maxOutput?: MaxOutputConfig;
 }
 
 export interface AdmittedResult {
@@ -306,6 +318,16 @@ function boundedEnvelope(output: string, artifactPath?: string, maxOutput?: MaxO
 	return result.truncated && artifactPath ? `${result.text}\n\nFull output: ${artifactPath}` : result.text;
 }
 
+function canonicalArtifactPaths(artifactsDir: string, childPath: string): ArtifactPaths {
+	const prefix = childPath.replaceAll("/", "_");
+	return {
+		inputPath: join(artifactsDir, `${prefix}_input.md`),
+		outputPath: join(artifactsDir, `${prefix}_output.md`),
+		jsonlPath: join(artifactsDir, `${prefix}.jsonl`),
+		metadataPath: join(artifactsDir, `${prefix}_meta.json`),
+	};
+}
+
 function validatePath(pathValue: string): void {
 	if (
 		!pathValue ||
@@ -401,6 +423,7 @@ export class SubagentControlRuntime {
 	readonly sessionRoot: string;
 	private readonly sessions = new Map<string, AgentSession>();
 	private readonly specs = new Map<string, ChildSpec>();
+	private readonly sessionFiles = new Map<string, string>();
 	private readonly runningAttempts = new Map<number, RunningAttempt>();
 	private readonly attemptTokens = new Map<string, number>();
 	private readonly attemptTerminators = new Map<string, (cause: TerminationCauseName) => Promise<void>>();
@@ -511,6 +534,7 @@ export class SubagentControlRuntime {
 		});
 		try {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
+			if (admitted.sessionFile) mkdirSync(dirname(admitted.sessionFile), { recursive: true });
 			const sessionManager = admitted.sessionFile
 				? SessionManager.open(admitted.sessionFile, admitted.sessionDir, admitted.policy.cwd)
 				: SessionManager.create(
@@ -552,6 +576,7 @@ export class SubagentControlRuntime {
 						initialContextTransform: promptBehavior.initialContextTransform,
 					});
 			session = created.session;
+			if (session.sessionFile) this.sessionFiles.set(admitted.identity.path, session.sessionFile);
 			this.sessions.set(admitted.identity.path, session);
 			unsubscribe = session.subscribe((event) => {
 				writeEvent(admitted.spec.artifactJsonlPath, event);
@@ -644,6 +669,11 @@ export class SubagentControlRuntime {
 				// Listener teardown must not replace the attempt result.
 			}
 			try {
+				activeSessionManager?.flush();
+			} catch {
+				// Persistence teardown must not replace the attempt result.
+			}
+			try {
 				session?.dispose();
 			} catch {
 				// Session teardown must not replace the attempt result.
@@ -707,7 +737,7 @@ export class SubagentControlRuntime {
 			return {
 				refusal: { kind: "unknownAgent", reason: "unknown child identity" },
 			};
-		const sessionFile = this.findSessionFile(sessionDir);
+		const sessionFile = this.sessionFiles.get(pathValue) ?? this.findSessionFile(sessionDir);
 		if (!sessionFile)
 			return {
 				refusal: {
@@ -772,32 +802,23 @@ export class SubagentControlRuntime {
 		await running.promise;
 	}
 
-	async deliverChildResult(
-		envelope: ResultEnvelope,
-		options?: {
-			readonly artifactsDir?: string;
-			readonly maxOutput?: MaxOutputConfig;
-		},
-	): Promise<void> {
+	async deliverChildResult(envelope: ResultEnvelope, options?: DeliverChildResultOptions): Promise<void> {
 		if (this.delivered.has(envelope.path)) return;
 		this.delivered.add(envelope.path);
-		this.deliveredEnvelopes.set(envelope.path, envelope);
 		const artifactDir = options?.artifactsDir ?? envelope.artifactsDir;
-		if (!artifactDir) return;
+		const paths =
+			options?.artifactPaths ?? (artifactDir ? canonicalArtifactPaths(artifactDir, envelope.path) : undefined);
+		const bounded = boundedEnvelope(envelope.envelope, paths?.outputPath, options?.maxOutput);
+		const deliveredEnvelope = { ...envelope, envelope: bounded };
+		this.deliveredEnvelopes.set(envelope.path, deliveredEnvelope);
+		if (!artifactDir || !paths) return;
 		ensureArtifactsDir(artifactDir);
-		const paths = getArtifactPaths(artifactDir, envelope.path.replaceAll("/", "_"), envelope.path);
-		const bounded = boundedEnvelope(envelope.envelope, paths.outputPath, options?.maxOutput);
 		writeArtifact(paths.outputPath, envelope.envelope);
 		writeMetadata(paths.metadataPath, {
-			...envelope,
-			envelope: bounded,
+			...deliveredEnvelope,
 			outputPath: paths.outputPath,
 		});
-		appendFileSync(
-			join(artifactDir, "run-history.jsonl"),
-			`${JSON.stringify({ ...envelope, envelope: bounded })}\n`,
-			"utf8",
-		);
+		appendFileSync(join(artifactDir, "run-history.jsonl"), `${JSON.stringify(deliveredEnvelope)}\n`, "utf8");
 	}
 
 	getDeliveredResult(pathValue: string): ResultEnvelope | undefined {
@@ -940,10 +961,7 @@ export function terminate_child_attempt(
 export function deliver_child_result(
 	control: SubagentControlRuntime,
 	envelope: ResultEnvelope,
-	options?: {
-		readonly artifactsDir?: string;
-		readonly maxOutput?: MaxOutputConfig;
-	},
+	options?: DeliverChildResultOptions,
 ): Promise<void> {
 	return control.deliverChildResult(envelope, options);
 }

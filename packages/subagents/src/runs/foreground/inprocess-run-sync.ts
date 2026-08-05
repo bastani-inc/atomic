@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig } from "../../agents/agent-types.ts";
-import { ensureArtifactsDir, getArtifactPaths, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
+import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.ts";
 import type {
 	AgentProgress,
 	ArtifactPaths,
@@ -243,22 +243,23 @@ export async function runSingleInProcess(
 		void running.promise.then(
 			async (backgroundOutcome) => {
 				const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths);
-				if (artifactPaths) {
-					await control.deliverChildResult(
-						{
-							path: backgroundOutcome.path,
-							status: backgroundOutcome.status,
-							...(backgroundOutcome.status === "error" ? { cause: backgroundOutcome.cause } : {}),
-							stats: backgroundOutcome.stats,
-							envelope: backgroundOutcome.envelope,
-							sessionFile: backgroundOutcome.sessionFile,
-							timestamp: Date.now(),
-							artifactsDir: options.artifactsDir,
-						},
-						{ artifactsDir: options.artifactsDir, maxOutput: options.maxOutput },
-					);
-					writeArtifact(artifactPaths.outputPath, recovered.envelope ?? recovered.finalOutput ?? "");
-					writeMetadata(artifactPaths.metadataPath, recovered);
+				await control.deliverChildResult(
+					{
+						path: backgroundOutcome.path,
+						status: backgroundOutcome.status,
+						...(backgroundOutcome.status === "error" ? { cause: backgroundOutcome.cause } : {}),
+						stats: backgroundOutcome.stats,
+						envelope: backgroundOutcome.envelope,
+						sessionFile: backgroundOutcome.sessionFile,
+						timestamp: Date.now(),
+						artifactsDir: options.artifactsDir,
+					},
+					{ artifactsDir: options.artifactsDir, artifactPaths, maxOutput: options.maxOutput },
+				);
+				const delivered = control.getDeliveredResult(backgroundOutcome.path);
+				if (delivered) {
+					recovered.envelope = delivered.envelope;
+					recovered.finalOutput = delivered.envelope;
 				}
 				options.onDetachedExit?.(recovered);
 			},
@@ -313,11 +314,25 @@ export async function runSingleInProcess(
 	const winner = await Promise.race([terminal, continuation.then(() => ({ kind: "continued" as const }))]);
 	if (winner.kind === "continued") {
 		detachCleanup();
-		void running.promise.then((backgroundOutcome) => {
+		void running.promise.then(async (backgroundOutcome) => {
 			const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths);
-			if (artifactPaths) {
-				writeArtifact(artifactPaths.outputPath, recovered.envelope ?? recovered.finalOutput ?? "");
-				writeMetadata(artifactPaths.metadataPath, recovered);
+			await control.deliverChildResult(
+				{
+					path: backgroundOutcome.path,
+					status: backgroundOutcome.status,
+					...(backgroundOutcome.status === "error" ? { cause: backgroundOutcome.cause } : {}),
+					stats: backgroundOutcome.stats,
+					envelope: backgroundOutcome.envelope,
+					sessionFile: backgroundOutcome.sessionFile,
+					timestamp: Date.now(),
+					artifactsDir: options.artifactsDir,
+				},
+				{ artifactsDir: options.artifactsDir, artifactPaths, maxOutput: options.maxOutput },
+			);
+			const delivered = control.getDeliveredResult(backgroundOutcome.path);
+			if (delivered) {
+				recovered.envelope = delivered.envelope;
+				recovered.finalOutput = delivered.envelope;
 			}
 			options.onDetachedExit?.(recovered);
 		});
@@ -354,20 +369,23 @@ export async function runSingleInProcess(
 	detachCleanup();
 	const outcome = winner.value;
 	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths);
-	if (artifactPaths) {
-		await control.deliverChildResult(
-			{
-				path: outcome.path,
-				status: outcome.status,
-				...(outcome.status === "error" ? { cause: outcome.cause } : {}),
-				stats: outcome.stats,
-				envelope: outcome.envelope,
-				sessionFile: outcome.sessionFile,
-				timestamp: Date.now(),
-				artifactsDir: options.artifactsDir,
-			},
-			{ artifactsDir: options.artifactsDir, maxOutput: options.maxOutput },
-		);
+	await control.deliverChildResult(
+		{
+			path: outcome.path,
+			status: outcome.status,
+			...(outcome.status === "error" ? { cause: outcome.cause } : {}),
+			stats: outcome.stats,
+			envelope: outcome.envelope,
+			sessionFile: outcome.sessionFile,
+			timestamp: Date.now(),
+			artifactsDir: options.artifactsDir,
+		},
+		{ artifactsDir: options.artifactsDir, artifactPaths, maxOutput: options.maxOutput },
+	);
+	const delivered = control.getDeliveredResult(outcome.path);
+	if (delivered) {
+		result.envelope = delivered.envelope;
+		result.finalOutput = delivered.envelope;
 	}
 	const update: SubagentToolResult = {
 		content: [{ type: "text", text: result.finalOutput ?? "(no output)" }],

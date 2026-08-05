@@ -20,6 +20,10 @@
 - Child prompt behavior now enters in-process `AgentSession` construction through typed admission policy: boundary instructions, project-context and inherited-skill filtering, orchestration-skill removal, and parent-only message filtering no longer depend on the process-era extension injection path ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 - Child MCP direct-tool selection and Intercom identity/capability now cross the in-process admission boundary as typed policy; omitted MCP selection preserves defaults, empty selection disables direct tools, and supervisor grants are never inherited through environment ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
+### Fixed
+
+- Fixed in-process parallel siblings colliding on the same canonical identity and terminal artifact path, and fixed async completions omitting their persisted result envelope from the parent notification ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
 ### Removed
 
 - Removed every remaining OS child-process code path from subagent execution, satisfying the spec's zero-process goal: the detached jiti async runner and its twelve `subagent-runner*` modules, the `async-execution-*` spawn layer, the async event journal, the idle/wall attempt watchdog, the stdout drain grace, the CLI spawn resolver, the environment-bridge builder, and the post-exit stdio guard ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).

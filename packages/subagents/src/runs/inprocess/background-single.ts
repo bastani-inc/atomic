@@ -138,10 +138,26 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 		skills: resolvedSkills.map((skill) => skill.name),
 		testSession: params.testSession,
 		onDetachedExit: (completed) => {
+			const envelope = completed.envelope?.trim() ? completed.envelope : "(no output)";
 			ctx.pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				id,
+				runId: id,
 				asyncDir,
+				agent,
 				success: completed.status === "ok",
+				summary: envelope,
+				envelope,
+				timestamp: Date.now(),
+				sessionFile: completed.sessionFile,
+				results: [
+					{
+						agent,
+						output: envelope,
+						success: completed.status === "ok",
+						index: 0,
+						intercomTarget: childIntercomTarget?.(agent, 0),
+					},
+				],
 				result: completed,
 			});
 		},

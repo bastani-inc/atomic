@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
+import {
+	clearSubagentControls,
+	findSubagentControl,
+} from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import {
 	interruptInProcessNestedAttempt,
 	resumeInProcessNestedAttempt,
@@ -146,6 +150,105 @@ test("background continuation returns the child identity before the in-process s
 		assert.equal(completed.status, "ok");
 	} finally {
 		gate.resolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("parallel siblings share one control plane and persist distinct terminal artifacts", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-parallel-"));
+	const artifactsDir = join(root, "artifacts");
+	const sessionRoot = join(root, "sessions");
+	clearSubagentControls();
+	try {
+		const results = await Promise.all(
+			[0, 1, 2].map((index) =>
+				runSingleInProcess(root, sampleAgent(), `inspect fixture ${index}`, {
+					cwd: root,
+					runId: "parallel-parent",
+					index,
+					sessionDir: join(sessionRoot, `run-${index}`),
+					sessionFile: join(sessionRoot, `run-${index}`, "session.jsonl"),
+					artifactsDir,
+					artifactConfig: {
+						enabled: true,
+						includeInput: true,
+						includeOutput: true,
+						includeJsonl: true,
+						includeMetadata: true,
+						cleanupDays: 7,
+					},
+					testSession: { output: `result ${index}` },
+				}),
+			),
+		);
+
+		assert.deepEqual(
+			results.map((result) => result.path),
+			["parallel-parent/analysis_1", "parallel-parent/analysis_2", "parallel-parent/analysis_3"],
+		);
+		assert.deepEqual(
+			results.map((result) => result.status),
+			["ok", "ok", "ok"],
+		);
+		for (const [index, result] of results.entries()) {
+			assert.ok(result.artifactPaths);
+			assert.equal(readFileSync(result.artifactPaths.outputPath, "utf8"), `result ${index}`);
+			assert.equal(existsSync(result.artifactPaths.metadataPath), true);
+		}
+		const history = readFileSync(join(artifactsDir, "run-history.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { path: string });
+		assert.deepEqual(history.map((entry) => entry.path).sort(), [
+			"parallel-parent/analysis_1",
+			"parallel-parent/analysis_2",
+			"parallel-parent/analysis_3",
+		]);
+		const thirdPath = results[2]?.path;
+		assert.ok(thirdPath);
+		const control = findSubagentControl(thirdPath);
+		assert.ok(control);
+		const resumed = await control.resumeChild(thirdPath, "inspect one more fixture", {});
+		assert.equal(resumed.status, "ok", resumed.status === "error" ? resumed.cause : undefined);
+		assert.equal(resumed.path, thirdPath);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("terminal artifacts use the configured prefix exactly once", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-artifact-prefix-"));
+	const artifactsDir = join(root, "artifacts");
+	clearSubagentControls();
+	try {
+		const result = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+			cwd: root,
+			runId: "prefix-parent",
+			index: 1,
+			sessionDir: join(root, "sessions", "run-1"),
+			sessionFile: join(root, "sessions", "run-1", "session.jsonl"),
+			artifactsDir,
+			artifactConfig: {
+				enabled: true,
+				includeInput: true,
+				includeOutput: true,
+				includeJsonl: true,
+				includeMetadata: true,
+				cleanupDays: 7,
+			},
+			testSession: { output: "terminal result" },
+		});
+
+		assert.equal(result.status, "ok");
+		assert.deepEqual(
+			readdirSync(artifactsDir)
+				.filter((name) => name.endsWith("_output.md") || name.endsWith("_meta.json"))
+				.sort(),
+			["prefix-parent_analysis_1_meta.json", "prefix-parent_analysis_1_output.md"],
+		);
+	} finally {
+		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
 	}
 });
