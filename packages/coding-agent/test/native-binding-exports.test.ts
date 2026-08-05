@@ -2,9 +2,14 @@ import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 const EXPECTED_NATIVE_EXPORTS = [
+	"AdmissionRefusalKind",
+	"AgentStatus",
 	"FileType",
 	"GrepOutputMode",
+	"NapiSubagentControl",
 	"PtySession",
+	"SubagentControl",
+	"TerminationCause",
 	"blockRangeAt",
 	"glob",
 	"grep",
