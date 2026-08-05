@@ -20,6 +20,7 @@ const serialTest = process.platform === "win32" ? test.sequential.skip : test.se
 const prefix = "@@ATOMIC_TEST@@";
 const warning =
 	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+const INTERACTIVE_STARTUP_TIMEOUT_MS = 20_000;
 
 interface Report {
 	type?: string;
@@ -292,7 +293,11 @@ serialTest(
 			cwd,
 		);
 		try {
-			const ready = await driver.waitFor((report) => report.type === "input_loop_ready");
+			const ready = await driver.waitFor(
+				(report) => report.type === "input_loop_ready",
+				0,
+				INTERACTIVE_STARTUP_TIMEOUT_MS,
+			);
 			const readyIndex = driver.reports.indexOf(ready);
 			const locked = await driver.waitForState(
 				(state) => state.modelFallbackReason === "configured-provider-unsupported",

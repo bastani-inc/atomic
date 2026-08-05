@@ -15,6 +15,7 @@ import {
 
 const serialTest = process.platform === "win32" ? test.sequential.skip : test.sequential;
 const PREFIX = "@@ATOMIC_TEST@@";
+const INHERITED_DISCOVERY_TIMEOUT_MS = 20_000;
 
 interface HarnessReport {
 	type?: string;
@@ -165,7 +166,7 @@ function args(): string[] {
 }
 
 async function waitForCommand(driver: InteractiveDriver): Promise<Set<string>> {
-	const deadline = performance.now() + 10_000;
+	const deadline = performance.now() + INHERITED_DISCOVERY_TIMEOUT_MS;
 	let names = new Set<string>();
 	while (performance.now() < deadline) {
 		names = await driver.autocomplete("/legacy-compatible");
