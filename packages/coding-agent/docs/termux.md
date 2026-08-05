@@ -2,7 +2,7 @@
 
 Atomic runs on Android via [Termux](https://termux.dev/), a terminal emulator and Linux environment for Android.
 
-Termux uses Android's bionic libc, not Alpine's musl libc. Atomic's Alpine musl archives target x64 and arm64 musl Linux only; they are not Termux packages and do not provide an Android target. Android ARM64 still has no Atomic native target, so musl support does not change Termux's native-addon limitations.
+Termux uses Android's bionic libc, not Alpine's musl libc. Do not run the root `install.sh` there: Atomic's glibc and musl Linux release archives are not Android packages and do not provide a Termux target. Use the npm path below. Android ARM64 still has no Atomic native target, so musl support does not change Termux's native-addon limitations.
 
 ## Prerequisites
 
