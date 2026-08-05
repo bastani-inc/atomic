@@ -170,7 +170,7 @@ fn build_regex_matcher(
 	RegexMatcherBuilder::new().case_insensitive(ignore_case).multi_line(multiline).build(pattern)
 }
 
-pub(super) fn build_matcher(
+pub fn build_matcher(
 	pattern: &str,
 	ignore_case: bool,
 	multiline: bool,

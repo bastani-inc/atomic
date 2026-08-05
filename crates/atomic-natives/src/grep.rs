@@ -366,5 +366,5 @@ mod pattern;
 mod run;
 mod walk;
 
-use pattern::build_matcher;
+pub use pattern::build_matcher;
 use run::{grep_sync, search_sync};
