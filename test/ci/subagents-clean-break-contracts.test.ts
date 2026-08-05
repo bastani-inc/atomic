@@ -71,6 +71,17 @@ const deletedModulePaths = [
 	"packages/subagents/src/runs/background/result-retry-scheduler.ts",
 	"packages/subagents/src/runs/background/result-status.ts",
 	"packages/subagents/src/runs/inprocess/runtime-support/process-args.ts",
+	"packages/subagents/src/runs/shared/nested-events-control.ts",
+	"packages/subagents/src/runs/shared/nested-events-core.ts",
+	"packages/subagents/src/runs/shared/nested-events-projection.ts",
+	"packages/subagents/src/runs/shared/nested-events-registry.ts",
+	"packages/subagents/src/runs/shared/nested-events-sanitize.ts",
+	"packages/subagents/src/runs/shared/nested-path.ts",
+	"packages/subagents/src/runs/shared/nested-render.ts",
+	"packages/subagents/src/runs/foreground/execution-attempt.ts",
+	"packages/subagents/src/runs/foreground/execution-attempt-control.ts",
+	"packages/subagents/src/runs/foreground/execution-attempt-finalize.ts",
+	"packages/subagents/src/runs/foreground/execution-attempt-types.ts",
 ] as const;
 
 const deletedModulePatterns = [
