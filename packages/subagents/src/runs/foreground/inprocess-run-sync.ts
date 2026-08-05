@@ -94,7 +94,12 @@ function resultFromOutcome(
 		interrupted: status === "interrupted" ? true : undefined,
 		messages: [],
 		usage: usageFromStats(outcome.stats),
-		model: undefined,
+		model: outcome.status === "ok" || outcome.status === "error" ? outcome.model : undefined,
+		...(outcome.status === "ok" || outcome.status === "error"
+			? outcome.attemptedModels?.length
+				? { attemptedModels: [...outcome.attemptedModels] }
+				: {}
+			: {}),
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
 		...(outcome.status === "ok" && outcome.structuredOutput !== undefined
@@ -167,6 +172,7 @@ export async function runSingleInProcess(
 	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
 		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
 	const candidate = filteredCandidates.candidates[0];
+	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	const orchestrationContext = workflowOrchestrationContext(options);
 	const parent: ParentContext = {
 		path: options.runId,
@@ -225,6 +231,7 @@ export async function runSingleInProcess(
 				}
 			: undefined,
 		artifactJsonlPath: artifactPaths?.jsonlPath,
+		...(fallbackCandidates.length ? { fallbackModels: fallbackCandidates } : {}),
 		onProgress: options.onUpdate
 			? (progress) => {
 					const liveProgress = { ...progress, index: options.index ?? 0 };
@@ -390,6 +397,8 @@ export async function runSingleInProcess(
 	detachCleanup();
 	const outcome = winner.value;
 	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths);
+	if (filteredCandidates.skippedAttempts.length)
+		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];
 	await control.deliverChildResult(
 		{
 			path: outcome.path,

@@ -83,6 +83,12 @@ export interface ChildSpec {
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly structuredOutput?: { readonly schema: JsonSchemaObject; readonly outputPath: string };
 	readonly artifactJsonlPath?: string;
+	/**
+	 * Fallback model candidates (full ids, optional `:thinking` suffix) handed to
+	 * the SDK session so child fallback uses the exact classification and
+	 * candidate-advancement behavior main chat and workflow stages share.
+	 */
+	readonly fallbackModels?: readonly string[];
 	/** Live progress callback for the parent's tool-result rendering. */
 	readonly onProgress?: (progress: AgentProgress) => void;
 }
@@ -122,6 +128,8 @@ export type AttemptOutcome =
 			readonly envelope: string;
 			readonly sessionFile?: string;
 			readonly structuredOutput?: unknown;
+			readonly model?: string;
+			readonly attemptedModels?: readonly string[];
 	  }
 	| {
 			readonly status: "error";
@@ -131,6 +139,8 @@ export type AttemptOutcome =
 			readonly envelope: string;
 			readonly sessionFile?: string;
 			readonly fallbackSignal?: string;
+			readonly model?: string;
+			readonly attemptedModels?: readonly string[];
 	  }
 	| {
 			readonly status: "interrupted";
@@ -647,6 +657,9 @@ export class SubagentControlRuntime {
 						cwd: admitted.policy.cwd,
 						model: candidate.model ?? admitted.policy.model,
 						thinkingLevel: candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
+						...(admitted.spec.fallbackModels?.length
+							? { fallbackModels: [...admitted.spec.fallbackModels] }
+							: {}),
 						tools: admitted.policy.tools ? [...admitted.policy.tools] : undefined,
 						excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
 						customTools: admitted.policy.customTools,
@@ -661,6 +674,12 @@ export class SubagentControlRuntime {
 			session = created.session;
 			if (session.sessionFile) this.sessionFiles.set(admitted.identity.path, session.sessionFile);
 			this.sessions.set(admitted.identity.path, session);
+			const initialModelId =
+				candidate.modelId ??
+				(candidate.model ? `${candidate.model.provider}/${candidate.model.id}` : undefined) ??
+				(admitted.policy.model ? `${admitted.policy.model.provider}/${admitted.policy.model.id}` : undefined);
+			let effectiveModelId = initialModelId;
+			const attemptedModels: string[] = initialModelId ? [initialModelId] : [];
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,
@@ -721,6 +740,10 @@ export class SubagentControlRuntime {
 				} else {
 					emitProgress(false);
 				}
+				if (event.type === "model_fallback_start") {
+					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
+					effectiveModelId = event.to;
+				}
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
@@ -766,6 +789,8 @@ export class SubagentControlRuntime {
 					path: admitted.identity.path,
 					envelope,
 					sessionFile,
+					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
 					...(structuredOutput === undefined ? {} : { structuredOutput }),
 				};
 			return {
@@ -775,6 +800,8 @@ export class SubagentControlRuntime {
 				path: admitted.identity.path,
 				envelope,
 				sessionFile,
+				...(status === "error" && effectiveModelId !== undefined ? { model: effectiveModelId } : {}),
+				...(status === "error" && attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
 			};
 		} catch (error) {
 			const stats = statsFor(session, admitted.identity.path);
