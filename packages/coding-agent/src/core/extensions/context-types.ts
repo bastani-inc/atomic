@@ -72,8 +72,9 @@ export interface WorkflowStageOrchestrationContext {
 export interface SubagentChildPolicy {
 	readonly managementActions: "full" | "restricted";
 	readonly fanoutAuthorized: boolean;
+	readonly inheritProjectContext: boolean;
+	readonly inheritSkills: boolean;
 }
-
 // Union alias kept for forward-compatible orchestration context variants.
 export type OrchestrationContext = WorkflowStageOrchestrationContext;
 

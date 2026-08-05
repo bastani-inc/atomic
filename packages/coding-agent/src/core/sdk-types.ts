@@ -1,4 +1,4 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "./agent-session.ts";
 import type {
@@ -80,6 +80,10 @@ export interface CreateAgentSessionOptions {
 	orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child. */
 	subagentPolicy?: SubagentChildPolicy;
+	/** Transform the fully constructed base system prompt at session construction. */
+	systemPromptTransform?: (prompt: string) => string;
+	/** Filter inherited session messages before they enter the new AgentSession. */
+	initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
 }
 
 /** Result from createAgentSession */

@@ -14,8 +14,7 @@ import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
-import { stripParentOnlySubagentMessages } from "../../packages/subagents/src/runs/shared/subagent-prompt-runtime.js";
+import { stripParentOnlySubagentMessages } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import type { SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
 import { resolveTopLevelParallelMaxTasks } from "../../packages/subagents/src/shared/types.js";
 import {
@@ -210,30 +209,23 @@ describe("recent upstream subagent syncs", () => {
 	});
 
 	test("preserves live nested subagent history in fanout child context", () => {
-		const previous = process.env[SUBAGENT_FANOUT_CHILD_ENV];
-		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
-		try {
-			const user = { role: "user", content: "Task" };
-			const subagentCall = {
-				role: "assistant",
-				content: [{ type: "toolCall", name: "subagent", input: { agent: "delegate" } }],
-			};
-			const subagentResult = { role: "toolResult", toolName: "subagent", content: "OK" };
-			const slashTextResult = {
-				role: "custom",
-				customType: "subagent-slash-text-result",
-				content: "Subagent profiles",
-			};
+		const user = { role: "user", content: "Task" };
+		const subagentCall = {
+			role: "assistant",
+			content: [{ type: "toolCall", name: "subagent", input: { agent: "delegate" } }],
+		};
+		const subagentResult = { role: "toolResult", toolName: "subagent", content: "OK" };
+		const slashTextResult = {
+			role: "custom",
+			customType: "subagent-slash-text-result",
+			content: "Subagent profiles",
+		};
 
-			assert.deepEqual(stripParentOnlySubagentMessages([user, subagentCall, subagentResult, slashTextResult]), [
-				user,
-				subagentCall,
-				subagentResult,
-			]);
-		} finally {
-			if (previous === undefined) delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			else process.env[SUBAGENT_FANOUT_CHILD_ENV] = previous;
-		}
+		assert.deepEqual(stripParentOnlySubagentMessages([user, subagentCall, subagentResult, slashTextResult], true), [
+			user,
+			subagentCall,
+			subagentResult,
+		]);
 	});
 
 	test("omits provider-rejected chain schema keywords", () => {

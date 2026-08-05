@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import type { ExtensionAPI, ToolDefinition } from "../../packages/coding-agent/src/index.js";
+import { rewriteSubagentPrompt } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import {
 	cleanupStructuredOutputRuntime,
 	createStructuredOutputRuntime,
@@ -13,9 +14,7 @@ import {
 	STRUCTURED_OUTPUT_MISSING_ERROR,
 	STRUCTURED_OUTPUT_SCHEMA_ENV,
 } from "../../packages/subagents/src/runs/shared/structured-output.js";
-import registerSubagentPromptRuntime, {
-	rewriteSubagentPrompt,
-} from "../../packages/subagents/src/runs/shared/subagent-prompt-runtime.js";
+import registerSubagentPromptRuntime from "../../packages/subagents/src/runs/shared/subagent-prompt-runtime.js";
 
 const objectSchema = {
 	type: "object",

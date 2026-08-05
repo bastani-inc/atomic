@@ -5,6 +5,7 @@
 ### Added
 
 - `CreateAgentSessionOptions` and `ExtensionContext` now carry an immutable typed subagent child capability policy for in-process tool registration ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- `CreateAgentSessionOptions` now supports construction-time system-prompt and inherited-context transforms, allowing in-process child sessions to apply typed policy without extension injection ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
 ### Fixed
 

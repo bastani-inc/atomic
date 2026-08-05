@@ -114,7 +114,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
-	const existingMessages = repairOrphanToolResults(existingSession.messages, { repairTrailing: true });
+	const repairedMessages = repairOrphanToolResults(existingSession.messages, { repairTrailing: true });
+	const existingMessages = options.initialContextTransform
+		? options.initialContextTransform(repairedMessages)
+		: repairedMessages;
 	const hasExistingSession = existingMessages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
@@ -378,6 +381,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionStartEvent: options.sessionStartEvent,
 		orchestrationContext: options.orchestrationContext,
 		subagentPolicy: options.subagentPolicy,
+		systemPromptTransform: options.systemPromptTransform,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

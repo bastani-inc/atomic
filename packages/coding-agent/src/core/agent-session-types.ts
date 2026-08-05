@@ -157,6 +157,7 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: import("./extensions/index.ts").ExtensionRunner };
 	sessionStartEvent?: SessionStartEvent;
 	subagentPolicy?: SubagentChildPolicy;
+	systemPromptTransform?: (prompt: string) => string;
 	orchestrationContext?: OrchestrationContext;
 }
 

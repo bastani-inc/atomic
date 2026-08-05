@@ -29,6 +29,7 @@ import {
 	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
 } from "../shared/structured-output.ts";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.ts";
+import { createInProcessChildPromptBehavior } from "./prompt-behavior.ts";
 
 export type ChildStatus = NativeAgentStatus;
 export type ContinuationReason = "async-requested" | "intercom-coordination";
@@ -507,12 +508,19 @@ export class SubagentControlRuntime {
 					);
 			if (workflow) sessionManager.markSessionInternal(workflow);
 			const settingsManager = SettingsManager.create(admitted.policy.cwd, getAgentDir());
+			const agentPrompt = admitted.spec.agent.systemPrompt?.trim();
 			const resourceLoader = new DefaultResourceLoader({
 				cwd: admitted.policy.cwd,
 				agentDir: getAgentDir(),
 				settingsManager,
+				...(agentPrompt && admitted.spec.agent.systemPromptMode === "append"
+					? { appendSystemPrompt: [agentPrompt] }
+					: agentPrompt
+						? { systemPrompt: agentPrompt }
+						: {}),
 			});
 			await resourceLoader.reload();
+			const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
 			const created = admitted.spec.testSession
 				? { session: createTestSession(sessionManager, admitted.spec) }
 				: await createAgentSession({
@@ -527,6 +535,8 @@ export class SubagentControlRuntime {
 						settingsManager,
 						orchestrationContext: admitted.spec.parent?.orchestrationContext,
 						subagentPolicy: admitted.policy,
+						systemPromptTransform: promptBehavior.systemPromptTransform,
+						initialContextTransform: promptBehavior.initialContextTransform,
 					});
 			session = created.session;
 			this.sessions.set(admitted.identity.path, session);

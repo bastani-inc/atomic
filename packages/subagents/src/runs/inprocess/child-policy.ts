@@ -11,11 +11,17 @@ export type ChildModePolicy = SubagentChildPolicy;
  */
 export function resolveChildModePolicy(spec: {
 	readonly tools?: readonly string[];
-	readonly agent: { readonly tools?: readonly string[] };
+	readonly agent: {
+		readonly tools?: readonly string[];
+		readonly inheritProjectContext: boolean;
+		readonly inheritSkills: boolean;
+	};
 }): ChildModePolicy {
 	const tools = spec.tools ?? spec.agent.tools;
 	return {
 		managementActions: "restricted",
 		fanoutAuthorized: tools?.includes("subagent") === true,
+		inheritProjectContext: spec.agent.inheritProjectContext,
+		inheritSkills: spec.agent.inheritSkills,
 	};
 }

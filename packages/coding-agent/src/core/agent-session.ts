@@ -149,6 +149,7 @@ class AgentSessionBase {
 	protected _toolPromptGuidelines: Map<string, string[]> = new Map();
 	protected _baseSystemPrompt = "";
 	protected _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	protected _systemPromptTransform?: (prompt: string) => string;
 	protected _systemPromptOverride?: string;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	protected _asyncJobManager: AsyncJobManager;
@@ -172,6 +173,7 @@ class AgentSessionBase {
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;
 		this._subagentPolicy = config.subagentPolicy;
+		this._systemPromptTransform = config.systemPromptTransform;
 		const stageContext =
 			config.orchestrationContext?.kind === "workflow-stage" ? config.orchestrationContext : undefined;
 		this._workflowStageAdmission =

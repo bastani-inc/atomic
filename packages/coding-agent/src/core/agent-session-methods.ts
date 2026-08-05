@@ -465,6 +465,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_toolPromptGuidelines: Map<string, string[]>;
 	_baseSystemPrompt: string;
 	_baseSystemPromptOptions: BuildSystemPromptOptions;
+	_systemPromptTransform?: (prompt: string) => string;
 	_systemPromptOverride?: string;
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_asyncJobManager: AsyncJobManager;

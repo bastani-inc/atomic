@@ -365,6 +365,8 @@ describe("programmatic subagent tool boundary", () => {
 			registerFanoutChildSubagentExtension(pi, {
 				managementActions: "restricted",
 				fanoutAuthorized: true,
+				inheritProjectContext: false,
+				inheritSkills: false,
 			});
 
 			assert.ok(registered);
