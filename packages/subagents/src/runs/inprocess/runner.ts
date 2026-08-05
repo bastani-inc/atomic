@@ -17,6 +17,7 @@ import {
 	type ChildIdentity,
 	type NativeAdmissionResult,
 	type AgentStatus as NativeAgentStatus,
+	type NativeExecutionGuardResult,
 	type TerminationCause as NativeTerminationCause,
 	SubagentControl,
 } from "@bastani/atomic-natives";
@@ -189,6 +190,33 @@ const EMPTY_STATS: AttemptStats = {
 	tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	cost: 0,
 };
+
+const CAPACITY_RETRY_INITIAL_DELAY_MS = 5;
+const CAPACITY_RETRY_MAX_DELAY_MS = 100;
+
+type CapacityWaitResult = "retry" | "abort" | "interrupt";
+
+function waitForExecutionCapacity(delayMs: number, signals: AttemptSignals): Promise<CapacityWaitResult> {
+	if (signals.interrupt.aborted) return Promise.resolve("interrupt");
+	if (signals.abort.aborted) return Promise.resolve("abort");
+	return new Promise((resolveWait) => {
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout>;
+		const settle = (result: CapacityWaitResult) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			signals.abort.removeEventListener("abort", onAbort);
+			signals.interrupt.removeEventListener("abort", onInterrupt);
+			resolveWait(result);
+		};
+		const onAbort = () => settle("abort");
+		const onInterrupt = () => settle("interrupt");
+		signals.abort.addEventListener("abort", onAbort, { once: true });
+		signals.interrupt.addEventListener("abort", onInterrupt, { once: true });
+		timer = setTimeout(() => settle("retry"), delayMs);
+	});
+}
 
 function workflowMetadataFromContext(
 	context: CreateAgentSessionOptions["orchestrationContext"] | undefined,
@@ -492,15 +520,43 @@ export class SubagentControlRuntime {
 		candidate: ModelCandidate,
 		signals: AttemptSignals,
 	): Promise<AttemptOutcome> {
-		const guard = this.native.beginChildAttempt(admitted.identity.path);
+		let guard: NativeExecutionGuardResult;
+		let retryDelayMs = CAPACITY_RETRY_INITIAL_DELAY_MS;
+		for (;;) {
+			guard = this.native.beginChildAttempt(admitted.identity.path);
+			if (guard.token || guard.refusal?.kind !== "capacityExhausted") break;
+			const waitResult = await waitForExecutionCapacity(retryDelayMs, signals);
+			if (waitResult !== "retry") {
+				const stats = { ...EMPTY_STATS, sessionId: admitted.identity.path };
+				const status = waitResult === "interrupt" ? "interrupted" : "error";
+				this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
+				return status === "interrupted"
+					? {
+							status,
+							stats,
+							path: admitted.identity.path,
+							envelope: boundedEnvelope(waitResult),
+						}
+					: {
+							status,
+							cause: waitResult,
+							stats,
+							path: admitted.identity.path,
+							envelope: boundedEnvelope(waitResult),
+						};
+			}
+			retryDelayMs = Math.min(retryDelayMs * 2, CAPACITY_RETRY_MAX_DELAY_MS);
+		}
 		if (!guard.token) {
+			const reason = guard.refusal?.reason ?? "child execution was refused";
 			const stats = { ...EMPTY_STATS, sessionId: admitted.identity.path };
+			this.native.publishChildStatus(admitted.identity.path, nativeStatus("error"));
 			return {
 				status: "error",
-				cause: guard.refusal?.reason ?? "child execution was refused",
+				cause: reason,
 				stats,
 				path: admitted.identity.path,
-				envelope: boundedEnvelope(guard.refusal?.reason ?? "child execution was refused"),
+				envelope: boundedEnvelope(reason),
 			};
 		}
 		const token = guard.token;

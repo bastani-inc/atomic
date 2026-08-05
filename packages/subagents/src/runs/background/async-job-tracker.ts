@@ -126,6 +126,7 @@ function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | n
 				: steps.some((step) => step.status === "paused")
 					? "paused"
 					: "complete";
+		if (status !== "running") continue;
 		jobs.set(control.parent.path, {
 			asyncId: control.parent.path,
 			asyncDir: control.parent.path,

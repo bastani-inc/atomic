@@ -2,6 +2,16 @@ import type { SubagentToolResult } from "../../shared/types.ts";
 import { findSubagentControl, listSubagentControls } from "./control-registry.ts";
 import type { ModelCandidate } from "./runner.ts";
 
+function canonicalChildren(control: NonNullable<ReturnType<typeof findSubagentControl>>) {
+	return [...control.listChildren()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function resumeTarget(control: NonNullable<ReturnType<typeof findSubagentControl>>, id: string) {
+	if (id !== control.parent.path) return control.findChild(id);
+	const children = canonicalChildren(control);
+	return children.find((child) => child.status === "interrupted") ?? children[0];
+}
+
 function childLines(control: ReturnType<typeof findSubagentControl>, id?: string): string[] {
 	if (!control) return [];
 	if (id) {
@@ -51,7 +61,7 @@ export function inspectInProcessChildStatus(id?: string): SubagentToolResult | u
 export async function interruptInProcessChild(id: string): Promise<SubagentToolResult | undefined> {
 	const control = findSubagentControl(id);
 	if (!control) return undefined;
-	const identities = control.listChildren();
+	const identities = canonicalChildren(control);
 	const candidates = id === control.parent.path ? identities : identities.filter((child) => child.path === id);
 	for (const child of candidates) {
 		if (await control.interruptChild(child.path)) {
@@ -75,9 +85,21 @@ export async function resumeInProcessChild(
 ): Promise<SubagentToolResult | undefined> {
 	const control = findSubagentControl(id);
 	if (!control) return undefined;
-	const outcome = await control.resumeChild(id, message, candidate);
+	const target = resumeTarget(control, id);
+	if (!target) {
+		return {
+			content: [{ type: "text", text: `No in-process child found for '${id}'.` }],
+			isError: true,
+			details: { mode: "management", results: [] },
+		};
+	}
+	const outcome = await control.resumeChild(target.path, message, candidate);
+	const selection =
+		id === control.parent.path && control.listChildren().length > 1
+			? `Bare run id resolved to ${target.path}; interrupted children are preferred, then canonical path order.\n\n`
+			: "";
 	return {
-		content: [{ type: "text", text: outcome.envelope }],
+		content: [{ type: "text", text: `${selection}${outcome.envelope}` }],
 		isError: outcome.status === "error" || outcome.status === "interrupted" ? true : undefined,
 		details: { mode: "management", results: [] },
 	};
