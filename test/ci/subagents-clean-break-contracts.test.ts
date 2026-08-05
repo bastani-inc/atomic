@@ -103,9 +103,21 @@ function trackedFiles(): string[] {
 		.filter((file) => file.length > 0);
 }
 
+function isChangelogPath(file: string): boolean {
+	return file.endsWith("CHANGELOG.md") || file.endsWith("/changelog.mdx");
+}
+
+function guardedSource(file: string): string {
+	const source = readFileSync(join(root, file), "utf8");
+	if (!isChangelogPath(file)) return source;
+	const start = source.indexOf("## [Unreleased]");
+	if (start < 0) return "";
+	const nextSection = source.indexOf("\n## [", start + "## [Unreleased]".length);
+	return source.slice(start, nextSection < 0 ? source.length : nextSection);
+}
+
 function scanPath(file: string): boolean {
 	if (file === guardPath || file.startsWith("specs/") || file.startsWith("research/")) return false;
-	if (file.endsWith("CHANGELOG.md") || file.endsWith("/changelog.mdx")) return false;
 	if (file.startsWith("packages/coding-agent/dist/")) return false;
 	if (file.includes("/test/") || file.startsWith("test/")) return false;
 	return file.startsWith("packages/") || file.startsWith("scripts/");
@@ -114,7 +126,7 @@ function scanPath(file: string): boolean {
 test("the clean-break env bridge and CLI-child protocol stay absent", () => {
 	const files = trackedFiles();
 	for (const relative of files.filter(scanPath)) {
-		const source = readFileSync(join(root, relative), "utf8");
+		const source = guardedSource(relative);
 		for (const envName of deletedEnvNames()) {
 			assert.equal(source.includes(envName), false, `${relative} reintroduced deleted environment key ${envName}`);
 		}
