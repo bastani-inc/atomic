@@ -179,9 +179,19 @@ export function createAsyncJobTracker(
 	const ensurePoller = () => {
 		hydrateActiveJobs();
 	};
-	const hydrateActiveJobs = (ctx?: ExtensionContext) => {
+	const safeCtxCwd = (ctx?: ExtensionContext): string | undefined => {
+		if (!ctx) return undefined;
+		try {
+			return ctx.cwd;
+		} catch {
+			// The extension ctx goes stale after session replacement or reload; a
+			// deferred hydration must degrade to the base cwd, never crash the host.
+			return undefined;
+		}
+	};
+	const hydrateActiveJobs = (ctx?: ExtensionContext, cwdOverride?: string) => {
 		if (ctxHasUI(ctx)) state.lastUiContext = ctx!;
-		const currentCwd = ctx?.cwd ?? state.baseCwd;
+		const currentCwd = cwdOverride ?? safeCtxCwd(ctx) ?? state.baseCwd;
 		const fileJobs = readActiveFileJobs(asyncDirRoot, state.currentSessionId, currentCwd);
 		const registryJobs = hydrateRegistryJobs(state, state.currentSessionId);
 		const next = new Map([...fileJobs, ...registryJobs]);
@@ -228,10 +238,11 @@ export function createAsyncJobTracker(
 	let pending: ReturnType<typeof setTimeout> | null = null;
 	const hydrateActiveJobsDeferred = (ctx?: ExtensionContext) => {
 		if (ctxHasUI(ctx)) state.lastUiContext = ctx!;
+		const capturedCwd = safeCtxCwd(ctx);
 		if (pending) clearTimeout(pending);
 		pending = setTimeout(() => {
 			pending = null;
-			hydrateActiveJobs(ctx);
+			hydrateActiveJobs(undefined, capturedCwd);
 		}, 0);
 		pending.unref?.();
 	};
