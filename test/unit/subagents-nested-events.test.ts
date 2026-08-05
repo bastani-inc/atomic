@@ -9,6 +9,7 @@ import {
 	createNestedRoute,
 	MAX_NESTED_CHILDREN,
 	MAX_NESTED_DEPTH,
+	MAX_NESTED_PATH_ENTRIES,
 	MAX_NESTED_STEPS,
 	MAX_PROCESSED_NESTED_EVENTS,
 	NESTED_RUNS_DIR,
@@ -20,6 +21,7 @@ import {
 	readNestedControlResults,
 	readNestedRegistry,
 	resolveNestedRouteFromEnv,
+	sanitizeNestedPath,
 	sanitizeSummary,
 	validateNestedRouteShape,
 	writeNestedControlRequest,
@@ -237,4 +239,16 @@ describe("nested subagent event routes", () => {
 		assert.equal(env[`${prefix}_SUBAGENT_NESTED_PARENT_RUN_ID`], "parent1");
 		assert.equal(Object.hasOwn(env, "PI_SUBAGENT_NESTED_ROOT_RUN_ID"), false);
 	});
+});
+
+test("nested path sanitization preserves only the bounded public path", () => {
+	const pathEntries = sanitizeNestedPath(
+		Array.from({ length: MAX_NESTED_PATH_ENTRIES + 3 }, (_, index) => ({
+			runId: `run-${index}`,
+			stepIndex: index,
+		})),
+	);
+	assert.equal(pathEntries.length, MAX_NESTED_PATH_ENTRIES);
+	assert.equal(pathEntries.at(-1)?.runId, `run-${MAX_NESTED_PATH_ENTRIES - 1}`);
+	assert.deepEqual(sanitizeNestedPath([{ runId: "../escape" }]), []);
 });

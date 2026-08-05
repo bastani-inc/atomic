@@ -4,6 +4,11 @@ import * as path from "node:path";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import type { NestedRunSummary } from "../../shared/types.ts";
 import {
+	appendInProcessNestedEvent,
+	hasInProcessNestedRoute,
+	readInProcessNestedEvents,
+} from "../inprocess/nested-routing.ts";
+import {
 	assertSafeId,
 	commonRouteRoot,
 	containedPath,
@@ -260,6 +265,19 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 
 export function projectNestedEvents(route: NestedRoute): NestedRegistry {
 	validateRouteShape(route);
+	if (hasInProcessNestedRoute(route)) {
+		const release = acquireRegistryLock(route);
+		try {
+			let registry = readNestedRegistry(route);
+			for (const event of readInProcessNestedEvents(route)) {
+				const parsed = parseRecord(JSON.stringify(event), route);
+				if (parsed) registry = applyNestedEvent(registry, parsed);
+			}
+			return registry;
+		} finally {
+			release();
+		}
+	}
 	const release = acquireRegistryLock(route);
 	try {
 		let registry = readNestedRegistry(route);
@@ -333,5 +351,6 @@ export function writeNestedEvent(
 	};
 	const sanitized = parseRecord(JSON.stringify(record), route);
 	if (!sanitized) throw new Error("Nested event record failed validation.");
+	appendInProcessNestedEvent(route, sanitized);
 	writeRouteRecord(route.eventSink, sanitized.ts, sanitized);
 }

@@ -219,6 +219,7 @@ export async function runSingleInProcess(
 			interrupt: options.interruptSignal ?? neverAbort,
 		},
 	);
+	control.registerNestedAttempt(options.runId, running, { modelId: candidate, thinkingLevel: spec.thinkingLevel });
 	if (options.backgroundContinuation) {
 		control.continueInBackground(running, "async-requested");
 		void running.promise.then(

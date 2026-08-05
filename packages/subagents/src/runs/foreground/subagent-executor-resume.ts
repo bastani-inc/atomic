@@ -30,6 +30,7 @@ import {
 import { readStatus } from "../../shared/utils.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { type ResolvedSubagentRunId, resolveSubagentRunId } from "../background/run-id-resolver.ts";
+import { interruptInProcessNestedAttempt, resumeInProcessNestedAttempt } from "../inprocess/nested-routing.ts";
 import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
 import { currentModelFullId } from "../shared/model-fallback.ts";
 import {
@@ -342,15 +343,35 @@ async function waitForNestedControlResult(
 	requestId: string,
 	timeoutMs = 1_000,
 ) {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		const result = readNestedControlResults(target.match.route).find(
+	const findResult = () =>
+		readNestedControlResults(target.match.route).find(
 			(candidate) => candidate.requestId === requestId && candidate.targetRunId === target.match.run.id,
 		);
-		if (result) return result;
-		await new Promise((resolve) => setTimeout(resolve, 50));
-	}
-	return undefined;
+	const existing = findResult();
+	if (existing) return existing;
+	return new Promise<ReturnType<typeof readNestedControlResults>[number] | undefined>((resolve) => {
+		let settled = false;
+		const watcher = fs.watch(target.match.route.eventSink, { persistent: false }, () => {
+			const result = findResult();
+			if (!result || settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			watcher.close();
+			resolve(result);
+		});
+		const timeout = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			watcher.close();
+			resolve(undefined);
+		}, timeoutMs);
+		watcher.on("error", () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			resolve(undefined);
+		});
+	});
 }
 
 async function sendNestedControlRequest(
@@ -416,6 +437,13 @@ export async function interruptNestedRun(
 			isError: true,
 			details: { mode: "management", results: [] },
 		};
+	const inProcessResult = await interruptInProcessNestedAttempt(run.id);
+	if (inProcessResult)
+		return {
+			content: [{ type: "text", text: inProcessResult.message }],
+			isError: inProcessResult.ok ? undefined : true,
+			details: { mode: "management", results: [] },
+		};
 	const result = await sendNestedControlRequest(target, "interrupt");
 	if (result)
 		return {
@@ -442,6 +470,13 @@ async function resumeLiveNestedRun(input: {
 	message: string;
 }): Promise<SubagentToolResult> {
 	const run = input.target.match.run;
+	const inProcessResult = await resumeInProcessNestedAttempt(run.id, input.message);
+	if (inProcessResult)
+		return {
+			content: [{ type: "text", text: inProcessResult.message }],
+			isError: inProcessResult.ok ? undefined : true,
+			details: { mode: "management", results: [] },
+		};
 	const result = await sendNestedControlRequest(input.target, "resume", input.message);
 	if (result)
 		return {
@@ -487,6 +522,13 @@ export async function resumeAsyncRun(input: {
 				})
 			: undefined;
 		if (resolved?.kind === "nested") {
+			const inProcessResult = await resumeInProcessNestedAttempt(resolved.match.run.id, followUp);
+			if (inProcessResult)
+				return {
+					content: [{ type: "text", text: inProcessResult.message }],
+					isError: inProcessResult.ok ? undefined : true,
+					details: { mode: "management", results: [] },
+				};
 			if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
 				return resumeLiveNestedRun({ target: resolved, message: followUp });
 			}

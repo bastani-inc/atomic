@@ -54,3 +54,5 @@ export {
 	writeNestedEvent,
 } from "./nested-events-registry.ts";
 export { applyNestedEvent, parseNestedEventRecords, sanitizeSummary } from "./nested-events-sanitize.ts";
+
+export { encodeNestedPathEnv, MAX_NESTED_PATH_ENTRIES, parseNestedPathEnv, sanitizeNestedPath } from "./nested-path.ts";

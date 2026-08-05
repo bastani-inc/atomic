@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
+import {
+	interruptInProcessNestedAttempt,
+	resumeInProcessNestedAttempt,
+} from "../../packages/subagents/src/runs/inprocess/nested-routing.ts";
 import {
 	type AttemptOutcome,
 	type ChildSpec,
@@ -12,6 +16,7 @@ import {
 	type RunningAttempt,
 	SubagentControlRuntime,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
+import { sleep } from "../helpers/runtime.ts";
 
 function sampleAgent(): AgentConfig {
 	return {
@@ -139,6 +144,42 @@ test("background continuation returns the child identity before the in-process s
 		gate.resolve();
 		const completed = await terminal.promise;
 		assert.equal(completed.status, "ok");
+	} finally {
+		gate.resolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("nested interrupt flushes JSONL and resume reloads the same in-process child", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-nested-control-"));
+	const gate = Promise.withResolvers<void>();
+	try {
+		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, join(root, "sessions"));
+		control.registerAgents([sampleAgent()]);
+		const admitted = control.admitChildSession(
+			{ ...sampleSpec(root), testSession: { output: "resumed", promptGate: gate.promise } },
+			{ path: "parent", depth: 0 },
+		).admitted;
+		assert.ok(admitted);
+		const neverAbort = new AbortController().signal;
+		const running = control.startAttempt(admitted, {}, { abort: neverAbort, interrupt: neverAbort });
+		control.registerNestedAttempt("nested-run", running, {});
+		await sleep(50);
+
+		const interrupt = await interruptInProcessNestedAttempt("nested-run");
+		assert.equal(interrupt?.ok, true);
+		const interrupted = await running.promise;
+		assert.equal(interrupted.status, "interrupted");
+		assert.ok(interrupted.sessionFile);
+		const interruptedLines = readFileSync(interrupted.sessionFile!, "utf8").trim().split("\n");
+		assert.ok(interruptedLines.length > 0);
+		for (const line of interruptedLines) assert.doesNotThrow(() => JSON.parse(line));
+
+		gate.resolve();
+		const resumed = await resumeInProcessNestedAttempt("nested-run", "continue with the saved context");
+		assert.equal(resumed?.ok, true);
+		assert.equal(resumed?.outcome?.status, "ok");
+		assert.equal(resumed?.outcome?.path, interrupted.path);
 	} finally {
 		gate.resolve();
 		rmSync(root, { recursive: true, force: true });

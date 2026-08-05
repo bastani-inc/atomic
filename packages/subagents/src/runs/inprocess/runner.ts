@@ -29,6 +29,7 @@ import {
 	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
 } from "../shared/structured-output.ts";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.ts";
+import { type InProcessNestedResumeOutcome, registerInProcessNestedAttempt } from "./nested-routing.ts";
 import { createInProcessChildPromptBehavior } from "./prompt-behavior.ts";
 
 export type ChildStatus = NativeAgentStatus;
@@ -189,6 +190,10 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	const testOptions = typeof spec.testSession === "object" ? spec.testSession : {};
 	let lastAssistantText = "";
 	let aborted = false;
+	let rejectPromptGate: (() => void) | undefined;
+	const promptAbort = new Promise<never>((_, reject) => {
+		rejectPromptGate = () => reject(new Error("aborted"));
+	});
 	let promptCount = 0;
 	let userMessages = 0;
 	let assistantMessages = 0;
@@ -198,6 +203,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		sessionFile: sessionManager.getSessionFile(),
 		abort: async () => {
 			aborted = true;
+			rejectPromptGate?.();
 		},
 		subscribe(listener: AgentSessionEventListener) {
 			listeners.add(listener);
@@ -210,7 +216,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
 			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 			userMessages += 1;
-			if (testOptions.promptGate) await testOptions.promptGate;
+			if (testOptions.promptGate) await Promise.race([testOptions.promptGate, promptAbort]);
 			if (
 				spec.structuredOutput &&
 				testOptions.structuredOutputAfterPrompt !== undefined &&
@@ -471,6 +477,7 @@ export class SubagentControlRuntime {
 		const token = guard.token;
 		this.attemptTokens.set(admitted.identity.path, token);
 		let session: AgentSession | undefined;
+		let activeSessionManager: SessionManager | undefined;
 		let termination: TerminationCauseName | undefined;
 		let terminating: Promise<void> | undefined;
 		let unsubscribe: (() => void) | undefined;
@@ -479,6 +486,7 @@ export class SubagentControlRuntime {
 			termination = cause;
 			terminating = (async () => {
 				try {
+					activeSessionManager?.flush();
 					await session?.abort();
 				} finally {
 					try {
@@ -506,6 +514,7 @@ export class SubagentControlRuntime {
 						admitted.sessionDir,
 						workflow ? { internal: true, workflow } : { internal: true },
 					);
+			activeSessionManager = sessionManager;
 			if (workflow) sessionManager.markSessionInternal(workflow);
 			const settingsManager = SettingsManager.create(admitted.policy.cwd, getAgentDir());
 			const agentPrompt = admitted.spec.agent.systemPrompt?.trim();
@@ -724,6 +733,33 @@ export class SubagentControlRuntime {
 				control: this,
 			}),
 		};
+	}
+
+	registerNestedAttempt(runId: string, running: RunningAttempt, candidate: ModelCandidate): void {
+		registerInProcessNestedAttempt({
+			runId,
+			path: running.child.identity.path,
+			status: () => running.status,
+			interrupt: () => this.terminateChildAttempt(running, "interrupt"),
+			resume: async (message): Promise<InProcessNestedResumeOutcome> => {
+				const admission = this.reloadColdChild(running.child.identity.path, message);
+				if (!admission.admitted) {
+					throw new Error(admission.refusal?.reason ?? "nested child cold reload was refused");
+				}
+				const neverAbort = new AbortController().signal;
+				const resumed = this.startAttempt(admission.admitted, candidate, {
+					abort: neverAbort,
+					interrupt: neverAbort,
+				});
+				const outcome = await resumed.promise;
+				return {
+					status: outcome.status,
+					path: outcome.path,
+					sessionFile: outcome.sessionFile,
+					envelope: outcome.envelope,
+				};
+			},
+		});
 	}
 
 	async terminateChildAttempt(running: RunningAttempt, cause: TerminationCauseName): Promise<void> {

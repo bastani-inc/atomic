@@ -1,6 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+	appendInProcessControlRequest,
+	appendInProcessControlResult,
+	hasInProcessNestedRoute,
+	readInProcessControlRequests,
+	readInProcessControlResults,
+} from "../inprocess/nested-routing.ts";
+import {
 	assertSafeId,
 	clampNumber,
 	containedPath,
@@ -90,13 +97,16 @@ export function writeNestedControlRequest(
 	};
 	const sanitized = parseNestedControlRequest(JSON.stringify(record), route);
 	if (!sanitized) throw new Error("Nested control request failed validation.");
-	return writeRouteRecord(route.controlInbox, sanitized.ts, sanitized);
+	const filePath = writeRouteRecord(route.controlInbox, sanitized.ts, sanitized);
+	appendInProcessControlRequest(route, { ...sanitized, filePath });
+	return filePath;
 }
 
 export function readNestedControlRequests(
 	route: NestedRoute,
 ): Array<NestedControlRequestRecord & { filePath: string }> {
 	validateRouteShape(route);
+	if (hasInProcessNestedRoute(route)) return [...readInProcessControlRequests(route)];
 	let entries: string[] = [];
 	try {
 		entries = fs
@@ -135,11 +145,13 @@ export function writeNestedControlResult(
 	};
 	const sanitized = parseNestedControlResult(JSON.stringify(record), route);
 	if (!sanitized) throw new Error("Nested control result failed validation.");
-	writeRouteRecord(route.eventSink, sanitized.ts, sanitized);
+	const filePath = writeRouteRecord(route.eventSink, sanitized.ts, sanitized);
+	appendInProcessControlResult(route, { ...sanitized, filePath });
 }
 
 export function readNestedControlResults(route: NestedRoute): NestedControlResultRecord[] {
 	validateRouteShape(route);
+	if (hasInProcessNestedRoute(route)) return [...readInProcessControlResults(route)] as NestedControlResultRecord[];
 	let entries: string[] = [];
 	try {
 		entries = fs

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getEnvValue } from "@bastani/atomic";
 import { type NestedRouteInfo, type NestedRunSummary, TEMP_ROOT_DIR } from "../../shared/types.ts";
+import { registerInProcessNestedRoute } from "../inprocess/nested-routing.ts";
 import { isSafeNestedPathId, type NestedPathEntry, parseNestedPathEnv } from "./nested-path.ts";
 import {
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
@@ -119,7 +120,9 @@ export function createNestedRoute(rootRunId: string): NestedRoute {
 		`${JSON.stringify({ rootRunId, capabilityToken, createdAt: Date.now() })}\n`,
 		{ mode: 0o600 },
 	);
-	return { rootRunId, eventSink, controlInbox, capabilityToken };
+	const route = { rootRunId, eventSink, controlInbox, capabilityToken };
+	registerInProcessNestedRoute(route);
+	return route;
 }
 
 /** Whether any entry in the tree rooted at filePath has an mtime at or after cutoff, stopping at the first hit. */
