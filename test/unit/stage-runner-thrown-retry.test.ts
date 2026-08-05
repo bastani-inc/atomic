@@ -926,3 +926,223 @@ describe("createStageContext — unresolved overflow is terminal for its candida
 		assert.deepEqual(prompts, ["anthropic/primary", "openai/fallback"]);
 	});
 });
+
+describe("createStageContext — one creation gate across concurrent callers", () => {
+	const noRetry = retrySettings({ enabled: false });
+	const gateSettingsManager: WorkflowFastModeSettingsManager = {
+		getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+		getRetrySettings: () => noRetry,
+	};
+
+	test("a second ensureSession joins the walk in flight instead of starting another", async () => {
+		const created: string[] = [];
+		const disposed: string[] = [];
+		let releaseFallback: (() => void) | undefined;
+		const fallbackReady = new Promise<void>((resolve) => {
+			releaseFallback = resolve;
+		});
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				const model = modelFor(options);
+				created.push(model);
+				if (model === "anthropic/primary") throw new Error("503 service unavailable during create");
+				await fallbackReady;
+				const { session } = makeMockSession({
+					async prompt() {
+						return undefined;
+					},
+					dispose() {
+						disposed.push(model);
+					},
+					getLastAssistantText: () => "fallback answer",
+				});
+				return { session, settingsManager: gateSettingsManager };
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					settingsManager: gateSettingsManager as never,
+				},
+			}),
+		) as InternalStageContext;
+
+		const first = ctx.__ensureSession();
+		// The walk has failed the primary, disposed it, and is now awaiting the
+		// fallback adapter — exactly the window where the promise used to be lost.
+		await flushMicrotasks();
+		await flushMicrotasks();
+		const second = ctx.__ensureSession();
+		releaseFallback?.();
+		await first;
+		await second;
+
+		assert.deepEqual(created, ["anthropic/primary", "openai/fallback"], "only one candidate walk may run");
+		assert.equal(created.filter((model) => model === "openai/fallback").length, 1, "no duplicate live session");
+		assert.deepEqual(disposed, [], "the single attached session is still live");
+	});
+
+	test("a first prompt joins a creation already in flight", async () => {
+		const created: string[] = [];
+		let releaseFallback: (() => void) | undefined;
+		const fallbackReady = new Promise<void>((resolve) => {
+			releaseFallback = resolve;
+		});
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				const model = modelFor(options);
+				created.push(model);
+				if (model === "anthropic/primary") throw new Error("503 service unavailable during create");
+				await fallbackReady;
+				return sessionWithSettings(noRetry, async () => "fallback answer", {
+					getLastAssistantText: () => "fallback answer",
+				});
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: {
+					model: "anthropic/primary",
+					fallbackModels: ["openai/fallback"],
+					settingsManager: gateSettingsManager as never,
+				},
+			}),
+		) as InternalStageContext;
+
+		const eager = ctx.__ensureSession();
+		await flushMicrotasks();
+		await flushMicrotasks();
+		const prompt = ctx.prompt("go");
+		releaseFallback?.();
+		await eager;
+
+		assert.equal(await prompt, "fallback answer");
+		assert.deepEqual(created, ["anthropic/primary", "openai/fallback"], "the prompt must not start a second walk");
+	});
+});
+
+describe("createStageContext — pauses observed while a creation is in flight", () => {
+	test("a pause that resolves during creation still delivers its replacement objective", async () => {
+		const promptTexts: string[] = [];
+		const created: string[] = [];
+		let releaseCreate: (() => void) | undefined;
+		const createReady = new Promise<void>((resolve) => {
+			releaseCreate = resolve;
+		});
+		const settings = retrySettings();
+		const settingsManager: WorkflowFastModeSettingsManager = {
+			getCodexFastModeSettings: () => ({ chat: false, workflow: false }),
+			getRetrySettings: () => settings,
+		};
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				created.push(modelFor(options));
+				await createReady;
+				return sessionWithSettings(
+					settings,
+					async (text) => {
+						promptTexts.push(text);
+						return "resumed answer";
+					},
+					{ getLastAssistantText: () => "resumed answer" },
+				);
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: { model: "anthropic/primary", settingsManager: settingsManager as never },
+			}),
+		) as InternalStageContext;
+
+		const eager = ctx.__ensureSession();
+		await flushMicrotasks();
+		// The pause both starts and finishes while the adapter is still in flight,
+		// so a post-await currentResume() check would miss it.
+		await ctx.__requestPause();
+		await ctx.__resume("replacement objective");
+		releaseCreate?.();
+		await eager;
+
+		assert.equal(await ctx.prompt("stale objective"), "resumed answer");
+		assert.deepEqual(promptTexts, ["replacement objective"], "the replacement objective is authoritative");
+		assert.deepEqual(created, ["anthropic/primary"], "the pause must not create a second session");
+	});
+});
+
+describe("createStageContext — pauses around a same-turn continuation", () => {
+	test("a pause during the continuation recovers with the replacement objective", async () => {
+		const messages: StageSessionRuntime["messages"] = [];
+		const promptTexts: string[] = [];
+		const created: string[] = [];
+		let continueCalls = 0;
+		let releaseContinue: (() => void) | undefined;
+		const continueReady = new Promise<void>((resolve) => {
+			releaseContinue = resolve;
+		});
+		const settings = retrySettings();
+		let sessionRef: { abort: () => Promise<void> } | undefined;
+		const agentSession: AgentSessionAdapter = {
+			async create(options) {
+				created.push(modelFor(options));
+				const result = sessionWithSettings(
+					settings,
+					async (text) => {
+						promptTexts.push(text);
+						messages.push({ role: "user", content: text, timestamp: Date.now() } as never);
+						if (promptTexts.length === 1) {
+							messages.push({
+								role: "assistant",
+								stopReason: "error",
+								errorMessage: "503 service unavailable",
+								content: [],
+							} as never);
+							throw new Error("503 service unavailable");
+						}
+						return "resumed answer";
+					},
+					{
+						messages,
+						getLastAssistantText: () => "resumed answer",
+						state: { messages },
+						sessionManager: {},
+						modelRuntime: {},
+						getContextUsage: () => ({}),
+						_runAgentContinue: async () => {
+							continueCalls += 1;
+							await continueReady;
+							// A controlled pause aborts the in-flight continuation.
+							throw new Error("Request aborted");
+						},
+					} as unknown as Partial<StageSessionRuntime>,
+				);
+				sessionRef = result.session;
+				return result;
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({
+				adapters: { agentSession },
+				stageOptions: { model: "anthropic/primary", fallbackModels: ["openai/fallback"] },
+			}),
+		) as InternalStageContext;
+
+		const prompt = ctx.prompt("do it");
+		// Let the first attempt fail, the backoff elapse, and the continuation start.
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(continueCalls, 1, "the retry must reach the continuation path");
+		const pause = ctx.__requestPause();
+		releaseContinue?.();
+		await pause;
+		await ctx.__resume("replacement objective");
+
+		assert.equal(await prompt, "resumed answer");
+		assert.deepEqual(promptTexts, ["do it", "replacement objective"]);
+		assert.deepEqual(created, ["anthropic/primary"], "a controlled pause must not spend a fallback candidate");
+		assert.equal(typeof sessionRef?.abort, "function");
+	});
+});

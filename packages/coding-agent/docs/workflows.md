@@ -2303,6 +2303,10 @@ A context overflow that the stage session's compaction has already failed to res
 
 The chain also covers session creation. A stage session created eagerly — by `ctx.__ensureSession()`, an eager stage call, or a control attach — retries its candidate under `settings.retry` and then walks to the next configured candidate, so a provider that cannot even open a session does not strand the stage. A creation failure that exhausts the whole chain is not cached: the next call starts a fresh attempt.
 
+That walk runs behind a single creation gate. A concurrent `ctx.__ensureSession()` or a first `ctx.prompt()` joins the creation already in flight rather than starting a second walk, so the stage never has two live sessions competing for the same generation.
+
+Controlled pauses are honored throughout. A pause that starts and finishes while a session is still being created keeps its replacement objective, which the next prompt sends exactly once; a pause during a same-candidate continuation is settled as a pause rather than a model failure, so resuming recovers the stage instead of spending a fallback candidate.
+
 Workflow-code errors, tool failures, validation failures, refusals, content-filter or safety blocks, cancellations, and task failures do not advance the chain. A reattached finished stage starts on the model that last succeeded; if that model fails retryably, the full chain restarts from the primary.
 
 ### `thinkingLevel` (deprecated)

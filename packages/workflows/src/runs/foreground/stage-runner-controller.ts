@@ -64,10 +64,15 @@ import {
 	unresolvedContextOverflowMessage,
 } from "./stage-runner-unresolved-overflow.js";
 
-type RetryPauseResume = Promise<{ readonly message?: string }>;
+type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"]>>;
 
 interface ThrownErrorRetryState {
 	readonly controller: AbortController;
+	pauseResume?: RetryPauseResume;
+}
+
+/** Observes a controlled pause raised while a session creation is in flight. */
+interface CreationPauseObserver {
 	pauseResume?: RetryPauseResume;
 }
 
@@ -145,6 +150,8 @@ class ThrownErrorRetryPaused extends Error {
 export class StageSessionController {
 	private session: StageSessionRuntime | undefined;
 	private activeCreation: Promise<StageSessionRuntime> | undefined;
+	/** The creation promise a candidate walk still owns, if one is advancing. */
+	private ownedCreationPromise: Promise<StageSessionRuntime> | undefined;
 	private abortGeneration = 0;
 	private abortReason: Error | DOMException | string | undefined;
 	private abortReasonGeneration = 0;
@@ -174,6 +181,7 @@ export class StageSessionController {
 	private readonly modelCatalog: WorkflowModelCatalogPort | undefined;
 	private sessionSettingsManager: WorkflowFastModeSettingsManager | undefined;
 	private readonly thrownErrorRetryStates = new Set<ThrownErrorRetryState>();
+	private readonly creationPauseObservers = new Set<CreationPauseObserver>();
 	private readonly replacement = new StageSessionReplacement();
 	private pendingCreationResumeMessage: string | undefined;
 	private readonly messageAdmission = new StageMessageAdmission();
@@ -246,10 +254,17 @@ export class StageSessionController {
 		if (!this.sessionPromise) {
 			const pending = this.createInitialSession(consumer);
 			this.sessionPromise = pending;
+			// One creation gate: the walk owns this promise while it advances
+			// candidates, so a concurrent caller joins it instead of racing it.
+			this.ownedCreationPromise = pending;
+			const release = (): void => {
+				if (this.ownedCreationPromise === pending) this.ownedCreationPromise = undefined;
+			};
 			// A terminal creation failure must not be replayed to every later
 			// caller. Clear by identity so a walk that replaced the promise, or a
 			// cancellation that already cleared it, is left alone.
-			pending.catch(() => {
+			pending.then(release, () => {
+				release();
 				if (this.sessionPromise === pending) this.sessionPromise = undefined;
 			});
 		}
@@ -366,8 +381,21 @@ export class StageSessionController {
 			return;
 		}
 
-		// A paused eager creation resumed with a replacement objective: that text
-		// is authoritative for this prompt and must not be dropped here.
+		// A creation already in flight — an eager walk, or a concurrent caller —
+		// owns the candidate chain. Join it rather than starting a second walk that
+		// would duplicate provider work and leak whichever session lost the race.
+		if (this.session === undefined && this.sessionPromise !== undefined) {
+			try {
+				await this.sessionPromise;
+			} catch (error) {
+				if (error instanceof StageSessionCreationCancelled) return;
+				// The exhausted walk cleared its own promise by identity; fall through
+				// and let the walk below report the failure for this prompt.
+			}
+		}
+
+		// A paused creation resumed with a replacement objective: that text is
+		// authoritative for this prompt and must not be dropped here.
 		const resumedText = this.pendingCreationResumeMessage;
 		this.pendingCreationResumeMessage = undefined;
 		let promptText = resumedText ?? text;
@@ -452,7 +480,16 @@ export class StageSessionController {
 	requestPause(): Promise<void> {
 		const pause = this.pauseControl.requestPause();
 		const resume = this.pauseControl.currentResume();
-		if (resume !== undefined) this.pauseThrownErrorRetries(resume);
+		if (resume !== undefined) {
+			this.pauseThrownErrorRetries(resume);
+			// A creation in flight cannot see the pause request itself, because
+			// completing the resume clears it before creation settles.
+			for (const observer of this.creationPauseObservers) {
+				if (observer.pauseResume !== undefined) continue;
+				observer.pauseResume = resume;
+				this.latchCreationResume(resume);
+			}
+		}
 		return pause;
 	}
 	resume(
@@ -581,6 +618,40 @@ export class StageSessionController {
 		}
 	}
 
+	/**
+	 * Resume the existing turn under the same pause rules as a prompt.
+	 *
+	 * A controlled pause aborts the in-flight request, which must not be mistaken
+	 * for a terminal model failure: the stage would advance a candidate and become
+	 * unrecoverable by resume.
+	 */
+	private async continueWithPauseResume(
+		continuationSession: RetryableAgentSession,
+	): Promise<{ readonly kind: "continued" } | { readonly kind: "paused"; readonly message?: string }> {
+		const settlePause = async (resume: RetryPauseResume): Promise<{ kind: "paused"; message?: string }> => {
+			const resumed = await resume;
+			await resumed.runnerOwnedDeliverySettlement;
+			return { kind: "paused", ...(resumed.message === undefined ? {} : { message: resumed.message }) };
+		};
+		const pauseBeforeContinue = this.pauseControl.currentResume();
+		if (pauseBeforeContinue !== undefined) return settlePause(pauseBeforeContinue);
+
+		const state: ThrownErrorRetryState = { controller: new AbortController() };
+		this.thrownErrorRetryStates.add(state);
+		try {
+			await continuationSession._runAgentContinue();
+		} catch (error) {
+			const resume = state.pauseResume ?? this.pauseControl.currentResume();
+			if (resume === undefined) throw error;
+			return settlePause(resume);
+		} finally {
+			this.thrownErrorRetryStates.delete(state);
+		}
+		const pauseAfterContinue = state.pauseResume ?? this.pauseControl.currentResume();
+		if (pauseAfterContinue !== undefined) return settlePause(pauseAfterContinue);
+		return { kind: "continued" };
+	}
+
 	private async promptWithThrownErrorRetry(
 		activeSession: StageSessionRuntime,
 		text: string,
@@ -597,11 +668,26 @@ export class StageSessionController {
 				if (retryAdmittedPrompt) {
 					const continuationSession = retryableAgentSession(activeSession);
 					if (continuationSession !== undefined) {
-						await continuationSession._runAgentContinue();
-						return {
-							terminalScanStartIndex:
-								terminalScanStartIndex ?? this.lastPromptStartIndex ?? messagesBeforeAttempt.length,
-						};
+						const outcome = await this.continueWithPauseResume(continuationSession);
+						if (outcome.kind === "continued") {
+							return {
+								terminalScanStartIndex:
+									terminalScanStartIndex ?? this.lastPromptStartIndex ?? messagesBeforeAttempt.length,
+							};
+						}
+						// A controlled pause interrupted the continuation. The resumed
+						// objective owns the turn from here, so re-prompt with it rather
+						// than resuming a turn the operator replaced.
+						this.dropRetainedPrompt(activeSession, retainedPrompt);
+						retainedPrompt = undefined;
+						retryAdmittedPrompt = false;
+						retryAttempt = 0;
+						terminalScanStartIndex = undefined;
+						if (outcome.message === undefined) {
+							return { terminalScanStartIndex: activeSession.messages.length };
+						}
+						nextText = outcome.message;
+						continue;
 					}
 					// No continuation is possible after all, so the retained prompt
 					// must not survive into the re-prompt below.
@@ -710,14 +796,14 @@ export class StageSessionController {
 
 	private async createInitialSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
 		if (!this.hasExplicitModelFallbackConfig) {
-			return this.createSession(undefined, consumer).catch((error) =>
+			return this.createSessionObservingPause(undefined, consumer).catch((error) =>
 				this.createInitialSessionWithRetry(undefined, consumer, { error }),
 			);
 		}
 		const candidates = await this.modelCandidates();
 		const first = candidates[0];
 		if (first === undefined) {
-			return this.createSession(undefined, consumer).catch((error) =>
+			return this.createSessionObservingPause(undefined, consumer).catch((error) =>
 				this.createInitialSessionWithRetry(undefined, consumer, { error }),
 			);
 		}
@@ -732,7 +818,7 @@ export class StageSessionController {
 		}
 		this.activeCandidateIndex = 0;
 		this.selectedModel = first.id;
-		return this.createSession(first, consumer).catch((error) =>
+		return this.createSessionObservingPause(first, consumer).catch((error) =>
 			this.createInitialSessionCandidateWalk(candidates, consumer, 0, { error }),
 		);
 	}
@@ -807,6 +893,50 @@ export class StageSessionController {
 		}
 	}
 
+	/**
+	 * Latch a paused creation's replacement objective for the next prompt.
+	 *
+	 * The created session is already attached, so the pause cannot cancel it
+	 * without leaking it; the replacement text becomes the next prompt's input.
+	 */
+	private latchCreationResume(resume: RetryPauseResume): void {
+		void resume
+			.then(async (resolved) => {
+				await resolved.runnerOwnedDeliverySettlement;
+				if (resolved.message !== undefined) this.pendingCreationResumeMessage = resolved.message;
+			})
+			.catch(() => {});
+	}
+
+	/**
+	 * Create while a controlled pause can still be observed.
+	 *
+	 * `requestPause()` latches its resume into every registered creation observer,
+	 * so a pause that both starts and finishes while the adapter is still in
+	 * flight is caught. Checking `currentResume()` after the await would miss it,
+	 * because completing a resume clears the pause request.
+	 *
+	 * The creation promise is returned untouched, and observers are kept out of
+	 * the thrown-retry set: this must add no microtask hop and must not alter
+	 * abort or backoff semantics. An attached stream stays observable in the
+	 * caller's own turn.
+	 */
+	private createSessionObservingPause(
+		candidate: WorkflowResolvedModelCandidate | undefined,
+		consumer: AgentSessionConsumer,
+	): Promise<StageSessionRuntime> {
+		const activePause = this.pauseControl.currentResume();
+		const observer: CreationPauseObserver = { pauseResume: activePause };
+		if (activePause !== undefined) this.latchCreationResume(activePause);
+		this.creationPauseObservers.add(observer);
+		const creation = this.createSession(candidate, consumer);
+		const settle = (): void => {
+			this.creationPauseObservers.delete(observer);
+		};
+		creation.then(settle, settle);
+		return creation;
+	}
+
 	private async createSessionWithThrownErrorRetry(
 		candidate: WorkflowResolvedModelCandidate | undefined,
 		consumer: AgentSessionConsumer,
@@ -821,7 +951,7 @@ export class StageSessionController {
 					pendingFailure = undefined;
 					throw failure.error;
 				}
-				return await this.createSession(candidate, consumer);
+				return await this.createSessionObservingPause(candidate, consumer);
 			} catch (error) {
 				const errorSettingsManager = retrySettingsManagerFromError(error);
 				if (errorSettingsManager !== undefined) this.sessionSettingsManager = errorSettingsManager;
@@ -968,7 +1098,10 @@ export class StageSessionController {
 		this.messageAdmission.reset();
 		this.replacement.retire(current);
 		this.session = undefined;
-		this.sessionPromise = undefined;
+		// A candidate walk still advancing owns the shared creation promise: clearing
+		// it here would let a concurrent caller start a second walk, duplicating
+		// provider work and leaking whichever session lost the race.
+		if (this.sessionPromise !== this.ownedCreationPromise) this.sessionPromise = undefined;
 		this.sessionSettingsManager = undefined;
 		this.resumeCurrentSession = false;
 		for (const unsubscribe of this.listenerUnsubscribes.values()) unsubscribe();
