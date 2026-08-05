@@ -20,7 +20,7 @@ type ProcessRow = {
 function probeChildren(): Set<string> {
 	if (process.platform === "win32") {
 		const query = [
-			`$parent=${process.pid}`,
+			`$parent=${process.pid};`,
 			`Get-CimInstance Win32_Process -Filter "ParentProcessId = $parent"`,
 			"| Select-Object ProcessId,Name,CommandLine",
 			"| ConvertTo-Json -Compress",
