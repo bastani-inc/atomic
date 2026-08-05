@@ -190,17 +190,11 @@ for (const handler of handlers) {
 console.log(JSON.stringify(tools));
 process.exit(0);
 `;
-		// The agent/subagent runtime exports MCP_DIRECT_TOOLS=__none__ for child processes,
-		// which suppresses cached direct-tool registration and would make this cold-start
-		// assertion environment-dependent (registering the proxy ['mcp'] instead of the cached
-		// direct tool). Neutralize it so the test deterministically exercises the
-		// config/cache-driven registration path regardless of the ambient environment.
 		const childEnv = {
 			...process.env,
 			ATOMIC_CODING_AGENT_DIR: agentDir,
 			PI_CODING_AGENT_DIR: "",
 		};
-		delete childEnv.MCP_DIRECT_TOOLS;
 		const result = spawnSync("bun", ["--eval", script], {
 			cwd: repoRoot,
 			env: childEnv,
