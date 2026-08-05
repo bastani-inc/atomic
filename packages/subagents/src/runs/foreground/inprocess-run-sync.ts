@@ -205,6 +205,23 @@ export async function runSingleInProcess(
 		model: undefined,
 		thinkingLevel: agent.thinking as ChildSpec["thinkingLevel"],
 		parent,
+		intercom: options.orchestratorIntercomTarget
+			? {
+					orchestratorTarget: options.orchestratorIntercomTarget,
+					runId: options.runId,
+					agent: agent.name,
+					index: options.index ?? 0,
+					...(options.intercomSessionName ? { sessionName: options.intercomSessionName } : {}),
+					...(options.supervisorAuthorization
+						? {
+								supervisor: {
+									capability: options.supervisorAuthorization.capability,
+									supervisorSessionId: options.supervisorAuthorization.supervisorSessionId,
+								},
+							}
+						: {}),
+				}
+			: undefined,
 		artifactJsonlPath: artifactPaths?.jsonlPath,
 	};
 	const admission = control.admitChildSession(spec, parent);

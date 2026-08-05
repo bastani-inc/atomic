@@ -126,6 +126,7 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 		workflowStageSubagentGuard,
 		workflowSessionMetadata: ctx.workflowSessionMetadata,
 		controlConfig,
+		supervisorAuthorization: params.supervisorAuthorization,
 		intercomSessionName: childIntercomTarget?.(agent, 0),
 		orchestratorIntercomTarget: controlIntercomTarget,
 		intercomGroup: resolveChildIntercomGroup(params.group, ctx.intercomGroup, undefined),

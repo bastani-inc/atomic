@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import type { McpServerManager } from "../../packages/mcp/server-manager.ts";
-import { scheduleMcpStartupWarmup } from "../../packages/mcp/startup-warmup.ts";
+import { resolveMcpDirectToolsSelection, scheduleMcpStartupWarmup } from "../../packages/mcp/startup-warmup.ts";
 import type { McpExtensionState } from "../../packages/mcp/state.ts";
 import type { McpConfig } from "../../packages/mcp/types.ts";
 
@@ -26,6 +26,21 @@ afterEach(() => {
 	if (originalDirectTools === undefined) delete process.env.MCP_DIRECT_TOOLS;
 	else process.env.MCP_DIRECT_TOOLS = originalDirectTools;
 	rmSync(tmpRoot, { recursive: true, force: true });
+});
+
+test("typed MCP direct-tool policy preserves defaults, explicit tools, and none", () => {
+	const base = {
+		managementActions: "restricted" as const,
+		fanoutAuthorized: false,
+		inheritProjectContext: true,
+		inheritSkills: true,
+	};
+	assert.deepEqual(resolveMcpDirectToolsSelection(base), { disabled: false });
+	assert.deepEqual(resolveMcpDirectToolsSelection({ ...base, mcpDirectTools: ["github/search_code"] }), {
+		disabled: false,
+		tools: ["github/search_code"],
+	});
+	assert.deepEqual(resolveMcpDirectToolsSelection({ ...base, mcpDirectTools: [] }), { disabled: true, tools: [] });
 });
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {

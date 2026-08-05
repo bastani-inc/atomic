@@ -1,3 +1,4 @@
+import type { SubagentChildPolicy } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.js";
 import { getMissingConfiguredDirectToolServers } from "./direct-tools.ts";
 import { loadMetadataCache } from "./metadata-cache.js";
@@ -7,6 +8,8 @@ import { logger } from "./logger.ts";
 import { updateMetadataCache, updateStatusBar } from "./init.js";
 
 export interface McpStartupWarmupOptions {
+  /** Typed child selection; undefined preserves the legacy parent env fallback. */
+  subagentPolicy?: SubagentChildPolicy;
   shouldContinue?: () => boolean;
   onDirectToolsChanged?: () => void | Promise<void>;
   onSettled?: () => void;
@@ -15,6 +18,25 @@ export interface McpStartupWarmupOptions {
 export interface McpStartupWarmupHandle {
   readonly promise: Promise<void>;
   cancel(): void;
+}
+
+export interface McpDirectToolsSelection {
+  readonly disabled: boolean;
+  readonly tools?: readonly string[];
+}
+
+/** Resolve the typed child policy while preserving the legacy parent env fallback. */
+export function resolveMcpDirectToolsSelection(
+  subagentPolicy?: SubagentChildPolicy,
+  legacyEnvValue = process.env.MCP_DIRECT_TOOLS,
+): McpDirectToolsSelection {
+  if (subagentPolicy !== undefined) {
+    const tools = subagentPolicy.mcpDirectTools;
+    return { disabled: tools !== undefined && tools.length === 0, ...(tools === undefined ? {} : { tools: [...tools] }) };
+  }
+  if (legacyEnvValue === "__none__") return { disabled: true };
+  const tools = legacyEnvValue?.split(",").map((item) => item.trim()).filter(Boolean);
+  return tools === undefined ? { disabled: false } : { disabled: false, tools };
 }
 
 function deferToMacrotask(): Promise<void> {
@@ -31,12 +53,10 @@ export function scheduleMcpStartupWarmup(
   const promise = (async () => {
     await deferToMacrotask();
     if (!shouldContinue()) return;
+    const selection = resolveMcpDirectToolsSelection(options.subagentPolicy);
+    if (selection.disabled) return;
 
-    const envDirect = process.env.MCP_DIRECT_TOOLS;
-    if (envDirect === "__none__") return;
-
-    const envDirectTools = envDirect?.split(",").map((item) => item.trim()).filter(Boolean);
-    const missingCacheServers = getMissingConfiguredDirectToolServers(state.config, loadMetadataCache(), envDirectTools)
+    const missingCacheServers = getMissingConfiguredDirectToolServers(state.config, loadMetadataCache(), selection.tools)
       .filter((name) => state.manager.getConnection(name)?.status !== "connected");
     if (missingCacheServers.length === 0) return;
 

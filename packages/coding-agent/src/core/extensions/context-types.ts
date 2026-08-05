@@ -68,12 +68,29 @@ export interface WorkflowStageOrchestrationContext {
 	 */
 	readonly intercomGroup?: string;
 }
+/** Typed child intercom identity and supervisor capability issued at admission. */
+export interface SubagentIntercomIdentity {
+	readonly orchestratorTarget: string;
+	readonly runId: string;
+	readonly agent: string;
+	readonly index: number;
+	readonly sessionName?: string;
+	readonly supervisor?: {
+		readonly capability: string;
+		readonly supervisorSessionId: string;
+	};
+}
+
 /** Typed child capability policy supplied by an in-process subagent admission. */
 export interface SubagentChildPolicy {
 	readonly managementActions: "full" | "restricted";
 	readonly fanoutAuthorized: boolean;
 	readonly inheritProjectContext: boolean;
 	readonly inheritSkills: boolean;
+	/** Undefined preserves MCP configuration defaults; [] explicitly disables direct tools. */
+	readonly mcpDirectTools?: readonly string[];
+	/** Admission-issued identity/capability; never inherited through process environment. */
+	readonly intercom?: SubagentIntercomIdentity;
 }
 // Union alias kept for forward-compatible orchestration context variants.
 export type OrchestrationContext = WorkflowStageOrchestrationContext;

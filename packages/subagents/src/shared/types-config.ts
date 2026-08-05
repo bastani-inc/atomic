@@ -73,6 +73,12 @@ export interface RunSyncOptions {
 	controlConfig?: ResolvedControlConfig;
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
+	/** Typed supervisor capability issued for this child; never read from environment. */
+	supervisorAuthorization?: {
+		capability: string;
+		supervisorSessionId: string;
+		childName: string;
+	};
 	/** Resolved intercom home group for the spawned child (explicit subagent group or inherited stage group). */
 	intercomGroup?: string;
 	maxOutput?: MaxOutputConfig;

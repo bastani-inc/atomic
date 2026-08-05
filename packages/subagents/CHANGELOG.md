@@ -18,6 +18,7 @@
 - In-process admission now resolves child management and fanout capabilities as a typed policy carried into the session and tool executor; restricted children cannot create, update, or delete agent definitions, and fanout authorization cannot be widened by a descendant ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 - `async: true` chain and parallel runs now execute on the same in-process foreground executor as their synchronous counterparts, un-awaited, instead of a separately serialized detached runner. Chain `{previous}` substitution, chain output bindings, dynamic fanout, worktree setup and cleanup, structured-output schemas, skills resolution, progress files, fail-fast, and per-step model-candidate ladders are now served by one implementation for both modes ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 - Child prompt behavior now enters in-process `AgentSession` construction through typed admission policy: boundary instructions, project-context and inherited-skill filtering, orchestration-skill removal, and parent-only message filtering no longer depend on the process-era extension injection path ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Child MCP direct-tool selection and Intercom identity/capability now cross the in-process admission boundary as typed policy; omitted MCP selection preserves defaults, empty selection disables direct tools, and supervisor grants are never inherited through environment ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
 ### Removed
 

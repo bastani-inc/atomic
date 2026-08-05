@@ -1,4 +1,4 @@
-import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext, ToolInfo } from "@bastani/atomic";
+import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext, SubagentChildPolicy, ToolInfo } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.js";
 import type { McpConfig } from "./types.ts";
 import type { MetadataCache } from "./metadata-cache.js";
@@ -55,22 +55,22 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   async function registerDirectToolsFromConfig(
     config: McpConfig,
     cache: MetadataCache | null,
+    subagentPolicy?: SubagentChildPolicy,
   ): Promise<{ directToolCount: number; missingConfiguredDirectToolServers: string[] }> {
     const [{ resolveDirectTools, createDirectToolExecutor, getMissingConfiguredDirectToolServers }, { truncateAtWord }] = await Promise.all([
       import("./direct-tools.ts"),
       import("./utils.js"),
     ]);
     const prefix = config.settings?.toolPrefix ?? "server";
-    const envRaw = process.env.MCP_DIRECT_TOOLS;
-    const envDirectTools = envRaw?.split(",").map(s => s.trim()).filter(Boolean);
+    // Typed admission owns child selection. The env fallback remains only for legacy parent sessions.
+    const envRaw = subagentPolicy === undefined ? process.env.MCP_DIRECT_TOOLS : undefined;
+    const typedDirectTools = subagentPolicy?.mcpDirectTools;
+    const directTools = subagentPolicy === undefined
+      ? envRaw?.split(",").map(s => s.trim()).filter(Boolean)
+      : typedDirectTools;
     const directSpecs = envRaw === "__none__"
       ? []
-      : resolveDirectTools(
-          config,
-          cache,
-          prefix,
-          envDirectTools,
-        );
+      : resolveDirectTools(config, cache, prefix, directTools === undefined ? undefined : [...directTools]);
     for (const spec of directSpecs) {
       if (registeredDirectToolNames.has(spec.prefixedName)) continue;
       registeredDirectToolNames.add(spec.prefixedName);
@@ -92,13 +92,13 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     refreshTools?.();
     return {
       directToolCount: directSpecs.length,
-      missingConfiguredDirectToolServers: getMissingConfiguredDirectToolServers(config, cache, envDirectTools),
+      missingConfiguredDirectToolServers: getMissingConfiguredDirectToolServers(config, cache, directTools),
     };
   }
 
-  async function registerDirectTools(nextState: McpExtensionState): Promise<{ directToolCount: number; missingConfiguredDirectToolServers: string[] }> {
+  async function registerDirectTools(nextState: McpExtensionState, subagentPolicy?: SubagentChildPolicy): Promise<{ directToolCount: number; missingConfiguredDirectToolServers: string[] }> {
     const { loadMetadataCache } = await import("./metadata-cache.js");
-    return registerDirectToolsFromConfig(nextState.config, loadMetadataCache());
+    return registerDirectToolsFromConfig(nextState.config, loadMetadataCache(), subagentPolicy);
   }
 
   async function shutdownOAuthFlow(reason: string): Promise<void> {
@@ -196,7 +196,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         throw new Error(`${STALE_INITIALIZATION_PREFIX} after startup`);
       }
 
-      const directToolState = await registerDirectTools(initializedState);
+      const directToolState = await registerDirectTools(initializedState, session.ctx.subagentPolicy);
       if (!isCurrentSession(session) || initPromise !== expectedPromise.current) {
         throw new Error(`${STALE_INITIALIZATION_PREFIX} after tool registration`);
       }
@@ -211,10 +211,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
       updateStatusBar(initializedState);
       let cancelWarmup: (() => void) | null = null;
       const warmup = scheduleMcpStartupWarmup(initializedState, {
+        subagentPolicy: session.ctx.subagentPolicy,
         shouldContinue: () => isCurrentSession(session) && state === initializedState,
         onDirectToolsChanged: async () => {
           if (!isCurrentSession(session) || state !== initializedState) return;
-          await registerDirectTools(initializedState);
+          await registerDirectTools(initializedState, session.ctx.subagentPolicy);
         },
         onSettled: () => {
           if (isCurrentSession(session) && state === initializedState && startupWarmupCancel === cancelWarmup) {

@@ -7,6 +7,10 @@
 - `CreateAgentSessionOptions` and `ExtensionContext` now carry an immutable typed subagent child capability policy for in-process tool registration ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 - `CreateAgentSessionOptions` now supports construction-time system-prompt and inherited-context transforms, allowing in-process child sessions to apply typed policy without extension injection ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
+### Changed
+
+- Typed child policy now includes MCP direct-tool selection and admission-issued Intercom identity/capability, allowing in-process extensions to consume child policy without inheritable environment state ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
 ### Fixed
 
 - Workflow runs awaiting human input now use the blue `？` indicator in the BACKGROUND panel, `/workflow connect` picker, and `/workflow status` listing, including prompts raised by hidden nested workflow children; the indicator returns to the run's current state when the prompt resolves.

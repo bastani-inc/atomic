@@ -11,6 +11,7 @@ import {
 	SessionManager,
 	type SessionStats,
 	SettingsManager,
+	type SubagentIntercomIdentity,
 } from "@bastani/atomic";
 import {
 	type ChildIdentity,
@@ -66,6 +67,8 @@ export interface ChildSpec {
 	readonly model?: Model<Api>;
 	readonly thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
 	readonly parent?: ParentContext;
+	/** Typed identity/capability resolved by the parent before admission. */
+	readonly intercom?: SubagentIntercomIdentity;
 	readonly sessionFile?: string;
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly structuredOutput?: { readonly schema: JsonSchemaObject; readonly outputPath: string };
@@ -449,6 +452,7 @@ export class SubagentControlRuntime {
 					model: spec.model,
 					thinkingLevel: spec.thinkingLevel ?? (spec.agent.thinking as ChildPolicy["thinkingLevel"]),
 					intercomGroup: parent.intercomGroup,
+					intercom: spec.intercom,
 					depth: identity.depth,
 				},
 				sessionDir,
