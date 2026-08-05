@@ -1,6 +1,60 @@
-// @generated split fragment copied from can1357/oh-my-pi for Atomic issue #1483 parity.
-// DO NOT EDIT directly; update the vendored source and re-split.
-fn search_sync(content: &[u8], options: SearchOptions) -> SearchResult {
+// Sync entry points and option resolution for native grep.
+
+use std::{
+	path::Path,
+	sync::atomic::{AtomicU64, Ordering},
+};
+
+use grep_matcher::Matcher;
+use napi::{
+	bindgen_prelude::{Error, Result},
+	threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
+};
+
+use super::{
+	DEFAULT_NATIVE_GREP_MAX_COUNT, GrepConfig, GrepMatch, GrepOutputMode, GrepResult, OutputMode,
+	SearchOptions, SearchParams, SearchResult, empty_search_result,
+	engine::run_search,
+	fs::{
+		ReadFile, collect_files, matches_type_filter, read_file_bytes, resolve_search_path,
+		resolve_type_filter,
+	},
+	output::{aggregate_parallel_results, push_content_matches, to_public_match},
+	pattern::build_matcher,
+	walk::{run_parallel_search, run_streaming_grep},
+};
+use crate::{fs_cache, glob_util, task};
+
+// ---------------------------------------------------------------------------
+// Option resolution
+// ---------------------------------------------------------------------------
+
+const fn parse_output_mode(mode: Option<GrepOutputMode>) -> OutputMode {
+	match mode {
+		None | Some(GrepOutputMode::Content) => OutputMode::Content,
+		Some(GrepOutputMode::Count) => OutputMode::Count,
+		Some(GrepOutputMode::FilesWithMatches) => OutputMode::FilesWithMatches,
+	}
+}
+
+fn resolve_context(
+	context: Option<u32>,
+	context_before: Option<u32>,
+	context_after: Option<u32>,
+) -> (u32, u32) {
+	if context_before.is_some() || context_after.is_some() {
+		(context_before.unwrap_or(0), context_after.unwrap_or(0))
+	} else {
+		let value = context.unwrap_or(0);
+		(value, value)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sync entry points
+// ---------------------------------------------------------------------------
+
+pub(super) fn search_sync(content: &[u8], options: SearchOptions) -> SearchResult {
 	let ignore_case = options.ignore_case.unwrap_or(false);
 	let multiline = options.multiline.unwrap_or(false);
 	let mode = parse_output_mode(options.mode);
@@ -37,7 +91,7 @@ fn search_sync(content: &[u8], options: SearchOptions) -> SearchResult {
 	}
 }
 
-fn grep_sync(
+pub(super) fn grep_sync(
 	options: GrepConfig,
 	on_match: Option<&ThreadsafeFunction<GrepMatch>>,
 	ct: task::CancelToken,
@@ -99,10 +153,8 @@ fn grep_sync(
 			});
 		}
 		if let Some(glob_set) = glob_set.as_ref() {
-			let file_name_matches = search_path
-				.file_name()
-				.map(Path::new)
-				.is_some_and(|path| glob_set.is_match(path));
+			let file_name_matches =
+				search_path.file_name().map(Path::new).is_some_and(|path| glob_set.is_match(path));
 			let cwd_relative_matches = options
 				.cwd
 				.as_deref()
@@ -314,137 +366,228 @@ fn grep_sync(
 	})
 }
 
-// ---------------------------------------------------------------------------
-// N-API exports
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+	#[cfg(unix)]
+	use std::{ffi::CString, os::unix::ffi::OsStrExt};
+	use std::{
+		fs,
+		path::{Path, PathBuf},
+		sync::atomic::{AtomicU64, Ordering},
+		time::{Duration, SystemTime, UNIX_EPOCH},
+	};
 
-/// Search content for a pattern (one-shot, compiles pattern each time).
-/// For repeated searches with the same pattern, use [`grep`] with file filters.
-///
-/// # Arguments
-/// - `content`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
-/// - `options`: Regex settings, context, and output mode.
-///
-/// # Returns
-/// Match list plus counts/limit status; errors are surfaced in `error`.
-#[napi]
-pub fn search(content: Either<JsString, Uint8Array>, options: SearchOptions) -> SearchResult {
-	match &content {
-		Either::A(js_str) => {
-			let utf8 = match js_str.into_utf8() {
-				Ok(utf8) => utf8,
-				Err(err) => return empty_search_result(Some(err.to_string())),
-			};
-			search_sync(utf8.as_slice(), options)
-		},
-		Either::B(buf) => search_sync(buf.as_ref(), options),
+	use super::grep_sync;
+	use crate::{
+		grep::{GrepConfig, GrepOutputMode},
+		task,
+	};
+
+	struct TempDirGuard(PathBuf);
+
+	impl TempDirGuard {
+		fn new() -> Self {
+			static COUNTER: AtomicU64 = AtomicU64::new(0);
+			let nanos = SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("system time is after UNIX_EPOCH")
+				.as_nanos();
+			let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+			let pid = std::process::id();
+			let path = std::env::temp_dir().join(format!("pi-grep-test-{pid}-{nanos}-{seq}"));
+			fs::create_dir_all(&path).expect("create temp test directory");
+			Self(path)
+		}
+
+		fn path(&self) -> &Path {
+			&self.0
+		}
 	}
-}
 
-/// Quick check if content matches a pattern.
-///
-/// # Arguments
-/// - `content`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
-/// - `pattern`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
-/// - `ignore_case`: Case-insensitive matching.
-/// - `multiline`: Enable multiline regex mode.
-///
-/// # Returns
-/// True if any match exists; false on no match.
-#[napi]
-pub fn has_match(
-	content: Either<JsString, Uint8Array>,
-	pattern: Either<JsString, Uint8Array>,
-	ignore_case: Option<bool>,
-	multiline: Option<bool>,
-) -> Result<bool> {
-	// Hold JsStringUtf8 on the stack and borrow - no copy
-	let content_utf8;
-	let content_slice: &[u8] = match &content {
-		Either::A(js_str) => {
-			content_utf8 = js_str.into_utf8()?;
-			content_utf8.as_slice()
-		},
-		Either::B(buf) => buf.as_ref(),
-	};
+	impl Drop for TempDirGuard {
+		fn drop(&mut self) {
+			let _ = fs::remove_dir_all(&self.0);
+		}
+	}
 
-	let pattern_utf8;
-	let pattern_string;
-	let pattern_ref: &str = match &pattern {
-		Either::A(js_str) => {
-			pattern_utf8 = js_str.into_utf8()?;
-			pattern_utf8.as_str()?
-		},
-		Either::B(buf) => {
-			pattern_string = std::str::from_utf8(buf.as_ref())
-				.map_err(|err| Error::from_reason(format!("Invalid UTF-8 in pattern: {err}")))?
-				.to_owned();
-			&pattern_string
-		},
-	};
+	fn write_file(path: &Path, content: &str) {
+		if let Some(parent) = path.parent() {
+			fs::create_dir_all(parent).expect("create parent directories for test file");
+		}
+		fs::write(path, content).expect("write test file");
+	}
 
-	let matcher =
-		build_matcher(pattern_ref, ignore_case.unwrap_or(false), multiline.unwrap_or(false))?;
-	Ok(matcher.is_match(content_slice).unwrap_or(false))
-}
+	#[cfg(unix)]
+	fn make_fifo(path: &Path) {
+		let fifo_path =
+			CString::new(path.as_os_str().as_bytes()).expect("fifo path has no NUL bytes");
+		// SAFETY: `fifo_path` is a valid CString (NUL-terminated, no interior NULs),
+		// so `as_ptr()` yields a valid C string pointer. `0o600` is a valid mode.
+		// The CString is alive for the duration of the call.
+		let rc = unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) };
+		assert_eq!(rc, 0, "create fifo: {}", std::io::Error::last_os_error());
+	}
 
-/// Search files for a regex pattern.
-///
-/// # Arguments
-/// - `options`: Pattern, path, filters, and output mode.
-/// - `on_match`: Optional callback invoked per match/result.
-///
-/// # Returns
-/// Aggregated results across matching files.
-#[napi]
-pub fn grep(
-	options: GrepOptions<'_>,
-	#[napi(ts_arg_type = "((error: Error | null, match: GrepMatch) => void) | undefined | null")]
-	on_match: Option<ThreadsafeFunction<GrepMatch>>,
-) -> task::Promise<GrepResult> {
-	let GrepOptions {
-		pattern,
-		path,
-		cwd,
-		glob,
-		r#type,
-		ignore_case,
-		multiline,
-		hidden,
-		gitignore,
-		cache,
-		max_count,
-		offset,
-		context_before,
-		context_after,
-		context,
-		max_columns,
-		mode,
-		max_count_per_file,
-		timeout_ms,
-		signal,
-	} = options;
+	#[cfg(unix)]
+	fn base_grep_config(path: &Path) -> GrepConfig {
+		GrepConfig {
+			pattern: "needle".to_string(),
+			path: path.to_string_lossy().into_owned(),
+			cwd: None,
+			glob: None,
+			type_filter: None,
+			ignore_case: None,
+			multiline: None,
+			hidden: None,
+			gitignore: Some(false),
+			cache: Some(false),
+			max_count: None,
+			offset: None,
+			context_before: None,
+			context_after: None,
+			context: None,
+			max_columns: None,
+			mode: None,
+			max_count_per_file: None,
+		}
+	}
 
-	let config = GrepConfig {
-		pattern,
-		path,
-		cwd,
-		glob,
-		type_filter: r#type,
-		ignore_case,
-		multiline,
-		hidden,
-		gitignore,
-		cache,
-		max_count,
-		max_count_per_file,
-		offset,
-		context_before,
-		context_after,
-		context,
-		max_columns,
-		mode,
-	};
-	let ct = task::CancelToken::new(timeout_ms, signal);
-	task::blocking("grep", ct, move |ct| grep_sync(config, on_match.as_ref(), ct))
+	#[cfg(unix)]
+	#[test]
+	fn grep_directory_skips_fifo_entries() {
+		let root = TempDirGuard::new();
+		write_file(&root.path().join("regular.txt"), "needle\n");
+		make_fifo(&root.path().join("skip-me.fifo"));
+
+		let result = grep_sync(base_grep_config(root.path()), None, task::CancelToken::default())
+			.expect("directory grep should succeed");
+
+		assert_eq!(result.total_matches, 1);
+		assert_eq!(result.files_with_matches, 1);
+		assert_eq!(result.files_searched, 1);
+		assert_eq!(result.matches.len(), 1);
+		assert_eq!(result.matches[0].path, "regular.txt");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn grep_directory_applies_offset_and_limit_in_walker_order() {
+		let root = TempDirGuard::new();
+		write_file(&root.path().join("a.txt"), "needle a1\nneedle a2\n");
+		write_file(&root.path().join("b.txt"), "needle b1\n");
+		write_file(&root.path().join("c.txt"), "haystack\n");
+
+		let mut config = base_grep_config(root.path());
+		config.max_count = Some(2);
+		config.offset = Some(1);
+
+		let result = grep_sync(config, None, task::CancelToken::default())
+			.expect("directory grep should succeed");
+
+		assert_eq!(result.total_matches, 3);
+		assert_eq!(result.files_with_matches, 2);
+		assert_eq!(result.limit_reached, Some(true));
+		assert_eq!(result.matches.len(), 2);
+		assert_eq!(result.matches[0].path, "a.txt");
+		assert_eq!(result.matches[0].line, "needle a2");
+		assert_eq!(result.matches[1].path, "b.txt");
+		assert_eq!(result.matches[1].line, "needle b1");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn grep_count_mode_limit_applies_to_matches_not_files() {
+		let root = TempDirGuard::new();
+		write_file(&root.path().join("a.txt"), "needle a1\nneedle a2\n");
+		write_file(&root.path().join("b.txt"), "needle b1\n");
+
+		let mut config = base_grep_config(root.path());
+		config.mode = Some(GrepOutputMode::Count);
+		config.max_count = Some(2);
+
+		let result = grep_sync(config, None, task::CancelToken::default())
+			.expect("directory grep should succeed");
+
+		assert_eq!(result.total_matches, 3);
+		assert_eq!(result.files_with_matches, 2);
+		assert_eq!(result.limit_reached, Some(true));
+		assert_eq!(result.matches.len(), 1);
+		assert_eq!(result.matches[0].path, "a.txt");
+		assert_eq!(result.matches[0].match_count, Some(2));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn grep_streaming_respects_pre_cancelled_token() {
+		let root = TempDirGuard::new();
+		write_file(&root.path().join("regular.txt"), "needle\n");
+
+		let ct = task::CancelToken::new(Some(0), None);
+		std::thread::sleep(Duration::from_millis(1));
+		let result = grep_sync(base_grep_config(root.path()), None, ct);
+
+		let Err(err) = result else {
+			panic!("pre-cancelled grep should fail before returning matches");
+		};
+		assert!(
+			err.to_string().contains("timed out"),
+			"expected timeout cancellation error, got: {err}"
+		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn grep_special_root_path_returns_empty_result() {
+		let root = TempDirGuard::new();
+		let fifo = root.path().join("direct.fifo");
+		make_fifo(&fifo);
+
+		let result = grep_sync(base_grep_config(&fifo), None, task::CancelToken::default())
+			.expect("special-file grep should return an empty result");
+
+		assert!(result.matches.is_empty());
+		assert_eq!(result.total_matches, 0);
+		assert_eq!(result.files_with_matches, 0);
+		assert_eq!(result.files_searched, 0);
+		assert_eq!(result.limit_reached, None);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn grep_multiline_matches_cross_line_patterns() {
+		let root = TempDirGuard::new();
+		write_file(&root.path().join("code.txt"), "fn foo() {\n  return 1;\n}\n");
+
+		let mut config = base_grep_config(root.path());
+		config.pattern = r"foo\(\) \{\n  return".to_string();
+		config.multiline = Some(true);
+
+		let result = grep_sync(config, None, task::CancelToken::default())
+			.expect("multiline grep should succeed");
+
+		assert_eq!(result.total_matches, 1, "cross-line pattern should match across lines");
+		assert_eq!(result.matches.len(), 1);
+		assert_eq!(result.matches[0].path, "code.txt");
+		assert_eq!(result.matches[0].line_number, 1);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn grep_per_file_max_count_preserves_file_diversity() {
+		let root = TempDirGuard::new();
+		write_file(&root.path().join("a.txt"), "needle 1\nneedle 2\nneedle 3\nneedle 4\nneedle 5\n");
+		write_file(&root.path().join("z.txt"), "needle z\n");
+
+		let mut config = base_grep_config(root.path());
+		config.max_count = Some(4);
+		config.max_count_per_file = Some(2);
+
+		let result = grep_sync(config, None, task::CancelToken::default())
+			.expect("directory grep should succeed");
+
+		let paths: Vec<&str> = result.matches.iter().map(|matched| matched.path.as_str()).collect();
+		assert_eq!(paths, ["a.txt", "a.txt", "z.txt"], "hot file must not starve later files");
+		assert_eq!(result.files_with_matches, 2);
+		assert_eq!(result.limit_reached, Some(true));
+	}
 }

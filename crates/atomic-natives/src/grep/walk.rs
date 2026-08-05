@@ -1,47 +1,42 @@
-// @generated split fragment copied from can1357/oh-my-pi for Atomic issue #1483 parity.
-// DO NOT EDIT directly; update the vendored source and re-split.
-fn build_matcher(
-	pattern: &str,
-	ignore_case: bool,
-	multiline: bool,
-) -> Result<grep_regex::RegexMatcher> {
-	let sanitized = sanitize_braces(pattern);
-	match build_regex_matcher(sanitized.as_ref(), ignore_case, multiline) {
-		Ok(matcher) => Ok(matcher),
-		Err(err) => {
-			let message = err.to_string();
-			if message.contains("unclosed group") || message.contains("unopened group") {
-				let escaped = escape_unescaped_parentheses(sanitized.as_ref());
-				if escaped.as_ref() != sanitized.as_ref() {
-					return build_regex_matcher(escaped.as_ref(), ignore_case, multiline)
-						.map_err(|retry_err| Error::from_reason(format!("Regex error: {retry_err}")));
-				}
-			}
-			Err(Error::from_reason(format!("Regex error: {message}")))
-		},
-	}
+// Directory traversal orchestration for native grep.
+
+use std::{
+	path::Path,
+	sync::{
+		Arc, Mutex,
+		atomic::{AtomicU64, Ordering},
+	},
+};
+
+use globset::GlobSet;
+use grep_matcher::Matcher;
+use grep_searcher::Searcher;
+use ignore::{ParallelVisitor, ParallelVisitorBuilder, WalkState};
+use napi::bindgen_prelude::{Error, Result};
+use rayon::prelude::*;
+
+use super::{
+	DEFAULT_NATIVE_GREP_MAX_COUNT, OutputMode, SearchParams,
+	engine::{
+		CollectedMatch, SearchResultInternal, build_searcher_for_params, per_file_params,
+		run_search_slice,
+	},
+	fs::{FileEntry, ReadFile, TypeFilter, matches_type_filter, read_file_bytes},
+};
+use crate::{fs_cache, task};
+
+pub(super) struct FileSearchResult {
+	pub(super) relative_path: String,
+	pub(super) matches: Vec<CollectedMatch>,
+	pub(super) match_count: u64,
+	pub(super) limit_reached: bool,
 }
 
 // ---------------------------------------------------------------------------
 // File / directory search orchestration
 // ---------------------------------------------------------------------------
 
-fn per_file_params(params: SearchParams) -> SearchParams {
-	let file_limit = match params.mode {
-		OutputMode::Content => {
-			let global = params.max_count.map(|max| max.saturating_add(params.offset));
-			match (global, params.max_count_per_file) {
-				(Some(global), Some(per_file)) => Some(global.min(per_file)),
-				(global, per_file) => global.or(per_file),
-			}
-		},
-		OutputMode::Count => None,
-		OutputMode::FilesWithMatches => Some(1),
-	};
-	SearchParams { max_count: file_limit, offset: 0, ..params }
-}
-
-fn run_parallel_search(
+pub(super) fn run_parallel_search(
 	entries: &[FileEntry],
 	matcher: &grep_regex::RegexMatcher,
 	params: SearchParams,
@@ -89,9 +84,16 @@ fn reserve_streaming_budget(budget: &AtomicU64, requested: u64) -> u64 {
 	let requested = requested.max(1);
 	loop {
 		let current = budget.load(Ordering::Relaxed);
-		if current == 0 { return 0; }
+		if current == 0 {
+			return 0;
+		}
 		let allowed = current.min(requested);
-		if budget.compare_exchange(current, current - allowed, Ordering::Relaxed, Ordering::Relaxed).is_ok() { return allowed; }
+		if budget
+			.compare_exchange(current, current - allowed, Ordering::Relaxed, Ordering::Relaxed)
+			.is_ok()
+		{
+			return allowed;
+		}
 	}
 }
 
@@ -180,12 +182,27 @@ impl ParallelVisitor for StreamingGrepVisitor<'_> {
 			};
 			search
 		};
-		if search.match_count == 0 { return WalkState::Continue; }
-		let requested = match self.params.mode { OutputMode::Content => search.matches.len() as u64, OutputMode::Count | OutputMode::FilesWithMatches => 1 };
+		if search.match_count == 0 {
+			return WalkState::Continue;
+		}
+		let requested = match self.params.mode {
+			OutputMode::Content => search.matches.len() as u64,
+			OutputMode::Count | OutputMode::FilesWithMatches => 1,
+		};
 		let allowed = reserve_streaming_budget(&self.collection_budget, requested);
-		if allowed == 0 { return WalkState::Quit; }
-		if self.params.mode == OutputMode::Content && allowed < requested { search.matches.truncate(allowed as usize); search.limit_reached = true; }
-		self.results.push(FileSearchResult { relative_path: relative.into_owned(), matches: search.matches, match_count: search.match_count, limit_reached: search.limit_reached });
+		if allowed == 0 {
+			return WalkState::Quit;
+		}
+		if self.params.mode == OutputMode::Content && allowed < requested {
+			search.matches.truncate(allowed as usize);
+			search.limit_reached = true;
+		}
+		self.results.push(FileSearchResult {
+			relative_path: relative.into_owned(),
+			matches: search.matches,
+			match_count: search.match_count,
+			limit_reached: search.limit_reached,
+		});
 		WalkState::Continue
 	}
 }
@@ -223,7 +240,7 @@ impl<'a> ParallelVisitorBuilder<'a> for StreamingGrepVisitorBuilder<'a> {
 	}
 }
 
-fn run_streaming_grep(
+pub(super) fn run_streaming_grep(
 	search_path: &Path,
 	matcher: &grep_regex::RegexMatcher,
 	glob_set: Option<&GlobSet>,
@@ -246,7 +263,13 @@ fn run_streaming_grep(
 	let file_params = per_file_params(params);
 	let shared_results = Arc::new(Mutex::new(Vec::new()));
 	let error = Arc::new(Mutex::new(None));
-	let collection_budget = Arc::new(AtomicU64::new(params.max_count.unwrap_or(DEFAULT_NATIVE_GREP_MAX_COUNT).saturating_add(params.offset).saturating_add(1024)));
+	let collection_budget = Arc::new(AtomicU64::new(
+		params
+			.max_count
+			.unwrap_or(DEFAULT_NATIVE_GREP_MAX_COUNT)
+			.saturating_add(params.offset)
+			.saturating_add(1024),
+	));
 	let skipped_oversized = Arc::new(AtomicU64::new(0));
 	let mut visitor_builder = StreamingGrepVisitorBuilder {
 		root: search_path,
@@ -277,132 +300,3 @@ fn run_streaming_grep(
 	results.sort_unstable_by(|a, b| a.relative_path.cmp(&b.relative_path));
 	Ok((results, skipped_oversized.load(Ordering::Relaxed)))
 }
-
-fn push_count_match(matches: &mut Vec<GrepMatch>, path: String, match_count: u64) {
-	matches.push(GrepMatch {
-		path,
-		line_number: 0,
-		line: String::new(),
-		context_before: None,
-		context_after: None,
-		truncated: None,
-		match_count: Some(crate::clamp_u32(match_count)),
-	});
-}
-
-fn push_file_match(matches: &mut Vec<GrepMatch>, path: String) {
-	matches.push(GrepMatch {
-		path,
-		line_number: 0,
-		line: String::new(),
-		context_before: None,
-		context_after: None,
-		truncated: None,
-		match_count: None,
-	});
-}
-
-fn aggregate_parallel_results(
-	results: Vec<FileSearchResult>,
-	params: SearchParams,
-) -> (Vec<GrepMatch>, u64, u32, u32, bool) {
-	let SearchParams { mode, max_count, offset, .. } = params;
-	let mut matches = Vec::new();
-	let mut total_matches = 0u64;
-	let mut files_with_matches = 0u32;
-	let files_searched = crate::clamp_u32(results.len() as u64);
-	let mut skipped = 0u64;
-	let mut emitted = 0u64;
-	let mut limit_reached = false;
-
-	for result in results {
-		if result.match_count == 0 {
-			continue;
-		}
-
-		let file_match_start = total_matches;
-		let file_match_count = result.match_count;
-		files_with_matches = files_with_matches.saturating_add(1);
-		total_matches = total_matches.saturating_add(file_match_count);
-
-		match mode {
-			OutputMode::Content => {
-				let mut selected_matches = Vec::new();
-				for matched in result.matches {
-					if skipped < offset {
-						skipped += 1;
-						continue;
-					}
-					if let Some(max) = max_count
-						&& emitted >= max
-					{
-						limit_reached = true;
-						break;
-					}
-					selected_matches.push(matched);
-					emitted += 1;
-				}
-				if !selected_matches.is_empty() {
-					push_content_matches(&mut matches, result.relative_path, selected_matches);
-				}
-				if result.limit_reached && skipped >= offset {
-					limit_reached = true;
-				}
-			},
-			OutputMode::Count => {
-				let skipped_in_file = offset.saturating_sub(file_match_start).min(file_match_count);
-				let available = file_match_count.saturating_sub(skipped_in_file);
-				if available == 0 {
-					continue;
-				}
-				if let Some(max) = max_count
-					&& emitted >= max
-				{
-					limit_reached = true;
-					continue;
-				}
-				let remaining = max_count.map_or(available, |max| max.saturating_sub(emitted));
-				if remaining == 0 {
-					limit_reached = true;
-					continue;
-				}
-				push_count_match(&mut matches, result.relative_path, result.match_count);
-				let selected = available.min(remaining);
-				emitted = emitted.saturating_add(selected);
-				if selected < available {
-					limit_reached = true;
-				}
-			},
-			OutputMode::FilesWithMatches => {
-				if skipped < offset {
-					skipped += 1;
-					continue;
-				}
-				if let Some(max) = max_count
-					&& emitted >= max
-				{
-					limit_reached = true;
-					continue;
-				}
-				push_file_match(&mut matches, result.relative_path);
-				emitted += 1;
-			},
-		}
-	}
-
-	if let Some(max) = max_count
-		&& emitted >= max
-	{
-		limit_reached = true;
-	}
-
-	if max_count == Some(0) {
-		limit_reached = files_with_matches > 0;
-	}
-
-	(matches, total_matches, files_with_matches, files_searched, limit_reached)
-}
-
-// ---------------------------------------------------------------------------
-// Sync entry points
-// ---------------------------------------------------------------------------
