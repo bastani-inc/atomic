@@ -1,4 +1,3 @@
-import * as path from "node:path";
 import { formatNestedAggregate } from "../runs/inprocess/runtime-support/nested-rendering.ts";
 import { formatDuration, formatModelThinking, shortenPath } from "../shared/formatters.ts";
 import { formatAgentRunningLabel } from "../shared/status-format.ts";
@@ -175,14 +174,6 @@ export function widgetStepActivityLine(
 	if (activity) return activity;
 	if (step.status === "running") return "thinking…";
 	return "";
-}
-
-export function widgetOutputPath(
-	job: AsyncJobState,
-	step: NonNullable<AsyncJobState["steps"]>[number],
-): string | undefined {
-	if (typeof step.index !== "number") return undefined;
-	return path.join(job.asyncDir, `output-${step.index}.log`);
 }
 
 export function nestedRunName(run: NestedRunSummary): string {

@@ -121,6 +121,8 @@ export interface RunSyncOptions {
 		promptLogPath?: string;
 		/** Hold a test prompt open until the caller releases the supplied promise. */
 		promptGate?: Promise<void>;
+		/** Match AgentSession.abort() settling an active prompt without throwing. */
+		abortResolvesPrompt?: boolean;
 	};
 }
 

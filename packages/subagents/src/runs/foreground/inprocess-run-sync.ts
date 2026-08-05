@@ -225,6 +225,28 @@ export async function runSingleInProcess(
 				}
 			: undefined,
 		artifactJsonlPath: artifactPaths?.jsonlPath,
+		onProgress: options.onUpdate
+			? (progress) => {
+					const liveProgress = { ...progress, index: options.index ?? 0 };
+					const liveResult: SingleResult = {
+						agent: agent.name,
+						task,
+						status: "continued",
+						messages: [],
+						usage: emptyUsage(),
+						progress: liveProgress,
+					};
+					options.onUpdate?.({
+						content: [{ type: "text", text: "running" }],
+						details: {
+							mode: "single",
+							runId: options.runId,
+							results: [liveResult],
+							progress: [liveProgress],
+						} satisfies Details,
+					});
+				}
+			: undefined,
 	};
 	const admission = control.admitChildSession(spec, parent);
 	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");

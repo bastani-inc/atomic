@@ -25,6 +25,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agent-types.ts";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
 import {
+	type AgentProgress,
 	type ArtifactPaths,
 	DEFAULT_MAX_OUTPUT,
 	type JsonSchemaObject,
@@ -59,6 +60,8 @@ export interface TestSessionOptions {
 	readonly promptLogPath?: string;
 	/** Hold a test prompt open until the caller releases the supplied promise. */
 	readonly promptGate?: Promise<void>;
+	/** Match AgentSession.abort() settling an active prompt without throwing. */
+	readonly abortResolvesPrompt?: boolean;
 }
 
 export interface ChildSpec {
@@ -80,6 +83,8 @@ export interface ChildSpec {
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly structuredOutput?: { readonly schema: JsonSchemaObject; readonly outputPath: string };
 	readonly artifactJsonlPath?: string;
+	/** Live progress callback for the parent's tool-result rendering. */
+	readonly onProgress?: (progress: AgentProgress) => void;
 }
 
 export interface ChildPolicy extends ChildModePolicy {
@@ -192,6 +197,7 @@ const EMPTY_STATS: AttemptStats = {
 };
 
 const CAPACITY_RETRY_INITIAL_DELAY_MS = 5;
+const INTERRUPTED_ENVELOPE = "Interrupted";
 const CAPACITY_RETRY_MAX_DELAY_MS = 100;
 
 type CapacityWaitResult = "retry" | "abort" | "interrupt";
@@ -234,9 +240,12 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	const testOptions = typeof spec.testSession === "object" ? spec.testSession : {};
 	let lastAssistantText = "";
 	let aborted = false;
-	let rejectPromptGate: (() => void) | undefined;
-	const promptAbort = new Promise<never>((_, reject) => {
-		rejectPromptGate = () => reject(new Error("aborted"));
+	let settlePromptAbort: (() => void) | undefined;
+	const promptAbort = new Promise<"aborted">((resolve, reject) => {
+		settlePromptAbort = () => {
+			if (testOptions.abortResolvesPrompt) resolve("aborted");
+			else reject(new Error("aborted"));
+		};
 	});
 	let promptCount = 0;
 	let userMessages = 0;
@@ -247,7 +256,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		sessionFile: sessionManager.getSessionFile(),
 		abort: async () => {
 			aborted = true;
-			rejectPromptGate?.();
+			settlePromptAbort?.();
 		},
 		subscribe(listener: AgentSessionEventListener) {
 			listeners.add(listener);
@@ -260,7 +269,13 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
 			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 			userMessages += 1;
-			if (testOptions.promptGate) await Promise.race([testOptions.promptGate, promptAbort]);
+			if (testOptions.promptGate) {
+				const gateResult = await Promise.race([
+					testOptions.promptGate.then(() => "released" as const),
+					promptAbort,
+				]);
+				if (gateResult === "aborted") return "";
+			}
 			if (
 				spec.structuredOutput &&
 				testOptions.structuredOutputAfterPrompt !== undefined &&
@@ -381,6 +396,16 @@ function sessionDirectory(root: string, pathValue: string): string {
 	const directory = resolve(root, ...pathValue.split("/"));
 	if (relative(root, directory).startsWith("..")) throw new Error("child session path escapes trusted root");
 	return directory;
+}
+
+function safeArgsPreview(args: unknown): string {
+	if (args === undefined) return "";
+	try {
+		const text = typeof args === "string" ? args : JSON.stringify(args);
+		return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+	} catch {
+		return "";
+	}
 }
 
 function writeEvent(pathValue: string | undefined, event: AgentSessionEvent): void {
@@ -535,7 +560,7 @@ export class SubagentControlRuntime {
 							status,
 							stats,
 							path: admitted.identity.path,
-							envelope: boundedEnvelope(waitResult),
+							envelope: INTERRUPTED_ENVELOPE,
 						}
 					: {
 							status,
@@ -636,10 +661,66 @@ export class SubagentControlRuntime {
 			session = created.session;
 			if (session.sessionFile) this.sessionFiles.set(admitted.identity.path, session.sessionFile);
 			this.sessions.set(admitted.identity.path, session);
+			const progressState: AgentProgress = {
+				index: 0,
+				agent: admitted.spec.agent.name,
+				status: "running",
+				task: admitted.spec.task,
+				recentTools: [],
+				recentOutput: [],
+				toolCount: 0,
+				tokens: 0,
+				durationMs: 0,
+				lastActivityAt: Date.now(),
+			};
+			const attemptStartedAt = Date.now();
+			let lastProgressEmit = 0;
+			const emitProgress = (force: boolean) => {
+				const onProgress = admitted.spec.onProgress;
+				if (!onProgress) return;
+				const now = Date.now();
+				if (!force && now - lastProgressEmit < 400) return;
+				lastProgressEmit = now;
+				progressState.durationMs = now - attemptStartedAt;
+				progressState.lastActivityAt = now;
+				onProgress({ ...progressState, recentTools: [...progressState.recentTools] });
+			};
 			unsubscribe = session.subscribe((event) => {
 				writeEvent(admitted.spec.artifactJsonlPath, event);
-				if (event.type === "agent_start")
+				if (event.type === "agent_start") {
 					this.native.publishChildStatus(admitted.identity.path, nativeStatus("running"));
+					emitProgress(true);
+				} else if (event.type === "tool_execution_start") {
+					progressState.toolCount += 1;
+					progressState.currentTool = event.toolName;
+					progressState.currentToolArgs = safeArgsPreview(event.args);
+					progressState.currentToolStartedAt = Date.now();
+					emitProgress(true);
+				} else if (event.type === "tool_execution_end") {
+					if (progressState.currentTool !== undefined) {
+						progressState.recentTools.push({
+							tool: progressState.currentTool,
+							args: progressState.currentToolArgs ?? "",
+							endMs: Date.now(),
+						});
+						if (progressState.recentTools.length > 5) progressState.recentTools.shift();
+					}
+					progressState.currentTool = undefined;
+					progressState.currentToolArgs = undefined;
+					progressState.currentToolStartedAt = undefined;
+					emitProgress(true);
+				} else if (event.type === "message_end") {
+					const message = (event as { message?: { role?: string; usage?: { input?: number; output?: number } } })
+						.message;
+					if (message?.role === "assistant") {
+						progressState.turnCount = (progressState.turnCount ?? 0) + 1;
+						const usage = message.usage;
+						if (usage) progressState.tokens += (usage.input ?? 0) + (usage.output ?? 0);
+					}
+					emitProgress(false);
+				} else {
+					emitProgress(false);
+				}
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
@@ -673,7 +754,10 @@ export class SubagentControlRuntime {
 				termination === "interrupt" ? "interrupted" : termination ? "error" : "ok";
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));
-			const envelope = boundedEnvelope(output || termination || "(no output)", undefined);
+			const envelope =
+				status === "interrupted"
+					? INTERRUPTED_ENVELOPE
+					: boundedEnvelope(output || termination || "(no output)", undefined);
 			if (status === "ok")
 				return {
 					status,
@@ -707,7 +791,7 @@ export class SubagentControlRuntime {
 						status,
 						stats,
 						path: admitted.identity.path,
-						envelope: boundedEnvelope(cause),
+						envelope: INTERRUPTED_ENVELOPE,
 						sessionFile: session?.sessionFile,
 					}
 				: {

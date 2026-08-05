@@ -84,7 +84,8 @@ export function renderSubagentResult(
 		);
 		return container;
 	}
-	if (!d?.results.length) {
+	const liveMultiProgress = (d?.mode === "parallel" || d?.mode === "chain") && (d?.progress?.length ?? 0) > 0;
+	if (!d?.results.length && !liveMultiProgress) {
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
 		const contextPrefix = d?.context === "fork" ? `${theme.fg("warning", "[fork]")} ` : "";
@@ -248,7 +249,6 @@ export function renderSubagentResult(
 	const modeLabel = d.mode;
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const multiLabel = buildMultiProgressLabel(d, hasRunning);
-	const itemTitle = multiLabel.itemTitle;
 
 	const chainVis =
 		d.chainAgents?.length && !multiLabel.hasParallelInChain
@@ -293,11 +293,13 @@ export function renderSubagentResult(
 	}
 
 	const useResultsDirectly = multiLabel.hasParallelInChain || !d.chainAgents?.length;
+	const progressSpan = d.progress?.length ? Math.max(...d.progress.map((p) => p.index + 1)) : 0;
+	const resultsSpan = Math.max(d.results.length, progressSpan, d.mode === "parallel" ? (d.totalSteps ?? 0) : 0);
 	const displayStart = multiLabel.showActiveGroupOnly ? multiLabel.groupStartIndex : 0;
 	const displayEnd = multiLabel.showActiveGroupOnly
 		? multiLabel.groupEndIndex
 		: useResultsDirectly
-			? d.results.length
+			? resultsSpan
 			: d.chainAgents!.length;
 	const chainEntries = buildChainRenderEntries(d, multiLabel);
 	const renderEntries =
@@ -305,14 +307,15 @@ export function renderSubagentResult(
 		Array.from({ length: displayEnd - displayStart }, (_, offset): ChainRenderEntry => {
 			const i = displayStart + offset;
 			const r = d.results[i];
+			const progressAgent = d.progress?.find((p) => p.index === i)?.agent;
 			const rowNumber = multiLabel.showActiveGroupOnly ? i - multiLabel.groupStartIndex + 1 : i + 1;
 			return {
 				kind: "result",
 				resultIndex: i,
 				rowNumber,
 				agentName: useResultsDirectly
-					? r?.agent || `step-${rowNumber}`
-					: d.chainAgents![i] || r?.agent || `step-${rowNumber}`,
+					? r?.agent || progressAgent || `step-${rowNumber}`
+					: d.chainAgents![i] || r?.agent || progressAgent || `step-${rowNumber}`,
 			};
 		});
 
@@ -335,8 +338,32 @@ export function renderSubagentResult(
 		const agentName = entry.agentName;
 
 		if (!r) {
-			const pendingLabel = chainEntries ? resultRowLabel(d, multiLabel, i, rowNumber) : `${itemTitle} ${rowNumber}`;
-			c.addChild(new Text(fit(theme.fg("dim", `  ${pendingLabel}: ${agentName}`)), 0, 0));
+			const rowLabel = resultRowLabel(d, multiLabel, i, rowNumber);
+			const runningProg = d.progress?.find((p) => p.index === i && p.status === "running") as
+				| AgentProgress
+				| undefined;
+			if (runningProg) {
+				const runningStats = ` | ${runningProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(runningProg, options.now))}`;
+				c.addChild(
+					new Text(
+						fit(
+							`${theme.fg("warning", "running")} ${rowLabel}: ${theme.bold(theme.fg("warning", agentName))}${runningStats}`,
+						),
+						0,
+						0,
+					),
+				);
+				const progressSnapshotNow = snapshotNowForProgress(runningProg, options.now);
+				const liveStatusLine = buildLiveStatusLine(runningProg, progressSnapshotNow);
+				if (liveStatusLine) {
+					c.addChild(new Text(fit(theme.fg("accent", `    ${liveStatusLine}`)), 0, 0));
+				}
+				const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
+				if (expandHint) c.addChild(new Text(fit(theme.fg("accent", `    Press ${expandHint}`)), 0, 0));
+				c.addChild(new Spacer(1));
+				continue;
+			}
+			c.addChild(new Text(fit(theme.fg("dim", `  ${rowLabel}: ${agentName}`)), 0, 0));
 			c.addChild(new Text(theme.fg("dim", `    status: pending`), 0, 0));
 			c.addChild(new Spacer(1));
 			continue;

@@ -109,6 +109,7 @@ struct ControlState {
 	residency: Residency,
 	dispatch: Arc<DispatchGate>,
 	attempts: Mutex<HashMap<u64, Arc<AttemptControl>>>,
+	termination_receipts: Mutex<HashMap<u64, TerminationReceipt>>,
 	next_attempt_id: AtomicU64,
 	napi_execution_guards: Mutex<HashMap<u64, ExecutionGuard>>,
 	next_napi_guard_id: AtomicU64,
@@ -124,6 +125,7 @@ impl ControlState {
 			residency: Residency::default(),
 			dispatch: Arc::new(DispatchGate::default()),
 			attempts: Mutex::new(HashMap::new()),
+			termination_receipts: Mutex::new(HashMap::new()),
 			next_attempt_id: AtomicU64::new(1),
 			napi_execution_guards: Mutex::new(HashMap::new()),
 			next_napi_guard_id: AtomicU64::new(1),
@@ -285,8 +287,16 @@ impl SubagentControl {
 			.attempts
 			.lock()
 			.map_err(|_| "attempt registry unavailable".to_owned())?
-			.remove(&id)
-			.ok_or_else(|| "unknown attempt".to_owned())?;
+			.remove(&id);
+		let Some(attempt) = attempt else {
+			let terminated = self
+				.state
+				.termination_receipts
+				.lock()
+				.map_err(|_| "termination receipt registry unavailable".to_owned())?
+				.contains_key(&id);
+			return if terminated { Ok(()) } else { Err("unknown attempt".to_owned()) };
+		};
 		let cause = attempt.requested_cause();
 		attempt.complete();
 		self
@@ -315,9 +325,24 @@ impl SubagentControl {
 			.lock()
 			.map_err(|_| "attempt registry unavailable".to_owned())?
 			.get(&id)
-			.cloned()
-			.ok_or_else(|| "unknown attempt".to_owned())?;
+			.cloned();
+		let Some(attempt) = attempt else {
+			return self
+				.state
+				.termination_receipts
+				.lock()
+				.map_err(|_| "termination receipt registry unavailable".to_owned())?
+				.get(&id)
+				.copied()
+				.ok_or_else(|| "unknown attempt".to_owned());
+		};
 		let receipt = attempt.terminate(cause).await;
+		self
+			.state
+			.termination_receipts
+			.lock()
+			.map_err(|_| "termination receipt registry unavailable".to_owned())?
+			.insert(id, receipt);
 		let removed = self
 			.state
 			.attempts
@@ -688,6 +713,36 @@ mod tests {
 			assert_eq!(identity.cause, Some(cause));
 			assert_eq!(child.status_watch().current_update().cause, Some(cause));
 		}
+	}
+
+	#[tokio::test(flavor = "current_thread")]
+	async fn terminated_attempt_completion_is_idempotent_but_unknown_ids_are_refused() {
+		let control = SubagentControl::new("parent").expect("control");
+		let parent = ParentContext::new("parent", 0).expect("parent");
+		let child =
+			control.admit_child_session(ChildSpec::new("analysis"), parent).expect("admit child");
+		let attempt = control.begin_child_attempt(&child).expect("begin attempt");
+		let receipt = control
+			.terminate_child_attempt(attempt, TerminationCause::Interrupt)
+			.await
+			.expect("terminate attempt");
+
+		assert_eq!(control.finish_child_attempt(attempt, AgentStatus::Interrupted), Ok(()));
+		assert_eq!(
+			control
+				.terminate_child_attempt(attempt, TerminationCause::Interrupt)
+				.await
+				.expect("repeat termination"),
+			receipt
+		);
+		assert_eq!(
+			control.finish_child_attempt(attempt + 1_000_000, AgentStatus::Interrupted),
+			Err("unknown attempt".to_owned())
+		);
+		assert_eq!(
+			control.terminate_child_attempt(attempt + 1_000_000, TerminationCause::Interrupt).await,
+			Err("unknown attempt".to_owned())
+		);
 	}
 
 	#[test]

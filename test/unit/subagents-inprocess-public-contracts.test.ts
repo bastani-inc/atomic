@@ -181,11 +181,17 @@ test("public interrupt and resume actions accept both bare run ids and canonical
 	let gate = Promise.withResolvers<void>();
 	let promptLogPath = join(cwd, "prompt-bare.log");
 	const events = new TestEvents();
+	const completions: Array<{
+		status?: string;
+		envelope?: string;
+		result?: { status?: string; envelope?: string; stats?: { sessionId?: string } };
+	}> = [];
+	events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (payload) => completions.push(payload as (typeof completions)[number]));
 	const { execute } = executor(cwd, events, {
 		executeAsyncSingle: (id, params) =>
 			executeAsyncSingle(id, {
 				...params,
-				testSession: { output: "resumed ok", promptGate: gate.promise, promptLogPath },
+				testSession: { output: "resumed ok", promptGate: gate.promise, promptLogPath, abortResolvesPrompt: true },
 			}),
 	});
 	const ctx = context(cwd);
@@ -218,7 +224,13 @@ test("public interrupt and resume actions accept both bare run ids and canonical
 		);
 		assert.equal(interrupted.isError, undefined, text(interrupted));
 		assert.match(text(interrupted), /Interrupt requested/);
-
+		const completion = completions.at(-1);
+		assert.equal(completion?.status, "interrupted");
+		assert.equal(completion?.result?.status, "interrupted");
+		assert.ok(completion?.result?.stats?.sessionId, "the typed interrupted result must retain session stats");
+		assert.equal(completion?.envelope, "Interrupted");
+		assert.equal(completion?.result?.envelope, "Interrupted");
+		assert.doesNotMatch(JSON.stringify(completion), /unknown attempt/i);
 		gate.resolve();
 		const resumed = await execute.execute(
 			`resume-${form}`,
