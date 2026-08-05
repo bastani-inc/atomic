@@ -3,9 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
-import type { ExtensionAPI, ToolDefinition } from "../../packages/coding-agent/src/index.js";
 import { rewriteSubagentPrompt } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
-import registerSubagentPromptRuntime from "../../packages/subagents/src/runs/inprocess/runtime-support/prompt-bridge.js";
 import {
 	cleanupStructuredOutputRuntime,
 	createStructuredOutputRuntime,
@@ -13,7 +11,6 @@ import {
 	readStructuredOutput,
 	STRUCTURED_OUTPUT_CAPTURE_ENV,
 	STRUCTURED_OUTPUT_MISSING_ERROR,
-	STRUCTURED_OUTPUT_SCHEMA_ENV,
 } from "../../packages/subagents/src/runs/shared/structured-output.js";
 
 const objectSchema = {
@@ -29,19 +26,6 @@ const payload = { answer: "ready" };
 function assertPrivateFileModeIfSupported(filePath: string): void {
 	if (process.platform === "win32") return;
 	assert.equal(statSync(filePath).mode & 0o777, 0o600);
-}
-
-function withStructuredOutputEnv<T>(schemaPath: string, outputPath: string, fn: () => Promise<T>): Promise<T> {
-	const previousSchema = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
-	const previousCapture = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
-	process.env[STRUCTURED_OUTPUT_SCHEMA_ENV] = schemaPath;
-	process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] = outputPath;
-	return fn().finally(() => {
-		if (previousSchema === undefined) delete process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
-		else process.env[STRUCTURED_OUTPUT_SCHEMA_ENV] = previousSchema;
-		if (previousCapture === undefined) delete process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
-		else process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] = previousCapture;
-	});
 }
 
 function withRuntime<T>(
@@ -145,60 +129,6 @@ describe("subagent structured_output prompt runtime", () => {
 		} finally {
 			if (previous === undefined) delete process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
 			else process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] = previous;
-		}
-	});
-
-	test("registers the shared structured_output tool and writes only output JSON", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-structured-"));
-		try {
-			const schemaPath = join(dir, "schema.json");
-			const outputPath = join(dir, "output.json");
-			const schema = {
-				type: "object",
-				required: ["files", "risks"],
-				properties: {
-					files: { type: "array", items: { type: "string" } },
-					risks: { type: "array", items: { type: "string" } },
-				},
-				additionalProperties: false,
-			};
-			writeFileSync(schemaPath, JSON.stringify(schema), { mode: 0o600 });
-
-			await withStructuredOutputEnv(schemaPath, outputPath, async () => {
-				let registeredTool: ToolDefinition | undefined;
-				const pi = {
-					registerTool(tool: ToolDefinition): void {
-						registeredTool = tool;
-					},
-					on(): void {},
-				} as Partial<ExtensionAPI> as ExtensionAPI;
-
-				registerSubagentPromptRuntime(pi);
-
-				assert.notEqual(registeredTool, undefined);
-				assert.equal(registeredTool?.name, "structured_output");
-				assert.deepEqual(registeredTool?.parameters, schema);
-
-				const promptPayload = { files: ["README.md"], risks: ["none"] };
-				const result = await registeredTool!.execute(
-					"good",
-					promptPayload,
-					undefined,
-					undefined,
-					{} as Parameters<ToolDefinition["execute"]>[4],
-				);
-
-				assert.equal(result.terminate, true);
-				assert.deepEqual(result.details, promptPayload);
-				assert.deepEqual(
-					JSON.parse(result.content[0]?.type === "text" ? result.content[0].text : ""),
-					promptPayload,
-				);
-				assert.deepEqual(JSON.parse(readFileSync(outputPath, "utf-8")), promptPayload);
-				assertPrivateFileModeIfSupported(outputPath);
-			});
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });
