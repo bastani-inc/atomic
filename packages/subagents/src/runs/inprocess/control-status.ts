@@ -1,5 +1,6 @@
 import type { SubagentToolResult } from "../../shared/types.ts";
 import { findSubagentControl, listSubagentControls } from "./control-registry.ts";
+import type { ModelCandidate } from "./runner.ts";
 
 function childLines(control: ReturnType<typeof findSubagentControl>, id?: string): string[] {
 	if (!control) return [];
@@ -63,6 +64,21 @@ export async function interruptInProcessChild(id: string): Promise<SubagentToolR
 	return {
 		content: [{ type: "text", text: `No running in-process child found for '${id}'.` }],
 		isError: true,
+		details: { mode: "management", results: [] },
+	};
+}
+
+export async function resumeInProcessChild(
+	id: string,
+	message: string,
+	candidate: ModelCandidate,
+): Promise<SubagentToolResult | undefined> {
+	const control = findSubagentControl(id);
+	if (!control) return undefined;
+	const outcome = await control.resumeChild(id, message, candidate);
+	return {
+		content: [{ type: "text", text: outcome.envelope }],
+		isError: outcome.status === "error" || outcome.status === "interrupted" ? true : undefined,
 		details: { mode: "management", results: [] },
 	};
 }

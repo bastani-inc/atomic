@@ -821,6 +821,29 @@ export class SubagentControlRuntime {
 		await this.terminateChildAttempt(running, "interrupt");
 		return true;
 	}
+	async resumeChild(
+		pathValue: string,
+		message: string,
+		candidate: ModelCandidate,
+		signals: AttemptSignals = {
+			abort: new AbortController().signal,
+			interrupt: new AbortController().signal,
+		},
+	): Promise<AttemptOutcome> {
+		const admission = this.reloadColdChild(pathValue, message);
+		if (!admission.admitted) {
+			const reason = admission.refusal?.reason ?? "cold child reload was refused";
+			return {
+				status: "error",
+				cause: reason,
+				stats: { ...EMPTY_STATS, sessionId: pathValue },
+				path: pathValue,
+				envelope: boundedEnvelope(reason),
+			};
+		}
+		const running = this.startAttempt(admission.admitted, candidate, signals);
+		return running.promise;
+	}
 
 	subscribe(pathValue: string, callback: (status: ChildStatus) => void): void {
 		this.native.subscribeChildStatus(pathValue, callback);

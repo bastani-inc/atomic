@@ -6,7 +6,11 @@ import { resolveIntercomSessionTarget } from "../../intercom/intercom-bridge.ts"
 import { SUBAGENT_ACTIONS, type SubagentToolResult } from "../../shared/types.ts";
 import { type ResolvedSubagentRunId, resolveSubagentRunId } from "../background/run-id-resolver.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
-import { inspectInProcessChildStatus, interruptInProcessChild } from "../inprocess/control-status.ts";
+import {
+	inspectInProcessChildStatus,
+	interruptInProcessChild,
+	resumeInProcessChild,
+} from "../inprocess/control-status.ts";
 import { runAsyncPath } from "./subagent-executor-async.ts";
 import { runChainPath } from "./subagent-executor-chain.ts";
 import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.ts";
@@ -125,6 +129,12 @@ async function handleManagementRequest(input: {
 		);
 	}
 	if (action === "resume") {
+		const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
+		const message = paramsWithResolvedCwd.message ?? paramsWithResolvedCwd.task;
+		if (targetRunId && message) {
+			const inProcess = await resumeInProcessChild(targetRunId, message, { model: ctx.model });
+			if (inProcess) return inProcess;
+		}
 		return resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
 	}
 	if (action === "interrupt") {
