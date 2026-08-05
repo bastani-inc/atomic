@@ -20,7 +20,7 @@ Sometimes you're running multiple Atomic/pi sessions — one researching, one ex
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), intercom is for targeted 1:1 communication where you pick the recipient.
 
-Intercom also integrates with delegated subagents: child agents get a child-only `contact_supervisor` tool when subagent bridge metadata is present. Atomic-prefixed bridge environment variables are supported, and legacy `PI_*` bridge metadata remains compatible. Atomic's subagent bridge also obtains a broker capability that binds the child session to the exact supervisor; client-authored channel flags are never trusted as cross-group authority. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
+Intercom also integrates with delegated subagents: in-process children receive a typed admission-issued identity for `contact_supervisor`, including their canonical run/agent/index metadata and any supervisor capability. The child identity is bound to its `IntercomClient` when it connects, so each message uses the same client-owned source and a descendant cannot inherit a parent's capability through process environment. Atomic-prefixed bridge environment variables and legacy `PI_*` metadata remain compatible for older integrations only. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
 
 ## In One Minute
 

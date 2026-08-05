@@ -1,5 +1,4 @@
-import type { ExtensionAPI } from "@bastani/atomic";
-import { APP_NAME, getEnvValue } from "@bastani/atomic";
+import { APP_NAME, getEnvValue, type ExtensionAPI, type SubagentChildPolicy } from "@bastani/atomic";
 import type { Attachment, Message, SessionInfo, SupervisorRegistration } from "./types.js";
 import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
@@ -76,7 +75,23 @@ export function formatAttachments(attachments: Attachment[]): string {
   }
   return text;
 }
-export function readChildOrchestratorMetadata(): ChildOrchestratorMetadata | null {
+export function childOrchestratorMetadataFromPolicy(policy?: SubagentChildPolicy): ChildOrchestratorMetadata | null {
+  const identity = policy?.intercom;
+  if (!identity) return null;
+  return {
+    orchestratorTarget: identity.orchestratorTarget,
+    runId: identity.runId,
+    agent: identity.agent,
+    index: String(identity.index),
+    ...(identity.sessionName ? { sessionName: identity.sessionName } : {}),
+    ...(identity.supervisor ? { supervisor: identity.supervisor } : {}),
+  };
+}
+
+/** Legacy fallback for sessions not created through typed in-process admission. */
+export function readChildOrchestratorMetadata(policy?: SubagentChildPolicy): ChildOrchestratorMetadata | null {
+  const typed = childOrchestratorMetadataFromPolicy(policy);
+  if (typed) return typed;
   const orchestratorTarget = getEnvValue(SUBAGENT_ORCHESTRATOR_TARGET_ENV)?.trim();
   const runId = getEnvValue(SUBAGENT_RUN_ID_ENV)?.trim();
   const agent = getEnvValue(SUBAGENT_CHILD_AGENT_ENV)?.trim();

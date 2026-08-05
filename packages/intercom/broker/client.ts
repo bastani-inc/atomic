@@ -38,6 +38,8 @@ export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
+  /** Source identity is captured once at connect, never read from env per message. */
+  private _messageSource: Message["source"] | undefined;
   private pendingSends = new PendingSendRegistry();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
   private pendingSupervisorAuthorizations = new Map<string, {
@@ -85,10 +87,16 @@ export class IntercomClient extends EventEmitter {
     return socket;
   }
 
-  connect(session: Omit<SessionInfo, "id">, supervisor?: SupervisorRegistration, supervisorOwnerToken?: string): Promise<void> {
+  connect(
+    session: Omit<SessionInfo, "id">,
+    supervisor?: SupervisorRegistration,
+    supervisorOwnerToken?: string,
+    messageSource?: Message["source"],
+  ): Promise<void> {
     if (this.socket) {
       return Promise.reject(new Error("Already connected"));
     }
+    this._messageSource = messageSource ?? readSubagentMessageSource();
 
     return new Promise((resolve, reject) => {
       const socket = net.connect(BROKER_SOCKET);
@@ -141,6 +149,7 @@ export class IntercomClient extends EventEmitter {
         }
         this._sessionId = null;
         this._supervisorSessionId = null;
+        this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
           this.emit("disconnected", disconnectError);
@@ -463,7 +472,7 @@ export class IntercomClient extends EventEmitter {
       replyTo: options.replyTo,
       expectsReply: options.expectsReply,
       replyError: options.replyError,
-      source: readSubagentMessageSource(),
+      source: this._messageSource,
       content: { text: options.text, attachments: options.attachments },
     };
     try {
