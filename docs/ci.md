@@ -36,7 +36,22 @@ This release graph follows pi's draft-first publication shape. Public GitHub Rel
 
 ## Tests (`test.yml`)
 
-The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, and on every pull request. Its work runs as four independent jobs so the wall clock is one job's longest dependent chain rather than the sum of every step in file order.
+The test workflow runs on pushes to `main` and on every pull request. Release
+branches carry no push trigger: `release/**` and `prerelease/**` always reach CI
+through their pull request, so listing those globs made one SHA run the whole
+workflow twice — two sets of runners competing for the same pool, and two
+competing check runs per required context. GitHub keeps the latest result per
+context name, so a spurious failure in either copy blocked the pull request even
+when the other copy was fully green. Runs `31047506585` (push, Linux `suites`
+cancelled on its cap) and `31047542976` (pull_request, every job green) on the
+same sha `772a373` are the worked example.
+
+There is deliberately no `concurrency:` block. A group that cancels an
+in-flight run can kill a run that has already published `test (...)`, leaving a
+cancelled required context on a SHA with no superseding successful run — the
+failure above, not a fix for it.
+
+Its work runs as four independent jobs so the wall clock is one job's longest dependent chain rather than the sum of every step in file order.
 
 | Job | Platforms | Chain | Linux | Windows |
 | --- | --- | --- | ---: | ---: |
@@ -119,7 +134,28 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 
 ### Per-job time limits
 
-The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang detector at roughly 2x measured p100, with room for the one bounded flake retry it owns: `suites` 8/12, `agent-suite` 6/12, `release-archive` 5/9, `static-checks` 6, gate 5. The two Windows caps are 12 rather than the 8 and 9 that the sequential-job sampling implied, because the first split run measured 348 s and 349 s there; a cap that cancels a passing retried run is worse than a late hang detection. The release-archive Windows cap is 9 because cold setup observed a 152 s Rust toolchain acquisition and 71 s checkout before the roughly 110 s native build and 40 s archive smoke. Every cap still sits under the 15-minute Windows blanket it replaced, and the contract test enforces that.
+The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang
+detector with room for the one bounded flake retry it owns: `suites` 13/14,
+`agent-suite` 8/12, `release-archive` 5/9, `static-checks` 6, gate 5. Every cap
+sits under the 15-minute Windows blanket it replaced, and the contract test
+enforces that.
+
+The target is roughly 2x measured p100, and **Windows `suites` does not meet
+it**. Run `31047542976` measured 400 s Linux and 595 s Windows for that job, so
+Linux at 13 min is 1.95x but 2x of the Windows leg is 19.8 min, which the
+under-15 rule forbids. Windows takes the ceiling-bounded 14 min (1.41x): enough
+for the measured p100 plus a slow runner, not enough for a full replay of the
+401 s Windows unit step. Shortening that step is what would restore a true 2x
+detector there; until then this leg can still be cancelled while healthy.
+
+The earlier 8/12 `suites` pair was sized against 230 s/348 s samples and had
+decayed to about 1.2x, which is what cancelled the Linux leg at 497 s on run
+`31047506585` while the same commit passed on the pull_request event. The
+`agent-suite` Windows cap stays 12 because the first split run measured 349 s
+there; its Linux cap moved 6 → 8 for the same drift. The release-archive Windows
+cap is 9 because cold setup observed a 152 s Rust toolchain acquisition and 71 s
+checkout before the roughly 110 s native build and 40 s archive smoke. A cap that
+cancels a passing retried run is worse than a late hang detection.
 
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
 
@@ -366,7 +402,7 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 
 | File | Trigger | Purpose |
 | --- | --- | --- |
-| `.github/workflows/test.yml` | selected pushes and every pull request | workspace tests and cross-platform release smoke |
+| `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, clean failed drafts |
 | `.github/workflows/warm-toolchain-cache.yml` | manual dispatch (see gate above) | write the Zig and MSVC CRT cache keys into the default-branch scope |
 
