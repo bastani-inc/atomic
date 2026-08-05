@@ -118,7 +118,7 @@ afterEach(() => {
 });
 
 describe("async subagent status while workflow overlay is active", () => {
-	test("surfaces running and completed async subagent status in the workflow graph statusline", () => {
+	test("does not publish async agent counts into the workflow graph statusline", () => {
 		const cwd = makeTempRoot("atomic-subagent-workflow-cwd-");
 		const asyncRoot = makeTempRoot("atomic-subagent-workflow-async-");
 		const resultsDir = makeTempRoot("atomic-subagent-workflow-results-");
@@ -141,11 +141,13 @@ describe("async subagent status while workflow overlay is active", () => {
 			getViewportRows: () => 20,
 		});
 
-		assert.match(visibleText(view.render(100)), /Async agents: 1 running/);
+		assert.equal(statuses.size, 0);
+		assert.doesNotMatch(visibleText(view.render(100)), /Async agents:/);
 
 		tracker.handleComplete({ id: "run-visible", success: true, asyncDir: path.join(asyncRoot, "run-visible") });
 
-		assert.match(visibleText(view.render(100)), /Async agents: 1 complete/);
+		assert.equal(statuses.size, 0);
+		assert.doesNotMatch(visibleText(view.render(100)), /Async agents:/);
 		view.dispose();
 	});
 });

@@ -170,28 +170,6 @@ function getWidgetOwnerKey(ctx: ExtensionContext): string {
 	return `${sessionOwner}|cwd:${cwdOwner}`;
 }
 
-function widgetStatusText(jobs: AsyncJobState[]): string | undefined {
-	if (jobs.length === 0) return undefined;
-	const counts = new Map<string, number>();
-	for (const job of jobs) counts.set(job.status, (counts.get(job.status) ?? 0) + 1);
-	const ordered = ["running", "queued", "complete", "failed", "paused"];
-	const parts = ordered
-		.map((status) => {
-			const count = counts.get(status) ?? 0;
-			return count > 0 ? `${count} ${status}` : undefined;
-		})
-		.filter((part): part is string => part !== undefined);
-	return `Async agents: ${parts.join(", ")}`;
-}
-
-function setWidgetStatus(ctx: ExtensionContext, jobs: AsyncJobState[]): void {
-	try {
-		ctx.ui.setStatus?.(WIDGET_KEY, widgetStatusText(jobs));
-	} catch {
-		// Status mirroring must never prevent the primary widget render path.
-	}
-}
-
 function requestWidgetRender(ctx: ExtensionContext): void {
 	(ctx as RenderRequestingContext).ui.requestRender?.();
 }
@@ -343,7 +321,6 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[], owner
 		if (requestedSurface.activeOwner && requestedSurface.activeOwner !== owner) return;
 		if (state.surfaceKey && getSurfaceState(state.surfaceKey).activeOwner !== owner) return;
 		if (state.mounted && state.mountedOwnerKey !== ownerKey) return;
-		if (ctx.hasUI) setWidgetStatus(ctx, []);
 		stopWidgetAnimation(ctx, owner);
 		return;
 	}
@@ -363,7 +340,6 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[], owner
 		state.latestJobs = [...jobs];
 		refreshWidgetSnapshot(state, jobs);
 	}
-	setWidgetStatus(ctx, jobs);
 	if (!state.mounted) {
 		const surface = getSurfaceState(requestedSurfaceKey);
 		if (surface.activeOwner && surface.activeOwner !== owner) return;

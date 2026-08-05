@@ -186,10 +186,10 @@ describe("subagent render widget logical owner stability", () => {
 
 		assert.equal(undefinedCalls(first.widgetCalls), 1);
 		assert.equal(mountCalls(other.widgetCalls), 1);
-		assert.equal(statuses.get(WIDGET_KEY), "Async agents: 1 running");
+		assert.equal(statuses.get(WIDGET_KEY), undefined);
 	});
 
-	test("stale-owner empty updates do not clear the active owner status", () => {
+	test("stale-owner empty updates do not clear the active owner widget", () => {
 		const cwd = makeTempRoot("atomic-widget-owner-cwd-");
 		const otherCwd = makeTempRoot("atomic-widget-owner-other-");
 		const statuses = new Map<string, string>();
@@ -201,7 +201,7 @@ describe("subagent render widget logical owner stability", () => {
 
 		assert.equal(undefinedCalls(active.widgetCalls), 0);
 		assert.equal(undefinedCalls(stale.widgetCalls), 0);
-		assert.equal(statuses.get(WIDGET_KEY), "Async agents: 1 running");
+		assert.equal(statuses.get(WIDGET_KEY), undefined);
 	});
 
 	test("stale session teardown cannot unmount another owner's active widget", () => {
@@ -229,11 +229,7 @@ describe("subagent render widget logical owner stability", () => {
 		renderWidget(parent.ctx, [makeJob()], parentApi);
 		renderWidget(stage.ctx, [makeJob()], stageApi);
 		renderWidget(stage.ctx, [], stageApi);
-		assert.equal(
-			statuses.get(WIDGET_KEY),
-			"Async agents: 1 running",
-			"stage empty updates must preserve parent status",
-		);
+		assert.equal(statuses.get(WIDGET_KEY), undefined, "the widget no longer mirrors a status-bar summary");
 		stopWidgetAnimation(undefined, stageApi);
 		renderWidget(parent.ctx, [makeJob("complete")], parentApi);
 
@@ -277,7 +273,7 @@ describe("subagent render widget logical owner stability", () => {
 		assert.equal(undefinedCalls(mounted.widgetCalls), 1, "API shutdown authoritatively releases its mount");
 	});
 
-	test("status cleanup failures do not block widget teardown", () => {
+	test("status-bar failures do not block widget teardown", () => {
 		const cwd = makeTempRoot("atomic-widget-owner-cwd-");
 		const current = makeCtx(cwd, path.join(cwd, "session.jsonl"), {
 			setStatus: () => {

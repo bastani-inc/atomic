@@ -41,7 +41,7 @@ class FakeEvents {
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
-function makeAgent(name: string): AgentConfig {
+function makeAgent(name: string, source: AgentConfig["source"] = "project"): AgentConfig {
 	return {
 		name,
 		description: name,
@@ -49,7 +49,7 @@ function makeAgent(name: string): AgentConfig {
 		inheritProjectContext: false,
 		inheritSkills: false,
 		systemPrompt: "Test agent",
-		source: "project",
+		source,
 		filePath: `/tmp/${name}.md`,
 	};
 }
@@ -57,7 +57,6 @@ function makeAgent(name: string): AgentConfig {
 function makeResult(agent: string, task: string, finalOutput = `${agent} complete`): SingleResult {
 	return { agent, task, status: "ok", messages: [], usage, finalOutput };
 }
-
 function makeContext(cwd: string, onCustom: () => never): ExtensionContext {
 	return {
 		cwd,
@@ -121,6 +120,31 @@ function makeExecutor(
 		runtime,
 	});
 }
+
+test("list action returns the available agent catalogue", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-list-"));
+	try {
+		const executor = makeExecutor(cwd, [makeAgent("codebase-analyzer", "builtin")], {});
+		const result = await executor.execute(
+			"list",
+			{ action: "list" },
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd, () => {
+				throw new Error("unexpected UI prompt");
+			}),
+		);
+		const text = result.content
+			.filter((item): item is { type: "text"; text: string } => item.type === "text")
+			.map((item) => item.text)
+			.join("\n");
+		assert.match(text, /Executable agents:/);
+		assert.match(text, /codebase-analyzer/);
+		assert.doesNotMatch(text, /No in-process subagents\./);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
 
 test("root single reads are schema-valid, cwd-correct, and identical in foreground and async modes", async () => {
 	const parentCwd = mkdtempSync(join(tmpdir(), "atomic-subagent-root-reads-"));
