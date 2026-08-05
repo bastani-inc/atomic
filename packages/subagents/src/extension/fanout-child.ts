@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
-import { APP_NAME, getEnvValue } from "@bastani/atomic";
+import { APP_NAME } from "@bastani/atomic";
 
 import { discoverAgents } from "../agents/agents.ts";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
@@ -16,7 +16,6 @@ import {
 	resolveNestedRouteFromEnv,
 	writeNestedControlResult,
 } from "../runs/inprocess/runtime-support/nested-api.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/inprocess/runtime-support/process-args.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import type { Details, SubagentState } from "../shared/types.ts";
 import { beginApiLifecycle } from "./api-lifecycle.ts";
@@ -224,12 +223,7 @@ export function startNestedControlInboxListener(pi: ExtensionAPI, state: Subagen
 }
 
 export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI, childPolicy?: ChildModePolicy): void {
-	if (
-		childPolicy
-			? !childPolicy.fanoutAuthorized
-			: getEnvValue(SUBAGENT_CHILD_ENV) !== "1" || getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) !== "1"
-	)
-		return;
+	if (!childPolicy?.fanoutAuthorized) return;
 
 	const lifecycle = beginApiLifecycle(pi);
 

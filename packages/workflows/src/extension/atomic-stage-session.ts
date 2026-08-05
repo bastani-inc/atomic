@@ -55,7 +55,6 @@ const WORKFLOW_STAGE_SUBAGENT_POLICY: SubagentChildPolicy = {
 	inheritProjectContext: true,
 	inheritSkills: true,
 };
-
 function resolveSessionCwd(options: AtomicCreateAgentSessionOptions | undefined): string {
 	return options?.cwd ?? options?.sessionManager?.getCwd() ?? process.cwd();
 }
@@ -109,8 +108,7 @@ export async function prepareAtomicStageSessionOptions(
 		resourceLoaderInheritanceSnapshot: inheritanceSnapshot,
 		builtinPackagePaths: stageBuiltinPackagePaths(builtinPackagePaths),
 	});
-	const stageSubagentPolicy = atomicOptions?.subagentPolicy ?? WORKFLOW_STAGE_SUBAGENT_POLICY;
-	await reloadWorkflowStageResources(resourceLoader, stageSubagentPolicy);
+	await reloadWorkflowStageResources(resourceLoader);
 
 	return {
 		...atomicOptions,
@@ -118,7 +116,7 @@ export async function prepareAtomicStageSessionOptions(
 		...(hasAgentDirOverride ? { agentDir } : {}),
 		settingsManager,
 		resourceLoader,
-		subagentPolicy: stageSubagentPolicy,
+		subagentPolicy: WORKFLOW_STAGE_SUBAGENT_POLICY,
 	};
 }
 
@@ -155,49 +153,10 @@ function stageBuiltinPackagePaths(paths: readonly PackageSource[]): PackageSourc
 	});
 }
 
-const SUBAGENT_CHILD_EXTENSION_ENV_KEYS = [
-	"ATOMIC_SUBAGENT_CHILD",
-	"ATOMIC_SUBAGENT_FANOUT_CHILD",
-	"PI_SUBAGENT_CHILD",
-	"PI_SUBAGENT_FANOUT_CHILD",
-] as const;
-
 let workflowStageResourceReloadQueue: Promise<void> = Promise.resolve();
 
-async function reloadWorkflowStageResources(
-	resourceLoader: PiSdkResourceLoader,
-	stageSubagentPolicy?: SubagentChildPolicy,
-): Promise<void> {
-	const queuedReload = workflowStageResourceReloadQueue.then(() =>
-		stageSubagentPolicy ? resourceLoader.reload() : reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader),
-	);
+async function reloadWorkflowStageResources(resourceLoader: PiSdkResourceLoader): Promise<void> {
+	const queuedReload = workflowStageResourceReloadQueue.then(() => resourceLoader.reload());
 	workflowStageResourceReloadQueue = queuedReload.catch(() => undefined);
 	return queuedReload;
-}
-async function reloadWorkflowStageResourcesWithEnvIsolation(resourceLoader: PiSdkResourceLoader): Promise<void> {
-	// Workflow stage sessions are already governed by an orchestration context
-	// that disables recursive workflow tools and caps nested subagent depth. When
-	// a workflow itself runs inside a subagent child process, inherited subagent
-	// child env flags would otherwise make the bundled subagents extension skip
-	// registering its `subagent` tool before the stage session exists. Isolate
-	// extension discovery from those parent-process flags so an explicit
-	// `tools: ["subagent"]` allowlist works the same in workflow stages everywhere.
-	// The isolation mutates process-global env, so serialize the full
-	// save/delete/reload/restore section. Without this queue, overlapping workflow
-	// stage session creation can snapshot an already-cleared env and restore that
-	// stale snapshot after another reload restores the real parent values.
-	const previousValues = new Map<string, string | undefined>();
-	for (const key of SUBAGENT_CHILD_EXTENSION_ENV_KEYS) {
-		previousValues.set(key, process.env[key]);
-		delete process.env[key];
-	}
-	try {
-		await resourceLoader.reload();
-	} finally {
-		for (const key of SUBAGENT_CHILD_EXTENSION_ENV_KEYS) {
-			const previousValue = previousValues.get(key);
-			if (previousValue === undefined) delete process.env[key];
-			else process.env[key] = previousValue;
-		}
-	}
 }

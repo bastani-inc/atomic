@@ -29,6 +29,11 @@ function applyFallbackThinkingLevel(model: string, thinkingLevel: string | undef
 	return thinkingSuffix ? model : `${model}:${thinkingLevel}`;
 }
 
+export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {
+	if (!model || !thinking || thinking === "off") return model;
+	return applyFallbackThinkingLevel(model, thinking);
+}
+
 export function resolveModelCandidate(
 	model: string | undefined,
 	availableModels: AvailableModelInfo[] | undefined,

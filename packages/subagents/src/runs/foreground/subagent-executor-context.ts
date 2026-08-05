@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type ExtensionContext, getEnvValue } from "@bastani/atomic";
+import type { ExtensionContext } from "@bastani/atomic";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import {
 	applyIntercomBridgeToAgent,
@@ -36,7 +36,6 @@ import {
 	resolveNestedParentAddressFromEnv,
 	writeNestedEvent,
 } from "../inprocess/runtime-support/nested-api.ts";
-import { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../inprocess/runtime-support/process-args.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import {
 	applyAgentDefaultContext,
@@ -250,7 +249,8 @@ export function prepareExecutionContext(input: {
 					parentStepIndex: nestedParentAddress.parentStepIndex,
 					depth: nestedParentAddress.depth,
 					path: nestedParentAddress.path,
-					ownerIntercomTarget: getEnvValue(SUBAGENT_INTERCOM_SESSION_NAME_ENV),
+					ownerIntercomTarget:
+						ctx.subagentPolicy?.intercom?.sessionName ?? ctx.subagentPolicy?.intercom?.orchestratorTarget,
 					leafIntercomTarget,
 					intercomTarget: leafIntercomTarget,
 					ownerState: state === "running" ? "live" : "gone",

@@ -62,15 +62,8 @@ export default function mcpAdapter(pi: ExtensionAPI) {
       import("./utils.js"),
     ]);
     const prefix = config.settings?.toolPrefix ?? "server";
-    // Typed admission owns child selection. The env fallback remains only for legacy parent sessions.
-    const envRaw = subagentPolicy === undefined ? process.env.MCP_DIRECT_TOOLS : undefined;
-    const typedDirectTools = subagentPolicy?.mcpDirectTools;
-    const directTools = subagentPolicy === undefined
-      ? envRaw?.split(",").map(s => s.trim()).filter(Boolean)
-      : typedDirectTools;
-    const directSpecs = envRaw === "__none__"
-      ? []
-      : resolveDirectTools(config, cache, prefix, directTools === undefined ? undefined : [...directTools]);
+    const directTools = subagentPolicy?.mcpDirectTools;
+    const directSpecs = resolveDirectTools(config, cache, prefix, directTools === undefined ? undefined : [...directTools]);
     for (const spec of directSpecs) {
       if (registeredDirectToolNames.has(spec.prefixedName)) continue;
       registeredDirectToolNames.add(spec.prefixedName);

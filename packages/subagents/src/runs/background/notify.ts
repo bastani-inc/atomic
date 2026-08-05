@@ -5,7 +5,6 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT } from "../../shared/types.ts";
-import { buildCompletionKey, hasSeenWithTtl, recordSeen } from "./completion-dedupe.ts";
 import type { CompletionNotificationEnvelope } from "./completion-notification.ts";
 
 interface ChainStepResult {
@@ -87,6 +86,20 @@ function getNotifySeen(pi: ExtensionAPI): Map<string, number> {
 	return seen;
 }
 
+function buildCompletionKey(data: SubagentResult, fallback: string): string {
+	if (data.runId) return `run:${data.runId}`;
+	if (data.id) return `id:${data.id}`;
+	return `meta:${data.agent ?? "unknown"}:${data.timestamp}:${data.taskIndex ?? "-"}:${fallback}`;
+}
+
+function hasSeenWithTtl(seen: Map<string, number>, key: string, now: number, ttlMs: number): boolean {
+	for (const [seenKey, seenAt] of seen) if (now - seenAt > ttlMs) seen.delete(seenKey);
+	return seen.has(key);
+}
+
+function recordSeen(seen: Map<string, number>, key: string, now: number): void {
+	seen.set(key, now);
+}
 function isPromiseLike(value: unknown): value is PromiseLike<void> {
 	return (
 		(typeof value === "object" || typeof value === "function") &&

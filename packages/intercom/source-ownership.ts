@@ -1,10 +1,5 @@
-import { APP_NAME, getEnvValue, type SubagentChildPolicy } from "@bastani/atomic";
+import { type SubagentChildPolicy } from "@bastani/atomic";
 import type { Message } from "./types.js";
-
-const ENV_PREFIX = APP_NAME.toUpperCase();
-const SUBAGENT_RUN_ID_ENV = `${ENV_PREFIX}_SUBAGENT_RUN_ID`;
-const SUBAGENT_CHILD_AGENT_ENV = `${ENV_PREFIX}_SUBAGENT_CHILD_AGENT`;
-const SUBAGENT_CHILD_INDEX_ENV = `${ENV_PREFIX}_SUBAGENT_CHILD_INDEX`;
 
 export function buildSubagentMessageSource(
   runIdValue: string | undefined,
@@ -26,18 +21,11 @@ export function buildSubagentMessageSource(
 }
 
 export function readSubagentMessageSource(policy?: SubagentChildPolicy): Message["source"] | undefined {
-  const identity = policy?.intercom;
-  if (policy !== undefined) {
-    if (!identity) return undefined;
-    return {
-      subagentRunId: identity.runId,
-      subagentAgent: identity.agent,
-      subagentIndex: identity.index,
-    };
-  }
-  return buildSubagentMessageSource(
-    getEnvValue(SUBAGENT_RUN_ID_ENV),
-    getEnvValue(SUBAGENT_CHILD_AGENT_ENV),
-    getEnvValue(SUBAGENT_CHILD_INDEX_ENV),
-  );
+	const identity = policy?.intercom;
+	if (!identity) return undefined;
+	return {
+		subagentRunId: identity.runId,
+		subagentAgent: identity.agent,
+		subagentIndex: identity.index,
+	};
 }

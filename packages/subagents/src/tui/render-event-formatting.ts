@@ -1,5 +1,4 @@
 import * as path from "node:path";
-import { flatToLogicalStepIndex } from "../runs/background/parallel-groups.ts";
 import { formatNestedAggregate } from "../runs/inprocess/runtime-support/nested-rendering.ts";
 import { formatDuration, formatModelThinking, shortenPath } from "../shared/formatters.ts";
 import { formatAgentRunningLabel } from "../shared/status-format.ts";
@@ -18,6 +17,17 @@ import {
 	formatToolUseStat,
 	statJoin,
 } from "./render-status-progress.ts";
+
+function flatToLogicalStepIndex(
+	currentStep: number,
+	_total: number,
+	groups: Array<{ start: number; count: number; stepIndex?: number }>,
+): number {
+	return (
+		groups.find((group) => currentStep >= group.start && currentStep < group.start + group.count)?.stepIndex ??
+		currentStep
+	);
+}
 
 export function formatWidgetAgents(agents: string[]): string {
 	const distinct = [...new Set(agents)];

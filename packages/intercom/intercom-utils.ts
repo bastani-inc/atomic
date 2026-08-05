@@ -1,4 +1,4 @@
-import { APP_NAME, getEnvValue, type ExtensionAPI, type SubagentChildPolicy } from "@bastani/atomic";
+import { type ExtensionAPI, type SubagentChildPolicy } from "@bastani/atomic";
 import type { Attachment, Message, SessionInfo, SupervisorRegistration } from "./types.js";
 import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
@@ -11,14 +11,6 @@ export const SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT = "subagent:supervisor-auth
 export const INBOUND_FLUSH_DELAY_MS = 200;
 export const INBOUND_IDLE_RETRY_MS = 500;
 export const DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX = "subagent-chat";
-const ENV_PREFIX = APP_NAME.toUpperCase();
-const SUBAGENT_ORCHESTRATOR_TARGET_ENV = `${ENV_PREFIX}_SUBAGENT_ORCHESTRATOR_TARGET`;
-const SUBAGENT_RUN_ID_ENV = `${ENV_PREFIX}_SUBAGENT_RUN_ID`;
-const SUBAGENT_CHILD_AGENT_ENV = `${ENV_PREFIX}_SUBAGENT_CHILD_AGENT`;
-const SUBAGENT_CHILD_INDEX_ENV = `${ENV_PREFIX}_SUBAGENT_CHILD_INDEX`;
-const SUBAGENT_INTERCOM_SESSION_NAME_ENV = `${ENV_PREFIX}_SUBAGENT_INTERCOM_SESSION_NAME`;
-const SUBAGENT_SUPERVISOR_CAPABILITY_ENV = `${ENV_PREFIX}_SUBAGENT_SUPERVISOR_CAPABILITY`;
-const SUBAGENT_SUPERVISOR_SESSION_ID_ENV = `${ENV_PREFIX}_SUBAGENT_SUPERVISOR_SESSION_ID`;
 
 export interface ChildOrchestratorMetadata {
   orchestratorTarget: string;
@@ -88,29 +80,9 @@ export function childOrchestratorMetadataFromPolicy(policy?: SubagentChildPolicy
   };
 }
 
-/** Legacy fallback for sessions not created through typed in-process admission. */
+/** Resolve metadata only from the admission-issued typed child identity. */
 export function readChildOrchestratorMetadata(policy?: SubagentChildPolicy): ChildOrchestratorMetadata | null {
-  if (policy !== undefined) return childOrchestratorMetadataFromPolicy(policy);
-  const orchestratorTarget = getEnvValue(SUBAGENT_ORCHESTRATOR_TARGET_ENV)?.trim();
-  const runId = getEnvValue(SUBAGENT_RUN_ID_ENV)?.trim();
-  const agent = getEnvValue(SUBAGENT_CHILD_AGENT_ENV)?.trim();
-  const index = getEnvValue(SUBAGENT_CHILD_INDEX_ENV)?.trim();
-  if (!orchestratorTarget || !runId || !agent || !index) {
-    return null;
-  }
-  const sessionName = getEnvValue(SUBAGENT_INTERCOM_SESSION_NAME_ENV)?.trim();
-  const capability = getEnvValue(SUBAGENT_SUPERVISOR_CAPABILITY_ENV)?.trim();
-  const supervisorSessionId = getEnvValue(SUBAGENT_SUPERVISOR_SESSION_ID_ENV)?.trim();
-  return {
-    orchestratorTarget,
-    runId,
-    agent,
-    index,
-    ...(sessionName ? { sessionName } : {}),
-    ...(capability && supervisorSessionId
-      ? { supervisor: { capability, supervisorSessionId } }
-      : {}),
-  };
+	return childOrchestratorMetadataFromPolicy(policy);
 }
 export function formatChildOrchestratorMessage(kind: "ask" | "update" | "interview", metadata: ChildOrchestratorMetadata, message: string): string {
   const heading = kind === "ask"

@@ -20,12 +20,6 @@ import {
 	validateRouteShape,
 } from "./nested-core.ts";
 import { writeRouteRecord } from "./nested-registry.ts";
-import {
-	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
-	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
-	SUBAGENT_PARENT_EVENT_SINK_ENV,
-	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
-} from "./process-args.ts";
 
 export function parseNestedControlRequest(content: string, route: NestedRoute): NestedControlRequestRecord | undefined {
 	if (Buffer.byteLength(content, "utf-8") > MAX_NESTED_EVENT_BYTES) return undefined;
@@ -179,11 +173,6 @@ export function readNestedControlResults(route: NestedRoute): NestedControlResul
 	return results;
 }
 
-export function nestedRouteEnv(route: NestedRoute): Record<string, string> {
-	return {
-		[SUBAGENT_PARENT_EVENT_SINK_ENV]: route.eventSink,
-		[SUBAGENT_PARENT_CONTROL_INBOX_ENV]: route.controlInbox,
-		[SUBAGENT_PARENT_ROOT_RUN_ID_ENV]: route.rootRunId,
-		[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV]: route.capabilityToken,
-	};
+export function nestedRouteEnv(_route: NestedRoute): Record<string, string> {
+	return {};
 }

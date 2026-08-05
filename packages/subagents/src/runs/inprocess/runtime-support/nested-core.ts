@@ -1,21 +1,10 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getEnvValue } from "@bastani/atomic";
 import { type NestedRouteInfo, type NestedRunSummary, TEMP_ROOT_DIR } from "../../../shared/types.ts";
+import { MAX_SUBAGENT_NESTING_DEPTH } from "../../../shared/types-runtime.ts";
 import { registerInProcessNestedRoute } from "../nested-routing.ts";
-import { isSafeNestedPathId, type NestedPathEntry, parseNestedPathEnv } from "./nested-paths.ts";
-import {
-	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
-	SUBAGENT_PARENT_CHILD_INDEX_ENV,
-	SUBAGENT_PARENT_CONTROL_INBOX_ENV,
-	SUBAGENT_PARENT_DEPTH_ENV,
-	SUBAGENT_PARENT_EVENT_SINK_ENV,
-	SUBAGENT_PARENT_MAX_DEPTH,
-	SUBAGENT_PARENT_PATH_ENV,
-	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
-	SUBAGENT_PARENT_RUN_ID_ENV,
-} from "./process-args.ts";
+import { isSafeNestedPathId, type NestedPathEntry } from "./nested-paths.ts";
 
 export const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 export const NESTED_RUNS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-runs");
@@ -24,7 +13,7 @@ export const REGISTRY_FILE = "registry.json";
 export const MAX_NESTED_EVENT_BYTES = 64 * 1024;
 export const MAX_NESTED_STEPS = 12;
 export const MAX_NESTED_CHILDREN = 16;
-export const MAX_NESTED_DEPTH = SUBAGENT_PARENT_MAX_DEPTH;
+export const MAX_NESTED_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;
 export const MAX_PROCESSED_NESTED_EVENTS = 20_000;
 type NestedStatusEventType = "subagent.nested.started" | "subagent.nested.updated" | "subagent.nested.completed";
 type NestedControlResultEventType = "subagent.nested.control-result";
@@ -177,57 +166,18 @@ export function cleanupOldNestedRuntimeDirs(maxAgeDays: number): void {
 	cleanupOldSubdirectories(NESTED_RUNS_DIR, maxAgeDays);
 }
 
-export function readSubagentEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
-	if (env === process.env) return getEnvValue(name);
-	// Atomic keeps reading legacy pi-prefixed env vars so older parent processes can route nested children.
-	const legacyName = name.replace(/^[A-Z0-9]+_/, "PI_");
-	return env[name] ?? (legacyName === name ? undefined : env[legacyName]);
+export function resolveNestedRouteFromEnv(_env: NodeJS.ProcessEnv = process.env): NestedRoute | undefined {
+	return undefined;
 }
 
-export function resolveNestedRouteFromEnv(env: NodeJS.ProcessEnv = process.env): NestedRoute | undefined {
-	const rootRunId = readSubagentEnv(env, SUBAGENT_PARENT_ROOT_RUN_ID_ENV);
-	const eventSink = readSubagentEnv(env, SUBAGENT_PARENT_EVENT_SINK_ENV);
-	const controlInbox = readSubagentEnv(env, SUBAGENT_PARENT_CONTROL_INBOX_ENV);
-	const capabilityToken = readSubagentEnv(env, SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV);
-	if (!rootRunId || !eventSink || !controlInbox || !capabilityToken) return undefined;
-	const route = { rootRunId, eventSink, controlInbox, capabilityToken };
-	validateRouteShape(route);
-	const routeFile = path.join(commonRouteRoot(route), ROUTE_FILE);
-	const metadata = JSON.parse(fs.readFileSync(routeFile, "utf-8")) as {
-		rootRunId?: unknown;
-		capabilityToken?: unknown;
-	};
-	if (metadata.rootRunId !== rootRunId || metadata.capabilityToken !== capabilityToken) {
-		throw new Error("Nested event route metadata does not match the provided root id and capability token.");
-	}
-	return route;
-}
-
-export function resolveInheritedNestedRouteFromEnv(env: NodeJS.ProcessEnv = process.env): NestedRoute | undefined {
-	try {
-		return resolveNestedRouteFromEnv(env);
-	} catch (error) {
-		console.error("Ignoring invalid nested subagent event route:", error);
-		return undefined;
-	}
+export function resolveInheritedNestedRouteFromEnv(_env: NodeJS.ProcessEnv = process.env): NestedRoute | undefined {
+	return undefined;
 }
 
 export function resolveNestedParentAddressFromEnv(
-	env: NodeJS.ProcessEnv = process.env,
+	_env: NodeJS.ProcessEnv = process.env,
 ): { parentRunId: string; parentStepIndex?: number; depth: number; path: NestedPathEntry[] } | undefined {
-	const parentRunId = readSubagentEnv(env, SUBAGENT_PARENT_RUN_ID_ENV);
-	if (!isSafeNestedId(parentRunId)) return undefined;
-	const rawIndex = readSubagentEnv(env, SUBAGENT_PARENT_CHILD_INDEX_ENV);
-	const parentStepIndex = rawIndex && /^\d+$/.test(rawIndex) ? Number(rawIndex) : undefined;
-	const depth = Math.min(
-		Math.max(1, clampNumber(Number(readSubagentEnv(env, SUBAGENT_PARENT_DEPTH_ENV))) ?? 1),
-		MAX_NESTED_DEPTH,
-	);
-	const parsedPath = parseNestedPathEnv(readSubagentEnv(env, SUBAGENT_PARENT_PATH_ENV));
-	const nestedPath = parsedPath.length
-		? parsedPath
-		: [{ runId: parentRunId, ...(parentStepIndex !== undefined ? { stepIndex: parentStepIndex } : {}) }];
-	return { parentRunId, ...(parentStepIndex !== undefined ? { parentStepIndex } : {}), depth, path: nestedPath };
+	return undefined;
 }
 
 export function resolveNestedAsyncDir(rootRunId: string, run: NestedRunSummary): string | undefined {

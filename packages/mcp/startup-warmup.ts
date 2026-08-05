@@ -8,11 +8,11 @@ import { logger } from "./logger.ts";
 import { updateMetadataCache, updateStatusBar } from "./init.js";
 
 export interface McpStartupWarmupOptions {
-  /** Typed child selection; undefined preserves the legacy parent env fallback. */
-  subagentPolicy?: SubagentChildPolicy;
-  shouldContinue?: () => boolean;
-  onDirectToolsChanged?: () => void | Promise<void>;
-  onSettled?: () => void;
+	/** Typed child selection issued during in-process admission. */
+	subagentPolicy?: SubagentChildPolicy;
+	shouldContinue?: () => boolean;
+	onDirectToolsChanged?: () => void | Promise<void>;
+	onSettled?: () => void;
 }
 
 export interface McpStartupWarmupHandle {
@@ -25,18 +25,10 @@ export interface McpDirectToolsSelection {
   readonly tools?: readonly string[];
 }
 
-/** Resolve the typed child policy while preserving the legacy parent env fallback. */
-export function resolveMcpDirectToolsSelection(
-  subagentPolicy?: SubagentChildPolicy,
-  legacyEnvValue = process.env.MCP_DIRECT_TOOLS,
-): McpDirectToolsSelection {
-  if (subagentPolicy !== undefined) {
-    const tools = subagentPolicy.mcpDirectTools;
-    return { disabled: tools !== undefined && tools.length === 0, ...(tools === undefined ? {} : { tools: [...tools] }) };
-  }
-  if (legacyEnvValue === "__none__") return { disabled: true };
-  const tools = legacyEnvValue?.split(",").map((item) => item.trim()).filter(Boolean);
-  return tools === undefined ? { disabled: false } : { disabled: false, tools };
+/** Resolve direct-tool selection exclusively from typed admission policy. */
+export function resolveMcpDirectToolsSelection(subagentPolicy?: SubagentChildPolicy): McpDirectToolsSelection {
+	const tools = subagentPolicy?.mcpDirectTools;
+	return { disabled: tools !== undefined && tools.length === 0, ...(tools === undefined ? {} : { tools: [...tools] }) };
 }
 
 function deferToMacrotask(): Promise<void> {

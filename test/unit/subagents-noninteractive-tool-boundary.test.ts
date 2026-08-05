@@ -15,10 +15,6 @@ import type {
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import {
-	SUBAGENT_CHILD_ENV,
-	SUBAGENT_FANOUT_CHILD_ENV,
-} from "../../packages/subagents/src/runs/inprocess/runtime-support/process-args.js";
-import {
 	type SingleResult,
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
@@ -311,89 +307,38 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("authorized fanout child registers the same non-interactive boundary", async () => {
-		const previousChild = process.env[SUBAGENT_CHILD_ENV];
-		const previousFanout = process.env[SUBAGENT_FANOUT_CHILD_ENV];
+	test("typed restricted child policy blocks management mutation without environment state", async () => {
 		let registered: ToolDefinition | undefined;
-		try {
-			process.env[SUBAGENT_CHILD_ENV] = "1";
-			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
-			const pi = {
-				registerTool: (tool: ToolDefinition) => {
-					registered = tool;
-				},
-				events: { on: () => () => {}, emit: () => {} },
-				getSessionName: () => "fanout-child",
-			} as unknown as ExtensionAPI;
-			registerFanoutChildSubagentExtension(pi);
+		const pi = {
+			registerTool: (tool: ToolDefinition) => {
+				registered = tool;
+			},
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "typed-fanout-child",
+		} as unknown as ExtensionAPI;
+		registerFanoutChildSubagentExtension(pi, {
+			managementActions: "restricted",
+			fanoutAuthorized: true,
+			inheritProjectContext: false,
+			inheritSkills: false,
+		});
 
-			assert.ok(registered);
-			let customCalls = 0;
-			const result = await registered.execute(
-				"fanout-chain",
-				{ chain: [{ agent: "debugger" }] },
+		assert.ok(registered);
+		for (const action of ["create", "update", "delete"] as const) {
+			const result = (await registered.execute(
+				`typed-restricted-${action}`,
+				{ action },
 				new AbortController().signal,
 				undefined,
 				makeContext(process.cwd(), () => {
-					customCalls += 1;
 					throw new Error("unexpected UI prompt");
 				}),
-			);
-			assert.equal(customCalls, 0);
+			)) as SubagentToolResult;
+			assert.equal(result.isError, true);
 			assert.match(
 				result.content[0]?.type === "text" ? result.content[0].text : "",
-				/First step in chain must have a task/,
+				new RegExp(`Action '${action}' is not available from child-safe subagent fanout mode`),
 			);
-		} finally {
-			if (previousChild === undefined) delete process.env[SUBAGENT_CHILD_ENV];
-			else process.env[SUBAGENT_CHILD_ENV] = previousChild;
-			if (previousFanout === undefined) delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			else process.env[SUBAGENT_FANOUT_CHILD_ENV] = previousFanout;
-		}
-	});
-	test("typed restricted child policy blocks management mutation without environment state", async () => {
-		const previousChild = process.env[SUBAGENT_CHILD_ENV];
-		const previousFanout = process.env[SUBAGENT_FANOUT_CHILD_ENV];
-		let registered: ToolDefinition | undefined;
-		try {
-			delete process.env[SUBAGENT_CHILD_ENV];
-			delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			const pi = {
-				registerTool: (tool: ToolDefinition) => {
-					registered = tool;
-				},
-				events: { on: () => () => {}, emit: () => {} },
-				getSessionName: () => "typed-fanout-child",
-			} as unknown as ExtensionAPI;
-			registerFanoutChildSubagentExtension(pi, {
-				managementActions: "restricted",
-				fanoutAuthorized: true,
-				inheritProjectContext: false,
-				inheritSkills: false,
-			});
-
-			assert.ok(registered);
-			for (const action of ["create", "update", "delete"] as const) {
-				const result = (await registered.execute(
-					`typed-restricted-${action}`,
-					{ action },
-					new AbortController().signal,
-					undefined,
-					makeContext(process.cwd(), () => {
-						throw new Error("unexpected UI prompt");
-					}),
-				)) as SubagentToolResult;
-				assert.equal(result.isError, true);
-				assert.match(
-					result.content[0]?.type === "text" ? result.content[0].text : "",
-					new RegExp(`Action '${action}' is not available from child-safe subagent fanout mode`),
-				);
-			}
-		} finally {
-			if (previousChild === undefined) delete process.env[SUBAGENT_CHILD_ENV];
-			else process.env[SUBAGENT_CHILD_ENV] = previousChild;
-			if (previousFanout === undefined) delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			else process.env[SUBAGENT_FANOUT_CHILD_ENV] = previousFanout;
 		}
 	});
 
@@ -537,75 +482,64 @@ describe("programmatic subagent tool boundary", () => {
 	});
 
 	test("parent registration exposes the non-interactive tool and preserves slash commands", async () => {
-		const previousChild = process.env[SUBAGENT_CHILD_ENV];
-		const previousFanout = process.env[SUBAGENT_FANOUT_CHILD_ENV];
 		let registered: ToolDefinition | undefined;
 		const commands: string[] = [];
 		const handlers = new Map<string, Array<() => void>>();
-		try {
-			delete process.env[SUBAGENT_CHILD_ENV];
-			delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			const pi = {
-				registerTool: (tool: ToolDefinition) => {
-					registered = tool;
-				},
-				registerCommand: (name: string) => {
-					commands.push(name);
-				},
-				registerMessageRenderer: () => {},
-				sendMessage: () => {},
-				on: (event: string, handler: () => void) => {
-					const eventHandlers = handlers.get(event) ?? [];
-					eventHandlers.push(handler);
-					handlers.set(event, eventHandlers);
-				},
-				events: { on: () => () => {}, emit: () => {} },
-				getSessionName: () => "parent",
-			} as unknown as ExtensionAPI;
-			registerSubagentExtension(pi);
+		const pi = {
+			registerTool: (tool: ToolDefinition) => {
+				registered = tool;
+			},
+			registerCommand: (name: string) => {
+				commands.push(name);
+			},
+			registerMessageRenderer: () => {},
+			sendMessage: () => {},
+			on: (event: string, handler: () => void) => {
+				const eventHandlers = handlers.get(event) ?? [];
+				eventHandlers.push(handler);
+				handlers.set(event, eventHandlers);
+			},
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "parent",
+		} as unknown as ExtensionAPI;
+		registerSubagentExtension(pi);
 
-			assert.ok(registered);
+		assert.ok(registered);
 
-			let customCalls = 0;
-			const result = await registered.execute(
-				"parent-chain",
-				{ chain: [{ agent: "debugger" }] },
-				new AbortController().signal,
-				undefined,
-				makeContext(process.cwd(), () => {
-					customCalls += 1;
-					throw new Error("unexpected UI prompt");
-				}),
-			);
-			assert.equal(customCalls, 0);
-			assert.match(
-				result.content[0]?.type === "text" ? result.content[0].text : "",
-				/First step in chain must have a task/,
-			);
+		let customCalls = 0;
+		const result = await registered.execute(
+			"parent-chain",
+			{ chain: [{ agent: "debugger" }] },
+			new AbortController().signal,
+			undefined,
+			makeContext(process.cwd(), () => {
+				customCalls += 1;
+				throw new Error("unexpected UI prompt");
+			}),
+		);
+		assert.equal(customCalls, 0);
+		assert.match(
+			result.content[0]?.type === "text" ? result.content[0].text : "",
+			/First step in chain must have a task/,
+		);
 
-			assert.deepEqual(commands.filter((name) => ["run", "chain", "parallel", "run-chain"].includes(name)).sort(), [
-				"chain",
-				"parallel",
-				"run",
-				"run-chain",
-			]);
+		assert.deepEqual(commands.filter((name) => ["run", "chain", "parallel", "run-chain"].includes(name)).sort(), [
+			"chain",
+			"parallel",
+			"run",
+			"run-chain",
+		]);
 
-			const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
-			for (const args of [
-				{ agent: "worker", async: true },
-				{ tasks: [{ agent: "worker", task: "one" }], async: true },
-				{ chain: [{ agent: "worker", task: "one" }], async: true },
-			]) {
-				const component = registered.renderCall?.(args as never, theme, {} as never);
-				assert.match(component?.render(120).join("\n") ?? "", /\[async\]/);
-			}
-		} finally {
-			for (const shutdown of handlers.get("session_shutdown") ?? []) shutdown();
-			if (previousChild === undefined) delete process.env[SUBAGENT_CHILD_ENV];
-			else process.env[SUBAGENT_CHILD_ENV] = previousChild;
-			if (previousFanout === undefined) delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			else process.env[SUBAGENT_FANOUT_CHILD_ENV] = previousFanout;
+		const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
+		for (const args of [
+			{ agent: "worker", async: true },
+			{ tasks: [{ agent: "worker", task: "one" }], async: true },
+			{ chain: [{ agent: "worker", task: "one" }], async: true },
+		]) {
+			const component = registered.renderCall?.(args as never, theme, {} as never);
+			assert.match(component?.render(120).join("\n") ?? "", /\[async\]/);
 		}
+		for (const shutdown of handlers.get("session_shutdown") ?? []) shutdown();
 	});
 
 	test("slash bridge dispatch remains separate and forwards its parameters unchanged", async () => {
