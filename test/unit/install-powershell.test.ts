@@ -84,8 +84,21 @@ test("Windows installer rejects PATHEXT launchers that shadow atomic.cmd before 
 	assert.match(source, /if \(\[string\]::IsNullOrWhiteSpace\(\$pathExtValue\)\) \{[\s\S]+\$pathExtValue = "\.COM;/u);
 	assert.doesNotMatch(source, /foreach \(\$pathExtValue in @\(\$env:PATHEXT,/u);
 	assert.match(source, /foreach \(\$pathExtEntry in \(\$pathExtValue -split ';'\)/u);
-	assert.match(source, /if \(\$extension -eq "\.CMD"\) \{\r?\n\s+break\r?\n\s+\}/u);
+	assert.match(source, /\$cmdSeen = \$false/u);
+	assert.match(source, /if \(\$extension -eq "\.CMD"\) \{\r?\n\s+\$cmdSeen = \$true\r?\n\s+break\r?\n\s+\}/u);
 	assert.match(source, /\$extension = \$extension\.ToUpperInvariant\(\)/u);
+	assert.match(source, /\$extension = \$pathExtEntry\.Trim\(\)\.Trim\('"'\)\.Trim\(\)/u);
+	const missingCmdThrow = source.indexOf("PATHEXT does not include .CMD");
+	assert.ok(missingCmdThrow >= 0, "the installer does not reject a PATHEXT without .CMD");
+	assert.match(source, /if \(-not \$cmdSeen\) \{[\s\S]{0,200}PATHEXT does not include \.CMD/u);
+	assert.match(source, /PATHEXT does not include \.CMD; bare atomic cannot resolve the installed atomic\.cmd shim\./u);
+	for (const boundary of [
+		'$apiHeaders = @{ Accept = "application/vnd.github+json" }',
+		"New-Item -ItemType Directory -Path $tempDir",
+		'Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath',
+	]) {
+		assert.ok(missingCmdThrow < source.indexOf(boundary), `the missing-.CMD rejection runs after: ${boundary}`);
+	}
 
 	const shadowLoop = source.indexOf("foreach ($shadowingExtension in @(Get-AtomicShimShadowingExtensions))");
 	assert.ok(shadowLoop >= 0, "the shadowing preflight loop is missing");
@@ -111,6 +124,89 @@ test("Windows installer rejects PATHEXT launchers that shadow atomic.cmd before 
 		assert.ok(boundaryIndex >= 0, boundary);
 		assert.ok(shadowLoop < boundaryIndex, `the shadowing preflight runs after: ${boundary}`);
 	}
+});
+
+test("Windows installer initializes cleanup state before preflight and API resolution", () => {
+	const source = installerSource();
+	const outerTry = source.indexOf("$previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol");
+	assert.ok(outerTry >= 0, "the TLS guard was not found");
+
+	for (const declaration of [
+		"$tempDir = $null",
+		"$versionStagePath = $null",
+		"$currentNextPath = $null",
+		"$atomicCurrentNextPath = $null",
+		"$shimNextPath = $null",
+		"$transaction = $null",
+		"$transactionCommitted = $false",
+		"$transactionMissingDirectories = New-Object System.Collections.ArrayList",
+		"$rollbackRetryLimit = 3",
+	]) {
+		const declarationIndex = source.indexOf(declaration);
+		assert.ok(declarationIndex >= 0, `${declaration} is missing`);
+		assert.ok(declarationIndex < outerTry, `${declaration} is initialized after the outer try`);
+		assert.equal(
+			(source.match(new RegExp(declaration.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "gu")) ?? []).length,
+			1,
+			`${declaration} is initialized more than once`,
+		);
+	}
+
+	assert.match(source, /if \(\$null -ne \$tempDir -and \(Test-Path -LiteralPath \$tempDir\)\)/u);
+	const preflightThrow = source.indexOf("ATOMIC_BIN_DIR contains an unexpected atomic.cmd directory");
+	assert.ok(outerTry < preflightThrow, "a preflight throw precedes the cleanup-state initialization");
+});
+
+test("Windows installer enforces Atomic release grammar before archive downloads", () => {
+	const source = installerSource();
+	assert.match(source, /function Test-AtomicReleaseTag/u);
+	assert.ok(
+		source.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?$'"),
+		"the PowerShell grammar does not match install.sh",
+	);
+	assert.match(source, /-cmatch/u);
+	assert.equal(
+		(
+			source.match(
+				/throw "unsupported release tag: expected MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION"/gu,
+			) ?? []
+		).length,
+		2,
+		"the requested ref and the resolved tag are not both validated",
+	);
+
+	const requestedCheck = source.indexOf(
+		"if (-not [string]::IsNullOrWhiteSpace($requestedRef) -and -not (Test-AtomicReleaseTag $requestedRef))",
+	);
+	const resolvedCheck = source.indexOf("if (-not (Test-AtomicReleaseTag $releaseTag))");
+	assert.ok(requestedCheck >= 0 && resolvedCheck > requestedCheck);
+	assert.ok(requestedCheck < source.indexOf("Invoke-AtomicApiRequest $latestApi"));
+	assert.ok(requestedCheck < source.indexOf('$apiHeaders = @{ Accept = "application/vnd.github+json" }'));
+	assert.ok(resolvedCheck < source.indexOf("$releaseBase = "));
+	assert.ok(resolvedCheck < source.indexOf("New-Item -ItemType Directory -Path $tempDir"));
+});
+
+test("Windows installer protects transaction pointer types before I/O", () => {
+	const source = installerSource();
+	const currentPath = source.indexOf('$currentPath = Join-Path $installRoot "current"');
+	const currentItem = source.indexOf("$existingCurrentItem = Get-AtomicDirectoryEntry $currentPath");
+	const currentThrow = source.indexOf(
+		"ATOMIC_INSTALL_DIR contains an unexpected current entry; refusing to replace it.",
+	);
+	const apiHeaders = source.indexOf('$apiHeaders = @{ Accept = "application/vnd.github+json" }');
+	assert.ok(currentPath >= 0 && currentItem > currentPath && currentThrow > currentItem);
+	assert.ok(currentThrow < apiHeaders, "the current-pointer guard runs after the API headers");
+	assert.ok(currentThrow < source.indexOf("New-Item -ItemType Directory -Path $tempDir"));
+	assert.match(
+		source.slice(currentItem, currentThrow),
+		/\(\$existingCurrentItem\.Attributes -band \[IO\.FileAttributes\]::ReparsePoint\) -eq 0/u,
+	);
+	assert.match(source, /ATOMIC_BIN_DIR contains an unexpected atomic-current entry; refusing to replace it\./u);
+	assert.doesNotMatch(
+		source.slice(source.indexOf("$existingShimItem = Get-AtomicDirectoryEntry $shimPath"), apiHeaders),
+		/Move-Item|Remove-Item|New-Item/u,
+		"the pointer preflight must not mutate caller entries",
+	);
 });
 
 test("Windows installer isolates IEX state and scopes TLS 1.2 to controlled requests", () => {
@@ -575,6 +671,141 @@ for (const engine of powershellEngines) {
 	});
 }
 
+const preflightGuardProbeHarness = String.raw`
+param(
+    [Parameter(Mandatory=$true)][string]$InstallerPath,
+    [Parameter(Mandatory=$true)][string]$Workspace
+)
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+Set-StrictMode -Version Latest
+
+$originalPathExt = $env:PATHEXT
+$env:PROCESSOR_ARCHITEW6432 = "AMD64"
+$env:PROCESSOR_ARCHITECTURE = "AMD64"
+$caseIndex = 0
+
+function New-ProbeSpace {
+    $script:caseIndex++
+    $root = Join-Path $Workspace ("case-" + $script:caseIndex)
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $env:ATOMIC_INSTALL_DIR = Join-Path $root "install root"
+    $env:ATOMIC_BIN_DIR = Join-Path $root "bin root"
+    return $root
+}
+
+function Assert-Rejected {
+    param([string]$Label, [string]$Pattern)
+    $failure = $null
+    try { & $InstallerPath @args | Out-Null }
+    catch { $failure = $_ }
+    if ($null -eq $failure) { throw "$Label was accepted" }
+    if ($failure.Exception.Message -notmatch $Pattern) {
+        throw "$Label failed for the wrong reason: $($failure.Exception.Message)"
+    }
+    if ($failure.Exception.Message -match 'variable') {
+        throw "$Label surfaced an uninitialized-variable error: $($failure.Exception.Message)"
+    }
+    if (Test-Path -LiteralPath $env:ATOMIC_INSTALL_DIR) { throw "$Label created an install root" }
+    return $failure
+}
+
+try {
+    # Missing .CMD in an effective PATHEXT must fail before any request or mutation.
+    $null = New-ProbeSpace
+    $env:PATHEXT = ".EXE;.BAT"
+    $missingCmd = Assert-Rejected "PATHEXT without .CMD" 'PATHEXT does not include \.CMD' -Ref "1.0.0"
+    if ($missingCmd.Exception.Message -notmatch 'bare atomic') { throw "the missing-.CMD rejection did not name bare atomic" }
+    if (Test-Path -LiteralPath $env:ATOMIC_BIN_DIR) { throw "the missing-.CMD rejection created a bin directory" }
+    $env:PATHEXT = $null
+
+    # Unsupported release tag grammar must fail before the tags API request.
+    foreach ($invalidTag in @("v1.0.0", "1.0", "1.0.0.0", "1.0.0-alpha.0", "1.0.0-beta.1", "1.0.0-alpha", "01.0.0", "release/1.0", "hash#tag", "percent%tag")) {
+        $null = New-ProbeSpace
+        $null = Assert-Rejected "explicit ref $invalidTag" 'unsupported release tag: expected MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION' -Ref $invalidTag
+    }
+    $null = New-ProbeSpace
+    $env:ATOMIC_VERSION = "not-a-tag"
+    $null = Assert-Rejected "ATOMIC_VERSION not-a-tag" 'unsupported release tag'
+    $env:ATOMIC_VERSION = $null
+
+    # A regular installRoot\current entry must be reported, never moved or deleted.
+    foreach ($kind in @("Directory", "File")) {
+        $null = New-ProbeSpace
+        New-Item -ItemType Directory -Path $env:ATOMIC_INSTALL_DIR -Force | Out-Null
+        $conflictPath = Join-Path $env:ATOMIC_INSTALL_DIR "current"
+        if ($kind -eq "Directory") {
+            New-Item -ItemType Directory -Path $conflictPath -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $conflictPath "marker.txt") -Value "caller-data" -NoNewline
+        }
+        else {
+            Set-Content -LiteralPath $conflictPath -Value "caller-data" -NoNewline
+        }
+        $failure = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $failure = $_ }
+        if ($null -eq $failure) { throw "a regular current $kind was accepted" }
+        if ($failure.Exception.Message -notmatch 'ATOMIC_INSTALL_DIR contains an unexpected current entry') {
+            throw "the regular current $kind failed for the wrong reason: $($failure.Exception.Message)"
+        }
+        $preserved = if ($kind -eq "Directory") { Get-Content -LiteralPath (Join-Path $conflictPath "marker.txt") -Raw } else { Get-Content -LiteralPath $conflictPath -Raw }
+        if ($preserved -ne "caller-data") { throw "the regular current $kind lost caller data" }
+        if (Test-Path -LiteralPath (Join-Path $env:ATOMIC_INSTALL_DIR "versions")) { throw "the regular current $kind rejection created versions" }
+        if (Test-Path -LiteralPath $env:ATOMIC_BIN_DIR) { throw "the regular current $kind rejection created a bin directory" }
+    }
+
+    # A preflight blocker must surface its own message rather than a cleanup error.
+    $null = New-ProbeSpace
+    New-Item -ItemType Directory -Path $env:ATOMIC_BIN_DIR -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $env:ATOMIC_BIN_DIR "atomic.exe") -Value "stale launcher" -NoNewline
+    $preflight = Assert-Rejected "stale same-stem launcher" 'PATHEXT resolves before atomic\.cmd' -Ref "1.0.0"
+    if ($preflight.Exception.Message -cne "ATOMIC_BIN_DIR contains atomic.exe, which PATHEXT resolves before atomic.cmd; remove it and rerun the installer.") {
+        throw "the preflight error text changed: $($preflight.Exception.Message)"
+    }
+
+    Write-Output "PREFLIGHT_GUARDS_OK"
+}
+finally {
+    $env:PATHEXT = $originalPathExt
+    $env:ATOMIC_VERSION = $null
+}
+`;
+
+if (powershellEngines.length === 0) {
+	test.skip("available PowerShell engines enforce every preflight guard before I/O", () => {});
+}
+for (const engine of powershellEngines) {
+	test(`${engine.label} enforces PATHEXT, tag grammar, and pointer guards before any request`, () => {
+		const workspace = mkdtempSync(join(tmpdir(), "atomic-ps-preflight-"));
+		const probePath = join(workspace, "preflight-guard-probe.ps1");
+		writeFileSync(probePath, preflightGuardProbeHarness);
+		try {
+			const result = spawnSyncCollect(
+				[
+					engine.executable,
+					"-NoLogo",
+					"-NoProfile",
+					"-NonInteractive",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					probePath,
+					"-InstallerPath",
+					installerPath,
+					"-Workspace",
+					workspace,
+				],
+				{ timeout: 90_000 },
+			);
+			assert.equal(result.exitCode, 0, `${result.stdout.toString()}${result.stderr.toString()}`);
+			assert.match(result.stdout.toString(), /PREFLIGHT_GUARDS_OK/u);
+		} finally {
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+}
+
 interface AsyncProcessResult {
 	exitCode: number | null;
 	stdout: string;
@@ -899,10 +1130,8 @@ function New-FixtureRelease {
 
 New-FixtureRelease "1.0.0"
 New-FixtureRelease "2.0.0"
-if ($Scenario -eq "escaped-refs") {
-    New-FixtureRelease "release/1.0"
-    New-FixtureRelease "hash#tag"
-    New-FixtureRelease "percent%tag"
+if ($Scenario -eq "tag-grammar") {
+    New-FixtureRelease "1.0.0-alpha.1"
 }
 
 $global:AtomicFixtureAssetRoot = $assetRoot
@@ -912,6 +1141,7 @@ $global:AtomicFixtureLastAssetName = $null
 $global:AtomicFixtureFailApi = $false
 $global:AtomicFixtureRedirectFails = $false
 $global:AtomicFixtureRedirectTag = "2.0.0"
+$global:AtomicFixtureLatestApiTag = "2.0.0"
 
 function global:Invoke-WebRequest {
     [CmdletBinding()]
@@ -945,11 +1175,11 @@ function global:Invoke-WebRequest {
     if ($Uri -match '^https://api\.github\.com/') {
         if ($global:AtomicFixtureFailApi) { throw "GitHub API is unavailable in this fixture scenario: $Uri" }
         if ($Uri -match '/repos/bastani-inc/atomic/releases/latest$') {
-            return [pscustomobject]@{ Content = '{"tag_name":"2.0.0"}'; Headers = @{} }
+            return [pscustomobject]@{ Content = ('{"tag_name":"' + $global:AtomicFixtureLatestApiTag + '"}'); Headers = @{} }
         }
         if ($Uri -match '/repos/bastani-inc/atomic/releases/tags/([^/]+)$') {
             $requestedTag = [Uri]::UnescapeDataString($Matches[1])
-            $canonicalTag = if ($requestedTag -eq "requested-alias") { "1.0.0" } else { $requestedTag }
+            $canonicalTag = if ($requestedTag -eq "1.0.1") { "1.0.0" } else { $requestedTag }
             return [pscustomobject]@{ Content = ('{"tag_name":"' + $canonicalTag + '"}'); Headers = @{} }
         }
     }
@@ -1134,6 +1364,7 @@ try {
     $env:GITHUB_TOKEN = "github-token"
     $env:GH_TOKEN = "gh-token"
     $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+    $env:PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
     if ($Scenario -eq "hash-fallback") {
         function global:Get-Command {
             [CmdletBinding()]
@@ -1224,65 +1455,173 @@ try {
         Assert-Fixture (@(Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -like ".current-*" }).Count -eq 0) "current transaction artifacts were not cleaned"
         Assert-Fixture (@(Get-ChildItem -LiteralPath $binDir -Force | Where-Object { $_.Name -like ".atomic-*" }).Count -eq 0) "shim transaction artifacts were not cleaned"
     }
-    elseif ($Scenario -eq "escaped-refs") {
+    elseif ($Scenario -eq "tag-grammar") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "AMD64"
-        $versionsDir = Join-Path $installRoot "versions"
-        $caseSpecs = @(
-            [pscustomobject]@{ Tag = "release/1.0"; EncodedTag = "release%2F1.0"; DoubleEncodedTag = "release%252F1.0" },
-            [pscustomobject]@{ Tag = "hash#tag"; EncodedTag = "hash%23tag"; DoubleEncodedTag = "hash%2523tag" },
-            [pscustomobject]@{ Tag = "percent%tag"; EncodedTag = "percent%25tag"; DoubleEncodedTag = "percent%2525tag" }
-        )
 
-        foreach ($case in $caseSpecs) {
-            $tag = $case.Tag
-            $encodedTag = $case.EncodedTag
-            $requestStart = $global:AtomicFixtureRequests.Count
-            $installOutput = & $InstallerPath -Ref $tag | Out-String
-            $caseRequests = @($global:AtomicFixtureRequests | Select-Object -Skip $requestStart)
-            $expectedApiUri = "https://api.github.com/repos/bastani-inc/atomic/releases/tags/" + $encodedTag
-            $expectedArchiveUri = "https://github.com/bastani-inc/atomic/releases/download/" + $encodedTag + "/atomic-windows-x64.zip"
-            $expectedChecksumsUri = "https://github.com/bastani-inc/atomic/releases/download/" + $encodedTag + "/SHA256SUMS"
-
-            Assert-Fixture ($caseRequests.Count -eq 3) "$tag install made requests beyond the exact API and download URLs"
-            Assert-Fixture (@($caseRequests | Where-Object { $_.Uri -ceq $expectedApiUri }).Count -eq 1) "$tag API URL was not escaped exactly once"
-            Assert-Fixture (@($caseRequests | Where-Object { $_.Uri -ceq $expectedArchiveUri }).Count -eq 1) "$tag archive URL was not escaped exactly once"
-            Assert-Fixture (@($caseRequests | Where-Object { $_.Uri -ceq $expectedChecksumsUri }).Count -eq 1) "$tag checksum URL was not escaped exactly once"
-            Assert-Fixture (@($caseRequests | Where-Object { $_.Uri.Contains($case.DoubleEncodedTag) }).Count -eq 0) "$tag was escaped more than once"
-            Assert-Fixture ($installOutput.Contains("Atomic $tag installed successfully.")) "$tag success output did not retain the raw canonical tag"
-            Assert-Fixture (-not $installOutput.Contains("Atomic $encodedTag installed successfully.")) "$tag success output used the encoded directory identity"
-
-            $versionPath = Join-Path $versionsDir $encodedTag
-            $versionEntry = @(Get-ChildItem -LiteralPath $versionsDir -Force | Where-Object { $_.Name -ceq $encodedTag })
-            Assert-Fixture ($encodedTag -notmatch '[\\/]') "$tag encoded version identity contains a directory separator"
-            Assert-Fixture ($versionEntry.Count -eq 1 -and $versionEntry[0].FullName -ceq $versionPath) "$tag encoded value was not the direct version-directory identity"
-            Assert-Fixture ((Get-Content -LiteralPath (Join-Path $versionPath "version.txt") -Raw) -ceq $tag) "$tag version directory did not retain the raw canonical tag"
-            Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionsDir $tag))) "$tag raw canonical value was used as a version path"
+        foreach ($invalidTag in @("v1.0.0", "1.0", "1.0.0.0", "1.0.0-alpha.0", "1.0.0-beta.1", "1.0.0-alpha", "01.0.0", "release/1.0", "hash#tag", "percent%tag")) {
+            $requestStart = @($global:AtomicFixtureRequests).Count
+            $rejected = $null
+            try { & $InstallerPath -Ref $invalidTag | Out-Null }
+            catch { $rejected = $_ }
+            Assert-Fixture ($null -ne $rejected) "explicit ref $invalidTag was accepted"
+            Assert-Fixture ($rejected.Exception.Message -match 'unsupported release tag: expected MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION') "explicit ref $invalidTag was rejected for the wrong reason: $($rejected.Exception.Message)"
+            Assert-Fixture (@($global:AtomicFixtureRequests).Count -eq $requestStart) "explicit ref $invalidTag performed a request"
+            Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "explicit ref $invalidTag created an install root"
+            Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "explicit ref $invalidTag created a bin directory"
+            Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "explicit ref $invalidTag created transaction temp state"
         }
 
+        $env:ATOMIC_VERSION = "not-a-tag"
+        $envRejected = $null
+        $envRequestStart = @($global:AtomicFixtureRequests).Count
+        try { & $InstallerPath | Out-Null }
+        catch { $envRejected = $_ }
+        Assert-Fixture ($null -ne $envRejected) "ATOMIC_VERSION was not validated"
+        Assert-Fixture ($envRejected.Exception.Message -match 'unsupported release tag') "ATOMIC_VERSION rejection used the wrong message"
+        Assert-Fixture (@($global:AtomicFixtureRequests).Count -eq $envRequestStart) "ATOMIC_VERSION rejection performed a request"
         $env:ATOMIC_VERSION = $null
-        $redirectTag = "release/1.0"
-        $encodedRedirectTag = "release%2F1.0"
-        $global:AtomicFixtureRedirectTag = $encodedRedirectTag
-        $global:AtomicFixtureFailApi = $true
-        $redirectRequestStart = $global:AtomicFixtureRequests.Count
-        $redirectOutput = & $InstallerPath | Out-String
-        $redirectRequests = @($global:AtomicFixtureRequests | Select-Object -Skip $redirectRequestStart)
-        $expectedRedirectArchiveUri = "https://github.com/bastani-inc/atomic/releases/download/release%2F1.0/atomic-windows-x64.zip"
-        $expectedRedirectChecksumsUri = "https://github.com/bastani-inc/atomic/releases/download/release%2F1.0/SHA256SUMS"
 
-        Assert-Fixture ($redirectRequests.Count -eq 3) "encoded latest redirect made requests beyond the redirect and exact download URLs"
-        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -ceq 'https://github.com/bastani-inc/atomic/releases/latest' }).Count -eq 1) "encoded latest redirect was not requested exactly once"
-        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -match '^https://api\.github\.com/' }).Count -eq 0) "encoded latest redirect queried the GitHub API"
-        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -ceq $expectedRedirectArchiveUri }).Count -eq 1) "encoded latest redirect archive URL was not normalized to one escape"
-        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -ceq $expectedRedirectChecksumsUri }).Count -eq 1) "encoded latest redirect checksum URL was not normalized to one escape"
-        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri.Contains('release%252F1.0') }).Count -eq 0) "encoded latest redirect produced release%252F1.0"
-        Assert-Fixture ($redirectOutput.Contains("Atomic $redirectTag installed successfully.")) "encoded latest redirect success output did not retain the raw canonical tag"
-        Assert-Fixture (-not $redirectOutput.Contains("Atomic $encodedRedirectTag installed successfully.")) "encoded latest redirect success output retained the encoded tag"
-        $redirectVersionPath = Join-Path $versionsDir $encodedRedirectTag
-        $redirectVersionEntry = @(Get-ChildItem -LiteralPath $versionsDir -Force | Where-Object { $_.Name -ceq $encodedRedirectTag })
-        Assert-Fixture ($redirectVersionEntry.Count -eq 1 -and $redirectVersionEntry[0].FullName -ceq $redirectVersionPath) "encoded latest redirect did not use the once-encoded version-directory identity"
-        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $redirectVersionPath "version.txt") -Raw) -ceq $redirectTag) "encoded latest redirect version directory lost the raw canonical tag"
+        foreach ($validTag in @("1.0.0", "1.0.0-alpha.1")) {
+            & $InstallerPath -Ref $validTag | Out-Null
+            Assert-Fixture (Test-Path -LiteralPath (Join-Path $installRoot ("versions\" + [Uri]::EscapeDataString($validTag) + "\atomic.exe"))) "valid tag $validTag did not install"
+            Assert-NoTransactionResidue $installRoot $binDir
+        }
+        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+
+        $global:AtomicFixtureRedirectTag = "release/1.0"
+        $redirectRequestStart = @($global:AtomicFixtureRequests).Count
+        $redirectRejected = $null
+        try { & $InstallerPath | Out-Null }
+        catch { $redirectRejected = $_ }
+        Assert-Fixture ($null -ne $redirectRejected) "an unsupported latest redirect tag was accepted"
+        Assert-Fixture ($redirectRejected.Exception.Message -match 'unsupported release tag') "latest redirect rejection used the wrong message"
+        $redirectRequests = @($global:AtomicFixtureRequests | Select-Object -Skip $redirectRequestStart)
+        Assert-Fixture (@($redirectRequests | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 0) "an unsupported latest redirect tag still downloaded a release"
+        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "an unsupported latest redirect tag created an install root"
+        $global:AtomicFixtureRedirectTag = "2.0.0"
+
+        $global:AtomicFixtureRedirectFails = $true
+        $global:AtomicFixtureLatestApiTag = "not-a-tag"
+        $apiRequestStart = @($global:AtomicFixtureRequests).Count
+        $apiRejected = $null
+        try { & $InstallerPath | Out-Null }
+        catch { $apiRejected = $_ }
+        Assert-Fixture ($null -ne $apiRejected) "an unsupported latest API tag_name was accepted"
+        Assert-Fixture ($apiRejected.Exception.Message -match 'unsupported release tag') "latest API rejection used the wrong message"
+        $apiRequests = @($global:AtomicFixtureRequests | Select-Object -Skip $apiRequestStart)
+        Assert-Fixture (@($apiRequests | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 0) "an unsupported latest API tag_name still downloaded a release"
+        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "an unsupported latest API tag_name created an install root"
+        $global:AtomicFixtureLatestApiTag = "2.0.0"
+        $global:AtomicFixtureRedirectFails = $false
+    }
+    elseif ($Scenario -eq "missing-cmd-pathext") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $env:PATHEXT = ".EXE;.BAT"
+        $requestStart = @($global:AtomicFixtureRequests).Count
+        $rejected = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $rejected = $_ }
+        Assert-Fixture ($null -ne $rejected) "a PATHEXT without .CMD reported success"
+        Assert-Fixture ($rejected.Exception.Message -match '\.CMD') "the missing-.CMD rejection did not name .CMD"
+        Assert-Fixture ($rejected.Exception.Message -match 'bare atomic') "the missing-.CMD rejection did not name bare atomic"
+        Assert-Fixture (@($global:AtomicFixtureRequests).Count -eq $requestStart) "the missing-.CMD rejection performed a request"
+        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "the missing-.CMD rejection created an install root"
+        Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "the missing-.CMD rejection created a bin directory"
+        Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "the missing-.CMD rejection created transaction temp state"
+
+        foreach ($acceptedPathExt in @(".cmd;.EXE", '  " .CMD " ; ".EXE"  ', ".EXE;.CMD;.BAT", $null)) {
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+            $env:PATHEXT = $acceptedPathExt
+            & $InstallerPath -Ref "1.0.0" | Out-Null
+            Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "PATHEXT '$acceptedPathExt' blocked a valid install"
+            Assert-NoTransactionResidue $installRoot $binDir
+        }
+        $env:PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+    }
+    elseif ($Scenario -eq "pointer-conflicts") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+
+        foreach ($case in @(
+            [pscustomobject]@{ Label = "current directory"; Parent = "install"; Name = "current"; Kind = "Directory"; Message = 'ATOMIC_INSTALL_DIR contains an unexpected current entry' },
+            [pscustomobject]@{ Label = "current file"; Parent = "install"; Name = "current"; Kind = "File"; Message = 'ATOMIC_INSTALL_DIR contains an unexpected current entry' },
+            [pscustomobject]@{ Label = "atomic-current directory"; Parent = "bin"; Name = "atomic-current"; Kind = "Directory"; Message = 'ATOMIC_BIN_DIR contains an unexpected atomic-current entry' },
+            [pscustomobject]@{ Label = "atomic-current file"; Parent = "bin"; Name = "atomic-current"; Kind = "File"; Message = 'ATOMIC_BIN_DIR contains an unexpected atomic-current entry' }
+        )) {
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+            $parentPath = if ($case.Parent -eq "install") { $installRoot } else { $binDir }
+            New-Item -ItemType Directory -Path $parentPath -Force | Out-Null
+            $conflictPath = Join-Path $parentPath $case.Name
+            if ($case.Kind -eq "Directory") {
+                New-Item -ItemType Directory -Path $conflictPath -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $conflictPath "marker.txt") -Value "caller-data" -Encoding ASCII -NoNewline
+            }
+            else {
+                Set-Content -LiteralPath $conflictPath -Value "caller-data" -Encoding ASCII -NoNewline
+            }
+
+            $requestStart = @($global:AtomicFixtureRequests).Count
+            $rejected = $null
+            try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+            catch { $rejected = $_ }
+            Assert-Fixture ($null -ne $rejected) "a regular $($case.Label) was accepted"
+            Assert-Fixture ($rejected.Exception.Message -match $case.Message) "the $($case.Label) rejection used the wrong message: $($rejected.Exception.Message)"
+            Assert-Fixture (@($global:AtomicFixtureRequests).Count -eq $requestStart) "the $($case.Label) rejection performed a request"
+            if ($case.Kind -eq "Directory") {
+                Assert-Fixture ((Get-Content -LiteralPath (Join-Path $conflictPath "marker.txt") -Raw) -eq "caller-data") "the $($case.Label) marker data was not preserved"
+            }
+            else {
+                Assert-Fixture ((Get-Content -LiteralPath $conflictPath -Raw) -eq "caller-data") "the $($case.Label) file content was not preserved"
+            }
+            Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $installRoot "versions"))) "the $($case.Label) rejection created a versions directory"
+            Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd"))) "the $($case.Label) rejection created a shim"
+            Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "the $($case.Label) rejection created transaction temp state"
+            Assert-NoTransactionResidue $installRoot $binDir
+        }
+
+        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+        & $InstallerPath -Ref "1.0.0" | Out-Null
+        Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "the reparse-point control install did not complete"
+        & $InstallerPath -Ref "2.0.0" | Out-Null
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "current\version.txt") -Raw) -eq "2.0.0") "an installer-owned current junction was not replaced"
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
+    elseif ($Scenario -eq "preflight-errors") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+        $stalePath = Join-Path $binDir "atomic.exe"
+        Copy-Item -LiteralPath $fixtureExecutable -Destination $stalePath
+
+        $requestStart = @($global:AtomicFixtureRequests).Count
+        $preflightError = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $preflightError = $_ }
+        Assert-Fixture ($null -ne $preflightError) "the preflight blocker did not fail"
+        Assert-Fixture ($preflightError.Exception.Message -ceq "ATOMIC_BIN_DIR contains atomic.exe, which PATHEXT resolves before atomic.cmd; remove it and rerun the installer.") "the preflight error was replaced: $($preflightError.Exception.Message)"
+        Assert-Fixture ($preflightError.Exception.Message -notmatch 'variable') "the preflight error mentions an uninitialized variable"
+        Assert-Fixture (@($global:AtomicFixtureRequests).Count -eq $requestStart) "the preflight blocker performed a request"
+        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "the preflight blocker created an install root"
+        Remove-Item -LiteralPath $stalePath -Force
+
+        $global:AtomicFixtureFailApi = $true
+        $global:AtomicFixtureRedirectFails = $true
+        $apiError = $null
+        try { & $InstallerPath -Ref "1.0.0" | Out-Null }
+        catch { $apiError = $_ }
+        $global:AtomicFixtureFailApi = $false
+        $global:AtomicFixtureRedirectFails = $false
+        Assert-Fixture ($null -ne $apiError) "the failing API request did not fail the install"
+        Assert-Fixture ($apiError.Exception.Message -match 'Failed to query GitHub release API at https://api\.github\.com/repos/bastani-inc/atomic/releases/tags/1\.0\.0') "the API error was replaced: $($apiError.Exception.Message)"
+        Assert-Fixture ($apiError.Exception.Message -notmatch 'variable') "the API error mentions an uninitialized variable"
+        Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "the failing API request created an install root"
+        Assert-Fixture (@(Get-ChildItem -LiteralPath $fixtureTemp -Filter "atomic-install-*" -Force).Count -eq 0) "the failing API request created transaction temp state"
     }
     elseif ($Scenario -eq "checksum") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
@@ -1694,10 +2033,10 @@ try {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "AMD64"
         $mismatch = $null
-        try { & $InstallerPath -Ref "requested-alias" | Out-Null }
+        try { & $InstallerPath -Ref "1.0.1" | Out-Null }
         catch { $mismatch = $_ }
         Assert-Fixture ($null -ne $mismatch) "a mismatched exact-tag response was accepted"
-        Assert-Fixture ($mismatch.Exception.Message -match 'GitHub returned release 1\.0\.0 for requested tag requested-alias') "mismatch failure did not name both release identities"
+        Assert-Fixture ($mismatch.Exception.Message -match 'GitHub returned release 1\.0\.0 for requested tag 1\.0\.1') "mismatch failure did not name both release identities"
         Assert-Fixture (@($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 0) "a mismatched exact-tag response still downloaded a release"
         Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "a mismatched exact-tag response created an installation"
         Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "a mismatched exact-tag response created a bin directory"
@@ -2200,19 +2539,52 @@ test("Windows PowerShell 5.1 fixtures enforce shim bytes, cmd execution, rollbac
 	);
 });
 
-test("Windows PowerShell 5.1 escaped-ref fixture covers one-pass URL and directory encoding", () => {
-	for (const [rawTag, encodedTag] of [
-		["release/1.0", "release%2F1.0"],
-		["hash#tag", "hash%23tag"],
-		["percent%tag", "percent%25tag"],
+test("Windows PowerShell 5.1 tag-grammar fixture rejects unsupported refs before any request", () => {
+	for (const invalidTag of [
+		"v1.0.0",
+		"1.0",
+		"1.0.0.0",
+		"1.0.0-alpha.0",
+		"1.0.0-beta.1",
+		"1.0.0-alpha",
+		"01.0.0",
+		"release/1.0",
+		"hash#tag",
+		"percent%tag",
 	]) {
-		assert.ok(fixtureHarness.includes(`Tag = "${rawTag}"; EncodedTag = "${encodedTag}"`));
+		assert.ok(fixtureHarness.includes(`"${invalidTag}"`), `tag-grammar fixture is missing ${invalidTag}`);
 	}
-	assert.match(fixtureHarness, /Atomic \$tag installed successfully\./u);
-	assert.match(fixtureHarness, /Atomic \$redirectTag installed successfully\./u);
-	assert.match(fixtureHarness, /release%2F1\.0/u);
-	assert.match(fixtureHarness, /release%252F1\.0/u);
-	assert.match(fixtureHarness, /encoded latest redirect queried the GitHub API/u);
+	assert.match(fixtureHarness, /explicit ref \$invalidTag performed a request/u);
+	assert.match(fixtureHarness, /explicit ref \$invalidTag created an install root/u);
+	assert.match(fixtureHarness, /ATOMIC_VERSION rejection performed a request/u);
+	assert.match(fixtureHarness, /foreach \(\$validTag in @\("1\.0\.0", "1\.0\.0-alpha\.1"\)\)/u);
+	assert.match(fixtureHarness, /an unsupported latest redirect tag still downloaded a release/u);
+	assert.match(fixtureHarness, /an unsupported latest API tag_name still downloaded a release/u);
+	assert.doesNotMatch(fixtureHarness, /Atomic \$tag installed successfully\./u);
+});
+
+test("Windows PowerShell 5.1 fixtures cover missing .CMD, pointer conflicts, and preserved preflight errors", () => {
+	assert.match(fixtureHarness, /\$env:PATHEXT = "\.EXE;\.BAT"/u);
+	assert.match(fixtureHarness, /the missing-\.CMD rejection performed a request/u);
+	assert.match(fixtureHarness, /the missing-\.CMD rejection did not name bare atomic/u);
+	for (const acceptedPathExt of ['".cmd;.EXE"', '".EXE;.CMD;.BAT"']) {
+		assert.ok(fixtureHarness.includes(acceptedPathExt), `missing-cmd-pathext lacks the control ${acceptedPathExt}`);
+	}
+	assert.ok(
+		fixtureHarness.includes(`'  " .CMD " ; ".EXE"  '`),
+		"missing-cmd-pathext lacks the quoted-whitespace control",
+	);
+
+	for (const label of ["current directory", "current file", "atomic-current directory", "atomic-current file"]) {
+		assert.ok(fixtureHarness.includes(`Label = "${label}"`), `pointer-conflicts lacks ${label}`);
+	}
+	assert.match(fixtureHarness, /marker data was not preserved/u);
+	assert.match(fixtureHarness, /an installer-owned current junction was not replaced/u);
+
+	assert.match(fixtureHarness, /the preflight error was replaced/u);
+	assert.match(fixtureHarness, /the API error was replaced/u);
+	assert.equal((fixtureHarness.match(/mentions an uninitialized variable/gu) ?? []).length, 2);
+	assert.match(fixtureHarness, /\$env:PATHEXT = "\.COM;\.EXE;\.BAT;\.CMD;\.VBS;\.VBE;\.JS;\.JSE;\.WSF;\.WSH;\.MSC"/u);
 });
 
 test("Windows PowerShell 5.1 Ctrl+C fixture uses a real isolated console event after actual moves", () => {
@@ -2255,7 +2627,10 @@ test("Windows PowerShell 5.1 Ctrl+C fixture uses a real isolated console event a
 function runPowerShellFixture(
 	scenario:
 		| "install"
-		| "escaped-refs"
+		| "tag-grammar"
+		| "missing-cmd-pathext"
+		| "pointer-conflicts"
+		| "preflight-errors"
 		| "checksum"
 		| "final-smoke"
 		| "unicode"
@@ -2321,8 +2696,20 @@ powershellTest("PowerShell 5.1 fixture installs exact refs for both architecture
 	runPowerShellFixture("install");
 });
 
-powershellTest("PowerShell 5.1 fixture escapes exact refs and normalizes an encoded latest redirect once", () => {
-	runPowerShellFixture("escaped-refs");
+powershellTest("PowerShell 5.1 fixture rejects unsupported release tags before archive download", () => {
+	runPowerShellFixture("tag-grammar");
+});
+
+powershellTest("PowerShell 5.1 fixture rejects PATHEXT without .CMD before any request or mutation", () => {
+	runPowerShellFixture("missing-cmd-pathext");
+});
+
+powershellTest("PowerShell 5.1 fixture refuses unexpected regular transaction pointers before any request", () => {
+	runPowerShellFixture("pointer-conflicts");
+});
+
+powershellTest("PowerShell 5.1 fixture preserves preflight and API errors before transaction setup", () => {
+	runPowerShellFixture("preflight-errors");
 });
 
 powershellTest("PowerShell 5.1 fixture rejects a checksum mismatch without mutating the old install", () => {

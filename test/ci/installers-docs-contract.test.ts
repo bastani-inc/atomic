@@ -50,6 +50,8 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.quickstart, /cannot equal or sit inside the launcher path/u);
 	assert.match(docs.quickstart, /cannot sit inside the install root's `current` or `versions` directories/u);
 	assert.match(docs.windows, /same-stem launcher that `PATHEXT` resolves before `atomic\.cmd`/u);
+	assert.match(docs.windows, /`PATHEXT` must include `\.CMD` for bare `atomic` to resolve/u);
+	assert.match(docs.windows, /is reported and left untouched instead of being moved or deleted/u);
 	assert.match(docs.quickstart, /MAJOR\.MINOR\.PATCH-alpha\.REVISION/u);
 	assert.match(docs.windows, /MAJOR\.MINOR\.PATCH-alpha\.REVISION/u);
 	assert.match(docs.quickstart, /protected temporary file instead of process arguments/u);

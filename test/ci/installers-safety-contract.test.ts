@@ -117,7 +117,7 @@ test("Windows same-stem PATHEXT launchers are rejected before any request", asyn
 	);
 	assert.doesNotMatch(powershell, /foreach \(\$pathExtValue in @\(\$env:PATHEXT,/u);
 	assert.match(powershell, /foreach \(\$pathExtEntry in \(\$pathExtValue -split ';'\)/u);
-	assert.match(powershell, /if \(\$extension -eq "\.CMD"\) \{\r?\n\s+break/u);
+	assert.match(powershell, /if \(\$extension -eq "\.CMD"\) \{\r?\n\s+\$cmdSeen = \$true\r?\n\s+break/u);
 	assert.match(powershell, /which PATHEXT resolves before atomic\.cmd; remove it and rerun the installer\./u);
 
 	const preflight = powershell.indexOf("foreach ($shadowingExtension in @(Get-AtomicShimShadowingExtensions))");
@@ -132,6 +132,66 @@ test("Windows same-stem PATHEXT launchers are rejected before any request", asyn
 		assert.ok(boundaryIndex >= 0, boundary);
 		assert.ok(preflight < boundaryIndex, `the Windows shadowing preflight runs after: ${boundary}`);
 	}
+});
+
+test("Windows safety and version checks all precede temp creation and archive downloads", async () => {
+	const { shell, powershell } = await installers();
+
+	const outerTry = powershell.indexOf("$previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol");
+	assert.ok(outerTry >= 0);
+	for (const declaration of ["$transaction = $null", "$transactionCommitted = $false", "$tempDir = $null"]) {
+		const declarationIndex = powershell.indexOf(declaration);
+		assert.ok(declarationIndex >= 0, declaration);
+		assert.ok(declarationIndex < outerTry, `cleanup state ${declaration} is initialized after the outer try`);
+	}
+	assert.match(powershell, /if \(\$null -ne \$tempDir -and \(Test-Path -LiteralPath \$tempDir\)\)/u);
+
+	const currentGuard = powershell.indexOf("ATOMIC_INSTALL_DIR contains an unexpected current entry");
+	const atomicCurrentGuard = powershell.indexOf("ATOMIC_BIN_DIR contains an unexpected atomic-current entry");
+	const missingCmdGuard = powershell.indexOf("PATHEXT does not include .CMD");
+	const requestedTagGuard = powershell.indexOf("(Test-AtomicReleaseTag $requestedRef)");
+	const resolvedTagGuard = powershell.indexOf("if (-not (Test-AtomicReleaseTag $releaseTag))");
+	for (const [name, index] of [
+		["current-pointer guard", currentGuard],
+		["atomic-current guard", atomicCurrentGuard],
+		["missing-.CMD guard", missingCmdGuard],
+		["requested-tag grammar", requestedTagGuard],
+		["resolved-tag grammar", resolvedTagGuard],
+	] as const) {
+		assert.ok(index >= 0, `${name} is missing`);
+	}
+
+	const apiHeaders = powershell.indexOf('$apiHeaders = @{ Accept = "application/vnd.github+json" }');
+	const apiRequest = powershell.indexOf("Invoke-AtomicApiRequest $latestApi");
+	const releaseBase = powershell.indexOf("$releaseBase = ");
+	const tempCreation = powershell.indexOf("New-Item -ItemType Directory -Path $tempDir");
+	const archiveDownload = powershell.indexOf('Invoke-AtomicDownload "$releaseBase/$assetName" $archivePath');
+	assert.ok(currentGuard < apiHeaders, "the current-pointer guard runs after the API headers");
+	assert.ok(atomicCurrentGuard < apiHeaders, "the atomic-current guard runs after the API headers");
+	assert.ok(missingCmdGuard < apiHeaders, "the missing-.CMD guard runs after the API headers");
+	assert.ok(requestedTagGuard < apiRequest, "the requested-tag grammar check runs after the API request");
+	assert.ok(requestedTagGuard < apiHeaders, "the requested-tag grammar check runs after the API headers");
+	assert.ok(resolvedTagGuard < releaseBase, "the resolved-tag grammar check runs after the download base");
+	for (const guard of [currentGuard, atomicCurrentGuard, missingCmdGuard, requestedTagGuard, resolvedTagGuard]) {
+		assert.ok(guard < tempCreation, "a preflight guard runs after the temp directory is created");
+		assert.ok(guard < archiveDownload, "a preflight guard runs after the archive download");
+	}
+
+	assert.doesNotMatch(
+		powershell.slice(powershell.indexOf("$existingShimItem = Get-AtomicDirectoryEntry $shimPath"), apiHeaders),
+		/Move-Item|Remove-Item|New-Item/u,
+		"the Windows pointer preflight must not move or delete caller entries",
+	);
+
+	assert.ok(
+		powershell.includes("'^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-alpha\\.(?:[1-9][0-9]*))?$'"),
+		"the Windows tag grammar does not mirror install.sh",
+	);
+	assert.match(shell, /MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION/u);
+	assert.match(
+		powershell,
+		/unsupported release tag: expected MAJOR\.MINOR\.PATCH or MAJOR\.MINOR\.PATCH-alpha\.REVISION/u,
+	);
 });
 
 test("POSIX release identities stay within Atomic's supported tag grammar", async () => {

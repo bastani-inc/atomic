@@ -58,6 +58,16 @@ function Get-AtomicFileSha256 {
     }
 }
 
+function Test-AtomicReleaseTag {
+    param([string]$Tag)
+
+    if ([string]::IsNullOrWhiteSpace($Tag)) {
+        return $false
+    }
+
+    return $Tag -cmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-alpha\.(?:[1-9][0-9]*))?$'
+}
+
 function Get-AtomicRedirectTag {
     param([string]$Uri)
 
@@ -219,12 +229,13 @@ function Get-AtomicDirectoryEntry {
 
 function Get-AtomicShimShadowingExtensions {
     $shadowing = New-Object System.Collections.ArrayList
+    $cmdSeen = $false
     $pathExtValue = $env:PATHEXT
     if ([string]::IsNullOrWhiteSpace($pathExtValue)) {
         $pathExtValue = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
     }
     foreach ($pathExtEntry in ($pathExtValue -split ';')) {
-        $extension = $pathExtEntry.Trim().Trim('"')
+        $extension = $pathExtEntry.Trim().Trim('"').Trim()
         if ([string]::IsNullOrWhiteSpace($extension)) {
             continue
         }
@@ -233,11 +244,15 @@ function Get-AtomicShimShadowingExtensions {
         }
         $extension = $extension.ToUpperInvariant()
         if ($extension -eq ".CMD") {
+            $cmdSeen = $true
             break
         }
         if (-not $shadowing.Contains($extension)) {
             [void]$shadowing.Add($extension)
         }
+    }
+    if (-not $cmdSeen) {
+        throw "PATHEXT does not include .CMD; bare atomic cannot resolve the installed atomic.cmd shim. Add .CMD to PATHEXT and rerun the installer."
     }
     return $shadowing
 }
@@ -503,6 +518,16 @@ function Remove-AtomicTransactionBackups {
     }
 }
 
+$tempDir = $null
+$versionStagePath = $null
+$currentNextPath = $null
+$atomicCurrentNextPath = $null
+$shimNextPath = $null
+$transaction = $null
+$transactionCommitted = $false
+$transactionMissingDirectories = New-Object System.Collections.ArrayList
+$rollbackRetryLimit = 3
+
 $previousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
 try {
     [Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -515,6 +540,9 @@ if ($PSBoundParameters.ContainsKey("Ref")) {
 }
 elseif (-not [string]::IsNullOrWhiteSpace($env:ATOMIC_VERSION)) {
     $requestedRef = $env:ATOMIC_VERSION
+}
+if (-not [string]::IsNullOrWhiteSpace($requestedRef) -and -not (Test-AtomicReleaseTag $requestedRef)) {
+    throw "unsupported release tag: expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION"
 }
 
 $architecture = $env:PROCESSOR_ARCHITEW6432
@@ -557,6 +585,12 @@ $existingAtomicCurrentItem = Get-AtomicDirectoryEntry $atomicCurrentPath
 if ($null -ne $existingAtomicCurrentItem -and
     ($existingAtomicCurrentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
     throw "ATOMIC_BIN_DIR contains an unexpected atomic-current entry; refusing to replace it."
+}
+$currentPath = Join-Path $installRoot "current"
+$existingCurrentItem = Get-AtomicDirectoryEntry $currentPath
+if ($null -ne $existingCurrentItem -and
+    ($existingCurrentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+    throw "ATOMIC_INSTALL_DIR contains an unexpected current entry; refusing to replace it."
 }
 foreach ($shadowingExtension in @(Get-AtomicShimShadowingExtensions)) {
     $shadowingItem = Get-AtomicDirectoryEntry (Join-Path $binDir ("atomic" + $shadowingExtension))
@@ -605,21 +639,15 @@ if ([string]::IsNullOrWhiteSpace($releaseTag)) {
     }
 }
 
+if (-not (Test-AtomicReleaseTag $releaseTag)) {
+    throw "unsupported release tag: expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION"
+}
 $encodedReleaseTag = [Uri]::EscapeDataString($releaseTag)
 $releaseBase = "https://github.com/bastani-inc/atomic/releases/download/$encodedReleaseTag"
 $tempDir = Join-Path ([IO.Path]::GetTempPath()) ("atomic-install-" + [Guid]::NewGuid().ToString("N"))
 $archivePath = Join-Path $tempDir $assetName
 $checksumsPath = Join-Path $tempDir "SHA256SUMS"
 $payloadPath = Join-Path $tempDir "payload"
-
-$versionStagePath = $null
-$currentNextPath = $null
-$atomicCurrentNextPath = $null
-$shimNextPath = $null
-$transaction = $null
-$transactionCommitted = $false
-$transactionMissingDirectories = New-Object System.Collections.ArrayList
-$rollbackRetryLimit = 3
 
 try {
     New-Item -ItemType Directory -Path $tempDir | Out-Null
@@ -817,7 +845,7 @@ finally {
     if ($null -ne $versionStagePath -and $null -ne (Get-AtomicDirectoryEntry $versionStagePath)) {
         Remove-Item -LiteralPath $versionStagePath -Recurse -Force -ErrorAction SilentlyContinue
     }
-    if (Test-Path -LiteralPath $tempDir) {
+    if ($null -ne $tempDir -and (Test-Path -LiteralPath $tempDir)) {
         Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
