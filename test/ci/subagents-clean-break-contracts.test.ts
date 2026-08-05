@@ -90,7 +90,7 @@ function trackedFiles(): string[] {
 
 function scanPath(file: string): boolean {
 	if (file === guardPath || file.startsWith("specs/") || file.startsWith("research/")) return false;
-	if (file.endsWith("CHANGELOG.md") || file.endsWith("/changelog.mdx") || file.endsWith("README.md")) return false;
+	if (file.endsWith("CHANGELOG.md") || file.endsWith("/changelog.mdx")) return false;
 	if (file.startsWith("packages/coding-agent/dist/")) return false;
 	if (file.includes("/test/") || file.startsWith("test/")) return false;
 	return file.startsWith("packages/") || file.startsWith("scripts/");
