@@ -308,7 +308,7 @@ test("PowerShell rolls back uncommitted move intents from finally and cleans cre
 	assert.match(finallyBlock, /-not \$transactionCommitted[\s\S]+Invoke-AtomicTransactionRollback \$transaction/u);
 	assert.match(powershell, /\$rollbackRetryLimit\s*=\s*[2-9]/u);
 	assert.match(finallyBlock, /while \(\$rollbackAttempt -lt \$rollbackRetryLimit/u);
-	assert.match(finallyBlock, /Write-Warning[^\n]+rollback[^\n]+incomplete/iu);
+	assert.match(finallyBlock, /Write-Warning.*rollback.*incomplete.*-WarningAction Continue/iu);
 	assert.match(powershell, /function Add-AtomicMissingDirectoryPaths/u);
 	assert.match(powershell, /Sort-Object -Property Length -Descending/u);
 	assert.match(powershell, /do \{[\s\S]+\} while \(\$removedDirectory\)/u);
@@ -367,7 +367,14 @@ test("Windows temporary download directories are removed with bounded verified r
 	assert.match(finallyBlock.slice(tempCleanup), /catch \{\r?\n\s+\$tempCleanupError = \$_/u);
 	assert.match(
 		finallyBlock.slice(deferredReport),
-		/if \(\$null -ne \$primaryError\) \{[\s\S]{0,200}Write-Warning[^\r\n]+cleanup remains incomplete[\s\S]{0,80}else \{\r?\n\s+throw \$tempCleanupError/u,
+		/if \(\$null -ne \$primaryError\) \{[\s\S]{0,200}Write-Warning[^\r\n]+cleanup remains incomplete[^\r\n]+-WarningAction Continue[\s\S]{0,80}else \{\r?\n\s+throw \$tempCleanupError/u,
 	);
+	for (const warning of powershell.matchAll(/^\s*Write-Warning[^\r\n]*$/gmu)) {
+		assert.match(
+			warning[0],
+			/-WarningAction Continue/u,
+			`warning can inherit a terminating preference: ${warning[0]}`,
+		);
+	}
 	assert.match(powershell, /catch \{\r?\n\s+\$primaryError = \$_\r?\n\s+throw \$primaryError\r?\n\}/u);
 });

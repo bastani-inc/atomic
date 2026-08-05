@@ -420,7 +420,7 @@ test("Windows installer records move intent and idempotently rolls back from cat
 		finalBlock,
 		/while \(\$rollbackAttempt -lt \$rollbackRetryLimit -and -not \$transaction\.RollbackCompleted\)/u,
 	);
-	assert.match(finalBlock, /Write-Warning[^\r\n]+rollback[^\r\n]+incomplete/iu);
+	assert.match(finalBlock, /Write-Warning.*rollback.*incomplete.*-WarningAction Continue/iu);
 	const committedFinally = finalBlock.slice(
 		finalBlock.indexOf("if ($null -ne $transaction -and $transactionCommitted)"),
 		finalBlock.indexOf("if ($null -ne $shimNextPath"),
@@ -534,8 +534,15 @@ test("Windows installer removes its temporary download directory with bounded ve
 	);
 	assert.match(
 		cleanup.slice(deferredReport),
-		/if \(\$null -ne \$primaryError\) \{\r?\n\s+Write-Warning "Temporary download directory cleanup remains incomplete: \$tempCleanupError"\r?\n\s+\}\r?\n\s+else \{\r?\n\s+throw \$tempCleanupError/u,
+		/if \(\$null -ne \$primaryError\) \{\r?\n\s+Write-Warning -Message "Temporary download directory cleanup remains incomplete: \$tempCleanupError" -WarningAction Continue\r?\n\s+\}\r?\n\s+else \{\r?\n\s+throw \$tempCleanupError/u,
 	);
+	for (const warning of source.matchAll(/^\s*Write-Warning[^\r\n]*$/gmu)) {
+		assert.match(
+			warning[0],
+			/-WarningAction Continue/u,
+			`warning can inherit a terminating preference: ${warning[0]}`,
+		);
+	}
 });
 
 interface PowerShellEngine {
@@ -1287,10 +1294,18 @@ $global:AtomicFixtureTempRemovalAttempts = 0
 $global:AtomicFixtureWarnings = New-Object System.Collections.ArrayList
 
 function global:Write-Warning {
-    param([string]$Message)
+    param(
+        [string]$Message,
+        [string]$WarningAction
+    )
 
     [void]$global:AtomicFixtureWarnings.Add($Message)
-    Microsoft.PowerShell.Utility\Write-Warning -Message $Message
+    if ([string]::IsNullOrWhiteSpace($WarningAction)) {
+        Microsoft.PowerShell.Utility\Write-Warning -Message $Message
+    }
+    else {
+        Microsoft.PowerShell.Utility\Write-Warning -Message $Message -WarningAction $WarningAction
+    }
 }
 
 function global:Remove-Item {
@@ -2333,10 +2348,15 @@ try {
         $global:AtomicFixtureWarnings.Clear()
         $global:AtomicFixtureTempLockMode = "sticky"
         $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "1.0.0"
+        $previousWarningPreference = $WarningPreference
+        $WarningPreference = "Stop"
         $primaryFailure = $null
         try { & $InstallerPath -Ref "1.0.0" | Out-Null }
         catch { $primaryFailure = $_ }
-        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+        finally {
+            $WarningPreference = $previousWarningPreference
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+        }
         $global:AtomicFixtureTempLockMode = $null
         Assert-Fixture ($null -ne $primaryFailure) "a failing installed smoke reported success"
         $primaryMessage = [string]$primaryFailure.Exception.Message

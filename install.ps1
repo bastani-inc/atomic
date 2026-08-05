@@ -407,7 +407,7 @@ function Remove-AtomicCreatedEmptyDirectories {
                 }
             }
             catch {
-                Write-Warning "Failed to remove transaction-created empty directory ${path}: $_"
+                Write-Warning -Message "Failed to remove transaction-created empty directory ${path}: $_" -WarningAction Continue
             }
         }
     } while ($removedDirectory)
@@ -431,7 +431,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.ShimInstallIntended = $false
             }
         }
-        catch { Write-Warning "Failed to remove the unsuccessful atomic.cmd shim: $_" }
+        catch { Write-Warning -Message "Failed to remove the unsuccessful atomic.cmd shim: $_" -WarningAction Continue }
     }
     if ($Transaction.ShimBackupIntended) {
         try {
@@ -445,7 +445,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.ShimBackupIntended = $false
             }
         }
-        catch { Write-Warning "Failed to restore the previous atomic.cmd shim: $_" }
+        catch { Write-Warning -Message "Failed to restore the previous atomic.cmd shim: $_" -WarningAction Continue }
     }
 
     if ($Transaction.AtomicCurrentInstallIntended) {
@@ -459,7 +459,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.AtomicCurrentInstallIntended = $false
             }
         }
-        catch { Write-Warning "Failed to remove the unsuccessful atomic-current pointer: $_" }
+        catch { Write-Warning -Message "Failed to remove the unsuccessful atomic-current pointer: $_" -WarningAction Continue }
     }
     if ($Transaction.AtomicCurrentBackupIntended) {
         try {
@@ -473,7 +473,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.AtomicCurrentBackupIntended = $false
             }
         }
-        catch { Write-Warning "Failed to restore the previous atomic-current pointer: $_" }
+        catch { Write-Warning -Message "Failed to restore the previous atomic-current pointer: $_" -WarningAction Continue }
     }
 
     if ($Transaction.CurrentInstallIntended) {
@@ -487,7 +487,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.CurrentInstallIntended = $false
             }
         }
-        catch { Write-Warning "Failed to remove the unsuccessful current pointer: $_" }
+        catch { Write-Warning -Message "Failed to remove the unsuccessful current pointer: $_" -WarningAction Continue }
     }
     if ($Transaction.CurrentBackupIntended) {
         try {
@@ -501,7 +501,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.CurrentBackupIntended = $false
             }
         }
-        catch { Write-Warning "Failed to restore the previous current pointer: $_" }
+        catch { Write-Warning -Message "Failed to restore the previous current pointer: $_" -WarningAction Continue }
     }
 
     if ($Transaction.VersionInstallIntended) {
@@ -515,7 +515,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.VersionInstallIntended = $false
             }
         }
-        catch { Write-Warning "Failed to remove the unsuccessful version directory: $_" }
+        catch { Write-Warning -Message "Failed to remove the unsuccessful version directory: $_" -WarningAction Continue }
     }
     if ($Transaction.VersionBackupIntended) {
         try {
@@ -529,7 +529,7 @@ function Invoke-AtomicTransactionRollback {
                 $Transaction.VersionBackupIntended = $false
             }
         }
-        catch { Write-Warning "Failed to restore the previous version directory: $_" }
+        catch { Write-Warning -Message "Failed to restore the previous version directory: $_" -WarningAction Continue }
     }
 
     if ($Transaction.CurrentPathChangeIntended) {
@@ -537,14 +537,14 @@ function Invoke-AtomicTransactionRollback {
             $env:Path = $Transaction.OldCurrentPath
             $Transaction.CurrentPathChangeIntended = $false
         }
-        catch { Write-Warning "Failed to restore the current PATH after installation failure: $_" }
+        catch { Write-Warning -Message "Failed to restore the current PATH after installation failure: $_" -WarningAction Continue }
     }
     if ($Transaction.UserPathChangeIntended) {
         try {
             [Environment]::SetEnvironmentVariable("Path", $Transaction.OldUserPath, "User")
             $Transaction.UserPathChangeIntended = $false
         }
-        catch { Write-Warning "Failed to restore the User PATH after installation failure: $_" }
+        catch { Write-Warning -Message "Failed to restore the User PATH after installation failure: $_" -WarningAction Continue }
     }
 
     $rollbackIncomplete = $false
@@ -573,7 +573,7 @@ function Remove-AtomicTransactionBackups {
     $shimBackupItem = Get-AtomicDirectoryEntry $Transaction.ShimBackupPath
     if ($null -ne $shimBackupItem) {
         try { Remove-Item -LiteralPath $shimBackupItem.FullName -Force }
-        catch { Write-Warning "Installed successfully, but could not remove the previous shim backup: $_" }
+        catch { Write-Warning -Message "Installed successfully, but could not remove the previous shim backup: $_" -WarningAction Continue }
     }
     foreach ($backup in @(
         @{ Name = "atomic-current"; Path = $Transaction.AtomicCurrentBackupPath },
@@ -582,7 +582,7 @@ function Remove-AtomicTransactionBackups {
     )) {
         if ($null -ne (Get-AtomicDirectoryEntry $backup.Path)) {
             try { Remove-AtomicDirectoryLinkOrTree $backup.Path }
-            catch { Write-Warning "Installed successfully, but could not remove the previous $($backup.Name) backup: $_" }
+            catch { Write-Warning -Message "Installed successfully, but could not remove the previous $($backup.Name) backup: $_" -WarningAction Continue }
         }
     }
 }
@@ -901,7 +901,7 @@ finally {
             Invoke-AtomicTransactionRollback $transaction
         }
         if (-not $transaction.RollbackCompleted) {
-            Write-Warning "Installation rollback remains incomplete after $rollbackRetryLimit final cleanup attempts; transaction backups were retained for recovery."
+            Write-Warning -Message "Installation rollback remains incomplete after $rollbackRetryLimit final cleanup attempts; transaction backups were retained for recovery." -WarningAction Continue
         }
     }
     if ($null -ne $transaction -and $transactionCommitted) {
@@ -913,11 +913,11 @@ finally {
     }
     if ($null -ne $atomicCurrentNextPath -and $null -ne (Get-AtomicDirectoryEntry $atomicCurrentNextPath)) {
         try { Remove-AtomicDirectoryLinkOrTree $atomicCurrentNextPath }
-        catch { Write-Warning "Failed to remove temporary atomic-current pointer ${atomicCurrentNextPath}: $_" }
+        catch { Write-Warning -Message "Failed to remove temporary atomic-current pointer ${atomicCurrentNextPath}: $_" -WarningAction Continue }
     }
     if ($null -ne $currentNextPath -and $null -ne (Get-AtomicDirectoryEntry $currentNextPath)) {
         try { Remove-AtomicDirectoryLinkOrTree $currentNextPath }
-        catch { Write-Warning "Failed to remove temporary current pointer ${currentNextPath}: $_" }
+        catch { Write-Warning -Message "Failed to remove temporary current pointer ${currentNextPath}: $_" -WarningAction Continue }
     }
     if ($null -ne $versionStagePath -and $null -ne (Get-AtomicDirectoryEntry $versionStagePath)) {
         Remove-Item -LiteralPath $versionStagePath -Recurse -Force -ErrorAction SilentlyContinue
@@ -937,7 +937,7 @@ finally {
 
     if ($null -ne $tempCleanupError) {
         if ($null -ne $primaryError) {
-            Write-Warning "Temporary download directory cleanup remains incomplete: $tempCleanupError"
+            Write-Warning -Message "Temporary download directory cleanup remains incomplete: $tempCleanupError" -WarningAction Continue
         }
         else {
             throw $tempCleanupError
@@ -950,7 +950,7 @@ finally {
         [Net.ServicePointManager]::SecurityProtocol = $previousSecurityProtocol
     }
     catch {
-        Write-Warning "Failed to restore the caller's TLS protocol setting: $_"
+        Write-Warning -Message "Failed to restore the caller's TLS protocol setting: $_" -WarningAction Continue
     }
 }
 } @args
