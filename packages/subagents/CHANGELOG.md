@@ -5,7 +5,7 @@
 ### Breaking Changes
 
 - `async: true` no longer survives parent exit. Async subagents now run as in-process children of the parent session on the same foreground executor, so quitting Atomic ends any in-flight async run. The child's canonical identity and its session file persist on disk and can be reloaded on a later start, but the running work does not continue in the background across a restart. The detached runner process that previously provided parent-exit survival has been deleted ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
-- Removed the `ATOMIC_SUBAGENT_*` process-era environment bridge variables consumed by the deleted spawn path. Child identity, policy, and supervisor capability now cross the in-process admission boundary as typed data; no child environment bridge is required ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Removed the `ATOMIC_SUBAGENT_*` process-era environment bridge variables consumed by the deleted spawn path and the synthesized numeric child-result exit-code protocol (`0/1/-1/-2/143`). Child identity, policy, supervisor capability, and terminal outcomes now cross typed admission; results use required `status` (`ok | error | skipped | interrupted | continued`) plus `cause` and `stats` ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
 ### Added
 
