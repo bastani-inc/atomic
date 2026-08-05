@@ -19,6 +19,7 @@ import {
 	type SingleResult,
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
+	type SubagentToolResult,
 } from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
 
@@ -340,6 +341,49 @@ describe("programmatic subagent tool boundary", () => {
 				result.content[0]?.type === "text" ? result.content[0].text : "",
 				/First step in chain must have a task/,
 			);
+		} finally {
+			if (previousChild === undefined) delete process.env[SUBAGENT_CHILD_ENV];
+			else process.env[SUBAGENT_CHILD_ENV] = previousChild;
+			if (previousFanout === undefined) delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
+			else process.env[SUBAGENT_FANOUT_CHILD_ENV] = previousFanout;
+		}
+	});
+	test("typed restricted child policy blocks management mutation without environment state", async () => {
+		const previousChild = process.env[SUBAGENT_CHILD_ENV];
+		const previousFanout = process.env[SUBAGENT_FANOUT_CHILD_ENV];
+		let registered: ToolDefinition | undefined;
+		try {
+			delete process.env[SUBAGENT_CHILD_ENV];
+			delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
+			const pi = {
+				registerTool: (tool: ToolDefinition) => {
+					registered = tool;
+				},
+				events: { on: () => () => {}, emit: () => {} },
+				getSessionName: () => "typed-fanout-child",
+			} as unknown as ExtensionAPI;
+			registerFanoutChildSubagentExtension(pi, {
+				managementActions: "restricted",
+				fanoutAuthorized: true,
+			});
+
+			assert.ok(registered);
+			for (const action of ["create", "update", "delete"] as const) {
+				const result = (await registered.execute(
+					`typed-restricted-${action}`,
+					{ action },
+					new AbortController().signal,
+					undefined,
+					makeContext(process.cwd(), () => {
+						throw new Error("unexpected UI prompt");
+					}),
+				)) as SubagentToolResult;
+				assert.equal(result.isError, true);
+				assert.match(
+					result.content[0]?.type === "text" ? result.content[0].text : "",
+					new RegExp(`Action '${action}' is not available from child-safe subagent fanout mode`),
+				);
+			}
 		} finally {
 			if (previousChild === undefined) delete process.env[SUBAGENT_CHILD_ENV];
 			else process.env[SUBAGENT_CHILD_ENV] = previousChild;

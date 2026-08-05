@@ -5,6 +5,7 @@ import type {
 	LoadExtensionsResult,
 	OrchestrationContext,
 	SessionStartEvent,
+	SubagentChildPolicy,
 	ToolDefinition,
 } from "./extensions/index.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
@@ -77,6 +78,8 @@ export interface CreateAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Session-scoped orchestration policy exposed to extension/tool handlers. */
 	orchestrationContext?: OrchestrationContext;
+	/** Typed capability policy for an in-process subagent child. */
+	subagentPolicy?: SubagentChildPolicy;
 }
 
 /** Result from createAgentSession */

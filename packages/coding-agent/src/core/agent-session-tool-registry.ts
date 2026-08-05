@@ -185,6 +185,7 @@ export function _buildRuntime(
 		this.sessionManager,
 		new ModelRegistry(this._modelRuntime),
 		this._orchestrationContext,
+		this._subagentPolicy,
 	);
 	if (this._extensionRunnerRef) {
 		this._extensionRunnerRef.current = this._extensionRunner;

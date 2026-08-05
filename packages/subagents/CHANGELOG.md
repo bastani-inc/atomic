@@ -14,6 +14,7 @@
 ### Changed
 
 - Foreground subagent attempts now enter through the in-process session runner, expose typed terminal status and `SessionStats`, and record typed run-history statuses; the foreground process-attempt implementation was removed ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- In-process admission now resolves child management and fanout capabilities as a typed policy carried into the session and tool executor; restricted children cannot create, update, or delete agent definitions, and fanout authorization cannot be widened by a descendant ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 - `async: true` chain and parallel runs now execute on the same in-process foreground executor as their synchronous counterparts, un-awaited, instead of a separately serialized detached runner. Chain `{previous}` substitution, chain output bindings, dynamic fanout, worktree setup and cleanup, structured-output schemas, skills resolution, progress files, fail-fast, and per-step model-candidate ladders are now served by one implementation for both modes ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
 ### Removed

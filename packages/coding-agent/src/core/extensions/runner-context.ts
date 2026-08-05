@@ -21,8 +21,8 @@ import type {
 	ExtensionMode,
 	ExtensionUIContext,
 	OrchestrationContext,
+	SubagentChildPolicy,
 } from "./types.ts";
-
 export interface ExtensionContextSource {
 	assertActive(): void;
 	getUIContext(): ExtensionUIContext;
@@ -35,6 +35,7 @@ export interface ExtensionContextSource {
 	getScopedModels(): readonly ScopedModel[];
 	getThinkingLevel(): ThinkingLevel | undefined;
 	getOrchestrationContext(): OrchestrationContext | undefined;
+	getSubagentPolicy(): SubagentChildPolicy | undefined;
 	isIdle(): boolean;
 	isProjectTrusted(): boolean;
 	getSignal(): AbortSignal | undefined;
@@ -155,6 +156,10 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		get orchestrationContext() {
 			source.assertActive();
 			return source.getOrchestrationContext();
+		},
+		get subagentPolicy() {
+			source.assertActive();
+			return source.getSubagentPolicy();
 		},
 		isIdle: () => {
 			source.assertActive();

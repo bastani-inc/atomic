@@ -451,6 +451,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_baseToolsOverride?: Record<string, AgentTool>;
 	_sessionStartEvent: SessionStartEvent;
 	_orchestrationContext?: OrchestrationContext;
+	_subagentPolicy?: import("./extensions/index.ts").SubagentChildPolicy;
 	_extensionUIContext?: ExtensionUIContext;
 	_extensionMode: ExtensionMode;
 	_extensionCommandContextActions?: ExtensionCommandContextActions;

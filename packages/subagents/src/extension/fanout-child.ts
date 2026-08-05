@@ -8,6 +8,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import type { ChildModePolicy } from "../runs/inprocess/child-policy.ts";
 import {
 	type NestedRoute,
 	readNestedControlRequests,
@@ -205,8 +206,13 @@ export function startNestedControlInboxListener(pi: ExtensionAPI, state: Subagen
 	return timer;
 }
 
-export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): void {
-	if (getEnvValue(SUBAGENT_CHILD_ENV) !== "1" || getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) !== "1") return;
+export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI, childPolicy?: ChildModePolicy): void {
+	if (
+		childPolicy
+			? !childPolicy.fanoutAuthorized
+			: getEnvValue(SUBAGENT_CHILD_ENV) !== "1" || getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) !== "1"
+	)
+		return;
 
 	const lifecycle = beginApiLifecycle(pi);
 
@@ -226,7 +232,8 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 			getSubagentSessionRoot,
 			expandTilde,
 			discoverAgents,
-			allowMutatingManagementActions: false,
+			childPolicy,
+			allowMutatingManagementActions: childPolicy ? childPolicy.managementActions === "full" : false,
 		});
 
 		const tool: ToolDefinition<typeof SubagentParams, Details> = {

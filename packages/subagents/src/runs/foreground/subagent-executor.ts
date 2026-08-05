@@ -25,7 +25,12 @@ import {
 	getForegroundControl,
 	retainedForegroundStatusResult,
 } from "./subagent-executor-status.ts";
-import type { ExecutorDeps, ResolvedExecutorDeps, SubagentParamsLike } from "./subagent-executor-types.ts";
+import {
+	type ExecutorDeps,
+	isManagementActionsRestricted,
+	type ResolvedExecutorDeps,
+	type SubagentParamsLike,
+} from "./subagent-executor-types.ts";
 
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 
@@ -129,7 +134,7 @@ async function handleManagementRequest(input: {
 			details: { mode: "management" as const, results: [] },
 		};
 	}
-	if (deps.allowMutatingManagementActions === false && MUTATING_MANAGEMENT_ACTIONS.has(action)) {
+	if (isManagementActionsRestricted(deps) && MUTATING_MANAGEMENT_ACTIONS.has(action)) {
 		return {
 			content: [{ type: "text", text: `Action '${action}' is not available from child-safe subagent fanout mode.` }],
 			isError: true,
@@ -224,6 +229,13 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		onUpdate: ((r: SubagentToolResult) => void) | undefined,
 		ctx: ExtensionContext,
 	): Promise<SubagentToolResult> => {
+		if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized) {
+			return {
+				content: [{ type: "text", text: "Subagent fanout is not authorized for this child." }],
+				isError: true,
+				details: { mode: "single", results: [] },
+			};
+		}
 		deps.state.baseCwd = ctx.cwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();

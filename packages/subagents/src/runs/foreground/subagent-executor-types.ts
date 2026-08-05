@@ -19,6 +19,7 @@ import type {
 	formatAsyncStartedMessage,
 	isAsyncAvailable,
 } from "../inprocess/background.ts";
+import type { ChildModePolicy } from "../inprocess/child-policy.ts";
 import type { runSync } from "./execution.ts";
 
 export interface TaskParam {
@@ -87,9 +88,18 @@ export interface ExecutorDeps {
 	expandTilde: (p: string) => string;
 	discoverAgents: (cwd: string, scope: AgentScope) => { agents: AgentConfig[] };
 	allowMutatingManagementActions?: boolean;
+	/** Typed admission policy; when present it is authoritative over the legacy boolean. */
+	childPolicy?: ChildModePolicy;
 	runtime?: Partial<SubagentExecutorRuntimeDeps>;
 }
 
+export function isManagementActionsRestricted(
+	deps: Pick<ExecutorDeps, "childPolicy" | "allowMutatingManagementActions">,
+): boolean {
+	return deps.childPolicy
+		? deps.childPolicy.managementActions === "restricted"
+		: deps.allowMutatingManagementActions === false;
+}
 export interface ResolvedExecutorDeps extends Omit<ExecutorDeps, "runtime"> {
 	runtime: SubagentExecutorRuntimeDeps;
 }

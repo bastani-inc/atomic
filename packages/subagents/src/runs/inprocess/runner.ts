@@ -28,6 +28,7 @@ import {
 	readStructuredOutput,
 	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
 } from "../shared/structured-output.ts";
+import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.ts";
 
 export type ChildStatus = NativeAgentStatus;
 export type ContinuationReason = "async-requested" | "intercom-coordination";
@@ -69,7 +70,7 @@ export interface ChildSpec {
 	readonly artifactJsonlPath?: string;
 }
 
-export interface ChildPolicy {
+export interface ChildPolicy extends ChildModePolicy {
 	readonly cwd: string;
 	readonly tools?: readonly string[];
 	readonly excludedTools?: readonly string[];
@@ -422,6 +423,7 @@ export class SubagentControlRuntime {
 		);
 		if (!native.child) return refusal(native);
 		const identity = native.child;
+		const childModePolicy = resolveChildModePolicy(spec);
 		const sessionDir = sessionDirectory(this.sessionRoot, identity.path);
 		mkdirSync(sessionDir, { recursive: true });
 		this.specs.set(identity.path, spec);
@@ -430,6 +432,7 @@ export class SubagentControlRuntime {
 				identity,
 				spec,
 				policy: {
+					...childModePolicy,
 					cwd: spec.cwd,
 					tools: spec.tools ?? spec.agent.tools,
 					excludedTools: spec.excludedTools,
@@ -523,6 +526,7 @@ export class SubagentControlRuntime {
 						sessionManager,
 						settingsManager,
 						orchestrationContext: admitted.spec.parent?.orchestrationContext,
+						subagentPolicy: admitted.policy,
 					});
 			session = created.session;
 			this.sessions.set(admitted.identity.path, session);
@@ -756,6 +760,7 @@ export class SubagentControlRuntime {
 
 	private policyFor(spec: ChildSpec, depth: number): ChildPolicy {
 		return {
+			...resolveChildModePolicy(spec),
 			cwd: spec.cwd,
 			tools: spec.tools ?? spec.agent.tools,
 			excludedTools: spec.excludedTools,

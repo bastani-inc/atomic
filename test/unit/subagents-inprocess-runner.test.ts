@@ -30,6 +30,27 @@ function sampleSpec(cwd: string): ChildSpec {
 	return { taskName: "analysis", task: "inspect the fixture", agent: sampleAgent(), cwd };
 }
 
+test("admission resolves restricted child management and explicit fanout policy", () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-policy-"));
+	try {
+		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
+		control.registerAgents([sampleAgent()]);
+		const result = control.admitChildSession(
+			{ ...sampleSpec(root), tools: ["subagent"] },
+			{ path: "parent", depth: 0 },
+		);
+		assert.ok(result.admitted);
+		assert.equal(result.admitted.policy.managementActions, "restricted");
+		assert.equal(result.admitted.policy.fanoutAuthorized, true);
+		const noFanout = control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 });
+		assert.ok(noFanout.admitted);
+		assert.equal(noFanout.admitted.policy.managementActions, "restricted");
+		assert.equal(noFanout.admitted.policy.fanoutAuthorized, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 function emptyOutcome(): AttemptOutcome {
 	return {
 		status: "error",

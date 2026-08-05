@@ -265,7 +265,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		maintenance.primeExistingResultsDeferred();
 		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobsDeferred } =
 			createAsyncJobTracker(pi, state, ASYNC_DIR);
-		const executor = createSubagentExecutor({
+		const executorDeps = {
 			pi,
 			state,
 			config,
@@ -274,7 +274,23 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			getSubagentSessionRoot,
 			expandTilde,
 			discoverAgents,
-		});
+		};
+		const executor = createSubagentExecutor(executorDeps);
+		const childExecutors = new Map<string, ReturnType<typeof createSubagentExecutor>>();
+		const executorForContext = (ctx: ExtensionContext): ReturnType<typeof createSubagentExecutor> => {
+			const policy = ctx.subagentPolicy;
+			if (!policy) return executor;
+			const key = `${policy.managementActions}:${policy.fanoutAuthorized ? "fanout" : "no-fanout"}`;
+			const cached = childExecutors.get(key);
+			if (cached) return cached;
+			const childExecutor = createSubagentExecutor({
+				...executorDeps,
+				childPolicy: policy,
+				allowMutatingManagementActions: policy.managementActions === "full",
+			});
+			childExecutors.set(key, childExecutor);
+			return childExecutor;
+		};
 		pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
 			const details = resolveSlashMessageDetails(message.details);
 			if (!details) return undefined;
@@ -304,7 +320,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				state.lastUiContext = ctx;
 				ctx.ui.setToolsExpanded(false);
 			}
-			return executor.execute(id, params, signal, onUpdate, ctx);
+			return executorForContext(ctx).execute(id, params, signal, onUpdate, ctx);
 		};
 		const slashBridge = registerSlashSubagentBridge({
 			events: pi.events,
@@ -454,6 +470,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				...Array.from(state.cleanupTimers.values(), (timer) => () => clearTimeout(timer)),
 				() => state.cleanupTimers.clear(),
 				() => state.asyncJobs.clear(),
+				() => childExecutors.clear(),
 				() => clearSlashSnapshots(pi),
 				() => slashBridge.cancelAll(),
 				() => slashBridge.dispose(),

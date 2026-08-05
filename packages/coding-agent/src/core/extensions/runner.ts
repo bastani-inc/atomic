@@ -80,6 +80,7 @@ import type {
 	ResolvedCommand,
 	ResourcesDiscoverEvent,
 	SessionShutdownEvent,
+	SubagentChildPolicy,
 	ToolCallEvent,
 	ToolCallEventResult,
 	ToolResultEvent,
@@ -123,6 +124,7 @@ export class ExtensionRunner {
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
 	private orchestrationContext: OrchestrationContext | undefined;
+	private subagentPolicy: SubagentChildPolicy | undefined;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<Api> | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
@@ -153,6 +155,7 @@ export class ExtensionRunner {
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
 		orchestrationContext?: OrchestrationContext,
+		subagentPolicy?: SubagentChildPolicy,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
@@ -161,6 +164,7 @@ export class ExtensionRunner {
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
 		this.orchestrationContext = orchestrationContext;
+		this.subagentPolicy = subagentPolicy;
 	}
 
 	bindCore(
@@ -398,6 +402,7 @@ export class ExtensionRunner {
 			getSessionManager: () => this.sessionManager,
 			getModelRegistry: () => this.modelRegistry,
 			getModel: () => this.getModel(),
+			getSubagentPolicy: () => this.subagentPolicy,
 			getScopedModels: () => this.getScopedModels(),
 			getThinkingLevel: () => this.runtime.getThinkingLevel(),
 			getOrchestrationContext: () => this.orchestrationContext,

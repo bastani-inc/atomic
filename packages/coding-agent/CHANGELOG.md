@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `CreateAgentSessionOptions` and `ExtensionContext` now carry an immutable typed subagent child capability policy for in-process tool registration ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
 ### Fixed
 
 - Workflow runs awaiting human input now use the blue `？` indicator in the BACKGROUND panel, `/workflow connect` picker, and `/workflow status` listing, including prompts raised by hidden nested workflow children; the indicator returns to the run's current state when the prompt resolves.

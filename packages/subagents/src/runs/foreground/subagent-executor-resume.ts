@@ -42,7 +42,11 @@ import {
 	writeNestedControlRequest,
 } from "../shared/nested-events.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
-import type { ResolvedExecutorDeps, SubagentParamsLike } from "./subagent-executor-types.ts";
+import {
+	isManagementActionsRestricted,
+	type ResolvedExecutorDeps,
+	type SubagentParamsLike,
+} from "./subagent-executor-types.ts";
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
 
@@ -51,7 +55,7 @@ export function resolveRequestedCwd(runtimeCwd: string, requestedCwd: string | u
 }
 
 export function nestedResolutionScopeForExecutor(deps: ResolvedExecutorDeps): NestedRunResolutionScope | undefined {
-	if (deps.allowMutatingManagementActions !== false) return undefined;
+	if (!isManagementActionsRestricted(deps)) return undefined;
 	const route = resolveInheritedNestedRouteFromEnv();
 	const address = route ? resolveNestedParentAddressFromEnv() : undefined;
 	return {

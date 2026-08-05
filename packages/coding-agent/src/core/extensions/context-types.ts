@@ -68,6 +68,11 @@ export interface WorkflowStageOrchestrationContext {
 	 */
 	readonly intercomGroup?: string;
 }
+/** Typed child capability policy supplied by an in-process subagent admission. */
+export interface SubagentChildPolicy {
+	readonly managementActions: "full" | "restricted";
+	readonly fanoutAuthorized: boolean;
+}
 
 // Union alias kept for forward-compatible orchestration context variants.
 export type OrchestrationContext = WorkflowStageOrchestrationContext;
@@ -80,6 +85,8 @@ export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 export interface ExtensionContext {
 	/** Session-scoped orchestration policy for child runtimes such as workflow stages. */
 	readonly orchestrationContext?: OrchestrationContext;
+	/** Typed capability policy for an in-process subagent child, when this session is one. */
+	readonly subagentPolicy?: SubagentChildPolicy;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */

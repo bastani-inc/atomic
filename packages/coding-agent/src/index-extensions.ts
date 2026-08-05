@@ -97,6 +97,7 @@ export type {
 	SlashCommandInfo,
 	SlashCommandSource,
 	SourceInfo,
+	SubagentChildPolicy,
 	TerminalInputHandler,
 	ToolCallEvent,
 	ToolCallEventResult,
