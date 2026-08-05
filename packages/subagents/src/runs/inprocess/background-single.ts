@@ -144,7 +144,7 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 				runId: id,
 				asyncDir,
 				agent,
-				success: completed.status === "ok",
+				status: completed.status,
 				summary: envelope,
 				envelope,
 				timestamp: Date.now(),
@@ -153,7 +153,7 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 					{
 						agent,
 						output: envelope,
-						success: completed.status === "ok",
+						status: completed.status,
 						index: 0,
 						intercomTarget: childIntercomTarget?.(agent, 0),
 					},

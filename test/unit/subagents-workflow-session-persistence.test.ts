@@ -104,7 +104,7 @@ function runForegroundInBun(root: string, options: Record<string, unknown>, agen
 		import { runSync } from ${JSON.stringify(executionPath)};
 		const [agent, task, options] = JSON.parse(process.argv[2]);
 		const result = await runSync(${JSON.stringify(root)}, [agent], task, options.taskText ?? task, options);
-		if (result.exitCode !== 0) {
+		if (result.status !== "ok") {
 			console.error(result.error ?? "foreground executor failed");
 			process.exit(1);
 		}

@@ -28,7 +28,6 @@ function result(index: number): SingleResult {
 		path: `child-${index}`,
 		envelope: "Child continued in background.",
 		detached: true,
-		exitCode: 0,
 		messages: [],
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 	};

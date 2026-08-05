@@ -1,5 +1,11 @@
 import type { DynamicParallelStep, ParallelTaskItem } from "../../shared/settings.ts";
-import type { ArtifactPaths, ChainOutputMap, JsonSchemaObject, SingleResult } from "../../shared/types.ts";
+import type {
+	ArtifactPaths,
+	ChainOutputMap,
+	JsonSchemaObject,
+	SingleResult,
+	SubagentAttemptStatus,
+} from "../../shared/types.ts";
 import { getSingleResultOutput } from "../../shared/utils.ts";
 import { validateStructuredOutputValue } from "./structured-output.ts";
 
@@ -22,7 +28,7 @@ export interface DynamicCollectedResult {
 	index: number;
 	item: unknown;
 	agent: string;
-	exitCode: number | null;
+	status: SubagentAttemptStatus;
 	text: string;
 	structured?: unknown;
 	error?: string;
@@ -350,7 +356,7 @@ export function collectDynamicResults(
 	step: DynamicParallelStep,
 	items: DynamicMaterializedItem[],
 	results: Array<
-		Pick<SingleResult, "agent" | "exitCode" | "error" | "structuredOutput" | "artifactPaths" | "savedOutputPath"> & {
+		Pick<SingleResult, "agent" | "status" | "error" | "structuredOutput" | "artifactPaths" | "savedOutputPath"> & {
 			output?: string;
 			finalOutput?: string;
 		}
@@ -368,7 +374,7 @@ export function collectDynamicResults(
 			index: entry.index,
 			item: entry.item,
 			agent: result?.agent ?? step.parallel.agent,
-			exitCode: result?.exitCode ?? null,
+			status: result?.status ?? "skipped",
 			text,
 			...(result?.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),
 			...(result?.error ? { error: result.error } : {}),

@@ -40,13 +40,13 @@ function nestedChain(level: number, maxLevel: number): NestedRunSummary {
 }
 
 describe("subagent result intercom helpers", () => {
-	test("resolves result status from detached, paused, success, state, and exit code inputs", () => {
+	test("resolves result status from typed statuses and legacy state projections", () => {
 		assert.equal(resolveSubagentResultStatus({ detached: true, success: true }), "detached");
-		assert.equal(resolveSubagentResultStatus({ interrupted: true }), "paused");
+		assert.equal(resolveSubagentResultStatus({ status: "interrupted" }), "paused");
 		assert.equal(resolveSubagentResultStatus({ state: "paused" }), "paused");
-		assert.equal(resolveSubagentResultStatus({ success: true }), "completed");
-		assert.equal(resolveSubagentResultStatus({ state: "failed" }), "failed");
-		assert.equal(resolveSubagentResultStatus({ exitCode: 0 }), "completed");
+		assert.equal(resolveSubagentResultStatus({ status: "ok" }), "completed");
+		assert.equal(resolveSubagentResultStatus({ status: "error" }), "failed");
+		assert.equal(resolveSubagentResultStatus({ status: "skipped" }), "failed");
 	});
 
 	test("attaches nested children by parent step index and compacts depth", () => {

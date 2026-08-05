@@ -108,7 +108,7 @@ export interface ParallelTaskResult {
 	agent: string;
 	taskIndex?: number;
 	output: string;
-	exitCode: number | null;
+	status: import("../../shared/types.ts").SubagentAttemptStatus;
 	error?: string;
 	model?: string;
 	fastMode?: boolean;
@@ -126,17 +126,19 @@ export function aggregateParallelOutputs(
 			const header = headerFormat(r.taskIndex ?? i, r.agent);
 			const hasOutput = Boolean(r.output?.trim());
 			const status =
-				r.exitCode === -1
+				r.status === "skipped"
 					? "SKIPPED"
-					: r.exitCode !== 0 && r.exitCode !== null
-						? `FAILED (exit code ${r.exitCode})${r.error ? `: ${r.error}` : ""}`
-						: r.error
-							? `WARNING: ${r.error}`
-							: !hasOutput && r.outputTargetPath && r.outputTargetExists === false
-								? `EMPTY OUTPUT (expected output file missing: ${r.outputTargetPath})`
-								: !hasOutput && !r.outputTargetPath
-									? "EMPTY OUTPUT (no textual response returned)"
-									: "";
+					: r.status === "continued"
+						? "CONTINUED"
+						: r.status === "error"
+							? `FAILED${r.error ? `: ${r.error}` : ""}`
+							: r.error
+								? `WARNING: ${r.error}`
+								: !hasOutput && r.outputTargetPath && r.outputTargetExists === false
+									? `EMPTY OUTPUT (expected output file missing: ${r.outputTargetPath})`
+									: !hasOutput && !r.outputTargetPath
+										? "EMPTY OUTPUT (no textual response returned)"
+										: "";
 			const body = status ? (hasOutput ? `${status}\n${r.output}` : status) : r.output;
 			return `${header}\n${body}`;
 		})

@@ -45,7 +45,7 @@ function makeResult(overrides: Partial<SingleResult> = {}): SingleResult {
 	return {
 		agent: "codebase-analyzer",
 		task: "audit",
-		exitCode: 0,
+		status: "ok",
 		usage: {} as SingleResult["usage"],
 		finalOutput: "Findings report content\nAdditional detail",
 		sessionFile: "/tmp/sessions/child-0.jsonl",
@@ -98,9 +98,9 @@ test("detached foreground completion notices render like background notification
 			const unregister = registerSubagentNotify(harness.pi as never);
 			const result =
 				status === "failed"
-					? makeResult({ exitCode: 1, error: "boom" })
+					? makeResult({ status: "error", error: "boom" })
 					: status === "paused"
-						? makeResult({ interrupted: true })
+						? makeResult({ status: "interrupted", interrupted: true })
 						: makeResult();
 			const summary = status === "failed" ? `boom\n\nOutput:\n${result.finalOutput}` : result.finalOutput!;
 
@@ -113,13 +113,11 @@ test("detached foreground completion notices render like background notification
 				result,
 			});
 			const detached = harness.sent[0]!;
-			const backgroundSuccess = status === "completed";
 			harness.pi.events.emit("subagent:async-complete", {
 				id: `background-render-${status}`,
 				agent: result.agent,
-				success: backgroundSuccess,
+				status: result.status,
 				summary,
-				exitCode: status === "failed" ? 1 : 0,
 				...(status === "paused" ? { state: "paused" } : {}),
 				timestamp: Date.now(),
 				durationMs: result.progressSummary?.durationMs,
@@ -177,7 +175,7 @@ test("failed and interrupted detached children report failed/paused status", () 
 		runId: "run-detach-4",
 		mode: "chain",
 		index: 0,
-		result: makeResult({ exitCode: 1, error: "boom" }),
+		result: makeResult({ status: "error", error: "boom" }),
 	});
 	assert.match(harness.sent[0]!.content, /^Detached subagent task failed: \*\*codebase-analyzer\*\*/);
 	assert.match(harness.sent[0]!.content, /boom/);
@@ -187,7 +185,7 @@ test("failed and interrupted detached children report failed/paused status", () 
 		runId: "run-detach-5",
 		mode: "single",
 		index: 0,
-		result: makeResult({ interrupted: true }),
+		result: makeResult({ status: "interrupted", interrupted: true }),
 	});
 	assert.match(harness.sent[1]!.content, /^Detached subagent task paused: \*\*codebase-analyzer\*\*/);
 	unregister();
@@ -199,7 +197,7 @@ test("async background notifications keep their original heading", () => {
 	harness.pi.events.emit("subagent:async-complete", {
 		id: "async-run",
 		agent: "worker",
-		success: true,
+		status: "ok",
 		summary: "done",
 		timestamp: Date.now(),
 	});

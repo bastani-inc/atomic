@@ -29,7 +29,6 @@ function continuedResult(data: ExecutionContextData, mode: "single" | "parallel"
 		status: "continued",
 		path,
 		envelope: "Child continued in background.",
-		exitCode: 0,
 		detached: true,
 		detachedReason: "async-requested",
 		messages: [],

@@ -272,7 +272,6 @@ export interface ModelAttempt {
 	model: string;
 	reasoningLevel?: string;
 	success: boolean;
-	exitCode?: number | null;
 	error?: string;
 	usage?: Usage;
 }
@@ -282,13 +281,12 @@ export type SubagentAttemptStatus = "ok" | "error" | "skipped" | "interrupted" |
 export interface SingleResult {
 	agent: string;
 	task: string;
-	/** Typed terminal outcome; foreground in-process runs always populate it. */
-	status?: SubagentAttemptStatus;
+	/** Typed terminal outcome; this is the only result discriminator. */
+	status: SubagentAttemptStatus;
 	cause?: string;
 	stats?: SessionStats;
 	path?: string;
 	envelope?: string;
-	exitCode: number;
 	detached?: boolean;
 	detachedReason?: string;
 	interrupted?: boolean;

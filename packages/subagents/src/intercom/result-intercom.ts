@@ -9,6 +9,7 @@ import {
 	type SingleResult,
 	SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
 	SUBAGENT_RESULT_INTERCOM_EVENT,
+	type SubagentAttemptStatus,
 	type SubagentResultIntercomChild,
 	type SubagentResultIntercomPayload,
 	type SubagentResultStatus,
@@ -16,18 +17,17 @@ import {
 } from "../shared/types.ts";
 
 export function resolveSubagentResultStatus(input: {
-	exitCode?: number;
+	status?: SubagentAttemptStatus;
 	success?: boolean;
 	state?: string;
 	interrupted?: boolean;
 	detached?: boolean;
 }): SubagentResultStatus {
-	if (input.detached) return "detached";
-	if (input.interrupted || input.state === "paused") return "paused";
-	if (typeof input.success === "boolean") return input.success ? "completed" : "failed";
-	if (input.state === "complete") return "completed";
-	if (input.state === "failed") return "failed";
-	if (typeof input.exitCode === "number") return input.exitCode === 0 ? "completed" : "failed";
+	if (input.detached || input.status === "continued") return "detached";
+	if (input.interrupted || input.status === "interrupted" || input.state === "paused") return "paused";
+	if (input.status === "ok" || input.success === true || input.state === "complete") return "completed";
+	if (input.status === "error" || input.status === "skipped" || input.success === false || input.state === "failed")
+		return "failed";
 	return "failed";
 }
 

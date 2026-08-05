@@ -60,7 +60,6 @@ const runSyncMock = vi.fn(
 			agent: agentName,
 			task,
 			status: "ok" as const,
-			exitCode: 0,
 			messages: [],
 			usage: emptyUsage,
 			finalOutput: `${agentName} output`,

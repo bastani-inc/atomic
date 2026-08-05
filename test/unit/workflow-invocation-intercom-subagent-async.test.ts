@@ -95,7 +95,6 @@ test("async single, parallel, and chain children inherit workflow groups through
 						agent: agentName,
 						task,
 						status: "ok",
-						exitCode: 0,
 						messages: [],
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 						finalOutput: "done",

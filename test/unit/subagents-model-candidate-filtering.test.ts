@@ -62,7 +62,7 @@ describe("subagent pre-spawn model candidate filtering", () => {
 				testSession: { output: "should not run" },
 			});
 
-			assert.equal(result.exitCode, 1);
+			assert.equal(result.status, "error");
 			assert.match(result.error ?? "", /No spawnable subagent model candidates/);
 			assert.equal(existsSync(join(dir, "spawned")), false);
 			assert.deepEqual(
@@ -126,7 +126,6 @@ describe("subagent pre-spawn model candidate filtering", () => {
 						return {
 							agent: agentName,
 							task,
-							exitCode: 0,
 							status: "ok",
 							messages: [],
 							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },

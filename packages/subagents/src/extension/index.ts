@@ -95,7 +95,7 @@ function isSlashResultRunning(result: { details?: Details }): boolean {
 }
 function isSlashResultError(result: { details?: Details }): boolean {
 	return (
-		result.details?.results.some((entry) => entry.exitCode !== 0 && entry.progress?.status !== "running") || false
+		result.details?.results.some((entry) => entry.status === "error" && entry.progress?.status !== "running") || false
 	);
 }
 type SubagentToolRenderState = SubagentResultRenderState;

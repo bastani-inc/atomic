@@ -18,7 +18,6 @@ export { errorMessage, isRetryableModelFailure, modelFailureMessage, normalizeMo
 interface ModelAttemptSummary {
 	model: string;
 	success: boolean;
-	exitCode?: number | null;
 	error?: string;
 	usage?: Usage;
 }
@@ -82,7 +81,7 @@ export function currentModelFullId(model: { provider: string; id: string } | und
 }
 
 export function formatModelAttemptNote(attempt: ModelAttemptSummary, nextModel?: string): string {
-	const failure = attempt.error?.trim() || `exit ${attempt.exitCode ?? 1}`;
+	const failure = attempt.error?.trim() || "model failure";
 	return nextModel
 		? `[fallback] ${attempt.model} failed: ${failure}. Retrying with ${nextModel}.`
 		: `[fallback] ${attempt.model} failed: ${failure}.`;

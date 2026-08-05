@@ -234,12 +234,7 @@ export async function runParallelPath(
 		});
 		for (let i = 0; i < results.length; i++) {
 			const run = results[i]!;
-			recordRun(
-				run.agent,
-				taskTexts[i]!,
-				run.status ?? (run.exitCode === 0 ? "ok" : "error"),
-				run.progressSummary?.durationMs ?? 0,
-			);
+			recordRun(run.agent, taskTexts[i]!, run.status, run.progressSummary?.durationMs ?? 0);
 		}
 
 		for (const result of results) {
@@ -301,12 +296,12 @@ export async function runParallelPath(
 		}
 
 		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks as TaskParam[]);
-		const ok = results.filter((result) => result.exitCode === 0).length;
+		const ok = results.filter((result) => result.status === "ok").length;
 		const aggregatedOutput = aggregateParallelOutputs(
 			results.map((result) => ({
 				agent: result.agent,
 				output: result.truncation?.text || getSingleResultOutput(result),
-				exitCode: result.exitCode,
+				status: result.status,
 				error: result.error,
 			})),
 			(i, agent) => `=== Task ${i + 1}: ${agent} ===`,

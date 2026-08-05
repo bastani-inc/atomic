@@ -215,9 +215,9 @@ export function prepareExecutionContext(input: {
 		const state =
 			type === "subagent.nested.started"
 				? "running"
-				: result?.isError || details?.results.some((child) => child.exitCode !== 0)
+				: result?.isError || details?.results.some((child) => child.status === "error")
 					? "failed"
-					: details?.results.some((child) => child.interrupted)
+					: details?.results.some((child) => child.interrupted || child.status === "interrupted")
 						? "paused"
 						: "complete";
 		const errorText = result?.isError ? result.content.find((item) => item.type === "text")?.text : undefined;
@@ -266,7 +266,12 @@ export function prepareExecutionContext(input: {
 						? {
 								steps: details.results.map((child) => ({
 									agent: child.agent,
-									status: child.interrupted ? "paused" : child.exitCode === 0 ? "complete" : "failed",
+									status:
+										child.interrupted || child.status === "interrupted"
+											? "paused"
+											: child.status === "ok"
+												? "complete"
+												: "failed",
 									...(child.sessionFile ? { sessionFile: child.sessionFile } : {}),
 									...(child.error ? { error: child.error } : {}),
 								})),

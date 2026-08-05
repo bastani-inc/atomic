@@ -53,7 +53,7 @@ export function runningSingleResult(): AgentToolResult<Details> {
 				{
 					agent: "worker",
 					task: "do work",
-					exitCode: 0,
+					status: "continued",
 					usage: {
 						input: 0,
 						output: 0,

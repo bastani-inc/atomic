@@ -100,9 +100,9 @@ export function renderSubagentResult(
 		const isRunning = r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
-			: r.detached
+			: r.detached || r.status === "continued"
 				? theme.fg("warning", "detached")
-				: r.exitCode === 0
+				: r.status === "ok"
 					? theme.fg("success", "ok")
 					: theme.fg("error", "failed");
 		const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
@@ -202,11 +202,11 @@ export function renderSubagentResult(
 		d.results.some((r) => r.progress?.status === "running") ||
 		workflowGraphHasStatus(d, ["running"]);
 	const ok = d.results.filter(
-		(r) => r.progress?.status === "completed" || (r.exitCode === 0 && r.progress?.status !== "running"),
+		(r) => r.progress?.status === "completed" || (r.status === "ok" && r.progress?.status !== "running"),
 	).length;
 	const hasEmptyWithoutTarget = d.results.some(
 		(r) =>
-			r.exitCode === 0 &&
+			r.status === "ok" &&
 			r.progress?.status !== "running" &&
 			hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
@@ -255,8 +255,8 @@ export function renderSubagentResult(
 			? d.chainAgents
 					.map((agent, i) => {
 						const result = d.results[i];
-						const isFailed = result && result.exitCode !== 0 && result.progress?.status !== "running";
-						const isComplete = result && result.exitCode === 0 && result.progress?.status !== "running";
+						const isFailed = result && result.status === "error" && result.progress?.status !== "running";
+						const isComplete = result && result.status === "ok" && result.progress?.status !== "running";
 						const isEmptyWithoutTarget =
 							Boolean(result) &&
 							Boolean(isComplete) &&
@@ -352,11 +352,13 @@ export function renderSubagentResult(
 		const resultOutput = getSingleResultOutput(r);
 		const statusIcon = rRunning
 			? theme.fg("warning", "running")
-			: r.exitCode !== 0
+			: r.status === "error"
 				? theme.fg("error", "failed")
-				: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
-					? theme.fg("warning", "warning")
-					: theme.fg("success", "done");
+				: r.status === "skipped" || r.status === "interrupted" || r.status === "continued"
+					? theme.fg("warning", r.status)
+					: hasEmptyTextOutputWithoutOutputTarget(r.task, resultOutput)
+						? theme.fg("warning", "warning")
+						: theme.fg("success", "done");
 		const stats = rProg
 			? ` | ${rProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(rProg, options.now))}`
 			: "";

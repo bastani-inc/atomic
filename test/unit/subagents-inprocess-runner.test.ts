@@ -20,6 +20,7 @@ import {
 	type RunningAttempt,
 	SubagentControlRuntime,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
+import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
 import { sleep } from "../helpers/runtime.ts";
 
 function sampleAgent(): AgentConfig {
@@ -249,6 +250,22 @@ test("terminal artifacts use the configured prefix exactly once", async () => {
 		);
 	} finally {
 		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+test("typed status is the sole result outcome discriminator", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-status-"));
+	try {
+		const result = await runSingleInProcess(root, sampleAgent(), "return a typed result", {
+			cwd: root,
+			runId: "typed-status-parent",
+			testSession: { output: "typed result" },
+		});
+		assert.equal(result.status, "ok");
+		assert.equal("exitCode" in result, false);
+		assert.equal(resultStatusLine({ ...result, status: "skipped" }, ""), "Skipped");
+		assert.equal(resultStatusLine({ ...result, status: "continued" }, ""), "Continued");
+	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });

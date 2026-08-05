@@ -15,7 +15,7 @@ import type {
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { stripParentOnlySubagentMessages } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
-import type { SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
+import type { SingleResult, SubagentAttemptStatus, Usage } from "../../packages/subagents/src/shared/types.js";
 import { resolveTopLevelParallelMaxTasks } from "../../packages/subagents/src/shared/types.js";
 import {
 	PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT,
@@ -139,11 +139,17 @@ function makeExecutor(input: {
 	return createSubagentExecutor(deps);
 }
 
-function result(agent: string, task: string, exitCode = 0, finalOutput = "ok", error?: string): SingleResult {
+function result(
+	agent: string,
+	task: string,
+	status: SubagentAttemptStatus = "ok",
+	finalOutput = "ok",
+	error?: string,
+): SingleResult {
 	return {
 		agent,
 		task,
-		exitCode,
+		status,
 		messages: [],
 		usage,
 		finalOutput,
@@ -384,7 +390,7 @@ describe("recent upstream subagent syncs", () => {
 					result(
 						agentName,
 						task,
-						1,
+						"error",
 						"Oracle review:\n- finding one\n- finding two",
 						"completed without making edits",
 					),

@@ -163,6 +163,7 @@ export interface ResultEnvelope {
 export interface DeliverChildResultOptions {
 	readonly artifactsDir?: string;
 	readonly artifactPaths?: ArtifactPaths;
+	readonly artifactsDisabled?: boolean;
 	readonly maxOutput?: MaxOutputConfig;
 }
 
@@ -518,7 +519,7 @@ export class SubagentControlRuntime {
 					await session?.abort();
 				} finally {
 					try {
-						this.native.terminateChildAttempt(token, nativeCause(cause));
+						await this.native.terminateChildAttempt(token, nativeCause(cause));
 					} catch {
 						// The attempt may have completed between signal delivery and termination.
 					}
@@ -813,7 +814,9 @@ export class SubagentControlRuntime {
 		const bounded = boundedEnvelope(envelope.envelope, paths?.outputPath, options?.maxOutput);
 		const deliveredEnvelope = { ...envelope, envelope: bounded };
 		this.deliveredEnvelopes.set(envelope.path, deliveredEnvelope);
-		if (!artifactDir || !paths) return;
+		if (options?.artifactsDisabled) return;
+		if (!artifactDir || !paths)
+			throw new Error(`Artifact persistence paths are unresolved for child ${envelope.path}`);
 		ensureArtifactsDir(artifactDir);
 		writeArtifact(paths.outputPath, envelope.envelope);
 		writeMetadata(paths.metadataPath, {
@@ -899,9 +902,8 @@ export class SubagentControlRuntime {
 			await running.promise;
 			return;
 		}
-		running.attemptToken = token;
 		try {
-			this.native.terminateChildAttempt(token, nativeCause(cause));
+			await this.native.terminateChildAttempt(token, nativeCause(cause));
 		} catch {
 			// The runner's signal path owns the race with terminal completion.
 		}

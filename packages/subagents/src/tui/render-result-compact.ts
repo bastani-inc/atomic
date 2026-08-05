@@ -73,7 +73,7 @@ export function renderSingleCompact(
 
 	c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
 	const preview = firstOutputLine(output);
-	if (preview && r.exitCode === 0 && !hasEmptyTextOutputWithoutOutputTarget(r.task, output)) {
+	if (preview && r.status === "ok" && !hasEmptyTextOutputWithoutOutputTarget(r.task, output)) {
 		c.addChild(new Text(truncLine(theme.fg("dim", `     ${preview}`), width), 0, 0));
 	}
 	if (r.sessionFile)
@@ -95,11 +95,18 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 		d.results.some((r) => r.progress?.status === "running") ||
 		workflowGraphHasStatus(d, ["running"]);
 	const failed =
-		d.results.some((r) => r.exitCode !== 0 && r.progress?.status !== "running") ||
+		d.results.some((r) => r.status === "error" && r.progress?.status !== "running") ||
 		workflowGraphHasStatus(d, ["failed"]);
 	const paused =
-		d.results.some((r) => (r.interrupted || r.detached) && r.progress?.status !== "running") ||
-		workflowGraphHasStatus(d, ["paused", "detached"]);
+		d.results.some(
+			(r) =>
+				(r.interrupted ||
+					r.detached ||
+					r.status === "interrupted" ||
+					r.status === "continued" ||
+					r.status === "skipped") &&
+				r.progress?.status !== "running",
+		) || workflowGraphHasStatus(d, ["paused", "detached"]);
 	let totalSummary = d.progressSummary;
 	if (!totalSummary) {
 		let sawProgress = false;
@@ -216,11 +223,14 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 			if (expandHint) c.addChild(new Text(truncLine(theme.fg("accent", `    Press ${expandHint}`), width), 0, 0));
 		} else if (
 			!rPending &&
-			(r.exitCode !== 0 || r.interrupted || r.detached || hasEmptyTextOutputWithoutOutputTarget(r.task, output))
+			(r.status !== "ok" || r.interrupted || r.detached || hasEmptyTextOutputWithoutOutputTarget(r.task, output))
 		) {
 			c.addChild(
 				new Text(
-					truncLine(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`), width),
+					truncLine(
+						theme.fg(r.status === "error" ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`),
+						width,
+					),
 					0,
 					0,
 				),

@@ -10,7 +10,7 @@ describe("workflow graph snapshots", () => {
 				{ agent: "scout", task: "Scan", phase: "Research", label: "Find context", as: "context" },
 				{ agent: "writer", task: "Use {outputs.context}", phase: "Synthesis", outputSchema: { type: "object" } },
 			],
-			results: [{ exitCode: 0 }, { exitCode: 1, error: "bad output" }],
+			results: [{ status: "ok" }, { status: "error", error: "bad output" }],
 		});
 
 		assert.equal(graph.nodes[0]?.id, "step-0");
@@ -54,7 +54,7 @@ describe("workflow graph snapshots", () => {
 		const graph = buildWorkflowGraphSnapshot({
 			runId: "run-3",
 			steps: [{ parallel: [{ agent: "first" }, { agent: "second" }] }],
-			results: [{ exitCode: 0 }],
+			results: [{ status: "ok" }],
 		});
 
 		assert.equal(graph.nodes[0]?.status, "running");
@@ -66,12 +66,12 @@ describe("workflow graph snapshots", () => {
 		const failedThenPaused = buildWorkflowGraphSnapshot({
 			runId: "run-4",
 			steps: [{ parallel: [{ agent: "first" }, { agent: "second" }] }],
-			results: [{ exitCode: 1 }, { exitCode: 1, interrupted: true }],
+			results: [{ status: "error" }, { status: "error", interrupted: true }],
 		});
 		const pausedThenFailed = buildWorkflowGraphSnapshot({
 			runId: "run-5",
 			steps: [{ parallel: [{ agent: "first" }, { agent: "second" }] }],
-			results: [{ exitCode: 1, interrupted: true }, { exitCode: 1 }],
+			results: [{ status: "error", interrupted: true }, { status: "error" }],
 		});
 
 		assert.equal(failedThenPaused.nodes[0]?.status, "failed");
@@ -100,7 +100,7 @@ describe("workflow graph snapshots", () => {
 			runId: "run-dynamic-collect-fail",
 			steps,
 			dynamicChildren: { 0: [{ agent: "reviewer", flatIndex: 0, itemKey: "a" }] },
-			results: [{ exitCode: 0 }],
+			results: [{ status: "ok" }],
 			dynamicGroupStatuses: { 0: { status: "failed", error: "Collected output validation failed" } },
 		});
 		assert.equal(collectFailure.nodes[0]?.status, "failed");

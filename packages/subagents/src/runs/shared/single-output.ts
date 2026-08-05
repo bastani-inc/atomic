@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
+import type { OutputMode, SavedOutputReference, SubagentAttemptStatus } from "../../shared/types.ts";
 
 export interface SingleOutputSnapshot {
 	exists: boolean;
@@ -147,13 +147,13 @@ export function finalizeSingleOutput(params: {
 	truncatedOutput?: string;
 	outputPath?: string;
 	outputMode?: OutputMode;
-	exitCode: number;
+	status: SubagentAttemptStatus;
 	savedPath?: string;
 	outputReference?: SavedOutputReference;
 	saveError?: string;
 }): { displayOutput: string; savedPath?: string; outputReference?: SavedOutputReference; saveError?: string } {
 	let displayOutput = params.truncatedOutput || params.fullOutput;
-	if (params.exitCode === 0 && params.savedPath) {
+	if (params.status === "ok" && params.savedPath) {
 		const outputReference = params.outputReference ?? formatSavedOutputReference(params.savedPath, params.fullOutput);
 		if (params.outputMode === "file-only") {
 			return { displayOutput: outputReference.message, savedPath: params.savedPath, outputReference };
@@ -161,7 +161,7 @@ export function finalizeSingleOutput(params: {
 		displayOutput += `\n\n${outputReference.message}`;
 		return { displayOutput, savedPath: params.savedPath, outputReference };
 	}
-	if (params.exitCode === 0 && params.saveError && params.outputPath) {
+	if (params.status === "ok" && params.saveError && params.outputPath) {
 		displayOutput += `\n\nOutput file error: ${params.outputPath}\n${params.saveError}`;
 		return { displayOutput, saveError: params.saveError };
 	}

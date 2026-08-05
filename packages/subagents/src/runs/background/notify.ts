@@ -4,13 +4,17 @@
 
 import type { ExtensionAPI } from "@bastani/atomic";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import { SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT } from "../../shared/types.ts";
+import {
+	SUBAGENT_ASYNC_COMPLETE_EVENT,
+	SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT,
+	type SubagentAttemptStatus,
+} from "../../shared/types.ts";
 import type { CompletionNotificationEnvelope } from "./completion-notification.ts";
 
 interface ChainStepResult {
 	agent: string;
 	output: string;
-	success: boolean;
+	status: SubagentAttemptStatus;
 	intercomTarget?: string;
 	index?: number;
 }
@@ -30,9 +34,8 @@ interface SubagentResult {
 	runId?: string;
 	notificationId?: string;
 	agent: string | null;
-	success: boolean;
+	status: SubagentAttemptStatus;
 	summary: string;
-	exitCode?: number;
 	state?: string;
 	timestamp: number;
 	durationMs?: number;
@@ -205,9 +208,14 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		const agent = result.agent ?? "unknown";
 		const summary = typeof result.summary === "string" ? result.summary : "";
 		const paused =
-			!result.success &&
-			(result.exitCode === 0 || result.state === "paused" || summary.startsWith("Paused after interrupt."));
-		const status = paused ? "paused" : result.success ? "completed" : "failed";
+			result.status === "interrupted" || result.state === "paused" || summary.startsWith("Paused after interrupt.");
+		const status = paused
+			? "paused"
+			: result.status === "ok"
+				? "completed"
+				: result.status === "continued"
+					? "paused"
+					: "failed";
 
 		const taskInfo =
 			result.taskIndex !== undefined && result.totalTasks !== undefined

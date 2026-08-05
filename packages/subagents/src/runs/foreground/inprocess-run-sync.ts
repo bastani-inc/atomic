@@ -91,7 +91,6 @@ function resultFromOutcome(
 		stats: outcome.stats,
 		path: outcome.path,
 		envelope: outcome.envelope,
-		exitCode: status === "ok" ? 0 : status === "interrupted" ? 130 : 1,
 		interrupted: status === "interrupted" ? true : undefined,
 		messages: [],
 		usage: usageFromStats(outcome.stats),
@@ -132,7 +131,6 @@ function refusedResult(agent: AgentConfig, task: string, reason: string): Single
 		},
 		path: "",
 		envelope: reason,
-		exitCode: 1,
 		messages: [],
 		usage: emptyUsage(),
 	};
@@ -184,6 +182,9 @@ export async function runSingleInProcess(
 	const artifactPaths = artifactsDir
 		? getArtifactPaths(artifactsDir, options.runId, agent.name, options.index)
 		: undefined;
+	const artifactsDisabled =
+		options.artifactConfig?.enabled === false ||
+		(options.artifactsDir === undefined && options.artifactConfig === undefined);
 	if (artifactsDir && artifactPaths && options.artifactConfig?.includeInput !== false) {
 		ensureArtifactsDir(artifactsDir);
 		writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
@@ -254,7 +255,7 @@ export async function runSingleInProcess(
 						timestamp: Date.now(),
 						artifactsDir: options.artifactsDir,
 					},
-					{ artifactsDir: options.artifactsDir, artifactPaths, maxOutput: options.maxOutput },
+					{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
 				);
 				const delivered = control.getDeliveredResult(backgroundOutcome.path);
 				if (delivered) {
@@ -271,7 +272,6 @@ export async function runSingleInProcess(
 			status: "continued",
 			path: admission.admitted.identity.path,
 			envelope: "Child continued in background.",
-			exitCode: 0,
 			detached: true,
 			detachedReason: "async-requested",
 			messages: [],
@@ -327,7 +327,7 @@ export async function runSingleInProcess(
 					timestamp: Date.now(),
 					artifactsDir: options.artifactsDir,
 				},
-				{ artifactsDir: options.artifactsDir, artifactPaths, maxOutput: options.maxOutput },
+				{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
 			);
 			const delivered = control.getDeliveredResult(backgroundOutcome.path);
 			if (delivered) {
@@ -342,7 +342,6 @@ export async function runSingleInProcess(
 			status: "continued",
 			path: admission.admitted.identity.path,
 			envelope: "Child continued in background.",
-			exitCode: 0,
 			detached: true,
 			detachedReason: "intercom-coordination",
 			messages: [],
@@ -380,7 +379,7 @@ export async function runSingleInProcess(
 			timestamp: Date.now(),
 			artifactsDir: options.artifactsDir,
 		},
-		{ artifactsDir: options.artifactsDir, artifactPaths, maxOutput: options.maxOutput },
+		{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
 	);
 	const delivered = control.getDeliveredResult(outcome.path);
 	if (delivered) {

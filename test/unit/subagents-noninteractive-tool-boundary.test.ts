@@ -55,7 +55,7 @@ function makeAgent(name: string): AgentConfig {
 }
 
 function makeResult(agent: string, task: string, finalOutput = `${agent} complete`): SingleResult {
-	return { agent, task, exitCode: 0, messages: [], usage, finalOutput };
+	return { agent, task, status: "ok", messages: [], usage, finalOutput };
 }
 
 function makeContext(cwd: string, onCustom: () => never): ExtensionContext {

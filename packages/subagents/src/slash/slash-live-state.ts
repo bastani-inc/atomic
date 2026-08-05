@@ -79,7 +79,7 @@ function createPlaceholderResult(
 	return {
 		agent,
 		task,
-		exitCode: 0,
+		status: "continued",
 		messages: EMPTY_MESSAGES,
 		usage: cloneUsage(),
 		progress: {
@@ -292,7 +292,7 @@ export function failSlashResult(
 	const initial = buildSlashInitialResult(requestId, params, owner).result;
 	const failedResults = initial.details.results.map((result) => ({
 		...result,
-		exitCode: 1,
+		status: "error" as const,
 		error: message,
 		progress: result.progress ? { ...result.progress, status: "failed" as const } : result.progress,
 	}));

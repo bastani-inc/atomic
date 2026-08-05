@@ -105,8 +105,8 @@ export function isDoneResult(result: Details["results"][number]): boolean {
 	const status = result.progress?.status;
 	if (status === "completed") return true;
 	if (status === "running" || status === "pending") return false;
-	if (result.interrupted || result.detached) return false;
-	return result.exitCode === 0;
+	if (result.interrupted || result.detached || result.status !== "ok") return false;
+	return true;
 }
 
 export function workflowGraphHasStatus(
@@ -188,7 +188,7 @@ export function buildMultiProgressLabel(
 	if (details.mode === "parallel") {
 		const totalCount = details.totalSteps ?? details.results.length;
 		const statuses = new Array(totalCount).fill("pending") as Array<
-			"pending" | "running" | "completed" | "failed" | "detached"
+			"pending" | "running" | "completed" | "failed" | "paused" | "detached"
 		>;
 		for (const progress of details.progress ?? []) {
 			if (progress.index >= 0 && progress.index < totalCount) statuses[progress.index] = progress.status;
@@ -202,7 +202,13 @@ export function buildMultiProgressLabel(
 			if (index < 0 || index >= totalCount) continue;
 			const status =
 				result.progress?.status ??
-				(result.interrupted || result.detached ? "detached" : result.exitCode === 0 ? "completed" : "failed");
+				(result.interrupted || result.status === "interrupted"
+					? "paused"
+					: result.detached || result.status === "continued"
+						? "detached"
+						: result.status === "ok"
+							? "completed"
+							: "failed");
 			statuses[index] = status;
 		}
 		const running = statuses.filter((status) => status === "running").length;

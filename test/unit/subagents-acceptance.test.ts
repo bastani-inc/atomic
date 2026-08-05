@@ -69,7 +69,7 @@ describe("subagent acceptance removal", () => {
 				artifactsDir: dir,
 			});
 
-			assert.equal(result.exitCode, 1);
+			assert.equal(result.status, "error");
 			assert.equal(result.error, `cwd does not exist: ${missing}`);
 			assert.doesNotMatch(result.error ?? "", /spawn .*ENOENT/i);
 		});

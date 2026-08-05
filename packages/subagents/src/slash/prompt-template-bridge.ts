@@ -77,9 +77,9 @@ interface PromptTemplateBridgeResult {
 	details?: {
 		results?: Array<{
 			agent?: string;
+			status?: "ok" | "error" | "skipped" | "interrupted" | "continued";
 			messages?: unknown[];
 			finalOutput?: string;
-			exitCode?: number;
 			error?: string;
 			model?: string;
 			toolCalls?: Array<{ text?: string; expandedText?: string }>;
@@ -367,12 +367,11 @@ export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: strin
 								errorText: "Missing result for delegated parallel task.",
 							};
 						}
-						const exitCode = typeof step.exitCode === "number" ? step.exitCode : undefined;
 						const errorText = step.error;
 						return {
 							agent: step.agent ?? task.agent,
 							messages: buildDelegationMessages(step),
-							isError: (exitCode !== undefined && exitCode !== 0) || !!errorText,
+							isError: step.status === "error" || !!errorText,
 							errorText: errorText || undefined,
 						};
 					})

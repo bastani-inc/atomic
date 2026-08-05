@@ -18,7 +18,6 @@ export function skippedModelAttempt(model: string, reason: string): ModelAttempt
 	return {
 		model,
 		success: false,
-		exitCode: null,
 		error: reason,
 	};
 }
