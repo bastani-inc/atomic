@@ -51,6 +51,46 @@ test("the test job is a fail-closed result gate carrying both required contexts"
 	assert.match(gate, /^[ \t]+runs-on: blacksmith-4vcpu-ubuntu-2404$/mu);
 });
 
+/**
+ * `push: branches: [main, "release/**", "prerelease/**"]` sitting next to an
+ * unfiltered `pull_request:` made every release and prerelease pull request run
+ * this workflow twice for one SHA. Both runs publish the same two required
+ * context names, GitHub keeps the latest result per name, and the duplicate load
+ * doubles contention on the shared runner pool. On sha 772a373 the push run
+ * 31047506585 lost its Linux `suites` leg to its own cap and published FAILURE
+ * for both contexts, while the pull_request run 31047542976 for the identical
+ * SHA was green throughout: the pull request stayed blocked with nothing wrong
+ * in it.
+ *
+ * A `concurrency` group is not the remedy. Cancelling an in-flight run that has
+ * already published `test (...)` strands a cancelled required context on a SHA
+ * with no superseding successful run, which is the exact state being fixed.
+ */
+test("one SHA runs this workflow once, and no group can cancel a run mid-flight", async () => {
+	const workflow = await readText(testPath);
+	const onIndex = workflow.indexOf("\non:\n");
+	const jobsIndex = workflow.indexOf("\njobs:\n");
+	assert.ok(onIndex >= 0 && jobsIndex > onIndex, "test.yml must declare `on:` above `jobs:`");
+	const triggers = workflow.slice(onIndex + 1, jobsIndex + 1);
+
+	const branches = /^ {4}branches: \[([^\]]*)\]$/mu.exec(triggers);
+	assert.ok(branches, "the push trigger must carry an explicit branch filter");
+	assert.deepEqual(
+		(branches[1] as string).split(",").map((branch) => branch.trim().replace(/^"|"$/gu, "")),
+		["main"],
+		"only main runs on push; every other branch reaches CI through its pull request",
+	);
+
+	const pullRequestIndex = triggers.indexOf("  pull_request:");
+	assert.ok(pullRequestIndex >= 0, "pull requests must keep producing the two required contexts");
+	const pullRequest = triggers.slice(pullRequestIndex);
+	assert.match(pullRequest, /^ {2}pull_request:[ \t]*$/mu);
+	assert.doesNotMatch(pullRequest, /^ {4}\S/mu, "the pull_request trigger stays unfiltered");
+
+	assert.doesNotMatch(workflow, /^[ \t]*concurrency:/mu, "a cancelled run can strand a failing required context");
+	assert.doesNotMatch(workflow, /cancel-in-progress/u);
+});
+
 test("every work job the gate names exists and is otherwise independent", async () => {
 	const blocks = await jobs();
 	assert.deepEqual([...blocks.keys()], [...WORK_JOBS, "test"]);
@@ -62,19 +102,28 @@ test("every work job the gate names exists and is otherwise independent", async 
 
 /**
  * Per-job wall-clock caps replace the blanket 10/15 minute pair. A cap is a hang
- * detector at roughly 2x measured p100 and must leave room for the one bounded
- * flake retry the job owns: the first split run fired that retry on both
- * platforms and took 230 s / 348 s in `suites` alone. The Windows
- * `release-archive` cap is 9 minutes because cold setup observed 152 s for
- * `rust-toolchain` and 71 s for checkout, followed by roughly 110 s native
- * build and 40 s archive smoke (near 6m50s versus a healthy 4m04s p100).
+ * detector at roughly 2x measured p100, and it decays into a false-failure
+ * generator as the suites grow: the 8-minute `suites` Linux cap was sized
+ * against a 230 s measurement, the job now measures 400 s, and it cancelled a
+ * healthy run at 497 s on 31047506585 while the same SHA passed on the
+ * pull_request event. The current numbers come from run 31047542976 on sha
+ * 772a373 -- `suites` 400 s / 595 s, `agent-suite` 154 s / 250 s (221 s / 270 s
+ * worst observation across both events on that SHA), `release-archive` 102 s /
+ * 192 s.
+ *
+ * Every cap stays strictly under the 15-minute Windows blanket it replaced, so
+ * Windows `suites` takes 14 minutes (1.41x) rather than the 20 that 2x of 595 s
+ * would ask for. The Windows `release-archive` cap is 9 minutes because cold
+ * setup observed 152 s for `rust-toolchain` and 71 s for checkout, followed by
+ * roughly 110 s native build and 40 s archive smoke (near 6m50s versus a
+ * healthy 4m04s p100).
  */
 test("each split job declares its own measured timeout", async () => {
 	const workflow = await readText(testPath);
 	const blocks = await jobs();
 	const caps: Record<string, [number, number]> = {
-		suites: [8, 12],
-		"agent-suite": [6, 12],
+		suites: [13, 14],
+		"agent-suite": [8, 12],
 		"release-archive": [5, 9],
 	};
 	for (const [job, [linux, windows]] of Object.entries(caps)) {
