@@ -1,159 +1,9 @@
+use std::{
+	collections::BTreeMap,
+	sync::{Arc, Mutex},
+};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ReservationError {
-	NotStarted,
-	AlreadyStarted,
-	ReservationMissing,
-	IdentityAlreadyCommitted,
-	RegistryUnavailable,
-}
-
-impl fmt::Display for ReservationError {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		formatter.write_str(match self {
-			Self::NotStarted => "spawn reservation has not started",
-			Self::AlreadyStarted => "spawn reservation already started",
-			Self::ReservationMissing => "spawn reservation is no longer available",
-			Self::IdentityAlreadyCommitted => "child identity is already committed",
-			Self::RegistryUnavailable => "child registry is unavailable",
-		})
-	}
-}
-
-/// A reservation that releases its identity slot unless it commits successfully.
-pub struct SpawnReservation {
-	registry: AgentRegistry,
-	identity: ChildIdentitySeed,
-	started: bool,
-	committed: bool,
-}
-
-impl SpawnReservation {
-	pub fn path(&self) -> &ChildPath {
-		&self.identity.path
-	}
-
-	pub fn start(&mut self) -> Result<(), ReservationError> {
-		if self.committed {
-			return Err(ReservationError::ReservationMissing);
-		}
-		if self.started {
-			return Err(ReservationError::AlreadyStarted);
-		}
-		self.started = true;
-		Ok(())
-	}
-
-	pub fn commit(mut self) -> Result<AdmittedChild, ReservationError> {
-		if !self.started {
-			return Err(ReservationError::NotStarted);
-		}
-		let result = self.registry.commit(self.identity.clone());
-		if result.is_ok() {
-			self.committed = true;
-		}
-		result
-	}
-}
-
-impl Drop for SpawnReservation {
-	fn drop(&mut self) {
-		if !self.committed {
-			self.registry.release(&self.identity);
-		}
-	}
-}
-
-/// An identity minted by a committed spawn reservation.
-#[derive(Clone)]
-pub struct AdmittedChild {
-	record: Arc<AgentRecord>,
-}
-
-impl AdmittedChild {
-	pub fn path(&self) -> &ChildPath {
-		&self.record.identity.path
-	}
-
-	pub fn parent_path(&self) -> &ChildPath {
-		&self.record.identity.parent_path
-	}
-
-	pub fn task_name(&self) -> &str {
-		&self.record.identity.task_name
-	}
-
-	pub fn depth(&self) -> Depth {
-		self.record.identity.depth
-	}
-
-	pub fn status_watch(&self) -> StatusWatch {
-		self.record.status.clone()
-	}
-}
-
-#[derive(Clone)]
-pub struct ExecutionLimiter {
-	active: Arc<Mutex<usize>>,
-	capacity: usize,
-}
-
-impl Default for ExecutionLimiter {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
-impl ExecutionLimiter {
-	pub fn new() -> Self {
-		Self { active: Arc::new(Mutex::new(0)), capacity: EXECUTION_CAPACITY }
-	}
-
-	pub fn capacity(&self) -> usize {
-		self.capacity
-	}
-
-	pub fn active(&self) -> usize {
-		self.active.lock().map(|active| *active).unwrap_or(self.capacity)
-	}
-
-	pub fn try_acquire(&self) -> Result<ExecutionGuard, AdmissionRefusal> {
-		let mut active = self.active.lock().map_err(|_| AdmissionRefusal::CapacityExhausted)?;
-		if *active >= self.capacity {
-			return Err(AdmissionRefusal::CapacityExhausted);
-		}
-		*active += 1;
-		Ok(ExecutionGuard { limiter: self.clone(), released: false })
-	}
-
-	fn release(&self) {
-		if let Ok(mut active) = self.active.lock() {
-			*active = active.saturating_sub(1);
-		}
-	}
-}
-
-/// A turn-scoped execution lease. Dropping it always frees a slot.
-pub struct ExecutionGuard {
-	limiter: ExecutionLimiter,
-	released: bool,
-}
-
-impl ExecutionGuard {
-	pub fn release(mut self) {
-		self.released = true;
-		self.limiter.release();
-	}
-}
-
-impl Drop for ExecutionGuard {
-	fn drop(&mut self) {
-		if !self.released {
-			self.released = true;
-			self.limiter.release();
-		}
-	}
-}
+use super::{ChildPath, EXECUTION_CAPACITY};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResidencyError {
@@ -163,8 +13,8 @@ pub enum ResidencyError {
 	AlreadyProtected,
 }
 
-impl fmt::Display for ResidencyError {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for ResidencyError {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		formatter.write_str(match self {
 			Self::UnknownChild => "child is not registered with residency",
 			Self::NotUnloadable => "child is not terminal, idle, and delivered",
