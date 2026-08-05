@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- In-process subagents now receive MCP direct-tool selection through typed admission policy. Omitted selection preserves MCP configuration defaults, a list selects exact server/tool entries, and an empty list disables direct tools; the legacy `MCP_DIRECT_TOOLS` bridge remains only for older parent-session integrations ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- In-process subagents now receive MCP direct-tool selection through typed admission policy. Omitted selection preserves MCP configuration defaults, a list selects exact server/tool entries, and an empty list disables direct tools; the process-era environment bridge has been removed ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
 ## [0.9.12] - 2026-08-04
 
