@@ -10,6 +10,7 @@
 ### Changed
 
 - Typed child policy now includes MCP direct-tool selection and admission-issued Intercom identity/capability, allowing in-process extensions to consume child policy without inheritable environment state ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Bundled subagent launches now use in-process `AgentSession` children with typed admission, canonical identities, and live async continuation; `async: true` work is owned by the parent process and does not survive parent exit ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
 
 ### Fixed
 
