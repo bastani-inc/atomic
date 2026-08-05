@@ -24,8 +24,6 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/invalidated[_\s-]+(?:oauth|auth)[_\s-]+token/i,
 	/forbidden/i,
 	/invalid\s*key/i,
-	/model.*(?:unavailable|disabled|not\s*found|unknown)/i,
-	/(?:unavailable|disabled|not\s*found|unknown).*model/i,
 	/overloaded/i,
 	/temporarily\s*unavailable/i,
 	/service\s*unavailable/i,
@@ -180,9 +178,7 @@ function diagnosticErrors(value: unknown): readonly unknown[] {
 		const diagnosticType = stringField(diagnostic, "type");
 		const diagnosticError = field(diagnostic, "error");
 		errors.push(
-			diagnosticType !== undefined && /provider[_\s-]?transport[_\s-]?failure/i.test(diagnosticType)
-				? diagnostic
-				: (diagnosticError ?? diagnostic),
+			normalizeCode(diagnosticType) === "provider_transport_failure" ? diagnostic : (diagnosticError ?? diagnostic),
 		);
 	}
 	return errors;
@@ -190,12 +186,34 @@ function diagnosticErrors(value: unknown): readonly unknown[] {
 
 function normalizeCode(value: string | number | undefined): string | undefined {
 	if (value === undefined) return undefined;
-	const normalized = String(value)
-		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "_")
-		.replace(/^_+|_+$/g, "");
+	const raw = String(value).trim().toLowerCase();
+	if (!raw) return undefined;
+	let normalized = "";
+	let needsSeparator = false;
+	for (const char of raw) {
+		const code = char.charCodeAt(0);
+		const isLowerAlpha = code >= 97 && code <= 122;
+		const isDigit = code >= 48 && code <= 57;
+		if (isLowerAlpha || isDigit) {
+			normalized += char;
+			needsSeparator = true;
+			continue;
+		}
+		if (needsSeparator && normalized[normalized.length - 1] !== "_") normalized += "_";
+	}
+	if (normalized.endsWith("_")) normalized = normalized.slice(0, -1);
 	return normalized.length > 0 ? normalized : undefined;
+}
+
+function messageLooksLikeModelUnavailable(message: string): boolean {
+	const lower = message.toLowerCase();
+	return (
+		lower.includes("model") &&
+		(lower.includes("unavailable") ||
+			lower.includes("disabled") ||
+			lower.includes("not found") ||
+			lower.includes("unknown"))
+	);
 }
 
 function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | undefined {
@@ -373,7 +391,10 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
-	if (!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return undefined;
+	const hasRetryablePattern =
+		RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message)) ||
+		messageLooksLikeModelUnavailable(message);
+	if (!hasRetryablePattern) return undefined;
 	if (/rate\s*limit|too\s*many\s*requests|\b429\b|quota|usage[\s_-]*limit|billing|credit/i.test(message))
 		return "rate_limit";
 	if (
@@ -382,12 +403,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 		)
 	)
 		return "auth_on_candidate_provider";
-	if (
-		/model.*(?:unavailable|disabled|not\s*found|unknown)|(?:unavailable|disabled|not\s*found|unknown).*model/i.test(
-			message,
-		)
-	)
-		return "model_unavailable";
+	if (messageLooksLikeModelUnavailable(message)) return "model_unavailable";
 	if (/network|fetch|socket|connection\s*refused|getaddrinfo|ENOTFOUND|EAI_AGAIN|timeout|timed\s*out/i.test(message))
 		return "network_timeout";
 	return "provider_unavailable";
@@ -492,7 +508,7 @@ function structuredSignal(
 	const stopReason = stopReasonFrom(value)?.toLowerCase();
 	const diagnosticType = stringField(value, "type");
 	const providerTransportSignal =
-		diagnosticType !== undefined && /provider[_\s-]?transport[_\s-]?failure/i.test(diagnosticType)
+		diagnosticType !== undefined && normalizeCode(diagnosticType) === "provider_transport_failure"
 			? makeSignal("transport_error", value, source)
 			: undefined;
 	if (stopReason === "aborted") return makeSignal("cancelled", value, source);
