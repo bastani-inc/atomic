@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.13-alpha.1] - 2026-08-05
+
 ### Changed
 
 - In-process child identities and supervisor capabilities now arrive through typed admission policy and are captured on each `IntercomClient` at connect time instead of being read from environment for every message. Descendants cannot inherit a parent's supervisor grant through process environment; legacy Atomic/Pi bridge metadata remains available for older hosts ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).

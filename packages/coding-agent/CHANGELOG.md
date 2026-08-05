@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.13-alpha.1] - 2026-08-05
+
 ### Added
 
 - `CreateAgentSessionOptions` and `ExtensionContext` now carry an immutable typed subagent child capability policy for in-process tool registration ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).

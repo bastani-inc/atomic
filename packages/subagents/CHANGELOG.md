@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.13-alpha.1] - 2026-08-05
+
 ### Breaking Changes
 
 - `async: true` no longer survives parent exit. Async subagents now run as in-process children of the parent session on the same foreground executor, so quitting Atomic ends any in-flight async run. The child's canonical identity and its session file persist on disk and can be reloaded on a later start, but the running work does not continue in the background across a restart. The detached runner process that previously provided parent-exit survival has been deleted ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
@@ -24,14 +26,11 @@
 ### Fixed
 
 - Fixed in-process parallel siblings colliding on the same canonical identity and terminal artifact path, and fixed async completions omitting their persisted result envelope from the parent notification ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Fixed model-failure classification sharing so subagent fallback decisions stay aligned with main chat and workflow candidates for auth, unavailable-model, request-incompatible, quota, and transport failures ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
 
 ### Removed
 
 - Removed every remaining OS child-process code path from subagent execution, satisfying the spec's zero-process goal: the detached jiti async runner and its twelve `subagent-runner*` modules, the `async-execution-*` spawn layer, the async event journal, the idle/wall attempt watchdog, the stdout drain grace, the CLI spawn resolver, the environment-bridge builder, and the post-exit stdio guard ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
-
-### Fixed
-
-- Fixed model-failure classification sharing so subagent fallback decisions stay aligned with main chat and workflow candidates for auth, unavailable-model, request-incompatible, quota, and transport failures ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
 
 ## [0.9.12] - 2026-08-04
 

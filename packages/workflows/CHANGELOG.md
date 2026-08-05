@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.13-alpha.1] - 2026-08-05
+
 ### Added
 
 - Added four user-initiated workflow lifecycle notices — `started`, `paused`, `quit`, and `resumed` — so the main chat learns when a top-level background run begins, stops, or picks back up. Each travels the same steer delivery, capped-backoff retry, and notice-card path the failure notice already uses, so an agent waiting on a background run no longer mistakes a deliberate stop for work still in progress. `WORKFLOW STARTED` (`▶`), `WORKFLOW PAUSED` (`⏸`, warning tone), `WORKFLOW QUIT` (`⏹`, warning tone, also reporting whether the run stayed resumable), and `WORKFLOW RESUMED` (`▶`) render as cards; the paused and quit text states that the stop was deliberate and user-requested and tells the model not to resume the run or take over the work unless asked, hinting `/workflow resume <run-id>`, while the resumed text does not, because the run is progressing again ([#2177](https://github.com/bastani-inc/atomic/issues/2177)).
