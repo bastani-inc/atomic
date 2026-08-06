@@ -308,6 +308,62 @@ export function runtimeRequestsOf(filePath: string): RuntimeRequest[] {
 		return undefined;
 	}
 
+	/**
+	 * Does this subtree hand a loader value back to a caller? An exported wrapper such as
+	 * `export function make(u) { return createRequire(u); }` gives importers the same power as
+	 * exporting the factory itself, so it has to fail closed too.
+	 */
+	function subtreeYieldsLoader(node: BabelNode, scope: Scope): boolean {
+		let found = false;
+		const scan = (current: BabelNode): void => {
+			if (found) return;
+			const returned =
+				current.type === "ReturnStatement"
+					? current.argument
+					: current.type === "ArrowFunctionExpression" &&
+							isNode(current.body) &&
+							current.body.type !== "BlockStatement"
+						? current.body
+						: undefined;
+			if (isNode(returned)) {
+				const resolved = resolveLoader(returned, scope);
+				if (resolved !== undefined && LOADER_KINDS.has(resolved.kind)) {
+					found = true;
+					return;
+				}
+			}
+			for (const child of childNodes(current)) scan(child);
+		};
+		scan(node);
+		return found;
+	}
+
+	/**
+	 * An `export const make = createRequire` carries a loader across the module boundary just as
+	 * `export { createRequire }` does, but Babel puts it in `declaration` with no specifiers, so
+	 * the specifier scan alone missed it entirely.
+	 */
+	function recordExportedLoaders(declaration: BabelNode, scope: Scope): void {
+		if (declaration.type === "VariableDeclaration") {
+			for (const declarator of (declaration.declarations as BabelNode[] | undefined) ?? []) {
+				const name = identifierName(declarator.id);
+				if (name !== undefined) {
+					const binding = lookup(scope, name);
+					if (binding !== undefined && LOADER_KINDS.has(binding.kind)) {
+						record("loader-reexport");
+						continue;
+					}
+				}
+				// A destructured loader export already reports through the generic escape path.
+				if (isNode(declarator.init) && subtreeYieldsLoader(declarator.init, scope)) record("loader-reexport");
+			}
+			return;
+		}
+		if (declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") {
+			if (subtreeYieldsLoader(declaration, scope)) record("loader-reexport");
+		}
+	}
+
 	/** Records the load a call performs, if any. Returns true when the callee was consumed. */
 	function classifyCall(node: BabelNode, scope: Scope): boolean {
 		const callee = node.callee;
@@ -390,7 +446,24 @@ export function runtimeRequestsOf(filePath: string): RuntimeRequest[] {
 						if (binding !== undefined && LOADER_KINDS.has(binding.kind)) record("loader-reexport");
 					}
 				}
-				if (isNode(node.declaration)) visit(node.declaration, scope);
+				if (isNode(node.declaration)) {
+					// Visit first so the exported binders carry their resolved kinds, then report.
+					visit(node.declaration, scope);
+					if (!isTypeOnlyExport(node)) recordExportedLoaders(node.declaration, scope);
+				}
+				return;
+			}
+			case "ExportDefaultDeclaration": {
+				const declaration = node.declaration;
+				if (!isNode(declaration)) return;
+				const resolved = resolveLoader(declaration, scope);
+				if (resolved !== undefined && LOADER_KINDS.has(resolved.kind)) {
+					// Returning here avoids a second record from the generic escape path.
+					record("loader-reexport");
+					return;
+				}
+				visit(declaration, scope);
+				recordExportedLoaders(declaration, scope);
 				return;
 			}
 			case "TSImportEqualsDeclaration": {

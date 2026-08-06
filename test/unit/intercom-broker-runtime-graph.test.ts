@@ -231,6 +231,77 @@ describe("runtime module-graph walker", () => {
 		assert.match(reexported.dynamic[0]?.description ?? "", /loader-reexport/u);
 	});
 
+	test("fails closed on a loader exported through a declaration, not just a specifier", () => {
+		// Babel puts `export const make = createRequire` in `declaration` with no specifiers, so a
+		// specifier-only scan let every one of these hand a loader to importers unnoticed.
+		const declarations: Record<string, string> = {
+			"exported factory": "export const make = createRequire;",
+			"exported ready require": "export const r = createRequire(import.meta.url);",
+			"exported let binding": "export let make = createRequire;",
+			"exported var binding": "export var make = createRequire;",
+			"exported wrapper function": "export function make(u: string) { return createRequire(u); }",
+			"exported arrow wrapper": "export const make = (u: string) => createRequire(u);",
+			"default factory": "export default createRequire;",
+			"default ready require": "export default createRequire(import.meta.url);",
+			"default wrapper function": "export default function make(u: string) { return createRequire(u); }",
+		};
+
+		for (const [name, body] of Object.entries(declarations)) {
+			const root = fixture({
+				"broker/broker.ts": ['import { createRequire } from "node:module";', body, ""].join("\n"),
+			});
+
+			const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+			assert.equal(walk.dynamic.length, 1, `${name}: ${describeViolations(walk.dynamic).join(", ")}`);
+			assert.match(walk.dynamic[0]?.description ?? "", /loader-reexport/u, name);
+			assert.deepEqual(describeViolations(walk.externals), [], name);
+		}
+	});
+
+	test("fails closed on a destructured loader export and on a later assignment", () => {
+		const root = fixture({
+			"broker/destructured.ts": [
+				'import { createRequire } from "node:module";',
+				"const box = { createRequire };",
+				"export const { createRequire: make } = box;",
+				"",
+			].join("\n"),
+			"broker/assigned.ts": [
+				'import { createRequire } from "node:module";',
+				"export let make: unknown;",
+				"make = createRequire;",
+				"",
+			].join("\n"),
+		});
+
+		for (const file of ["broker/destructured.ts", "broker/assigned.ts"]) {
+			const walk = walkRuntimeGraph(join(root, file));
+
+			assert.ok(walk.dynamic.length >= 1, `${file} reported no violation`);
+			for (const entry of walk.dynamic) assert.match(entry.description, /loader-(escape|reexport)/u, file);
+			assert.deepEqual(describeViolations(walk.externals), [], file);
+		}
+	});
+
+	test("an ordinary exported declaration is not mistaken for a loader", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import { normalizeGroup } from "../group.js";',
+				"export const DEFAULT = normalizeGroup(undefined);",
+				"export function pick(value?: string) { return normalizeGroup(value); }",
+				"export default function make() { return DEFAULT; }",
+				"",
+			].join("\n"),
+			"group.ts": ["export function normalizeGroup(value?: string) { return value ?? 'default'; }", ""].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+		assert.deepEqual(describeViolations(walk.externals), []);
+	});
+
 	test("reports computed string properties on loader objects", () => {
 		const root = fixture({
 			"broker/broker.ts": [
