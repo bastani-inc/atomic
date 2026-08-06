@@ -8,8 +8,22 @@ import { parse } from "@babel/parser";
  *
  * A regex scanner over import syntax is not enough: `createRequire(import.meta.url)("pkg")`
  * loads a package at runtime and looks nothing like an import declaration. This parses each
- * file with Babel and collects every construct that performs a runtime module request, so a
- * CommonJS-style reintroduction fails the same way a static import does.
+ * file with Babel and collects the constructs that perform a runtime module request, so a
+ * CommonJS-style reintroduction fails the same way a static import does. Computed string
+ * properties (`module["createRequire"]`, `require["resolve"]`) and aliases of loader functions
+ * are recognized too.
+ *
+ * Where a target cannot be known statically the walker fails closed rather than passing:
+ *
+ * - a non-literal specifier (`require(name)`, `import(name)`) is a `dynamic` violation;
+ * - a non-literal computed property on `module` or on a require function
+ *   (`module[name](...)`) is a `computed-loader-member` violation.
+ *
+ * `process[name](...)` is deliberately not flagged: the only loader on `process` is
+ * `getBuiltinModule`, which can return nothing but a Node builtin.
+ *
+ * Static analysis still cannot see module requests built by `eval`, `new Function`, a native
+ * addon, or generated source. Those need a reviewed exception rather than silent acceptance.
  */
 
 const nodeBuiltins = new Set(builtinModules);
@@ -30,7 +44,8 @@ export interface RuntimeRequest {
 		| "require.resolve"
 		| "created-require"
 		| "process.getBuiltinModule"
-		| "import.meta.resolve";
+		| "import.meta.resolve"
+		| "computed-loader-member";
 	readonly importer: string;
 	/** Source text of a non-literal argument. */
 	readonly raw?: string;
@@ -107,9 +122,27 @@ function isIdentifier(node: unknown, name: string): boolean {
 	return isNode(node) && node.type === "Identifier" && node.name === name;
 }
 
-function isMemberCallee(node: unknown, objectName: string, propertyName: string): boolean {
-	if (!isNode(node) || node.type !== "MemberExpression") return false;
-	return isIdentifier(node.object, objectName) && isIdentifier(node.property, propertyName);
+/**
+ * Property name of a member expression, for both `a.b` and `a["b"]`.
+ *
+ * Returns `undefined` for a computed non-literal property such as `a[name]`, which a static
+ * walk cannot resolve. Callers decide whether that is harmless or must fail closed.
+ */
+function memberPropertyName(node: BabelNode): string | undefined {
+	if (node.computed === true) return stringLiteralValue(node.property);
+	const property = node.property;
+	return isNode(property) && property.type === "Identifier" && typeof property.name === "string"
+		? property.name
+		: undefined;
+}
+
+function isMemberOf(node: unknown, objectName: string): node is BabelNode {
+	return isNode(node) && node.type === "MemberExpression" && isIdentifier(node.object, objectName);
+}
+
+/** `module.createRequire` or `module["createRequire"]`. */
+function isModuleCreateRequire(node: unknown): boolean {
+	return isMemberOf(node, "module") && memberPropertyName(node) === "createRequire";
 }
 
 /** `import.meta.resolve(...)` — a MetaProperty base rather than a plain identifier. */
@@ -117,16 +150,32 @@ function isImportMetaResolve(node: unknown): boolean {
 	if (!isNode(node) || node.type !== "MemberExpression") return false;
 	const object = node.object;
 	if (!isNode(object) || object.type !== "MetaProperty") return false;
-	return isIdentifier(node.property, "resolve");
+	return memberPropertyName(node) === "resolve";
+}
+
+/** `process.getBuiltinModule` or `process["getBuiltinModule"]`. */
+function isGetBuiltinModule(node: unknown): boolean {
+	return isMemberOf(node, "process") && memberPropertyName(node) === "getBuiltinModule";
+}
+
+interface LoaderNames {
+	/** Called with a specifier, returns a require function. */
+	readonly factories: Set<string>;
+	/** Called with a specifier, loads a module. */
+	readonly requires: Set<string>;
+	/** Called with a specifier, resolves or returns a module. */
+	readonly resolvers: Set<string>;
 }
 
 /**
- * Local names bound to a `createRequire` factory, plus the names of require functions those
- * factories produce, including chained `const s = r` aliases resolved to a fixed point.
+ * Local names bound to module-loading functions, resolved to a fixed point so chains such as
+ * `const r = createRequire(url); const s = r;` and `const load = process.getBuiltinModule` are
+ * all recognized at their call sites.
  */
-function collectRequireNames(ast: BabelNode): { factories: Set<string>; requires: Set<string> } {
+function collectLoaderNames(ast: BabelNode): LoaderNames {
 	const factories = new Set<string>(DEFAULT_REQUIRE_FACTORIES);
 	const requires = new Set<string>(["require"]);
+	const resolvers = new Set<string>();
 
 	walk(ast, (node) => {
 		if (node.type !== "ImportDeclaration") return;
@@ -142,7 +191,7 @@ function collectRequireNames(ast: BabelNode): { factories: Set<string>; requires
 		}
 	});
 
-	// Repeat until stable so `const r = createRequire(...); const s = r;` resolves fully.
+	// Repeat until stable so multi-step aliases resolve fully.
 	let changed = true;
 	while (changed) {
 		changed = false;
@@ -150,30 +199,61 @@ function collectRequireNames(ast: BabelNode): { factories: Set<string>; requires
 			if (node.type !== "VariableDeclarator") return;
 			const id = node.id;
 			if (!isNode(id) || id.type !== "Identifier" || typeof id.name !== "string") return;
+			const name: string = id.name;
 			const init = node.init;
 			if (!isNode(init)) return;
 
-			const producesRequire =
-				(init.type === "CallExpression" &&
-					isNode(init.callee) &&
-					((init.callee.type === "Identifier" && factories.has(String(init.callee.name))) ||
-						isMemberCallee(init.callee, "module", "createRequire"))) ||
-				(init.type === "Identifier" && requires.has(String(init.name)));
-
-			if (producesRequire && !requires.has(id.name)) {
-				requires.add(id.name);
+			const add = (set: Set<string>): void => {
+				if (set.has(name)) return;
+				set.add(name);
 				changed = true;
+			};
+
+			// `const cr = module.createRequire` / `const cr = createRequire`
+			if (isModuleCreateRequire(init) || (init.type === "Identifier" && factories.has(String(init.name)))) {
+				add(factories);
+				return;
 			}
+			// `const r = createRequire(url)` / `const r = module["createRequire"](url)`
+			if (
+				init.type === "CallExpression" &&
+				isNode(init.callee) &&
+				((init.callee.type === "Identifier" && factories.has(String(init.callee.name))) ||
+					isModuleCreateRequire(init.callee))
+			) {
+				add(requires);
+				return;
+			}
+			// `const s = r`
+			if (init.type === "Identifier" && requires.has(String(init.name))) {
+				add(requires);
+				return;
+			}
+			// `const load = process.getBuiltinModule` / `const res = r.resolve` / `import.meta.resolve`
+			if (
+				isGetBuiltinModule(init) ||
+				isImportMetaResolve(init) ||
+				(isNode(init) &&
+					init.type === "MemberExpression" &&
+					memberPropertyName(init) === "resolve" &&
+					isNode(init.object) &&
+					init.object.type === "Identifier" &&
+					requires.has(String(init.object.name)))
+			) {
+				add(resolvers);
+				return;
+			}
+			if (init.type === "Identifier" && resolvers.has(String(init.name))) add(resolvers);
 		});
 	}
 
-	return { factories, requires };
+	return { factories, requires, resolvers };
 }
 
 /** Every runtime module request a file makes, with type-only edges already removed. */
 export function runtimeRequestsOf(filePath: string): RuntimeRequest[] {
 	const ast = parseFile(filePath);
-	const { factories, requires } = collectRequireNames(ast);
+	const { factories, requires, resolvers } = collectLoaderNames(ast);
 	const requests: RuntimeRequest[] = [];
 
 	const record = (kind: RuntimeRequest["kind"], argument: unknown): void => {
@@ -220,34 +300,51 @@ export function runtimeRequestsOf(filePath: string): RuntimeRequest[] {
 					record("dynamic-import", first);
 					return;
 				}
-				if (isNode(callee) && callee.type === "Identifier" && requires.has(String(callee.name))) {
-					record(String(callee.name) === "require" ? "require" : "created-require", first);
-					return;
-				}
-				if (isNode(callee) && callee.type === "MemberExpression" && isIdentifier(callee.property, "resolve")) {
-					if (
-						isNode(callee.object) &&
-						callee.object.type === "Identifier" &&
-						requires.has(String(callee.object.name))
-					) {
+				if (isNode(callee) && callee.type === "Identifier") {
+					const name = String(callee.name);
+					if (requires.has(name)) {
+						record(name === "require" ? "require" : "created-require", first);
+						return;
+					}
+					if (resolvers.has(name)) {
 						record("require.resolve", first);
 						return;
 					}
 				}
-				if (isMemberCallee(callee, "process", "getBuiltinModule")) {
-					record("process.getBuiltinModule", first);
-					return;
+				if (isNode(callee) && callee.type === "MemberExpression") {
+					const property = memberPropertyName(callee);
+					const objectIsRequire =
+						isNode(callee.object) &&
+						callee.object.type === "Identifier" &&
+						requires.has(String(callee.object.name));
+
+					if (property === "resolve" && objectIsRequire) {
+						record("require.resolve", first);
+						return;
+					}
+					if (isGetBuiltinModule(callee)) {
+						record("process.getBuiltinModule", first);
+						return;
+					}
+					if (isImportMetaResolve(callee)) {
+						record("import.meta.resolve", first);
+						return;
+					}
+					// `module[name](...)` or `require[name](...)` could be any loader entry point, so a
+					// non-literal property on one of those objects fails closed rather than passing.
+					// `process[name](...)` is deliberately not flagged: the only loader there is
+					// `getBuiltinModule`, which can return nothing but a Node builtin.
+					if (property === undefined && (isMemberOf(callee, "module") || objectIsRequire)) {
+						record("computed-loader-member", undefined);
+						return;
+					}
 				}
-				if (isImportMetaResolve(callee)) {
-					record("import.meta.resolve", first);
-					return;
-				}
-				// `createRequire(import.meta.url)("pkg")` and `module.createRequire(...)("pkg")`.
+				// `createRequire(import.meta.url)("pkg")` and `module["createRequire"](...)("pkg")`.
 				if (isNode(callee) && callee.type === "CallExpression") {
 					const inner = callee.callee;
 					const isFactory =
 						(isNode(inner) && inner.type === "Identifier" && factories.has(String(inner.name))) ||
-						isMemberCallee(inner, "module", "createRequire");
+						isModuleCreateRequire(inner);
 					if (isFactory) record("created-require", first);
 				}
 				return;

@@ -129,6 +129,81 @@ describe("runtime module-graph walker", () => {
 		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), ["@bastani/atomic", "typebox"]);
 	});
 
+	test("reports computed string properties on loader objects", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import module from "node:module";',
+				'export const host = module["createRequire"](import.meta.url)("@bastani/atomic");',
+				'export const path = require["resolve"]("@earendil-works/pi-tui");',
+				'export const builtin = process["getBuiltinModule"]("fs");',
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		// The builtin request is allowed; both package requests are reported.
+		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), [
+			"@bastani/atomic",
+			"@earendil-works/pi-tui",
+		]);
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+	});
+
+	test("follows aliases of loader functions", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import module from "node:module";',
+				'const makeRequire = module["createRequire"];',
+				"const r = makeRequire(import.meta.url);",
+				'export const host = r("@bastani/atomic");',
+				"const load = process.getBuiltinModule;",
+				'export const builtin = load("fs");',
+				"const resolvePath = r.resolve;",
+				'export const path = resolvePath("typebox");',
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), ["@bastani/atomic", "typebox"]);
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+	});
+
+	test("fails closed on a computed non-literal property of a loader object", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import module from "node:module";',
+				"declare const key: string;",
+				'export const a = module[key](import.meta.url)("@bastani/atomic");',
+				'export const b = require[key]("@bastani/atomic");',
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.equal(walk.dynamic.length, 2, describeViolations(walk.dynamic).join(", "));
+		for (const entry of walk.dynamic) assert.match(entry.description, /computed-loader-member/u);
+	});
+
+	test("ordinary computed calls on unrelated objects are not flagged", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				"declare const handlers: Record<string, () => void>;",
+				"declare const key: string;",
+				"export const run = () => handlers[key]();",
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+		assert.deepEqual(describeViolations(walk.externals), []);
+	});
+
 	test("fails closed on a non-literal request rather than ignoring it", () => {
 		const root = fixture({
 			"broker/broker.ts": [
