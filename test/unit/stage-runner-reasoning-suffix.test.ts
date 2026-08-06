@@ -67,6 +67,8 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
 				{ model: "openai/fallback", reasoningLevel: "low", success: true },
 			],
 		);
+		assert.equal(result.meta.thinkingLevel, "medium");
+		assert.equal(result.meta.model, "openai/fallback");
 	});
 
 	test("chain-step retry uses the next candidate reasoning level", async () => {
