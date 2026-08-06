@@ -50,9 +50,10 @@ export const MULTI_TARGET_PACKAGE_FAMILIES: readonly MultiTargetFamily[] = [
 
 interface PlatformManifest {
 	readonly name?: string;
-	readonly os?: readonly string[];
-	readonly cpu?: readonly string[];
-	readonly libc?: readonly string[];
+	// npm permits a bare string or an array for each of these.
+	readonly os?: readonly string[] | string;
+	readonly cpu?: readonly string[] | string;
+	readonly libc?: readonly string[] | string;
 }
 
 export interface ArchiveArchitectureMismatch {
@@ -67,10 +68,39 @@ export interface AssertArchiveArchitectureOptions {
 	readonly platform: ArchivePlatform;
 }
 
-/** npm field semantics: a leading `!` excludes, and a list of inclusions is exhaustive. */
-function fieldMatches(declared: readonly string[] | undefined, value: string | undefined): boolean {
-	if (declared === undefined || declared.length === 0) return true;
-	if (value === undefined) return true;
+/**
+ * Normalize an npm platform field to a string list.
+ *
+ * npm accepts a bare string (`"os": "linux"`) as well as an array. Treating the
+ * field as always-array made a valid string manifest throw
+ * `declared.filter is not a function` and abort the release build.
+ */
+export function normalizePlatformField(declared: readonly string[] | string | undefined): readonly string[] {
+	if (declared === undefined) return [];
+	return typeof declared === "string" ? [declared] : declared;
+}
+
+/**
+ * npm field semantics: a leading `!` excludes, `any` matches everything, and a
+ * non-empty list of inclusions is exhaustive.
+ *
+ * An absent target value must NOT count as a match. This guard exists to reject
+ * a package that cannot run on the archive's platform, so an unknown target is
+ * the case where we know least — treating it as a pass is how a wrong-platform
+ * package slips through. `libc` is the live example: it is undefined for a
+ * Darwin archive, and `libc: ["glibc"]` previously passed there.
+ */
+function fieldMatches(
+	declaredRaw: readonly string[] | string | undefined,
+	value: string | undefined,
+	{ unknownTargetMatches }: { unknownTargetMatches: boolean },
+): boolean {
+	const declared = normalizePlatformField(declaredRaw);
+	if (declared.length === 0) return true;
+	// `any` is npm's explicit wildcard and must never be read as a literal
+	// platform name; `os: ["any"]` was previously reported as a mismatch.
+	if (declared.some((entry) => entry === "any")) return true;
+	if (value === undefined) return unknownTargetMatches;
 	const excluded = declared.filter((entry) => entry.startsWith("!")).map((entry) => entry.slice(1));
 	if (excluded.includes(value)) return false;
 	const included = declared.filter((entry) => !entry.startsWith("!"));
@@ -127,23 +157,30 @@ export function findArchiveArchitectureMismatches(
 	for (const directory of packageDirectories) {
 		const manifest = readManifest(join(directory, "package.json"));
 		if (manifest === undefined) continue;
-		const declaresPlatform =
-			(manifest.os?.length ?? 0) > 0 || (manifest.cpu?.length ?? 0) > 0 || (manifest.libc?.length ?? 0) > 0;
+		const declaredOs = normalizePlatformField(manifest.os);
+		const declaredCpu = normalizePlatformField(manifest.cpu);
+		const declaredLibc = normalizePlatformField(manifest.libc);
+		const declaresPlatform = declaredOs.length > 0 || declaredCpu.length > 0 || declaredLibc.length > 0;
 		if (!declaresPlatform) continue;
 
 		const name = manifest.name ?? relative(nodeModules, directory).split(/[\\/]/u).join("/");
 		if (isMultiTargetFamily(name)) continue;
 
+		// os/cpu are known for every archive we build, so an unknown value there
+		// means the caller passed a platform we cannot judge — do not reject on it.
+		// libc is legitimately undefined for non-glibc/musl targets such as Darwin
+		// and Windows, and a package pinning a libc genuinely cannot run there, so
+		// an unknown libc target must NOT be read as a match.
 		const matches =
-			fieldMatches(manifest.os, target.os) &&
-			fieldMatches(manifest.cpu, target.cpu) &&
-			fieldMatches(manifest.libc, target.libc);
+			fieldMatches(declaredOs, target.os, { unknownTargetMatches: true }) &&
+			fieldMatches(declaredCpu, target.cpu, { unknownTargetMatches: true }) &&
+			fieldMatches(declaredLibc, target.libc, { unknownTargetMatches: false });
 		if (matches) continue;
 
 		mismatches.push({
 			path: relative(archiveRoot, directory).split(/[\\/]/u).join("/"),
 			name,
-			declared: { os: manifest.os, cpu: manifest.cpu, libc: manifest.libc },
+			declared: { os: declaredOs, cpu: declaredCpu, libc: declaredLibc },
 		});
 	}
 

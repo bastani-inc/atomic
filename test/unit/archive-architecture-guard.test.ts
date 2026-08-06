@@ -159,3 +159,55 @@ describe("archive architecture guard", () => {
 		assert.equal(syntax.status, 0, syntax.stderr);
 	});
 });
+
+describe("npm platform-field semantics", () => {
+	/**
+	 * The first revision of this guard assumed every platform field was an array
+	 * and treated a missing target value as a match. Both are wrong against real
+	 * npm manifests, and the array assumption is the dangerous one: a valid
+	 * `"os": "linux"` string threw `declared.filter is not a function`, which
+	 * would have aborted the release build the first time the guard ran on a real
+	 * archive rather than rejecting a bad package.
+	 */
+	const makeArchive = (packages: Record<string, object>): string => {
+		const root = mkdtempSync(join(tmpdir(), "archive-platform-fields-"));
+		for (const [name, manifest] of Object.entries(packages)) {
+			const dir = join(root, "node_modules", name);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name, ...manifest }));
+		}
+		return root;
+	};
+
+	const flagged = (root: string, platform: ArchivePlatform): string[] =>
+		findArchiveArchitectureMismatches({ archiveRoot: root, platform }).map((entry) => entry.name);
+
+	test("a string-valued os/cpu field is accepted rather than throwing", () => {
+		const root = makeArchive({ "str-form": { os: "linux", cpu: "arm64" } });
+		assert.deepEqual(flagged(root, "linux-arm64"), []);
+		assert.deepEqual(flagged(root, "darwin-arm64"), ["str-form"]);
+	});
+
+	test("npm's `any` wildcard matches every platform", () => {
+		const root = makeArchive({ "wildcard-pkg": { os: ["any"], cpu: ["any"] } });
+		for (const platform of Object.keys(ARCHIVE_TARGETS) as ArchivePlatform[]) {
+			assert.deepEqual(flagged(root, platform), [], `expected no mismatch on ${platform}`);
+		}
+	});
+
+	test("a libc-pinned package is rejected on a target with no libc", () => {
+		// Treating an unknown target value as a match let `libc: ["glibc"]` pass a
+		// Darwin archive, which is exactly the class of bug this guard exists for.
+		const root = makeArchive({ "glibc-only": { libc: ["glibc"] } });
+		assert.deepEqual(flagged(root, "darwin-arm64"), ["glibc-only"]);
+	});
+
+	test("negation still excludes, and a genuine mismatch is still caught", () => {
+		const root = makeArchive({
+			"not-darwin": { os: ["!darwin"] },
+			"wrong-cpu": { os: ["linux"], cpu: ["x64"] },
+		});
+		assert.deepEqual(flagged(root, "darwin-arm64").sort(), ["not-darwin", "wrong-cpu"]);
+		assert.deepEqual(flagged(root, "linux-arm64"), ["wrong-cpu"]);
+	});
+});
