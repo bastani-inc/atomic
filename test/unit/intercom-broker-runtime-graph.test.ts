@@ -129,6 +129,108 @@ describe("runtime module-graph walker", () => {
 		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), ["@bastani/atomic", "typebox"]);
 	});
 
+	test("binds a namespace import of node:module", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import * as moduleApi from "node:module";',
+				"const makeRequire = moduleApi.createRequire;",
+				"const r = makeRequire(import.meta.url);",
+				"const s = r;",
+				'export const host = s("@bastani/atomic");',
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(
+			walk.externals.map((entry) => entry.description),
+			["@bastani/atomic"],
+		);
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+	});
+
+	test("binds a default import and a `default as` alias of node:module", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import mod from "node:module";',
+				'export const a = mod.createRequire(import.meta.url)("@bastani/atomic");',
+				"",
+			].join("\n"),
+			"broker/other.ts": [
+				'import { default as api } from "node:module";',
+				'export const b = api["createRequire"](import.meta.url)("typebox");',
+				"",
+			].join("\n"),
+		});
+
+		assert.deepEqual(
+			walkRuntimeGraph(join(root, "broker/broker.ts")).externals.map((entry) => entry.description),
+			["@bastani/atomic"],
+		);
+		assert.deepEqual(
+			walkRuntimeGraph(join(root, "broker/other.ts")).externals.map((entry) => entry.description),
+			["typebox"],
+		);
+	});
+
+	test("a local binding named module is not the CJS module object", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				"const module = { createRequire: (_url: string) => (name: string) => name };",
+				'export const harmless = module.createRequire(import.meta.url)("@bastani/atomic");',
+				"export function scoped(module: { createRequire: (u: string) => (n: string) => string }) {",
+				'	return module.createRequire("u")("@bastani/atomic");',
+				"}",
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(describeViolations(walk.externals), []);
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+	});
+
+	test("resolves loader values held in simple object and array literals", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import { createRequire } from "node:module";',
+				"const box = { createRequire };",
+				'export const a = box.createRequire(import.meta.url)("@bastani/atomic");',
+				"const list = [createRequire];",
+				'export const b = list[0](import.meta.url)("typebox");',
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), ["@bastani/atomic", "typebox"]);
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+	});
+
+	test("fails closed when a loader value escapes into untracked flow", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import { createRequire } from "node:module";',
+				"declare function makeBox(factory: unknown): { get(): (u: string) => (n: string) => string };",
+				"const box = makeBox(createRequire);",
+				'export const a = box.get()(import.meta.url)("@bastani/atomic");',
+				"",
+			].join("\n"),
+			"broker/reexport.ts": ['export { createRequire } from "node:module";', ""].join("\n"),
+		});
+
+		const escaped = walkRuntimeGraph(join(root, "broker/broker.ts"));
+		assert.equal(escaped.dynamic.length, 1, describeViolations(escaped.dynamic).join(", "));
+		assert.match(escaped.dynamic[0]?.description ?? "", /loader-escape/u);
+
+		const reexported = walkRuntimeGraph(join(root, "broker/reexport.ts"));
+		assert.equal(reexported.dynamic.length, 1, describeViolations(reexported.dynamic).join(", "));
+		assert.match(reexported.dynamic[0]?.description ?? "", /loader-reexport/u);
+	});
+
 	test("reports computed string properties on loader objects", () => {
 		const root = fixture({
 			"broker/broker.ts": [
