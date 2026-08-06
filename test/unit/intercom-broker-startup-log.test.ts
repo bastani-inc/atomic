@@ -23,6 +23,7 @@ import {
 	BROKER_LOG_MAX_BYTES,
 	installBoundedStderr,
 } from "../../packages/intercom/broker/bounded-stderr.js";
+import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { bunExecutable } from "../helpers/runtime.js";
 
 /** Resolves true once the broker socket accepts a connection. */
@@ -195,15 +196,49 @@ describe("broker startup failures name the log", () => {
 				]),
 			(error: unknown) => {
 				assert.ok(error instanceof Error);
-				assert.match(error.message, /Intercom broker exited before startup with code 3/u);
+				// Which failure path reports this is platform-dependent, and the
+				// contract being tested is the diagnostic, not the wording.
+				//
+				// On Windows the broker is launched through the hidden VBS
+				// launcher, so the direct child is the launcher: it exits 0
+				// immediately and getBrokerSpawnOptions' onExit deliberately
+				// ignores that (`windows-launcher && code === 0 && signal === null`).
+				// The real broker's failure therefore surfaces through the
+				// waitForBroker() timeout instead of an exit code. Asserting the
+				// exit-code wording there tested the launcher, not the fix.
+				const reportsFailure =
+					/Intercom broker exited before startup with code 3/u.test(error.message) ||
+					/Broker failed to start within timeout/u.test(error.message);
+				assert.ok(reportsFailure, error.message);
 				assert.ok(error.message.includes(logPath), error.message);
 				// Proof the descriptor really captured the child's stderr, not just that a path was named.
+				// This must hold on BOTH paths -- it is the whole point of the change.
 				assert.ok(error.message.includes(marker), error.message);
 				return true;
 			},
 		);
 
 		assert.ok(readFileSync(logPath, "utf8").includes(marker));
+	});
+
+	test("the exit-code path names the code where the platform reports one", {
+		skip: process.platform === "win32",
+	}, async () => {
+		// Kept as a distinct assertion so the non-Windows exit path cannot
+		// regress behind the platform-tolerant check above.
+		const marker = `EXIT-CODE-MARKER-${Date.now()}`;
+		await assert.rejects(
+			() =>
+				spawnModule.spawnBrokerIfNeeded(process.execPath, [
+					"-e",
+					`console.error(${JSON.stringify(marker)}); process.exit(3);`,
+				]),
+			(error: unknown) => {
+				assert.ok(error instanceof Error);
+				assert.match(error.message, /Intercom broker exited before startup with code 3/u);
+				return true;
+			},
+		);
 	});
 
 	test("each spawn truncates the log so it stays bounded across restarts", async () => {
@@ -537,7 +572,11 @@ describe("physical broker log cap", () => {
 				);
 				closeSync(logFd);
 
-				const socketPath = join(probeAgentDir, "intercom", "broker.sock");
+				// Must come from the platform-aware helper, not a hand-built path:
+				// on Windows the broker binds a named pipe (\\.\pipe\pi-intercom-*),
+				// so probing "<agentDir>/intercom/broker.sock" can never connect and
+				// the probe reports unreachable no matter how healthy the broker is.
+				const socketPath = getBrokerSocketPath(process.platform, probeAgentDir);
 				const deadline = Date.now() + 10_000;
 				let reachable = false;
 				while (Date.now() < deadline && !reachable) {
