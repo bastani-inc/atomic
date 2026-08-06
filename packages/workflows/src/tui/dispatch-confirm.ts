@@ -273,11 +273,34 @@ function renderInputsSegment(
 	};
 }
 
+/**
+ * Anything that would break a value out of its single card row.
+ *
+ * Card rows are spliced into a bordered box by `renderRoundedBox`, which pads
+ * each row to the interior width. A value carrying a literal newline emits a
+ * second physical line that no border ever wraps, destroying the box from that
+ * row down. `truncateToWidth` cannot save us: it measures *visible width*, and
+ * a control character has none, so a `\n` survives truncation intact.
+ *
+ * This is reachable from ordinary use — any multi-line workflow input (a
+ * `prompt`, an `acceptance_criteria` block) contains newlines by nature.
+ *
+ * U+2028/U+2029 are included deliberately: `JSON.stringify` does *not* escape
+ * them, so they survive the object/array projection below, and some terminals
+ * treat them as line breaks.
+ */
+const ROW_BREAKING_RE = /[\p{Cc}\p{Cf}\u2028\u2029]+/gu;
+
+/** Collapse row-breaking characters and whitespace runs into single spaces. */
+function toSingleLine(value: string): string {
+	return value.replace(ROW_BREAKING_RE, " ").replace(/ {2,}/g, " ").trim();
+}
+
 function renderInputValue(value: unknown, budget: number): string {
 	if (typeof value === "string") {
 		// Reserve 2 cells for the surrounding quotes; truncate the interior.
 		const interior = Math.max(0, budget - 2);
-		const trimmed = truncateToWidth(value, interior, ELLIPSIS);
+		const trimmed = truncateToWidth(toSingleLine(value), interior, ELLIPSIS);
 		return `"${trimmed}"`;
 	}
 	if (typeof value === "number" || typeof value === "boolean") {
@@ -285,8 +308,9 @@ function renderInputValue(value: unknown, budget: number): string {
 	}
 	if (value === null) return "null";
 	// Objects / arrays — show a compact JSON projection within budget.
+	// JSON.stringify escapes \n as literal backslash-n, but not U+2028/U+2029.
 	const json = JSON.stringify(value);
-	return truncateToWidth(json ?? "", budget, ELLIPSIS);
+	return truncateToWidth(toSingleLine(json ?? ""), budget, ELLIPSIS);
 }
 
 /**

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the `DISPATCHED` confirmation panel being torn apart by any workflow input containing a newline. Input values were truncated by visible width, which a control character does not have, so an embedded newline survived truncation and emitted extra physical lines that no border ever wrapped — the box was destroyed from that row down. Multi-line inputs are ordinary, so this fired for most real launches: a `prompt` or an `acceptance_criteria` block reliably reproduced it. String values and the object/array JSON projection now collapse control characters, `U+2028`, and `U+2029` to single spaces before truncation, so a run card stays one row per value. `U+2028`/`U+2029` are included because `JSON.stringify` does not escape them and some terminals still break lines on them. As a side effect, escape sequences in an input value can no longer inject ANSI styling into the chat surface.
+
 ## [0.9.13-alpha.1] - 2026-08-05
 
 ### Added

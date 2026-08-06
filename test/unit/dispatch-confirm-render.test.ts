@@ -234,3 +234,112 @@ describe("renderDispatchConfirm — plain", () => {
 		assert.match(out, /▸ \/workflow connect 5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 	});
 });
+
+describe("renderDispatchConfirm — multi-line input values", () => {
+	const WIDTH = 120;
+
+	/**
+	 * Every rendered row must be exactly the render width. A value carrying a
+	 * literal newline used to emit extra physical lines that no border wrapped,
+	 * so the box was destroyed from that row down. Multi-line inputs are
+	 * ordinary: any `prompt` or `acceptance_criteria` block contains newlines.
+	 */
+	const assertAllRowsExactWidth = (out: string, width: number) => {
+		const offenders = out
+			.split("\n")
+			.map((line, index) => ({ index, width: visibleWidth(line), line }))
+			.filter((row) => row.width !== width);
+		assert.deepEqual(
+			offenders.map((row) => ({ index: row.index, width: row.width })),
+			[],
+			`every row must be ${width} cells; got ${JSON.stringify(offenders, null, 2)}`,
+		);
+	};
+
+	const multiLineInputs = {
+		prompt: "<keepContext>\nImplement the thing.\n</keepContext>",
+		acceptance_criteria: "<keepContext>\nAll criteria must hold.\n</keepContext>",
+		git_worktree_dir: "/Users/example/projects/checkout",
+		base_branch: "main",
+		create_pr: false,
+	};
+
+	test("newline-bearing values never break the box (themed)", () => {
+		const out = renderDispatchConfirm({
+			workflowName: "ralph",
+			runId: "12ffba70-4883-408e-9101-8dc400a1d999",
+			inputs: multiLineInputs,
+			theme: deriveGraphTheme({}),
+			width: WIDTH,
+		});
+		assertAllRowsExactWidth(out, WIDTH);
+		assert.doesNotMatch(stripAnsi(out).split("\n").slice(1, -1).join("\n"), /^[^│]/m);
+	});
+
+	test("newline-bearing values never break the box (plain)", () => {
+		const out = renderDispatchConfirm({
+			workflowName: "ralph",
+			runId: "12ffba70-4883-408e-9101-8dc400a1d999",
+			inputs: multiLineInputs,
+			width: WIDTH,
+		});
+		assertAllRowsExactWidth(out, WIDTH);
+	});
+
+	test("CR, CRLF, and tab are collapsed rather than emitted", () => {
+		const out = renderDispatchConfirm({
+			workflowName: "primer",
+			runId: "7c02aa31-aaaa-bbbb-cccc-dddddddddddd",
+			inputs: { note: "alpha\r\nbeta\rgamma\tdelta" },
+			width: WIDTH,
+		});
+		assertAllRowsExactWidth(out, WIDTH);
+		const plain = stripAnsi(out);
+		assert.doesNotMatch(plain, /\r/);
+		assert.doesNotMatch(plain, /\t/);
+		// The surviving text stays readable on one row.
+		assert.match(plain, /alpha beta gamma delta/);
+	});
+
+	test("U+2028/U+2029 survive JSON.stringify and must still be collapsed", () => {
+		// JSON.stringify does NOT escape these, so the object projection would
+		// otherwise carry a terminal-visible line break into a card row.
+		const out = renderDispatchConfirm({
+			workflowName: "primer",
+			runId: "9a41bb02-aaaa-bbbb-cccc-dddddddddddd",
+			inputs: { cfg: { label: "one\u2028two\u2029three" } },
+			width: WIDTH,
+		});
+		assertAllRowsExactWidth(out, WIDTH);
+		assert.doesNotMatch(out, /[\u2028\u2029]/);
+	});
+
+	test("escape sequences in an input value cannot inject ANSI into the card", () => {
+		const out = renderDispatchConfirm({
+			workflowName: "primer",
+			runId: "3f7c1d90-aaaa-bbbb-cccc-dddddddddddd",
+			inputs: { note: "safe\u001b[31mINJECTED\u001b[0m" },
+			width: WIDTH,
+		});
+		assertAllRowsExactWidth(out, WIDTH);
+		assert.match(stripAnsi(out), /safe\[31mINJECTED\[0m|safe/);
+		assert.doesNotMatch(out, /\u001b\[31m/);
+	});
+
+	test("single-line inputs are unchanged by the sanitizer", () => {
+		// 140 cells, not WIDTH: at 120 the per-pair value budget truncates
+		// "map the codebase" on its own. That is pre-existing truncation
+		// policy, and asserting against it here would test the wrong thing —
+		// this case exists to prove the sanitizer leaves clean values alone.
+		const wideEnough = 140;
+		const out = renderDispatchConfirm({
+			workflowName: "primer",
+			runId: "1d5e7a44-aaaa-bbbb-cccc-dddddddddddd",
+			inputs: { prompt: "map the codebase", max_branches: 4 },
+			width: wideEnough,
+		});
+		assertAllRowsExactWidth(out, wideEnough);
+		assert.match(stripAnsi(out), /prompt="map the codebase"/);
+		assert.match(stripAnsi(out), /max_branches=4/);
+	});
+});
