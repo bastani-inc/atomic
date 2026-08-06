@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed native macOS `Cmd+V` so clipboard images paste into the editor without duplicate image inserts from terminal key repeats ([#2186](https://github.com/bastani-inc/atomic/issues/2186)).
+
 ## [0.9.13-alpha.1] - 2026-08-05
 
 ### Added
