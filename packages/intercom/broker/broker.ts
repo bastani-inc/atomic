@@ -8,6 +8,7 @@ import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { normalizeGroup } from "../group.js";
+import { installBoundedStderr } from "./bounded-stderr.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -313,5 +314,9 @@ class IntercomBroker {
     process.exit(0);
   }
 }
+
+// Cap the startup log before anything can write to it. The parent opened the descriptor and
+// will exit; only the broker itself can bound what lands in broker.log from here on.
+installBoundedStderr();
 
 new IntercomBroker().start();

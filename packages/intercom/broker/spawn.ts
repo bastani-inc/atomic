@@ -21,8 +21,11 @@ const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
 const BROKER_LOG = getBrokerLogPath();
 
 /**
- * How much of the broker startup log is read back into an error message. The log itself is
- * truncated on every spawn, so this also bounds what a single startup can leave behind.
+ * How much of the broker startup log is read back into an error message.
+ *
+ * This is a read bound only. The file's physical size is capped separately, inside the broker
+ * process, by {@link BROKER_LOG_MAX_BYTES} in `bounded-stderr.ts` — nothing the parent does can
+ * bound a detached child that keeps appending after the parent exits.
  */
 export const BROKER_LOG_TAIL_BYTES = 8 * 1024;
 
