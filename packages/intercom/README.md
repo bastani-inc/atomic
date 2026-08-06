@@ -444,7 +444,10 @@ Runtime files live under the active agent directory. Atomic defaults to `~/.atom
 - `broker-launch.vbs` — Windows helper script used to launch the broker without a console window
 - `broker.pid` — Broker process ID
 - `broker.spawn.lock` — Short-lived lock used to avoid duplicate auto-spawns
+- `broker.log` — Broker stderr from the current startup, truncated on every spawn
 - `config.json` — User configuration
+
+The broker is a detached subprocess and never inherits the host's extension-loader module aliases, so every module reachable from `broker/broker.ts` resolves to Node built-ins or Intercom's own files. Its stderr is captured to `broker.log` through an already-open file descriptor rather than a pipe, because a pipe to a process that outlives its parent breaks once the parent exits. Startup failures — both an early exit and a readiness timeout — quote the log path and a bounded tail of that output.
 
 ## Design Decisions
 
