@@ -7,6 +7,8 @@ import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.
 const EMPTY_BRACKETED_PASTE = "\x1b[200~\x1b[201~";
 const F9_SEQUENCE = "\x1b[20~";
 const KITTY_SUPER_V = "\x1b[118;9u";
+const KITTY_SUPER_V_REPEAT = "\x1b[118;9:2u";
+const KITTY_CTRL_V_REPEAT = "\x1b[118;5:2u";
 
 class FakeTerminal implements Terminal {
 	columns = 80;
@@ -167,7 +169,6 @@ describe("CustomEditor macOS empty paste routing", () => {
 		});
 	});
 
-
 	it("routes Kitty-protocol super+v on darwin to onPasteImage once without changing the draft", () => {
 		withPlatform("darwin", () => {
 			const editor = createEditor();
@@ -185,6 +186,22 @@ describe("CustomEditor macOS empty paste routing", () => {
 		});
 	});
 
+	it("does not repeat image paste for Kitty-protocol super+v repeat events on darwin", () => {
+		withPlatform("darwin", () => {
+			const editor = createEditor();
+			let pasteImageCalls = 0;
+			editor.onPasteImage = () => {
+				pasteImageCalls += 1;
+			};
+			editor.setText("seed");
+
+			editor.handleInput(KITTY_SUPER_V_REPEAT);
+
+			expect(pasteImageCalls).toBe(0);
+			expect(editor.getText()).toBe("seed");
+		});
+	});
+
 	it("does not call onPasteImage for Kitty-protocol super+v on linux", () => {
 		withPlatform("linux", () => {
 			const editor = createEditor();
@@ -195,6 +212,22 @@ describe("CustomEditor macOS empty paste routing", () => {
 			editor.setText("seed");
 
 			editor.handleInput(KITTY_SUPER_V);
+
+			expect(pasteImageCalls).toBe(0);
+			expect(editor.getText()).toBe("seed");
+		});
+	});
+
+	it("does not repeat the explicit pasteImage keybinding for Kitty repeat events", () => {
+		withPlatform("linux", () => {
+			const editor = createEditor({ "app.clipboard.pasteImage": "ctrl+v" });
+			let pasteImageCalls = 0;
+			editor.onPasteImage = () => {
+				pasteImageCalls += 1;
+			};
+			editor.setText("seed");
+
+			editor.handleInput(KITTY_CTRL_V_REPEAT);
 
 			expect(pasteImageCalls).toBe(0);
 			expect(editor.getText()).toBe("seed");

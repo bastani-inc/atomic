@@ -3,6 +3,7 @@ import {
 	Editor,
 	type EditorOptions,
 	type EditorTheme,
+	isKeyRepeat,
 	matchesKey,
 	type TUI,
 	truncateToWidth,
@@ -157,8 +158,12 @@ export class CustomEditor extends Editor {
 
 		// Explicit Image Paste keybinding, or macOS Native Paste (image-only Cmd+V
 		// as empty bracketed paste or Kitty-protocol super+v).
-		if (this.keybindings.matches(data, "app.clipboard.pasteImage") || isMacosNativeImagePasteSignal(data)) {
-			this.onPasteImage?.();
+		const isPasteImageSignal =
+			this.keybindings.matches(data, "app.clipboard.pasteImage") || isMacosNativeImagePasteSignal(data);
+		if (isPasteImageSignal) {
+			if (!isKeyRepeat(data)) {
+				this.onPasteImage?.();
+			}
 			return;
 		}
 

@@ -21,7 +21,7 @@
 - Fixed a context overflow that compaction cannot resolve to advance the configured `fallbackModels` chain instead of ending the turn, so a larger-context candidate can answer. Compaction still runs first, and a compactable overflow spends no fallback candidate ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
 - Fixed a reasoning-level change during a model fallback stranding the session on the fallback model. Changing reasoning effort is not a model choice, so it no longer cancels the pending restore; the next turn returns to the user-selected primary and keeps the reasoning level that was chosen. Only an explicit `/model` selection or model cycle cancels the restore ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
 - Fixed gRPC `ResourceExhausted` provider errors, seen from providers such as NVIDIA NIM, bypassing the same-model auto-retry budget. They are now retried like other transient provider failures, matching upstream pi-ai, and still advance a configured fallback chain when the retries are exhausted ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
-- Fixed native macOS `Cmd+V` so clipboard images paste into the editor ([#2186](https://github.com/bastani-inc/atomic/issues/2186)).
+- Fixed native macOS `Cmd+V` so clipboard images paste into the editor without duplicate image inserts from terminal key repeats ([#2186](https://github.com/bastani-inc/atomic/issues/2186)).
 
 ## [0.9.12] - 2026-08-04
 
