@@ -217,6 +217,21 @@ atomic_native_filename() {
     esac
 }
 
+# The @embedded-postgres leaf that can actually run on each archive. `embedded-postgres`
+# publishes no arm64 Windows package, so windows-arm64 names one that never matches and
+# every leaf is pruned.
+embedded_postgres_package_name() {
+    case "$1" in
+        darwin-arm64) echo "darwin-arm64" ;;
+        darwin-x64) echo "darwin-x64" ;;
+        linux-x64) echo "linux-x64" ;;
+        linux-arm64) echo "linux-arm64" ;;
+        windows-x64) echo "windows-x64" ;;
+        windows-arm64) echo "windows-arm64" ;;
+        *) echo "Unknown platform: $1" >&2; return 1 ;;
+    esac
+}
+
 win32_console_mode_arch() {
     case "$1" in
         windows-x64) echo "x64" ;;
@@ -253,6 +268,15 @@ for platform in "${PLATFORMS[@]}"; do
         # The embedded-postgres wrapper remains useful for its Docker/in-memory fallback,
         # but its optional @embedded-postgres/* packages contain glibc binaries only.
         rm -rf "binaries/$platform/node_modules/@embedded-postgres"
+    else
+        # Every archive is built on one runner, so the shared runtime copy carries that
+        # runner's @embedded-postgres binary into all of them. Keep only the leaf that
+        # matches this archive; a foreign one cannot run and the wrapper falls back.
+        embedded_postgres_leaf="$(embedded_postgres_package_name "$platform")"
+        embedded_postgres_dir="binaries/$platform/node_modules/@embedded-postgres"
+        if [ -d "$embedded_postgres_dir" ]; then
+            find "$embedded_postgres_dir" -mindepth 1 -maxdepth 1 -type d ! -name "$embedded_postgres_leaf" -exec rm -rf {} +
+        fi
     fi
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
     find "binaries/$platform/node_modules/@bastani/atomic-natives" -maxdepth 1 -type f -name 'atomic_natives.*.node' -delete
@@ -267,6 +291,10 @@ for platform in "${PLATFORMS[@]}"; do
 
     cp -r docs "binaries/$platform/"
     cp -r examples "binaries/$platform/"
+
+    # Last gate before the archive is created: no package staged here may declare a platform
+    # this archive cannot run. Atomic 0.9.12 shipped @esbuild/linux-x64 in the arm64 archives.
+    bun run ../../packages/coding-agent/scripts/assert-archive-architecture.ts "binaries/$platform" --platform "$platform"
 done
 
 rm -rf "$runtime_deps_dir" "$shared_app_dir"
