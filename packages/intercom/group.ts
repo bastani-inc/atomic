@@ -1,4 +1,13 @@
-import { getEnvValue } from "@bastani/atomic";
+/**
+ * Mirrors `getEnvValue("ATOMIC_INTERCOM_GROUP")` locally so the detached broker subprocess
+ * needs no host package. `getEnvValue` returns the first value that is `!== undefined` across
+ * `[ATOMIC_INTERCOM_GROUP, PI_INTERCOM_GROUP]`, so a defined-but-empty ATOMIC value
+ * deliberately shadows the legacy name and yields `""`; `resolveHomeGroup` then falls through
+ * on the empty string. `??` reproduces that exactly — do not "improve" it to `||`.
+ */
+function intercomGroupFromEnv(): string | undefined {
+  return process.env.ATOMIC_INTERCOM_GROUP ?? process.env.PI_INTERCOM_GROUP;
+}
 
 /** The implicit group every ungrouped session belongs to. */
 export const DEFAULT_GROUP = "default";
@@ -13,9 +22,6 @@ export function normalizeGroup(value?: string | null): string {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : DEFAULT_GROUP;
 }
-
-/** `getEnvValue("ATOMIC_INTERCOM_GROUP")` also resolves the legacy `PI_INTERCOM_GROUP`. */
-const INTERCOM_GROUP_ENV = "ATOMIC_INTERCOM_GROUP";
 
 interface HomeGroupContext {
   orchestrationContext?: { intercomGroup?: string } | undefined;
@@ -35,7 +41,7 @@ export function resolveHomeGroup(
   if (typeof fromContext === "string" && fromContext.trim().length > 0) {
     return normalizeGroup(fromContext);
   }
-  const fromEnv = getEnvValue(INTERCOM_GROUP_ENV);
+  const fromEnv = intercomGroupFromEnv();
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
     return normalizeGroup(fromEnv);
   }

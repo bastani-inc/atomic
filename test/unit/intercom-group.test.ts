@@ -55,3 +55,23 @@ test("resolveHomeGroup precedence: orchestrationContext > env > config > default
 	assert.equal(resolveHomeGroup({}, {}), DEFAULT_GROUP);
 	assert.equal(resolveHomeGroup(undefined, undefined), DEFAULT_GROUP);
 });
+
+test("a defined-but-empty ATOMIC_INTERCOM_GROUP shadows the legacy PI_INTERCOM_GROUP", () => {
+	// `getEnvValue` returned the first `!== undefined` value across [ATOMIC_*, PI_*], so an empty
+	// ATOMIC value yields "" and never falls back to the legacy name. The local helper uses `??`
+	// to keep that exactly; `||` would wrongly resolve "legacy" here.
+	setEnv("ATOMIC_INTERCOM_GROUP", "");
+	setEnv("PI_INTERCOM_GROUP", "legacy");
+
+	assert.equal(resolveHomeGroup({ group: "configured" }, {}), "configured");
+	assert.equal(resolveHomeGroup(undefined, {}), DEFAULT_GROUP);
+	assert.equal(resolveHomeGroup({ group: "configured" }, { orchestrationContext: { intercomGroup: "ctx" } }), "ctx");
+
+	// A whitespace-only ATOMIC value shadows the legacy name the same way.
+	setEnv("ATOMIC_INTERCOM_GROUP", "   ");
+	assert.equal(resolveHomeGroup({ group: "configured" }, {}), "configured");
+
+	// Only an entirely absent ATOMIC value defers to the legacy name.
+	setEnv("ATOMIC_INTERCOM_GROUP", undefined);
+	assert.equal(resolveHomeGroup({ group: "configured" }, {}), "legacy");
+});
