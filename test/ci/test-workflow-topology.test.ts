@@ -73,7 +73,19 @@ test("one SHA runs this workflow once, and no group can cancel a run mid-flight"
 	assert.ok(onIndex >= 0 && jobsIndex > onIndex, "test.yml must declare `on:` above `jobs:`");
 	const triggers = workflow.slice(onIndex + 1, jobsIndex + 1);
 
-	const branches = /^ {4}branches: \[([^\]]*)\]$/mu.exec(triggers);
+	// Scoped to the `push` mapping rather than the whole trigger block. A bare
+	// four-space `branches:` search can be satisfied by a filter belonging to some
+	// other trigger, which would leave "only main runs on push" asserted by
+	// nothing at all -- including in the case this test exists to catch, where
+	// `push:` is dropped or re-widened while another trigger carries `[main]`.
+	const pushIndex = triggers.indexOf("  push:");
+	assert.ok(pushIndex >= 0, "the workflow must still run on pushes to main");
+	const afterPush = triggers.slice(pushIndex);
+	const pushBodyStart = afterPush.indexOf("\n") + 1;
+	const pushBodyEnd = afterPush.slice(pushBodyStart).search(/^ {0,2}\S/mu);
+	const push = pushBodyEnd >= 0 ? afterPush.slice(0, pushBodyStart + pushBodyEnd) : afterPush;
+
+	const branches = /^ {4}branches: \[([^\]]*)\]$/mu.exec(push);
 	assert.ok(branches, "the push trigger must carry an explicit branch filter");
 	assert.deepEqual(
 		(branches[1] as string).split(",").map((branch) => branch.trim().replace(/^"|"$/gu, "")),
