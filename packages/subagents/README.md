@@ -196,7 +196,7 @@ Use the optional prompt shortcuts below when you want the pattern to be repeatab
 
 Packaged `planner`, `worker`, and `oracle` default to forked context when a launch omits `context`; pass `context: "fresh"` when you intentionally want a fresh child run.
 
-Child-safety boundaries are enforced at runtime. Spawned child sessions do not register the `subagent` tool or receive the bundled `pi-subagents` skill unless the parent intentionally selected an explicit fanout agent whose resolved builtin `tools` includes `subagent`. Non-fanout children receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents; authorized fanout children get a narrower boundary that limits nested delegation to the assigned fanout. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
+Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. Non-fanout children receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents; authorized fanout children get a narrower boundary that limits nested delegation to the assigned fanout. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
 
 ## Optional shortcuts
 
@@ -641,7 +641,7 @@ Missing skills do not fail execution. The result summary shows a warning.
 
 ### Bundled skill
 
-The package bundles a `subagent` skill that is automatically available to the parent agent when the extension is installed. It is for the orchestrating parent only: child subagents never receive it unless explicitly authorized for fanout, and their context is filtered to strip parent-only orchestration instructions.
+The package bundles a `subagent` skill that is automatically available to the parent agent when the extension is installed. It is for the orchestrating parent only: it is stripped from every child prompt, including fanout-authorized children, and child context is filtered to strip parent-only orchestration instructions. A child may still have the `subagent` tool registered; typed admission policy, not the skill, decides which of its actions are allowed.
 
 What the bundled skill covers:
 - **Delegation patterns**: when to launch which agent, whether to use single, parallel, chain, or async mode, and whether to use fresh or forked context
