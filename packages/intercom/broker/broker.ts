@@ -1,3 +1,6 @@
+// MUST stay first: ESM evaluates static dependencies before the importer's body, so this is the
+// only position from which the stderr cap covers the other modules' own initialization.
+import "./bounded-stderr-install.js";
 import net from "net";
 import { writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { randomUUID } from "crypto";
@@ -8,7 +11,6 @@ import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { normalizeGroup } from "../group.js";
-import { installBoundedStderr } from "./bounded-stderr.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -315,8 +317,5 @@ class IntercomBroker {
   }
 }
 
-// Cap the startup log before anything can write to it. The parent opened the descriptor and
-// will exit; only the broker itself can bound what lands in broker.log from here on.
-installBoundedStderr();
-
+// The stderr cap is already in place: `./bounded-stderr-install.js` is this file's first import.
 new IntercomBroker().start();

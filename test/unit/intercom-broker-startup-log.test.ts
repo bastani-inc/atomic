@@ -3,14 +3,17 @@ import { spawn } from "node:child_process";
 import {
 	appendFileSync,
 	closeSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -22,6 +25,19 @@ import {
 } from "../../packages/intercom/broker/bounded-stderr.js";
 import { bunExecutable } from "../helpers/runtime.js";
 
+/** Resolves true once the broker socket accepts a connection. */
+function connectable(socketPath: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.connect(socketPath);
+		const finish = (value: boolean) => {
+			socket.destroy();
+			resolve(value);
+		};
+		socket.on("connect", () => finish(true));
+		socket.on("error", () => finish(false));
+		setTimeout(() => finish(false), 500);
+	});
+}
 /** Shapes the limiter patches; mirrored here so the fakes stay honest about the real contract. */
 interface WritableLike {
 	write(chunk: string | Uint8Array, encodingOrCallback?: unknown, maybeCallback?: () => void): boolean;
@@ -351,14 +367,21 @@ describe("physical broker log cap", () => {
 		assert.ok(spawnModule.BROKER_LOG_TAIL_BYTES <= BROKER_LOG_MAX_BYTES);
 	});
 
-	test("the broker installs the cap before it starts listening", () => {
+	test("the installer is the broker's very first import", () => {
 		const source = readFileSync(join(process.cwd(), "packages/intercom/broker/broker.ts"), "utf8");
-		const install = source.indexOf("installBoundedStderr()");
-		const start = source.indexOf("new IntercomBroker().start()");
+		const firstImport = source.match(/^import[^\n]*$/mu)?.[0];
 
-		assert.ok(source.includes('from "./bounded-stderr.js"'));
-		assert.ok(install > 0, "broker.ts never installs the stderr cap");
-		assert.ok(install < start, "the cap must be installed before the broker starts listening");
+		// ESM evaluates static dependencies before the importer's body, so any import placed above
+		// this one could write unbounded stderr while it initializes.
+		assert.equal(firstImport, 'import "./bounded-stderr-install.js";');
+		assert.equal(source.includes("installBoundedStderr("), false, "the entrypoint must not call it directly");
+
+		const installer = readFileSync(join(process.cwd(), "packages/intercom/broker/bounded-stderr-install.ts"), "utf8");
+		assert.ok(installer.includes('from "./bounded-stderr.js"'));
+		assert.ok(installer.includes("installBoundedStderr();"));
+		// Installing at the utility's module scope would patch process globals for every importer.
+		const utility = readFileSync(join(process.cwd(), "packages/intercom/broker/bounded-stderr.ts"), "utf8");
+		assert.equal(/^installBoundedStderr\(/mu.test(utility), false);
 	});
 
 	interface CapProbe {
@@ -445,6 +468,100 @@ describe("physical broker log cap", () => {
 				REAL_BROKER_STARTUP_TIMEOUT_MS,
 			);
 		}
+	}
+
+	interface ImportTimeProbe {
+		readonly name: string;
+		/** Kept very short: the agent directory holds a Unix socket, and macOS caps that path near 104 bytes. */
+		readonly slug: string;
+		readonly prelude: string;
+		/** The broker only reaches its socket when the poisoned module does not throw. */
+		readonly expectReachable: boolean;
+	}
+
+	const importTimeProbes: readonly ImportTimeProbe[] = [
+		{
+			name: "oversized write while a dependency initializes",
+			slug: "w",
+			prelude: `process.stderr.write("P".repeat(BYTES));`,
+			expectReachable: true,
+		},
+		{
+			name: "throw while a dependency initializes",
+			slug: "t",
+			prelude: `throw new Error("Q".repeat(BYTES));`,
+			expectReachable: false,
+		},
+	];
+
+	for (const probe of importTimeProbes) {
+		test(
+			`the cap already applies to an ${probe.name}`,
+			async () => {
+				// A real copy of the broker's own module graph, so the poisoned module is genuinely
+				// imported by the entrypoint and evaluated before its body runs. Only the files the
+				// graph reaches are copied: `skills/` and `ui/` would add cost for no coverage.
+				const packageRoot = join(agentDir, `pkg-${probe.slug}`);
+				const packageSource = join(process.cwd(), "packages/intercom");
+				mkdirSync(packageRoot, { recursive: true });
+				cpSync(join(packageSource, "broker"), join(packageRoot, "broker"), { recursive: true });
+				cpSync(join(packageSource, "package.json"), join(packageRoot, "package.json"));
+				for (const entry of readdirSync(packageSource, { withFileTypes: true })) {
+					if (entry.isFile() && entry.name.endsWith(".ts")) {
+						cpSync(join(packageSource, entry.name), join(packageRoot, entry.name));
+					}
+				}
+				const poisoned = join(packageRoot, "group.ts");
+				const attemptedBytes = BROKER_LOG_MAX_BYTES * 4;
+				writeFileSync(
+					poisoned,
+					`${probe.prelude.replaceAll("BYTES", String(attemptedBytes))}\n${readFileSync(poisoned, "utf8")}`,
+					"utf8",
+				);
+
+				const probeAgentDir = join(agentDir, `a-${probe.slug}`);
+				mkdirSync(join(probeAgentDir, "intercom"), { recursive: true });
+				const capLogPath = join(probeAgentDir, "intercom", "broker.log");
+				const logFd = openSync(capLogPath, "w");
+				const child = spawn(
+					process.execPath,
+					[
+						spawnModule.getJitiCliPath(join(process.cwd(), "packages/intercom")),
+						join(packageRoot, "broker", "broker.ts"),
+					],
+					{
+						detached: true,
+						stdio: ["ignore", "ignore", logFd],
+						env: { ...process.env, ATOMIC_CODING_AGENT_DIR: probeAgentDir, NODE_NO_WARNINGS: "1" },
+					},
+				);
+				closeSync(logFd);
+
+				const socketPath = join(probeAgentDir, "intercom", "broker.sock");
+				const deadline = Date.now() + 10_000;
+				let reachable = false;
+				while (Date.now() < deadline && !reachable) {
+					reachable = await connectable(socketPath);
+					if (!reachable) await new Promise((resolve) => setTimeout(resolve, 20));
+					if (!reachable && child.exitCode !== null) break;
+				}
+				assert.equal(reachable, probe.expectReachable);
+
+				const size = statSync(capLogPath).size;
+				assert.ok(size > 0, "the probe wrote nothing, so the cap was not exercised");
+				assert.ok(
+					size <= BROKER_LOG_MAX_BYTES,
+					`log grew to ${size} bytes after ${attemptedBytes} were attempted, cap is ${BROKER_LOG_MAX_BYTES}`,
+				);
+
+				try {
+					if (child.pid !== undefined) process.kill(child.pid, "SIGTERM");
+				} catch {
+					// Already gone.
+				}
+			},
+			REAL_BROKER_STARTUP_TIMEOUT_MS,
+		);
 	}
 });
 
