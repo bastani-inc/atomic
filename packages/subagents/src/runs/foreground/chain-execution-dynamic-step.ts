@@ -171,6 +171,7 @@ export async function runDynamicParallelChainStep(input: {
 		foregroundControl: context.foregroundControl,
 		nestedRoute: context.params.nestedRoute,
 		maxSubagentDepth: context.params.maxSubagentDepth,
+		parentDepth: context.params.parentDepth,
 		workflowStageSubagentGuard: context.params.workflowStageSubagentGuard,
 		runSync: context.executeRunSync,
 		onDetachedExit: context.onDetachedExit,

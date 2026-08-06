@@ -196,6 +196,7 @@ export async function runSinglePath(
 			outputPath,
 			outputMode: effectiveOutputMode,
 			maxSubagentDepth,
+			parentDepth: data.parentDepth,
 			workflowStageSubagentGuard,
 			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
 			onUpdate: forwardSingleUpdate,
@@ -262,7 +263,13 @@ export async function runSinglePath(
 		artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		truncation: r.truncation,
 	});
-	rememberForegroundRun(deps.state, { runId, mode: "single", cwd: effectiveCwd, results: details.results });
+	rememberForegroundRun(deps.state, {
+		runId,
+		mode: "single",
+		cwd: effectiveCwd,
+		results: details.results,
+		maxSubagentDepths: [maxSubagentDepth],
+	});
 
 	if (!r.detached && !r.interrupted) {
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);

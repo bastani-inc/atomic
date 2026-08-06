@@ -139,6 +139,7 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			outputPath,
 			outputMode: behavior.outputMode,
 			maxSubagentDepth,
+			parentDepth: input.parentDepth,
 			workflowStageSubagentGuard: input.workflowStageSubagentGuard,
 			workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 			controlConfig: input.controlConfig,

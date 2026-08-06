@@ -93,6 +93,7 @@ export interface ChainExecutionParams {
 	chainDir?: string;
 	dynamicFanoutMaxItems?: number;
 	maxSubagentDepth: number;
+	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	nestedRoute?: NestedRouteInfo;
 	worktreeSetupHook?: string;
@@ -146,6 +147,7 @@ export interface ParallelChainRunInput {
 	dynamicGroupStatuses?: ChainExecutionDetailsInput["dynamicGroupStatuses"];
 	worktreeSetup?: WorktreeSetup;
 	maxSubagentDepth: number;
+	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	nestedRoute?: NestedRouteInfo;
 	runSync: RunSyncDependency;

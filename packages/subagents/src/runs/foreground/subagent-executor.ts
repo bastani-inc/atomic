@@ -14,7 +14,9 @@ import { toModelInfo } from "../../shared/model-info.ts";
 import { resolveSingleProgress } from "../../shared/settings.ts";
 import {
 	DEFAULT_ARTIFACT_CONFIG,
+	getCurrentSubagentDepth,
 	isWorkflowStageOrchestrationContext,
+	resolveChildMaxSubagentDepth,
 	resolveWorkflowStageMaxSubagentDepth,
 	SUBAGENT_ACTIONS,
 	type SubagentToolResult,
@@ -104,7 +106,16 @@ async function resumeRetainedForegroundChild(
 		progress: resolveSingleProgress(agentConfig, params.progress, message),
 		modelOverride: params.model,
 		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
-		maxSubagentDepth: resolveWorkflowStageMaxSubagentDepth(ctx, deps.config.maxSubagentDepth),
+		// The child's own effective limit, recorded when the run was retained. An
+		// older record without one falls back to narrowing the current limit by the
+		// agent definition, so a resume never widens a child's delegation budget.
+		maxSubagentDepth:
+			child.maxSubagentDepth ??
+			resolveChildMaxSubagentDepth(
+				resolveWorkflowStageMaxSubagentDepth(ctx, deps.config.maxSubagentDepth),
+				agentConfig.maxSubagentDepth,
+			),
+		parentDepth: getCurrentSubagentDepth(ctx),
 		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
 		controlConfig: resolveControlConfig(deps.config.control, params.control),
 		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
@@ -115,6 +126,13 @@ async function resumeRetainedForegroundChild(
 	});
 }
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
+/**
+ * Management actions that only observe. Every other action either mutates agent
+ * definitions or starts/continues agent execution, so a child without fanout
+ * authorization is refused all of them.
+ */
+const READ_ONLY_MANAGEMENT_ACTIONS = new Set(["list", "get", "status", "doctor"]);
+const FANOUT_REFUSAL_MESSAGE = "Subagent fanout is not authorized for this child.";
 
 export type { SubagentExecutorRuntimeDeps, SubagentParamsLike } from "./subagent-executor-types.ts";
 
@@ -132,6 +150,30 @@ async function handleManagementRequest(input: {
 			content: [{ type: "text", text: "Missing action." }],
 			isError: true,
 			details: { mode: "management", results: [] },
+		};
+	}
+	if (!(SUBAGENT_ACTIONS as readonly string[]).includes(action)) {
+		return {
+			content: [{ type: "text", text: `Unknown action: ${action}. Valid: ${SUBAGENT_ACTIONS.join(", ")}` }],
+			isError: true,
+			details: { mode: "management" as const, results: [] },
+		};
+	}
+	if (isManagementActionsRestricted(deps) && MUTATING_MANAGEMENT_ACTIONS.has(action)) {
+		return {
+			content: [{ type: "text", text: `Action '${action}' is not available from child-safe subagent fanout mode.` }],
+			isError: true,
+			details: { mode: "management" as const, results: [] },
+		};
+	}
+	// `resume` revives a child and `interrupt` is privileged control over a
+	// running one; both continue agent execution, so only the observing actions
+	// reach their handlers for a child without fanout authorization.
+	if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized && !READ_ONLY_MANAGEMENT_ACTIONS.has(action)) {
+		return {
+			content: [{ type: "text", text: FANOUT_REFUSAL_MESSAGE }],
+			isError: true,
+			details: { mode: "management" as const, results: [] },
 		};
 	}
 	if (action === "doctor") {
@@ -229,20 +271,6 @@ async function handleManagementRequest(input: {
 			details: { mode: "management", results: [] },
 		};
 	}
-	if (!(SUBAGENT_ACTIONS as readonly string[]).includes(action)) {
-		return {
-			content: [{ type: "text", text: `Unknown action: ${action}. Valid: ${SUBAGENT_ACTIONS.join(", ")}` }],
-			isError: true,
-			details: { mode: "management" as const, results: [] },
-		};
-	}
-	if (isManagementActionsRestricted(deps) && MUTATING_MANAGEMENT_ACTIONS.has(action)) {
-		return {
-			content: [{ type: "text", text: `Action '${action}' is not available from child-safe subagent fanout mode.` }],
-			isError: true,
-			details: { mode: "management" as const, results: [] },
-		};
-	}
 	return handleManagementAction(action, paramsWithResolvedCwd, { ...ctx, cwd: requestCwd });
 }
 
@@ -291,13 +319,13 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		if (params.action) {
 			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps });
 		}
-		// Fanout authorization gates actual delegation only. Read-only management
-		// (list/get/status/doctor/interrupt/resume) stays available to an unauthorized
-		// child; mutating management is refused by the narrower gate in
-		// handleManagementRequest.
+		// Fanout authorization gates delegation and every management action that can
+		// start or continue agent execution. Only `list`, `get`, `status`, and
+		// `doctor` stay available to an unauthorized child; `resume`, `interrupt`,
+		// and mutating management are refused inside handleManagementRequest.
 		if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized) {
 			return {
-				content: [{ type: "text", text: "Subagent fanout is not authorized for this child." }],
+				content: [{ type: "text", text: FANOUT_REFUSAL_MESSAGE }],
 				isError: true,
 				details: { mode: inferExecutionMode(params), results: [] },
 			};

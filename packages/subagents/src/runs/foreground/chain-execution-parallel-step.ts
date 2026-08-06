@@ -154,6 +154,7 @@ export async function runStaticParallelChainStep(input: {
 			nestedRoute: context.params.nestedRoute,
 			worktreeSetup,
 			maxSubagentDepth: context.params.maxSubagentDepth,
+			parentDepth: context.params.parentDepth,
 			workflowStageSubagentGuard: context.params.workflowStageSubagentGuard,
 			runSync: context.executeRunSync,
 			onDetachedExit: (index, result) => {

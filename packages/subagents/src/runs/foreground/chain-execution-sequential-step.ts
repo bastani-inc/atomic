@@ -131,6 +131,7 @@ export async function runSequentialChainStep(input: {
 		outputPath,
 		outputMode: behavior.outputMode,
 		maxSubagentDepth,
+		parentDepth: context.params.parentDepth,
 		workflowStageSubagentGuard: context.params.workflowStageSubagentGuard,
 		workflowSessionMetadata: workflowSessionMetadataFromContext(context.params.ctx),
 		controlConfig: context.controlConfig,

@@ -174,10 +174,11 @@ subagent({ agent: "worker", task: "Implement it in the background.", progress: t
 
 Child-safety boundaries are enforced by typed admission policy and the bundled subagent extension:
 
-- Normal child sessions do not receive the `subagent` tool or the parent-only subagents skill.
+- In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout. The bundled subagents skill remains parent-only and is stripped from child prompts, including fanout-authorized children.
 - Child context is filtered to remove parent orchestration artifacts, old control/status messages, and prior parent `subagent` tool calls/results.
 - Non-fanout children are instructed that they are not the parent orchestrator and must not propose or run subagents.
 - Nested fanout is available only for explicitly authorized agents whose resolved tools include `subagent`. Authorized fanout children receive narrower instructions that limit delegation to the assigned fanout.
+- Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`.
 - The recursion guard has a hard maximum of five delegated subagent levels. The admitted depth policy may choose a lower value from `0` to `5`; deeper admission is refused rather than inherited from process environment state.
 
 This keeps the parent session responsible for orchestration unless you deliberately choose a fanout-capable custom agent.

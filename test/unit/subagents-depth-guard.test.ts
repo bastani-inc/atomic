@@ -1,34 +1,31 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "vitest";
+import { describe, test } from "vitest";
 import {
 	checkSubagentDepth,
-	getSubagentDepthEnv,
 	MAX_SUBAGENT_NESTING_DEPTH,
 	resolveWorkflowStageMaxSubagentDepth,
 	subagentDepthBlockedMessage,
-	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
 } from "../../packages/subagents/src/shared/types.js";
 
-const DEPTH_ENV = "ATOMIC_SUBAGENT_DEPTH";
-const MAX_DEPTH_ENV = "ATOMIC_SUBAGENT_MAX_DEPTH";
+const childPolicy = {
+	managementActions: "full" as const,
+	fanoutAuthorized: true,
+	inheritProjectContext: false,
+	inheritSkills: false,
+};
 
-const savedEnv = new Map<string, string | undefined>();
-for (const key of [DEPTH_ENV, MAX_DEPTH_ENV, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV]) {
-	savedEnv.set(key, process.env[key]);
+function contextAtDepth(depth: number, maxSubagentDepth?: number) {
+	return {
+		subagentPolicy: {
+			...childPolicy,
+			depth,
+			...(maxSubagentDepth === undefined ? {} : { maxSubagentDepth }),
+		},
+	};
 }
-
-afterEach(() => {
-	for (const [key, value] of savedEnv) {
-		if (value === undefined) delete process.env[key];
-		else process.env[key] = value;
-	}
-});
 
 describe("subagent workflow-stage depth guard", () => {
 	test("workflow-stage context preserves stricter limits and defaults to main-chat depth", () => {
-		delete process.env[DEPTH_ENV];
-		delete process.env[MAX_DEPTH_ENV];
-		delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 		const workflowCtx = {
 			orchestrationContext: {
 				kind: "workflow-stage" as const,
@@ -54,57 +51,56 @@ describe("subagent workflow-stage depth guard", () => {
 		assert.equal(resolveWorkflowStageMaxSubagentDepth({}, undefined), MAX_SUBAGENT_NESTING_DEPTH);
 	});
 
-	test("subagent nesting defaults to and is capped at five levels", () => {
-		delete process.env[DEPTH_ENV];
-		delete process.env[MAX_DEPTH_ENV];
-		delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
+	test("the live admitted policy depth blocks at the documented five-level limit", () => {
+		const topLevel = checkSubagentDepth({});
+		assert.equal(topLevel.blocked, false);
+		assert.equal(topLevel.depth, 0);
+		assert.equal(topLevel.maxDepth, MAX_SUBAGENT_NESTING_DEPTH);
 
-		const result = checkSubagentDepth();
-		assert.equal(result.blocked, false);
-		assert.equal(result.depth, 0);
-		assert.equal(result.maxDepth, MAX_SUBAGENT_NESTING_DEPTH);
+		const oneBelow = checkSubagentDepth(contextAtDepth(MAX_SUBAGENT_NESTING_DEPTH - 1));
+		assert.equal(oneBelow.blocked, false);
+		assert.equal(oneBelow.depth, MAX_SUBAGENT_NESTING_DEPTH - 1);
 
-		process.env[MAX_DEPTH_ENV] = String(MAX_SUBAGENT_NESTING_DEPTH + 10);
-		assert.equal(checkSubagentDepth().maxDepth, MAX_SUBAGENT_NESTING_DEPTH);
-
-		const firstChildEnv = getSubagentDepthEnv(MAX_SUBAGENT_NESTING_DEPTH + 10, { workflowStageSubagentGuard: true });
-		assert.equal(firstChildEnv[DEPTH_ENV], "1");
-		assert.equal(firstChildEnv[MAX_DEPTH_ENV], String(MAX_SUBAGENT_NESTING_DEPTH));
-		assert.equal(firstChildEnv[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV], "1");
-
-		process.env[DEPTH_ENV] = firstChildEnv[DEPTH_ENV];
-		process.env[MAX_DEPTH_ENV] = firstChildEnv[MAX_DEPTH_ENV];
-		process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV] = firstChildEnv[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
-		const firstChildResult = checkSubagentDepth();
-		assert.equal(firstChildResult.blocked, false);
-		assert.equal(firstChildResult.depth, 1);
-		assert.equal(firstChildResult.maxDepth, MAX_SUBAGENT_NESTING_DEPTH);
-
-		const secondChildEnv = getSubagentDepthEnv(MAX_SUBAGENT_NESTING_DEPTH, { workflowStageSubagentGuard: true });
-		assert.equal(secondChildEnv[DEPTH_ENV], "2");
-		assert.equal(secondChildEnv[MAX_DEPTH_ENV], String(MAX_SUBAGENT_NESTING_DEPTH));
+		const atLimit = checkSubagentDepth(contextAtDepth(MAX_SUBAGENT_NESTING_DEPTH));
+		assert.equal(atLimit.blocked, true);
+		assert.equal(atLimit.depth, MAX_SUBAGENT_NESTING_DEPTH);
+		assert.equal(atLimit.maxDepth, MAX_SUBAGENT_NESTING_DEPTH);
 	});
 
-	test("workflow-stage child env marker produces nested workflow-stage rejection message", () => {
-		delete process.env[DEPTH_ENV];
-		delete process.env[MAX_DEPTH_ENV];
-		delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
+	test("a configured lower limit still applies to admitted depth", () => {
+		const result = checkSubagentDepth(contextAtDepth(2), 2);
 
-		const firstChildEnv = getSubagentDepthEnv(2, { workflowStageSubagentGuard: true });
-		process.env[DEPTH_ENV] = firstChildEnv[DEPTH_ENV];
-		process.env[MAX_DEPTH_ENV] = firstChildEnv[MAX_DEPTH_ENV];
-		process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV] = firstChildEnv[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
-		const secondChildEnv = getSubagentDepthEnv(2, { workflowStageSubagentGuard: true });
-		assert.equal(secondChildEnv[DEPTH_ENV], "2");
-		assert.equal(secondChildEnv[MAX_DEPTH_ENV], "2");
-		assert.equal(secondChildEnv[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV], "1");
-
-		process.env[DEPTH_ENV] = secondChildEnv[DEPTH_ENV];
-		process.env[MAX_DEPTH_ENV] = secondChildEnv[MAX_DEPTH_ENV];
-		process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV] = secondChildEnv[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
-		const result = checkSubagentDepth();
 		assert.equal(result.blocked, true);
-		assert.equal(result.workflowStageGuard, true);
+		assert.equal(result.depth, 2);
+		assert.equal(result.maxDepth, 2);
+	});
+
+	test("the nesting ceiling clamps a configured limit that exceeds it", () => {
+		assert.equal(checkSubagentDepth({}, MAX_SUBAGENT_NESTING_DEPTH + 10).maxDepth, MAX_SUBAGENT_NESTING_DEPTH);
+		assert.equal(
+			checkSubagentDepth(contextAtDepth(0, MAX_SUBAGENT_NESTING_DEPTH + 10)).maxDepth,
+			MAX_SUBAGENT_NESTING_DEPTH,
+		);
+	});
+
+	test("an inherited policy maximum tightens the limit and blocks below the global ceiling", () => {
+		const result = checkSubagentDepth(contextAtDepth(1, 1));
+
+		assert.equal(result.maxDepth, 1);
+		assert.equal(result.depth, 1);
+		assert.equal(result.blocked, true);
+	});
+
+	test("the stricter of the local and inherited maximums wins in either direction", () => {
+		assert.equal(checkSubagentDepth(contextAtDepth(0, 3), 2).maxDepth, 2);
+		assert.equal(checkSubagentDepth(contextAtDepth(0, 2), 3).maxDepth, 2);
+		assert.equal(checkSubagentDepth(contextAtDepth(0), 3).maxDepth, 3);
+	});
+
+	test("workflow-stage rejection uses the workflow-specific message", () => {
+		const result = checkSubagentDepth(contextAtDepth(2), 2);
+
+		assert.equal(result.blocked, true);
 		assert.match(
 			subagentDepthBlockedMessage(result.depth, result.maxDepth, { workflowStageGuard: true }),
 			/Sub-agents inside workflow stages are running at the maximum nesting depth/,

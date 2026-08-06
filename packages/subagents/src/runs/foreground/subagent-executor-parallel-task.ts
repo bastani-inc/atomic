@@ -38,6 +38,7 @@ interface ForegroundParallelRunInput {
 	maxOutput?: MaxOutputConfig;
 	paramsCwd: string;
 	maxSubagentDepths: number[];
+	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	availableModels: ModelInfo[];
 	knownModelProviders: string[];
@@ -124,6 +125,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				outputPath,
 				outputMode: behavior?.outputMode,
 				maxSubagentDepth: input.maxSubagentDepths[index],
+				parentDepth: input.parentDepth,
 				workflowStageSubagentGuard: input.workflowStageSubagentGuard,
 				workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 				controlConfig: input.controlConfig,

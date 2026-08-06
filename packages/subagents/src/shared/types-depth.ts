@@ -3,44 +3,38 @@
  */
 
 import type { ExtensionContext, SessionWorkflowMetadata } from "@bastani/atomic";
-import {
-	APP_NAME,
-	getEnvValue,
-	WORKFLOW_SESSION_METADATA_ENV,
-	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
-} from "@bastani/atomic";
 import { DEFAULT_SUBAGENT_MAX_DEPTH, MAX_SUBAGENT_NESTING_DEPTH } from "./types-runtime.ts";
 
-const ENV_PREFIX = APP_NAME.toUpperCase();
-const SUBAGENT_MAX_DEPTH_ENV = `${ENV_PREFIX}_SUBAGENT_MAX_DEPTH`;
-const SUBAGENT_DEPTH_ENV = `${ENV_PREFIX}_SUBAGENT_DEPTH`;
-
-export { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV };
+// Depth is admission state carried in the typed child policy, not process environment.
 
 // ============================================================================
-
 export function normalizeMaxSubagentDepth(value: unknown): number | undefined {
 	const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
 	if (!Number.isInteger(parsed) || parsed < 0) return undefined;
 	return Math.min(parsed, MAX_SUBAGENT_NESTING_DEPTH);
 }
 
-export function resolveCurrentMaxSubagentDepth(configMaxDepth?: number): number {
-	return (
-		normalizeMaxSubagentDepth(getEnvValue(SUBAGENT_MAX_DEPTH_ENV)) ??
-		normalizeMaxSubagentDepth(configMaxDepth) ??
-		DEFAULT_SUBAGENT_MAX_DEPTH
-	);
+/**
+ * The effective limit is the stricter of the local configuration and any limit
+ * inherited through the child policy, both clamped by the global ceiling.
+ */
+export function resolveCurrentMaxSubagentDepth(configMaxDepth?: number, inheritedMaxDepth?: number): number {
+	const local = normalizeMaxSubagentDepth(configMaxDepth) ?? DEFAULT_SUBAGENT_MAX_DEPTH;
+	const inherited = normalizeMaxSubagentDepth(inheritedMaxDepth);
+	return inherited === undefined ? local : Math.min(local, inherited);
+}
+
+/** Read the delegation limit a parent admission issued to this child session. */
+export function getInheritedMaxSubagentDepth(
+	ctx: Partial<Pick<ExtensionContext, "subagentPolicy">>,
+): number | undefined {
+	return ctx.subagentPolicy?.maxSubagentDepth;
 }
 
 export function resolveChildMaxSubagentDepth(parentMaxDepth: number, agentMaxDepth?: number): number {
 	const normalizedParent = normalizeMaxSubagentDepth(parentMaxDepth) ?? DEFAULT_SUBAGENT_MAX_DEPTH;
 	const normalizedAgent = normalizeMaxSubagentDepth(agentMaxDepth);
 	return normalizedAgent === undefined ? normalizedParent : Math.min(normalizedParent, normalizedAgent);
-}
-
-export function hasWorkflowStageSubagentGuard(): boolean {
-	return getEnvValue(WORKFLOW_STAGE_SUBAGENT_GUARD_ENV) === "1";
 }
 
 export function isWorkflowStageOrchestrationContext(ctx: Pick<ExtensionContext, "orchestrationContext">): boolean {
@@ -59,21 +53,11 @@ export function workflowSessionMetadataFromContext(
 	};
 }
 
-export function workflowSessionEnv(metadata: SessionWorkflowMetadata | undefined): Record<string, string> {
-	return metadata ? { [WORKFLOW_SESSION_METADATA_ENV]: JSON.stringify(metadata) } : {};
-}
-
-export function workflowSessionEnvFromContext(
-	ctx: Pick<ExtensionContext, "orchestrationContext">,
-): Record<string, string> {
-	return workflowSessionEnv(workflowSessionMetadataFromContext(ctx));
-}
-
 export function resolveWorkflowStageMaxSubagentDepth(
-	ctx: Pick<ExtensionContext, "orchestrationContext">,
+	ctx: Pick<ExtensionContext, "orchestrationContext"> & Partial<Pick<ExtensionContext, "subagentPolicy">>,
 	configMaxDepth?: number,
 ): number {
-	const maxDepth = resolveCurrentMaxSubagentDepth(configMaxDepth);
+	const maxDepth = resolveCurrentMaxSubagentDepth(configMaxDepth, getInheritedMaxSubagentDepth(ctx));
 	return isWorkflowStageOrchestrationContext(ctx)
 		? // Workflow stages receive an explicit host constraint, clamped by the
 			// inherited/global nesting ceiling. A 0-depth workflow constraint still
@@ -88,7 +72,7 @@ export interface SubagentDepthPolicy {
 }
 
 export function resolveSubagentDepthPolicy(
-	ctx: Pick<ExtensionContext, "orchestrationContext">,
+	ctx: Pick<ExtensionContext, "orchestrationContext"> & Partial<Pick<ExtensionContext, "subagentPolicy">>,
 	configMaxDepth?: number,
 ): SubagentDepthPolicy {
 	return {
@@ -128,31 +112,21 @@ export interface SubagentDepthCheck {
 	blocked: boolean;
 	depth: number;
 	maxDepth: number;
-	workflowStageGuard: boolean;
 }
 
-export function checkSubagentDepth(configMaxDepth?: number): SubagentDepthCheck {
-	const depth = Number(getEnvValue(SUBAGENT_DEPTH_ENV) ?? "0");
-	const maxDepth = resolveCurrentMaxSubagentDepth(configMaxDepth);
-	const blocked = Number.isFinite(depth) && depth >= maxDepth;
-	return { blocked, depth, maxDepth, workflowStageGuard: hasWorkflowStageSubagentGuard() };
+/** Read the admitted depth carried by an in-process child session. */
+export function getCurrentSubagentDepth(ctx: Pick<ExtensionContext, "subagentPolicy">): number {
+	const depth = ctx.subagentPolicy?.depth;
+	return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0;
 }
 
-export function getSubagentDepthEnv(
-	maxDepth?: number,
-	options?: { workflowStageSubagentGuard?: boolean },
-): Record<string, string> {
-	const parentDepth = Number(getEnvValue(SUBAGENT_DEPTH_ENV) ?? "0");
-	// Preserve an inherited workflow-stage marker for descendants; callers that
-	// mutate process.env in tests must clear it to avoid intentional propagation.
-	const nextDepth = Number.isFinite(parentDepth) ? parentDepth + 1 : 1;
-	return {
-		[SUBAGENT_DEPTH_ENV]: String(nextDepth),
-		[SUBAGENT_MAX_DEPTH_ENV]: String(normalizeMaxSubagentDepth(maxDepth) ?? resolveCurrentMaxSubagentDepth()),
-		...(options?.workflowStageSubagentGuard || hasWorkflowStageSubagentGuard()
-			? { [WORKFLOW_STAGE_SUBAGENT_GUARD_ENV]: "1" }
-			: {}),
-	};
+export function checkSubagentDepth(
+	ctx: Pick<ExtensionContext, "subagentPolicy">,
+	configMaxDepth?: number,
+): SubagentDepthCheck {
+	const depth = getCurrentSubagentDepth(ctx);
+	const maxDepth = resolveCurrentMaxSubagentDepth(configMaxDepth, getInheritedMaxSubagentDepth(ctx));
+	return { blocked: Number.isFinite(depth) && depth >= maxDepth, depth, maxDepth };
 }
 
 // ============================================================================

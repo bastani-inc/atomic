@@ -94,6 +94,8 @@ export interface RunSyncOptions {
 	outputPath?: string;
 	outputMode?: OutputMode;
 	maxSubagentDepth?: number;
+	/** Current session depth passed to the in-process admission door. */
+	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	workflowSessionMetadata?: SessionWorkflowMetadata;
 	nestedRoute?: NestedRouteInfo;

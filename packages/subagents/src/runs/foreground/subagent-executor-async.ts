@@ -166,6 +166,7 @@ export async function runAsyncPath(
 			availableModels,
 			knownModelProviders,
 			maxSubagentDepth: resolveChildMaxSubagentDepth(depthPolicy.maxSubagentDepth, agent.maxSubagentDepth),
+			parentDepth: data.parentDepth,
 			workflowStageSubagentGuard: depthPolicy.workflowStageSubagentGuard,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,

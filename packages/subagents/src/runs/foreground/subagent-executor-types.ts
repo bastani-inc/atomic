@@ -118,6 +118,7 @@ export interface ExecutionContextData {
 	sessionFileForIndex: (idx?: number) => string | undefined;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
+	parentDepth?: number;
 	effectiveAsync: boolean;
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;

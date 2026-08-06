@@ -1,7 +1,7 @@
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import type { ChainStep } from "../../shared/settings.ts";
-import { resolveSubagentDepthPolicy } from "../../shared/types.ts";
+import { resolveChildMaxSubagentDepth, resolveSubagentDepthPolicy } from "../../shared/types.ts";
 import { compactForegroundDetails } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
 import { executeChain } from "./chain-execution.ts";
@@ -70,6 +70,7 @@ export async function runChainPath(
 		chainDir: params.chainDir,
 		dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
 		maxSubagentDepth: currentMaxSubagentDepth,
+		parentDepth: data.parentDepth,
 		workflowStageSubagentGuard,
 		worktreeSetupHook: deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
@@ -83,7 +84,19 @@ export async function runChainPath(
 	const chainDetails = chainResult.details ? compactForegroundDetails({ ...chainResult.details, runId }) : undefined;
 	if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 	if (chainDetails)
-		rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results });
+		rememberForegroundRun(deps.state, {
+			runId,
+			mode: "chain",
+			cwd: effectiveCwd,
+			results: chainDetails.results,
+			// Narrow per step from the definitions this run used, while it is running.
+			maxSubagentDepths: chainDetails.results.map((result) =>
+				resolveChildMaxSubagentDepth(
+					currentMaxSubagentDepth,
+					agents.find((agent) => agent.name === result.agent)?.maxSubagentDepth,
+				),
+			),
+		});
 	const intercomReceipt =
 		chainDetails && !chainDetails.results.some((result) => result.interrupted || result.detached)
 			? await maybeBuildForegroundIntercomReceipt({

@@ -56,8 +56,8 @@ export function checkDepthForExecution(
 	deps: ResolvedExecutorDeps,
 ): SubagentToolResult | undefined {
 	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const { blocked, depth, maxDepth, workflowStageGuard } = checkSubagentDepth(depthPolicy.maxSubagentDepth);
-	const workflowStageSubagentGuard = workflowStageGuard || depthPolicy.workflowStageSubagentGuard;
+	const { blocked, depth, maxDepth } = checkSubagentDepth(ctx, depthPolicy.maxSubagentDepth);
+	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
 	if (!blocked) return undefined;
 	return {
 		content: [
@@ -80,7 +80,7 @@ export function prepareExecutionContext(input: {
 }): ExecutionContextBuildResult {
 	const { params, ctx, signal, onUpdate, deps } = input;
 	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const { depth } = checkSubagentDepth(depthPolicy.maxSubagentDepth);
+	const { depth } = checkSubagentDepth(ctx, depthPolicy.maxSubagentDepth);
 	const normalized = normalizeRepeatedParallelCounts(params);
 	if (normalized.error) return { error: normalized.error };
 	const normalizedParams = normalized.params!;
@@ -180,6 +180,7 @@ export function prepareExecutionContext(input: {
 		sessionFileForIndex: childSessionFileForIndex,
 		artifactConfig,
 		artifactsDir,
+		parentDepth: depth,
 		effectiveAsync,
 		controlConfig,
 		intercomBridge,

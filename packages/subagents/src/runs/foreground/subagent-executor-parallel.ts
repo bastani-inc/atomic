@@ -226,6 +226,7 @@ export async function runParallelPath(
 			foregroundControl,
 			concurrencyLimit: parallelConcurrency,
 			maxSubagentDepths,
+			parentDepth: data.parentDepth,
 			liveResults,
 			liveProgress,
 			onUpdate,
@@ -250,7 +251,13 @@ export async function runParallelPath(
 			progress: params.includeProgress ? allProgress : undefined,
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
-		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
+		rememberForegroundRun(deps.state, {
+			runId,
+			mode: "parallel",
+			cwd: effectiveCwd,
+			results: details.results,
+			maxSubagentDepths,
+		});
 		if (interrupted) {
 			return {
 				content: [

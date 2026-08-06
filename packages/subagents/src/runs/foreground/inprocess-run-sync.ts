@@ -176,7 +176,7 @@ export async function runSingleInProcess(
 	const orchestrationContext = workflowOrchestrationContext(options);
 	const parent: ParentContext = {
 		path: options.runId,
-		depth: 0,
+		depth: options.parentDepth ?? 0,
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 		...(orchestrationContext ? { orchestrationContext } : {}),
 	};
@@ -204,6 +204,7 @@ export async function runSingleInProcess(
 		cwd,
 		testSession: testSession,
 		sessionFile: options.sessionFile,
+		...(options.maxSubagentDepth === undefined ? {} : { maxSubagentDepth: options.maxSubagentDepth }),
 		structuredOutput: options.structuredOutput
 			? { schema: options.structuredOutput.schema, outputPath: options.structuredOutput.outputPath }
 			: undefined,
