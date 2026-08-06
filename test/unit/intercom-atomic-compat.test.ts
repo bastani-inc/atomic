@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, test } from "vitest";
 import {
@@ -31,11 +31,11 @@ function tempDir(prefix: string): string {
 	return mkdtempSync(join(tmpdir(), prefix));
 }
 
-function createBundledTsxCli(extensionDir: string): string {
-	const tsxCli = join(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
-	mkdirSync(dirname(tsxCli), { recursive: true });
-	writeFileSync(tsxCli, "", "utf8");
-	return tsxCli;
+function createBundledJitiCli(extensionDir: string): string {
+	const jitiCli = join(extensionDir, "node_modules", "jiti", "lib", "jiti-cli.mjs");
+	mkdirSync(dirname(jitiCli), { recursive: true });
+	writeFileSync(jitiCli, "", "utf8");
+	return jitiCli;
 }
 
 function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T {
@@ -133,12 +133,12 @@ describe("intercom default broker runtime", () => {
 		assert.deepEqual(config.brokerArgs, ["--no-install", "tsx"]);
 	});
 
-	test("hardens the default sentinel to launch through the current runtime and tsx", () => {
+	test("hardens the default sentinel to launch through the current runtime and jiti", () => {
 		const extensionDir = tempDir("atomic-intercom-extension-");
 		const intercomDir = tempDir("atomic-intercom-runtime-");
 		const brokerPath = join(extensionDir, "broker", "broker.ts");
 		const nodePath = join(extensionDir, "node-runtime");
-		const bundledTsx = createBundledTsxCli(extensionDir);
+		const bundledJiti = createBundledJitiCli(extensionDir);
 
 		const launch = getBrokerLaunchSpec(
 			brokerPath,
@@ -155,8 +155,8 @@ describe("intercom default broker runtime", () => {
 		assert.equal(launch.command, nodePath);
 		assert.notEqual(launch.command, "bun");
 		assert.notEqual(launch.command, "npx");
-		assert.deepEqual(launch.args, [bundledTsx, brokerPath]);
-		assert.equal(basename(launch.args[0] ?? ""), "cli.mjs");
+		assert.deepEqual(launch.args, [bundledJiti, brokerPath]);
+		assert.equal(basename(launch.args[0] ?? ""), "jiti-cli.mjs");
 	});
 
 	test("uses the current Bun runtime directly for the default sentinel without PATH lookup", () => {
@@ -215,14 +215,16 @@ describe("intercom default broker runtime", () => {
 		);
 	});
 
-	test("falls back to bundled jiti when tsx is unavailable for Node default sentinel", () => {
+	test("ignores a bundled tsx CLI entirely for the Node default sentinel", () => {
 		const extensionDir = tempDir("atomic-intercom-extension-");
 		const intercomDir = tempDir("atomic-intercom-runtime-");
 		const brokerPath = join(extensionDir, "broker", "broker.ts");
 		const nodePath = join(extensionDir, "node-runtime");
-		const jitiCli = join(extensionDir, "node_modules", "jiti", "lib", "jiti-cli.mjs");
-		mkdirSync(dirname(jitiCli), { recursive: true });
-		writeFileSync(jitiCli, "", "utf8");
+		const bundledJiti = createBundledJitiCli(extensionDir);
+		// A leftover tsx install must not change the launch: the broker runs on jiti now.
+		const strayTsx = join(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
+		mkdirSync(dirname(strayTsx), { recursive: true });
+		writeFileSync(strayTsx, "", "utf8");
 
 		const launch = getBrokerLaunchSpec(
 			brokerPath,
@@ -237,7 +239,11 @@ describe("intercom default broker runtime", () => {
 
 		assert.equal(launch.kind, "direct");
 		assert.equal(launch.command, nodePath);
-		assert.deepEqual(launch.args, [jitiCli, brokerPath]);
+		assert.deepEqual(launch.args, [bundledJiti, brokerPath]);
+		assert.equal(
+			launch.args.some((arg) => arg.includes(`${sep}tsx${sep}`)),
+			false,
+		);
 	});
 
 	test("preserves explicit custom bun broker configs as pass-through overrides", () => {
@@ -251,11 +257,11 @@ describe("intercom default broker runtime", () => {
 		assert.deepEqual(launch.args, [brokerPath]);
 	});
 
-	test("uses the current runtime and tsx in the Windows default launcher command line", () => {
+	test("uses the current runtime and jiti in the Windows default launcher command line", () => {
 		const extensionDir = tempDir("atomic-intercom-extension-");
 		const brokerPath = join(extensionDir, "broker", "broker.ts");
 		const nodePath = String.raw`C:\Program Files\Atomic\node.exe`;
-		const bundledTsx = createBundledTsxCli(extensionDir);
+		const bundledJiti = createBundledJitiCli(extensionDir);
 
 		const commandLine = getWindowsBrokerCommandLine(
 			brokerPath,
@@ -267,10 +273,11 @@ describe("intercom default broker runtime", () => {
 		);
 
 		assert.ok(commandLine.startsWith(`"${nodePath}" `));
-		assert.ok(commandLine.includes(`"${bundledTsx.replace(/"/g, '""')}"`));
+		assert.ok(commandLine.includes(`"${bundledJiti.replace(/"/g, '""')}"`));
 		assert.ok(commandLine.endsWith(` "${brokerPath.replace(/"/g, '""')}"`));
 		assert.equal(commandLine.includes('"npx"'), false);
 		assert.equal(commandLine.includes('"bun"'), false);
+		assert.equal(commandLine.includes(`${sep}tsx${sep}`), false);
 	});
 
 	test("preserves Windows custom broker override command line", () => {

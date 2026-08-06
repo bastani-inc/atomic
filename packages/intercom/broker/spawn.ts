@@ -66,20 +66,6 @@ function requireFromExtensionDir(extensionDir: string): NodeJS.Require {
   return createRequire(join(extensionDir, "package.json"));
 }
 
-function resolveTsxCliPath(extensionDir: string): string | null {
-  try {
-    const tsxMain = requireFromExtensionDir(extensionDir).resolve("tsx");
-    return join(dirname(tsxMain), "cli.mjs");
-  } catch {
-    const bundledTsx = join(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
-    return existsSync(bundledTsx) ? bundledTsx : null;
-  }
-}
-
-export function getTsxCliPath(extensionDir: string = EXTENSION_DIR): string {
-  return resolveTsxCliPath(extensionDir) ?? join(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
-}
-
 export function getJitiCliPath(extensionDir: string = EXTENSION_DIR): string {
   try {
     const jitiPackage = requireFromExtensionDir(extensionDir).resolve("jiti/package.json");
@@ -89,8 +75,13 @@ export function getJitiCliPath(extensionDir: string = EXTENSION_DIR): string {
   }
 }
 
+/**
+ * jiti is a dependency-free pure-JS TypeScript loader, so the Node broker path no longer needs
+ * tsx and its platform-specific esbuild binary. The `npx --no-install tsx` config pair remains
+ * a recognized compatibility sentinel; nothing resolves the tsx package.
+ */
 function getDefaultBrokerRunnerPath(extensionDir: string): string {
-  return resolveTsxCliPath(extensionDir) ?? getJitiCliPath(extensionDir);
+  return getJitiCliPath(extensionDir);
 }
 
 function getDefaultBrokerCommandParts(
