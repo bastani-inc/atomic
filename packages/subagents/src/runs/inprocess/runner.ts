@@ -478,6 +478,40 @@ function safeArgsPreview(args: unknown): string {
 	}
 }
 
+/**
+ * How a child session event should publish {@link AgentProgress} to the host UI.
+ *
+ * - `force` — the event changed progress the live widget shows; bypass the throttle.
+ * - `throttled` — worth publishing, but subject to the 400 ms throttle.
+ * - `none` — carries nothing the widget shows; do not publish.
+ *
+ * `none` is the important case. Foreground subagent results render into chat
+ * scrollback, which can sit above pi-tui's viewport fold. Every publish rewrites
+ * `durationMs`/`lastActivityAt` and repaints the widget, and a repaint of a row
+ * above the fold makes `TUI.doRender()` take its `firstChanged < viewportTop`
+ * branch, which issues a full redraw that writes `\x1b[2J\x1b[H\x1b[3J` — clearing
+ * the user's scrollback and snapping the terminal to the bottom. A catch-all
+ * publish therefore destroyed the scrollback ~2.5x/s for the whole run, because
+ * `AgentSessionEvent` includes high-frequency traffic (`message_update` streaming
+ * deltas, `tool_execution_update`, `entry_appended`) that the widget never shows.
+ * Keep this table narrow: add an event only when the widget renders something the
+ * event changed.
+ */
+export type ProgressEmission = "force" | "throttled" | "none";
+
+export function progressEmissionFor(eventType: AgentSessionEvent["type"]): ProgressEmission {
+	switch (eventType) {
+		case "agent_start":
+		case "tool_execution_start":
+		case "tool_execution_end":
+			return "force";
+		case "message_end":
+			return "throttled";
+		default:
+			return "none";
+	}
+}
+
 function writeEvent(pathValue: string | undefined, event: AgentSessionEvent): void {
 	if (!pathValue) return;
 	mkdirSync(dirname(pathValue), { recursive: true });
@@ -774,15 +808,14 @@ export class SubagentControlRuntime {
 			};
 			unsubscribe = session.subscribe((event) => {
 				writeEvent(admitted.spec.artifactJsonlPath, event);
+				const emission = progressEmissionFor(event.type);
 				if (event.type === "agent_start") {
 					this.native.publishChildStatus(admitted.identity.path, nativeStatus("running"));
-					emitProgress(true);
 				} else if (event.type === "tool_execution_start") {
 					progressState.toolCount += 1;
 					progressState.currentTool = event.toolName;
 					progressState.currentToolArgs = safeArgsPreview(event.args);
 					progressState.currentToolStartedAt = Date.now();
-					emitProgress(true);
 				} else if (event.type === "tool_execution_end") {
 					if (progressState.currentTool !== undefined) {
 						progressState.recentTools.push({
@@ -795,7 +828,6 @@ export class SubagentControlRuntime {
 					progressState.currentTool = undefined;
 					progressState.currentToolArgs = undefined;
 					progressState.currentToolStartedAt = undefined;
-					emitProgress(true);
 				} else if (event.type === "message_end") {
 					const message = (event as { message?: { role?: string; usage?: { input?: number; output?: number } } })
 						.message;
@@ -804,10 +836,8 @@ export class SubagentControlRuntime {
 						const usage = message.usage;
 						if (usage) progressState.tokens += (usage.input ?? 0) + (usage.output ?? 0);
 					}
-					emitProgress(false);
-				} else {
-					emitProgress(false);
 				}
+				if (emission !== "none") emitProgress(emission === "force");
 				if (event.type === "model_fallback_start") {
 					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
 					effectiveModelId = event.to;
