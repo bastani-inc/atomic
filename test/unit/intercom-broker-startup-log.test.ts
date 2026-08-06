@@ -15,7 +15,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
-import { BROKER_LOG_MAX_BYTES, installBoundedStderr } from "../../packages/intercom/broker/bounded-stderr.js";
+import {
+	type BoundedStderrOptions,
+	BROKER_LOG_MAX_BYTES,
+	installBoundedStderr,
+} from "../../packages/intercom/broker/bounded-stderr.js";
+import { bunExecutable } from "../helpers/runtime.js";
+
+/** Shapes the limiter patches; mirrored here so the fakes stay honest about the real contract. */
+interface WritableLike {
+	write(chunk: string | Uint8Array, encodingOrCallback?: unknown, maybeCallback?: () => void): boolean;
+}
+interface ConsoleLike {
+	error(...args: unknown[]): void;
+	warn(...args: unknown[]): void;
+}
 
 /**
  * Issue #2208: the broker is spawned detached with `stdio: "ignore"`, so a broker that dies
@@ -210,17 +224,28 @@ describe("broker startup failures name the log", () => {
 });
 
 describe("physical broker log cap", () => {
-	test("the limiter counts bytes, not characters, and forwards only what fits", () => {
-		const accepted: Buffer[] = [];
-		const stream = {
-			write(chunk: string | Uint8Array, _encoding?: unknown, callback?: () => void): boolean {
+	function fakeStream(accepted: Buffer[]): WritableLike {
+		return {
+			// Node accepts both `write(chunk, cb)` and `write(chunk, encoding, cb)`; the limiter
+			// forwards the two-argument shape, so the fake resolves the callback the way Node does.
+			write(chunk: string | Uint8Array, encodingOrCallback?: unknown, maybeCallback?: () => void): boolean {
 				accepted.push(Buffer.from(chunk as Uint8Array));
-				callback?.();
+				const callback = typeof encodingOrCallback === "function" ? encodingOrCallback : maybeCallback;
+				(callback as (() => void) | undefined)?.();
 				return true;
 			},
-		} as unknown as NodeJS.WriteStream;
+		} as WritableLike;
+	}
 
-		const handle = installBoundedStderr(10, stream);
+	function fakeConsole(): ConsoleLike {
+		return { error: () => {}, warn: () => {} };
+	}
+
+	test("the limiter counts bytes, not characters, and forwards only what fits", () => {
+		const accepted: Buffer[] = [];
+		const stream = fakeStream(accepted);
+
+		const handle = installBoundedStderr({ maxBytes: 10, stream, console: fakeConsole(), process: null });
 		// "é" is two bytes in UTF-8: five of them fill the ten-byte budget exactly.
 		assert.equal(stream.write("ééééé"), true);
 		assert.equal(handle.writtenBytes(), 10);
@@ -234,35 +259,26 @@ describe("physical broker log cap", () => {
 	});
 
 	test("a partial chunk is truncated at the cap rather than dropped whole", () => {
-		const accepted: string[] = [];
-		const stream = {
-			write(chunk: string | Uint8Array): boolean {
-				accepted.push(Buffer.from(chunk as Uint8Array).toString("utf8"));
-				return true;
-			},
-		} as unknown as NodeJS.WriteStream;
+		const accepted: Buffer[] = [];
+		const stream = fakeStream(accepted);
 
-		const handle = installBoundedStderr(4, stream);
+		const handle = installBoundedStderr({ maxBytes: 4, stream, console: fakeConsole(), process: null });
 		stream.write("abcdefgh");
 
-		assert.deepEqual(accepted, ["abcd"]);
+		assert.deepEqual(
+			accepted.map((entry) => entry.toString("utf8")),
+			["abcd"],
+		);
 		assert.equal(handle.writtenBytes(), 4);
 		handle.restore();
 	});
 
 	test("callbacks still run and writes still report success past the cap", () => {
 		let calls = 0;
-		const stream = {
-			// Node accepts both `write(chunk, cb)` and `write(chunk, encoding, cb)`; the limiter
-			// forwards the two-argument shape, so the fake has to resolve the callback like Node does.
-			write(_chunk: string | Uint8Array, encodingOrCallback?: unknown, maybeCallback?: () => void): boolean {
-				const callback = typeof encodingOrCallback === "function" ? encodingOrCallback : maybeCallback;
-				(callback as (() => void) | undefined)?.();
-				return true;
-			},
-		} as unknown as NodeJS.WriteStream;
+		const accepted: Buffer[] = [];
+		const stream = fakeStream(accepted);
 
-		const handle = installBoundedStderr(2, stream);
+		const handle = installBoundedStderr({ maxBytes: 2, stream, console: fakeConsole(), process: null });
 		stream.write("xx", "utf8", () => {
 			calls += 1;
 		});
@@ -275,6 +291,60 @@ describe("physical broker log cap", () => {
 		);
 		assert.equal(calls, 2);
 		handle.restore();
+	});
+
+	test("console.error and console.warn share the same budget as the stream", () => {
+		const accepted: Buffer[] = [];
+		const stream = fakeStream(accepted);
+		const consoleObject = fakeConsole();
+
+		const handle = installBoundedStderr({ maxBytes: 12, stream, console: consoleObject, process: null });
+		consoleObject.error("abc", 42);
+		assert.equal(Buffer.concat(accepted).toString("utf8"), "abc 42\n");
+		consoleObject.warn("defgh");
+		// Only the five bytes still available are taken from the second message.
+		assert.equal(handle.writtenBytes(), 12);
+		assert.equal(Buffer.concat(accepted).toString("utf8"), "abc 42\ndefgh");
+
+		handle.restore();
+		consoleObject.error("restored");
+		assert.equal(handle.writtenBytes(), 12);
+	});
+
+	test("fatal handlers are registered on both channels and write through the budget", () => {
+		const accepted: Buffer[] = [];
+		const stream = fakeStream(accepted);
+		const listeners = new Map<string, (value: unknown) => void>();
+		let exitCode: number | undefined;
+		const host = {
+			on(event: string, listener: (value: unknown) => void) {
+				listeners.set(event, listener);
+				return host;
+			},
+			off(event: string) {
+				listeners.delete(event);
+				return host;
+			},
+			exit(code?: number) {
+				exitCode = code;
+				return undefined as never;
+			},
+		};
+
+		const handle = installBoundedStderr({
+			maxBytes: 16,
+			stream,
+			console: fakeConsole(),
+			process: host as unknown as NonNullable<BoundedStderrOptions["process"]>,
+		});
+
+		assert.deepEqual([...listeners.keys()].sort(), ["uncaughtException", "unhandledRejection"]);
+		listeners.get("uncaughtException")?.(new Error("x".repeat(500)));
+		assert.equal(handle.writtenBytes(), 16);
+		assert.equal(exitCode, 1);
+
+		handle.restore();
+		assert.deepEqual([...listeners.keys()], []);
 	});
 
 	test("the read bound never exceeds the physical cap", () => {
@@ -291,63 +361,91 @@ describe("physical broker log cap", () => {
 		assert.ok(install < start, "the cap must be installed before the broker starts listening");
 	});
 
-	test(
-		"a real detached child writing oversized stderr leaves a capped file",
-		async () => {
-			const capLogPath = join(agentDir, "intercom", "cap-probe.log");
-			const fixturePath = join(agentDir, "cap-probe.ts");
-			const limiterUrl = pathToFileURL(
-				join(process.cwd(), "packages/intercom/broker/bounded-stderr.ts"),
-			).href.replace(/\.ts$/u, ".js");
-			const attemptedBytes = BROKER_LOG_MAX_BYTES * 4;
-			writeFileSync(
-				fixturePath,
-				[
-					`import { installBoundedStderr } from ${JSON.stringify(limiterUrl)};`,
-					"installBoundedStderr();",
-					`process.stderr.write("A".repeat(${attemptedBytes}));`,
-					"",
-				].join("\n"),
-				"utf8",
-			);
+	interface CapProbe {
+		readonly name: string;
+		readonly body: string;
+		readonly expectedExitCode: number;
+	}
 
-			// Run the fixture through exactly the loader the Node broker launch spec selects.
-			const launch = spawnModule.getBrokerLaunchSpec(
-				fixturePath,
-				"npx",
-				["--no-install", "tsx"],
-				join(process.cwd(), "packages/intercom"),
-				"linux",
-				join(agentDir, "intercom"),
-				process.execPath,
-				"node",
-			);
-			assert.equal(launch.kind, "direct");
-
-			const logFd = openSync(capLogPath, "w");
-			const child = spawn(launch.command, launch.args, {
-				detached: true,
-				stdio: ["ignore", "ignore", logFd],
-				env: { ...process.env, NODE_NO_WARNINGS: "1" },
-			});
-			closeSync(logFd);
-
-			const exitCode = await new Promise<number | null>((resolve, reject) => {
-				child.once("error", reject);
-				child.once("exit", resolve);
-			});
-			assert.equal(exitCode, 0);
-
-			const size = statSync(capLogPath).size;
-			// The child really tried to write four times the cap; the file must not have grown.
-			assert.ok(size > 0, "the probe wrote nothing, so the cap was not exercised");
-			assert.ok(
-				size <= BROKER_LOG_MAX_BYTES,
-				`log grew to ${size} bytes after ${attemptedBytes} were attempted, cap is ${BROKER_LOG_MAX_BYTES}`,
-			);
+	const capProbes: readonly CapProbe[] = [
+		{ name: "stream", body: `process.stderr.write("A".repeat(BYTES));`, expectedExitCode: 0 },
+		// Bun's console is native and does not go through process.stderr.write.
+		{ name: "console.error", body: `console.error("B".repeat(BYTES));`, expectedExitCode: 0 },
+		// Node and Bun both print an uncaught error themselves, bypassing the stream.
+		{ name: "uncaught exception", body: `throw new Error("C".repeat(BYTES));`, expectedExitCode: 1 },
+		{
+			name: "unhandled rejection",
+			body: `Promise.reject(new Error("D".repeat(BYTES))); setTimeout(() => {}, 1000);`,
+			expectedExitCode: 1,
 		},
-		REAL_BROKER_STARTUP_TIMEOUT_MS,
-	);
+	];
+
+	/** Node plus, when it is installed, the runtime the standalone broker actually runs on. */
+	function capRuntimes(): { name: string; command: () => string; needsLoader: boolean }[] {
+		const runtimes = [{ name: "node", command: () => process.execPath, needsLoader: true }];
+		try {
+			const bun = bunExecutable();
+			runtimes.push({ name: "bun", command: () => bun, needsLoader: false });
+		} catch {
+			// Bun is not installed on this machine; the Node rows still run.
+		}
+		return runtimes;
+	}
+
+	for (const runtime of capRuntimes()) {
+		for (const probe of capProbes) {
+			test(
+				`a real detached ${runtime.name} child capped on the ${probe.name} path`,
+				async () => {
+					const slug = `${runtime.name}-${probe.name}`.replace(/[^a-z0-9]+/giu, "-");
+					const capLogPath = join(agentDir, "intercom", `cap-${slug}.log`);
+					const fixturePath = join(agentDir, `cap-${slug}.ts`);
+					const limiterUrl = pathToFileURL(
+						join(process.cwd(), "packages/intercom/broker/bounded-stderr.ts"),
+					).href.replace(/\.ts$/u, ".js");
+					const attemptedBytes = BROKER_LOG_MAX_BYTES * 4;
+					writeFileSync(
+						fixturePath,
+						[
+							`import { installBoundedStderr } from ${JSON.stringify(limiterUrl)};`,
+							"installBoundedStderr();",
+							probe.body.replaceAll("BYTES", String(attemptedBytes)),
+							"",
+						].join("\n"),
+						"utf8",
+					);
+
+					const logFd = openSync(capLogPath, "w");
+					// The loader path comes from the production resolver, so the probe runs the way
+					// the Node broker does. Resolved here because spawn.js is imported in beforeAll.
+					const leadingArgs = runtime.needsLoader
+						? [spawnModule.getJitiCliPath(join(process.cwd(), "packages/intercom"))]
+						: [];
+					const child = spawn(runtime.command(), [...leadingArgs, fixturePath], {
+						detached: true,
+						stdio: ["ignore", "ignore", logFd],
+						env: { ...process.env, NODE_NO_WARNINGS: "1" },
+					});
+					closeSync(logFd);
+
+					const exitCode = await new Promise<number | null>((resolve, reject) => {
+						child.once("error", reject);
+						child.once("exit", resolve);
+					});
+					assert.equal(exitCode, probe.expectedExitCode);
+
+					const size = statSync(capLogPath).size;
+					// The child really attempted four times the cap; the file must not have grown.
+					assert.ok(size > 0, "the probe wrote nothing, so the cap was not exercised");
+					assert.ok(
+						size <= BROKER_LOG_MAX_BYTES,
+						`log grew to ${size} bytes after ${attemptedBytes} were attempted, cap is ${BROKER_LOG_MAX_BYTES}`,
+					);
+				},
+				REAL_BROKER_STARTUP_TIMEOUT_MS,
+			);
+		}
+	}
 });
 
 describe("readiness polling", () => {
