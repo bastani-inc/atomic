@@ -452,12 +452,14 @@ Runtime files live under the active agent directory — `~/.atomic/agent/interco
 - `broker-launch.vbs` — Windows helper script to launch the broker without a console window
 - `broker.pid` — Broker process ID
 - `broker.spawn.lock` — Short-lived lock used to avoid duplicate auto-spawns
-- `broker.log` — Broker stderr from the current startup, truncated on every spawn
+- `broker.log` — Broker stderr, truncated on every spawn and capped at 8 KiB by the broker itself
 - `config.json` — User configuration
 
 The broker runs as a detached subprocess, so it does not share the host session's module graph: every module it loads resolves from Node built-ins and Intercom's own files only. Standalone Atomic binaries run it through the internal broker handoff of the same executable, with no external runtime package to resolve.
 
 If the broker fails to start, its stderr is not lost. The parent hands the child an already-open descriptor on `broker.log` (a file, not a pipe, because the broker outlives the session that spawned it) and truncates the file on every spawn. Both the "exited before startup" error and the readiness-timeout error quote the log path and a bounded tail of that output, so `cat ~/.atomic/agent/intercom/broker.log` shows the same text after the fact. On Windows the hidden launcher appends the broker's stderr to the same file.
+
+The file cannot grow without limit. The parent exits while the broker keeps running, so the cap is applied inside the broker: it wraps its own stderr with an 8 KiB byte limiter before it starts listening, and anything past that is discarded rather than written. That covers both launch shapes, because the Windows redirect carries the same stream.
 
 Async extension work (startup, inbound flushes, reconnects, overlays, and relays) no-ops if the session shuts down or reloads before it settles.
 
