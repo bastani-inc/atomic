@@ -1,4 +1,17 @@
 import assert from "node:assert/strict";
+// `node:child_process` rather than test/helpers/runtime.ts's `spawnProcess`, and
+// deliberately so. This suite spawns the broker exactly as spawn.ts ships it:
+// `detached: true` with a raw file descriptor for stderr. `BunSpawnOptions`
+// exposes neither -- it has no `detached`, and its `StdioOption` normalizes to
+// "pipe" | "inherit" | "ignore", so a descriptor cannot survive it. Routing
+// through the helper would test a process shape the product never launches,
+// which is the one thing these tests exist to check. The helper's purpose is
+// the Bun-to-Node porting traps in AGENTS.md (`Bun.spawnSync`'s `status` vs
+// `exitCode`, `Bun.spawn`'s missing `.exited`); this file was written against
+// Node from the start and ports nothing. Same reasoning for the synchronous
+// `node:fs` calls below: `mkdtempSync`, `statSync` and `openSync` have no
+// helper equivalents, and the async ones that do exist would not make the
+// descriptor plumbing any safer.
 import { spawn } from "node:child_process";
 import {
 	appendFileSync,
