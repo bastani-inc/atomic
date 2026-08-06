@@ -1,202 +1,212 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { builtinModules } from "node:module";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "vitest";
+import { type GraphViolation, runtimeRequestsOf, walkRuntimeGraph } from "./module-graph-walker.js";
 
 /**
  * The intercom broker runs as a detached subprocess. It never inherits the host extension
  * loader's `@bastani/atomic` alias and standalone archives ship no physical copy of that
  * package, so any runtime edge from the broker entrypoint to a non-`node:` package makes the
- * broker fail to start (issue #2208). This walks the real import graph from the real source,
- * rather than comparing against a hand-maintained list of files.
+ * broker fail to start (issue #2208).
+ *
+ * This walks the real import graph of the real source with a Babel parser, not a hand-written
+ * file list and not a regex over import syntax. A regex scanner missed
+ * `createRequire(import.meta.url)("@bastani/atomic")`, which loads the package just as surely
+ * as a static import does.
  */
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const brokerEntrypoint = join(repoRoot, "packages/intercom/broker/broker.ts");
-const spawnModule = join(repoRoot, "packages/intercom/broker/spawn.ts");
-const groupModule = join(repoRoot, "packages/intercom/group.ts");
+const spawnModulePath = join(repoRoot, "packages/intercom/broker/spawn.ts");
+const groupModulePath = join(repoRoot, "packages/intercom/group.ts");
 
-const nodeBuiltins = new Set(builtinModules);
-
-interface RuntimeImport {
-	readonly specifier: string;
-	readonly importer: string;
+function describeViolations(violations: readonly GraphViolation[]): string[] {
+	return violations.map((entry) => `${relative(repoRoot, entry.importer)} -> ${entry.description}`);
 }
 
-/** Replace comment bodies with spaces so import syntax inside comments is never matched. */
-function blankComments(source: string): string {
-	let output = "";
-	let index = 0;
-	while (index < source.length) {
-		const two = source.slice(index, index + 2);
-		if (two === "//") {
-			const end = source.indexOf("\n", index);
-			const stop = end === -1 ? source.length : end;
-			output += " ".repeat(stop - index);
-			index = stop;
-			continue;
-		}
-		if (two === "/*") {
-			const end = source.indexOf("*/", index + 2);
-			const stop = end === -1 ? source.length : end + 2;
-			output += source.slice(index, stop).replace(/[^\n]/gu, " ");
-			index = stop;
-			continue;
-		}
-		const char = source[index] ?? "";
-		if (char === '"' || char === "'" || char === "`") {
-			let cursor = index + 1;
-			while (cursor < source.length) {
-				if (source[cursor] === "\\") {
-					cursor += 2;
-					continue;
-				}
-				if (source[cursor] === char) break;
-				cursor += 1;
-			}
-			const stop = Math.min(cursor + 1, source.length);
-			output += source.slice(index, stop);
-			index = stop;
-			continue;
-		}
-		output += char;
-		index += 1;
+function fixture(files: Record<string, string>): string {
+	const root = mkdtempSync(join(tmpdir(), "intercom-graph-fixture-"));
+	for (const [name, contents] of Object.entries(files)) {
+		const path = join(root, name);
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, contents, "utf8");
 	}
-	return output;
-}
-
-/**
- * `import type ...` and `export type ...` erase at runtime, and so does a named import whose
- * every specifier carries its own `type` keyword. Anything else keeps a runtime edge.
- */
-function isTypeOnlyClause(clause: string): boolean {
-	const trimmed = clause.trim();
-	if (/^type\b/u.test(trimmed)) return true;
-	const braces = trimmed.match(/^\{([\s\S]*)\}$/u);
-	if (!braces) return false;
-	const specifiers = (braces[1] ?? "")
-		.split(",")
-		.map((entry) => entry.trim())
-		.filter((entry) => entry.length > 0);
-	if (specifiers.length === 0) return false;
-	return specifiers.every((entry) => /^type\b/u.test(entry));
-}
-
-function runtimeImportsOf(filePath: string): string[] {
-	const source = blankComments(readFileSync(filePath, "utf8"));
-	const specifiers: string[] = [];
-
-	const fromDeclaration = /(?:^|\n)[ \t]*(?:import|export)\b([^;]*?)\bfrom\s*["']([^"']+)["']/gu;
-	for (const match of source.matchAll(fromDeclaration)) {
-		if (isTypeOnlyClause(match[1] ?? "")) continue;
-		specifiers.push(match[2] ?? "");
-	}
-
-	const sideEffectImport = /(?:^|\n)[ \t]*import\s*["']([^"']+)["']/gu;
-	for (const match of source.matchAll(sideEffectImport)) specifiers.push(match[1] ?? "");
-
-	const dynamicImport = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu;
-	for (const match of source.matchAll(dynamicImport)) specifiers.push(match[1] ?? "");
-
-	return specifiers;
-}
-
-function resolveRelative(importer: string, specifier: string): string | undefined {
-	const base = resolve(dirname(importer), specifier);
-	const candidates = [base.replace(/\.js$/u, ".ts"), `${base}.ts`, join(base, "index.ts"), base];
-	return candidates.find((candidate) => existsSync(candidate) && candidate.endsWith(".ts"));
-}
-
-interface GraphWalk {
-	readonly visited: string[];
-	readonly externals: RuntimeImport[];
-	readonly unresolved: RuntimeImport[];
-}
-
-function walkRuntimeGraph(entrypoint: string): GraphWalk {
-	const visited = new Set<string>();
-	const externals: RuntimeImport[] = [];
-	const unresolved: RuntimeImport[] = [];
-	const queue = [entrypoint];
-
-	while (queue.length > 0) {
-		const current = queue.shift();
-		if (current === undefined || visited.has(current)) continue;
-		visited.add(current);
-
-		for (const specifier of runtimeImportsOf(current)) {
-			if (specifier.startsWith("node:")) continue;
-			if (nodeBuiltins.has(specifier)) continue;
-			if (specifier.startsWith(".") || specifier.startsWith("/")) {
-				const resolved = resolveRelative(current, specifier);
-				if (resolved === undefined) {
-					unresolved.push({ specifier, importer: current });
-					continue;
-				}
-				queue.push(resolved);
-				continue;
-			}
-			externals.push({ specifier, importer: current });
-		}
-	}
-
-	return { visited: [...visited], externals, unresolved };
-}
-
-function describeImports(imports: RuntimeImport[]): string[] {
-	return imports.map((entry) => `${relative(repoRoot, entry.importer)} -> ${entry.specifier}`);
+	return root;
 }
 
 describe("intercom broker runtime module graph", () => {
-	test("no module reachable from broker.ts imports a non-node: package at runtime", () => {
+	test("no module reachable from broker.ts loads a non-node: package at runtime", () => {
 		const walk = walkRuntimeGraph(brokerEntrypoint);
 
-		assert.deepEqual(describeImports(walk.unresolved), []);
-		assert.deepEqual(describeImports(walk.externals), []);
+		assert.deepEqual(describeViolations(walk.unresolved), []);
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+		assert.deepEqual(describeViolations(walk.externals), []);
 	});
 
 	test("the walk actually reaches group.ts and never reaches parent-side spawn.ts", () => {
 		const walk = walkRuntimeGraph(brokerEntrypoint);
 
 		// Without this the first test would pass vacuously if the walker stopped early.
-		assert.ok(walk.visited.includes(groupModule), `group.ts not reached: ${describeImports([])}`);
-		assert.equal(walk.visited.includes(spawnModule), false);
+		assert.ok(walk.visited.includes(groupModulePath), "group.ts not reached");
+		assert.equal(walk.visited.includes(spawnModulePath), false);
 		assert.ok(walk.visited.length >= 8, `unexpectedly small graph: ${walk.visited.length}`);
 	});
 
 	test("spawn.ts is parent-side and is allowed to keep its host-package import", () => {
-		assert.ok(runtimeImportsOf(spawnModule).includes("@bastani/atomic"));
+		const specifiers = runtimeRequestsOf(spawnModulePath).map((request) => request.specifier);
+
+		assert.ok(specifiers.includes("@bastani/atomic"));
+	});
+});
+
+describe("runtime module-graph walker", () => {
+	test("reports a reachable static external import", () => {
+		const root = fixture({
+			"broker/broker.ts": ['import { helper } from "../leaf.js";', "export const port = helper;", ""].join("\n"),
+			"leaf.ts": ['import { getEnvValue } from "@bastani/atomic";', "export const helper = getEnvValue;", ""].join(
+				"\n",
+			),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(describeViolations(walk.externals), [
+			`${relative(repoRoot, join(root, "leaf.ts"))} -> @bastani/atomic`,
+		]);
 	});
 
-	test("the walker reports a reintroduced host-package import instead of ignoring it", () => {
-		const fixtureRoot = mkdtempSync(join(tmpdir(), "intercom-graph-fixture-"));
-		mkdirSync(join(fixtureRoot, "broker"), { recursive: true });
-		const entry = join(fixtureRoot, "broker", "broker.ts");
-		const leaf = join(fixtureRoot, "leaf.ts");
-		writeFileSync(
-			entry,
-			[
-				'import net from "node:net";',
-				'import type { Unused } from "../types.js";',
-				'import { helper } from "../leaf.js";',
-				"export const port = net && helper && ({} as Unused);",
+	test("reports a direct createRequire call, which a regex scanner missed", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import { createRequire } from "node:module";',
+				'export const host = createRequire(import.meta.url)("@bastani/atomic");',
 				"",
 			].join("\n"),
-			"utf8",
-		);
-		writeFileSync(
-			leaf,
-			['import { getEnvValue } from "@bastani/atomic";', "export const helper = getEnvValue;", ""].join("\n"),
-			"utf8",
-		);
+		});
 
-		const walk = walkRuntimeGraph(entry);
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
 
-		assert.deepEqual(describeImports(walk.externals), [`${relative(repoRoot, leaf)} -> @bastani/atomic`]);
-		// The type-only `../types.js` edge erases, so it is not reported as unresolved.
-		assert.deepEqual(describeImports(walk.unresolved), []);
+		assert.deepEqual(describeViolations(walk.externals), [
+			`${relative(repoRoot, join(root, "broker/broker.ts"))} -> @bastani/atomic`,
+		]);
+	});
+
+	test("follows a createRequire result through const aliases", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import { createRequire as makeRequire } from "node:module";',
+				"const r = makeRequire(import.meta.url);",
+				"const s = r;",
+				'export const host = s("@bastani/atomic");',
+				'export const resolved = r.resolve("@earendil-works/pi-tui");',
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), [
+			"@bastani/atomic",
+			"@earendil-works/pi-tui",
+		]);
+	});
+
+	test("reports module.createRequire and plain require", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import module from "node:module";',
+				'export const host = module.createRequire(import.meta.url)("@bastani/atomic");',
+				'export const other = require("typebox");',
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), ["@bastani/atomic", "typebox"]);
+	});
+
+	test("fails closed on a non-literal request rather than ignoring it", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import { createRequire } from "node:module";',
+				"const r = createRequire(import.meta.url);",
+				"declare const name: string;",
+				"export const a = r(name);",
+				"export const b = require(name);",
+				"export const c = process.getBuiltinModule(name);",
+				"export const d = import(name);",
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.equal(walk.dynamic.length, 4, describeViolations(walk.dynamic).join(", "));
+		for (const entry of walk.dynamic) assert.match(entry.description, /Identifier/u);
+		assert.deepEqual(describeViolations(walk.externals), []);
+	});
+
+	test("type-only edges never become runtime edges", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import type { Absent } from "@types/absent";',
+				'import { type AlsoAbsent } from "@types/also-absent";',
+				'export type { Third } from "@types/third";',
+				'export { type Fourth } from "@types/fourth";',
+				'import type Legacy = require("@types/legacy");',
+				'import { type Mixed, value } from "./mixed.js";',
+				"export const used = value as unknown as Absent | AlsoAbsent | Mixed | Legacy;",
+				"",
+			].join("\n"),
+			"broker/mixed.ts": ["export type Mixed = string;", "export const value = 1;", ""].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		// The mixed import keeps its runtime edge; every type-only form disappears.
+		assert.deepEqual(describeViolations(walk.externals), []);
+		assert.deepEqual(describeViolations(walk.unresolved), []);
+		assert.equal(walk.visited.includes(join(root, "broker/mixed.ts")), true);
+	});
+
+	test("accepts builtins spelled with and without the node: prefix", () => {
+		const root = fixture({
+			"broker/broker.ts": [
+				'import net from "node:net";',
+				'import { readFileSync } from "fs";',
+				'const os = require("node:os");',
+				'const path = process.getBuiltinModule("path");',
+				"export const used = [net, readFileSync, os, path];",
+				"",
+			].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(describeViolations(walk.externals), []);
+		assert.deepEqual(describeViolations(walk.dynamic), []);
+	});
+
+	test("reports import.meta.resolve, which still performs package resolution", () => {
+		const root = fixture({
+			"broker/broker.ts": ['export const url = import.meta.resolve("@bastani/atomic");', ""].join("\n"),
+		});
+
+		const walk = walkRuntimeGraph(join(root, "broker/broker.ts"));
+
+		assert.deepEqual(
+			walk.externals.map((entry) => entry.description),
+			["@bastani/atomic"],
+		);
+	});
+
+	test("a parse failure is loud instead of degrading to text matching", () => {
+		const root = fixture({ "broken.ts": "const = ;\n" });
+
+		assert.throws(() => runtimeRequestsOf(join(root, "broken.ts")));
 	});
 });
