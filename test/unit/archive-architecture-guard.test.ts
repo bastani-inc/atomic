@@ -210,4 +210,19 @@ describe("npm platform-field semantics", () => {
 		assert.deepEqual(flagged(root, "darwin-arm64").sort(), ["not-darwin", "wrong-cpu"]);
 		assert.deepEqual(flagged(root, "linux-arm64"), ["wrong-cpu"]);
 	});
+
+	test("an explicit exclusion outranks the `any` wildcard", () => {
+		// npm treats `!x` as a hard deny, so a package that opts out of a platform
+		// must be rejected there even when it also declares the wildcard. An
+		// earlier revision returned as soon as it saw `any`, which accepted
+		// exactly the package the author took the trouble to exclude.
+		const root = makeArchive({
+			"any-but-not-windows": { os: ["any", "!win32"] },
+			"any-but-not-arm64": { cpu: ["any", "!arm64"] },
+		});
+		assert.deepEqual(flagged(root, "windows-x64"), ["any-but-not-windows"]);
+		assert.deepEqual(flagged(root, "linux-arm64"), ["any-but-not-arm64"]);
+		// Neither exclusion applies here, so the wildcard governs and both pass.
+		assert.deepEqual(flagged(root, "darwin-x64"), []);
+	});
 });

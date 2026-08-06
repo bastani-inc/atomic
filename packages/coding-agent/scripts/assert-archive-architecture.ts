@@ -97,12 +97,20 @@ function fieldMatches(
 ): boolean {
 	const declared = normalizePlatformField(declaredRaw);
 	if (declared.length === 0) return true;
+	if (value === undefined) {
+		// `any` alone still matches an unknown target; an exclusion list cannot be
+		// evaluated without a value, so fall back to the caller's policy.
+		return declared.some((entry) => entry === "any") ? true : unknownTargetMatches;
+	}
+	// Exclusions are checked BEFORE the `any` wildcard. npm treats `!x` as a hard
+	// deny, so `os: ["any", "!win32"]` must still reject a windows archive --
+	// returning early on `any` accepted exactly the package the author took the
+	// trouble to exclude.
+	const excluded = declared.filter((entry) => entry.startsWith("!")).map((entry) => entry.slice(1));
+	if (excluded.includes(value)) return false;
 	// `any` is npm's explicit wildcard and must never be read as a literal
 	// platform name; `os: ["any"]` was previously reported as a mismatch.
 	if (declared.some((entry) => entry === "any")) return true;
-	if (value === undefined) return unknownTargetMatches;
-	const excluded = declared.filter((entry) => entry.startsWith("!")).map((entry) => entry.slice(1));
-	if (excluded.includes(value)) return false;
 	const included = declared.filter((entry) => !entry.startsWith("!"));
 	return included.length === 0 || included.includes(value);
 }
