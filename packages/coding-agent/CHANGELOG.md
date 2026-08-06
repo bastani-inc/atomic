@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed in-process child sessions losing their admission-issued nesting depth and delegation limit. `SubagentChildPolicy` now carries both the admitted `depth` and the effective `maxSubagentDepth`, so the subagent executor can enforce the configured and inherited limits without relying on the removed process-environment bridge ([#2205](https://github.com/bastani-inc/atomic/pull/2205)).
+- Fixed in-process child sessions losing their admission-issued nesting depth and delegation limit. `SubagentChildPolicy` now carries both the admitted `depth` and the effective `maxSubagentDepth`, so the subagent executor can enforce the configured and inherited limits without relying on the removed process-environment bridge ([#2220](https://github.com/bastani-inc/atomic/pull/2220), regression from [#2205](https://github.com/bastani-inc/atomic/pull/2205)).
 
 ## [0.9.13-alpha.1] - 2026-08-05
 
