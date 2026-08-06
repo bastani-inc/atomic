@@ -903,6 +903,7 @@ Authoring basics:
 - Workflow names normalize for lookup: trim, lowercase, convert whitespace/underscore to hyphen, remove other punctuation, and collapse hyphens.
 - `description` sets the listing text.
 - `autoAttach: true` opens the graph overlay when an interactive top-level named launch through `/workflow <name>` or the registered `workflow` tool is accepted. Only exact `true` is retained on the compiled definition; omission and `false` do not opt a definition into auto-attachment. Existing input-form launch behavior is unchanged.
+- `heartbeatIntervalMinutes` declares the workflow's heartbeat cadence in minutes. Omission uses the `15`-minute default; `0` disables heartbeats for the workflow. Negative and non-finite values are rejected when the definition is authored. The authoring contract lands first; scheduling and parent delivery follow in a separate change.
 - `inputs` declares typed user inputs.
 - `worktreeFromInputs` optionally maps input names to workflow-wide reusable Git worktree defaults.
 - `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
@@ -1867,6 +1868,26 @@ readonly autoAttach?: boolean;
 
 Exact `true` opts interactive top-level named launches through `/workflow <name>` and the registered `workflow` tool into opening the graph overlay immediately. Omission and `false` do not opt in. This option does not affect headless launches, nested `ctx.workflow(...)` calls, or the existing input-form launch path. Compiled definitions retain this field only as literal `true`.
 
+### `heartbeatIntervalMinutes`
+
+```typescript
+readonly heartbeatIntervalMinutes?: number;
+```
+
+The heartbeat cadence for the workflow, in minutes, measured from the run's persisted start time. Omission resolves to the `15`-minute default and `0` explicitly disables heartbeats; negative and non-finite values are rejected with a `TypeError` when the definition is authored. Every compiled definition carries the resolved value, so consumers read a number rather than re-deriving the default.
+
+```ts
+export default workflow({
+  name: "audit-auth",
+  description: "Audit the authentication module.",
+  heartbeatIntervalMinutes: 30,
+  outputs: {},
+  run: async (ctx) => ({}),
+});
+```
+
+This is the authoring contract only. Scheduling the cadence and delivering heartbeats to the parent chat land in a separate change, so a positive interval does not yet produce heartbeat messages.
+
 ### `inputs`
 
 ```typescript
@@ -1943,6 +1964,7 @@ interface WorkflowDefinition<
   readonly normalizedName: string;
   readonly description: string;
   readonly autoAttach?: true;
+  readonly heartbeatIntervalMinutes: number;
   readonly inputs: WorkflowInputSchemaMap;
   readonly outputs?: WorkflowOutputSchemaMap;
   readonly inputBindings?: { readonly worktree?: WorkflowWorktreeInputBinding };

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `heartbeatIntervalMinutes` to the workflow authoring surface: an optional cadence in minutes that resolves to the `15`-minute default when omitted, treats `0` as an explicit disable, and rejects negative and non-finite values with a `TypeError` while the definition is authored, so a bad cadence fails at authoring rather than at schedule time. Every compiled definition carries the resolved value, and a distinct `workflows:workflow-heartbeat` event contract is declared alongside it — run id, workflow name, start time, scheduled time, and interval, with heartbeat identity keyed by run id plus scheduled time. Scheduling and parent delivery are not part of this change, so a positive interval does not yet emit heartbeats ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
+
 ### Fixed
 
 - Fixed the `DISPATCHED` confirmation panel being torn apart by any workflow input containing a newline. Input values were truncated by visible width, which a control character does not have, so an embedded newline survived truncation and emitted extra physical lines that no border ever wrapped — the box was destroyed from that row down. Multi-line inputs are ordinary, so this fired for most real launches: a `prompt` or an `acceptance_criteria` block reliably reproduced it. String values and the object/array JSON projection now collapse control characters, `U+2028`, and `U+2029` to single spaces before truncation, so a run card stays one row per value. `U+2028`/`U+2029` are included because `JSON.stringify` does not escape them and some terminals still break lines on them. As a side effect, escape sequences in an input value can no longer inject ANSI styling into the chat surface.

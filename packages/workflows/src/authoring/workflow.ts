@@ -26,6 +26,7 @@ export type {
 } from "../shared/workflow-authoring-types.js";
 
 const BRANDED_WORKFLOW_DEFINITIONS = new WeakSet<object>();
+export const DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES = 15;
 
 export type AuthoredWorkflowSpec<
 	TInputs extends WorkflowInputSchemaMap = Record<never, never>,
@@ -158,6 +159,13 @@ export function workflow<
 	) {
 		throw new TypeError("workflow: inputs must be a schema map");
 	}
+	const heartbeatIntervalMinutes =
+		spec.heartbeatIntervalMinutes === undefined
+			? DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES
+			: spec.heartbeatIntervalMinutes;
+	if (!Number.isFinite(heartbeatIntervalMinutes) || heartbeatIntervalMinutes < 0) {
+		throw new TypeError("workflow: heartbeatIntervalMinutes must be a non-negative finite number");
+	}
 
 	const name = resolveWorkflowName(spec.name);
 	const normalizedName = normalizeWorkflowName(name);
@@ -174,6 +182,7 @@ export function workflow<
 		normalizedName,
 		description: spec.description,
 		...(spec.autoAttach === true ? { autoAttach: true } : {}),
+		heartbeatIntervalMinutes,
 		inputs: frozenInputs,
 		outputs: frozenOutputs,
 		...(inputBindings !== undefined ? { inputBindings } : {}),
