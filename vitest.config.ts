@@ -11,6 +11,19 @@ export { TEST_TIMEOUT_MS };
  */
 const setupFiles = ["./test/setup-workflow-durability.ts"];
 
+/**
+ * Runs once per project, before any file is collected. It builds
+ * `@bastani/atomic-natives` only when no compiled binding exists, because a
+ * missing binding no longer degrades gracefully: `packages/subagents` imports
+ * the Rust control plane statically, so the bundled extension throws during
+ * module loading and takes roughly twenty unrelated files down with it under
+ * errors that name the importer rather than the binding.
+ *
+ * On the happy path this is a single `existsSync`, so CI — which builds the
+ * binding in an explicit step first — and any warm worktree pay nothing.
+ */
+const globalSetup = ["./test/global-setup-natives.ts"];
+
 const project = (name: string, directory: string) => ({
 	resolve: { alias: sharedAliases },
 	test: {
@@ -21,6 +34,7 @@ const project = (name: string, directory: string) => ({
 		include: [`${directory}/**/*.test.ts`],
 		exclude: ["**/node_modules/**"],
 		setupFiles,
+		globalSetup,
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},

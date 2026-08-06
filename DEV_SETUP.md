@@ -28,12 +28,35 @@ npm run build --workspace=@bastani/atomic-natives
 The natives build is a required one-time step (and again after pulling changes to
 `crates/` or `packages/natives/`). `npm ci --ignore-scripts` deliberately skips
 lifecycle scripts, and the workspace natives package has no install hook anyway —
-only published releases ship prebuilt binaries. Without the compiled
-`packages/natives/native/*.node`, the CLI still runs but silently degrades:
-`pty:true` bash falls back to pipes, native grep/find/tree-sitter block
-resolution fall back to slower JS paths, and several `packages/coding-agent`
-tests fail (`bash-pty-native`, `search-tool-*`, `hashline-tools`). CI builds the
+only published releases ship prebuilt binaries.
+
+**`vitest` now builds it for you when it is missing.** The `globalSetup` in
+`test/global-setup-natives.ts` checks for `packages/natives/native/*.node`
+before collecting any file: present and current, it returns after one stat and
+costs nothing; missing, it prints what it is doing and runs the build; older
+than the Rust sources, it warns and runs anyway, because `git checkout` rewrites
+mtimes and blocking a suite on that evidence is worse than one build too few.
+You still need a Rust toolchain — without cargo it fails with that prerequisite
+rather than a compile error.
+
+Running the CLI is not covered by that, so build it yourself before using the
+agent from a fresh checkout. Without the compiled binding, `pty:true` bash falls
+back to pipes and native grep/find/tree-sitter block resolution fall back to
+slower JS paths.
+
+What is **not** a graceful degradation is the test suites. Since the in-process
+subagent runner landed, `packages/subagents` reaches the Rust control plane
+through a *static* import, so a missing binding throws while the module graph is
+still loading and takes roughly twenty root unit and integration files with it —
+not just `bash-pty-native`, `search-tool-*`, and `hashline-tools`. The errors
+name whatever imported the extension, such as `workflow-stage-bundled-resources`,
+so the failure reads like a regression in an unrelated subsystem. CI builds the
 module explicitly for the same reason (see `.github/workflows/test.yml`).
+
+Note that the generated napi-rs loader's own miss message suggests removing
+`package-lock.json` and `node_modules` and re-running `npm i`. That advice does
+not apply here: with `--ignore-scripts`, reinstalling never produces the
+binding. `npm run build --workspace=@bastani/atomic-natives` is the fix.
 
 The committed `.npmrc` applies a three-day minimum release age to anything you add with
 `npm install`, and pins exact versions. `package-lock.json` is the only lockfile.
