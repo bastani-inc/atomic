@@ -62,8 +62,24 @@ const REAL_BROKER_STARTUP_TIMEOUT_MS = 30_000;
 const BROKER_STARTUP_BUDGET_MS = 8_000;
 
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-broker-log-"));
+// Both agent-dir variables are restored in afterAll. Vitest's default `forks`
+// pool already isolates each file in its own process, so today this cannot leak
+// -- but AGENTS.md forbids pinning `pool`/`isolate`, so the isolation this
+// relies on is a default rather than a guarantee, and a future default would
+// silently hand every other suite a temp directory that is deleted at exit.
+const previousAgentDirEnv = {
+	atomic: process.env.ATOMIC_CODING_AGENT_DIR,
+	pi: process.env.PI_CODING_AGENT_DIR,
+} as const;
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
+
+const restoreAgentDirEnv = (): void => {
+	if (previousAgentDirEnv.atomic === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDirEnv.atomic;
+	if (previousAgentDirEnv.pi === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDirEnv.pi;
+};
 
 type SpawnModule = typeof import("../../packages/intercom/broker/spawn.js");
 type PathsModule = typeof import("../../packages/intercom/broker/paths.js");
@@ -81,6 +97,8 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+	// Restore first: an early return below must not leave the override installed.
+	restoreAgentDirEnv();
 	const pidPath = pathsModule.getBrokerPidPath();
 	if (!existsSync(pidPath)) return;
 	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);

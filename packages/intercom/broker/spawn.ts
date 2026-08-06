@@ -144,8 +144,17 @@ export function getWindowsBrokerCommandLine(
  * descriptor passed to `wscript.exe` would only ever capture the launcher. Run the broker under
  * `cmd.exe /s /c` instead and append its stderr to the same log the direct path writes.
  * `/s` makes cmd strip exactly the outer quote pair and use the remainder verbatim.
+ *
+ * Returns the command line unchanged when it contains a `%`. cmd expands `%NAME%` at parse time
+ * and there is no reliable way to escape a literal percent on a `cmd /c` command line — `^` does
+ * not cover it, and `%%` is a batch-file escape rather than a command-line one. Wrapping such a
+ * command would hand the broker different arguments than the user configured, so the redirect is
+ * dropped instead: launching correctly without a captured log beats launching wrongly with one.
+ * A `%` reaches here only from a custom `brokerCommand`/`brokerArgs` or an install path that
+ * contains one, and the direct (non-launcher) Windows path still captures stderr normally.
  */
 export function getWindowsStderrRedirectCommandLine(commandLine: string, logPath: string): string {
+  if (commandLine.includes("%")) return commandLine;
   return `cmd.exe /s /c "${commandLine} 2>>${quoteWindowsArg(logPath)}"`;
 }
 
