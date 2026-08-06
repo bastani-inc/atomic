@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -8,6 +8,8 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
+	getBuiltinPackagePaths,
+	type PackageSource,
 	SessionManager,
 	type SessionStats,
 	SettingsManager,
@@ -30,6 +32,7 @@ import {
 	DEFAULT_MAX_OUTPUT,
 	type JsonSchemaObject,
 	type MaxOutputConfig,
+	normalizeMaxSubagentDepth,
 	truncateOutput,
 } from "../../shared/types.ts";
 import {
@@ -80,6 +83,12 @@ export interface ChildSpec {
 	/** Typed identity/capability resolved by the parent before admission. */
 	readonly intercom?: SubagentIntercomIdentity;
 	readonly sessionFile?: string;
+	/**
+	 * Effective delegation limit for this child, already narrowed by the parent's
+	 * limit and the child agent's own `maxSubagentDepth`. Retained on the spec so
+	 * a cold reload reissues the same limit.
+	 */
+	readonly maxSubagentDepth?: number;
 	readonly testSession?: boolean | TestSessionOptions;
 	readonly structuredOutput?: { readonly schema: JsonSchemaObject; readonly outputPath: string };
 	readonly artifactJsonlPath?: string;
@@ -242,6 +251,57 @@ function workflowMetadataFromContext(
 		runId: context.workflowRunId,
 		stageId: context.workflowStageId,
 		stageName: context.workflowStageName,
+	};
+}
+
+/**
+ * Effective delegation limit for an admitted child. A caller that already
+ * narrowed the parent's limit against the agent definition puts the result on
+ * the spec; a caller admitting a child directly still gets the agent's own
+ * declared limit rather than an unbounded policy.
+ */
+export function effectiveChildMaxSubagentDepth(spec: ChildSpec): number | undefined {
+	return spec.maxSubagentDepth ?? normalizeMaxSubagentDepth(spec.agent.maxSubagentDepth);
+}
+
+/**
+ * In-process children must load the same bundled extensions as the host.
+ * Workflow extensions are disabled inside workflow-owned sessions because their
+ * startup lifecycle belongs to the parent workflow store.
+ */
+export function inProcessChildBuiltinPackagePaths(
+	context: CreateAgentSessionOptions["orchestrationContext"] | undefined,
+): PackageSource[] {
+	return getBuiltinPackagePaths().map((source) => {
+		if (context?.kind !== "workflow-stage" || basename(source) !== "workflows") return source;
+		return { source, extensions: [] };
+	});
+}
+
+/**
+ * Resource-loading options for a real (non-test) in-process child session.
+ * Omitting `builtinPackagePaths` leaves a child with no bundled extension at
+ * all — no `subagent`, `web_search`, `fetch_content`, or `intercom` — so the
+ * bundled roots belong in every child loader.
+ */
+export function inProcessChildResourceLoaderOptions(input: {
+	readonly cwd: string;
+	readonly agentDir: string;
+	readonly settingsManager: SettingsManager;
+	readonly agent: Pick<AgentConfig, "systemPrompt" | "systemPromptMode">;
+	readonly orchestrationContext: CreateAgentSessionOptions["orchestrationContext"] | undefined;
+}): ConstructorParameters<typeof DefaultResourceLoader>[0] {
+	const agentPrompt = input.agent.systemPrompt?.trim();
+	return {
+		cwd: input.cwd,
+		agentDir: input.agentDir,
+		settingsManager: input.settingsManager,
+		builtinPackagePaths: inProcessChildBuiltinPackagePaths(input.orchestrationContext),
+		...(agentPrompt && input.agent.systemPromptMode === "append"
+			? { appendSystemPrompt: [agentPrompt] }
+			: agentPrompt
+				? { systemPrompt: agentPrompt }
+				: {}),
 	};
 }
 
@@ -542,6 +602,9 @@ export class SubagentControlRuntime {
 					intercomGroup: parent.intercomGroup,
 					intercom: spec.intercom,
 					depth: identity.depth,
+					...(effectiveChildMaxSubagentDepth(spec) === undefined
+						? {}
+						: { maxSubagentDepth: effectiveChildMaxSubagentDepth(spec) }),
 				},
 				sessionDir,
 				sessionFile: spec.sessionFile,
@@ -637,40 +700,45 @@ export class SubagentControlRuntime {
 					);
 			activeSessionManager = sessionManager;
 			if (workflow) sessionManager.markSessionInternal(workflow);
-			const settingsManager = SettingsManager.create(admitted.policy.cwd, getAgentDir());
-			const agentPrompt = admitted.spec.agent.systemPrompt?.trim();
-			const resourceLoader = new DefaultResourceLoader({
-				cwd: admitted.policy.cwd,
-				agentDir: getAgentDir(),
-				settingsManager,
-				...(agentPrompt && admitted.spec.agent.systemPromptMode === "append"
-					? { appendSystemPrompt: [agentPrompt] }
-					: agentPrompt
-						? { systemPrompt: agentPrompt }
-						: {}),
-			});
-			await resourceLoader.reload();
-			const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
-			const created = admitted.spec.testSession
-				? { session: createTestSession(sessionManager, admitted.spec) }
-				: await createAgentSession({
+			let created: { session: AgentSession };
+			if (admitted.spec.testSession) {
+				created = { session: createTestSession(sessionManager, admitted.spec) };
+			} else {
+				const settingsManager = SettingsManager.create(admitted.policy.cwd, getAgentDir());
+				const resourceLoader = new DefaultResourceLoader(
+					inProcessChildResourceLoaderOptions({
 						cwd: admitted.policy.cwd,
-						model: candidate.model ?? admitted.policy.model,
-						thinkingLevel: candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
-						...(admitted.spec.fallbackModels?.length
-							? { fallbackModels: [...admitted.spec.fallbackModels] }
-							: {}),
-						tools: admitted.policy.tools ? [...admitted.policy.tools] : undefined,
-						excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
-						customTools: admitted.policy.customTools,
-						resourceLoader,
-						sessionManager,
+						agentDir: getAgentDir(),
 						settingsManager,
+						agent: admitted.spec.agent,
 						orchestrationContext: admitted.spec.parent?.orchestrationContext,
-						subagentPolicy: admitted.policy,
-						systemPromptTransform: promptBehavior.systemPromptTransform,
-						initialContextTransform: promptBehavior.initialContextTransform,
-					});
+					}),
+				);
+				await resourceLoader.reload();
+				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
+				created = {
+					session: (
+						await createAgentSession({
+							cwd: admitted.policy.cwd,
+							model: candidate.model ?? admitted.policy.model,
+							thinkingLevel: candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
+							...(admitted.spec.fallbackModels?.length
+								? { fallbackModels: [...admitted.spec.fallbackModels] }
+								: {}),
+							tools: admitted.policy.tools ? [...admitted.policy.tools] : undefined,
+							excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
+							customTools: admitted.policy.customTools,
+							resourceLoader,
+							sessionManager,
+							settingsManager,
+							orchestrationContext: admitted.spec.parent?.orchestrationContext,
+							subagentPolicy: admitted.policy,
+							systemPromptTransform: promptBehavior.systemPromptTransform,
+							initialContextTransform: promptBehavior.initialContextTransform,
+						})
+					).session,
+				};
+			}
 			session = created.session;
 			if (session.sessionFile) this.sessionFiles.set(admitted.identity.path, session.sessionFile);
 			this.sessions.set(admitted.identity.path, session);
@@ -1055,6 +1123,9 @@ export class SubagentControlRuntime {
 			thinkingLevel: spec.thinkingLevel ?? (spec.agent.thinking as ChildPolicy["thinkingLevel"]),
 			intercomGroup: spec.parent?.intercomGroup,
 			depth,
+			...(effectiveChildMaxSubagentDepth(spec) === undefined
+				? {}
+				: { maxSubagentDepth: effectiveChildMaxSubagentDepth(spec) }),
 		};
 	}
 

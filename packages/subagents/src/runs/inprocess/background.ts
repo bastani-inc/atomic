@@ -42,6 +42,7 @@ export interface AsyncSingleParams {
 	availableModels?: ModelInfo[];
 	knownModelProviders?: string[];
 	maxSubagentDepth: number;
+	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;

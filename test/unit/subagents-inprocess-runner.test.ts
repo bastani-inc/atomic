@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
@@ -17,9 +17,11 @@ import {
 	type AttemptOutcome,
 	type ChildSpec,
 	continue_in_background,
+	inProcessChildBuiltinPackagePaths,
 	type RunningAttempt,
 	SubagentControlRuntime,
 } from "../../packages/subagents/src/runs/inprocess/runner.ts";
+import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
 import { sleep } from "../helpers/runtime.ts";
 
@@ -40,6 +42,63 @@ function sampleSpec(cwd: string): ChildSpec {
 	return { taskName: "analysis", task: "inspect the fixture", agent: sampleAgent(), cwd };
 }
 
+test("a run's parent depth reaches admission and the door refuses the level past the maximum", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-depth-"));
+	clearSubagentControls();
+	try {
+		const deepestAllowed = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+			cwd: root,
+			runId: "depth-parent-below-limit",
+			sessionDir: join(root, "sessions", "below-limit"),
+			parentDepth: MAX_SUBAGENT_NESTING_DEPTH - 1,
+			testSession: { output: "deep result" },
+		});
+
+		assert.equal(deepestAllowed.status, "ok");
+		const deepestControl = findSubagentControl("depth-parent-below-limit");
+		assert.equal(
+			deepestControl?.native.listChildren()[0]?.depth,
+			MAX_SUBAGENT_NESTING_DEPTH,
+			"a child of the deepest allowed parent is admitted at the maximum depth",
+		);
+
+		const beyondLimit = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+			cwd: root,
+			runId: "depth-parent-at-limit",
+			sessionDir: join(root, "sessions", "at-limit"),
+			parentDepth: MAX_SUBAGENT_NESTING_DEPTH,
+			testSession: { output: "deep result" },
+		});
+
+		assert.equal(beyondLimit.status, "error");
+		assert.equal(beyondLimit.error, `child depth exceeds maximum ${MAX_SUBAGENT_NESTING_DEPTH}`);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("in-process child loading includes bundled subagent resources", () => {
+	const packagePath = (source: string | { source: string }): string =>
+		typeof source === "string" ? source : source.source;
+	const builtinPaths = inProcessChildBuiltinPackagePaths(undefined);
+	const subagentsPath = builtinPaths.find((source) => basename(packagePath(source)) === "subagents");
+	const workflowsPath = builtinPaths.find((source) => basename(packagePath(source)) === "workflows");
+
+	assert.ok(subagentsPath, "in-process children must load the bundled subagents package");
+	assert.ok(workflowsPath, "source checkout must expose the bundled workflows package");
+
+	const stagePaths = inProcessChildBuiltinPackagePaths({
+		kind: "workflow-stage",
+		workflowRunId: "run",
+		workflowStageId: "stage",
+		workflowStageName: "Stage",
+		constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+	});
+	const stageWorkflowsPath = stagePaths.find((source) => basename(packagePath(source)) === "workflows");
+	assert.deepEqual(stageWorkflowsPath, { source: packagePath(workflowsPath), extensions: [] });
+});
+
 test("admission resolves restricted child management and explicit fanout policy", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-policy-"));
 	try {
@@ -51,12 +110,129 @@ test("admission resolves restricted child management and explicit fanout policy"
 		);
 		assert.ok(result.admitted);
 		assert.equal(result.admitted.policy.managementActions, "restricted");
+		assert.equal(result.admitted.policy.depth, 1);
 		assert.equal(result.admitted.policy.fanoutAuthorized, true);
 		const noFanout = control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 });
 		assert.ok(noFanout.admitted);
 		assert.equal(noFanout.admitted.policy.managementActions, "restricted");
 		assert.equal(noFanout.admitted.policy.fanoutAuthorized, false);
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("admission carries the effective per-agent maximum into the child policy", () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-max-depth-"));
+	try {
+		const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
+		control.registerAgents([sampleAgent()]);
+
+		const capped = control.admitChildSession(
+			{ ...sampleSpec(root), maxSubagentDepth: 1 },
+			{ path: "parent", depth: 0 },
+		);
+		assert.ok(capped.admitted);
+		assert.equal(capped.admitted.policy.depth, 1);
+		assert.equal(capped.admitted.policy.maxSubagentDepth, 1);
+
+		const uncapped = control.admitChildSession(sampleSpec(root), { path: "parent", depth: 0 });
+		assert.ok(uncapped.admitted);
+		assert.equal(uncapped.admitted.policy.maxSubagentDepth, undefined);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("direct admission falls back to the agent's own declared maximum", () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-agent-max-depth-"));
+	try {
+		const cappedAgent: AgentConfig = { ...sampleAgent(), maxSubagentDepth: 1 };
+		const control = new SubagentControlRuntime({ path: "agent-max-parent", depth: 0 }, root);
+		control.registerAgents([cappedAgent]);
+
+		// The spec omits maxSubagentDepth, as a caller admitting a child directly does.
+		const admitted = control.admitChildSession(
+			{ taskName: cappedAgent.name, task: "inspect the fixture", agent: cappedAgent, cwd: root },
+			{ path: "agent-max-parent", depth: 0 },
+		);
+
+		assert.ok(admitted.admitted);
+		assert.equal(admitted.admitted.policy.depth, 1);
+		assert.equal(admitted.admitted.policy.maxSubagentDepth, 1);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("an explicitly narrowed spec maximum wins over the agent's declared one", () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-narrowed-max-depth-"));
+	try {
+		const cappedAgent: AgentConfig = { ...sampleAgent(), maxSubagentDepth: 3 };
+		const control = new SubagentControlRuntime({ path: "narrowed-parent", depth: 0 }, root);
+		control.registerAgents([cappedAgent]);
+
+		const admitted = control.admitChildSession(
+			{
+				taskName: cappedAgent.name,
+				task: "inspect the fixture",
+				agent: cappedAgent,
+				cwd: root,
+				maxSubagentDepth: 1,
+			},
+			{ path: "narrowed-parent", depth: 0 },
+		);
+
+		assert.ok(admitted.admitted);
+		assert.equal(admitted.admitted.policy.maxSubagentDepth, 1);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a retained spec keeps the effective maximum across a cold reload", () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-max-depth-reload-"));
+	try {
+		const control = new SubagentControlRuntime({ path: "reload-parent", depth: 0 }, root);
+		control.registerAgents([sampleAgent()]);
+		const admitted = control.admitChildSession(
+			{ ...sampleSpec(root), maxSubagentDepth: 1 },
+			{ path: "reload-parent", depth: 0 },
+		);
+		assert.ok(admitted.admitted);
+		mkdirSync(admitted.admitted.sessionDir, { recursive: true });
+		writeFileSync(join(admitted.admitted.sessionDir, "session.jsonl"), "", "utf8");
+
+		const reloaded = control.reloadColdChild(admitted.admitted.identity.path, "follow up");
+
+		assert.ok(reloaded.admitted, reloaded.refusal?.reason);
+		assert.equal(reloaded.admitted.policy.maxSubagentDepth, 1);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a run's effective maximum reaches the admitted child policy", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-max-depth-run-"));
+	clearSubagentControls();
+	try {
+		const result = await runSingleInProcess(root, sampleAgent(), "inspect fixture", {
+			cwd: root,
+			runId: "max-depth-parent",
+			sessionDir: join(root, "sessions"),
+			maxSubagentDepth: 1,
+			testSession: { output: "capped result" },
+		});
+		assert.equal(result.status, "ok");
+
+		const control = findSubagentControl("max-depth-parent");
+		assert.ok(control);
+		const childPath = result.path ?? "";
+		const reloaded = control.reloadColdChild(childPath, "follow up");
+
+		assert.ok(reloaded.admitted, reloaded.refusal?.reason);
+		assert.equal(reloaded.admitted.policy.maxSubagentDepth, 1);
+	} finally {
+		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

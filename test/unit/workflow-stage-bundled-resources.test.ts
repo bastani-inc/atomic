@@ -198,6 +198,35 @@ describe("workflow stage bundled resources", () => {
 		}
 	});
 
+	test("delegates through the registered subagent tool from a workflow stage", async () => {
+		const snapshot = snapshotEnv();
+		const cwd = tempDir("atomic-workflow-stage-delegation-cwd-");
+		const agentDir = join(cwd, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		try {
+			const { session } = await createWorkflowStageSession({ cwd, agentDir });
+			try {
+				const tool = session.getToolDefinition("subagent");
+				assert.ok(tool, "workflow stages must register the subagent tool");
+				const result = await tool.execute(
+					"stage-delegation",
+					{ agent: "worker", task: "complete this test task", context: "fresh" } as never,
+					undefined,
+					undefined,
+					session.extensionRunner.createContext(),
+				);
+				assert.ok(
+					result.content.some((part) => part.type === "text" && part.text.includes("done")),
+					"the stage tool must return the in-process child result",
+				);
+			} finally {
+				session.dispose();
+			}
+		} finally {
+			restoreEnv(snapshot);
+		}
+	});
+
 	test("keeps explicit workflow stage tool allowlists authoritative", async () => {
 		const cwd = tempDir("atomic-workflow-stage-explicit-tools-cwd-");
 		const agentDir = join(cwd, "agent");
