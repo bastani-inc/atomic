@@ -200,6 +200,7 @@ export class ScrollableComponentViewport implements Component {
 	private visibleRows = 1;
 	private scrollFromBottom = 0;
 	private lastLineCount = 0;
+	private lastComponentRowCounts: readonly number[] = [];
 	private lastWidth = 0;
 	private maxScroll = 0;
 
@@ -264,12 +265,32 @@ export class ScrollableComponentViewport implements Component {
 
 	render(width: number): string[] {
 		const componentRows = this.measureComponentRows(width);
-		const lineCount = componentRows.reduce((sum, rows) => sum + rows.rowCount, 0);
+		const rowCounts = componentRows.map((rows) => rows.rowCount);
+		const lineCount = rowCounts.reduce((sum, count) => sum + count, 0);
 		const maxScroll = Math.max(0, lineCount - this.visibleRows);
-		if (this.scrollFromBottom > 0 && this.lastWidth === width && lineCount > this.lastLineCount) {
-			this.scrollFromBottom += lineCount - this.lastLineCount;
+		// The offset is a distance from the bottom, so the first visible row is
+		// `maxScroll - scrollFromBottom`. Rows appearing or disappearing move the
+		// content a scrolled-up viewer is reading unless the offset moves with
+		// them -- a live subagent widget does exactly that every time it gains or
+		// drops its current-tool row.
+		//
+		// Which way the offset must move depends on where the rows changed, so a
+		// plain `scrollFromBottom += lineCount - lastLineCount` is wrong half the
+		// time. Rows changing *below* the anchor need the offset adjusted by that
+		// delta; rows changing *above* it need the offset left alone, because the
+		// bottom-relative distance to the anchored content did not change. Anchor
+		// on the row the viewer is actually reading and re-derive the offset from
+		// it. A viewer already at the bottom keeps scrollFromBottom === 0 and is
+		// skipped entirely, so sticky-bottom following is untouched.
+		if (this.scrollFromBottom > 0 && this.lastWidth === width) {
+			const previousMaxScroll = Math.max(0, this.lastLineCount - this.visibleRows);
+			const anchorRow = Math.max(0, previousMaxScroll - this.scrollFromBottom);
+			const shift = rowsShiftedAboveAnchor(this.lastComponentRowCounts, rowCounts, anchorRow);
+			const nextAnchorRow = Math.max(0, Math.min(maxScroll, anchorRow + shift));
+			this.scrollFromBottom = maxScroll - nextAnchorRow;
 		}
 		this.lastLineCount = lineCount;
+		this.lastComponentRowCounts = rowCounts;
 		this.lastWidth = width;
 		this.maxScroll = maxScroll;
 		this.clampScroll();
@@ -335,6 +356,38 @@ export class ScrollableComponentViewport implements Component {
 	private clampScroll(): void {
 		this.scrollFromBottom = Math.max(0, Math.min(this.maxScroll, this.scrollFromBottom));
 	}
+}
+
+/**
+ * Net rows gained or lost by the components that sit entirely above `anchorRow`.
+ *
+ * The anchored row moves down by exactly this many rows, so adding it to the
+ * anchor keeps the same content under the viewer. Components at or across the
+ * anchor are excluded: their own changes happen at or below the anchored row and
+ * must not move it.
+ *
+ * Row counts are compared positionally over the shared prefix, which is what the
+ * chat stacks this viewport drives actually do — they append and mutate at the
+ * tail. A component inserted or removed *ahead* of the anchor would be
+ * misattributed; the anchor then lands one component off rather than drifting on
+ * every frame, and the next user scroll re-establishes it.
+ */
+function rowsShiftedAboveAnchor(
+	previousRowCounts: readonly number[],
+	nextRowCounts: readonly number[],
+	anchorRow: number,
+): number {
+	let cursor = 0;
+	let shift = 0;
+	const shared = Math.min(previousRowCounts.length, nextRowCounts.length);
+	for (let index = 0; index < shared; index += 1) {
+		const previousRows = previousRowCounts[index] ?? 0;
+		const componentEnd = cursor + previousRows;
+		if (componentEnd > anchorRow) break;
+		shift += (nextRowCounts[index] ?? 0) - previousRows;
+		cursor = componentEnd;
+	}
+	return shift;
 }
 
 function isRowWindowComponent(component: Component): component is RowWindowComponent {
