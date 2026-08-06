@@ -459,7 +459,7 @@ The broker runs as a detached subprocess, so it does not share the host session'
 
 If the broker fails to start, its stderr is not lost. The parent hands the child an already-open descriptor on `broker.log` (a file, not a pipe, because the broker outlives the session that spawned it) and truncates the file on every spawn. Both the "exited before startup" error and the readiness-timeout error quote the log path and a bounded tail of that output, so `cat ~/.atomic/agent/intercom/broker.log` shows the same text after the fact. On Windows the hidden launcher appends the broker's stderr to the same file.
 
-The file cannot grow without limit. The parent exits while the broker keeps running, so the cap is applied inside the broker: it wraps its own stderr with an 8 KiB byte limiter before it starts listening, and anything past that is discarded rather than written. That covers both launch shapes, because the Windows redirect carries the same stream.
+The file cannot grow without limit. The parent exits while the broker keeps running, so the cap is applied inside the broker before it starts listening. Three routes reach the log and each is capped: `process.stderr.write`, `console.error` / `console.warn`, and the default fatal printing for an uncaught exception or an unhandled rejection. Patching the stream alone would not be enough — Bun's console writes to the file descriptor directly, and neither runtime routes a fatal error through the stream. Anything past 8 KiB is discarded rather than written, on the direct launch and the Windows redirect alike.
 
 Async extension work (startup, inbound flushes, reconnects, overlays, and relays) no-ops if the session shuts down or reloads before it settles.
 
