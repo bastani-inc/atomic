@@ -285,15 +285,26 @@ function renderInputsSegment(
  * This is reachable from ordinary use — any multi-line workflow input (a
  * `prompt`, an `acceptance_criteria` block) contains newlines by nature.
  *
- * U+2028/U+2029 are included deliberately: `JSON.stringify` does *not* escape
- * them, so they survive the object/array projection below, and some terminals
- * treat them as line breaks.
+ * Scoped to `\p{Cc}` (C0/C1 controls, so `\n`, `\r`, `\t`, and a stray ESC that
+ * would otherwise inject styling) plus the two separators `JSON.stringify` does
+ * *not* escape, which some terminals still break lines on. It deliberately does
+ * NOT cover all of `\p{Cf}`: that class includes U+200D ZERO WIDTH JOINER, and
+ * stripping it splits emoji sequences such as a family glyph into their
+ * components. A format character that occupies no cell cannot break a row, so
+ * removing it only corrupts the value the user asked to see.
  */
-const ROW_BREAKING_RE = /[\p{Cc}\p{Cf}\u2028\u2029]+/gu;
+const ROW_BREAKING_RE = /[\p{Cc}\u2028\u2029]+/gu;
 
-/** Collapse row-breaking characters and whitespace runs into single spaces. */
+/**
+ * Replace runs of row-breaking characters with a single space.
+ *
+ * Only the replaced runs collapse. Pre-existing spacing is left alone and the
+ * result is not trimmed, because a value's own leading, trailing, or repeated
+ * spaces are content: the card renders inside quotes, so `"  alpha   beta  "`
+ * should still read as what was passed rather than as `"alpha beta"`.
+ */
 function toSingleLine(value: string): string {
-	return value.replace(ROW_BREAKING_RE, " ").replace(/ {2,}/g, " ").trim();
+	return value.replace(ROW_BREAKING_RE, " ");
 }
 
 function renderInputValue(value: unknown, budget: number): string {

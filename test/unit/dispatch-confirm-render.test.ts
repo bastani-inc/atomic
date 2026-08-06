@@ -286,7 +286,7 @@ describe("renderDispatchConfirm — multi-line input values", () => {
 		assertAllRowsExactWidth(out, WIDTH);
 	});
 
-	test("CR, CRLF, and tab are collapsed rather than emitted", () => {
+	test("CR, CRLF, and tab become spaces without touching the rest", () => {
 		const out = renderDispatchConfirm({
 			workflowName: "primer",
 			runId: "7c02aa31-aaaa-bbbb-cccc-dddddddddddd",
@@ -295,10 +295,40 @@ describe("renderDispatchConfirm — multi-line input values", () => {
 		});
 		assertAllRowsExactWidth(out, WIDTH);
 		const plain = stripAnsi(out);
-		assert.doesNotMatch(plain, /\r/);
-		assert.doesNotMatch(plain, /\t/);
-		// The surviving text stays readable on one row.
-		assert.match(plain, /alpha beta gamma delta/);
+		assert.doesNotMatch(plain, /[\r\t]/u);
+		// `\r\n` is one run and collapses to one space, so the exact surviving
+		// text is pinned rather than merely "contains the words".
+		assert.match(plain, /note="alpha beta gamma delta"/u);
+	});
+
+	test("spacing inside a value is content and survives untouched", () => {
+		// An earlier revision collapsed runs of spaces and trimmed the result, so
+		// a value rendered as something the caller never passed. Only the
+		// row-breaking characters may be rewritten.
+		const out = renderDispatchConfirm({
+			workflowName: "primer",
+			runId: "5c19ba77-aaaa-bbbb-cccc-dddddddddddd",
+			inputs: { note: "  alpha   beta  " },
+			width: WIDTH,
+		});
+		assertAllRowsExactWidth(out, WIDTH);
+		// Exact substring rather than a regex: the whole point is the precise run
+		// lengths, which are unreadable as a pattern and which biome rightly flags.
+		assert.ok(stripAnsi(out).includes('note="  alpha   beta  "'), stripAnsi(out));
+	});
+
+	test("a zero-width joiner is preserved so emoji sequences survive", () => {
+		// U+200D is \p{Cf}, but it occupies no cell and so cannot break a row.
+		// Stripping the whole format class split this family glyph into four.
+		const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";
+		const out = renderDispatchConfirm({
+			workflowName: "primer",
+			runId: "6e2ad418-aaaa-bbbb-cccc-dddddddddddd",
+			inputs: { note: family },
+			width: WIDTH,
+		});
+		assertAllRowsExactWidth(out, WIDTH);
+		assert.ok(stripAnsi(out).includes(family), "the joined emoji sequence must survive intact");
 	});
 
 	test("U+2028/U+2029 survive JSON.stringify and must still be collapsed", () => {
@@ -311,7 +341,7 @@ describe("renderDispatchConfirm — multi-line input values", () => {
 			width: WIDTH,
 		});
 		assertAllRowsExactWidth(out, WIDTH);
-		assert.doesNotMatch(out, /[\u2028\u2029]/);
+		assert.doesNotMatch(out, /[\u2028\u2029]/u);
 	});
 
 	test("escape sequences in an input value cannot inject ANSI into the card", () => {
@@ -322,8 +352,12 @@ describe("renderDispatchConfirm — multi-line input values", () => {
 			width: WIDTH,
 		});
 		assertAllRowsExactWidth(out, WIDTH);
-		assert.match(stripAnsi(out), /safe\[31mINJECTED\[0m|safe/);
-		assert.doesNotMatch(out, /\u001b\[31m/);
+		// Pinned exactly. An earlier revision allowed `|safe`, which would also
+		// have passed had the sanitizer dropped everything after the escape --
+		// the assertion could not fail for the reason it existed to catch.
+		// ESC is removed; its payload stays as ordinary text.
+		assert.match(stripAnsi(out), /note="safe \[31mINJECTED \[0m"/u);
+		assert.doesNotMatch(out, /\u001b\[31m/u);
 	});
 
 	test("single-line inputs are unchanged by the sanitizer", () => {
