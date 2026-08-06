@@ -45,25 +45,40 @@ jobs:
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
             binary_platform: linux-x64
-            timeout_minutes: 13
+            timeout_minutes: 20
           - os: blacksmith-4vcpu-windows-2025
             binary_platform: windows-x64
-            timeout_minutes: 14
+            timeout_minutes: 20
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # Measured p100 on the last fully green run of this workflow, run
-    # 31047542976 (pull_request, sha 772a373): 400s Linux (unit 291s, native
-    # bindings 45s, integration 29s) and 595s Windows (unit 401s). The previous
-    # 8/12 caps were sized against older 230s/348s measurements and had decayed
-    # to 1.2x, so the Linux leg was cancelled at 497s on run 31047506585 while
-    # the same SHA passed on the pull_request event.
+    # This job owns TWO retryable steps -- unit and integration each run behind
+    # the bounded flake-retry wrapper -- so its cap must cover a replay of both,
+    # not just one pass. The retry replays only those steps, so the budget is
+    # `setup + 2 x (unit + integration)` rather than 2x the whole job.
     #
-    # The cap is a hang detector, not a performance budget. Linux is 13 min
-    # (780s, 1.95x of 400s). Windows would need 20 min for that same ratio, and
-    # every cap here stays strictly under 15 min, so Windows takes the
-    # ceiling-bounded 14 min (840s, 1.41x of 595s). That covers the measured
-    # p100 plus a slow runner but not a full replay of the 401s Windows unit
-    # step; shortening that step is what would restore a true 2x detector.
+    # Worst observed per step, runs 31085190975 and 31088323060:
+    #   Linux   setup 86s,  unit 355s, integration 31s -> 86 + 2*386 =  858s (14.3 min)
+    #   Windows setup 232s, unit 324s, integration 44s -> 232 + 2*368 = 968s (16.1 min)
+    # The Windows setup figure is a cold runner (122s "Set up job" alone), which
+    # is the right pessimistic input for a cap.
+    #
+    # Both legs take 20 min: 1.40x Linux, 1.24x Windows. A single number is
+    # deliberate. The previous 13/14 pair encoded a per-platform precision the
+    # measurements do not support -- these are 4-vCPU shared runners whose setup
+    # alone varied 73s to 232s across two samples of the same job -- and a split
+    # cap invites re-tuning each leg as suites grow, which is how 8/12 decayed
+    # into cancelling healthy runs. One cap tracks one question: has this job
+    # hung, given it may legitimately run its suites twice.
+    #
+    # The previous 13/14 pair sat BELOW both retry-inclusive figures, so any
+    # genuine failure that triggered the retry was cancelled at the cap rather
+    # than reporting a failure -- and `gh run view --log` refuses to serve logs
+    # until the whole run completes, so those cancellations arrived with no test
+    # names at all. That is how three PRs reported `cancelled` at 14m08s while
+    # the underlying defect was two ordinary Windows test bugs.
+    #
+    # This stays a hang detector, not a performance budget. Shortening the
+    # ~5.5 min unit step is still what would buy the headroom back.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.

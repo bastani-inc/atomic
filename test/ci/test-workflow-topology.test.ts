@@ -114,27 +114,41 @@ test("every work job the gate names exists and is otherwise independent", async 
 
 /**
  * Per-job wall-clock caps replace the blanket 10/15 minute pair. A cap is a hang
- * detector at roughly 2x measured p100, and it decays into a false-failure
- * generator as the suites grow: the 8-minute `suites` Linux cap was sized
- * against a 230 s measurement, the job now measures 400 s, and it cancelled a
- * healthy run at 497 s on 31047506585 while the same SHA passed on the
- * pull_request event. The current numbers come from run 31047542976 on sha
- * 772a373 -- `suites` 400 s / 595 s, `agent-suite` 154 s / 250 s (221 s / 270 s
- * worst observation across both events on that SHA), `release-archive` 102 s /
- * 192 s.
+ * detector, and it decays into a false-failure generator as the suites grow: the
+ * 8-minute `suites` Linux cap was sized against a 230 s measurement, the job now
+ * measures 400 s, and it cancelled a healthy run at 497 s on 31047506585 while
+ * the same SHA passed on the pull_request event.
  *
- * Every cap stays strictly under the 15-minute Windows blanket it replaced, so
- * Windows `suites` takes 14 minutes (1.41x) rather than the 20 that 2x of 595 s
- * would ask for. The Windows `release-archive` cap is 9 minutes because cold
- * setup observed 152 s for `rust-toolchain` and 71 s for checkout, followed by
- * roughly 110 s native build and 40 s archive smoke (near 6m50s versus a
- * healthy 4m04s p100).
+ * A cap must cover the retries its job owns, because a retry replays only the
+ * retryable steps: the budget is `setup + 2 x (retryable steps)`, not 2x the
+ * whole job. `suites` owns TWO retryable steps (unit and integration), so its
+ * worst legitimate run is roughly double its test time.
+ *
+ * Worst observed per step across runs 31085190975 and 31088323060:
+ *   suites  Linux   setup  86 s, unit 355 s, integration 31 s ->  858 s (14.3 min)
+ *   suites  Windows setup 232 s, unit 324 s, integration 44 s ->  968 s (16.1 min)
+ *   agent-suite Linux   setup  72 s, suite 105 s             ->  282 s ( 4.7 min)
+ *   agent-suite Windows setup 125 s, suite 208 s             ->  541 s ( 9.0 min)
+ *
+ * The former `suites` 13/14 pair sat BELOW both retry-inclusive figures, so a
+ * genuine failure that triggered the retry was cancelled at the cap instead of
+ * reporting a failure -- and GitHub withholds job logs until the whole run
+ * completes, so the cancellation carried no test names. Both `suites` legs now
+ * take a single 20-minute cap (1.40x Linux, 1.24x Windows): the per-platform
+ * split encoded precision these shared 4-vCPU runners do not support, given
+ * setup alone varied 73 s to 232 s across two samples of the same job.
+ *
+ * `agent-suite` and `release-archive` keep their pairs: agent-suite already
+ * clears its retry-inclusive worst case at 1.70x/1.33x, and release-archive
+ * runs no retryable step at all. The Windows `release-archive` cap is 9 minutes
+ * because cold setup observed 152 s for `rust-toolchain` and 71 s for checkout,
+ * followed by roughly 110 s native build and 40 s archive smoke.
  */
 test("each split job declares its own measured timeout", async () => {
 	const workflow = await readText(testPath);
 	const blocks = await jobs();
 	const caps: Record<string, [number, number]> = {
-		suites: [13, 14],
+		suites: [20, 20],
 		"agent-suite": [8, 12],
 		"release-archive": [5, 9],
 	};
@@ -158,12 +172,14 @@ test("each split job declares its own measured timeout", async () => {
 	}
 	assert.match(blocks.get("static-checks") as string, /^[ \t]+timeout-minutes: 6$/mu);
 	assert.match(blocks.get("test") as string, /^[ \t]+timeout-minutes: 5$/mu);
-	// The blanket per-platform pair covered fourteen sequential steps and detected
-	// nothing about the step that actually hung. Every cap must also stay under
-	// the 15-minute Windows blanket it replaced.
-	assert.doesNotMatch(workflow, /timeout_minutes: (10|15)\b/u);
+	// A cap is still a hang detector: it must bound a stuck job to minutes rather
+	// than GitHub's six-hour default. The former assertion was `< 15`, inherited
+	// from the blanket pair these caps replaced rather than from any measurement,
+	// and it is what forced Windows `suites` to 14 minutes -- below the 16.1 min
+	// a legitimate retried run needs. The bound is now the largest cap the
+	// measurements justify, so raising one further has to come with new numbers.
 	for (const [, value] of workflow.matchAll(/^\s+timeout_minutes: (\d+)$/gmu)) {
-		assert.ok(Number(value) < 15, `cap ${value} is no tighter than the blanket it replaced`);
+		assert.ok(Number(value) <= 20, `cap ${value} is too loose to detect a hang`);
 	}
 });
 

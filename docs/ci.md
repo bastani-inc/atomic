@@ -135,27 +135,50 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 ### Per-job time limits
 
 The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang
-detector with room for the one bounded flake retry it owns: `suites` 13/14,
-`agent-suite` 8/12, `release-archive` 5/9, `static-checks` 6, gate 5. Every cap
-sits under the 15-minute Windows blanket it replaced, and the contract test
-enforces that.
+detector with room for the bounded flake retries it owns: `suites` 20/20,
+`agent-suite` 8/12, `release-archive` 5/9, `static-checks` 6, gate 5. The
+contract test in `test/ci/test-workflow-topology.test.ts` pins every value.
 
-The target is roughly 2x measured p100, and **Windows `suites` does not meet
-it**. Run `31047542976` measured 400 s Linux and 595 s Windows for that job, so
-Linux at 13 min is 1.95x but 2x of the Windows leg is 19.8 min, which the
-under-15 rule forbids. Windows takes the ceiling-bounded 14 min (1.41x): enough
-for the measured p100 plus a slow runner, not enough for a full replay of the
-401 s Windows unit step. Shortening that step is what would restore a true 2x
-detector there; until then this leg can still be cancelled while healthy.
+A cap has to cover the retries its job owns. `scripts/run-flaky-test-suite.ts`
+replays only the step it wraps, so the budget is `setup + 2 × (retryable steps)`
+rather than 2× the whole job — and `suites` wraps **two** steps, unit and
+integration, so a legitimate retried run is close to double its test time.
 
-The earlier 8/12 `suites` pair was sized against 230 s/348 s samples and had
-decayed to about 1.2x, which is what cancelled the Linux leg at 497 s on run
-`31047506585` while the same commit passed on the pull_request event. The
-`agent-suite` Windows cap stays 12 because the first split run measured 349 s
-there; its Linux cap moved 6 → 8 for the same drift. The release-archive Windows
-cap is 9 because cold setup observed a 152 s Rust toolchain acquisition and 71 s
-checkout before the roughly 110 s native build and 40 s archive smoke. A cap that
-cancels a passing retried run is worse than a late hang detection.
+Worst observed per step, runs `31085190975` and `31088323060`:
+
+| Job | Platform | Setup | Retryable steps | Worst with retry | Cap | Ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| `suites` | Linux | 86 s | unit 355 s + integration 31 s | 858 s (14.3 min) | 20 | 1.40× |
+| `suites` | Windows | 232 s | unit 324 s + integration 44 s | 968 s (16.1 min) | 20 | 1.24× |
+| `agent-suite` | Linux | 72 s | suite 105 s | 282 s (4.7 min) | 8 | 1.70× |
+| `agent-suite` | Windows | 125 s | suite 208 s | 541 s (9.0 min) | 12 | 1.33× |
+
+The previous `suites` pair was 13/14, **below both retry-inclusive figures**. A
+genuine failure that triggered the retry was therefore cancelled at the cap
+instead of reporting a failure, and GitHub withholds job logs until the whole
+run completes, so the cancellation arrived with no test names. Three PRs
+reported `cancelled` at 14m08s while the underlying defect was two ordinary
+Windows test bugs; each cost a full diagnostic cycle to recover.
+
+Both `suites` legs now share one 20-minute cap. The per-platform split encoded a
+precision these shared 4-vCPU runners do not support — setup alone varied 73 s to
+232 s across two samples of the same job — and it invited re-tuning each leg as
+the suites grew, which is how the earlier 8/12 pair decayed to about 1.2× and
+cancelled the Linux leg at 497 s on run `31047506585` while the same commit
+passed on the pull_request event. One cap tracks one question: has this job hung,
+given it may legitimately run its suites twice.
+
+`agent-suite` keeps its 8/12 pair because it already clears its retry-inclusive
+worst case, and `release-archive` keeps 5/9 because it runs no retryable step at
+all; its Windows cap is 9 because cold setup observed a 152 s Rust toolchain
+acquisition and 71 s checkout before the roughly 110 s native build and 40 s
+archive smoke. A cap that cancels a passing retried run is worse than a late hang
+detection.
+
+These caps are wall-clock ceilings, not performance budgets. Shortening the
+~5.5 min unit step is what buys headroom back; raising a cap again should come
+with fresh measurements, and the contract test bounds every cap at 20 minutes so
+that stays a deliberate decision.
 
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
 
