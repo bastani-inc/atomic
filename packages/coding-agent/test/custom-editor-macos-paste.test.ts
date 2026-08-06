@@ -169,6 +169,54 @@ describe("CustomEditor macOS empty paste routing", () => {
 		});
 	});
 
+	it("prefers an extension shortcut over exact empty bracketed paste on darwin", () => {
+		withPlatform("darwin", () => {
+			const editor = createEditor();
+			let extensionCalls = 0;
+			let pasteImageCalls = 0;
+			editor.onExtensionShortcut = (data) => {
+				if (data !== EMPTY_BRACKETED_PASTE) return false;
+				extensionCalls += 1;
+				return true;
+			};
+			editor.onPasteImage = () => {
+				pasteImageCalls += 1;
+			};
+			const seeded = "keep-me-byte-for-byte";
+			editor.setText(seeded);
+
+			editor.handleInput(EMPTY_BRACKETED_PASTE);
+
+			expect(extensionCalls).toBe(1);
+			expect(pasteImageCalls).toBe(0);
+			expect(editor.getText()).toBe(seeded);
+		});
+	});
+
+	it("prefers an extension shortcut over Kitty-protocol super+v on darwin", () => {
+		withPlatform("darwin", () => {
+			const editor = createEditor();
+			let extensionCalls = 0;
+			let pasteImageCalls = 0;
+			editor.onExtensionShortcut = (data) => {
+				if (data !== KITTY_SUPER_V) return false;
+				extensionCalls += 1;
+				return true;
+			};
+			editor.onPasteImage = () => {
+				pasteImageCalls += 1;
+			};
+			const seeded = "keep-me-byte-for-byte";
+			editor.setText(seeded);
+
+			editor.handleInput(KITTY_SUPER_V);
+
+			expect(extensionCalls).toBe(1);
+			expect(pasteImageCalls).toBe(0);
+			expect(editor.getText()).toBe(seeded);
+		});
+	});
+
 	it("routes Kitty-protocol super+v on darwin to onPasteImage once without changing the draft", () => {
 		withPlatform("darwin", () => {
 			const editor = createEditor();
