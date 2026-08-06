@@ -1,11 +1,12 @@
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import net from "net";
 import { isBunBinary } from "@bastani/atomic";
 import {
+  getBrokerLogPath,
   getBrokerPidPath,
   getBrokerSocketPath,
   getBrokerSpawnLockPath,
@@ -17,6 +18,19 @@ const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = getBrokerPidPath();
 const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
+const BROKER_LOG = getBrokerLogPath();
+
+/**
+ * How much of the broker startup log is read back into an error message. The log itself is
+ * truncated on every spawn, so this also bounds what a single startup can leave behind.
+ */
+export const BROKER_LOG_TAIL_BYTES = 8 * 1024;
+
+/** First readiness poll interval; doubles up to {@link BROKER_POLL_MAX_INTERVAL_MS}. */
+export const BROKER_POLL_INITIAL_INTERVAL_MS = 10;
+
+/** Upper bound for the readiness poll interval, matching the historic flat poll. */
+export const BROKER_POLL_MAX_INTERVAL_MS = 100;
 
 type BrokerRuntime = "node" | "bun-source" | "bun-binary";
 
@@ -122,6 +136,16 @@ export function getWindowsBrokerCommandLine(
   return [quoteWindowsArg(brokerCommand), ...brokerArgs.map(quoteWindowsArg), quoteWindowsArg(brokerPath)].join(" ");
 }
 
+/**
+ * `WshShell.Run` does not hand the launched process the parent's standard handles, so a file
+ * descriptor passed to `wscript.exe` would only ever capture the launcher. Run the broker under
+ * `cmd.exe /s /c` instead and append its stderr to the same log the direct path writes.
+ * `/s` makes cmd strip exactly the outer quote pair and use the remainder verbatim.
+ */
+export function getWindowsStderrRedirectCommandLine(commandLine: string, logPath: string): string {
+  return `cmd.exe /s /c "${commandLine} 2>>${quoteWindowsArg(logPath)}"`;
+}
+
 export function getWindowsHiddenLauncherScript(commandLine: string): string {
   return [
     'Set WshShell = CreateObject("WScript.Shell")',
@@ -149,6 +173,7 @@ export function getBrokerLaunchSpec(
   intercomDir: string = INTERCOM_DIR,
   nodePath: string = process.execPath,
   runtime: BrokerRuntime = getCurrentBrokerRuntime(),
+  logPath: string = BROKER_LOG,
 ): BrokerLaunchSpec {
   if (platform === "win32") {
     const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
@@ -157,7 +182,10 @@ export function getBrokerLaunchSpec(
       command: "wscript.exe",
       args: [launcherPath],
       launcherPath,
-      launcherCommandLine: getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath, brokerCommand, brokerArgs, runtime),
+      launcherCommandLine: getWindowsStderrRedirectCommandLine(
+        getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath, brokerCommand, brokerArgs, runtime),
+        logPath,
+      ),
     };
   }
 
@@ -177,20 +205,66 @@ export function getBrokerLaunchSpec(
   };
 }
 
-export function getBrokerSpawnOptions(extensionDir: string = EXTENSION_DIR): {
+/**
+ * The broker is detached and outlives this process, so its stderr goes to an already-open file
+ * descriptor rather than a pipe: a long-lived pipe would keep the parent's event loop attached
+ * and break once the parent exits.
+ */
+export function getBrokerSpawnOptions(
+  extensionDir: string = EXTENSION_DIR,
+  stderr: number | "ignore" = "ignore",
+): {
   detached: true;
-  stdio: "ignore";
+  stdio: ["ignore", "ignore", number | "ignore"];
   cwd: string;
   env: NodeJS.ProcessEnv;
   windowsHide: true;
 } {
   return {
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", stderr],
     cwd: extensionDir,
     env: { ...process.env, NODE_NO_WARNINGS: "1" },
     windowsHide: true,
   };
+}
+
+/** Truncate (or create) the broker log so each spawn starts from a bounded, current file. */
+function resetBrokerLog(logPath: string = BROKER_LOG): void {
+  mkdirSync(dirname(logPath), { recursive: true });
+  closeSync(openSync(logPath, "w"));
+}
+
+/** Read at most {@link BROKER_LOG_TAIL_BYTES} trailing bytes of the broker log. */
+export function readBrokerLogTail(logPath: string = BROKER_LOG, maxBytes: number = BROKER_LOG_TAIL_BYTES): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(logPath, "r");
+    const size = statSync(logPath).size;
+    const length = Math.min(size, maxBytes);
+    if (length <= 0) return "";
+    const buffer = Buffer.allocUnsafe(length);
+    const read = readSync(fd, buffer, 0, length, size - length);
+    return buffer.subarray(0, read).toString("utf-8").trim();
+  } catch {
+    // A missing or unreadable log simply yields no diagnostic tail.
+    return "";
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+}
+
+/** Path plus bounded stderr tail, appended to every broker startup failure. */
+export function describeBrokerLog(logPath: string = BROKER_LOG): string {
+  const tail = readBrokerLogTail(logPath);
+  if (tail.length === 0) return `Broker log: ${logPath} (empty)`;
+  return `Broker log: ${logPath}\n--- broker stderr (last ${Buffer.byteLength(tail)} bytes) ---\n${tail}`;
 }
 
 function toError(error: unknown): Error {
@@ -220,7 +294,18 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
-    const child = spawn(launch.command, launch.args, getBrokerSpawnOptions());
+    // Reset before spawning either way: the Windows launcher appends to this same path.
+    resetBrokerLog();
+    // The Windows launcher redirects the broker's own stderr, so only the direct spawn
+    // needs the descriptor. Node duplicates it during spawn, so the parent copy is closed
+    // immediately afterwards rather than being held open for the broker's lifetime.
+    const logFd = launch.kind === "direct" ? openSync(BROKER_LOG, "a") : undefined;
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(launch.command, launch.args, getBrokerSpawnOptions(EXTENSION_DIR, logFd ?? "ignore"));
+    } finally {
+      if (logFd !== undefined) closeSync(logFd);
+    }
     child.unref();
 
     await new Promise<void>((resolve, reject) => {
@@ -231,7 +316,9 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
 
       const onError = (error: Error) => {
         cleanup();
-        reject(new Error(`Failed to spawn intercom broker: ${error.message}`, { cause: error }));
+        reject(
+          new Error(`Failed to spawn intercom broker: ${error.message}\n${describeBrokerLog()}`, { cause: error }),
+        );
       };
 
       const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
@@ -240,10 +327,12 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
         }
         cleanup();
         if (signal) {
-          reject(new Error(`Intercom broker exited before startup with signal ${signal}`));
+          reject(new Error(`Intercom broker exited before startup with signal ${signal}\n${describeBrokerLog()}`));
           return;
         }
-        reject(new Error(`Intercom broker exited before startup with code ${code ?? "unknown"}`));
+        reject(
+          new Error(`Intercom broker exited before startup with code ${code ?? "unknown"}\n${describeBrokerLog()}`),
+        );
       };
 
       child.once("error", onError);
@@ -364,13 +453,20 @@ function releaseSpawnLock(): void {
   }
 }
 
-async function waitForBroker(timeoutMs = 5000): Promise<void> {
+/**
+ * Poll the broker socket with a short initial interval and bounded exponential backoff.
+ * Startup is tens of milliseconds, so the previous flat 100 ms sleep dominated it; the
+ * overall timeout semantics are unchanged.
+ */
+export async function waitForBroker(timeoutMs = 5000): Promise<void> {
   const start = Date.now();
+  let interval = BROKER_POLL_INITIAL_INTERVAL_MS;
   while (Date.now() - start < timeoutMs) {
     if (await checkSocketConnectable()) {
       return;
     }
-    await sleep(100);
+    await sleep(interval);
+    interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
   }
-  throw new Error("Broker failed to start within timeout");
+  throw new Error(`Broker failed to start within timeout\n${describeBrokerLog()}`);
 }

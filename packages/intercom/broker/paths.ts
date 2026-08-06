@@ -46,6 +46,15 @@ export function getBrokerSpawnLockPath(agentDir: string = getAgentDir()): string
   return join(getIntercomDirPath(agentDir), "broker.spawn.lock");
 }
 
+/**
+ * Startup/diagnostic log for the detached broker process. The parent opens this file
+ * and hands the descriptor to the child as stderr, so a broker that dies before it can
+ * accept connections leaves a readable reason behind for whichever process inspects it.
+ */
+export function getBrokerLogPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "broker.log");
+}
+
 export function getBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDir(),
