@@ -74,7 +74,7 @@ Then select a provider. Built-in subscription logins include Claude Pro/Max, Cha
 Set an API key before launching Atomic:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=[REDACTED:API key param]
 atomic
 ```
 
@@ -243,7 +243,7 @@ atomic @README.md "Summarize this"
 atomic @src/app.ts @src/app.test.ts "Review these together"
 ```
 
-Images can be pasted with native macOS Cmd+V, Ctrl+V (Alt+V on Windows), or dragged into supported terminals. When the clipboard has both text and an image, Cmd+V may paste the text while Ctrl+V prefers the image.
+Images can be pasted with native macOS Cmd+V, Ctrl+V (Alt+V on Windows), or dragged into supported terminals. When the clipboard has both text and an image, Ctrl+V prefers the image; Cmd+V may paste text or the image depending on how the terminal delivers the gesture.
 
 ### Run shell commands
 
