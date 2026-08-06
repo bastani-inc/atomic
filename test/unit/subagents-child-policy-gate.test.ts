@@ -1,0 +1,392 @@
+/**
+ * Regression coverage for the #2205 child-policy gate.
+ *
+ * The fanout gate used to run before the management branch, so a child with
+ * `fanoutAuthorized: false` was refused every `subagent` action — `list`
+ * included — with a message about fanout. Workflow stages additionally shipped
+ * `fanoutAuthorized: false`, so no stage could delegate at all.
+ */
+
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { join } from "node:path";
+import type {
+	DefaultResourceLoaderInheritanceSnapshot,
+	ExtensionAPI,
+	PackageSource,
+	SubagentChildPolicy,
+	ToolDefinition,
+} from "@bastani/atomic";
+import { afterAll, afterEach, beforeEach, describe, test, vi } from "vitest";
+import registerFanoutChildSubagentExtension from "../../packages/subagents/src/extension/fanout-child.js";
+import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
+import {
+	MAX_SUBAGENT_NESTING_DEPTH,
+	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
+} from "../../packages/subagents/src/shared/types.js";
+import type {
+	PiCodingAgentSdk,
+	PiSdkResourceLoader,
+	PiSdkSettingsManager,
+} from "../../packages/workflows/src/extension/atomic-stage-session.js";
+import { prepareAtomicStageSessionOptions } from "../../packages/workflows/src/extension/wiring.js";
+import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+
+const FANOUT_MESSAGE = "Subagent fanout is not authorized for this child.";
+const DEPTH_ENV = "ATOMIC_SUBAGENT_DEPTH";
+const MAX_DEPTH_ENV = "ATOMIC_SUBAGENT_MAX_DEPTH";
+
+interface MinimalAgentConfig {
+	name: string;
+	description: string;
+	systemPromptMode: "append" | "replace";
+	inheritProjectContext: boolean;
+	inheritSkills: boolean;
+	systemPrompt: string;
+	source: "builtin" | "user" | "project";
+	filePath: string;
+}
+
+type ExecutorForTest = ReturnType<typeof createSubagentExecutor>;
+type ExecutorDepsForTest = Parameters<typeof createSubagentExecutor>[0];
+type ExecutorContextForTest = Parameters<ExecutorForTest["execute"]>[4];
+type ExecutorResultForTest = Awaited<ReturnType<ExecutorForTest["execute"]>>;
+
+const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+const runSyncCalls: string[] = [];
+
+const runSyncMock = vi.fn(
+	async (
+		_cwd: string,
+		_agents: MinimalAgentConfig[],
+		agentName: string,
+		task: string,
+		_options: { maxSubagentDepth?: number },
+	) => {
+		runSyncCalls.push(agentName);
+		return {
+			agent: agentName,
+			task,
+			status: "ok" as const,
+			messages: [],
+			usage: emptyUsage,
+			finalOutput: `${agentName} output`,
+		};
+	},
+);
+
+function makeAgent(name: string): MinimalAgentConfig {
+	return {
+		name,
+		description: `${name} test agent`,
+		systemPromptMode: "replace",
+		inheritProjectContext: false,
+		inheritSkills: false,
+		systemPrompt: "You are a test agent.",
+		source: "project",
+		filePath: `/tmp/${name}.md`,
+	};
+}
+
+function makeState() {
+	return {
+		baseCwd: "",
+		currentSessionId: null,
+		asyncJobs: new Map(),
+		foregroundRuns: new Map(),
+		foregroundControls: new Map(),
+		lastForegroundControlId: null,
+		cleanupTimers: new Map(),
+		lastUiContext: null,
+		poller: null,
+		completionSeen: new Map(),
+		watcher: null,
+		watcherRestartTimer: null,
+		resultFileCoalescer: { schedule: () => false, clear: () => {} },
+	};
+}
+
+function makeContext(cwd: string): ExecutorContextForTest {
+	return {
+		cwd,
+		mode: "tui",
+		hasUI: false,
+		ui: { custom: async <T>() => undefined as T } as unknown as ExecutorContextForTest["ui"],
+		model: undefined,
+		scopedModels: [],
+		modelRegistry: { getAvailable: () => [] } as unknown as ExecutorContextForTest["modelRegistry"],
+		sessionManager: {
+			getSessionFile: () => undefined,
+			getSessionId: () => "parent-session",
+			getLeafId: () => null,
+		} as ExecutorContextForTest["sessionManager"],
+		orchestrationContext: undefined,
+		isIdle: () => true,
+		isProjectTrusted: () => true,
+		signal: undefined,
+		abort: () => {},
+		hasPendingMessages: () => false,
+		shutdown: () => {},
+		getContextUsage: () => undefined,
+		compact: () => {},
+		getSystemPrompt: () => "",
+	} satisfies ExecutorContextForTest;
+}
+
+function makeExecutor(policy: SubagentChildPolicy): ExecutorForTest {
+	const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-child-policy-"));
+	const deps = {
+		pi: {
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "parent-session-name",
+		} as unknown as ExecutorDepsForTest["pi"],
+		state: makeState(),
+		config: { parallel: { concurrency: 4, maxTasks: 50 } },
+		asyncByDefault: false,
+		tempArtifactsDir: path.join(tempRoot, "artifacts"),
+		getSubagentSessionRoot: () => path.join(tempRoot, "sessions"),
+		expandTilde: (p: string) => p,
+		discoverAgents: () => ({ agents: [makeAgent("alpha")] }),
+		childPolicy: policy,
+		allowMutatingManagementActions: policy.managementActions === "full",
+		runtime: {
+			runSync: runSyncMock,
+			isAsyncAvailable: () => false,
+		},
+	} satisfies ExecutorDepsForTest;
+	return createSubagentExecutor(deps);
+}
+
+function policyFor(overrides: Partial<SubagentChildPolicy>): SubagentChildPolicy {
+	return {
+		managementActions: "restricted",
+		fanoutAuthorized: false,
+		inheritProjectContext: false,
+		inheritSkills: false,
+		...overrides,
+	};
+}
+
+function resultText(result: ExecutorResultForTest): string {
+	return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+}
+
+async function runAction(
+	executor: ExecutorForTest,
+	params: Parameters<ExecutorForTest["execute"]>[1],
+): Promise<ExecutorResultForTest> {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-child-policy-cwd-"));
+	return executor.execute("subagent", params, new AbortController().signal, undefined, makeContext(cwd));
+}
+
+const savedEnv = new Map<string, string | undefined>();
+for (const key of [DEPTH_ENV, MAX_DEPTH_ENV, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV]) {
+	savedEnv.set(key, process.env[key]);
+}
+
+function clearDepthEnv(): void {
+	delete process.env[DEPTH_ENV];
+	delete process.env[MAX_DEPTH_ENV];
+	delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
+}
+
+beforeEach(() => {
+	runSyncCalls.length = 0;
+	runSyncMock.mockClear();
+	clearDepthEnv();
+});
+
+afterEach(() => {
+	for (const [key, value] of savedEnv) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+});
+
+afterAll(clearDepthEnv);
+
+describe("subagent child policy gates fanout, not management", () => {
+	test("a child without fanout authorization can still run read-only management actions", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: false, managementActions: "full" }));
+
+		for (const action of ["list", "get", "status", "doctor", "interrupt", "resume"] as const) {
+			const result = await runAction(executor, { action });
+			assert.notEqual(
+				resultText(result),
+				FANOUT_MESSAGE,
+				`read-only management action '${action}' must not be refused as fanout`,
+			);
+			assert.equal(result.details.mode, "management");
+		}
+	});
+
+	test("'list' succeeds for a child without fanout authorization", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: false, managementActions: "full" }));
+
+		const result = await runAction(executor, { action: "list" });
+
+		assert.notEqual(result.isError, true);
+		assert.ok(!resultText(result).includes(FANOUT_MESSAGE));
+	});
+
+	test("a management-restricted child is still refused create/update/delete", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: false, managementActions: "restricted" }));
+
+		for (const action of ["create", "update", "delete"] as const) {
+			const result = await runAction(executor, { action, agent: "alpha" });
+			assert.equal(result.isError, true);
+			assert.equal(resultText(result), `Action '${action}' is not available from child-safe subagent fanout mode.`);
+			assert.equal(result.details.mode, "management");
+		}
+	});
+
+	test("a child without fanout authorization is still refused actual delegation", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: false, managementActions: "full" }));
+
+		const single = await runAction(executor, { agent: "alpha", task: "do work" });
+		assert.equal(single.isError, true);
+		assert.equal(resultText(single), FANOUT_MESSAGE);
+		assert.equal(single.details.mode, "single");
+
+		const parallel = await runAction(executor, { tasks: [{ agent: "alpha", task: "do work" }] });
+		assert.equal(parallel.isError, true);
+		assert.equal(resultText(parallel), FANOUT_MESSAGE);
+		assert.equal(parallel.details.mode, "parallel");
+
+		const chain = await runAction(executor, { chain: [{ agent: "alpha", task: "do work" }] });
+		assert.equal(chain.isError, true);
+		assert.equal(resultText(chain), FANOUT_MESSAGE);
+		assert.equal(chain.details.mode, "chain");
+
+		assert.deepEqual(runSyncCalls, []);
+	});
+
+	test("a fanout-authorized child reaches the delegation path", async () => {
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full" }));
+
+		const result = await runAction(executor, { agent: "alpha", task: "do work" });
+
+		assert.equal(result.isError, undefined);
+		assert.deepEqual(runSyncCalls, ["alpha"]);
+	});
+
+	test("the depth guard still refuses delegation beyond the documented limit", async () => {
+		assert.equal(MAX_SUBAGENT_NESTING_DEPTH, 5);
+		process.env[DEPTH_ENV] = String(MAX_SUBAGENT_NESTING_DEPTH);
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full" }));
+
+		const result = await runAction(executor, { agent: "alpha", task: "do work" });
+
+		assert.equal(result.isError, true);
+		assert.ok(
+			resultText(result).startsWith(
+				`Nested subagent call blocked (depth=${MAX_SUBAGENT_NESTING_DEPTH}, max=${MAX_SUBAGENT_NESTING_DEPTH})`,
+			),
+			`unexpected depth message: ${resultText(result)}`,
+		);
+		assert.deepEqual(runSyncCalls, []);
+	});
+
+	test("one hop below the limit is still allowed", async () => {
+		process.env[DEPTH_ENV] = String(MAX_SUBAGENT_NESTING_DEPTH - 1);
+		const executor = makeExecutor(policyFor({ fanoutAuthorized: true, managementActions: "full" }));
+
+		const result = await runAction(executor, { agent: "alpha", task: "do work" });
+
+		assert.equal(result.isError, undefined);
+		assert.deepEqual(runSyncCalls, ["alpha"]);
+	});
+});
+
+function makeFakeAtomicSdk(defaultAgentDir: string): PiCodingAgentSdk {
+	class FakeResourceLoader implements PiSdkResourceLoader {
+		constructor(_options: {
+			cwd: string;
+			agentDir: string;
+			settingsManager?: PiSdkSettingsManager;
+			builtinPackagePaths?: PackageSource[];
+			resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
+		}) {}
+
+		async reload(): Promise<void> {}
+	}
+
+	return {
+		getAgentDir: () => defaultAgentDir,
+		getBuiltinPackagePaths: () => [],
+		SettingsManager: {
+			create(): PiSdkSettingsManager {
+				return { getCodexFastModeSettings: () => ({ chat: false, workflow: false }) };
+			},
+		},
+		DefaultResourceLoader: FakeResourceLoader,
+		async createAgentSession(): Promise<{ session: StageSessionRuntime }> {
+			throw new Error("not used");
+		},
+	};
+}
+
+describe("workflow stage subagent policy", () => {
+	test("a prepared stage session resolves a fanout-authorized policy with full management", async () => {
+		const sdk = makeFakeAtomicSdk(join("/home", "user", ".atomic", "agent"));
+
+		const options = await prepareAtomicStageSessionOptions({ cwd: join("/tmp", "project") }, sdk);
+
+		assert.equal(options?.subagentPolicy?.fanoutAuthorized, true);
+		assert.equal(options?.subagentPolicy?.managementActions, "full");
+		assert.equal(options?.subagentPolicy?.inheritProjectContext, true);
+		assert.equal(options?.subagentPolicy?.inheritSkills, true);
+	});
+
+	test("an executor built from the stage policy reaches the delegation path", async () => {
+		const sdk = makeFakeAtomicSdk(join("/home", "user", ".atomic", "agent"));
+		const options = await prepareAtomicStageSessionOptions({ cwd: join("/tmp", "project") }, sdk);
+		const policy = options?.subagentPolicy;
+		assert.ok(policy, "stage options must carry a subagent policy");
+
+		const executor = makeExecutor(policy);
+		const listed = await runAction(executor, { action: "list" });
+		assert.ok(!resultText(listed).includes(FANOUT_MESSAGE));
+
+		const delegated = await runAction(executor, { agent: "alpha", task: "do work" });
+		assert.equal(delegated.isError, undefined);
+		assert.deepEqual(runSyncCalls, ["alpha"]);
+	});
+
+	test("the registered subagent tool answers 'list' for a stage-policy session", async () => {
+		// End-to-end through the real registration door a stage session uses, so the
+		// policy -> registered-tool wiring is covered rather than only the executor.
+		const sdk = makeFakeAtomicSdk(join("/home", "user", ".atomic", "agent"));
+		const options = await prepareAtomicStageSessionOptions({ cwd: join("/tmp", "project") }, sdk);
+		const policy = options?.subagentPolicy;
+		assert.ok(policy, "stage options must carry a subagent policy");
+
+		let registered: ToolDefinition | undefined;
+		const pi = {
+			registerTool: (tool: ToolDefinition) => {
+				registered = tool;
+			},
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "workflow-stage-session",
+		} as unknown as ExtensionAPI;
+		registerFanoutChildSubagentExtension(pi, policy);
+		assert.ok(registered, "the subagent tool must be registered");
+
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-stage-tool-"));
+		const result = (await registered.execute(
+			"stage-list",
+			{ action: "list" },
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd),
+		)) as ExecutorResultForTest;
+
+		assert.notEqual(result.isError, true);
+		assert.ok(
+			!resultText(result).includes(FANOUT_MESSAGE),
+			`stage 'subagent list' must not be refused as fanout, got: ${resultText(result)}`,
+		);
+	});
+});

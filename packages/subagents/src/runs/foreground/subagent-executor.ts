@@ -282,13 +282,6 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		onUpdate: ((r: SubagentToolResult) => void) | undefined,
 		ctx: ExtensionContext,
 	): Promise<SubagentToolResult> => {
-		if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized) {
-			return {
-				content: [{ type: "text", text: "Subagent fanout is not authorized for this child." }],
-				isError: true,
-				details: { mode: "single", results: [] },
-			};
-		}
 		deps.state.baseCwd = ctx.cwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();
@@ -297,6 +290,17 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
 			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps });
+		}
+		// Fanout authorization gates actual delegation only. Read-only management
+		// (list/get/status/doctor/interrupt/resume) stays available to an unauthorized
+		// child; mutating management is refused by the narrower gate in
+		// handleManagementRequest.
+		if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized) {
+			return {
+				content: [{ type: "text", text: "Subagent fanout is not authorized for this child." }],
+				isError: true,
+				details: { mode: inferExecutionMode(params), results: [] },
+			};
 		}
 
 		const depthError = checkDepthForExecution(ctx, deps);

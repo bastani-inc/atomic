@@ -360,7 +360,7 @@ describe("prepareAtomicStageSessionOptions", () => {
 
 			assert.deepEqual(firstOptions?.subagentPolicy, {
 				managementActions: "full",
-				fanoutAuthorized: false,
+				fanoutAuthorized: true,
 				inheritProjectContext: true,
 				inheritSkills: true,
 			});

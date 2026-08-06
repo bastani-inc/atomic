@@ -49,9 +49,15 @@ export interface PrepareAtomicStageSessionOptions {
 	resourceLoaderInheritanceSnapshot?: DefaultResourceLoaderInheritanceSnapshot;
 	onSettingsManager?: (settingsManager: PiSdkSettingsManager) => void;
 }
+/**
+ * Workflow stages are top-level sessions that carry a policy object; they are
+ * not subagent children. They keep full management and are authorized to
+ * delegate, as `packages/coding-agent/docs/workflows.md` documents. Nesting
+ * stays bounded by the depth guard in the subagent executor.
+ */
 const WORKFLOW_STAGE_SUBAGENT_POLICY: SubagentChildPolicy = {
 	managementActions: "full",
-	fanoutAuthorized: false,
+	fanoutAuthorized: true,
 	inheritProjectContext: true,
 	inheritSkills: true,
 };

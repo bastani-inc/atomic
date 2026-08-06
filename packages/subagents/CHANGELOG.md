@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed every `subagent` action being refused with "Subagent fanout is not authorized for this child." for a child without fanout authorization. The fanout check ran before the management branch, so read-only management — `list`, `get`, `status`, `doctor`, `interrupt`, and `resume` — was rejected with a message about delegation, which those actions do not perform. Fanout authorization now gates only actual delegation. Mutating management (`create`, `update`, `delete`) is still refused for a management-restricted child, by the narrower gate that this bug had made unreachable, and an unauthorized child attempting real delegation still receives the unchanged fanout message. The nesting-depth guard is unchanged ([#2205](https://github.com/bastani-inc/atomic/pull/2205)).
+
 ## [0.9.13-alpha.1] - 2026-08-05
 
 ### Breaking Changes
