@@ -8,6 +8,43 @@ export declare class PtySession {
   kill(): void
 }
 
+/**
+ * N-API wrapper around the root-scoped Rust control plane. The host marker is
+ * intentionally held by the wrapper while the cloneable core stores only a
+ * weak reference to it.
+ */
+export declare class SubagentControl {
+  constructor(parentPath: string)
+  get parentPath(): string
+  registerAgent(name: string): void
+  admitChildSession(spec: NativeChildSpec, parent: NativeParentContext): NativeAdmissionResult
+  listChildren(): Array<ChildIdentity>
+  publishChildStatus(path: string, status: AgentStatus): void
+  subscribeChildStatus(path: string, callback: (status: AgentStatus) => void): void
+  subscribeChildStatusWithCause(path: string, callback: (update: NativeStatusUpdate) => void): void
+  tryAcquireExecutionGuard(): NativeExecutionGuardResult
+  releaseExecutionGuard(token: number): boolean
+  beginChildAttempt(path: string): NativeExecutionGuardResult
+  finishChildAttempt(token: number, status: AgentStatus): void
+  terminateChildAttempt(token: number, cause: TerminationCause): Promise<NativeTerminationResult>
+  reloadColdChild(path: string, message: string): NativeAdmissionResult
+}
+export type NapiSubagentControl = SubagentControl
+
+export type AdmissionRefusalKind =  'depthExceeded'|
+'capacityExhausted'|
+'dispatchGuardBusy'|
+'invalidCwd'|
+'unknownAgent';
+
+/** The only statuses emitted by a child status watch. */
+export type AgentStatus =  'pending'|
+'running'|
+'ok'|
+'error'|
+'interrupted'|
+'continued';
+
 export interface BlockRange {
   /** 1-indexed inclusive first line of the resolved block. */
   startLine: number
@@ -31,6 +68,17 @@ export interface BlockRangeOptions {
   line: number
 }
 
+/** Persistent identity information returned by the registry. */
+export interface ChildIdentity {
+  path: string
+  parentPath: string
+  taskName: string
+  depth: number
+  status: AgentStatus
+  cause?: TerminationCause
+  loaded: boolean
+}
+
 /** A context line (before or after a match). */
 export interface ContextLine {
   /** 1-indexed line number in the source file. */
@@ -40,7 +88,7 @@ export interface ContextLine {
 }
 
 /** Resolved filesystem entry kind for glob filters and match metadata. */
-export declare const enum FileType {
+export declare enum FileType {
   /** Regular file. */
   File = 1,
   /** Directory. */
@@ -202,14 +250,12 @@ export interface GrepOptions {
 }
 
 /** Output mode for [`search`] and [`grep`] (string values match JS callers). */
-export declare const enum GrepOutputMode {
-  /** Emit matched lines (and optional context lines). */
-  Content = 'content',
-  /** Emit per-file or total counts instead of line content. */
-  Count = 'count',
-  /** Emit one row per file that matched, without line content. */
-  FilesWithMatches = 'filesWithMatches'
-}
+export type GrepOutputMode = /** Emit matched lines (and optional context lines). */
+'content'|
+/** Emit per-file or total counts instead of line content. */
+'count'|
+/** Emit one row per file that matched| without line content. */
+'filesWithMatches';
 
 /** Result of searching files. */
 export interface GrepResult {
@@ -267,6 +313,44 @@ export interface Match {
   contextAfter?: Array<ContextLine>
   /** Whether the line was truncated. */
   truncated?: boolean
+}
+
+export interface NativeAdmissionRefusal {
+  kind: AdmissionRefusalKind
+  reason: string
+  maxDepth?: number
+}
+
+export interface NativeAdmissionResult {
+  child?: ChildIdentity
+  refusal?: NativeAdmissionRefusal
+}
+
+export interface NativeChildSpec {
+  taskName: string
+  agentName?: string
+  cwd?: string
+}
+
+export interface NativeExecutionGuardResult {
+  token?: number
+  refusal?: NativeAdmissionRefusal
+}
+
+export interface NativeParentContext {
+  path: string
+  depth: number
+}
+
+export interface NativeStatusUpdate {
+  status: AgentStatus
+  cause?: TerminationCause
+}
+
+export interface NativeTerminationResult {
+  cause: TerminationCause
+  forced: boolean
+  graceMs: number
 }
 
 export interface PtyRunResult {
@@ -337,3 +421,12 @@ export interface SearchResult {
   /** Error message, if any. */
   error?: string
 }
+
+/**
+ * Explicit termination causes. Timer/idle/wall-clock causes are intentionally
+ * absent, making timer-driven termination unrepresentable.
+ */
+export type TerminationCause =  'abort'|
+'interrupt'|
+'fail-fast-skip'|
+'parent-shutdown';

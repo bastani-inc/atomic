@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { buildSendSignature, PendingSendRegistry } from "../../packages/intercom/broker/pending-send-registry.js";
-import { buildSubagentMessageSource } from "../../packages/intercom/source-ownership.js";
+import { readChildOrchestratorMetadata } from "../../packages/intercom/intercom-utils.js";
+import { buildSubagentMessageSource, readSubagentMessageSource } from "../../packages/intercom/source-ownership.js";
 
 const signature = (to = "session-a", text = "hello") => buildSendSignature(to, { text });
 
@@ -327,4 +328,50 @@ describe("IntercomClient.send", () => {
 		});
 		assert.equal(buildSubagentMessageSource(undefined, "worker", "2"), undefined);
 	});
+});
+test("typed child identity cannot inherit a parent supervisor capability from env", () => {
+	const keys = [
+		"ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET",
+		"ATOMIC_SUBAGENT_RUN_ID",
+		"ATOMIC_SUBAGENT_CHILD_AGENT",
+		"ATOMIC_SUBAGENT_CHILD_INDEX",
+		"ATOMIC_SUBAGENT_SUPERVISOR_CAPABILITY",
+		"ATOMIC_SUBAGENT_SUPERVISOR_SESSION_ID",
+	] as const;
+	const previous = new Map(keys.map((key) => [key, process.env[key]]));
+	try {
+		for (const key of keys) process.env[key] = key.includes("CAPABILITY") ? "parent-capability" : "parent-value";
+		const policy = {
+			managementActions: "restricted" as const,
+			fanoutAuthorized: false,
+			inheritProjectContext: true,
+			inheritSkills: true,
+			intercom: { orchestratorTarget: "typed-parent", runId: "typed-run", agent: "worker", index: 0 },
+		};
+		assert.deepEqual(readChildOrchestratorMetadata(policy), {
+			orchestratorTarget: "typed-parent",
+			runId: "typed-run",
+			agent: "worker",
+			index: "0",
+		});
+		assert.deepEqual(readSubagentMessageSource(policy), {
+			subagentRunId: "typed-run",
+			subagentAgent: "worker",
+			subagentIndex: 0,
+		});
+		const policyWithoutIdentity = {
+			managementActions: policy.managementActions,
+			fanoutAuthorized: policy.fanoutAuthorized,
+			inheritProjectContext: policy.inheritProjectContext,
+			inheritSkills: policy.inheritSkills,
+		};
+		assert.equal(readChildOrchestratorMetadata(policyWithoutIdentity), null);
+		assert.equal(readSubagentMessageSource(policyWithoutIdentity), undefined);
+	} finally {
+		for (const key of keys) {
+			const value = previous.get(key);
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
 });

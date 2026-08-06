@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [0.9.13-alpha.1] - 2026-08-05
+
+### Breaking Changes
+
+- `async: true` no longer survives parent exit. Async subagents now run as in-process children of the parent session on the same foreground executor, so quitting Atomic ends any in-flight async run. The child's canonical identity and its session file persist on disk and can be reloaded on a later start, but the running work does not continue in the background across a restart. The detached runner process that previously provided parent-exit survival has been deleted ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Removed the `ATOMIC_SUBAGENT_*` process-era environment bridge variables consumed by the deleted spawn path and the synthesized numeric child-result exit-code protocol (`0/1/-1/-2/143`). Child identity, policy, supervisor capability, and terminal outcomes now cross typed admission; results use required `status` (`ok | error | skipped | interrupted | continued`) plus `cause` and `stats` ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
+### Added
+
+- Added the in-process subagent control-plane doors and `InProcessChildRunner` foundation backed by the Rust N-API registry, typed statuses, session statistics, and bounded result envelopes ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
+### Changed
+
+- Nested in-process children now route live `interrupt` and cold `resume` actions directly through the Rust control plane. Nested event and control records use an in-memory host route while retaining the validated file shape for cold-start compatibility; session JSONL is flushed before forced interruption, and the former 200 ms nested-control polling loop is replaced by event-driven delivery ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- In-process children now advance through their model-fallback ladder via the SDK session's `fallbackModels` — the exact classification, same-model retry, and candidate-advancement behavior main chat and workflow stages converged on ([#2170](https://github.com/bastani-inc/atomic/issues/2170)) — instead of a subagents-local walk. Pre-spawn auth filtering still builds the ladder, and results report the effective `model`, `attemptedModels`, and skipped pre-spawn attempts ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Foreground subagent attempts now enter through the in-process session runner, expose typed terminal status and `SessionStats`, and record typed run-history statuses; the foreground process-attempt implementation was removed ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- In-process admission now resolves child management and fanout capabilities as a typed policy carried into the session and tool executor; restricted children cannot create, update, or delete agent definitions, and fanout authorization cannot be widened by a descendant ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- `async: true` chain and parallel runs now execute on the same in-process foreground executor as their synchronous counterparts, un-awaited, instead of a separately serialized detached runner. Chain `{previous}` substitution, chain output bindings, dynamic fanout, worktree setup and cleanup, structured-output schemas, skills resolution, progress files, fail-fast, and per-step model-candidate ladders are now served by one implementation for both modes ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Child prompt behavior now enters in-process `AgentSession` construction through typed admission policy: boundary instructions, project-context and inherited-skill filtering, orchestration-skill removal, and parent-only message filtering no longer depend on the process-era extension injection path ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Child MCP direct-tool selection and Intercom identity/capability now cross the in-process admission boundary as typed policy; omitted MCP selection preserves defaults, empty selection disables direct tools, and supervisor grants are never inherited through environment ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
+### Fixed
+
+- Fixed in-process parallel siblings colliding on the same canonical identity and terminal artifact path, and fixed async completions omitting their persisted result envelope from the parent notification ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Fixed model-failure classification sharing so subagent fallback decisions stay aligned with main chat and workflow candidates for auth, unavailable-model, request-incompatible, quota, and transport failures ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+
+### Removed
+
+- Removed every remaining OS child-process code path from subagent execution, satisfying the spec's zero-process goal: the detached jiti async runner and its twelve `subagent-runner*` modules, the `async-execution-*` spawn layer, the async event journal, the idle/wall attempt watchdog, the stdout drain grace, the CLI spawn resolver, the environment-bridge builder, and the post-exit stdio guard ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
 ## [0.9.12] - 2026-08-04
 
 ### Fixed

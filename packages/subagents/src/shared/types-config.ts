@@ -60,6 +60,8 @@ export interface RunSyncOptions {
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;
 	allowIntercomDetach?: boolean;
+	/** Start the admitted child and settle this call with a continued result immediately. */
+	backgroundContinuation?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onDetachedExit?: (result: SingleResult) => void;
 	/** Shared foreground-group signal used to release sibling supervision after one exact child commits Intercom detach. */
@@ -71,6 +73,12 @@ export interface RunSyncOptions {
 	controlConfig?: ResolvedControlConfig;
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
+	/** Typed supervisor capability issued for this child; never read from environment. */
+	supervisorAuthorization?: {
+		capability: string;
+		supervisorSessionId: string;
+		childName: string;
+	};
 	/** Resolved intercom home group for the spawned child (explicit subagent group or inherited stage group). */
 	intercomGroup?: string;
 	maxOutput?: MaxOutputConfig;
@@ -105,6 +113,16 @@ export interface RunSyncOptions {
 		schema: JsonSchemaObject;
 		schemaPath: string;
 		outputPath: string;
+	};
+	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */
+	testSession?: {
+		output?: string;
+		structuredOutputAfterPrompt?: number;
+		promptLogPath?: string;
+		/** Hold a test prompt open until the caller releases the supplied promise. */
+		promptGate?: Promise<void>;
+		/** Match AgentSession.abort() settling an active prompt without throwing. */
+		abortResolvesPrompt?: boolean;
 	};
 }
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type ExtensionContext, getEnvValue } from "@bastani/atomic";
+import type { ExtensionContext } from "@bastani/atomic";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import {
 	applyIntercomBridgeToAgent,
@@ -25,14 +25,17 @@ import {
 	type SubagentToolResult,
 	subagentDepthBlockedMessage,
 } from "../../shared/types.ts";
-import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
+
+function applyForceTopLevelAsyncOverride<T extends { async?: boolean }>(params: T, depth: number, force: boolean): T {
+	return depth === 0 && force ? { ...params, async: true } : params;
+}
+
 import {
 	createNestedRoute,
 	resolveInheritedNestedRouteFromEnv,
 	resolveNestedParentAddressFromEnv,
 	writeNestedEvent,
-} from "../shared/nested-events.ts";
-import { SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../shared/pi-args.ts";
+} from "../inprocess/runtime-support/nested-api.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import {
 	applyAgentDefaultContext,
@@ -133,7 +136,7 @@ export function prepareExecutionContext(input: {
 		...DEFAULT_ARTIFACT_CONFIG,
 		enabled: effectiveParams.artifacts !== false,
 	};
-	const artifactsDir = effectiveAsync ? deps.tempArtifactsDir : getArtifactsDir(parentSessionFile);
+	const artifactsDir = getArtifactsDir(parentSessionFile);
 
 	let sessionRoot: string;
 	if (effectiveParams.sessionDir) {
@@ -212,9 +215,9 @@ export function prepareExecutionContext(input: {
 		const state =
 			type === "subagent.nested.started"
 				? "running"
-				: result?.isError || details?.results.some((child) => child.exitCode !== 0)
+				: result?.isError || details?.results.some((child) => child.status === "error")
 					? "failed"
-					: details?.results.some((child) => child.interrupted)
+					: details?.results.some((child) => child.interrupted || child.status === "interrupted")
 						? "paused"
 						: "complete";
 		const errorText = result?.isError ? result.content.find((item) => item.type === "text")?.text : undefined;
@@ -246,7 +249,8 @@ export function prepareExecutionContext(input: {
 					parentStepIndex: nestedParentAddress.parentStepIndex,
 					depth: nestedParentAddress.depth,
 					path: nestedParentAddress.path,
-					ownerIntercomTarget: getEnvValue(SUBAGENT_INTERCOM_SESSION_NAME_ENV),
+					ownerIntercomTarget:
+						ctx.subagentPolicy?.intercom?.sessionName ?? ctx.subagentPolicy?.intercom?.orchestratorTarget,
 					leafIntercomTarget,
 					intercomTarget: leafIntercomTarget,
 					ownerState: state === "running" ? "live" : "gone",
@@ -262,7 +266,12 @@ export function prepareExecutionContext(input: {
 						? {
 								steps: details.results.map((child) => ({
 									agent: child.agent,
-									status: child.interrupted ? "paused" : child.exitCode === 0 ? "complete" : "failed",
+									status:
+										child.interrupted || child.status === "interrupted"
+											? "paused"
+											: child.status === "ok"
+												? "complete"
+												: "failed",
 									...(child.sessionFile ? { sessionFile: child.sessionFile } : {}),
 									...(child.error ? { error: child.error } : {}),
 								})),

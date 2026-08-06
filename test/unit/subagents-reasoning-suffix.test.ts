@@ -3,10 +3,10 @@ import { describe, test } from "vitest";
 import { parseFrontmatter } from "../../packages/subagents/src/agents/frontmatter.js";
 import type { AvailableModelInfo } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 import {
+	applyThinkingSuffix,
 	buildModelCandidates,
 	resolveModelCandidate,
 } from "../../packages/subagents/src/runs/shared/model-fallback.js";
-import { applyThinkingSuffix, buildPiArgs } from "../../packages/subagents/src/runs/shared/pi-args.js";
 import {
 	getSupportedThinkingLevels,
 	resolveEffectiveThinking,
@@ -64,23 +64,6 @@ describe("subagent suffix-first reasoning helpers", () => {
 			baseModel: "openai/gpt-5:ultra",
 			thinkingSuffix: "",
 		});
-	});
-
-	test("forwards max thinking to the child Atomic CLI model argument", () => {
-		const model = "openai/gpt-5.6-sol";
-		const result = buildPiArgs({
-			baseArgs: [],
-			task: "reason deeply",
-			sessionEnabled: false,
-			model,
-			thinking: "max",
-			inheritProjectContext: true,
-			inheritSkills: true,
-		});
-
-		const modelIndex = result.args.indexOf("--model");
-		assert.notEqual(modelIndex, -1);
-		assert.equal(result.args[modelIndex + 1], `${model}:max`);
 	});
 
 	test("offers max only when a model explicitly maps the new extended level", () => {

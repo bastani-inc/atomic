@@ -92,10 +92,10 @@ function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, 
 	return renderIntercomToolResult(name, args);
 }
 export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
-	const delegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
-	let heavyAttempt: HeavyAttempt | null = null;
-	let loadedHeavy: IntercomHeavyHandle | null = null;
-	let sessionSnapshot: SessionSnapshot | null = null;
+  const inheritedDelegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
+  let heavyAttempt: HeavyAttempt | null = null;
+  let loadedHeavy: IntercomHeavyHandle | null = null;
+  let sessionSnapshot: SessionSnapshot | null = null;
 	let lifecycleGeneration = 0;
 	let nextLeaseId = 1;
 	let activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++);
@@ -229,21 +229,45 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		);
 		return promise;
 	}
-	pi.on("session_start", async (event, ctx) => {
-		if (delegatedSessionName && typeof pi.setSessionName === "function") pi.setSessionName(delegatedSessionName);
-		if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
-		const lease = activeLease;
-		await waitForPriorCleanup(lease);
-		if (sessionSnapshot) {
-			activeLifecycle.turnStart = null;
-			activeLifecycle.agentStart = null;
-			activeLifecycle.activeTools.clear();
-			activeLifecycle.modelSelect = null;
-		}
-		const generation = ++lifecycleGeneration;
-		sessionSnapshot = { event, ctx, generation, lease };
-		if (loadedHeavy) await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
-	});
+  let typedContactSupervisorRegistered = hasSubagentIntercomEnv();
+  const registerTypedContactSupervisor = (): void => {
+    if (typedContactSupervisorRegistered) return;
+    typedContactSupervisorRegistered = true;
+    pi.registerTool({
+      name: "contact_supervisor",
+      label: "Contact Supervisor",
+      description: "Subagent-only tool for contacting the supervisor agent that delegated this task.",
+      promptSnippet: "Subagent-only: contact the supervisor for decisions, interviews, or meaningful updates.",
+      parameters: Type.Object({
+        reason: Type.String({ enum: ["need_decision", "progress_update", "interview_request"] }),
+        message: Type.Optional(Type.String()),
+        interview: Type.Optional(Type.Unknown()),
+      }),
+      execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
+      renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
+    });
+  };
+  pi.on("session_start", async (event, ctx) => {
+    const typedIdentity = ctx.subagentPolicy?.intercom;
+    if (typedIdentity) {
+      if (typedIdentity.sessionName && typeof pi.setSessionName === "function") pi.setSessionName(typedIdentity.sessionName);
+      registerTypedContactSupervisor();
+    } else if (inheritedDelegatedSessionName && typeof pi.setSessionName === "function") {
+      pi.setSessionName(inheritedDelegatedSessionName);
+    }
+    if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
+    const lease = activeLease;
+    await waitForPriorCleanup(lease);
+    if (sessionSnapshot) {
+      activeLifecycle.turnStart = null;
+      activeLifecycle.agentStart = null;
+      activeLifecycle.activeTools.clear();
+      activeLifecycle.modelSelect = null;
+    }
+    const generation = ++lifecycleGeneration;
+    sessionSnapshot = { event, ctx, generation, lease };
+    if (loadedHeavy) await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
+  });
 	pi.on("session_shutdown", async (event, ctx) => {
 		const lease = activeLease;
 		const generation = ++lifecycleGeneration;

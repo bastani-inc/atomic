@@ -125,6 +125,18 @@ export {
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";
+export type {
+	ModelFallbackFailureKind,
+	ModelFallbackFailureSignal,
+	ModelFallbackFailureSource,
+} from "./core/model-fallback-failures.ts";
+export {
+	errorMessage,
+	isRetryableModelFailure,
+	isRetryableSameModelFailure,
+	modelFailureMessage,
+	normalizeModelFailureSignal,
+} from "./core/model-fallback-failures.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export { type CreateModelRuntimeOptions, ModelRuntime, type ModelRuntimeAuthOverrides } from "./core/model-runtime.ts";
 export type {
@@ -143,6 +155,7 @@ export type {
 	ResourceLoader,
 } from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+export { nextRetryDecision, type RetryDecision, type RetryPolicySettings } from "./core/retry-policy.ts";
 // SDK for programmatic usage
 export {
 	AgentSessionRuntime,

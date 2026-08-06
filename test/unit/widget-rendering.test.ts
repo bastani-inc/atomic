@@ -142,6 +142,30 @@ describe("renderWidgetLines — standard form", () => {
 		assert.ok(lines[0]!.includes("BACKGROUND  1 run  1 quit"));
 		assert.ok(joined.includes("quit · resumable via /workflow resume"));
 	});
+	test("quit run with a pending prompt keeps quit treatment and is excluded from needs-attention count", () => {
+		const now = 10_000;
+		const theme = deriveGraphTheme({});
+		const quit: RunSnapshot = {
+			...makeRun("quit-with-prompt", "resume-me", "paused", [], now - 1_000),
+			exitReason: "quit",
+			resumable: true,
+			pendingPrompt: {
+				id: "quit-prompt",
+				kind: "confirm",
+				message: "Continue?",
+				createdAt: now - 100,
+			},
+		};
+		const lines = buildThemedWidgetLines(makeSnap([quit]), NULL_PI_THEME, 120, now);
+		const joined = lines.join("\n");
+		assert.ok(joined.includes(statusIcon("pending")), "quit card keeps the pending glyph");
+		assert.ok(
+			joined.includes(hexToAnsi(statusColor(quit.status, theme))),
+			"quit card keeps the paused warning colour",
+		);
+		assert.doesNotMatch(stripAnsi(lines[0]!), /needs attention/);
+		assert.ok(stripAnsi(lines[0]!).includes("1 quit"), "quit count remains visible");
+	});
 	test("quit card expires from the widget after the recent window while status stays resumable", () => {
 		const originalNow = Date.now;
 		let now = 1_000_000;
@@ -553,9 +577,7 @@ describe("run identity rows", () => {
 
 		const cases = [
 			{ id: ids.running, name: "stage-output-transcript", glyph: statusIcon("running") },
-			// Provisional pin: today's card keeps the running glyph; the objective example shows `？`,
-			// but changing awaiting-input attribution belongs to PR #2135.
-			{ id: ids.awaiting, name: "build-check", glyph: statusIcon("running") },
+			{ id: ids.awaiting, name: "build-check", glyph: statusIcon("awaiting_input") },
 			{ id: ids.quit, name: "release-docs", glyph: statusIcon("pending") },
 			{ id: ids.completed, name: "publish-release", glyph: statusIcon("completed") },
 			{ id: ids.failed, name: "verify-release", glyph: statusIcon("failed") },
@@ -581,6 +603,9 @@ describe("run identity rows", () => {
 		const themed = buildThemedWidgetLines(makeSnap([running]), NULL_PI_THEME, 120);
 		assert.ok(themed[1]?.includes(hexToAnsi(statusColor("running", theme))));
 		assert.ok(themed[1]?.includes(statusIcon("running")));
+		const themedAwaiting = buildThemedWidgetLines(makeSnap([awaiting]), NULL_PI_THEME, 120);
+		assert.ok(themedAwaiting[1]?.includes(hexToAnsi(statusColor("awaiting_input", theme))));
+		assert.ok(themedAwaiting[1]?.includes(statusIcon("awaiting_input")));
 	});
 
 	test("keeps every widget border line at the collapsed breakpoint", () => {

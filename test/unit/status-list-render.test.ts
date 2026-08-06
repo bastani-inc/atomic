@@ -19,7 +19,7 @@ import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/sh
 import { chatWidth } from "../../packages/workflows/src/tui/chat-surface.js";
 import { hexToAnsi, RESET } from "../../packages/workflows/src/tui/color-utils.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
+import { statusColor, statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 
@@ -169,6 +169,40 @@ describe("renderStatusList — populated", () => {
 		assert.doesNotMatch(out, /✓ completed/);
 	});
 
+	test("awaiting input changes only the run indicator glyph/colour and attributes nested prompts to the root", () => {
+		const theme = deriveGraphTheme({});
+		const root = makeRun({ id: "root-awaiting", name: "root-awaiting", status: "running" });
+		const child = makeRun({
+			id: "child-awaiting",
+			name: "hidden-child",
+			status: "running",
+			stages: [makeStage("ask", "ask", "awaiting_input")],
+		});
+		child.parentRunId = root.id;
+		const out = renderStatusList([root], { theme, width: 100, allRuns: [root, child], showDetailHint: false });
+		const plain = stripAnsi(out);
+		const idLine = plain.split("\n").find((line) => line.includes(root.id));
+		assert.ok(idLine?.includes(statusIcon("awaiting_input")));
+		assert.ok(out.includes(hexToAnsi(statusColor("awaiting_input", theme))));
+		assert.ok(plain.includes("root-awaiting"));
+		assert.match(plain, /single\s+\[●\]/);
+	});
+
+	test("precomputed indicatorStatuses drive the indicator without the full run collection (restored payloads)", () => {
+		const theme = deriveGraphTheme({});
+		const root = makeRun({ id: "root-restored", name: "root-restored", status: "running" });
+		const out = renderStatusList([root], {
+			theme,
+			width: 100,
+			indicatorStatuses: { [root.id]: "awaiting_input" },
+			showDetailHint: false,
+		});
+		const plain = stripAnsi(out);
+		const idLine = plain.split("\n").find((line) => line.includes(root.id));
+		assert.ok(idLine?.includes(statusIcon("awaiting_input")));
+		assert.ok(out.includes(hexToAnsi(statusColor("awaiting_input", theme))));
+	});
+
 	test("legacy completed snapshots with incomplete returned status render blocked", () => {
 		const now = 1_000_000;
 		const out = renderStatusList(
@@ -283,6 +317,35 @@ describe("renderStatusList — populated", () => {
 		assert.match(plain, /resume-me/);
 		assert.match(plain, /resumable via \/workflow resume/);
 		assert.doesNotMatch(plain, /failed/);
+	});
+	test("quit run with a pending prompt keeps the prompt-free resumable card byte-identical", () => {
+		const now = 10_000;
+		const theme = deriveGraphTheme({});
+		const promptFree: RunSnapshot = makeRun({
+			id: "quit-prompt-list",
+			name: "resume-me",
+			status: "paused",
+			startedAt: now - 1_000,
+			exitReason: "quit",
+			resumable: true,
+		});
+		const prompted: RunSnapshot = {
+			...promptFree,
+			pendingPrompt: {
+				id: "quit-prompt",
+				kind: "confirm",
+				message: "Continue?",
+				createdAt: now - 100,
+			},
+		};
+		const opts = { theme, now, width: 120 };
+		const promptFreeOutput = renderStatusList([promptFree], opts);
+		const promptedOutput = renderStatusList([prompted], opts);
+		assert.equal(promptedOutput, promptFreeOutput);
+		const plain = stripAnsi(promptedOutput);
+		assert.match(plain, new RegExp(`${statusIcon("pending")}\\s+quit-prompt-list`));
+		assert.match(plain, new RegExp(`resume-me.*${statusIcon("pending")}\\s+quit`));
+		assert.match(plain, /resumable via \/workflow resume/);
 	});
 
 	test("mixed running and paused snapshot keeps paused runs out of running counts and labels their rows", () => {

@@ -31,12 +31,19 @@ function progress(status: AgentProgress["status"], error?: string): AgentProgres
 	};
 }
 
-function result(status: AgentProgress["status"], error?: string): SingleResult {
-	const currentProgress = progress(status, error);
+function result(progressStatus: AgentProgress["status"], error?: string): SingleResult {
+	const currentProgress = progress(progressStatus, error);
 	return {
 		agent: "debugger",
 		task: "inspect",
-		exitCode: status === "failed" ? 1 : 0,
+		status:
+			progressStatus === "completed"
+				? "ok"
+				: progressStatus === "failed"
+					? "error"
+					: progressStatus === "detached"
+						? "continued"
+						: "interrupted",
 		messages: [],
 		usage,
 		error,

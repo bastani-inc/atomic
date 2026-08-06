@@ -14,11 +14,11 @@ import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
 import {
 	type SingleResult,
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
+	type SubagentToolResult,
 } from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
 
@@ -41,7 +41,7 @@ class FakeEvents {
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 
-function makeAgent(name: string): AgentConfig {
+function makeAgent(name: string, source: AgentConfig["source"] = "project"): AgentConfig {
 	return {
 		name,
 		description: name,
@@ -49,15 +49,14 @@ function makeAgent(name: string): AgentConfig {
 		inheritProjectContext: false,
 		inheritSkills: false,
 		systemPrompt: "Test agent",
-		source: "project",
+		source,
 		filePath: `/tmp/${name}.md`,
 	};
 }
 
 function makeResult(agent: string, task: string, finalOutput = `${agent} complete`): SingleResult {
-	return { agent, task, exitCode: 0, messages: [], usage, finalOutput };
+	return { agent, task, status: "ok", messages: [], usage, finalOutput };
 }
-
 function makeContext(cwd: string, onCustom: () => never): ExtensionContext {
 	return {
 		cwd,
@@ -121,6 +120,31 @@ function makeExecutor(
 		runtime,
 	});
 }
+
+test("list action returns the available agent catalogue", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-list-"));
+	try {
+		const executor = makeExecutor(cwd, [makeAgent("codebase-analyzer", "builtin")], {});
+		const result = await executor.execute(
+			"list",
+			{ action: "list" },
+			new AbortController().signal,
+			undefined,
+			makeContext(cwd, () => {
+				throw new Error("unexpected UI prompt");
+			}),
+		);
+		const text = result.content
+			.filter((item): item is { type: "text"; text: string } => item.type === "text")
+			.map((item) => item.text)
+			.join("\n");
+		assert.match(text, /Executable agents:/);
+		assert.match(text, /codebase-analyzer/);
+		assert.doesNotMatch(text, /No in-process subagents\./);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
 
 test("root single reads are schema-valid, cwd-correct, and identical in foreground and async modes", async () => {
 	const parentCwd = mkdtempSync(join(tmpdir(), "atomic-subagent-root-reads-"));
@@ -289,17 +313,7 @@ describe("programmatic subagent tool boundary", () => {
 	test("async parallel execution rejects more than 50 expanded tasks before dispatch", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-async-limit-"));
 		try {
-			let dispatchCalls = 0;
-			const executor = makeExecutor(cwd, [makeAgent("worker")], {
-				isAsyncAvailable: () => true,
-				executeAsyncChain: () => {
-					dispatchCalls += 1;
-					return {
-						content: [{ type: "text", text: "background started" }],
-						details: { mode: "parallel", results: [] },
-					};
-				},
-			});
+			const executor = makeExecutor(cwd, [makeAgent("worker")], { isAsyncAvailable: () => true });
 			const result = await executor.execute(
 				"async-parallel-limit",
 				{ tasks: [{ agent: "worker", task: "repeat", count: 51 }], async: true },
@@ -312,50 +326,43 @@ describe("programmatic subagent tool boundary", () => {
 
 			assert.equal(result.isError, true);
 			assert.equal(result.content[0]?.type === "text" ? result.content[0].text : "", "Max 50 tasks");
-			assert.equal(dispatchCalls, 0);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
-	test("authorized fanout child registers the same non-interactive boundary", async () => {
-		const previousChild = process.env[SUBAGENT_CHILD_ENV];
-		const previousFanout = process.env[SUBAGENT_FANOUT_CHILD_ENV];
+	test("typed restricted child policy blocks management mutation without environment state", async () => {
 		let registered: ToolDefinition | undefined;
-		try {
-			process.env[SUBAGENT_CHILD_ENV] = "1";
-			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
-			const pi = {
-				registerTool: (tool: ToolDefinition) => {
-					registered = tool;
-				},
-				events: { on: () => () => {}, emit: () => {} },
-				getSessionName: () => "fanout-child",
-			} as unknown as ExtensionAPI;
-			registerFanoutChildSubagentExtension(pi);
+		const pi = {
+			registerTool: (tool: ToolDefinition) => {
+				registered = tool;
+			},
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "typed-fanout-child",
+		} as unknown as ExtensionAPI;
+		registerFanoutChildSubagentExtension(pi, {
+			managementActions: "restricted",
+			fanoutAuthorized: true,
+			inheritProjectContext: false,
+			inheritSkills: false,
+		});
 
-			assert.ok(registered);
-			let customCalls = 0;
-			const result = await registered.execute(
-				"fanout-chain",
-				{ chain: [{ agent: "debugger" }] },
+		assert.ok(registered);
+		for (const action of ["create", "update", "delete"] as const) {
+			const result = (await registered.execute(
+				`typed-restricted-${action}`,
+				{ action },
 				new AbortController().signal,
 				undefined,
 				makeContext(process.cwd(), () => {
-					customCalls += 1;
 					throw new Error("unexpected UI prompt");
 				}),
-			);
-			assert.equal(customCalls, 0);
+			)) as SubagentToolResult;
+			assert.equal(result.isError, true);
 			assert.match(
 				result.content[0]?.type === "text" ? result.content[0].text : "",
-				/First step in chain must have a task/,
+				new RegExp(`Action '${action}' is not available from child-safe subagent fanout mode`),
 			);
-		} finally {
-			if (previousChild === undefined) delete process.env[SUBAGENT_CHILD_ENV];
-			else process.env[SUBAGENT_CHILD_ENV] = previousChild;
-			if (previousFanout === undefined) delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			else process.env[SUBAGENT_FANOUT_CHILD_ENV] = previousFanout;
 		}
 	});
 
@@ -438,19 +445,16 @@ describe("programmatic subagent tool boundary", () => {
 		try {
 			let customCalls = 0;
 			const asyncSingle: Array<{ agent: string; task: string }> = [];
-			const asyncChains: Array<{ mode?: string; chainLength: number }> = [];
+			const runCalls: Array<{ agent: string; task: string }> = [];
 			const executor = makeExecutor(cwd, [makeAgent("alpha"), makeAgent("beta")], {
 				isAsyncAvailable: () => true,
 				executeAsyncSingle: (_id, params) => {
 					asyncSingle.push({ agent: params.agent, task: params.task ?? "" });
 					return { content: [{ type: "text", text: "single started" }], details: { mode: "single", results: [] } };
 				},
-				executeAsyncChain: (_id, params) => {
-					asyncChains.push({ mode: params.resultMode, chainLength: params.chain.length });
-					return {
-						content: [{ type: "text", text: "chain started" }],
-						details: { mode: params.resultMode ?? "chain", results: [] },
-					};
+				runSync: async (_cwd, _agents, agent, task) => {
+					runCalls.push({ agent, task });
+					return makeResult(agent, task);
 				},
 			});
 			const ctx = makeContext(cwd, () => {
@@ -460,7 +464,7 @@ describe("programmatic subagent tool boundary", () => {
 			const signal = new AbortController().signal;
 
 			await executor.execute("async-single", { agent: "alpha", task: "one", async: true }, signal, undefined, ctx);
-			await executor.execute(
+			const parallel = await executor.execute(
 				"async-parallel",
 				{
 					tasks: [
@@ -473,7 +477,7 @@ describe("programmatic subagent tool boundary", () => {
 				undefined,
 				ctx,
 			);
-			await executor.execute(
+			const chain = await executor.execute(
 				"async-chain",
 				{
 					chain: [
@@ -486,88 +490,80 @@ describe("programmatic subagent tool boundary", () => {
 				undefined,
 				ctx,
 			);
+			await new Promise<void>((resolve) => setImmediate(resolve));
 
 			assert.equal(customCalls, 0);
 			assert.deepEqual(asyncSingle, [{ agent: "alpha", task: "one" }]);
-			assert.deepEqual(asyncChains, [
-				{ mode: "parallel", chainLength: 1 },
-				{ mode: undefined, chainLength: 2 },
-			]);
+			assert.equal(parallel.details.results[0]?.status, "continued");
+			assert.equal(chain.details.results[0]?.status, "continued");
+			assert.deepEqual(
+				runCalls.map((call) => call.agent),
+				["alpha", "beta", "alpha", "beta"],
+			);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
 	test("parent registration exposes the non-interactive tool and preserves slash commands", async () => {
-		const previousChild = process.env[SUBAGENT_CHILD_ENV];
-		const previousFanout = process.env[SUBAGENT_FANOUT_CHILD_ENV];
 		let registered: ToolDefinition | undefined;
 		const commands: string[] = [];
 		const handlers = new Map<string, Array<() => void>>();
-		try {
-			delete process.env[SUBAGENT_CHILD_ENV];
-			delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			const pi = {
-				registerTool: (tool: ToolDefinition) => {
-					registered = tool;
-				},
-				registerCommand: (name: string) => {
-					commands.push(name);
-				},
-				registerMessageRenderer: () => {},
-				sendMessage: () => {},
-				on: (event: string, handler: () => void) => {
-					const eventHandlers = handlers.get(event) ?? [];
-					eventHandlers.push(handler);
-					handlers.set(event, eventHandlers);
-				},
-				events: { on: () => () => {}, emit: () => {} },
-				getSessionName: () => "parent",
-			} as unknown as ExtensionAPI;
-			registerSubagentExtension(pi);
+		const pi = {
+			registerTool: (tool: ToolDefinition) => {
+				registered = tool;
+			},
+			registerCommand: (name: string) => {
+				commands.push(name);
+			},
+			registerMessageRenderer: () => {},
+			sendMessage: () => {},
+			on: (event: string, handler: () => void) => {
+				const eventHandlers = handlers.get(event) ?? [];
+				eventHandlers.push(handler);
+				handlers.set(event, eventHandlers);
+			},
+			events: { on: () => () => {}, emit: () => {} },
+			getSessionName: () => "parent",
+		} as unknown as ExtensionAPI;
+		registerSubagentExtension(pi);
 
-			assert.ok(registered);
+		assert.ok(registered);
 
-			let customCalls = 0;
-			const result = await registered.execute(
-				"parent-chain",
-				{ chain: [{ agent: "debugger" }] },
-				new AbortController().signal,
-				undefined,
-				makeContext(process.cwd(), () => {
-					customCalls += 1;
-					throw new Error("unexpected UI prompt");
-				}),
-			);
-			assert.equal(customCalls, 0);
-			assert.match(
-				result.content[0]?.type === "text" ? result.content[0].text : "",
-				/First step in chain must have a task/,
-			);
+		let customCalls = 0;
+		const result = await registered.execute(
+			"parent-chain",
+			{ chain: [{ agent: "debugger" }] },
+			new AbortController().signal,
+			undefined,
+			makeContext(process.cwd(), () => {
+				customCalls += 1;
+				throw new Error("unexpected UI prompt");
+			}),
+		);
+		assert.equal(customCalls, 0);
+		assert.match(
+			result.content[0]?.type === "text" ? result.content[0].text : "",
+			/First step in chain must have a task/,
+		);
 
-			assert.deepEqual(commands.filter((name) => ["run", "chain", "parallel", "run-chain"].includes(name)).sort(), [
-				"chain",
-				"parallel",
-				"run",
-				"run-chain",
-			]);
+		assert.deepEqual(commands.filter((name) => ["run", "chain", "parallel", "run-chain"].includes(name)).sort(), [
+			"chain",
+			"parallel",
+			"run",
+			"run-chain",
+		]);
 
-			const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
-			for (const args of [
-				{ agent: "worker", async: true },
-				{ tasks: [{ agent: "worker", task: "one" }], async: true },
-				{ chain: [{ agent: "worker", task: "one" }], async: true },
-			]) {
-				const component = registered.renderCall?.(args as never, theme, {} as never);
-				assert.match(component?.render(120).join("\n") ?? "", /\[async\]/);
-			}
-		} finally {
-			for (const shutdown of handlers.get("session_shutdown") ?? []) shutdown();
-			if (previousChild === undefined) delete process.env[SUBAGENT_CHILD_ENV];
-			else process.env[SUBAGENT_CHILD_ENV] = previousChild;
-			if (previousFanout === undefined) delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
-			else process.env[SUBAGENT_FANOUT_CHILD_ENV] = previousFanout;
+		const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
+		for (const args of [
+			{ agent: "worker", async: true },
+			{ tasks: [{ agent: "worker", task: "one" }], async: true },
+			{ chain: [{ agent: "worker", task: "one" }], async: true },
+		]) {
+			const component = registered.renderCall?.(args as never, theme, {} as never);
+			assert.match(component?.render(120).join("\n") ?? "", /\[async\]/);
 		}
+		for (const shutdown of handlers.get("session_shutdown") ?? []) shutdown();
 	});
 
 	test("slash bridge dispatch remains separate and forwards its parameters unchanged", async () => {

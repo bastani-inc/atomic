@@ -65,7 +65,7 @@ export function subagentResultRenderKey(
 		...details.results.map((entry) =>
 			[
 				entry.agent,
-				entry.exitCode,
+				entry.status,
 				entry.interrupted === true ? "interrupted" : "",
 				entry.detached === true ? "detached" : "",
 				progressRenderKey(entry.progress),

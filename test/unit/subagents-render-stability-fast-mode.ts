@@ -19,7 +19,7 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
 					{
 						agent: "worker",
 						task: "do work",
-						exitCode: 0,
+						status: "ok",
 						usage: {
 							input: 0,
 							output: 0,
@@ -50,7 +50,7 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
 					{
 						agent: "worker",
 						task: "do work",
-						exitCode: 0,
+						status: "ok",
 						usage: {
 							input: 0,
 							output: 0,

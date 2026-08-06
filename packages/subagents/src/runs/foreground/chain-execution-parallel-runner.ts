@@ -53,7 +53,7 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			return {
 				agent: task.agent,
 				task: input.parallelTemplates[taskIndex] ?? task.task ?? "{previous}",
-				exitCode: -1,
+				status: "skipped",
 				messages: [],
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 				error: "Skipped after foreground group detached for intercom coordination",
@@ -63,7 +63,7 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			return {
 				agent: task.agent,
 				task: "(skipped)",
-				exitCode: -1,
+				status: "skipped",
 				messages: [],
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 				error: "Skipped due to fail-fast",
@@ -210,8 +210,8 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			input.foregroundControl.updatedAt = Date.now();
 		}
 
-		if (result.exitCode !== 0 && failFast) aborted = true;
-		recordRun(task.agent, cleanTask, result.exitCode, result.progressSummary?.durationMs ?? 0);
+		if (result.status === "error" && failFast) aborted = true;
+		recordRun(task.agent, cleanTask, result.status, result.progressSummary?.durationMs ?? 0);
 		return result;
 	});
 }

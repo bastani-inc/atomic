@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { RunDetail } from "../../packages/workflows/src/runs/background/status.js";
+import { resolveRunIndicatorStatuses } from "../../packages/workflows/src/shared/run-indicator-status.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
 	chatWidth,
@@ -25,6 +26,7 @@ import {
 	renderChatSurfacePlainText,
 } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -411,6 +413,57 @@ describe("registerChatSurfaceRenderer", () => {
 				Date.now = originalNow;
 			}
 		}
+	});
+	test("restored status payloads keep hidden-descendant awaiting attribution without object-identity state", () => {
+		// Regression: the complete run collection used to live in a WeakMap
+		// keyed by the in-memory StatusPayload. A payload deserialized from a
+		// persisted session is a different object, so the WeakMap missed and a
+		// visible running ancestor with a hidden nested child awaiting input
+		// re-rendered with the ordinary running indicator. The emit-time
+		// `indicatorStatuses` record must survive a JSON round-trip instead.
+		class ClassBackedPi {
+			readonly renderers = new Map<string, (payload: unknown) => unknown>();
+			registerMessageRenderer(event: string, renderer: (payload: unknown) => unknown): void {
+				this.renderers.set(event, renderer);
+			}
+		}
+		const pi = new ClassBackedPi();
+		registerChatSurfaceRenderer(pi as never, deriveGraphTheme({}));
+		const renderer = pi.renderers.get(CHAT_SURFACE_CUSTOM_TYPE);
+		assert.notEqual(renderer, undefined);
+		const root: RunSnapshot = {
+			id: "root-run-1234567890",
+			name: "visible-root",
+			inputs: {},
+			status: "running",
+			stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
+			startedAt: 1_000,
+		};
+		const hiddenChild: RunSnapshot = {
+			id: "child-run-1234567890",
+			name: "hidden-child",
+			inputs: {},
+			status: "running",
+			stages: [{ id: "ask", name: "ask", status: "awaiting_input", parentIds: [], toolEvents: [] }],
+			startedAt: 1_100,
+			parentRunId: "root-run-1234567890",
+		};
+		const payload: ChatSurfacePayload = {
+			kind: "status",
+			runs: [root],
+			indicatorStatuses: resolveRunIndicatorStatuses([root], [root, hiddenChild]),
+		};
+		// Simulate the session-restore path: the renderer receives a payload
+		// rebuilt from persisted JSON, never the emit-time object.
+		const restored = JSON.parse(JSON.stringify(payload)) as ChatSurfacePayload;
+		const component = renderer!({ details: restored }) as { render(width: number): string[] };
+		const plain = stripAnsi(component.render(100).join("\n"));
+		const idLine = plain.split("\n").find((line) => line.includes(root.id));
+		assert.ok(idLine !== undefined, "status card must render the visible root's identifier row");
+		assert.ok(
+			idLine.includes(statusIcon("awaiting_input")),
+			`restored ancestor row must carry the awaiting-input indicator, got: ${idLine}`,
+		);
 	});
 });
 describe("chatWidth", () => {

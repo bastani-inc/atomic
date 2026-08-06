@@ -42,16 +42,16 @@ function renderOverlay(statuses: Map<string, string>): string {
 }
 
 describe("workflow orchestrator statusline extension statuses", () => {
-	test("hides the host MCP server count", () => {
+	test("hides the host MCP server count while preserving other extension statuses", () => {
 		const rendered = renderOverlay(
 			new Map([
 				["mcp", "MCP: 0/1 servers"],
-				["subagents", "Async agents: 1 running"],
+				["other-extension", "Other extension status"],
 			]),
 		);
 
 		assert.doesNotMatch(rendered, /MCP:/);
-		assert.match(rendered, /Async agents: 1 running/);
+		assert.match(rendered, /Other extension status/);
 	});
 
 	test("hides workflow-owned status keys", () => {

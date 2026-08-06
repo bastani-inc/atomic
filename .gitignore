@@ -297,3 +297,6 @@ evals/jobs/
 # repository root, so vitest and node_modules resolve by the ordinary upward
 # walk. Removed on success; ignored so an interrupted run leaves nothing tracked.
 .tmp-flake-real-*/
+
+# subagent test scratch
+.atomic/subagents/

@@ -134,8 +134,10 @@ export function firstOutputLine(text: string): string {
 
 export function resultStatusLine(result: Details["results"][number], output: string): string {
 	if (result.detached) return result.detachedReason ? `Detached: ${result.detachedReason}` : "Detached";
-	if (result.interrupted) return "Paused";
-	if (result.exitCode !== 0) return `Error: ${result.error ?? (firstOutputLine(output) || `exit ${result.exitCode}`)}`;
+	if (result.status === "continued") return "Continued";
+	if (result.interrupted || result.status === "interrupted") return "Paused";
+	if (result.status === "skipped") return result.error ? `Skipped: ${result.error}` : "Skipped";
+	if (result.status === "error") return `Error: ${result.error ?? (firstOutputLine(output) || "failed")}`;
 	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return "Done (no text output)";
 	return "Done";
 }
@@ -148,9 +150,10 @@ export function resultGlyph(
 	pulseFrame?: number,
 ): string {
 	if (running) return theme.fg("accent", pulseGlyph(pulseFrame));
-	if (result.detached) return theme.fg("warning", "■");
-	if (result.interrupted) return theme.fg("warning", "■");
-	if (result.exitCode !== 0) return theme.fg("error", "✗");
+	if (result.detached || result.status === "continued") return theme.fg("warning", "■");
+	if (result.interrupted || result.status === "interrupted" || result.status === "skipped")
+		return theme.fg("warning", "■");
+	if (result.status === "error") return theme.fg("error", "✗");
 	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return theme.fg("warning", "✓");
 	return theme.fg("success", "✓");
 }

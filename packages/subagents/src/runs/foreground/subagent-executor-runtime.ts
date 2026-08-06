@@ -1,15 +1,10 @@
-import {
-	executeAsyncChain,
-	executeAsyncSingle,
-	formatAsyncStartedMessage,
-	isAsyncAvailable,
-} from "../background/async-execution.ts";
+import { formatAsyncStartedMessage, isAsyncAvailable } from "../inprocess/background.ts";
+import { executeAsyncSingle } from "../inprocess/background-single.ts";
 import { runSync } from "./execution.ts";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.ts";
 
 const defaultSubagentExecutorRuntimeDeps: SubagentExecutorRuntimeDeps = {
 	runSync,
-	executeAsyncChain,
 	executeAsyncSingle,
 	isAsyncAvailable,
 	formatAsyncStartedMessage,

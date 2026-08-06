@@ -1,15 +1,32 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runParallelChainTasks } from "../../packages/subagents/src/runs/foreground/chain-execution-parallel-runner.js";
 import { runForegroundParallelTasks } from "../../packages/subagents/src/runs/foreground/subagent-executor-parallel-task.js";
 import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
-import { agentConfig } from "./subagents-attempt-watchdog-helpers.js";
+
+function agentConfig(): AgentConfig {
+	return {
+		name: "fake-worker",
+		description: "Fake worker",
+		source: "project",
+		filePath: "fake-worker.md",
+		systemPrompt: "Work.",
+		systemPromptMode: "replace",
+		inheritProjectContext: false,
+		inheritSkills: false,
+		model: "provider-a/stalled",
+		fallbackModels: ["provider-b/working"],
+	};
+}
 
 function result(index: number): SingleResult {
 	return {
 		agent: "fake-worker",
 		task: `task-${index}`,
-		exitCode: -2,
+		status: "continued",
+		path: `child-${index}`,
+		envelope: "Child continued in background.",
 		detached: true,
 		messages: [],
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
@@ -88,7 +105,7 @@ test("one parallel child's supervisor detach releases every active foreground si
 	assert.deepEqual(settled.toSorted(), [0, 1]);
 	assert.equal(output.length, 3);
 	assert.ok(output.slice(0, 2).every((entry) => entry.detached));
-	assert.equal(output[2]?.exitCode, -1);
+	assert.equal(output[2]?.status, "skipped");
 	assert.match(output[2]?.error ?? "", /Skipped after foreground group detached/);
 });
 
@@ -162,6 +179,6 @@ test("chain-parallel detach does not launch work that was still queued", async (
 	});
 
 	assert.deepEqual(started, [10, 11]);
-	assert.equal(output[2]?.exitCode, -1);
+	assert.equal(output[2]?.status, "skipped");
 	assert.match(output[2]?.error ?? "", /Skipped after foreground group detached/);
 });

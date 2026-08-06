@@ -68,7 +68,30 @@ export interface WorkflowStageOrchestrationContext {
 	 */
 	readonly intercomGroup?: string;
 }
+/** Typed child intercom identity and supervisor capability issued at admission. */
+export interface SubagentIntercomIdentity {
+	readonly orchestratorTarget: string;
+	readonly runId: string;
+	readonly agent: string;
+	readonly index: number;
+	readonly sessionName?: string;
+	readonly supervisor?: {
+		readonly capability: string;
+		readonly supervisorSessionId: string;
+	};
+}
 
+/** Typed child capability policy supplied by an in-process subagent admission. */
+export interface SubagentChildPolicy {
+	readonly managementActions: "full" | "restricted";
+	readonly fanoutAuthorized: boolean;
+	readonly inheritProjectContext: boolean;
+	readonly inheritSkills: boolean;
+	/** Undefined preserves MCP configuration defaults; [] explicitly disables direct tools. */
+	readonly mcpDirectTools?: readonly string[];
+	/** Admission-issued identity/capability; never inherited through process environment. */
+	readonly intercom?: SubagentIntercomIdentity;
+}
 // Union alias kept for forward-compatible orchestration context variants.
 export type OrchestrationContext = WorkflowStageOrchestrationContext;
 
@@ -80,6 +103,8 @@ export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 export interface ExtensionContext {
 	/** Session-scoped orchestration policy for child runtimes such as workflow stages. */
 	readonly orchestrationContext?: OrchestrationContext;
+	/** Typed capability policy for an in-process subagent child, when this session is one. */
+	readonly subagentPolicy?: SubagentChildPolicy;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */

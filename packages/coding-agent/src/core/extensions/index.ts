@@ -176,6 +176,8 @@ export type {
 	SetLabelHandler,
 	SetModelHandler,
 	SetThinkingLevelHandler,
+	SubagentChildPolicy,
+	SubagentIntercomIdentity,
 	TerminalInputHandler,
 	// Events - Tool
 	ToolCallEvent,

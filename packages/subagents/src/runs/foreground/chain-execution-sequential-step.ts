@@ -199,7 +199,7 @@ export async function runSequentialChainStep(input: {
 		context.foregroundControl.interrupt = undefined;
 		context.foregroundControl.updatedAt = Date.now();
 	}
-	recordRun(seqStep.agent, cleanTask, result.exitCode, result.progressSummary?.durationMs ?? 0);
+	recordRun(seqStep.agent, cleanTask, result.status, result.progressSummary?.durationMs ?? 0);
 
 	state.globalTaskIndex++;
 	state.results.push(result);
@@ -232,7 +232,7 @@ export async function runSequentialChainStep(input: {
 			),
 		};
 	}
-	if (result.exitCode !== 0) {
+	if (result.status !== "ok") {
 		const summary = buildChainSummary(context.chainSteps, state.results, context.chainDir, "failed", {
 			index: stepIndex,
 			error: result.error || "Chain failed",

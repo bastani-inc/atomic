@@ -7,7 +7,6 @@ import {
 	INTERACTIVE_ENGINE_ENV_VARS,
 	scrubInteractiveEngineEnv,
 } from "../../packages/coding-agent/src/utils/interactive-engine-env.ts";
-import { buildSubagentSpawnEnv } from "../../packages/subagents/src/runs/shared/spawn-env.ts";
 import { moduleDir, sleep } from "../helpers/runtime.js";
 import { DefaultMainDriver } from "./fixtures/default-main-driver.ts";
 
@@ -43,25 +42,6 @@ test("scrubInteractiveEngineEnv removes every engine key, preserves the rest, an
 	assert.equal(scrubbed.ATOMIC_SESSION_ID, "abc");
 	assert.equal(scrubbed.EMPTY, "", "an unrelated empty value must be preserved verbatim");
 	assert.equal(input.ATOMIC_INTERACTIVE_ENGINE_CHILD, "1", "the caller's object was mutated");
-});
-
-test("subagent spawn env merges layers in order and scrubs after the last merge", () => {
-	const env = buildSubagentSpawnEnv(
-		{ ...ENGINE_ENV, PATH: "/usr/bin", LAYER: "base" },
-		// A caller-supplied environment must not be able to reintroduce a key.
-		{ LAYER: "caller", ATOMIC_INTERACTIVE_ENGINE_API_KEY: "sk-reintroduced" },
-		{ ATOMIC_SUBAGENT_DEPTH: "1", ATOMIC_INTERACTIVE_ENGINE_CHILD: "1" },
-	);
-	for (const name of INTERACTIVE_ENGINE_ENV_VARS) assert.equal(env[name], undefined, `${name} survived the scrub`);
-	assert.equal(env.LAYER, "caller", "later layers must win");
-	assert.equal(env.PATH, "/usr/bin");
-	assert.equal(env.ATOMIC_SUBAGENT_DEPTH, "1");
-});
-
-test("subagent spawn env tolerates omitted layers", () => {
-	const env = buildSubagentSpawnEnv({ ...ENGINE_ENV, KEEP: "yes" }, undefined);
-	assert.equal(env.KEEP, "yes");
-	assert.equal(env.ATOMIC_INTERACTIVE_ENGINE_GUARD_FILE, undefined);
 });
 
 /**

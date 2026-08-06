@@ -64,7 +64,7 @@ function runningSubagentDetails() {
 	};
 	return {
 		mode: "single",
-		results: [{ agent: "worker", task: "fix spinner", exitCode: 0, usage: {}, progress }],
+		results: [{ agent: "worker", task: "fix spinner", status: "continued", usage: {}, progress }],
 		progress: [progress],
 		workflowGraph: {
 			runId: "subagent-run-1",
@@ -117,7 +117,7 @@ function runningMultiSubagentDetails(mode: "parallel" | "chain"): Details {
 		results: [first, second].map((progress) => ({
 			agent: progress.agent,
 			task: progress.task,
-			exitCode: 0,
+			status: "continued" as const,
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 			progress,
 			artifactPaths: {

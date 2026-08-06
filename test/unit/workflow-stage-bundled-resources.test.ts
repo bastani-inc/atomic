@@ -134,6 +134,7 @@ async function createWorkflowStageSession(options: {
 		...(options.noTools === undefined ? {} : { noTools: options.noTools }),
 		excludedTools,
 		orchestrationContext,
+		subagentPolicy: sessionOptions.subagentPolicy,
 		sessionManager: SessionManager.inMemory(options.cwd),
 		model: model!,
 	});
@@ -183,9 +184,6 @@ describe("workflow stage bundled resources", () => {
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		try {
-			process.env.ATOMIC_SUBAGENT_CHILD = "1";
-			process.env.ATOMIC_SUBAGENT_FANOUT_CHILD = "0";
-
 			const { session } = await createWorkflowStageSession({ cwd, agentDir });
 			try {
 				const allToolNames = session.getAllTools().map((tool) => tool.name);
@@ -268,9 +266,6 @@ describe("workflow stage bundled resources", () => {
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		try {
-			process.env.ATOMIC_SUBAGENT_CHILD = "1";
-			process.env.ATOMIC_SUBAGENT_FANOUT_CHILD = "0";
-
 			const { session } = await createWorkflowStageSession({
 				cwd,
 				agentDir,

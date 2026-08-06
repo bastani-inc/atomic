@@ -11,7 +11,7 @@ export interface WorkflowGraphBuildInput {
 	runId: string;
 	mode?: SubagentRunMode;
 	steps: ChainStep[];
-	results?: Array<Pick<SingleResult, "exitCode" | "detached" | "interrupted" | "error">>;
+	results?: Array<Pick<SingleResult, "status" | "detached" | "interrupted" | "error">>;
 	currentFlatIndex?: number;
 	currentStepIndex?: number;
 	stepStatuses?: Array<{ status?: string; error?: string }>;
@@ -51,12 +51,12 @@ function normalizeStatus(status: string | undefined): WorkflowNodeStatus | undef
 }
 
 function resultStatus(
-	result: Pick<SingleResult, "exitCode" | "detached" | "interrupted"> | undefined,
+	result: Pick<SingleResult, "status" | "detached" | "interrupted"> | undefined,
 ): WorkflowNodeStatus | undefined {
 	if (!result) return undefined;
-	if (result.detached) return "detached";
-	if (result.interrupted) return "paused";
-	return result.exitCode === 0 ? "completed" : "failed";
+	if (result.detached || result.status === "continued") return "detached";
+	if (result.interrupted || result.status === "interrupted") return "paused";
+	return result.status === "ok" ? "completed" : "failed";
 }
 
 function nodeStatus(input: WorkflowGraphBuildInput, flatIndex: number): WorkflowNodeStatus {

@@ -11,6 +11,7 @@ import type {
 	OrchestrationContext,
 	SessionStartEvent,
 	ShutdownHandler,
+	SubagentChildPolicy,
 	ToolDefinition,
 } from "./extensions/index.ts";
 import type { CustomMessage } from "./messages.ts";
@@ -155,6 +156,8 @@ export interface AgentSessionConfig {
 	baseToolsOverride?: Record<string, AgentTool>;
 	extensionRunnerRef?: { current?: import("./extensions/index.ts").ExtensionRunner };
 	sessionStartEvent?: SessionStartEvent;
+	subagentPolicy?: SubagentChildPolicy;
+	systemPromptTransform?: (prompt: string) => string;
 	orchestrationContext?: OrchestrationContext;
 }
 

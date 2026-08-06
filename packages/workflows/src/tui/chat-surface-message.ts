@@ -27,6 +27,7 @@
 
 import type { ExtensionAPI } from "../extension/index.js";
 import type { RunDetail } from "../runs/background/status.js";
+import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowInputValues } from "../shared/types.js";
 import { renderDispatchConfirm } from "./dispatch-confirm.js";
@@ -67,6 +68,15 @@ export interface DispatchPayload {
 export interface StatusPayload {
 	kind: "status";
 	runs: readonly RunSnapshot[];
+	/**
+	 * Emit-time indicator status per visible run id, resolved against the
+	 * complete point-in-time run collection (including hidden nested
+	 * descendants). Persisted with the payload because chat entries are
+	 * re-rendered from `details` after a session restore, where the full
+	 * collection is gone; storing only the derived statuses keeps hidden
+	 * run snapshots out of the serialized message.
+	 */
+	indicatorStatuses?: Readonly<Record<string, RunIndicatorStatus>>;
 }
 
 /** Workflow catalogue after `/workflow list`. */
@@ -164,7 +174,12 @@ export function renderChatSurfacePlainText(
 			return [rendered, `run id: ${payload.runId}`, `inputs: ${formatPlainRecord(payload.inputs)}`].join("\n");
 		}
 		case "status": {
-			const rendered = renderStatusList(payload.runs, { width, now, ...themed });
+			const rendered = renderStatusList(payload.runs, {
+				width,
+				now,
+				...themed,
+				indicatorStatuses: payload.indicatorStatuses,
+			});
 			if (payload.runs.length === 0) return rendered;
 			return [
 				rendered,
@@ -288,7 +303,12 @@ function renderPayload(payload: ChatSurfacePayload, theme: GraphTheme, width: nu
 				width,
 			});
 		case "status":
-			return renderStatusList(payload.runs, { theme, width, now });
+			return renderStatusList(payload.runs, {
+				theme,
+				width,
+				now,
+				indicatorStatuses: payload.indicatorStatuses,
+			});
 		case "list":
 			return renderWorkflowList(payload.entries, { theme, width });
 		case "detail":

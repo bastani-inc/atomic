@@ -90,6 +90,7 @@ export async function setModel(this: AgentSession, model: Model<Api>): Promise<v
 	if (!this._modelRuntime.hasConfiguredAuth(model.provider)) {
 		throw new Error(`No API key for ${model.provider}/${model.id}`);
 	}
+	this._clearFallbackModelScope?.();
 
 	const previousModel = this.model;
 	const thinkingLevel = this._getThinkingLevelForModelSwitch();
@@ -142,7 +143,8 @@ export async function _cycleScopedModel(
 	const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
 	const nextModel = next.model;
 
-	// Apply model
+	// An explicit cycle cancels any pending per-turn fallback restoration.
+	this._clearFallbackModelScope?.();
 	this.agent.state.model = nextModel;
 	this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 	this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
@@ -176,6 +178,8 @@ export async function _cycleAvailableModel(
 	const selectedModel = availableModels[nextIndex];
 
 	const thinkingLevel = this._getThinkingLevelForModelSwitch();
+	// An explicit cycle cancels any pending per-turn fallback restoration.
+	this._clearFallbackModelScope?.();
 	this.agent.state.model = selectedModel;
 	this.sessionManager.appendModelChange(selectedModel.provider, selectedModel.id);
 	this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
@@ -211,6 +215,12 @@ export function setThinkingLevel(this: AgentSession, level: ThinkingLevel): void
 	this.agent.state.thinkingLevel = effectiveLevel;
 
 	if (isChanging) {
+		// A reasoning choice is not a model choice, so it must not strand the
+		// session on a fallback candidate: keep the pending restore. Carry the
+		// explicit level into the scope so the restore does not overwrite it.
+		// (A no-op level assignment — a registry refresh re-applying the current
+		// level — changes nothing here.)
+		if (this._fallbackOriginModel !== undefined) this._fallbackOriginThinkingLevel = effectiveLevel;
 		this.sessionManager.appendThinkingLevelChange(effectiveLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
 		if (this.supportsThinking() || effectiveLevel !== "off") {

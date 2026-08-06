@@ -123,7 +123,8 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): s
 		toolSnippets,
 		promptGuidelines,
 	};
-	return buildSystemPrompt(this._baseSystemPromptOptions);
+	const baseSystemPrompt = buildSystemPrompt(this._baseSystemPromptOptions);
+	return this._systemPromptTransform ? this._systemPromptTransform(baseSystemPrompt) : baseSystemPrompt;
 }
 
 export function _refreshBaseSystemPromptFromActiveTools(this: AgentSession): void {

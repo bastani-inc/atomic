@@ -20,6 +20,7 @@
 
 import { keyText } from "@bastani/atomic";
 import { isWorkflowRunResumable, type WorkflowRunResumeCandidate } from "../durable/resume-eligibility.js";
+import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
 import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -31,6 +32,10 @@ import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 const ESCAPE_CODE = 0x1b;
+
+function isQuitRun(run: RunSnapshot): boolean {
+	return run.endedAt === undefined && run.status === "paused" && run.exitReason === "quit";
+}
 const DOUBLE_ESCAPE_SEQUENCE = String.fromCharCode(ESCAPE_CODE, ESCAPE_CODE);
 
 // ---------------------------------------------------------------------------
@@ -146,6 +151,8 @@ export interface SessionPickerRenderOpts {
 	state: SessionPickerState;
 	/** Optional: now override for deterministic tests. */
 	now?: number;
+	/** Point-in-time/live run collection used to attribute hidden child prompts. */
+	allRuns?: readonly RunSnapshot[];
 }
 
 /** Pad a visible string (any embedded ANSI is OK; we measure visibly). */
@@ -257,12 +264,20 @@ function stageProgress(run: RunSnapshot): string {
 	return `${done}/${total} stages`;
 }
 
-function renderRunRow(row: PickerRow, isSelected: boolean, inner: number, theme: GraphTheme, now: number): string[] {
+function renderRunRow(
+	row: PickerRow,
+	isSelected: boolean,
+	inner: number,
+	theme: GraphTheme,
+	now: number,
+	allRuns: readonly RunSnapshot[],
+): string[] {
 	const border = hexToAnsi(theme.border);
 	const panelBg = hexBg(theme.bg);
 	const run = row.run;
-	const icon = statusIcon(run.status);
-	const iconColor = hexToAnsi(statusColor(run.status, theme));
+	const indicatorStatus = isQuitRun(run) ? run.status : runIndicatorStatus(run, allRuns);
+	const icon = statusIcon(indicatorStatus);
+	const iconColor = hexToAnsi(statusColor(indicatorStatus, theme));
 	const dim = hexToAnsi(theme.dim);
 	const text = hexToAnsi(theme.text);
 	const muted = hexToAnsi(theme.textMuted);
@@ -349,6 +364,7 @@ export function renderSessionPicker(opts: SessionPickerRenderOpts): string[] {
 	const visible = rows.slice(Math.max(0, start), Math.max(0, start) + VIEWPORT);
 
 	let prevBucket: PickerRow["bucket"] | null = null;
+	const allRuns = opts.allRuns ?? rows.map(({ run }) => run);
 	for (let i = 0; i < visible.length; i++) {
 		const row = visible[i]!;
 		if (row.bucket !== prevBucket) {
@@ -356,7 +372,7 @@ export function renderSessionPicker(opts: SessionPickerRenderOpts): string[] {
 			prevBucket = row.bucket;
 		}
 		const absIndex = Math.max(0, start) + i;
-		lines.push(...renderRunRow(row, absIndex === sel, inner, theme, now));
+		lines.push(...renderRunRow(row, absIndex === sel, inner, theme, now, allRuns));
 	}
 	lines.push(renderBlankRow(inner, theme));
 	lines.push(renderBottomBorder(width, theme));

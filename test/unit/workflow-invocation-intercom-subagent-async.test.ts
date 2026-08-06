@@ -1,28 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
-import { executeAsyncChain } from "../../packages/subagents/src/runs/background/async-execution-chain.js";
-import { executeAsyncSingle } from "../../packages/subagents/src/runs/background/async-execution-single.js";
-import { runSingleStep } from "../../packages/subagents/src/runs/background/subagent-runner-step.js";
+import { runSync as runInProcessSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { successEvent, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
-
-interface CapturedRunnerStep {
-	intercomGroup?: string;
-	parallel?: CapturedRunnerStep[];
-}
-
-interface CapturedRunnerConfig {
-	steps: CapturedRunnerStep[];
-}
-
-function capturedGroups(config: CapturedRunnerConfig): Array<string | undefined> {
-	return config.steps.flatMap((step) => step.parallel?.map((child) => child.intercomGroup) ?? [step.intercomGroup]);
-}
+import { executeAsyncSingle } from "../../packages/subagents/src/runs/inprocess/background-single.js";
 
 function makeState(): ExecutorDeps["state"] {
 	return {
@@ -76,12 +61,19 @@ function stageContext(cwd: string): ExtensionContext {
 	} satisfies ExtensionContext;
 }
 
-test("async single, parallel, and chain children inherit the workflow group with explicit overrides", async () => {
+test("async single, parallel, and chain children inherit workflow groups through in-process execution", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-workflow-group-async-"));
-	const configs: CapturedRunnerConfig[] = [];
-	const state = makeState();
-	const sessionFile = join(root, "child.jsonl");
-	writeFileSync(sessionFile, "{}\n");
+	const groups: Array<string | undefined> = [];
+	const agent = {
+		name: "worker",
+		description: "test worker",
+		systemPromptMode: "replace" as const,
+		inheritProjectContext: false,
+		inheritSkills: false,
+		systemPrompt: "work",
+		source: "project" as const,
+		filePath: join(root, "worker.md"),
+	};
 	const pi: Pick<ExecutorDeps["pi"], "events" | "getSessionName"> = {
 		events: { on: () => () => {}, emit: () => {} },
 		getSessionName: () => "workflow-stage",
@@ -89,69 +81,55 @@ test("async single, parallel, and chain children inherit the workflow group with
 	try {
 		const executor = createSubagentExecutor({
 			pi: pi as ExecutorDeps["pi"],
-			state,
+			state: makeState(),
 			config: { maxSubagentDepth: 2, parallel: { concurrency: 2, maxTasks: 10 } },
 			asyncByDefault: false,
 			tempArtifactsDir: join(root, "artifacts"),
 			getSubagentSessionRoot: () => join(root, "sessions"),
-			expandTilde: (path) => path,
-			discoverAgents: () => ({
-				agents: [
-					{
-						name: "worker",
-						description: "test worker",
-						systemPromptMode: "replace",
-						inheritProjectContext: false,
-						inheritSkills: false,
-						systemPrompt: "work",
-						source: "project",
-						filePath: join(root, "worker.md"),
-					},
-				],
-			}),
+			expandTilde: (value) => value,
+			discoverAgents: () => ({ agents: [agent] }),
 			runtime: {
-				runSync: async (_cwd, _agents, agent, task) => ({
-					agent,
-					task,
-					exitCode: 0,
-					messages: [],
-					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-					finalOutput: "done",
-					sessionFile,
-				}),
+				runSync: async (_cwd, _agents, agentName, task, options) => {
+					groups.push(options.intercomGroup);
+					return {
+						agent: agentName,
+						task,
+						status: "ok",
+						messages: [],
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+						finalOutput: "done",
+					};
+				},
 				isAsyncAvailable: () => true,
-				executeAsyncSingle: (id, params) =>
-					executeAsyncSingle(id, {
-						...params,
-						spawnRunner(config) {
-							configs.push(config as CapturedRunnerConfig);
-							return { pid: 1234 };
-						},
-					}),
-				executeAsyncChain: (id, params) =>
-					executeAsyncChain(id, {
-						...params,
-						spawnRunner(config) {
-							configs.push(config as CapturedRunnerConfig);
-							return { pid: 1234 };
-						},
-					}),
+				executeAsyncSingle: (id, params) => {
+					groups.push(
+						params.group === true ? params.ctx.intercomGroup : (params.group ?? params.ctx.intercomGroup),
+					);
+					return executeAsyncSingle(id, { ...params, testSession: { output: "done" } });
+				},
 			},
 		});
 		const context = stageContext(root);
-		for (const params of [
+		const single = await executor.execute(
+			"async-single",
 			{ agent: "worker", task: "inherit", async: true },
+			new AbortController().signal,
+			undefined,
+			context,
+		);
+		assert.equal(single.isError, undefined);
+		assert.equal(single.details.results[0]?.status, "continued");
+		assert.ok(single.details.results[0]?.path);
+
+		const explicitSingle = await executor.execute(
+			"async-single-explicit",
 			{ agent: "worker", task: "default", async: true, group: "default" },
-		] as const) {
-			const result = await executor.execute(
-				"async-single",
-				params,
-				new AbortController().signal,
-				undefined,
-				context,
-			);
-			assert.equal(result.isError, undefined);
-		}
+			new AbortController().signal,
+			undefined,
+			context,
+		);
+		assert.equal(explicitSingle.isError, undefined);
+
 		const parallel = await executor.execute(
 			"async-parallel",
 			{
@@ -167,6 +145,7 @@ test("async single, parallel, and chain children inherit the workflow group with
 			context,
 		);
 		assert.equal(parallel.isError, undefined);
+		assert.equal(parallel.details.results[0]?.status, "continued");
 
 		const chain = await executor.execute(
 			"async-chain",
@@ -183,93 +162,44 @@ test("async single, parallel, and chain children inherit the workflow group with
 			context,
 		);
 		assert.equal(chain.isError, undefined);
-
-		const foreground = await executor.execute(
-			"foreground-source",
-			{
-				agent: "worker",
-				task: "persist source",
-			},
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-		assert.equal(foreground.isError, undefined);
-		assert.ok(foreground.details.runId);
-		for (const group of [undefined, "default"] as const) {
-			const revived = await executor.execute(
-				"revive",
-				{
-					action: "resume",
-					id: foreground.details.runId,
-					message: "continue",
-					...(group ? { group } : {}),
-				},
-				new AbortController().signal,
-				undefined,
-				context,
-			);
-			assert.equal(revived.isError, undefined);
-		}
+		assert.equal(chain.details.results[0]?.status, "continued");
+		await new Promise<void>((resolve) => setImmediate(resolve));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 
-	assert.deepEqual(configs.map(capturedGroups), [
-		["workflow:root"],
-		["default"],
-		["parallel-set", "default"],
-		["chain-top", "default"],
-		["workflow:root"],
-		["default"],
-	]);
+	assert.ok(groups.includes("workflow:root"));
+	assert.ok(groups.includes("default"));
+	assert.ok(groups.includes("parallel-set"));
+	assert.ok(groups.includes("chain-top"));
 });
 
-test("the async runner clears a serialized group when the child lacks Intercom access", async () => {
+test("in-process child resolves intercom group through typed admission without an env bridge", async () => {
 	const previousGroup = process.env.ATOMIC_INTERCOM_GROUP;
 	process.env.ATOMIC_INTERCOM_GROUP = "ambient-group";
+	const dir = mkdtempSync(join(tmpdir(), "atomic-workflow-group-inprocess-"));
 	try {
-		await withFakeCli(
-			`
-      import { writeFileSync } from "node:fs";
-      writeFileSync(new URL("./intercom-group.txt", import.meta.url), process.env.ATOMIC_INTERCOM_GROUP ?? "missing");
-      console.log(${JSON.stringify(successEvent("done"))});
-    `,
-			async (dir) => {
-				const step = {
-					agent: "worker",
-					task: "work",
-					intercomGroup: "workflow:root",
-					inheritProjectContext: false,
-					inheritSkills: false,
-				};
-				const context = {
-					previousOutput: "",
-					placeholder: "{previous}",
-					cwd: dir,
-					sessionEnabled: false,
-					id: "async-group-runner",
-					flatIndex: 0,
-					flatStepCount: 1,
-					outputFile: join(dir, "output.txt"),
-				};
-				const grouped = await runSingleStep(step, {
-					...context,
-					childIntercomTarget: "async-child",
-				});
-				assert.equal(grouped.exitCode, 0);
-				assert.equal(readFileSync(join(dir, "intercom-group.txt"), "utf8"), "workflow:root");
-
-				const ungrouped = await runSingleStep(step, {
-					...context,
-					outputFile: join(dir, "ungrouped-output.txt"),
-				});
-				assert.equal(ungrouped.exitCode, 0);
-				assert.equal(readFileSync(join(dir, "intercom-group.txt"), "utf8"), "");
-			},
-			{ idleMs: 4_000, wallMs: 8_000 },
-		);
+		const agent = {
+			name: "worker",
+			description: "test worker",
+			systemPromptMode: "replace" as const,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			systemPrompt: "work",
+			source: "project" as const,
+			filePath: join(dir, "worker.md"),
+		};
+		const result = await runInProcessSync(dir, [agent], "worker", "work", {
+			cwd: dir,
+			runId: "inprocess-group",
+			intercomGroup: "workflow:root",
+			testSession: { output: "done" },
+		});
+		assert.equal(result.status, "ok");
+		assert.equal(result.finalOutput, "done");
+		assert.equal(process.env.ATOMIC_INTERCOM_GROUP, "ambient-group");
 	} finally {
+		rmSync(dir, { recursive: true, force: true });
 		if (previousGroup === undefined) delete process.env.ATOMIC_INTERCOM_GROUP;
 		else process.env.ATOMIC_INTERCOM_GROUP = previousGroup;
 	}

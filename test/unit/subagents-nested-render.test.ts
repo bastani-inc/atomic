@@ -4,7 +4,7 @@ import {
 	countNestedRuns,
 	formatNestedAggregate,
 	formatNestedRunStatusLines,
-} from "../../packages/subagents/src/runs/shared/nested-render.js";
+} from "../../packages/subagents/src/runs/inprocess/runtime-support/nested-rendering.js";
 import type { NestedRunSummary } from "../../packages/subagents/src/shared/types.js";
 
 function run(id: string, state: NestedRunSummary["state"], children: NestedRunSummary[] = []): NestedRunSummary {

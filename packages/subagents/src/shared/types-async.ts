@@ -153,7 +153,6 @@ export interface AsyncStatus {
 		startedAt?: number;
 		endedAt?: number;
 		durationMs?: number;
-		exitCode?: number | null;
 		tokens?: TokenUsage;
 		skills?: string[];
 		model?: string;

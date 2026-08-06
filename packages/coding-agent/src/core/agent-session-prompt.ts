@@ -118,6 +118,9 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			return;
 		}
 
+		// A fallback model is scoped to the failing turn. Restore the user-selected
+		// model before validating credentials for the next idle prompt.
+		if (typeof this._restoreFallbackModel === "function") await this._restoreFallbackModel();
 		// Flush any pending bash messages before the new prompt
 		this._flushPendingBashMessages();
 

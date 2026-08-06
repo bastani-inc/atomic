@@ -1,5 +1,4 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
@@ -7,9 +6,35 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { isCodexTokenInvalidationError } from "./codex-errors.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { fallbackKey, resolveFallbackModel as resolveConfiguredFallbackModel } from "./fallback-models.ts";
+import {
+	isRetryableModelFailure,
+	isRetryableSameModelFailure,
+	isSafetyRefusalFailure,
+	normalizeModelFailureSignal,
+} from "./model-fallback-failures.ts";
+import { nextRetryDecision } from "./retry-policy.ts";
 
 function modelLabel(model: Model<Api> | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "unknown model";
+}
+
+function containsCodexTokenInvalidation(provider: string, value: unknown, seen = new Set<unknown>()): boolean {
+	if (value === null || value === undefined || seen.has(value)) return false;
+	if (typeof value === "string") return isCodexTokenInvalidationError(provider, value);
+	if (typeof value !== "object") return false;
+	seen.add(value);
+	const record = value as Record<string, unknown>;
+	for (const field of [record.errorMessage, record.message, record.statusText]) {
+		if (typeof field === "string" && isCodexTokenInvalidationError(provider, field)) return true;
+	}
+	for (const nested of [
+		record.error,
+		record.cause,
+		...(Array.isArray(record.diagnostics) ? record.diagnostics : []),
+	]) {
+		if (containsCodexTokenInvalidation(provider, nested, seen)) return true;
+	}
+	return false;
 }
 
 function resolveFallbackModel(
@@ -23,101 +48,41 @@ function resolveFallbackModel(
 	);
 }
 
-function hasProviderTransportDiagnostic(
-	value: unknown,
-	seen = new Set<unknown>(),
-	includeMessageFields = false,
-): boolean {
-	if (value === null || value === undefined || seen.has(value)) return false;
-	if (typeof value !== "object") {
-		return /provider_transport_failure|websocket.*error|sse.*404/i.test(String(value));
-	}
-	seen.add(value);
-	const record = value as Record<string, unknown>;
-	const fields = includeMessageFields
-		? [record.type, record.code, record.name, record.message, record.errorMessage, record.status, record.statusCode]
-		: [record.type, record.code, record.name, record.status, record.statusCode];
-	for (const field of fields) {
-		if (typeof field === "string" || typeof field === "number") {
-			if (/provider_transport_failure|websocket.*error|sse.*404|\b404\b/i.test(String(field))) return true;
-		}
-	}
-	for (const nested of [
-		record.error,
-		record.cause,
-		...(Array.isArray(record.diagnostics) ? record.diagnostics : []),
-	]) {
-		if (hasProviderTransportDiagnostic(nested, seen, true)) return true;
-	}
-	return false;
+/** Whether an assistant error may advance the configured fallback chain. */
+export function _isFallbackableError(this: AgentSession, message: AssistantMessage): boolean {
+	if (message.stopReason !== "error") return false;
+	const contextWindow = this.model?.contextWindow ?? 0;
+	if (isContextOverflow(message, contextWindow)) return false;
+	const provider = message.provider || this.model?.provider;
+	if (provider && containsCodexTokenInvalidation(provider, message)) return true;
+	const signal = normalizeModelFailureSignal(message);
+	if (signal.kind === "cancelled" || signal.kind === "task_failure") return false;
+	return isRetryableModelFailure(message);
 }
 
-function hasProviderModelUnavailableDiagnostic(
-	value: unknown,
-	seen = new Set<unknown>(),
-	includeMessageFields = false,
-): boolean {
-	if (value === null || value === undefined || seen.has(value)) return false;
-	if (typeof value !== "object") return false;
-	seen.add(value);
-	const record = value as Record<string, unknown>;
-	const fields = includeMessageFields
-		? [record.type, record.code, record.name, record.message, record.errorMessage]
-		: [record.type, record.code, record.name, record.errorMessage];
-	for (const field of fields) {
-		if (
-			typeof field === "string" &&
-			/model(?:[_\s-].*)?(?:not[_\s-]?found|unavailable|unknown|disabled)|model[_-]?not[_-]?found/i.test(field)
-		)
-			return true;
-	}
-	for (const nested of [
-		record.error,
-		record.cause,
-		...(Array.isArray(record.diagnostics) ? record.diagnostics : []),
-	]) {
-		if (hasProviderModelUnavailableDiagnostic(nested, seen, true)) return true;
-	}
-	return false;
-}
+/**
+ * Whether the current model should be requested again.
+ *
+ * Fallback eligibility is broader than same-model retry eligibility. Auth and
+ * request-incompatible failures should spend a fallback candidate, but cannot
+ * be repaired by sending the same request again. Codex token invalidation is
+ * also terminal for the current model while remaining fallbackable.
+ */
 export function _isRetryableError(this: AgentSession, message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;
 
-	// Context overflow is handled by compaction, not retry
+	// Context overflow is handled by compaction, not retry.
 	const contextWindow = this.model?.contextWindow ?? 0;
 	if (isContextOverflow(message, contextWindow)) return false;
 
-	// A definitive Codex authentication rejection is terminal. It takes
-	// precedence over transport diagnostics recorded during WebSocket-to-SSE
-	// fallback so those earlier diagnostics cannot trigger a pointless retry.
 	const provider = message.provider || this.model?.provider;
-	if (provider && isCodexTokenInvalidationError(provider, message.errorMessage)) return false;
+	if (provider && containsCodexTokenInvalidation(provider, message)) return false;
 
-	if (hasProviderTransportDiagnostic(message) || hasProviderModelUnavailableDiagnostic(message)) return true;
-	// Keep Atomic-specific terminal exclusions above, then inherit pi-ai's
-	// transport classifier (including getaddrinfo, ENOTFOUND, and EAI_AGAIN).
-	if (isRetryableAssistantError(message)) return true;
-	if (!message.errorMessage) return false;
-
-	const err = message.errorMessage;
-
-	// Safety triggers surface through structured API signals that pi-ai maps to
-	// stopReason "error":
-	// - Anthropic `refusal` stops become pi-ai's canned "The model refused to
-	//   complete the request" error message;
-	// - OpenAI-style APIs (and github-copilot CAPI, which also maps spurious
-	//   Gemini RECITATION/safety blocks this way) surface
-	//   `finish_reason: content_filter`.
-	// Spurious safety triggers are common in agentic settings, so these are
-	// re-requested like transient failures, bounded by maxRetries (issue #1608).
-	if (/refused to complete the request|finish.?reason:?\s*content.?filter/i.test(err)) {
-		return true;
-	}
-
-	// Match: overloaded_error, provider returned error, rate limit, quota/usage-limit exhaustion (e.g. "Codex error: The usage limit has been reached" — retryable so configured fallbackModels can advance to a provider/model with remaining headroom), 429, 500, 502, 503, 504, service unavailable, network/connection errors (including connection lost), WebSocket transport closes/errors, fetch failed, premature stream endings, HTTP/2 closed before response, terminated, retry delay exceeded, and a bare/transient provider finish_reason "error" (e.g. github-copilot Gemini's CAPI mapping of MALFORMED_FUNCTION_CALL/OTHER/UNEXPECTED_TOOL_CALL). These are provider-agnostic transient failures.
-	return /overloaded|provider.?returned.?error|rate.?limit|usage.?limit|quota|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|finish.?reason:?\s*error/i.test(
-		err,
-	);
+	// Safety/refusal errors remain bounded same-model retries, but do not spend
+	// another provider candidate. The refusal grammar lives in the shared
+	// classifier so this decision cannot drift from workflow fallback handling.
+	if (isSafetyRefusalFailure(message)) return true;
+	return isRetryableSameModelFailure(message);
 }
 
 /**
@@ -216,30 +181,169 @@ export function _isSafetyRefusal(this: AgentSession, message: AssistantMessage):
 	return (message.usage?.output ?? 0) === 0;
 }
 
-/**
- * Handle retryable errors with exponential backoff.
- * @returns true if retry was initiated, false if max retries exceeded or disabled
- */
+function applyFallbackThinkingLevel(this: AgentSession, level: ThinkingLevel): boolean {
+	const previousLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
+	this.agent.state.thinkingLevel = level;
+	if (previousLevel === level) return false;
+	this.sessionManager.appendThinkingLevelChange(level);
+	this._emit({ type: "thinking_level_changed", level });
+	void this._extensionRunner?.emit({
+		type: "thinking_level_select",
+		level,
+		previousLevel,
+	});
+	return true;
+}
 
+/** Capture the user-selected model before the first fallback in a turn. */
+export function _beginFallbackModelScope(this: AgentSession): void {
+	const currentModel = this.agent.state.model ?? this.model;
+	if (this._fallbackOriginModel !== undefined || currentModel === undefined) return;
+	this._fallbackScopeGeneration = (this._fallbackScopeGeneration ?? 0) + 1;
+	this._fallbackOriginGeneration = this._fallbackScopeGeneration;
+	this._fallbackOriginModel = currentModel;
+	this._fallbackOriginThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
+	this._fallbackRestoreError = undefined;
+}
+
+function clearFallbackModelScopeState(this: AgentSession): void {
+	this._fallbackOriginGeneration = undefined;
+	this._fallbackOriginModel = undefined;
+	this._fallbackOriginThinkingLevel = undefined;
+	this._fallbackRestoreError = undefined;
+	this._fallbackAttemptedKeys.clear();
+	this._fallbackBlockedModels.length = 0;
+}
+
+function finishFallbackModelScope(
+	this: AgentSession,
+	options: {
+		readonly success: boolean;
+		readonly from?: string;
+		readonly to?: string;
+		readonly finalError?: string;
+	},
+): boolean {
+	if (this._fallbackOriginModel === undefined || this._fallbackOriginGeneration === undefined) return false;
+	this._fallbackScopeGeneration = (this._fallbackScopeGeneration ?? 0) + 1;
+	clearFallbackModelScopeState.call(this);
+	this._emit({
+		type: "model_fallback_end",
+		success: options.success,
+		...(options.from === undefined ? {} : { from: options.from }),
+		...(options.to === undefined ? {} : { to: options.to }),
+		...(options.finalError === undefined ? {} : { finalError: options.finalError }),
+	});
+	return true;
+}
+
+/** Cancel a pending fallback restore after an explicit model/effort choice. */
+export function _clearFallbackModelScope(this: AgentSession): void {
+	const currentModel = this.agent.state.model ?? this.model;
+	const finalError = this._fallbackRestoreError;
+	if (this._fallbackOriginModel !== undefined && this._fallbackOriginGeneration !== undefined) {
+		finishFallbackModelScope.call(this, {
+			success: finalError === undefined,
+			from: modelLabel(currentModel),
+			...(finalError === undefined ? {} : { finalError }),
+		});
+		return;
+	}
+	this._fallbackScopeGeneration = (this._fallbackScopeGeneration ?? 0) + 1;
+	clearFallbackModelScopeState.call(this);
+}
+
+/** Restore the model that was active before this turn spent a fallback. */
+export async function _restoreFallbackModel(this: AgentSession): Promise<boolean> {
+	const originModel = this._fallbackOriginModel;
+	const originGeneration = this._fallbackOriginGeneration;
+	const finalError = this._fallbackRestoreError;
+	if (originModel === undefined || originGeneration === undefined) {
+		clearFallbackModelScopeState.call(this);
+		return false;
+	}
+
+	const previousModel = this.agent.state.model ?? this.model;
+	const previousThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
+	const originThinkingLevel = clampThinkingLevel(
+		originModel,
+		this._fallbackOriginThinkingLevel ?? DEFAULT_THINKING_LEVEL,
+	) as ThinkingLevel;
+	const modelChanged = !modelsAreEqual(previousModel, originModel);
+	const thinkingChanged = previousThinkingLevel !== originThinkingLevel;
+	if (!modelChanged && !thinkingChanged) {
+		return finishFallbackModelScope.call(this, {
+			success: finalError === undefined,
+			from: modelLabel(previousModel),
+			to: modelLabel(originModel),
+			...(finalError === undefined ? {} : { finalError }),
+		});
+	}
+
+	const stillOwnsRestore = (): boolean =>
+		this._fallbackOriginGeneration === originGeneration &&
+		this._fallbackOriginModel === originModel &&
+		modelsAreEqual(this.agent.state.model ?? this.model, originModel) &&
+		(this.agent.state.thinkingLevel ?? this.thinkingLevel) === originThinkingLevel;
+
+	this.agent.state.model = originModel;
+	if (modelChanged) this.sessionManager.appendModelChange(originModel.provider, originModel.id);
+	applyFallbackThinkingLevel.call(this, originThinkingLevel);
+	this._refreshBaseSystemPromptFromActiveTools();
+	this._emitModelChanged(originModel, previousModel, "restore");
+	if (!stillOwnsRestore()) return false;
+	await this._emitModelSelect(originModel, previousModel, "restore");
+	if (!stillOwnsRestore()) return false;
+
+	return finishFallbackModelScope.call(this, {
+		success: finalError === undefined,
+		from: modelLabel(previousModel),
+		to: modelLabel(originModel),
+		...(finalError === undefined ? {} : { finalError }),
+	});
+}
+
+/** Handle retryable errors with exponential backoff. */
 export async function _trySwitchToFallbackModel(this: AgentSession, message: AssistantMessage): Promise<boolean> {
-	if (this._fallbackModels.length === 0 || !this.model) return false;
+	const currentModel = this.agent.state.model ?? this.model;
+	if (this._fallbackModels.length === 0 || currentModel === undefined) return false;
 
-	this._fallbackAttemptedKeys.add(fallbackKey(this.model, this.thinkingLevel));
-	const fromModel = this.model;
+	// A failure the chain may spend a candidate on, but that requesting the same
+	// model again cannot repair — a rejected credential, an unavailable model, a
+	// request this model cannot serve — condemns that model for the rest of the
+	// turn. Reasoning level does not change any of those answers, so every
+	// reasoning variant of it is blocked too. Transient rate-limit and transport
+	// failures stay same-model retryable and keep their reasoning variants.
+	if (isRetryableModelFailure(message) && !isRetryableSameModelFailure(message)) {
+		if (!this._fallbackBlockedModels.some((blocked) => modelsAreEqual(blocked, currentModel))) {
+			this._fallbackBlockedModels.push(currentModel);
+		}
+	}
+
+	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
+	const fromModel = currentModel;
 	for (const rawCandidate of this._fallbackModels) {
 		const candidate = resolveFallbackModel.call(this, rawCandidate);
 		if (!candidate) continue;
-		const key = fallbackKey(candidate.model, candidate.thinkingLevel);
-		if (this._fallbackAttemptedKeys.has(key)) continue;
 		const nextModel = candidate.model;
 		const nextLevel = clampThinkingLevel(
 			nextModel,
 			candidate.thinkingLevel ??
 				this.settingsManager.getDefaultThinkingLevel() ??
-				this.thinkingLevel ??
+				currentThinkingLevel ??
 				DEFAULT_THINKING_LEVEL,
 		) as ThinkingLevel;
-		if (modelsAreEqual(candidate.model, fromModel) && nextLevel === this.thinkingLevel) continue;
+		const key = fallbackKey(nextModel, nextLevel);
+		if (this._fallbackAttemptedKeys.has(key)) continue;
+		if (modelsAreEqual(nextModel, fromModel) && nextLevel === currentThinkingLevel) continue;
+		// Skipped before any lifecycle starts: a blocked variant emits no fallback
+		// event and opens no scope.
+		if (this._fallbackBlockedModels.some((blocked) => modelsAreEqual(blocked, nextModel))) continue;
+
+		// Do not create a fallback lifecycle until a candidate can actually be
+		// selected. An exhausted or unresolvable chain has no start to close.
+		_beginFallbackModelScope.call(this);
+		this._fallbackAttemptedKeys.add(fallbackKey(currentModel, currentThinkingLevel));
 		if (this._retryAttempt > 0) {
 			this._emit({
 				type: "auto_retry_end",
@@ -262,51 +366,65 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		}
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		this.agent.state.thinkingLevel = nextLevel;
-		this.sessionManager.appendThinkingLevelChange(nextLevel);
+		applyFallbackThinkingLevel.call(this, nextLevel);
 		this._refreshBaseSystemPromptFromActiveTools();
 		this._emitModelChanged(nextModel, fromModel, "fallback");
 		await this._emitModelSelect(nextModel, fromModel, "fallback");
 		this._retryAttempt = 0;
 
+		const fallbackGeneration = this._fallbackOriginGeneration;
 		setTimeout(() => {
-			this.agent.continue().then(
-				() => {
-					// A resolved continuation may still have produced an assistant
-					// error that will be classified by agent_end and may advance to
-					// the next fallback. Do not emit a successful fallback end here;
-					// agent_end/turn_end clear UI state for successful turns, while
-					// fallback exhaustion emits the failure end event.
-				},
-				(error: unknown) => {
-					const finalError = error instanceof Error ? error.message : String(error);
-					this._emit({
-						type: "model_fallback_end",
-						success: false,
-						from: modelLabel(fromModel),
-						to: modelLabel(nextModel),
-						finalError,
-					});
-					this._retryAttempt = 0;
-					this._resolveRetry();
-				},
-			);
+			void this.agent.continue().catch(async (error: unknown) => {
+				const finalError = error instanceof Error ? error.message : String(error);
+				if (this._fallbackOriginGeneration === fallbackGeneration) {
+					this._fallbackRestoreError = finalError;
+					try {
+						await this._restoreFallbackModel();
+					} catch {
+						if (this._fallbackOriginGeneration === fallbackGeneration) {
+							finishFallbackModelScope.call(this, {
+								success: false,
+								from: modelLabel(this.agent.state.model ?? this.model),
+								finalError,
+							});
+						}
+					}
+				}
+				this._retryAttempt = 0;
+				this._resolveRetry();
+			});
 		}, 0);
 		return true;
 	}
-	this._emit({
-		type: "model_fallback_end",
-		success: false,
-		from: modelLabel(fromModel),
-		finalError: message.errorMessage,
-	});
+	if (this._fallbackOriginModel !== undefined) {
+		this._fallbackRestoreError = message.errorMessage || "Model fallback exhausted";
+	}
 	return false;
 }
 
 export async function _handleRetryableError(this: AgentSession, message: AssistantMessage): Promise<boolean> {
 	const settings = this.settingsManager.getRetrySettings();
-	if (!settings.enabled) {
-		return this._trySwitchToFallbackModel(message);
+	const retryableError = this._isRetryableError?.(message) ?? true;
+	const fallbackableError = this._isFallbackableError?.(message) ?? retryableError;
+	const emptyCompletion = this._isEmptyCompletion?.(message) ?? false;
+	const safetyRefusal = this._isSafetyRefusal?.(message) ?? false;
+	const canRetrySameModel = retryableError || emptyCompletion || safetyRefusal;
+	// Empty completions have historically been allowed to spend a fallback after
+	// same-model retries. Provider safety refusals stay on the same model.
+	const canAdvanceToFallback = fallbackableError || emptyCompletion;
+	if (!settings.enabled || !canRetrySameModel) {
+		if (canAdvanceToFallback && (await this._trySwitchToFallbackModel(message))) return true;
+		if (this._retryAttempt > 0) {
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt: this._retryAttempt,
+				finalError: message.errorMessage,
+			});
+		}
+		this._retryAttempt = 0;
+		this._resolveRetry();
+		return false;
 	}
 
 	// Retry promise is created synchronously in _handleAgentEvent for agent_end.
@@ -317,10 +435,14 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 		});
 	}
 
-	this._retryAttempt++;
-
-	if (this._retryAttempt > settings.maxRetries) {
-		if (await this._trySwitchToFallbackModel(message)) {
+	// One shared policy decides the bounded same-model budget and its backoff, so
+	// main chat and workflow stages cannot drift apart on the same settings. The
+	// counter still advances on the exhausting attempt, so `_trySwitchToFallbackModel`
+	// closes the retry lifecycle before the fallback lifecycle opens.
+	const decision = nextRetryDecision(settings, this._retryAttempt, canRetrySameModel);
+	this._retryAttempt += 1;
+	if (decision === undefined) {
+		if (canAdvanceToFallback && (await this._trySwitchToFallbackModel(message))) {
 			return true;
 		}
 		// Max retries exceeded, emit final failure and reset
@@ -335,7 +457,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 		return false;
 	}
 
-	const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+	const delayMs = decision.delayMs;
 
 	this._emit({
 		type: "auto_retry_start",
@@ -426,10 +548,14 @@ export function setAutoRetryEnabled(this: AgentSession, enabled: boolean): void 
 
 export const agentSessionRetryMethods = {
 	_isRetryableError,
+	_isFallbackableError,
 	_isEmptyCompletion,
 	_isSafetyRefusal,
 	_handleRetryableError,
 	_trySwitchToFallbackModel,
+	_beginFallbackModelScope,
+	_clearFallbackModelScope,
+	_restoreFallbackModel,
 	abortRetry,
 	waitForRetry,
 	setAutoRetryEnabled,

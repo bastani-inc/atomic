@@ -1,5 +1,6 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { inspectRun } from "../runs/background/status.js";
+import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
@@ -7,7 +8,7 @@ import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
-import { buildWorkflowStatusListing } from "./workflow-status-summary.js";
+import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 import { isWorkflowStageToolContext, resolveRunId, topLevelExpandedSnapshots } from "./workflow-targets.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
@@ -94,12 +95,14 @@ export function makeExecuteWorkflowTool(
 						: { action: "statusDetail", runId: target, error: `run not found: ${target}` };
 				}
 				const listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), args.statusFilter ?? "all");
-				return {
-					action: "status",
+				const result = {
+					action: "status" as const,
 					filter: listing.filter,
 					runs: listing.runs,
 					snapshots: listing.snapshots,
 				};
+				setWorkflowStatusRenderRuns(result, store.graphSnapshot().runs);
+				return result;
 			}
 			case "stages":
 				return workflowStagesResult(args);

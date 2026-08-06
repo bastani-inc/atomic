@@ -2,6 +2,7 @@
  * Result, progress, and core subagent public types.
  */
 
+import type { SessionStats } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-async.ts";
@@ -271,15 +272,21 @@ export interface ModelAttempt {
 	model: string;
 	reasoningLevel?: string;
 	success: boolean;
-	exitCode?: number | null;
 	error?: string;
 	usage?: Usage;
 }
 
+export type SubagentAttemptStatus = "ok" | "error" | "skipped" | "interrupted" | "continued";
+
 export interface SingleResult {
 	agent: string;
 	task: string;
-	exitCode: number;
+	/** Typed terminal outcome; this is the only result discriminator. */
+	status: SubagentAttemptStatus;
+	cause?: string;
+	stats?: SessionStats;
+	path?: string;
+	envelope?: string;
 	detached?: boolean;
 	detachedReason?: string;
 	interrupted?: boolean;

@@ -15,6 +15,7 @@ import { registerSubagentRelay } from "./subagent-relay.js";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./foreground-detach-handoff.js";
 import { routeIncomingReply } from "./reply-routing.js";
 import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
+import { readSubagentMessageSource } from "./source-ownership.js";
 import { buildIncomingCustomMessage, createIncomingMessageSender } from "./incoming-message-delivery.js";
 import { InboundIdleQueue } from "./inbound-idle-queue.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
@@ -46,8 +47,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   };
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
-  const childOrchestratorMetadata = readChildOrchestratorMetadata();
+  const legacyChildOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
+  function currentChildOrchestratorMetadata() {
+    return runtimeContext?.subagentPolicy !== undefined
+      ? readChildOrchestratorMetadata(runtimeContext.subagentPolicy)
+      : legacyChildOrchestratorMetadata;
+  }
   let currentSessionId: string | null = null;
   let currentModel = "unknown";
   let sessionStartedAt: number | null = null;
@@ -389,8 +395,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       attachClientHandlers(nextClient);
       try {
         await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
+        const childMetadata = currentChildOrchestratorMetadata();
         await nextClient.connect(
-          buildRegistration(), childOrchestratorMetadata?.supervisor, supervisorAuthorizations.ownerToken,
+          buildRegistration(),
+          childMetadata?.supervisor,
+          supervisorAuthorizations.ownerToken,
+          readSubagentMessageSource(runtimeContext?.subagentPolicy),
         );
         await supervisorAuthorizations.restore(nextClient);
         if (!getLiveContext(contextAtStart, generationAtStart)) {
@@ -470,7 +480,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
 
   registerContactSupervisorTool(pi, {
-    childOrchestratorMetadata,
+    childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
     resolveSessionTarget: resolveSessionTargetId,

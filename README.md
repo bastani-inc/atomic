@@ -97,10 +97,13 @@ Atomic does not require package install scripts. Add `--ignore-scripts` to the i
 
 ### Authenticate and run
 
-Atomic supports subscription login for Codex, Claude, GitHub Copilot, xAI, and Radius, as well as API-key providers such as OpenRouter:
-
+Start Atomic:
 ```bash
 atomic
+```
+Login. Atomic supports subscription login for Codex, Claude, GitHub Copilot, xAI, as well as API-key providers such as OpenRouter:
+
+```bash
 /login   # then select your provider
 ```
 

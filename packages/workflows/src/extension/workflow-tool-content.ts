@@ -1,10 +1,13 @@
+import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { fmtDuration } from "../tui/status-helpers.js";
+import { fmtDuration, statusIcon } from "../tui/status-helpers.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowRunStatusSummary, WorkflowStatusAwaitingInput } from "./workflow-status-summary.js";
+import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 
 function stringifyWorkflowToolResult(result: WorkflowToolResult): string {
 	return JSON.stringify(result, null, 2);
@@ -69,7 +72,20 @@ function statusAwaitingInputLine(entry: WorkflowStatusAwaitingInput): string {
 	return `    awaiting input: ${target}${prompt}${message}`;
 }
 
+function statusRunIcon(
+	run: WorkflowRunStatusSummary,
+	snapshot: RunSnapshot | undefined,
+	allRuns: readonly RunSnapshot[],
+): string {
+	if (snapshot === undefined) return statusIcon(run.status);
+	const indicatorStatus = runIndicatorStatus(snapshot, allRuns);
+	if (snapshot.endedAt === undefined && snapshot.status === "paused" && snapshot.exitReason === "quit") {
+		return statusIcon("pending");
+	}
+	return statusIcon(indicatorStatus);
+}
 function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "status" }>): string {
+	const allRuns = getWorkflowStatusRenderRuns(result) ?? result.snapshots;
 	const lines = ["action: status", `filter: ${result.filter}`];
 	if (result.runs.length === 0) {
 		lines.push(result.filter === "all" ? "runs: none" : `runs: none (statusFilter: ${result.filter})`);
@@ -81,6 +97,7 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 		const hint = statusRunHint(run);
 		const summaryLine = [
 			`[${index + 1}]`,
+			statusRunIcon(run, result.snapshots[index], allRuns),
 			run.runId,
 			run.name,
 			run.status,

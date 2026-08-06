@@ -1,5 +1,6 @@
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
+import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
 import { schemaIsRequired } from "../shared/schema-introspection.js";
 import { store } from "../shared/store.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
@@ -158,8 +159,14 @@ async function workflowSlashHandler(
 			emitChatSurface(pi, { kind: "detail", detail: inspected.detail });
 			return;
 		}
-		const rows = selectRunsForPicker(store.runs(), "", true, Date.now());
-		emitChatSurface(pi, { kind: "status", runs: rows.map((r) => r.run) });
+		const capturedRuns = store.graphSnapshot().runs;
+		const rows = selectRunsForPicker(capturedRuns, "", true, Date.now());
+		const visibleRuns = rows.map((r) => r.run);
+		emitChatSurface(pi, {
+			kind: "status",
+			runs: visibleRuns,
+			indicatorStatuses: resolveRunIndicatorStatuses(visibleRuns, capturedRuns),
+		});
 		return;
 	}
 	if (subcommand === "reload") {

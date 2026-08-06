@@ -438,6 +438,32 @@ describe("AgentSession retry", () => {
 		).toBe(false);
 	});
 
+	it("treats Codex token invalidation wrapped in abort diagnostics as fallbackable only", async () => {
+		const created = await createSession({ failCount: 0 });
+		const probe = created.session as unknown as {
+			_isFallbackableError(message: AssistantMessage): boolean;
+			_isRetryableError(message: AssistantMessage): boolean;
+		};
+		const wrappedInvalidation = {
+			...createAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "invalidated oauth token",
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				model: "gpt-5.5",
+			}),
+			diagnostics: [
+				{
+					type: "provider_transport_failure",
+					error: { name: "AbortError", message: "The operation was aborted" },
+				},
+			],
+		} as AssistantMessage;
+
+		expect(probe._isFallbackableError(wrappedInvalidation)).toBe(true);
+		expect(probe._isRetryableError(wrappedInvalidation)).toBe(false);
+	});
+
 	it("does not classify a reasoning-only turn with output tokens as empty", async () => {
 		const created = await createSession({ failCount: 0 });
 		const probe = created.session as unknown as { _isEmptyCompletion(message: AssistantMessage): boolean };

@@ -19,7 +19,7 @@ import {
 } from "./intercom-utils.js";
 
 interface ContactSupervisorDeps {
-  childOrchestratorMetadata: ChildOrchestratorMetadata | null;
+  childOrchestratorMetadata: ChildOrchestratorMetadata | null | (() => ChildOrchestratorMetadata | null);
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
@@ -35,7 +35,10 @@ interface ContactSupervisorDeps {
 
 export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSupervisorDeps): void {
   const { childOrchestratorMetadata, ensureConnected, syncPresenceIdentity, resolveSessionTarget, beginReplyWait, hasReplyWaiter } = deps;
-  if (childOrchestratorMetadata) {
+  const getMetadata = typeof childOrchestratorMetadata === "function"
+    ? childOrchestratorMetadata
+    : () => childOrchestratorMetadata;
+  if (childOrchestratorMetadata !== null) {
     pi.registerTool({
       name: "contact_supervisor",
       label: "Contact Supervisor",
@@ -116,7 +119,14 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           };
         }
 
-        const metadata = childOrchestratorMetadata;
+        const metadata = getMetadata();
+        if (!metadata) {
+          return {
+            content: [{ type: "text", text: "Supervisor contact is unavailable for this session" }],
+            isError: true,
+            details: { error: true },
+          };
+        }
         let sendTo: string;
         if (connectedClient.supervisorSessionId || metadata.supervisor) {
           sendTo = connectedClient.supervisorSessionId ?? metadata.supervisor!.supervisorSessionId;

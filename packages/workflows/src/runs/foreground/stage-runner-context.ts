@@ -233,7 +233,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		},
 
 		async abort() {
-			await controller.currentSession?.abort();
+			await controller.abort();
 		},
 
 		async __dispose() {

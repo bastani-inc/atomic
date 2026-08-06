@@ -176,6 +176,13 @@ export class SessionManager {
 		return this.persist;
 	}
 
+	/** Persist the current session tree before an in-process attempt is force-finalized. */
+	flush(): void {
+		if (!this.persist || !this.sessionFile) return;
+		this._rewriteFile();
+		this.flushed = true;
+	}
+
 	getCwd(): string {
 		return this.cwd;
 	}

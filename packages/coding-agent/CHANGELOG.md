@@ -6,6 +6,26 @@
 
 - Added a model row to the `/workflow connect` graph node cards. Each stage card now shows the running stage's model, thinking level, and Codex `fast` tier (provider prefix dropped and thinking omitted when off to fit the ~22-cell card; the fast marker is kept over the thinking level when space is tight), on a dedicated row beneath the status line while keeping the existing duration, status, and dependency (`root`/`N deps`) fields. The row reflects live model fallbacks — when a stage falls back to another model it updates to the model actually running. Node card height grows from 5 to 6 rows. The effective thinking level is carried on the run snapshot (`StageSnapshot.thinkingLevel`) alongside the existing `model` field and persisted through DBOS durability so resumed runs (`/workflow resume`) restore the same model + thinking identity.
 
+## [0.9.13-alpha.1] - 2026-08-05
+
+### Added
+
+- `CreateAgentSessionOptions` and `ExtensionContext` now carry an immutable typed subagent child capability policy for in-process tool registration ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- `CreateAgentSessionOptions` now supports construction-time system-prompt and inherited-context transforms, allowing in-process child sessions to apply typed policy without extension injection ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
+### Changed
+
+- Typed child policy now includes MCP direct-tool selection and admission-issued Intercom identity/capability, allowing in-process extensions to consume child policy without inheritable environment state ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+- Bundled subagent launches now use in-process `AgentSession` children with typed admission, canonical identities, and live async continuation; `async: true` work is owned by the parent process and does not survive parent exit ([#2188](https://github.com/bastani-inc/atomic/issues/2188)).
+
+### Fixed
+
+- Workflow runs awaiting human input now use the blue `？` indicator in the BACKGROUND panel, `/workflow connect` picker, and `/workflow status` listing, including prompts raised by hidden nested workflow children; the indicator returns to the run's current state when the prompt resolves.
+- Fixed main-chat model fallback to classify provider failures consistently with workflows, advance rejected credentials and incompatible or unavailable models to the next candidate, and restore the user-selected model at the next turn without overriding an explicit `/model` choice. A failure that requesting the same model again cannot repair now takes that model out of the chain for the rest of the turn at every reasoning level, so a fallback entry differing only by its `:low`/`:high` suffix is skipped instead of retrying the same dead credential; transient rate-limit and transport failures keep those reasoning variants ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+- Fixed a context overflow that compaction cannot resolve to advance the configured `fallbackModels` chain instead of ending the turn, so a larger-context candidate can answer. Compaction still runs first, and a compactable overflow spends no fallback candidate ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+- Fixed a reasoning-level change during a model fallback stranding the session on the fallback model. Changing reasoning effort is not a model choice, so it no longer cancels the pending restore; the next turn returns to the user-selected primary and keeps the reasoning level that was chosen. Only an explicit `/model` selection or model cycle cancels the restore ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+- Fixed gRPC `ResourceExhausted` provider errors, seen from providers such as NVIDIA NIM, bypassing the same-model auto-retry budget. They are now retried like other transient provider failures, matching upstream pi-ai, and still advance a configured fallback chain when the retries are exhausted ([#2170](https://github.com/bastani-inc/atomic/issues/2170)).
+
 ## [0.9.12] - 2026-08-04
 
 Cumulative release of the `0.9.12-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.

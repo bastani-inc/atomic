@@ -8,6 +8,7 @@
 import { beforeEach, describe, test } from "vitest";
 import type { WorkflowRunStatusSummary } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
+import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import {
 	assert,
 	createExtensionRuntime,
@@ -164,6 +165,31 @@ describe("workflow tool status run listing", () => {
 		assert.equal(result.runs[0]!.awaitingInputCount, 1);
 	});
 
+	test.sequential("status rendering attributes a run-level prompt in a hidden child without exposing it in JSON", async () => {
+		const rootId = `status-nested-root-${Date.now()}`;
+		const childId = `status-nested-child-${Date.now()}`;
+		store.recordRunStart(makeInflightRun(rootId));
+		store.recordRunStart({
+			...makeInflightRun(childId),
+			parentRunId: rootId,
+			rootRunId: rootId,
+			pendingPrompt: {
+				id: "nested-prompt",
+				kind: "confirm",
+				message: "Continue nested workflow?",
+				createdAt: Date.now(),
+			},
+		});
+		const result = await makeToolHandler()({ action: "status" }, {} as never);
+		const text = renderWorkflowToolContent(result, { action: "status" });
+		const summaryLine = text.split("\n").find((line) => line.startsWith("[1]"));
+		assert.notEqual(summaryLine, undefined);
+		assert.match(summaryLine!, new RegExp(`${statusIcon("awaiting_input")}.*${rootId}`));
+
+		const json = renderWorkflowToolContent(result, { action: "status", format: "json" });
+		assert.doesNotMatch(json, new RegExp(childId));
+	});
+
 	test.sequential("status text output is a concise per-run listing; json format returns structured data", async () => {
 		const activeId = `status-content-active-${Date.now()}`;
 		recordRunningRunWithStages(activeId);
@@ -181,6 +207,14 @@ describe("workflow tool status run listing", () => {
 		assert.match(summaryLine!, /release-docs/);
 		assert.match(summaryLine!, /running/);
 		assert.match(summaryLine!, /awaiting input \(1\): approve/);
+		assert.match(summaryLine!, new RegExp(statusIcon("awaiting_input")));
+
+		// The rendered result keeps the point-in-time snapshot even when the live store resolves the prompt later.
+		const liveStage = store.runs().find((run) => run.id === activeId)?.stages[1];
+		assert.notEqual(liveStage, undefined);
+		liveStage!.status = "running";
+		liveStage!.pendingPrompt = undefined;
+		assert.equal(renderWorkflowToolContent(result, { action: "status" }), text);
 		// Full identifiers for pause/resume/interrupt/quit/send follow-ups.
 		assert.match(text, new RegExp(`runId: ${activeId}`));
 		assert.match(text, new RegExp(`${activeId}-stage-approve`));

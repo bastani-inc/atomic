@@ -67,11 +67,14 @@ export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promis
 	this._agentEventQueue = processing;
 
 	// Keep queue alive if an event handler fails. Agent-core must additionally
-	// await the hidden reconciliation's persistence boundary before its provider
-	// request, but an extension-listener failure retains the legacy nonblocking
-	// event behavior.
+	// await protected persistence and fallback reconciliation before the next
+	// provider request; other listener work stays nonblocking.
 	processing.catch(() => {});
-	if (awaitProtectedPersistence) return processing.catch(() => {});
+	if (
+		awaitProtectedPersistence ||
+		(event.type === "agent_end" && (this._fallbackModels.length > 0 || this._fallbackOriginModel !== undefined))
+	)
+		return processing.catch(() => {});
 }
 
 export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentEvent): void {
@@ -89,10 +92,13 @@ export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentE
 		return;
 	}
 
+	const fallbackable =
+		typeof this._isFallbackableError === "function"
+			? this._isFallbackableError(lastAssistant)
+			: this._isRetryableError(lastAssistant);
+	const retryable = this._isRetryableError(lastAssistant);
 	const shouldRetry =
-		this._isRetryableError(lastAssistant) ||
-		this._isEmptyCompletion(lastAssistant) ||
-		this._isSafetyRefusal(lastAssistant);
+		retryable || fallbackable || this._isEmptyCompletion(lastAssistant) || this._isSafetyRefusal(lastAssistant);
 	if (!shouldRetry) {
 		return;
 	}
@@ -127,6 +133,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	if (event.type === "message_start" && event.message.role === "user") {
 		this._overflowRecoveryAttempted = false;
 		this._fallbackAttemptedKeys.clear();
+		this._fallbackBlockedModels.length = 0;
 		const messageText = this._getUserMessageText(event.message);
 		if (messageText) {
 			// Check steering queue first
@@ -206,9 +213,13 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 				this._isEmptyCompletion(assistantMsg) ||
 				this._isSafetyRefusal(assistantMsg);
 			if (!assistantFailed) {
-				this._fallbackAttemptedKeys.clear();
 				this._overflowRecoveryAttempted = false;
+				this._contextOverflowUnresolved = false;
 				this._outputBudgetErrorContinuationAttempts = 0;
+			}
+			if (!assistantFailed && assistantMsg.stopReason === "stop") {
+				this._fallbackAttemptedKeys.clear();
+				this._fallbackBlockedModels.length = 0;
 			}
 
 			// A non-truncated assistant response means the length-continuation loop
@@ -243,14 +254,26 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			this._postToolCompactionPreflightError !== undefined &&
 			msg.errorMessage === this._postToolCompactionPreflightError;
 
-		// Check for retryable errors first (overloaded, rate limit, server errors,
-		// transient provider finish_reason errors, degenerate empty completions,
-		// or intercepted canned safety refusals)
+		// Check provider/model failures before compaction. Fallback eligibility is
+		// broader than same-model retry eligibility: auth and request-incompatible
+		// failures advance without re-requesting the failed model.
+		const fallbackableError =
+			!postToolPreflightFailed &&
+			(typeof this._isFallbackableError === "function"
+				? this._isFallbackableError(msg)
+				: this._isRetryableError(msg));
 		const retryableError = !postToolPreflightFailed && this._isRetryableError(msg);
-		const emptyCompletion = !postToolPreflightFailed && !retryableError && this._isEmptyCompletion(msg);
+		const emptyCompletion =
+			!postToolPreflightFailed && !retryableError && !fallbackableError && this._isEmptyCompletion(msg);
 		const safetyRefusal =
-			!postToolPreflightFailed && !retryableError && !emptyCompletion && this._isSafetyRefusal(msg);
-		if (retryableError || emptyCompletion || safetyRefusal) {
+			!postToolPreflightFailed &&
+			!retryableError &&
+			!fallbackableError &&
+			!emptyCompletion &&
+			this._isSafetyRefusal(msg);
+		const modelFailure = retryableError || fallbackableError || emptyCompletion || safetyRefusal;
+		let restoreAfterTurn = !modelFailure;
+		if (modelFailure) {
 			if (emptyCompletion && !msg.errorMessage) {
 				// Surface a clear reason in the retry banner; empty completions carry no
 				// provider error message of their own.
@@ -260,10 +283,27 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			}
 			const didRetry = await this._handleRetryableError(msg);
 			if (didRetry) return; // Retry was initiated, don't proceed to compaction
+			restoreAfterTurn = true;
 		}
 
 		this._resolveRetry();
+		this._contextOverflowUnresolved = false;
 		await this._checkCompaction(msg);
+		// Compaction owns context overflow first. Only once it is disabled, fails,
+		// or reports the overflow unresolved may the chain spend a candidate on a
+		// larger-context model, so a compactable first overflow costs nothing.
+		if (this._contextOverflowUnresolved) {
+			this._contextOverflowUnresolved = false;
+			if (typeof this._trySwitchToFallbackModel === "function" && (await this._trySwitchToFallbackModel(msg)))
+				return;
+			restoreAfterTurn = true;
+		}
+		// Keep a fallback active across the compact-and-continue probe that belongs
+		// to this same user turn. The probe restores it before a queued next turn,
+		// or after a continuation settles.
+		if (restoreAfterTurn && this._pendingPostCompactionContinuation === undefined) {
+			if (typeof this._restoreFallbackModel === "function") await this._restoreFallbackModel();
+		}
 	}
 }
 

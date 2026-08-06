@@ -1,3 +1,4 @@
+import type { SubagentChildPolicy } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.js";
 import { getMissingConfiguredDirectToolServers } from "./direct-tools.ts";
 import { loadMetadataCache } from "./metadata-cache.js";
@@ -7,14 +8,27 @@ import { logger } from "./logger.ts";
 import { updateMetadataCache, updateStatusBar } from "./init.js";
 
 export interface McpStartupWarmupOptions {
-  shouldContinue?: () => boolean;
-  onDirectToolsChanged?: () => void | Promise<void>;
-  onSettled?: () => void;
+	/** Typed child selection issued during in-process admission. */
+	subagentPolicy?: SubagentChildPolicy;
+	shouldContinue?: () => boolean;
+	onDirectToolsChanged?: () => void | Promise<void>;
+	onSettled?: () => void;
 }
 
 export interface McpStartupWarmupHandle {
   readonly promise: Promise<void>;
   cancel(): void;
+}
+
+export interface McpDirectToolsSelection {
+  readonly disabled: boolean;
+  readonly tools?: readonly string[];
+}
+
+/** Resolve direct-tool selection exclusively from typed admission policy. */
+export function resolveMcpDirectToolsSelection(subagentPolicy?: SubagentChildPolicy): McpDirectToolsSelection {
+	const tools = subagentPolicy?.mcpDirectTools;
+	return { disabled: tools !== undefined && tools.length === 0, ...(tools === undefined ? {} : { tools: [...tools] }) };
 }
 
 function deferToMacrotask(): Promise<void> {
@@ -31,12 +45,10 @@ export function scheduleMcpStartupWarmup(
   const promise = (async () => {
     await deferToMacrotask();
     if (!shouldContinue()) return;
+    const selection = resolveMcpDirectToolsSelection(options.subagentPolicy);
+    if (selection.disabled) return;
 
-    const envDirect = process.env.MCP_DIRECT_TOOLS;
-    if (envDirect === "__none__") return;
-
-    const envDirectTools = envDirect?.split(",").map((item) => item.trim()).filter(Boolean);
-    const missingCacheServers = getMissingConfiguredDirectToolServers(state.config, loadMetadataCache(), envDirectTools)
+    const missingCacheServers = getMissingConfiguredDirectToolServers(state.config, loadMetadataCache(), selection.tools)
       .filter((name) => state.manager.getConnection(name)?.status !== "connected");
     if (missingCacheServers.length === 0) return;
 

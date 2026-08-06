@@ -1,31 +1,19 @@
-import { randomUUID } from "node:crypto";
 import { APP_NAME } from "@bastani/atomic";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
-import {
-	requestSupervisorAuthorization,
-	type SupervisorAuthorization,
-} from "../../intercom/supervisor-authorization.ts";
-import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";
-import {
-	type ChainStep,
-	isDynamicParallelStep,
-	isParallelStep,
-	resolveSingleProgress,
-	type SequentialStep,
-} from "../../shared/settings.ts";
+import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.ts";
+import type { ChainStep } from "../../shared/settings.ts";
+import type { SingleResult, SubagentToolResult } from "../../shared/types.ts";
 import {
 	resolveChildMaxSubagentDepth,
 	resolveSubagentDepthPolicy,
-	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
 	workflowSessionMetadataFromContext,
 	wrapForkTask,
 } from "../../shared/types.ts";
-import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
-import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
-import { normalizeSingleOutputOverride } from "../shared/single-output.ts";
-import { collectChainSessionFiles, wrapChainTasksForFork } from "./subagent-executor-input.ts";
+import { formatAsyncStartedMessage } from "../inprocess/background.ts";
+import { runChainPath } from "./subagent-executor-chain.ts";
+import { runParallelPath } from "./subagent-executor-parallel.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 import {
 	buildChainWorktreeTaskCwdError,
@@ -33,285 +21,170 @@ import {
 	buildParallelWorktreeTaskCwdError,
 } from "./subagent-executor-worktree.ts";
 
-async function authorizeChild(
-	deps: ResolvedExecutorDeps,
-	childName: string | undefined,
-): Promise<SupervisorAuthorization | undefined> {
-	return await requestSupervisorAuthorization(deps.pi.events, childName);
-}
-
-async function authorizeAsyncChain(
-	chain: ChainStep[],
-	childTarget: ((agent: string, index: number) => string | undefined) | undefined,
-	dynamicMaxItems: number | undefined,
-	deps: ResolvedExecutorDeps,
-): Promise<{
-	authorizations?: Array<SupervisorAuthorization | undefined>;
-	dynamic?: Record<number, SupervisorAuthorization[]>;
-}> {
-	if (!childTarget) return {};
-	const authorizations: Array<SupervisorAuthorization | undefined> = [];
-	const dynamic: Record<number, SupervisorAuthorization[]> = {};
-	for (let stepIndex = 0; stepIndex < chain.length; stepIndex++) {
-		const step = chain[stepIndex]!;
-		if (isDynamicParallelStep(step)) {
-			authorizations.push(undefined);
-
-			const count = Math.max(0, dynamicMaxItems ?? 0);
-			dynamic[stepIndex] = (
-				await Promise.all(Array.from({ length: count }, () => authorizeChild(deps, "*")))
-			).filter((value): value is SupervisorAuthorization => value !== undefined);
-			continue;
-		}
-		const agents = isParallelStep(step) ? step.parallel.map((task) => task.agent) : [(step as SequentialStep).agent];
-		for (let index = 0; index < agents.length; index++) {
-			authorizations.push(await authorizeChild(deps, "*"));
-		}
-	}
+function continuedResult(data: ExecutionContextData, mode: "single" | "parallel" | "chain"): SingleResult {
+	const path = `${data.runId}/orchestration_1`;
 	return {
-		authorizations,
-		...(Object.keys(dynamic).length > 0 ? { dynamic } : {}),
+		agent: mode,
+		task: data.params.task ?? `${mode} subagent run`,
+		status: "continued",
+		path,
+		envelope: "Child continued in background.",
+		detached: true,
+		detachedReason: "async-requested",
+		messages: [],
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+		progress: {
+			index: 0,
+			agent: mode,
+			status: "running",
+			task: data.params.task ?? `${mode} subagent run`,
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 0,
+			turnCount: 0,
+			tokens: 0,
+			durationMs: 0,
+			lastActivityAt: Date.now(),
+		},
 	};
 }
 
+function modeFor(data: ExecutionContextData): "single" | "parallel" | "chain" {
+	if ((data.params.chain?.length ?? 0) > 0) return "chain";
+	if ((data.params.tasks?.length ?? 0) > 0) return "parallel";
+	return "single";
+}
+
+function runForegroundInBackground(
+	data: ExecutionContextData,
+	deps: ResolvedExecutorDeps,
+	mode: "parallel" | "chain",
+): void {
+	const backgroundData: ExecutionContextData = { ...data, effectiveAsync: false };
+	const work = mode === "chain" ? runChainPath(backgroundData, deps) : runParallelPath(backgroundData, deps);
+	void work.catch((error) => {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(`[${APP_NAME}-subagents] in-process async ${mode} failed: ${message}`);
+	});
+}
+
+/**
+ * Async is a don't-wait request over the same in-process foreground executor.
+ *
+ * Single runs retain the focused background-single helper because it owns the
+ * child admission and terminal artifact delivery. Chain and parallel runs use
+ * the existing foreground executors un-awaited; their child sessions are
+ * admitted by runSync as the executor advances, so chain substitution,
+ * dynamic fanout, worktrees, structured output, and fail-fast remain one code
+ * path rather than a second serialized runner.
+ */
 export async function runAsyncPath(
 	data: ExecutionContextData,
 	deps: ResolvedExecutorDeps,
-): Promise<import("../../shared/types.ts").SubagentToolResult | null> {
-	const {
-		params,
-		effectiveCwd,
-		agents,
-		ctx,
-		shareEnabled,
-		sessionRoot,
-		sessionFileForIndex,
-		artifactConfig,
-		artifactsDir,
-		effectiveAsync,
-		controlConfig,
-		intercomBridge,
-		nestedRoute,
-	} = data;
-	const hasChain = (params.chain?.length ?? 0) > 0;
-	const hasTasks = (params.tasks?.length ?? 0) > 0;
-	const hasSingle = !hasChain && !hasTasks && Boolean(params.agent);
-	if (!effectiveAsync) return null;
+): Promise<SubagentToolResult | null> {
+	if (!data.effectiveAsync) return null;
 
-	if (hasChain && params.chain) {
+	const mode = modeFor(data);
+	const { params, effectiveCwd } = data;
+	if (mode === "chain" && params.chain) {
 		const chainWorktreeTaskCwdError = buildChainWorktreeTaskCwdError(params.chain as ChainStep[], effectiveCwd);
 		if (chainWorktreeTaskCwdError) {
 			return {
 				content: [{ type: "text", text: chainWorktreeTaskCwdError }],
 				isError: true,
-				details: { mode: "chain" as const, results: [] },
+				details: { mode: "chain", results: [] },
 			};
 		}
 	}
-
-	if (hasTasks && params.tasks) {
+	if (mode === "parallel" && params.tasks) {
 		const maxParallelTasks = resolveTopLevelParallelMaxTasks(deps.config.parallel?.maxTasks);
-		if (params.tasks.length > maxParallelTasks) {
-			return buildParallelModeError(`Max ${maxParallelTasks} tasks`);
-		}
+		if (params.tasks.length > maxParallelTasks) return buildParallelModeError(`Max ${maxParallelTasks} tasks`);
 		if (params.worktree) {
 			const worktreeTaskCwdError = buildParallelWorktreeTaskCwdError(params.tasks, effectiveCwd);
 			if (worktreeTaskCwdError) return buildParallelModeError(worktreeTaskCwdError);
 		}
 	}
-
 	if (!deps.runtime.isAsyncAvailable()) {
 		return {
 			content: [
 				{
 					type: "text",
-					text: `Async mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the ${APP_NAME}-subagents package dependencies are installed.`,
+					text: `Async mode requires the in-process runner but it could not be initialized. Ensure the ${APP_NAME}-subagents package is installed.`,
 				},
 			],
 			isError: true,
-			details: { mode: "single" as const, results: [] },
+			details: { mode, results: [] },
 		};
 	}
-	const id = randomUUID();
-	const asyncCtx = {
-		pi: deps.pi,
-		cwd: ctx.cwd,
-		currentSessionId: deps.state.currentSessionId!,
-		currentModelProvider: ctx.model?.provider,
-		currentModel: currentModelFullId(ctx.model),
-		workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
-		intercomGroup: inheritedIntercomGroup(ctx),
-	};
-	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
-	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
-	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
-	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
-	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
-	const currentProvider = ctx.model?.provider;
-	const controlIntercomTarget = intercomBridge.active ? intercomBridge.orchestratorTarget : undefined;
-	const childIntercomTarget = intercomBridge.active
-		? (agent: string, index: number) => resolveSubagentIntercomTarget(id, agent, index)
-		: undefined;
 
-	if (hasTasks && params.tasks) {
-		const agentConfigs = params.tasks.map((task) => agents.find((agent) => agent.name === task.agent));
-		const modelOverrides = params.tasks.map((task, index) =>
-			resolveModelCandidate(task.model ?? agentConfigs[index]?.model, availableModels, currentProvider),
-		);
-		const skillOverrides = params.tasks.map((task) => normalizeSkillInput(task.skill));
-		const parallelTasks = params.tasks.map((task, index) => ({
-			agent: task.agent,
-			task: params.context === "fork" ? wrapForkTask(task.task) : task.task,
-			cwd: task.cwd,
-			group: task.group,
-			...(modelOverrides[index] ? { model: modelOverrides[index] } : {}),
-			...(skillOverrides[index] !== undefined ? { skill: skillOverrides[index] } : {}),
-			...(task.output === true
-				? agentConfigs[index]?.output
-					? { output: agentConfigs[index]!.output }
-					: {}
-				: task.output !== undefined
-					? { output: task.output }
-					: {}),
-			...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
-			...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
-			...(task.progress !== undefined ? { progress: task.progress } : {}),
-		}));
-		const supervisorAuthorizations = childIntercomTarget
-			? await Promise.all(
-					params.tasks.map((task, index) => authorizeChild(deps, childIntercomTarget(task.agent, index))),
-				)
-			: undefined;
-		return deps.runtime.executeAsyncChain(id, {
-			chain: [
-				{
-					parallel: parallelTasks,
-					group: params.group,
-					concurrency: resolveTopLevelParallelConcurrency(params.concurrency, deps.config.parallel?.concurrency),
-					worktree: params.worktree,
-				},
-			],
-			resultMode: "parallel",
-			group: params.group,
-			agents,
-			ctx: asyncCtx,
-			availableModels,
-			knownModelProviders,
-			cwd: effectiveCwd,
-			maxOutput: params.maxOutput,
-			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-			artifactConfig,
-			shareEnabled,
-			sessionRoot,
-			chainSkills: [],
-			sessionFilesByFlatIndex: params.tasks.map((_, index) => sessionFileForIndex(index)),
-			maxSubagentDepth: currentMaxSubagentDepth,
-			workflowStageSubagentGuard,
-			worktreeSetupHook: deps.config.worktreeSetupHook,
-			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
-			controlConfig,
-			controlIntercomTarget,
-			childIntercomTarget,
-			supervisorAuthorizations,
-			nestedRoute,
-		});
-	}
-
-	if (hasChain && params.chain) {
-		const normalized = normalizeSkillInput(params.skill);
-		const chainSkills = normalized === false ? [] : (normalized ?? []);
-		const chain = wrapChainTasksForFork(params.chain as ChainStep[], params.context);
-		const supervisor = await authorizeAsyncChain(
-			chain,
-			childIntercomTarget,
-			deps.config.chain?.dynamicFanout?.maxItems,
-			deps,
-		);
-		return deps.runtime.executeAsyncChain(id, {
-			chain,
-			task: params.task,
-			group: params.group,
-			agents,
-			ctx: asyncCtx,
-			availableModels,
-			knownModelProviders,
-			cwd: effectiveCwd,
-			maxOutput: params.maxOutput,
-			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-			artifactConfig,
-			shareEnabled,
-			sessionRoot,
-			chainSkills,
-			sessionFilesByFlatIndex: collectChainSessionFiles(chain, sessionFileForIndex),
-			dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
-			maxSubagentDepth: currentMaxSubagentDepth,
-			workflowStageSubagentGuard,
-			worktreeSetupHook: deps.config.worktreeSetupHook,
-			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
-			controlConfig,
-			controlIntercomTarget,
-			childIntercomTarget,
-			supervisorAuthorizations: supervisor.authorizations,
-			dynamicSupervisorAuthorizations: supervisor.dynamic,
-			nestedRoute,
-		});
-	}
-
-	if (hasSingle) {
-		const a = agents.find((x) => x.name === params.agent);
-		if (!a) {
+	if (mode === "single") {
+		const agent = data.agents.find((candidate) => candidate.name === params.agent);
+		if (!agent) {
 			return {
 				content: [{ type: "text", text: `Unknown agent: ${params.agent}` }],
 				isError: true,
-				details: { mode: "single" as const, results: [] },
+				details: { mode: "single", results: [] },
 			};
 		}
-		const rawOutput = params.output !== undefined ? params.output : a.output;
-		const effectiveOutput = normalizeSingleOutputOverride(rawOutput, a.output);
-		const effectiveOutputMode = params.outputMode ?? "inline";
+		const availableModels = data.ctx.modelRegistry.getAvailable().map(toModelInfo);
+		const knownModelProviders = collectKnownModelProviders(data.ctx.modelRegistry);
+		const depthPolicy = resolveSubagentDepthPolicy(data.ctx, deps.config.maxSubagentDepth);
 		const normalizedSkills = normalizeSkillInput(params.skill);
 		const skills = normalizedSkills === false ? [] : normalizedSkills;
-		const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, a.maxSubagentDepth);
-		const modelOverride = resolveModelCandidate(
-			(params.model as string | undefined) ?? a.model,
-			availableModels,
-			currentProvider,
-		);
-		const progress = resolveSingleProgress(a, params.progress, params.task);
-		const supervisorAuthorization = childIntercomTarget
-			? await authorizeChild(deps, childIntercomTarget(params.agent!, 0))
+		const task = params.context === "fork" ? wrapForkTask(params.task ?? "") : (params.task ?? "");
+		const childIntercomTarget = data.intercomBridge.active
+			? (childAgent: string, index: number) => resolveSubagentIntercomTarget(data.runId, childAgent, index)
 			: undefined;
-		return deps.runtime.executeAsyncSingle(id, {
+		const currentModel = data.ctx.model ? `${data.ctx.model.provider}/${data.ctx.model.id}` : undefined;
+		const modelOverride = params.model ?? agent.model;
+		return deps.runtime.executeAsyncSingle(data.runId, {
 			agent: params.agent!,
-			task: params.context === "fork" ? wrapForkTask(params.task ?? "") : (params.task ?? ""),
+			task,
 			group: params.group,
-			agentConfig: a,
-			ctx: asyncCtx,
-			availableModels,
-			knownModelProviders,
+			agentConfig: agent,
+			ctx: {
+				pi: deps.pi,
+				cwd: data.ctx.cwd,
+				currentSessionId: deps.state.currentSessionId ?? data.ctx.sessionManager.getSessionId(),
+				currentModelProvider: data.ctx.model?.provider,
+				currentModel,
+				intercomGroup: data.ctx.orchestrationContext?.intercomGroup,
+				workflowSessionMetadata: workflowSessionMetadataFromContext(data.ctx),
+			},
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
-			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-			artifactConfig,
-			shareEnabled,
-			sessionRoot,
-			sessionFile: sessionFileForIndex(0),
+			artifactsDir: data.artifactConfig.enabled ? data.artifactsDir : undefined,
+			artifactConfig: data.artifactConfig,
+			shareEnabled: data.shareEnabled,
+			sessionRoot: data.sessionRoot,
+			sessionFile: data.sessionFileForIndex(0),
 			skills,
-			output: effectiveOutput,
-			outputMode: effectiveOutputMode,
-			progress,
+			output: params.output,
+			outputMode: params.outputMode,
+			progress: params.progress,
 			modelOverride,
-			maxSubagentDepth,
-			workflowStageSubagentGuard,
+			availableModels,
+			knownModelProviders,
+			maxSubagentDepth: resolveChildMaxSubagentDepth(depthPolicy.maxSubagentDepth, agent.maxSubagentDepth),
+			workflowStageSubagentGuard: depthPolicy.workflowStageSubagentGuard,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
-			controlConfig,
-			controlIntercomTarget,
-			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(agent, index) : undefined,
-			supervisorAuthorization,
-			nestedRoute,
+			controlConfig: data.controlConfig,
+			controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+			childIntercomTarget,
+			nestedRoute: data.nestedRoute,
 		});
 	}
 
-	return null;
+	const continued = continuedResult(data, mode);
+	if (mode === "chain" || mode === "parallel") runForegroundInBackground(data, deps, mode);
+	return {
+		content: [{ type: "text", text: formatAsyncStartedMessage(`Async ${mode}: ${data.runId}`) }],
+		details: {
+			mode,
+			runId: data.runId,
+			asyncId: data.runId,
+			results: [continued],
+		},
+	};
 }

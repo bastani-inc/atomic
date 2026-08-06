@@ -36,15 +36,36 @@ This release graph follows pi's draft-first publication shape. Public GitHub Rel
 
 ## Tests (`test.yml`)
 
-The test workflow runs on pushes to `main`, `release/**`, and `prerelease/**`, and on every pull request. Its work runs as four independent jobs so the wall clock is one job's longest dependent chain rather than the sum of every step in file order.
+The test workflow runs on pushes to `main` and on every pull request. Release
+branches carry no push trigger: `release/**` and `prerelease/**` always reach CI
+through their pull request, so listing those globs made one SHA run the whole
+workflow twice — two sets of runners competing for the same pool, and two
+competing check runs per required context. GitHub keeps the latest result per
+context name, so a spurious failure in either copy blocked the pull request even
+when the other copy was fully green. Runs `31047506585` (push, Linux `suites`
+cancelled on its cap) and `31047542976` (pull_request, every job green) on the
+same sha `772a373` are the worked example.
+
+There is deliberately no `concurrency:` block. A group that cancels an
+in-flight run can kill a run that has already published `test (...)`, leaving a
+cancelled required context on a SHA with no superseding successful run — the
+failure above, not a fix for it.
+
+Its work runs as four independent jobs so the wall clock is one job's longest dependent chain rather than the sum of every step in file order.
 
 | Job | Platforms | Chain | Linux | Windows |
 | --- | --- | --- | ---: | ---: |
 | `suites` | both | build `@bastani/atomic` -> unit -> integration | 121 s | 195 s |
 | `agent-suite` | both | build native bindings -> coding-agent vitest (Node), then its Bun-hosted SQLite selector project | 126 s | 232 s |
-| `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s |
+| `release-archive` | both | build package -> `scripts/build-binaries.sh` -> archive smoke | 74 s | 149 s warm / 4m04s healthy p100 |
 | `static-checks` | Linux only | typecheck, docs links, Mintlify, CI contracts | 30 s | – |
 | `test` | 2 gate legs | assert every work-job result is `success` | 15 s | – |
+
+The release-archive Windows samples above are warm-toolchain measurements. A cold
+run reached 6m12s and 6m13s before cancellation: `rust-toolchain` took 152s and
+140s (versus 12s and 36s warm), checkout took 71s and 64s, and the native build
+and archive smoke add roughly 110s and 40s. The 9-minute cap covers that observed
+near-6m50s tail rather than only the healthy 4m04s p100.
 
 Those are the per-step costs sampled from four sequential-job runs, which put the critical path on the Windows `agent-suite` chain at about 247 s against the 452 s (434–483 s, n=3 healthy) the single sequential job measured. Runner-seconds rise about 35 % (709 s to roughly 957 s); that is the price of the wall-clock cut.
 
@@ -53,11 +74,16 @@ Those are the per-step costs sampled from four sequential-job runs, which put th
 | Job | run 1 | run 2 |
 | --- | ---: | ---: |
 | `static-checks (linux-x64)` | 32 s | 50 s |
-| `release-archive` Linux / Windows | 84 s / 162 s | 83 s / 175 s |
+| `release-archive` Linux / Windows | 84 s / 162 s (warm) | 83 s / 175 s (warm) |
 | `suites` Linux / Windows | 230 s / 348 s | 147 s / 238 s |
 | `agent-suite` Linux / Windows | 138 s / **349 s** | 203 s / **380 s** |
 | `test` gate, both legs | 3 s / 4 s | 4 s / 5 s |
 | **whole run** | **433 s** | **440 s** |
+
+The older split-run release-archive values in this table are warm samples; later
+healthy Windows runs reached 4m04s, while two cold runs reached 6m12s and 6m13s
+and were cancelled by the former 6-minute cap. The Windows cap is therefore 9
+minutes to cover the cold toolchain and checkout tail.
 
 Read this carefully before planning further work, because it says two different things.
 
@@ -108,7 +134,28 @@ If maintainers later prefer real per-job required contexts, that is a separate d
 
 ### Per-job time limits
 
-The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang detector at roughly 2x measured p100, with room for the one bounded flake retry it owns: `suites` 8/12, `agent-suite` 6/12, `release-archive` 5/6, `static-checks` 6, gate 5. The two Windows caps are 12 rather than the 8 and 9 that the sequential-job sampling implied, because the first split run measured 348 s and 349 s there; a cap that cancels a passing retried run is worse than a late hang detection. Every cap still sits under the 15-minute Windows blanket it replaced, and the contract test enforces that.
+The blanket 10/15-minute pair is gone. Each job declares its own cap as a hang
+detector with room for the one bounded flake retry it owns: `suites` 13/14,
+`agent-suite` 8/12, `release-archive` 5/9, `static-checks` 6, gate 5. Every cap
+sits under the 15-minute Windows blanket it replaced, and the contract test
+enforces that.
+
+The target is roughly 2x measured p100, and **Windows `suites` does not meet
+it**. Run `31047542976` measured 400 s Linux and 595 s Windows for that job, so
+Linux at 13 min is 1.95x but 2x of the Windows leg is 19.8 min, which the
+under-15 rule forbids. Windows takes the ceiling-bounded 14 min (1.41x): enough
+for the measured p100 plus a slow runner, not enough for a full replay of the
+401 s Windows unit step. Shortening that step is what would restore a true 2x
+detector there; until then this leg can still be cancelled while healthy.
+
+The earlier 8/12 `suites` pair was sized against 230 s/348 s samples and had
+decayed to about 1.2x, which is what cancelled the Linux leg at 497 s on run
+`31047506585` while the same commit passed on the pull_request event. The
+`agent-suite` Windows cap stays 12 because the first split run measured 349 s
+there; its Linux cap moved 6 → 8 for the same drift. The release-archive Windows
+cap is 9 because cold setup observed a 152 s Rust toolchain acquisition and 71 s
+checkout before the roughly 110 s native build and 40 s archive smoke. A cap that
+cancels a passing retried run is worse than a late hang detection.
 
 Every job that runs a suite through `scripts/run-flaky-test-suite.ts` uploads `.ci-diagnostics/` under a job-unique artifact name (`test-diagnostics-<job>-<binary_platform>`). `actions/upload-artifact@v4+` fails the entire run when two jobs upload the same name.
 
@@ -355,7 +402,7 @@ Repository-wide workflow permissions are read-only. Only draft staging, undrafti
 
 | File | Trigger | Purpose |
 | --- | --- | --- |
-| `.github/workflows/test.yml` | selected pushes and every pull request | workspace tests and cross-platform release smoke |
+| `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
 | `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, clean failed drafts |
 | `.github/workflows/warm-toolchain-cache.yml` | manual dispatch (see gate above) | write the Zig and MSVC CRT cache keys into the default-branch scope |
 

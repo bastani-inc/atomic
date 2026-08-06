@@ -86,6 +86,14 @@ function isStale(err: unknown): boolean {
 	return err instanceof Error && err.message.includes(STALE_CONTEXT);
 }
 
+function liveWidgetSnapshot(storeInstance: Store): StoreSnapshot {
+	return {
+		runs: storeInstance.runs(),
+		notices: storeInstance.notices(),
+		version: 0,
+	};
+}
+
 export function decideWidgetAction(prev: WidgetRenderState, nextLines: readonly string[]): WidgetAction {
 	return decideReactiveWidgetAction(prev, nextLines);
 }
@@ -107,7 +115,7 @@ export function installStoreWidget(
 		key: WIDGET_KEY,
 		placement: "belowEditor",
 		timers,
-		getSnapshot: () => readGraphStoreSnapshot(storeInstance),
+		getSnapshot: () => liveWidgetSnapshot(storeInstance),
 		subscribe: (listener) => subscribeStoreInvalidation(storeInstance, listener),
 		getPreviewLines: (snap, now) => buildThemedWidgetLines(snap, undefined, 120, now),
 		render: (snap, { theme, width, now }) => buildThemedWidgetLines(snap, theme as PiTheme | undefined, width, now),

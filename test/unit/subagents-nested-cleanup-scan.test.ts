@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test, vi } from "vitest";
-import { hasEntryNewerThan } from "../../packages/subagents/src/runs/shared/nested-events-core.js";
+import { hasEntryNewerThan } from "../../packages/subagents/src/runs/inprocess/runtime-support/nested-core.js";
 
 const scanInstrumentation = vi.hoisted(() => ({ active: false, readdirCalls: [] as string[] }));
 

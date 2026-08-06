@@ -16,6 +16,7 @@
  */
 
 import { runCallback } from "@bastani/atomic";
+import { sleepOrAbort } from "../runs/shared/retry.js";
 import { flattenTruncatedString } from "../shared/flat-string.js";
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
 import type {
@@ -26,6 +27,9 @@ import type {
 	WorkflowToolPrimitive,
 } from "../shared/types.js";
 import { field, hasProcessFailureEvidence, normalizeCode } from "../shared/workflow-failures-signals.js";
+
+export { sleepOrAbort } from "../runs/shared/retry.js";
+
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
 import { recordThrowingToolFailure } from "./tool-failure-checkpoint.js";
@@ -658,34 +662,6 @@ async function executeWithRetries<T>(
 		}
 	}
 	throw lastError ?? new Error("ctx.tool: retries exhausted");
-}
-
-export function sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
-	if (signal?.aborted)
-		return Promise.reject(
-			signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled"),
-		);
-	return new Promise((resolve, reject) => {
-		let settled = false;
-		const cleanup = (): void => signal?.removeEventListener("abort", onAbort);
-		const finish = (): void => {
-			if (settled) return;
-			settled = true;
-			cleanup();
-			resolve();
-		};
-		const fail = (err: Error): void => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			cleanup();
-			reject(err);
-		};
-		const timer = setTimeout(finish, ms);
-		const onAbort = (): void =>
-			fail(signal?.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled"));
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
 }
 
 /**

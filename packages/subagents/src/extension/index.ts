@@ -6,7 +6,6 @@ import {
 	APP_NAME,
 	type ExtensionAPI,
 	type ExtensionContext,
-	getEnvValue,
 	keyHintIfBound,
 	type ToolDefinition,
 } from "@bastani/atomic";
@@ -25,7 +24,6 @@ import { discoverAgents } from "../agents/agents.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
-import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
@@ -48,7 +46,6 @@ import {
 	stopWidgetAnimation,
 } from "../tui/render.ts";
 import { loadConfig } from "./config.ts";
-import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { parseSubagentNotifyContent } from "./notification-content.ts";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
 import { SubagentParams } from "./schemas.ts";
@@ -60,7 +57,6 @@ import {
 	ASYNC_DIR,
 	DEFAULT_ARTIFACT_CONFIG,
 	type Details,
-	RESULTS_DIR,
 	SLASH_RESULT_TYPE,
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
 	SUBAGENT_ASYNC_STARTED_EVENT,
@@ -90,18 +86,6 @@ function getSubagentSessionRoot(parentSessionFile: string | null): string {
 function expandTilde(p: string): string {
 	return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
 }
-function ensureAccessibleDir(dirPath: string): void {
-	fs.mkdirSync(dirPath, { recursive: true });
-	try {
-		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
-	} catch {
-		try {
-			fs.rmSync(dirPath, { recursive: true, force: true });
-		} catch {}
-		fs.mkdirSync(dirPath, { recursive: true });
-		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
-	}
-}
 function isSlashResultRunning(result: { details?: Details }): boolean {
 	return (
 		result.details?.progress?.some((entry) => entry.status === "running") ||
@@ -111,7 +95,7 @@ function isSlashResultRunning(result: { details?: Details }): boolean {
 }
 function isSlashResultError(result: { details?: Details }): boolean {
 	return (
-		result.details?.results.some((entry) => entry.exitCode !== 0 && entry.progress?.status !== "running") || false
+		result.details?.results.some((entry) => entry.status === "error" && entry.progress?.status !== "running") || false
 	);
 }
 type SubagentToolRenderState = SubagentResultRenderState;
@@ -221,16 +205,10 @@ class SubagentControlNoticeComponent implements Component {
 }
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
-	if (getEnvValue(SUBAGENT_CHILD_ENV) === "1") {
-		if (getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) === "1") registerFanoutChildSubagentExtension(pi);
-		return;
-	}
 	const lifecycle = beginApiLifecycle(pi);
 	const registrationFailureCleanups: Array<() => void> = [];
 	let runtimeCleanupInstalled = false;
 	try {
-		ensureAccessibleDir(RESULTS_DIR);
-		ensureAccessibleDir(ASYNC_DIR);
 		const config = loadConfig();
 		const asyncByDefault = config.asyncByDefault === true;
 		const tempArtifactsDir = getArtifactsDir(null);
@@ -254,18 +232,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				clear: () => {},
 			},
 		};
-		const maintenance = createSubagentStartupMaintenance(pi, state, {
-			resultsDir: RESULTS_DIR,
+		const maintenance = createSubagentStartupMaintenance(state, {
 			artifactCleanupDays: DEFAULT_ARTIFACT_CONFIG.cleanupDays,
-			resultTtlMs: 10 * 60 * 1000,
 		});
 		maintenance.scheduleStartupCleanup();
 		registrationFailureCleanups.push(() => maintenance.stop());
-		maintenance.startResultWatcherDeferred();
-		maintenance.primeExistingResultsDeferred();
 		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobsDeferred } =
 			createAsyncJobTracker(pi, state, ASYNC_DIR);
-		const executor = createSubagentExecutor({
+		const executorDeps = {
 			pi,
 			state,
 			config,
@@ -274,7 +248,23 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			getSubagentSessionRoot,
 			expandTilde,
 			discoverAgents,
-		});
+		};
+		const executor = createSubagentExecutor(executorDeps);
+		const childExecutors = new Map<string, ReturnType<typeof createSubagentExecutor>>();
+		const executorForContext = (ctx: ExtensionContext): ReturnType<typeof createSubagentExecutor> => {
+			const policy = ctx.subagentPolicy;
+			if (!policy) return executor;
+			const key = `${policy.managementActions}:${policy.fanoutAuthorized ? "fanout" : "no-fanout"}`;
+			const cached = childExecutors.get(key);
+			if (cached) return cached;
+			const childExecutor = createSubagentExecutor({
+				...executorDeps,
+				childPolicy: policy,
+				allowMutatingManagementActions: policy.managementActions === "full",
+			});
+			childExecutors.set(key, childExecutor);
+			return childExecutor;
+		};
 		pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
 			const details = resolveSlashMessageDetails(message.details);
 			if (!details) return undefined;
@@ -304,7 +294,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				state.lastUiContext = ctx;
 				ctx.ui.setToolsExpanded(false);
 			}
-			return executor.execute(id, params, signal, onUpdate, ctx);
+			return executorForContext(ctx).execute(id, params, signal, onUpdate, ctx);
 		};
 		const slashBridge = registerSlashSubagentBridge({
 			events: pi.events,
@@ -454,6 +444,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				...Array.from(state.cleanupTimers.values(), (timer) => () => clearTimeout(timer)),
 				() => state.cleanupTimers.clear(),
 				() => state.asyncJobs.clear(),
+				() => childExecutors.clear(),
 				() => clearSlashSnapshots(pi),
 				() => slashBridge.cancelAll(),
 				() => slashBridge.dispose(),
@@ -489,7 +480,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			resetJobs(ctx);
 			hydrateActiveJobsDeferred(ctx);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
-			maintenance.primeExistingResultsDeferred();
+			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 		};
 		pi.on("session_start", (_event, ctx) => {
 			if (lifecycle.isCurrent()) resetSessionState(ctx);

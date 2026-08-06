@@ -44,6 +44,7 @@ import type {
 	ExtensionUIContext,
 	OrchestrationContext,
 	SessionStartEvent,
+	SubagentChildPolicy,
 	ToolDefinition,
 } from "./extensions/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
@@ -75,6 +76,13 @@ class AgentSessionBase {
 	protected _scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	protected _fallbackModels: string[];
 	protected _fallbackAttemptedKeys: Set<string> = new Set();
+	/** Models condemned for this turn by a failure retrying them cannot repair. */
+	protected _fallbackBlockedModels: Array<Model<Api>> = [];
+	protected _fallbackOriginModel: Model<Api> | undefined;
+	protected _fallbackOriginThinkingLevel: ThinkingLevel | undefined;
+	protected _fallbackScopeGeneration = 0;
+	protected _fallbackOriginGeneration: number | undefined;
+	protected _fallbackRestoreError: string | undefined;
 	protected _unsubscribeAgent?: () => void;
 	protected _eventListeners: AgentSessionEventListener[] = [];
 	protected _agentEventQueue: Promise<void> = Promise.resolve();
@@ -98,6 +106,8 @@ class AgentSessionBase {
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
+	/** Set when compaction cannot recover a context overflow on the current model. */
+	protected _contextOverflowUnresolved = false;
 	protected _pendingPostCompactionContinuation: Promise<void> | undefined = undefined;
 	protected _postCompactionContinuationToken = 0;
 	protected _lengthContinuationAttempts = 0;
@@ -120,6 +130,7 @@ class AgentSessionBase {
 	protected _cwd: string;
 	protected _extensionRunnerRef?: { current?: ExtensionRunner };
 	protected _initialActiveToolNames?: string[];
+	protected _subagentPolicy?: SubagentChildPolicy;
 	protected _allowedToolNames?: Set<string>;
 	protected _excludedToolNames?: Set<string>;
 	protected _baseToolsOverride?: Record<string, AgentTool>;
@@ -138,6 +149,7 @@ class AgentSessionBase {
 	protected _toolPromptGuidelines: Map<string, string[]> = new Map();
 	protected _baseSystemPrompt = "";
 	protected _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	protected _systemPromptTransform?: (prompt: string) => string;
 	protected _systemPromptOverride?: string;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	protected _asyncJobManager: AsyncJobManager;
@@ -160,6 +172,8 @@ class AgentSessionBase {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;
+		this._subagentPolicy = config.subagentPolicy;
+		this._systemPromptTransform = config.systemPromptTransform;
 		const stageContext =
 			config.orchestrationContext?.kind === "workflow-stage" ? config.orchestrationContext : undefined;
 		this._workflowStageAdmission =

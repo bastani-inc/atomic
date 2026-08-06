@@ -57,19 +57,22 @@ export async function _checkCompaction(
 	// response — before a fresh user prompt we must not resume the old turn.
 	const isLiveTurnCompletion = skipAbortedCheck;
 	const settings = this.settingsManager.getCompactionSettings();
-	if (!settings.enabled) return;
-
-	// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
-	if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
-
 	const contextWindow = this.model?.contextWindow ?? 0;
-
-	// Skip overflow check if the message came from a different model.
+	// Skip overflow handling if the message came from a different model.
 	// This handles the case where user switched from a smaller-context model (e.g. opus)
 	// to a larger-context model (e.g. codex) - the overflow error from the old model
 	// shouldn't trigger compaction for the new model.
 	const sameModel =
 		this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
+	if (!settings.enabled) {
+		// Compaction cannot recover this turn, so a configured fallback chain may
+		// advance to a larger-context candidate instead of dead-ending.
+		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) this._contextOverflowUnresolved = true;
+		return;
+	}
+
+	// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
+	if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
 
 	// Skip compaction checks if this assistant message is older than the latest
 	// compaction boundary. This prevents a stale pre-compaction usage/error
@@ -91,6 +94,9 @@ export async function _checkCompaction(
 		}
 
 		if (this._overflowRecoveryAttempted) {
+			// One compact-and-retry has already been spent on this turn; a configured
+			// fallback chain may now advance to a larger-context candidate.
+			this._contextOverflowUnresolved = true;
 			this._emit({
 				type: "compaction_end",
 				reason: "overflow",
@@ -266,10 +272,25 @@ export function _schedulePostAutoCompactionContinuationProbe(
 ): void {
 	const token = this._postCompactionContinuationToken + 1;
 	this._postCompactionContinuationToken = token;
+	const fallbackScopeGeneration = this._fallbackOriginGeneration;
 	let pending: Promise<void>;
 	pending = new Promise<void>((resolve) => {
 		setTimeout(() => {
 			void (async () => {
+				const restoreIfOwned = async (): Promise<void> => {
+					if (
+						fallbackScopeGeneration === undefined ||
+						this._fallbackOriginGeneration !== fallbackScopeGeneration ||
+						typeof this._restoreFallbackModel !== "function"
+					)
+						return;
+					try {
+						await this._restoreFallbackModel();
+					} catch {
+						// A listener must not strand the continuation waiter. The model
+						// state was already restored before lifecycle notifications ran.
+					}
+				};
 				try {
 					if (willRetry) {
 						if (this._postCompactionContinuationToken !== token) return;
@@ -278,9 +299,24 @@ export function _schedulePostAutoCompactionContinuationProbe(
 						await this.agent.waitForIdle();
 						if (this._postCompactionContinuationToken !== token) return;
 						if (this.isCompacting || this.isStreaming) return;
-						if (!this.agent.hasQueuedMessages()) return;
+						if (!this.agent.hasQueuedMessages()) {
+							await restoreIfOwned();
+							return;
+						}
+						// A queued message starts the next user turn. Restore before
+						// Agent snapshots the next request's model.
+						await restoreIfOwned();
 					}
+
+					if (this._pendingPostCompactionContinuation !== pending) return;
+					// Clear this probe before entering the next run. Its promise is
+					// still awaited by _awaitPendingPostCompactionContinuation, but
+					// the nested agent_end must be free to schedule a new probe.
+					this._pendingPostCompactionContinuation = undefined;
 					await this._resumeAfterAutoCompaction();
+					if (willRetry && this._pendingPostCompactionContinuation === undefined) {
+						await restoreIfOwned();
+					}
 				} finally {
 					if (this._pendingPostCompactionContinuation === pending) {
 						this._pendingPostCompactionContinuation = undefined;
@@ -334,8 +370,18 @@ export function _resumeAfterLengthTruncation(this: AgentSession): void {
 	this._schedulePostAutoCompactionContinuationProbe("threshold", true);
 }
 
-function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): boolean | undefined {
-	return reason === "overflow" && !aborted ? true : undefined;
+/**
+ * Whether an overflow turn is now unrecoverable by compaction, recording it on
+ * the session so a configured fallback chain may advance to another candidate.
+ */
+function overflowUnresolved(
+	this: AgentSession,
+	reason: "overflow" | "threshold",
+	aborted = false,
+): boolean | undefined {
+	if (reason !== "overflow" || aborted) return undefined;
+	this._contextOverflowUnresolved = true;
+	return true;
 }
 
 export async function _runAutoCompaction(
@@ -367,7 +413,7 @@ export async function _runAutoCompaction(
 				result: undefined,
 				aborted: false,
 				willRetry: false,
-				unresolvedOverflow: overflowUnresolved(reason),
+				unresolvedOverflow: overflowUnresolved.call(this, reason),
 			});
 			return;
 		}
@@ -398,7 +444,7 @@ export async function _runAutoCompaction(
 				result: undefined,
 				aborted: false,
 				willRetry: false,
-				unresolvedOverflow: overflowUnresolved(reason),
+				unresolvedOverflow: overflowUnresolved.call(this, reason),
 			});
 			return;
 		}
@@ -419,7 +465,7 @@ export async function _runAutoCompaction(
 			result: undefined,
 			aborted,
 			willRetry: false,
-			unresolvedOverflow: overflowUnresolved(reason, aborted),
+			unresolvedOverflow: overflowUnresolved.call(this, reason, aborted),
 			errorMessage: aborted
 				? undefined
 				: reason === "overflow"

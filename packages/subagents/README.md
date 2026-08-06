@@ -162,9 +162,9 @@ Workflow invocations receive a stable, non-`default` Intercom group automaticall
 
 Foreground runs stream progress in the conversation while they run.
 
-Background runs keep working after control returns to you. The launch acknowledgement says `launched` and `completion pending`: the `subagent` launch tool call itself is finished, while the detached child is not. Inspect active runs with `subagent({ action: "status" })`, or a specific run with `subagent({ action: "status", id: "..." })`.
+`async: true` means **do not wait**. Atomic admits an in-process child, returns its canonical child path immediately, and tracks the live child through the jobs widget. **Async work does not survive parent exit:** the live child is owned by the parent process and ends when Atomic quits; only its canonical identity and session file remain for a later cold resume.
 
-They also show a compact async widget with the same launch/pending distinction and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones.
+The jobs widget shows the live status-watch state and sends one terminal completion notification. Parallel background runs show per-agent progress, and chains with parallel groups keep their grouped shape in progress and results. There is no detached runner process or PID polling loop.
 
 You can also ask naturally:
 
@@ -238,7 +238,7 @@ The child can use one dedicated coordination tool:
 
 - `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for blocking decisions or clarification, and `reason: "progress_update"` for short non-blocking updates when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
-Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Intercom-confirmed foreground delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child intercom targets and full child summaries. The separate in-process completion event keeps its legacy synchronous semantics: emission is accepted unless a listener explicitly rejects it during the call, and no listener is not treated as an error.
+Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side Atomic sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async terminal result. Intercom-confirmed foreground delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child intercom targets and full child summaries.
 When the companion is enabled and available, the bridge gives eligible children deterministic Intercom identities and coordination tools without connecting them automatically. Parent and child connections remain tool-driven: if a child may need live coordination, the parent model should invoke `intercom({ action: "status" })` before launch, and the child connects when it invokes `contact_supervisor` or `intercom`. Foreground/background launch and management-only actions do not force Intercom loading or broker startup.
 
 For foreground runs, Intercom uses a targeted probe/reservation before delivery: only the exact live child can claim its message. Atomic then commits detach for that child and waits for its acknowledgement before placing claimed asks, sends, decisions, interviews, and progress updates in the parent's model-visible steering queue, so cancellation between phases cannot surface an orphaned request. Blocking calls remain alive for an exact threaded reply and then resume; fire-and-forget calls create no waiter. The retained child later replaces its detached status and artifacts with the real result. Cancellation/replacement invalidates stale handshakes, duplicate delivery cannot recommit, and background or unmatched messages retain queued-until-idle behavior.
@@ -344,7 +344,7 @@ You can combine them in either order:
 /run reviewer "review this diff" --bg --fork
 ```
 
-Background runs are detached. A successful acknowledgement explicitly means the run was launched and child completion is pending; it is a terminal result for the launch tool, not a claim that the child has finished. If the parent agent has other independent work, it should keep working. If it has nothing useful to do until the background result arrives, it should end the turn instead of running sleep or status-polling loops. Pi will deliver the completion when the run finishes.
+Background runs use the same in-process continuation as foreground detach. A successful acknowledgement means the canonical child path was returned and completion is pending; the live child remains owned by the parent process and the jobs widget tracks it. **`async: true` does not survive parent exit.** If the parent exits, the in-flight run ends; its persisted identity/session can be listed and resumed later.
 
 The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
@@ -356,7 +356,7 @@ The human slash commands remain on their separate parsing and event-bridge path,
 
 ## Agents and chains
 
-Agents are markdown files with YAML frontmatter and a system prompt body. They define the specialist that will run in the child Atomic process.
+Agents are markdown files with YAML frontmatter and a system prompt body. They define the specialist that will run in a child Atomic session.
 
 Agent locations, lowest to highest priority:
 
@@ -837,7 +837,7 @@ subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for c
 subagent({ action: "doctor" })
 ```
 
-`resume` sends the follow-up directly when an async child is still reachable over intercom. After completion, it revives the child by starting a new async child from the stored child session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child. Revive starts a new child process from the old session context; it does not restart the same OS process, and it requires the chosen child to have a persisted `.jsonl` session file.
+`resume` sends the follow-up directly when a child is still reachable. After completion or eviction, it cold-reloads the same canonical child identity from the stored session file. Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child; no new OS process is created.
 
 ## Worktree isolation
 
@@ -919,7 +919,7 @@ Session directory precedence is: `params.sessionDir`, then `config.defaultSessio
 { "maxSubagentDepth": 1 }
 ```
 
-Controls nested delegation when no inherited `ATOMIC_SUBAGENT_MAX_DEPTH` (or legacy `PI_SUBAGENT_MAX_DEPTH`) is already in effect. Accepted values are `0` through `5`; higher values are clamped to the hard ceiling. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
+Controls nested delegation through typed admission policy. Accepted values are `0` through `5`; higher values are refused at the hard ceiling. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
 
 ### `intercomBridge`
 
@@ -979,25 +979,24 @@ Debug artifacts live under `{sessionDir}/subagent-artifacts/` or a user-scoped t
 - `{runId}_{agent}.jsonl`
 - `{runId}_{agent}_meta.json`
 
-Metadata records timing, usage, exit code, final model, attempted models, and fallback attempt outcomes.
+Metadata records timing, usage, typed status, termination cause, final model, attempted models, and fallback attempt outcomes.
 
-Session files are stored under a per-run session directory. With `context: "fork"`, each child starts with `--session <branched-session-file>` produced from the parent’s current leaf. That is a real session fork, not an injected summary.
+Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
-Async completions notify only the originating session. The result watcher emits `subagent:async-complete`, and the extension consumes that event to render completion notifications.
+Async completions notify only the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications.
 
-Async runs write:
+Async runs persist their durable session and user-facing artifacts beside the parent session:
 
 ```text
-<tmpdir>/atomic-subagents-<scope>/async-subagent-runs/<id>/
-  status.json
-  events.jsonl
-  output-<n>.log
-  subagent-log-<id>.md
+{parent-session-dir}/subagent-artifacts/
+  {runId}_{agent}_input.md
+  {runId}_{agent}_output.md
+  {runId}_{agent}.jsonl
+  {runId}_{agent}_meta.json
+  run-history.jsonl
 ```
 
-`status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus bounded child telemetry annotated with run and step metadata: streaming deltas keep compact incremental metadata rather than cumulative partial-message snapshots, and raw child stdout/stderr consume the same byte budget. One truncation marker records exhaustion, while the full finalized `message_end` and later control/lifecycle/terminal events remain available. Writer reacquisition uses a bounded identity/fingerprint cache so unchanged or append-only journals avoid full rescans while same-inode rewrites, truncate/regrow cycles, replacements, and externally appended markers reset state correctly. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
-
-The result watcher waits for modern run status to become terminal using capped exponential rechecks, so a late repaired status still delivers without a fixed-rate polling loop. Intercom confirmation and local synchronous acceptance are tracked as separate phases; a successful phase is not replayed when another phase retries or the watcher is replaced. Equivalent result aliases coalesce by canonical run identity, but aliases with different user-visible output or parent targets are retained under collision-resistant names in the non-scanned `<results>/.undelivered/` directory. The same directory retains a still-owned result after a finite no-progress retry budget, and Atomic logs the retained path instead of retrying forever, overwriting earlier evidence, or deleting the payload.
+The Rust registry and status watch power the widget and `subagent({ action: "status" })` output. Terminal delivery is an in-memory bounded envelope persisted once with typed `status`, `cause`, and `stats`; there is no `status.json`, `events.jsonl`, PID reconciler, result watcher, or claim pipeline.
 
 ## Completion and output
 
@@ -1039,17 +1038,10 @@ By default, nesting is capped at five delegated subagent levels below the main s
 
 Configure a lower or equal limit with:
 
-1. `ATOMIC_SUBAGENT_MAX_DEPTH` (or legacy `PI_SUBAGENT_MAX_DEPTH`) before starting Atomic; values above `5` are clamped to `5`
-2. `config.maxSubagentDepth`
-3. `maxSubagentDepth` in agent frontmatter, which can only tighten the inherited limit
+1. `config.maxSubagentDepth`
+2. `maxSubagentDepth` in agent frontmatter, which can only tighten the admitted limit
 
-```bash
-export ATOMIC_SUBAGENT_MAX_DEPTH=5
-export ATOMIC_SUBAGENT_MAX_DEPTH=3
-export ATOMIC_SUBAGENT_MAX_DEPTH=0
-```
-
-`ATOMIC_SUBAGENT_DEPTH` is internal and propagated automatically. Do not set it manually. Legacy `PI_SUBAGENT_MAX_DEPTH` and `PI_SUBAGENT_DEPTH` are still read for compatibility.
+The depth policy is typed admission state and is not inherited through an environment variable.
 
 ## Events
 
@@ -1063,7 +1055,7 @@ Intercom delivery events:
 - `subagent:control-intercom`
 - `subagent:result-intercom`
 
-The result watcher emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices and persisted for async runs. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
+The in-process status watch emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices, and typed terminal records carry the canonical path, status, cause, and session statistics. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
 
 ## Prompt-template integration
 

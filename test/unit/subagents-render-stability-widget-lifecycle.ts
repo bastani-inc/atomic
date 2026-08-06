@@ -232,39 +232,45 @@ describe("async widget animation ticker lifecycle", () => {
 		assert.equal(renders(), 1, "no periodic widget ticker should run after the status update");
 	});
 
-	test("compact large parallel widgets preserve running output paths", () => {
+	test("compact and expanded widgets never advertise deleted process stdout logs", () => {
 		type WidgetFactory = (tui: unknown, widgetTheme: RenderTheme) => Component;
 
-		const { ctx, widgetCalls } = mockLifecycleWidgetCtx();
-		const steps = Array.from({ length: 3 }, (_, index) => ({
-			index,
-			agent: `worker-${index}`,
-			status: "running" as const,
-			durationMs: 1_000 + index,
-			toolCount: index + 1,
-			tokens: { input: 10, output: 0, total: 10 },
-		}));
-		renderWidget(ctx, [
-			{
-				...runningJob(),
-				asyncDir: "/tmp/parallel-job",
-				mode: "parallel",
-				agents: steps.map((step) => step.agent),
-				steps,
-				stepsTotal: steps.length,
-				runningSteps: steps.length,
-				completedSteps: 0,
-			},
-		]);
+		for (const expanded of [false, true]) {
+			const { ctx, widgetCalls } = mockLifecycleWidgetCtx(undefined, expanded);
+			const steps = Array.from({ length: 3 }, (_, index) => ({
+				index,
+				agent: `worker-${index}`,
+				status: "running" as const,
+				durationMs: 1_000 + index,
+				toolCount: index + 1,
+				tokens: { input: 10, output: 0, total: 10 },
+			}));
+			renderWidget(ctx, [
+				{
+					...runningJob(),
+					asyncDir: "/tmp/parallel-job",
+					mode: "parallel",
+					agents: steps.map((step) => step.agent),
+					steps,
+					stepsTotal: steps.length,
+					runningSteps: steps.length,
+					completedSteps: 0,
+				},
+			]);
 
-		const factory = widgetCalls[0]?.content;
-		assert.equal(typeof factory, "function");
-		const component = (factory as WidgetFactory)(undefined, theme);
-		const rendered = component.render(160).join("\n");
+			const factory = widgetCalls[0]?.content;
+			assert.equal(typeof factory, "function");
+			const component = (factory as WidgetFactory)(undefined, theme);
+			const rendered = component.render(160).join("\n");
 
-		assert.match(rendered, /output-0\.log/, "compact parallel widget should keep the first running output path");
-		assert.match(rendered, /output-1\.log/, "compact parallel widget should keep the second running output path");
-		assert.match(rendered, /output-2\.log/, "compact parallel widget should keep the third running output path");
+			assert.doesNotMatch(rendered, /output-\d+\.log/, "the widget must not claim a deleted child stdout log");
+			assert.doesNotMatch(
+				rendered,
+				/^\s*(?:output|session|artifacts?):\s+\S+/m,
+				"no nonexistent artifact path is claimed",
+			);
+			stopWidgetAnimation();
+		}
 	});
 	test("mounts the async widget belowEditor so its live line stays within the viewport (flicker-free)", () => {
 		const opts: unknown[] = [];

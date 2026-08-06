@@ -31,7 +31,7 @@ function makeAgent(defaultProgress?: boolean): AgentConfig {
 }
 
 function makeResult(task: string): SingleResult {
-	return { agent: "worker", task, exitCode: 0, messages: [], usage, finalOutput: "done" };
+	return { agent: "worker", task, status: "ok", messages: [], usage, finalOutput: "done" };
 }
 
 function extractProgressPath(task: string): string {
@@ -244,7 +244,7 @@ test("foreground artifacts-disabled progress storage is removed after child fail
 			runSync: async (_cwd, _agents, _agent, task) => {
 				progressPath = extractProgressPath(task);
 				assert.equal(existsSync(progressPath), true);
-				return { ...makeResult(task), exitCode: 1, error: "failed" };
+				return { ...makeResult(task), status: "error" as const, error: "failed" };
 			},
 		});
 

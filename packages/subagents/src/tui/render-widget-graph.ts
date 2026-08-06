@@ -1,5 +1,4 @@
 import { keyHintIfBound } from "@bastani/atomic";
-import { shortenPath } from "../shared/formatters.ts";
 import { aggregateStepStatus, formatParallelOutcome } from "../shared/status-format.ts";
 import type { AsyncJobState } from "../shared/types.ts";
 import { buildAsyncChainStepSpans } from "./render-chain-graph.ts";
@@ -8,7 +7,6 @@ import {
 	modelThinkingBadge,
 	widgetActivity,
 	widgetJobName,
-	widgetOutputPath,
 	widgetStats,
 	widgetStatusGlyph,
 	widgetStepActivity,
@@ -130,8 +128,6 @@ export function foregroundStyleWidgetStepLines(
 	if (step.status === "running") {
 		const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
 		if (!expanded && expandHint) lines.push(`    ${theme.fg("accent", `Press ${expandHint}`)}`);
-		const output = widgetOutputPath(job, step);
-		if (output) lines.push(`    ${theme.fg("dim", `output: ${shortenPath(output)}`)}`);
 		if (expanded) {
 			const liveStatus = buildLiveStatusLine(step, job.updatedAt);
 			if (liveStatus && liveStatus !== activity) lines.push(`    ${theme.fg("accent", liveStatus)}`);
@@ -247,10 +243,6 @@ export function compactSingleWidgetLines(
 			pulseFrame,
 		))
 			lines.push(`    ${nestedLine}`);
-		if (step.status === "running") {
-			const output = widgetOutputPath(job, step);
-			if (output) lines.push(`    ${theme.fg("dim", `output: ${shortenPath(output)}`)}`);
-		}
 	}
 	const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
 	if (expandHint && job.steps.some((step) => step.status === "running"))

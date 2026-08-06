@@ -34,5 +34,5 @@ export function renderSessionList(runs: readonly RunSnapshot[], opts: SessionLis
 			toolNodes: graph.tools.map((tool) => structuredClone(tool)),
 		};
 	});
-	return renderStatusList(filtered, { theme: opts.theme, now });
+	return renderStatusList(filtered, { theme: opts.theme, now, allRuns: runs });
 }

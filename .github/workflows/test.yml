@@ -6,9 +6,23 @@ env:
 permissions:
   contents: read
 
+# Only `main` runs on push. A release/** or prerelease/** branch always reaches
+# CI through its pull request (AGENTS.md, "Agent publishing requests"), so
+# listing those globs here made one SHA run the entire workflow twice: two sets
+# of runners competing for the same 4vCPU pool, and two competing check runs per
+# required context. GitHub keeps the latest result per context name, so one
+# spurious failure in the push run blocked the pull request permanently even
+# though the pull_request run for that exact SHA was fully green -- runs
+# 31047506585 (push, Linux `suites` cancelled on its cap) and 31047542976
+# (pull_request, every job green) on sha 772a373.
+#
+# There is deliberately no `concurrency:` block. A group that cancels a run
+# already in flight can kill a run that has published `test (...)`, leaving a
+# cancelled required context on a SHA with no superseding successful run, which
+# is the failure being fixed here rather than a fix for it.
 on:
   push:
-    branches: [main, "release/**", "prerelease/**"]
+    branches: [main]
   pull_request:
 
 # The work runs as four concurrent jobs instead of one sequential per-platform
@@ -31,17 +45,25 @@ jobs:
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
             binary_platform: linux-x64
-            timeout_minutes: 8
+            timeout_minutes: 13
           - os: blacksmith-4vcpu-windows-2025
             binary_platform: windows-x64
-            timeout_minutes: 12
+            timeout_minutes: 14
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # Sequential-job sampling put this at 121s Linux / 195s Windows, but the
-    # first split run measured 230s / 348s with the unit step's one bounded flake
-    # retry firing on both platforms. The cap is a hang detector at roughly 2x
-    # measured p100, not a performance budget, and a cap that cancels a passing
-    # retried run is worse than a late hang detection.
+    # Measured p100 on the last fully green run of this workflow, run
+    # 31047542976 (pull_request, sha 772a373): 400s Linux (unit 291s, native
+    # bindings 45s, integration 29s) and 595s Windows (unit 401s). The previous
+    # 8/12 caps were sized against older 230s/348s measurements and had decayed
+    # to 1.2x, so the Linux leg was cancelled at 497s on run 31047506585 while
+    # the same SHA passed on the pull_request event.
+    #
+    # The cap is a hang detector, not a performance budget. Linux is 13 min
+    # (780s, 1.95x of 400s). Windows would need 20 min for that same ratio, and
+    # every cap here stays strictly under 15 min, so Windows takes the
+    # ceiling-bounded 14 min (840s, 1.41x of 595s). That covers the measured
+    # p100 plus a slow runner but not a full replay of the 401s Windows unit
+    # step; shortening that step is what would restore a true 2x detector.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # Sticky disks are Blacksmith-Linux-only; Windows takes a standard clone.
@@ -70,8 +92,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # packages/subagents now drives its children through the Rust control
+      # plane in crates/atomic-natives, so the bundled subagent extension fails
+      # to load at import without a binding. That takes the root unit and
+      # integration suites down with it, not just the in-process runner tests.
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        timeout-minutes: 4
+        with:
+          # Required once pinned by SHA: the version otherwise comes from the ref.
+          toolchain: stable
       - name: Install dependencies
         run: npm ci --ignore-scripts
+      # Measured at 42s Linux / 86s Windows, both inside the existing caps.
+      - name: Build native bindings for the root suites
+        run: npm run build --workspace=@bastani/atomic-natives
       # Both suites below consume this build. test/unit/pi-0.82.1-artifacts.test.ts
       # silently degrades to test.skip when packages/coding-agent/dist is absent,
       # so moving the unit suite out of this job would lose coverage without
@@ -110,15 +144,20 @@ jobs:
         include:
           - os: blacksmith-4vcpu-ubuntu-2404
             binary_platform: linux-x64
-            timeout_minutes: 6
+            timeout_minutes: 8
           - os: blacksmith-4vcpu-windows-2025
             binary_platform: windows-x64
             timeout_minutes: 12
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # Sampled at 126s Linux / 232s Windows; the first split run measured 138s /
-    # 349s. This is the critical path of the whole workflow, so it is the chain
-    # to shard first if a further cut is wanted.
+    # Measured on sha 772a373: 154s / 250s in the green run 31047542976, and a
+    # worst observation of 221s Linux / 270s Windows across both events on that
+    # SHA; the first split run measured 138s / 349s. Linux moves 6 -> 8 min
+    # (480s, 2.17x of the 221s worst observation) because 6 min had decayed to
+    # 1.6x, the same drift that cancelled `suites`. Windows stays at 12 min
+    # (720s), still 2.06x the 349s worst case this job has ever produced. This
+    # is the critical path of the whole workflow, so it is the chain to shard
+    # first if a further cut is wanted.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
@@ -178,12 +217,13 @@ jobs:
             timeout_minutes: 5
           - os: blacksmith-4vcpu-windows-2025
             binary_platform: windows-x64
-            timeout_minutes: 6
+            timeout_minutes: 9
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    # Sampled at 74s Linux / 149s Windows and measured at 84s / 162s on the first
-    # split run, both including the native binding rebuild this job pays for
-    # itself (see the Rust toolchain note below).
+    # The warm sample measured 162s, but cold acquisition consumed 152s for
+    # rust-toolchain and 71s for checkout, on top of ~110s native build and
+    # ~40s archive smoke: an observed tail near 6m50s versus a healthy 4m04s.
+    # Keep 9m of headroom for that cold toolchain tail.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
