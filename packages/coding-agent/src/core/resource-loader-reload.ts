@@ -21,6 +21,7 @@ import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./reso
 import {
 	loadExtensionFactories,
 	loadFinalExtensionSet,
+	recordLoadedFileExtensionPaths,
 	resolveInheritedExtensionOverlaps,
 } from "./resource-loader-extensions.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
@@ -121,6 +122,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 		undefined,
 		inheritanceSnapshotProvider,
 	);
+	recordLoadedFileExtensionPaths(extensionsResult);
 	const inlineExtensions = await loadExtensionFactories(
 		loader,
 		extensionsResult.runtime,
@@ -274,6 +276,11 @@ export async function reloadDefaultResourceLoader(
 		}
 	}
 	state.extensionsResult = state.extensionsOverride ? state.extensionsOverride(extensionsResult) : extensionsResult;
+	// Re-record from the final set, not just the pre-inline snapshot. An inline
+	// factory that defers its decision to activation time — the Herdr reporter
+	// stands down for a file-based integration — must see every file extension
+	// this cycle loaded, including any that landed after the factories ran.
+	recordLoadedFileExtensionPaths(state.extensionsResult);
 	applyExtensionSourceInfo(loader, state.extensionsResult.extensions, metadataByPath);
 	resolveInheritedExtensionOverlaps(state.extensionsResult);
 

@@ -2,6 +2,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
+import { setLoadedFileExtensionPaths } from "./extensions/loaded-extension-paths.ts";
 import { loadExtensionFromFactory, loadExtensionsCached, type WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
@@ -32,6 +33,7 @@ export async function loadFinalExtensionSet(
 			inheritanceSnapshotProvider,
 		);
 		endTimingSpan(loadExtensionsSpan);
+		recordLoadedFileExtensionPaths(extensionsResult);
 		const inlineExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadInlineExtensionFactories");
 		const inlineExtensions = await loadExtensionFactories(
 			loader,
@@ -84,6 +86,20 @@ export async function loadFinalExtensionSet(
 		runtime: preTrustExtensions.runtime,
 	};
 	return extensionsResult;
+}
+
+/**
+ * Publish the file-backed extension paths of `extensionsResult` for this cycle.
+ *
+ * Inline factories read this to decide whether an equivalent file extension
+ * already loaded, so it must be set before they run.
+ */
+export function recordLoadedFileExtensionPaths(extensionsResult: LoadExtensionsResult): void {
+	setLoadedFileExtensionPaths(
+		extensionsResult.extensions
+			.filter((extension) => !extension.path.startsWith("<inline:"))
+			.map((extension) => extension.resolvedPath),
+	);
 }
 
 export async function loadExtensionFactories(
