@@ -203,26 +203,13 @@ export function renderSubagentResult(
 			r.progress?.status !== "running" &&
 			hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
-	const hasFailure = d.results.some((r) => r.status === "error" || r.progress?.status === "failed");
-	const hasPaused = d.results.some(
-		(r) =>
-			r.interrupted ||
-			r.detached ||
-			r.status === "interrupted" ||
-			r.status === "continued" ||
-			r.status === "skipped",
-	);
 	const icon = hasRunning
 		? theme.fg("warning", "running")
 		: hasEmptyWithoutTarget
 			? theme.fg("warning", "warning")
-			: hasFailure
-				? theme.fg("error", "failed")
-				: hasPaused
-					? theme.fg("warning", "paused")
-					: ok === d.results.length
-						? theme.fg("success", "ok")
-						: theme.fg("error", "failed");
+			: ok === d.results.length
+				? theme.fg("success", "ok")
+				: theme.fg("error", "failed");
 
 	const totalSummary =
 		d.progressSummary ||

@@ -11,7 +11,7 @@
 
 Fix issue #1087 by aligning `@bastani/subagents` skill resolution with Atomic’s builtin package resource discovery. Today the main Atomic chat loads builtin package skills from `@bastani/subagents` through `DefaultResourceLoader`, but subagent execution resolves requested agent skills independently in `packages/subagents/src/agents/skills.ts`. As a result, builtin agents such as `debugger` declare `skills: tdd, browser` in `packages/subagents/agents/debugger.md:8`, yet child execution can warn `Skills not found: tdd, browser` when run from the repo root or a normal project cwd.
 
-The proposed minimal fix is to add builtin package skill roots to the subagent resolver’s search path by reusing Atomic’s exported `getBuiltinPackagePaths()` and existing `pi.skills` manifest extraction. This preserves current project/user/settings/package discovery and source precedence while making builtin skill injection available to foreground, async single, and async chain subagent runs without changing those execution paths.
+The proposed minimal fix is to add builtin package skill roots to the subagent resolver’s search path by reusing Atomic’s exported `getBuiltinPackagePaths()` and existing `pi.skills` manifest extraction. This preserves current project/user/settings/package discovery and source precedence while making builtin skill injection available to foreground and async single subagent runs without changing those execution paths.
 
 Tests will be written first. The core red test should demonstrate that, from the repository root, `resolveSkills(["tdd", "browser"], process.cwd())` resolves to `packages/subagents/skills/*/SKILL.md` instead of returning both names in `missing`.
 
@@ -44,7 +44,6 @@ Subagent execution has a separate resolver:
 The foreground and background execution paths already use this resolver:
 
 - Foreground: `packages/subagents/src/runs/foreground/execution.ts:768-785`.
-- Async chain: `packages/subagents/src/runs/background/async-execution.ts:307-316`.
 - Async single: `packages/subagents/src/runs/background/async-execution.ts:563-571`.
 
 `packages/subagents/package.json` declares:
@@ -98,7 +97,7 @@ No prior review findings were provided for this first iteration. No direct `#108
 
 1. From repo root, resolving `tdd` and `browser` through `packages/subagents/src/agents/skills.ts` succeeds and resolves to `packages/subagents/skills`.
 2. Foreground subagent runs using builtin `debugger` no longer warn `Skills not found: tdd, browser` solely because the skills are builtin package resources.
-3. Async single and async chain execution benefit automatically because they already call `resolveSkillsWithFallback()`.
+3. Async single execution benefits automatically because it already calls `resolveSkillsWithFallback()`.
 4. Preserve existing project/user/settings/package skill discovery behavior.
 5. Preserve precedence: project/user skill definitions continue to override builtin definitions by name.
 6. Keep the `subagent` orchestration skill unavailable for ordinary child injection, as currently enforced in `resolveSkills()`.
@@ -190,7 +189,7 @@ This avoids a larger dependency inversion refactor while still eliminating the d
 | `packages/subagents/agents/debugger.md`                                            | Declares `skills: tdd, browser`                                              | Markdown + YAML frontmatter                | Reproduction target for issue #1087                              |
 | `packages/subagents/skills/*/SKILL.md`                                             | Builtin skill content to inject into child prompts                           | Agent Skills standard markdown             | Required builtin resources already shipped by package metadata   |
 | `packages/subagents/src/runs/foreground/execution.ts`                              | Inject resolved skills into foreground child system prompts                  | TypeScript                                 | Should benefit via unchanged resolver call                       |
-| `packages/subagents/src/runs/background/async-execution.ts`                        | Inject resolved skills into async single and chain child prompts             | TypeScript                                 | Should benefit via unchanged resolver call                       |
+| `packages/subagents/src/runs/background/async-execution.ts`                        | Inject resolved skills into async single child prompts                       | TypeScript                                 | Should benefit via unchanged resolver call                       |
 | `test/unit/subagents-skills.test.ts` (new)                                         | Regression tests for builtin subagent skill resolution and precedence        | `bun:test`, `node:assert/strict`           | Direct TDD coverage for issue #1087                              |
 | `test/unit/coding-agent-builtin-workflows.test.ts` (optional update)               | Existing builtin package ResourceLoader coverage                             | `bun:test`                                 | Can assert main loader also exposes `tdd` and `browser`          |
 

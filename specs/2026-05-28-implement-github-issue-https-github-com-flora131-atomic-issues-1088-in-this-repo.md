@@ -11,7 +11,7 @@
 
 Implement GitHub issue [#1088](https://github.com/bastani-inc/atomic/issues/1088) by refactoring `test/unit/subagents-foreground-guard-propagation.test.ts` away from `spyOn` against ESM namespace imports. The issue is a follow-up from PR #1081 review: Bun currently allows this pattern, but it is fragile if imported ESM module bindings become read-only or if module-load ordering changes.
 
-The proposed fix is to add a narrow, internal dependency-injection seam to `createSubagentExecutor()` in `packages/subagents/src/runs/foreground/subagent-executor.ts`. Production callers continue using the real foreground/background execution functions by default, while tests can inject typed fakes for `runSync`, `executeAsyncChain`, `executeAsyncSingle`, and async availability checks. The existing guard-propagation tests will then assert behavior through injected collaborators instead of monkey-patching module exports.
+The proposed fix is to add a narrow, internal dependency-injection seam to `createSubagentExecutor()` in `packages/subagents/src/runs/foreground/subagent-executor.ts`. Production callers continue using the real foreground/background execution functions by default, while tests can inject typed fakes for `runSync`, `executeAsyncSingle`, and async availability checks. The existing guard-propagation tests will then assert behavior through injected collaborators instead of monkey-patching module exports.
 
 ## 2. Context and Motivation
 
@@ -27,17 +27,15 @@ Current evidence:
     - `../../packages/subagents/src/runs/foreground/execution.ts`
 - The test patches module exports with `spyOn(...).mockImplementation(...)` for:
     - `foregroundExecution.runSync`
-    - `asyncExecution.executeAsyncChain`
     - `asyncExecution.executeAsyncSingle`
     - `asyncExecution.formatAsyncStartedMessage`
     - `asyncExecution.isAsyncAvailable`
 - The test dynamically imports `subagent-executor.ts` only after spies are installed, creating a module-load-order dependency.
 - `packages/subagents/src/runs/foreground/subagent-executor.ts` directly imports these collaborators at module scope:
     - `runSync` from `./execution.ts`
-    - `executeAsyncChain`, `executeAsyncSingle`, `formatAsyncStartedMessage`, and `isAsyncAvailable` from `../background/async-execution.ts`
+    - `executeAsyncSingle`, `formatAsyncStartedMessage`, and `isAsyncAvailable` from `../background/async-execution.ts`
 - Direct call sites include:
-    - `executeAsyncSingle(...)` in async resume and single async paths.
-    - `executeAsyncChain(...)` in async chain/parallel and clarify-to-background paths.
+    - `executeAsyncSingle(...)` in async resume, single async, and clarify-to-background paths.
     - `isAsyncAvailable()` before async launches.
     - `runSync(...)` in foreground parallel and single paths.
 
@@ -64,7 +62,6 @@ Risks:
 2. Keep production behavior unchanged when no collaborators are injected.
 3. Refactor `test/unit/subagents-foreground-guard-propagation.test.ts` to use injected fakes instead of `spyOn`/dynamic import ordering.
 4. Preserve all existing assertions for workflow-stage guard propagation through:
-    - sequential/parallel chain children,
     - foreground parallel children,
     - parallel clarify-to-background async handoff,
     - single clarify-to-background async handoff.
@@ -76,7 +73,7 @@ Risks:
 - No change to the public `subagent` tool schema or CLI behavior.
 - No change to workflow-stage recursion policy.
 - No change to background runner semantics.
-- No broad refactor of `chain-execution.ts`, `async-execution.ts`, or `execution.ts`.
+- No broad refactor of `async-execution.ts` or `execution.ts`.
 - No cleanup of unrelated duplicate `[Unreleased]` changelog sections unless explicitly requested.
 - No new public SDK for third-party executor customization.
 
@@ -93,7 +90,7 @@ flowchart TD
     Executor["createSubagentExecutor()\npackages/subagents/src/runs/foreground/subagent-executor.ts"]
     Runtime["SubagentExecutorRuntimeDeps\noptional injected collaborators"]
     RealForeground["runSync()\npackages/subagents/src/runs/foreground/execution.ts"]
-    RealAsync["executeAsyncChain()/executeAsyncSingle()/isAsyncAvailable()\npackages/subagents/src/runs/background/async-execution.ts"]
+    RealAsync["executeAsyncSingle()/isAsyncAvailable()\npackages/subagents/src/runs/background/async-execution.ts"]
     FakeForeground["test fake runSync\ncaptures options"]
     FakeAsync["test fake async functions\ncapture params"]
     Assertions["guard propagation assertions\nmaxSubagentDepth=1\nworkflowStageSubagentGuard=true"]
@@ -123,8 +120,8 @@ This keeps the seam explicit and local to `createSubagentExecutor()` instead of 
 
 | Component                                                     | Responsibility                                                                                                                                | Technology Stack                       | Justification                                                                                    |
 | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `packages/subagents/src/runs/foreground/subagent-executor.ts` | Owns `createSubagentExecutor()`, validates params, selects single/parallel/chain/async paths, and forwards guard policy into child execution. | TypeScript, Bun runtime                | Primary component under issue #1088; direct imports are what force current test monkey-patching. |
-| `SubagentExecutorRuntimeDeps`                                 | Typed internal seam for `runSync`, `executeAsyncChain`, `executeAsyncSingle`, `isAsyncAvailable`, and optionally `formatAsyncStartedMessage`. | TypeScript structural typing           | Allows tests to inject fakes without changing user-facing behavior.                              |
+| `packages/subagents/src/runs/foreground/subagent-executor.ts` | Owns `createSubagentExecutor()`, validates params, selects single/parallel/async paths, and forwards guard policy into child execution. | TypeScript, Bun runtime                | Primary component under issue #1088; direct imports are what force current test monkey-patching. |
+| `SubagentExecutorRuntimeDeps`                                 | Typed internal seam for `runSync`, `executeAsyncSingle`, `isAsyncAvailable`, and optionally `formatAsyncStartedMessage`. | TypeScript structural typing           | Allows tests to inject fakes without changing user-facing behavior.                              |
 | `test/unit/subagents-foreground-guard-propagation.test.ts`    | Regression test for workflow-stage subagent guard propagation.                                                                                | `bun:test`, `node:assert/strict`       | The exact test called out by the GitHub issue.                                                   |
 | `packages/subagents/src/runs/foreground/execution.ts`         | Real foreground child process execution via `runSync`.                                                                                        | TypeScript, child process spawn        | Production default collaborator; should remain behaviorally unchanged.                           |
 | `packages/subagents/src/runs/background/async-execution.ts`   | Real async launch/status formatting helpers.                                                                                                  | TypeScript, filesystem async run state | Production default collaborator; current test fakes async launch behavior.                       |
@@ -141,7 +138,6 @@ Internal interface to add in `packages/subagents/src/runs/foreground/subagent-ex
 ```ts
 export interface SubagentExecutorRuntimeDeps {
     runSync: typeof runSync;
-    executeAsyncChain: typeof executeAsyncChain;
     executeAsyncSingle: typeof executeAsyncSingle;
     isAsyncAvailable: typeof isAsyncAvailable;
     formatAsyncStartedMessage: typeof formatAsyncStartedMessage;
@@ -149,7 +145,6 @@ export interface SubagentExecutorRuntimeDeps {
 
 const defaultSubagentExecutorRuntimeDeps: SubagentExecutorRuntimeDeps = {
     runSync,
-    executeAsyncChain,
     executeAsyncSingle,
     isAsyncAvailable,
     formatAsyncStartedMessage,
@@ -175,7 +170,6 @@ function resolveSubagentExecutorRuntimeDeps(
 Recommended call-site changes:
 
 - Replace direct `runSync(...)` calls with `runtime.runSync(...)`.
-- Replace direct `executeAsyncChain(...)` calls with `runtime.executeAsyncChain(...)`.
 - Replace direct `executeAsyncSingle(...)` calls with `runtime.executeAsyncSingle(...)`.
 - Replace direct `isAsyncAvailable()` calls with `runtime.isAsyncAvailable()`.
 - Replace direct `formatAsyncStartedMessage(...)` in async resume formatting with `runtime.formatAsyncStartedMessage(...)`.
@@ -223,7 +217,6 @@ Test refactor algorithm:
 4. Pass `runtime` fakes from `makeExecutor()`.
 5. Keep captured arrays:
     - `runSyncCalls`
-    - `asyncChainCalls`
     - `asyncSingleCalls`
 6. Assert captured params/options as before.
 
@@ -309,4 +302,3 @@ AGENT=1 bun run test:unit
 1. `[OWNER: subagents maintainers]` Should `formatAsyncStartedMessage` be part of the seam even though the current foreground guard propagation tests do not directly need it? Recommendation: include it because the current test patches it today and async resume uses it in the same executor module.
 2. `[OWNER: subagents maintainers]` Should `SubagentExecutorRuntimeDeps` be exported from `subagent-executor.ts` for test typing, or kept module-private with structural test objects? Recommendation: export the type from the source file only; do not re-export it from the package root.
 3. `[OWNER: release maintainer]` Should this test-hardening/internal-seam change receive a changelog entry? Recommendation: add a single concise `Fixed` entry under the topmost `packages/subagents/CHANGELOG.md` `[Unreleased]` section if issue #1088 is expected to be tracked in release notes.
-4. `[OWNER: subagents maintainers]` Should `executeChain` also be injectable? Recommendation: not in iteration 1; current issue only requires replacing collaborators patched by the foreground guard propagation test.

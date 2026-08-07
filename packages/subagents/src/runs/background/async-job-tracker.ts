@@ -133,6 +133,7 @@ function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | n
 			stepsTotal: steps.length,
 			runningSteps: steps.filter((step) => step.status === "running").length,
 			completedSteps: steps.filter((step) => step.status === "complete").length,
+			activeParallelGroup: steps.some((step) => step.status === "running"),
 			startedAt: Date.now(),
 			updatedAt: Date.now(),
 		});

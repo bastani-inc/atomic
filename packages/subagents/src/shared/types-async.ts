@@ -168,6 +168,7 @@ export interface AsyncJobState {
 	stepsTotal?: number;
 	runningSteps?: number;
 	completedSteps?: number;
+	activeParallelGroup?: boolean;
 	startedAt?: number;
 	updatedAt?: number;
 	sessionDir?: string;

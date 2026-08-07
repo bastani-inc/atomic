@@ -44,8 +44,8 @@ These are behavior-bearing and must survive byte-identical unless the rubric exp
 4. **Agent frontmatter** in `packages/subagents/agents/*.md`: `name`, `description`, `tools`,
    `model`, `fallbackModels`, `skills`, `systemPromptMode`, `inheritProjectContext`,
    `inheritSkills`, `defaultContext`, `defaultProgress`. Descriptions drive routing — tighten only.
-5. **Template variables** in `packages/subagents/prompts/*.md` and chain task strings:
-   `{task}`, `{previous}`, `{chain_dir}`, `{item}`, `{outputs.name}`.
+5. **Argument placeholders** in `packages/subagents/prompts/*.md`: `$@` (and any positional
+   `$1`…`$9`). These expand to the invoking slash command's arguments.
 6. **Tool, skill, command, and path literals**: `contact_supervisor`, `intercom`, `playwright-cli`,
    `tmux`, `tdd`, `fetch_content`, `research/web/`, `progress.md`, `git status --porcelain`,
    `bun run typecheck`, artifact paths, `send_to_user`.
@@ -217,7 +217,7 @@ Primary GPT-5.6, fallback Opus 5 / Fable 5.
 
 ### 3.2 `packages/subagents/prompts/*.md` (7 files)
 
-Preserve `{task}` / `{previous}` / `{chain_dir}` variables. These are chain-step task templates:
+Preserve the `$@` argument placeholder. These are slash-prompt templates:
 make each one outcome-first with an explicit output contract and stop rule.
 
 ### 3.3 `packages/workflows/builtin/*prompts*.ts` + `shared-prompts.ts`, `ralph-core.ts`,

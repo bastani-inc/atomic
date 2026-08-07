@@ -100,7 +100,7 @@ export function widgetStepActivity(step: NonNullable<AsyncJobState["steps"]>[num
 export function widgetStats(job: AsyncJobState, theme: Theme): string {
 	const parts: string[] = [];
 	const stepsTotal = job.stepsTotal ?? job.agents?.length ?? 1;
-	if (job.mode === "parallel") {
+	if (job.activeParallelGroup) {
 		const running = job.runningSteps ?? (job.status === "running" ? 1 : 0);
 		const done = job.completedSteps ?? (job.status === "complete" ? stepsTotal : 0);
 		if (job.status === "running" && running > 0) parts.push(formatAgentRunningLabel(running));
