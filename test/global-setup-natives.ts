@@ -1,5 +1,4 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
 import { join } from "node:path";
 import { spawnSyncCollect } from "./helpers/runtime.js";
 
@@ -56,15 +55,26 @@ function note(lines: readonly string[]): void {
  * real state after copying a native directory between checkouts or unpacking
  * release artifacts. Requiring the generated entrypoint asks the exact question
  * the suites will ask, so it cannot drift from the loader.
+ *
+ * The load happens in a CHILD process, and that is the whole point.
+ *
+ * `globalSetup` runs in vitest's orchestrator, the process that owns the worker
+ * pool. Requiring the addon there dlopens it into the orchestrator, which
+ * nothing else does: workers load it on demand, in their own processes. On
+ * glibc Linux the addon's destructors then run at exit alongside the pool
+ * teardown and the process dies with SIGSEGV — every test passing first, then
+ * `exit code 139`. It reproduced on every Linux `suites` run and on no macOS or
+ * Windows one, which is why local runs never showed it.
+ *
+ * A child pays one short spawn on a path that already spawns a Rust build when
+ * the binding is missing, and the orchestrator never touches the addon.
  */
 function bindingLoads(): boolean {
 	if (!existsSync(NATIVE_ENTRY)) return false;
-	try {
-		createRequire(import.meta.url)(NATIVE_ENTRY);
-		return true;
-	} catch {
-		return false;
-	}
+	const probe = spawnSyncCollect([process.execPath, "-e", `require(${JSON.stringify(NATIVE_ENTRY)})`], {
+		cwd: REPO_ROOT,
+	});
+	return probe.success;
 }
 
 /** Newest mtime across Rust sources, or 0 when none can be read. */
