@@ -5,6 +5,7 @@ import { executeBashWithOperations } from "./bash-executor.ts";
 import type { BashExecutionMessage } from "./messages.ts";
 import { type BashOperations, type BashOutputChannel, createLocalBashOperations } from "./tools/bash.ts";
 import { applyBashSessionEnvironment, snapshotBashSessionEnvironment } from "./tools/bash-session-environment.ts";
+import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
 
 export async function executeBash(
 	this: AgentSession,
@@ -44,6 +45,7 @@ export async function executeBash(
 				signal: abortController.signal,
 				env,
 				pty: options?.pty,
+				sessionTempDir: resolveSessionTempDirPath(this.sessionManager.getSessionId()),
 			},
 		);
 

@@ -17,6 +17,8 @@ interface StartAsyncBashCommandOptions {
 	manager?: AsyncJobManager;
 	deliveryHandler?: AsyncJobDeliveryHandler;
 	sessionId?: symbol;
+	/** Session-scoped directory for the async spill log. */
+	sessionTempDir?: string;
 }
 
 export async function startAsyncBashCommand(options: StartAsyncBashCommandOptions): Promise<{
@@ -41,7 +43,10 @@ export async function startAsyncBashCommand(options: StartAsyncBashCommandOption
 		discardManagedBashJob(job.jobId);
 		throw registerError;
 	}
-	const appendAsyncOutput = createAsyncOutputAppender(job, { persistAfterBytes: 12_000 });
+	const appendAsyncOutput = createAsyncOutputAppender(job, {
+		persistAfterBytes: 12_000,
+		sessionTempDir: options.sessionTempDir,
+	});
 	const onParentAbort = () => {
 		options.manager?.acknowledgeDeliveries([job.jobId]);
 		job.abortController?.abort();

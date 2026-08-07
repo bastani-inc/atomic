@@ -1,0 +1,204 @@
+/**
+ * Session-scoped temp storage: path scoping, traversal-safe sanitization, and
+ * owner-only permissions for the directories and files tools spill into.
+ */
+import assert from "node:assert/strict";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, sep } from "node:path";
+import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
+import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
+import { PersistedOutputFile } from "../src/core/tools/persisted-output-file.ts";
+import {
+	getSessionTempDir,
+	getTempRootDir,
+	registerActiveSessionTempDir,
+	resetSessionTempDirStateForTesting,
+	resolveSessionTempDirPath,
+	SESSION_TEMP_DIR_MODE,
+	SESSION_TEMP_FILE_MODE,
+	sanitizeTempPathComponent,
+} from "../src/core/tools/session-temp-dir.ts";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
+
+const isPosix = process.platform !== "win32";
+
+const envKeys = ["TMPDIR", "TEMP", "TMP"] as const;
+const savedEnv = new Map<string, string | undefined>();
+let sandbox: string;
+
+/** Point os.tmpdir() at a sandbox so the suite never writes into the real temp root. */
+function useSandboxTmpdir(dir: string): void {
+	for (const key of envKeys) {
+		savedEnv.set(key, process.env[key]);
+		process.env[key] = dir;
+	}
+}
+
+beforeAll(() => {
+	sandbox = mkdtempSync(join(tmpdir(), "atomic-session-temp-dir-"));
+	useSandboxTmpdir(sandbox);
+});
+
+afterAll(() => {
+	for (const key of envKeys) {
+		const saved = savedEnv.get(key);
+		if (saved === undefined) delete process.env[key];
+		else process.env[key] = saved;
+	}
+	rmSync(sandbox, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+	resetSessionTempDirStateForTesting();
+});
+
+/** True when `child` resolves inside `parent`. */
+function isInside(parent: string, child: string): boolean {
+	const rel = relative(parent, child);
+	return rel.length > 0 && !rel.startsWith("..") && !rel.startsWith(`${sep}..`);
+}
+
+describe("session temp directory scoping", () => {
+	it("puts every session under one owner-scoped root inside the temp directory", () => {
+		const root = getTempRootDir();
+		assert.ok(isInside(sandbox, root), `${root} is not inside ${sandbox}`);
+		assert.ok(isInside(root, resolveSessionTempDirPath("session-abc")));
+	});
+
+	it("keeps a session id containing path separators inside the root", () => {
+		for (const hostile of [
+			"../../escape",
+			"..",
+			".",
+			"../..",
+			"a/../../b",
+			"C:\\Windows\\Temp",
+			"/etc/passwd",
+			"..\\..\\escape",
+			"....//....//escape",
+		]) {
+			const dir = resolveSessionTempDirPath(hostile);
+			assert.ok(isInside(getTempRootDir(), dir), `${hostile} escaped to ${dir}`);
+			assert.equal(relative(getTempRootDir(), dir).includes(sep), false, `${hostile} added a path level`);
+		}
+	});
+
+	it("never produces a dot-only or hidden component", () => {
+		assert.equal(sanitizeTempPathComponent("..", "fallback"), "fallback");
+		assert.equal(sanitizeTempPathComponent(".", "fallback"), "fallback");
+		assert.equal(sanitizeTempPathComponent("///", "fallback"), "fallback");
+		assert.equal(sanitizeTempPathComponent("", "fallback"), "fallback");
+		assert.equal(sanitizeTempPathComponent(".last-cleanup", "fallback"), "last-cleanup");
+		assert.equal(sanitizeTempPathComponent("2026-01-01_session-1", "fallback"), "2026-01-01_session-1");
+	});
+
+	it("distinguishes sessions and reuses one directory per session id", () => {
+		assert.notEqual(resolveSessionTempDirPath("a"), resolveSessionTempDirPath("b"));
+		assert.equal(resolveSessionTempDirPath("a"), resolveSessionTempDirPath("a"));
+	});
+
+	it("falls back to a process-scoped directory when no session id is known", () => {
+		const dir = resolveSessionTempDirPath();
+		assert.ok(isInside(getTempRootDir(), dir));
+		assert.ok(dir.endsWith(`pid-${process.pid}`));
+	});
+
+	it("uses the registered active session for writers without a session handle", () => {
+		registerActiveSessionTempDir("live-session");
+		assert.equal(resolveSessionTempDirPath(), resolveSessionTempDirPath("live-session"));
+	});
+
+	it("creates the directory lazily with owner-only permissions", () => {
+		const dir = getSessionTempDir("mode-check");
+		const stat = statSync(dir);
+		assert.ok(stat.isDirectory());
+		if (isPosix) {
+			assert.equal(stat.mode & 0o777, SESSION_TEMP_DIR_MODE);
+			assert.equal(statSync(getTempRootDir()).mode & 0o777, SESSION_TEMP_DIR_MODE);
+		}
+	});
+
+	it("recreates a memoized directory that was removed out of band", () => {
+		const dir = getSessionTempDir("reaped");
+		writeFileSync(join(dir, "spill.log"), "before");
+		rmSync(dir, { recursive: true, force: true });
+		assert.equal(existsSync(dir), false);
+
+		const again = getSessionTempDir("reaped");
+
+		assert.equal(again, dir);
+		assert.equal(statSync(dir).isDirectory(), true, "a cache hit must not hand back a deleted directory");
+		if (isPosix) {
+			assert.equal(statSync(dir).mode & 0o777, SESSION_TEMP_DIR_MODE, "the mode is reapplied on recreation");
+		}
+		writeFileSync(join(dir, "spill.log"), "after");
+	});
+
+	it.skipIf(!isPosix)("refuses a symlink squatting on a session directory path", () => {
+		const outside = join(sandbox, "outside-target");
+		mkdirSync(outside, { recursive: true });
+		writeFileSync(join(outside, "keep.txt"), "keep");
+
+		const dir = resolveSessionTempDirPath("symlinked");
+		mkdirSync(getTempRootDir(), { recursive: true });
+		symlinkSync(outside, dir, "dir");
+
+		const created = getSessionTempDir("symlinked");
+
+		assert.equal(created, dir);
+		assert.equal(lstatSync(dir).isSymbolicLink(), false, "the link must be replaced by a real directory");
+		assert.equal(statSync(dir).isDirectory(), true);
+		assert.equal(existsSync(join(outside, "keep.txt")), true, "the link target is left untouched");
+		assert.equal(existsSync(join(dir, "keep.txt")), false, "writes no longer reach the link target");
+	});
+});
+
+describe("persisted tool-output files", () => {
+	it("creates spill files owner-only", async () => {
+		const dir = getSessionTempDir("file-mode");
+		const file = new PersistedOutputFile(join(dir, "spill.log"));
+		file.write("hello");
+		await file.close();
+		if (isPosix) {
+			assert.equal(statSync(file.path).mode & 0o777, SESSION_TEMP_FILE_MODE);
+		}
+	});
+
+	it("routes an in-memory session's oversized tool result into the session temp tree", async () => {
+		const sessionId = "in-memory-session";
+		const replacement = await redirectOversizedToolResult({
+			toolName: "bash",
+			toolCallId: "call-1",
+			result: { content: [{ type: "text", text: "x".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1) }], details: {} },
+			isError: false,
+			sessionId,
+		});
+		assert.ok(replacement, "expected the oversized result to be persisted");
+		const match = replacement.content[0]?.text.match(/Full output saved to: (.+)\n/);
+		assert.ok(match, "expected a 'Full output saved to:' path");
+		const savedPath = match[1]!;
+		const expectedDir = join(resolveSessionTempDirPath(sessionId), TOOL_RESULTS_SUBDIR);
+		assert.ok(isInside(expectedDir, savedPath), `${savedPath} is not inside ${expectedDir}`);
+		if (isPosix) {
+			assert.equal(statSync(savedPath).mode & 0o777, SESSION_TEMP_FILE_MODE);
+			assert.equal(statSync(expectedDir).mode & 0o777, SESSION_TEMP_DIR_MODE);
+		}
+	});
+
+	it("keeps disk-backed sessions writing under the session directory", async () => {
+		const sessionDir = join(sandbox, "disk-session");
+		const replacement = await redirectOversizedToolResult({
+			toolName: "bash",
+			toolCallId: "call-2",
+			result: { content: [{ type: "text", text: "y".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1) }], details: {} },
+			isError: false,
+			sessionId: "disk-backed",
+			sessionDir,
+		});
+		assert.ok(replacement);
+		const savedPath = replacement.content[0]?.text.match(/Full output saved to: (.+)\n/)?.[1];
+		assert.ok(savedPath);
+		assert.ok(isInside(join(sessionDir, TOOL_RESULTS_SUBDIR), savedPath));
+	});
+});

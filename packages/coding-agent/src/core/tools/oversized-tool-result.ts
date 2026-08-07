@@ -1,10 +1,10 @@
 import { Buffer } from "node:buffer";
 import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
-import { APP_NAME } from "../../config.ts";
+import { capPersistedText } from "./persisted-output-file.ts";
+import { resolveSessionTempDirPath, SESSION_TEMP_DIR_MODE, SESSION_TEMP_FILE_MODE } from "./session-temp-dir.ts";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_CLOSING_TAG,
@@ -159,10 +159,9 @@ function getToolResultsDir(input: { sessionDir?: string; sessionId: string }): s
 	if (input.sessionDir?.trim()) {
 		return join(input.sessionDir, TOOL_RESULTS_SUBDIR);
 	}
-	// Fall back to a stable session-scoped temp directory for in-memory sessions.
-	const safeApp = sanitizePathComponent(APP_NAME || "atomic", "atomic");
-	const safeSessionId = sanitizePathComponent(input.sessionId || "session", "session");
-	return join(tmpdir(), `${safeApp}-${TOOL_RESULTS_SUBDIR}`, safeSessionId);
+	// Fall back to the owner- and session-scoped temp tree for in-memory sessions,
+	// so the sweeper can reap it once the session is gone.
+	return join(resolveSessionTempDirPath(input.sessionId), TOOL_RESULTS_SUBDIR);
 }
 
 function getErrnoCode(error: unknown): string | undefined {
@@ -192,8 +191,12 @@ async function persistToolOutput(input: {
 	const fileName = `${sanitizePathComponent(input.toolCallId, "tool-result")}.txt`;
 	const filepath = join(dir, fileName);
 	try {
-		await mkdir(dir, { recursive: true, mode: 0o700 });
-		await writeFile(filepath, input.text, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		await mkdir(dir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		await writeFile(filepath, capPersistedText(input.text), {
+			encoding: "utf8",
+			mode: SESSION_TEMP_FILE_MODE,
+			flag: "wx",
+		});
 	} catch (error) {
 		if (getErrnoCode(error) === "EEXIST") {
 			// Already persisted on a prior turn — reuse the existing file.

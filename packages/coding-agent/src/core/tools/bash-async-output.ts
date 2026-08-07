@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME } from "../../config.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../../utils/shell.ts";
+import { PersistedOutputFile } from "./persisted-output-file.ts";
+import { ensureSessionTempDir } from "./session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "./truncate.ts";
 
 export interface BashAsyncOutputTarget {
@@ -17,8 +17,9 @@ export interface BashAsyncOutputAppender {
 	close(): Promise<void>;
 }
 
-function outputPath(): string {
-	return join(tmpdir(), `${APP_NAME}-bash-async-${randomBytes(8).toString("hex")}.log`);
+function outputPath(sessionTempDir: string | undefined): string {
+	const dir = ensureSessionTempDir(sessionTempDir);
+	return join(dir, `${APP_NAME}-bash-async-${randomBytes(8).toString("hex")}.log`);
 }
 
 function byteLength(text: string): number {
@@ -36,31 +37,31 @@ function utf8Prefix(text: string, maxBytes: number): string {
 
 export function createAsyncOutputAppender(
 	job: BashAsyncOutputTarget,
-	options?: { persistAfterBytes?: number },
+	options?: { persistAfterBytes?: number; sessionTempDir?: string },
 ): BashAsyncOutputAppender {
 	const persistAfterBytes = options?.persistAfterBytes ?? DEFAULT_MAX_BYTES;
 	let outputBytes = 0;
 	let truncated = false;
-	let fullOutputStream: WriteStream | undefined;
+	let fullOutputFile: PersistedOutputFile | undefined;
 	let bufferedChunks: Buffer[] = [];
 	const decoder = new TextDecoder();
 
-	const ensureFullOutputStream = (): WriteStream => {
-		if (fullOutputStream) return fullOutputStream;
-		job.fullOutputPath = outputPath();
-		fullOutputStream = createWriteStream(job.fullOutputPath);
-		for (const chunk of bufferedChunks) fullOutputStream.write(chunk);
+	const ensureFullOutputFile = (): PersistedOutputFile => {
+		if (fullOutputFile) return fullOutputFile;
+		job.fullOutputPath = outputPath(options?.sessionTempDir);
+		fullOutputFile = new PersistedOutputFile(job.fullOutputPath);
+		for (const chunk of bufferedChunks) fullOutputFile.write(chunk);
 		bufferedChunks = [];
-		return fullOutputStream;
+		return fullOutputFile;
 	};
 	const appendDecodedText = (decoded: string): void => {
 		if (truncated || decoded.length === 0) return;
 		const text = sanitizeDecodedOutput(decoded);
 		if (text.length === 0) return;
 		const bytes = byteLength(text);
-		if (outputBytes + bytes > persistAfterBytes) ensureFullOutputStream();
+		if (outputBytes + bytes > persistAfterBytes) ensureFullOutputFile();
 		if (outputBytes + bytes > DEFAULT_MAX_BYTES) {
-			ensureFullOutputStream();
+			ensureFullOutputFile();
 			const remaining = Math.max(0, DEFAULT_MAX_BYTES - outputBytes);
 			if (remaining > 0) job.output += utf8Prefix(text, remaining);
 			job.output += `\n[Output truncated at ${formatSize(DEFAULT_MAX_BYTES)} for async job polling. Full output: ${job.fullOutputPath}]`;
@@ -74,20 +75,16 @@ export function createAsyncOutputAppender(
 
 	return {
 		append(chunk) {
-			if (fullOutputStream) fullOutputStream.write(chunk);
+			if (fullOutputFile) fullOutputFile.write(chunk);
 			else bufferedChunks.push(chunk);
 			appendDecodedText(decoder.decode(chunk, { stream: true }));
 		},
 		async close() {
 			appendDecodedText(decoder.decode());
-			if (!fullOutputStream) return;
-			const stream = fullOutputStream;
-			fullOutputStream = undefined;
-			await new Promise<void>((resolve, reject) => {
-				stream.once("error", reject);
-				stream.once("finish", resolve);
-				stream.end();
-			});
+			if (!fullOutputFile) return;
+			const file = fullOutputFile;
+			fullOutputFile = undefined;
+			await file.close();
 		},
 	};
 }

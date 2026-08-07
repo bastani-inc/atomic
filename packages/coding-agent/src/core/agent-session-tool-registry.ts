@@ -6,6 +6,7 @@ import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./ext
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
+import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
 export function _refreshToolRegistry(
@@ -149,6 +150,9 @@ export function _buildRuntime(
 						this._asyncJobManagerSessionId,
 					),
 					asyncJobSessionId: this._asyncJobManagerSessionId,
+					// Resolved per execution so bash spill files follow the live
+					// transcript session across fork/branch/resume.
+					sessionTempDir: () => resolveSessionTempDirPath(this.sessionManager.getSessionId()),
 					interceptor: async (context) => {
 						const result = await this._extensionRunner.emitUserBash({
 							type: "user_bash",

@@ -26,3 +26,16 @@ export const PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>";
 
 /** Preview size in bytes shown inline in the persisted-output message. */
 export const PREVIEW_SIZE_BYTES = 2000;
+
+/**
+ * Hard cap on the number of bytes any single persisted tool-output file may hold.
+ *
+ * Persisted output exists so the model can read back what did not fit in context;
+ * past this size the file is no longer a useful artifact, only a way to fill the
+ * disk. Writers stop at the cap and append {@link PERSISTED_OUTPUT_TRUNCATION_MARKER}
+ * so the total file size never exceeds it.
+ */
+export const MAX_PERSISTED_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+/** Appended in place of the content dropped at {@link MAX_PERSISTED_OUTPUT_BYTES}. */
+export const PERSISTED_OUTPUT_TRUNCATION_MARKER = `\n[Output truncated: persisted-output cap of ${MAX_PERSISTED_OUTPUT_BYTES} bytes reached]\n`;

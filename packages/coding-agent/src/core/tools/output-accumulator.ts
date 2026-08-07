@@ -1,14 +1,19 @@
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME } from "../../config.ts";
+import { PersistedOutputFile } from "./persisted-output-file.ts";
+import { ensureSessionTempDir } from "./session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
 export interface OutputAccumulatorOptions {
 	maxLines?: number;
 	maxBytes?: number;
 	tempFilePrefix?: string;
+	/**
+	 * Session-scoped directory for the spill file. Defaults to the active
+	 * session's temp directory so spill files are reapable per session.
+	 */
+	tempDir?: string;
 }
 
 export interface OutputSnapshot {
@@ -17,9 +22,9 @@ export interface OutputSnapshot {
 	fullOutputPath?: string;
 }
 
-function defaultTempFilePath(prefix: string): string {
+function defaultTempFilePath(prefix: string, tempDir: string | undefined): string {
 	const id = randomBytes(8).toString("hex");
-	return join(tmpdir(), `${prefix}-${id}.log`);
+	return join(ensureSessionTempDir(tempDir), `${prefix}-${id}.log`);
 }
 
 function byteLength(text: string): number {
@@ -38,6 +43,7 @@ export class OutputAccumulator {
 	private readonly maxBytes: number;
 	private readonly maxRollingBytes: number;
 	private readonly tempFilePrefix: string;
+	private readonly tempDir: string | undefined;
 	private readonly decoder = new TextDecoder();
 
 	private rawChunks: Buffer[] = [];
@@ -53,13 +59,14 @@ export class OutputAccumulator {
 	private finished = false;
 
 	private tempFilePath: string | undefined;
-	private tempFileStream: WriteStream | undefined;
+	private tempFile: PersistedOutputFile | undefined;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 		this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 		this.maxRollingBytes = Math.max(this.maxBytes * 2, 1);
 		this.tempFilePrefix = options.tempFilePrefix ?? `${APP_NAME}-output`;
+		this.tempDir = options.tempDir;
 	}
 
 	append(data: Buffer): void {
@@ -70,9 +77,9 @@ export class OutputAccumulator {
 		this.totalRawBytes += data.length;
 		this.appendDecodedText(this.decoder.decode(data, { stream: true }));
 
-		if (this.tempFileStream || this.shouldUseTempFile()) {
+		if (this.tempFile || this.shouldUseTempFile()) {
 			this.ensureTempFile();
-			this.tempFileStream?.write(data);
+			this.tempFile?.write(data);
 		} else if (data.length > 0) {
 			this.rawChunks.push(data);
 		}
@@ -120,26 +127,12 @@ export class OutputAccumulator {
 	}
 
 	async closeTempFile(): Promise<void> {
-		if (!this.tempFileStream) {
+		const file = this.tempFile;
+		if (!file) {
 			return;
 		}
-
-		const stream = this.tempFileStream;
-		this.tempFileStream = undefined;
-
-		await new Promise<void>((resolve, reject) => {
-			const onError = (error: Error) => {
-				stream.off("finish", onFinish);
-				reject(error);
-			};
-			const onFinish = () => {
-				stream.off("error", onError);
-				resolve();
-			};
-			stream.once("error", onError);
-			stream.once("finish", onFinish);
-			stream.end();
-		});
+		this.tempFile = undefined;
+		await file.close();
 	}
 
 	getLastLineBytes(): number {
@@ -213,10 +206,11 @@ export class OutputAccumulator {
 		if (this.tempFilePath) {
 			return;
 		}
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix);
-		this.tempFileStream = createWriteStream(this.tempFilePath);
+		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix, this.tempDir);
+		const file = new PersistedOutputFile(this.tempFilePath);
+		this.tempFile = file;
 		for (const chunk of this.rawChunks) {
-			this.tempFileStream.write(chunk);
+			file.write(chunk);
 		}
 		this.rawChunks = [];
 	}

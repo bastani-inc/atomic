@@ -53,6 +53,8 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
+import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
+import { registerActiveSessionTempDir } from "./tools/session-temp-dir.ts";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 
 export type { ParsedSkillBlock } from "./agent-session-skill-block.ts";
@@ -192,6 +194,20 @@ class AgentSessionBase {
 				extensionState: new Map(),
 				isOpen: () => this._workflowStageAdmission?.isOpen() === true,
 			};
+		}
+		// Claim this session's temp tree before any tool can spill into it, so the
+		// sweeper below never reaps a directory this process is still writing to.
+		try {
+			registerActiveSessionTempDir(this.sessionManager.getSessionId());
+			// A custom `--session-dir` keeps its tool results directly under that
+			// directory, outside the project-nested roots the default sweep walks,
+			// so it has to be named as its own target.
+			const customSessionDir = this.sessionManager.usesDefaultSessionDir()
+				? undefined
+				: this.sessionManager.getSessionDir() || undefined;
+			scheduleSessionTempCleanup(customSessionDir ? { sessionDirs: [customSessionDir] } : {});
+		} catch {
+			// Temp-storage housekeeping must never block session construction.
 		}
 		const internals = this as unknown as AgentSessionInternalSurface;
 		const asyncJobManagerHandle = createSessionAsyncJobManager(internals);

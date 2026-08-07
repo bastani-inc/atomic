@@ -217,6 +217,11 @@ export interface BashToolOptions {
 	asyncJobManager?: AsyncJobManager;
 	asyncJobDeliveryHandler?: (message: AsyncJobDeliveryMessage) => void | Promise<void>;
 	asyncJobSessionId?: symbol;
+	/**
+	 * Session-scoped directory for overflow logs, resolved per execution so a
+	 * session switch (fork, branch, resume) follows the live transcript session.
+	 */
+	sessionTempDir?: string | (() => string | undefined);
 }
 const BASH_PREVIEW_LINES = 5,
 	BASH_UPDATE_THROTTLE_MS = 100;
@@ -363,6 +368,9 @@ export function createBashToolDefinition(
 	const asyncJobManager = options?.asyncJobManager,
 		asyncJobDeliveryHandler = options?.asyncJobDeliveryHandler,
 		asyncJobSessionId = options?.asyncJobSessionId;
+	const sessionTempDirOption = options?.sessionTempDir;
+	const resolveSessionTempDir = (): string | undefined =>
+		typeof sessionTempDirOption === "function" ? sessionTempDirOption() : sessionTempDirOption;
 	return {
 		name: "bash",
 		label: "bash",
@@ -502,9 +510,13 @@ export function createBashToolDefinition(
 					manager: asyncJobManager,
 					deliveryHandler: asyncJobDeliveryHandler,
 					sessionId: asyncJobSessionId,
+					sessionTempDir: resolveSessionTempDir(),
 				});
 			}
-			const output = new OutputAccumulator({ tempFilePrefix: `${APP_NAME}-bash` });
+			const output = new OutputAccumulator({
+				tempFilePrefix: `${APP_NAME}-bash`,
+				tempDir: resolveSessionTempDir(),
+			});
 			let acceptingOutput = true;
 			let updateTimer: NodeJS.Timeout | undefined;
 			let updateDirty = false;
