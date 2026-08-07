@@ -25,15 +25,17 @@ export function resolveSocketEndpoint(socketPath: string, platform: string = pro
 	return platform === "win32" ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 }
 
-function attempt(endpoint: string, request: HerdrRequest, timeoutMs: number): Promise<boolean> {
+function attempt(endpoint: string, request: HerdrRequest, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
 	return new Promise<boolean>((resolve) => {
 		let settled = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let removeAbortListener: (() => void) | undefined;
 
 		const finish = (delivered: boolean): void => {
 			if (settled) return;
 			settled = true;
 			if (timer) clearTimeout(timer);
+			removeAbortListener?.();
 			socket.destroy();
 			resolve(delivered);
 		};
@@ -59,21 +61,43 @@ function attempt(endpoint: string, request: HerdrRequest, timeoutMs: number): Pr
 		timer = setTimeout(() => finish(false), timeoutMs);
 		// The reporter must never hold the process open past its work.
 		timer.unref?.();
+
+		if (signal) {
+			const onAbort = (): void => finish(false);
+			signal.addEventListener("abort", onAbort, { once: true });
+			removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+		}
 	});
 }
 
 /**
  * Send one request, with one bounded retry. Always resolves; never rejects.
+ *
+ * An aborted signal ends the attempt in flight and skips the retry. A reporter
+ * silenced by a non-quit shutdown must stop talking immediately: otherwise its
+ * 1500 ms retry opened another connection *after* shutdown returned, and the
+ * successor's first report could race stale traffic from a predecessor that was
+ * supposed to have gone quiet.
  */
-export async function sendHerdrRequest(endpoint: string, request: HerdrRequest): Promise<boolean> {
-	if (await attempt(endpoint, request, FIRST_ATTEMPT_TIMEOUT_MS)) return true;
-	return attempt(endpoint, request, RETRY_ATTEMPT_TIMEOUT_MS);
+export async function sendHerdrRequest(
+	endpoint: string,
+	request: HerdrRequest,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	if (signal?.aborted) return false;
+	if (await attempt(endpoint, request, FIRST_ATTEMPT_TIMEOUT_MS, signal)) return true;
+	if (signal?.aborted) return false;
+	return attempt(endpoint, request, RETRY_ATTEMPT_TIMEOUT_MS, signal);
 }
 
-/** The transport shape the reporter depends on, so tests can substitute one. */
-export type HerdrTransport = (request: HerdrRequest) => Promise<boolean>;
+/**
+ * The transport shape the reporter depends on, so tests can substitute one.
+ *
+ * The signal is optional so a substituted transport may ignore it.
+ */
+export type HerdrTransport = (request: HerdrRequest, signal?: AbortSignal) => Promise<boolean>;
 
 /** Bind {@link sendHerdrRequest} to one socket endpoint. */
 export function createSocketTransport(endpoint: string): HerdrTransport {
-	return (request) => sendHerdrRequest(endpoint, request);
+	return (request, signal) => sendHerdrRequest(endpoint, request, signal);
 }

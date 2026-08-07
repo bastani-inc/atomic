@@ -436,6 +436,30 @@ describe("herdr reporter latency against an unresponsive socket", () => {
 		assert.ok(quitMs <= 4 * REQUEST_BUDGET_MS, `quit waited ${quitMs} ms, beyond the documented bound`);
 	});
 
+	it("opens no further connection after a non-quit shutdown aborts the attempt", async () => {
+		// Clearing the queue was not enough. An attempt already in flight still
+		// spent its 1500 ms retry and connected again *after* shutdown returned,
+		// so a predecessor could talk over the successor that replaced it.
+		const sessionManager = SessionManager.inMemory();
+		const reporter = new HerdrReporter({
+			paneId: PANE_ID,
+			transport: createSocketTransport(resolveSocketEndpoint(fixture.socketPath)),
+		});
+		await reporter.onSessionStart(sessionManager, false);
+		await fixture.waitForRequests(1);
+
+		const connectionsAtShutdown = fixture.connectionCount();
+		await reporter.onSessionShutdown("reload");
+
+		// Well past the first attempt's budget and into the retry window.
+		await new Promise((resolve) => setTimeout(resolve, FIRST_ATTEMPT_TIMEOUT_MS + 400));
+		assert.equal(
+			fixture.connectionCount(),
+			connectionsAtShutdown,
+			"a silenced reporter must not open another connection",
+		);
+	});
+
 	it("drops queued work immediately on a non-quit shutdown", async () => {
 		const sessionManager = SessionManager.inMemory();
 		const reporter = new HerdrReporter({

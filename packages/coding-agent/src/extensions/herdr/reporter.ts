@@ -17,9 +17,10 @@ import { type DesiredPaneState, HERDR_AGENT, HERDR_SOURCE, type HerdrRequest, ty
 /**
  * Upper bound on any free text that crosses the socket.
  *
- * Block labels are dialog titles and failure text comes from a provider error
- * string; both are short by nature, and the cap keeps a pathological one from
- * becoming a payload.
+ * The only free text is a dialog title, which is short by nature; the cap keeps
+ * a pathological one from becoming a payload. Provider failures do not reach
+ * here as text at all — the extension substitutes a fixed label before the
+ * reporter ever sees them.
  */
 export const MAX_REPORT_MESSAGE_LENGTH = 120;
 
@@ -87,6 +88,15 @@ export class HerdrReporter {
 	private queue: QueuedRequest[] = [];
 	private draining: Promise<void> | undefined;
 	private quitting = false;
+
+	/**
+	 * Cancels an in-flight socket attempt when this instance is silenced.
+	 *
+	 * Clearing the queue was not enough: an attempt already running would still
+	 * spend its retry and open another connection after a non-quit shutdown had
+	 * returned, letting a predecessor talk over its successor.
+	 */
+	private readonly abortController = new AbortController();
 
 	constructor(options: HerdrReporterOptions) {
 		this.paneId = options.paneId;
@@ -195,6 +205,7 @@ export class HerdrReporter {
 		if (reason !== "quit") {
 			this.queue = [];
 			this.silenced = true;
+			this.abortController.abort();
 			return;
 		}
 		// Latch first, so a lifecycle callback arriving during the drain cannot
@@ -335,7 +346,8 @@ export class HerdrReporter {
 
 	private async send(request: HerdrRequest): Promise<void> {
 		try {
-			await this.transport(request);
+			// Quit deliberately does not abort: it drains and then releases.
+			await this.transport(request, this.abortController.signal);
 		} catch {
 			// The transport is defined not to reject; a substituted one must not be
 			// able to break a lifecycle path either.
