@@ -3,7 +3,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
-import type { UserBlock, UserBlockReason } from "./block-types.ts";
+import type { UserBlock, UserBlockReason } from "./block-types.js";
 import {
 	emptyWorkflowResourceProvider,
 	normalizeWorkflowResourceProvider,

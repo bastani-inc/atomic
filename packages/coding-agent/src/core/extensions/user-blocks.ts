@@ -19,7 +19,7 @@ import type {
 	UserBlockListener,
 	UserBlockReason,
 	UserBlockSnapshot,
-} from "./block-types.ts";
+} from "./block-types.js";
 
 interface OpenBlock {
 	readonly id: number;

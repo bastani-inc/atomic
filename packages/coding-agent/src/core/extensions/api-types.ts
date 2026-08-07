@@ -33,7 +33,7 @@ import type {
 	TurnStartEvent,
 	UserBashEvent,
 } from "./agent-events.ts";
-import type { AgentBlockedEvent, AgentUnblockedEvent, UserBlock, UserBlockReason } from "./block-types.ts";
+import type { AgentBlockedEvent, AgentUnblockedEvent, UserBlock, UserBlockReason } from "./block-types.js";
 import type { RegisteredCommand } from "./command-types.ts";
 import type { ExtensionContext } from "./context-types.ts";
 import type {

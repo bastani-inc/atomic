@@ -13,7 +13,7 @@ import type {
 	ReloadHandler,
 	SwitchSessionHandler,
 } from "./runner-handlers.ts";
-import { withUserBlocks } from "./runner-ui-blocks.ts";
+import { withUserBlocks } from "./runner-ui-blocks.js";
 import type {
 	CompactOptions,
 	ContextUsage,

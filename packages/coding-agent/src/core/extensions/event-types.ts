@@ -21,7 +21,7 @@ import type {
 	TurnStartEvent,
 	UserBashEvent,
 } from "./agent-events.ts";
-import type { AgentBlockedEvent, AgentUnblockedEvent } from "./block-types.ts";
+import type { AgentBlockedEvent, AgentUnblockedEvent } from "./block-types.js";
 import type { ResourcesDiscoverEvent, SessionEvent } from "./session-events.ts";
 import type { ToolCallEvent, ToolResultEvent } from "./tool-events.ts";
 
