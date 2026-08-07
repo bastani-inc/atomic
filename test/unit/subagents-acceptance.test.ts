@@ -124,7 +124,7 @@ describe("subagent acceptance removal", () => {
 	});
 	test("subagent schema omits sequential execution and dynamic fan-out", () => {
 		const properties = (SubagentParams as { properties: Record<string, unknown> }).properties;
-		const removedExecutionField = "ch" + "ain";
+		const removedExecutionField = "chain";
 		assert.equal(removedExecutionField in properties, false);
 		assert.doesNotMatch(JSON.stringify(properties), /expand|collect|outputs\.name/);
 		assert.equal(

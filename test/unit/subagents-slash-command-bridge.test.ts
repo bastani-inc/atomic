@@ -147,7 +147,7 @@ describe("human subagent slash command bridge", () => {
 
 	test("removed slash commands are not registered", async () => {
 		await withSlashHarness(async ({ registeredCommands }) => {
-			const removed = ["ch" + "ain", "run-" + "ch" + "ain"];
+			const removed = ["chain", "run-chain"];
 			const commands = registeredCommands();
 			assert.deepEqual(
 				commands.filter((command) => removed.includes(command)),
