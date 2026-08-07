@@ -2,7 +2,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
-import { setLoadedFileExtensionPaths } from "./extensions/loaded-extension-paths.ts";
+import { setLoadedFileExtensionPaths } from "./extensions/loaded-extension-paths.js";
 import { loadExtensionFromFactory, loadExtensionsCached, type WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";

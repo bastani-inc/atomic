@@ -1,7 +1,7 @@
 import { APP_TITLE, CONFIG_DIR_NAME } from "../config.ts";
 import { emitProjectTrustEvent } from "./extensions/runner.ts";
 import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/types.ts";
-import { openUserBlock } from "./extensions/user-blocks.ts";
+import { openUserBlock } from "./extensions/user-blocks.js";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
 import {
 	getProjectTrustOptions,

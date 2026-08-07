@@ -22,7 +22,7 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types.ts";
-import { openUserBlock } from "./user-blocks.ts";
+import { openUserBlock } from "./user-blocks.js";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 

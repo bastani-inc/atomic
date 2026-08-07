@@ -91,7 +91,7 @@ import type {
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
-import { subscribeUserBlocks } from "./user-blocks.ts";
+import { subscribeUserBlocks } from "./user-blocks.js";
 
 export type {
 	ExtensionErrorListener,
