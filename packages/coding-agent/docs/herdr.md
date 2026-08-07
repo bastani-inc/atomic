@@ -34,14 +34,21 @@ flicker to idle between a failed request and its retry.
 ## What it sends
 
 Each report carries the pane id, the fixed identity `herdr:atomic` / `atomic`,
-the state, a short label or error string, a sequence number, and a reference to
-the Atomic session file.
+the state, a short label, a sequence number, and a reference to the Atomic
+session file.
 
-**Prompt text, tool arguments, and model output never cross the socket.** The
-only free text is a dialog title or a provider error string, and both are capped
-at 120 characters. A value within the cap is sent exactly as it was given,
-whitespace and all; a longer one is sent as its first 119 characters followed by
-an ellipsis. Nothing else is rewritten.
+**Prompt text, tool arguments, model output, and provider error text never cross
+the socket.** There is exactly one source of free text — the title of the dialog
+waiting on you — and it is capped at 120 characters. A title within the cap is
+sent exactly as it was given, whitespace and all; a longer one is sent as its
+first 119 characters followed by an ellipsis. Nothing else is rewritten.
+
+A turn that ended in a provider error reports the fixed string
+`Agent turn failed`, never the provider's own message. That message is whatever
+the provider or a custom `streamSimple` implementation put there — an exception
+string, a normalized response body, raw request metadata — and real ones carry
+authorization headers and echoed prompt content. Truncating it would not make it
+safe, so it is not sent at all. The detail stays in the session transcript.
 
 The label shown for a `blocked` pane is the title of the dialog waiting on you —
 "Approve edit?", "Overwrite this file?" — taken from the oldest open dialog when
