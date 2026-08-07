@@ -39,7 +39,9 @@ the Atomic session file.
 
 **Prompt text, tool arguments, and model output never cross the socket.** The
 only free text is a dialog title or a provider error string, and both are capped
-at 120 characters.
+at 120 characters. A value within the cap is sent exactly as it was given,
+whitespace and all; a longer one is sent as its first 119 characters followed by
+an ellipsis. Nothing else is rewritten.
 
 The label shown for a `blocked` pane is the title of the dialog waiting on you —
 "Trust project folder?", "Approve edit?" — taken from the oldest open dialog when
@@ -77,8 +79,20 @@ still wins, and the pane never ends up with two writers regardless of load order
 ## Failure behavior
 
 A dead, refusing, or hung Herdr socket degrades to silence. Each report gets one
-500 ms attempt and one 1500 ms retry, then is dropped. No Atomic lifecycle path
-can be delayed, blocked, or failed by the reporter.
+500 ms attempt and one 1500 ms retry, then is dropped without a diagnostic.
+
+Reporting never blocks the agent. Ordinary lifecycle callbacks — session start,
+turn start, settle, block open and close — hand their report to the writer and
+return without waiting for the socket, and a non-quit shutdown drops queued work
+and returns at once.
+
+Quit is the one exception, and it is deliberate: Atomic drains what is queued and
+then attempts the release, because a pane left claimed by a dead agent is worse
+than a slow exit. Against a socket that accepts connections and never answers,
+that wait is bounded by the transport budgets — at most three requests (session
+identity, one coalesced state, the release) at 2 s each, so roughly six seconds
+in the worst case, and nothing at all when the socket is healthy or absent. A
+substituted transport that never settles has no separate reporter timeout.
 
 Writes are serialized. State, session identity, and the final release all go
 through one queue, so exactly one request is ever in flight; state queued behind
@@ -90,7 +104,9 @@ than reorder them.
 ## Session lifecycle
 
 Quitting Atomic releases the pane — the queue drains, then a final
-`pane.release_agent` goes out, and nothing is reported afterwards.
+`pane.release_agent` is attempted, and nothing is reported afterwards. Like every
+other report it can be dropped if the socket is gone, in which case Herdr falls
+back on its own handling for an agent that stopped reporting.
 
 `/reload`, `/new`, `/resume`, and forking do **not** release the pane. The
 outgoing reporter goes quiet and drops its queued work; the incoming one
