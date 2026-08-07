@@ -8,6 +8,7 @@ import type { ProjectTrustContext, UserBlockChange } from "../src/core/extension
 import { getOpenUserBlocks, subscribeUserBlocks } from "../src/core/extensions/user-blocks.ts";
 import { resolveProjectTrusted } from "../src/core/project-trust.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
+import { captureRejection } from "./error-capture.ts";
 
 const tempDirs: string[] = [];
 
@@ -86,15 +87,14 @@ describe("project trust prompt block", () => {
 			},
 		};
 
-		await assert.rejects(
-			() =>
-				resolveProjectTrusted({
-					cwd,
-					trustStore: new ProjectTrustStore(join(cwd, "agent")),
-					projectTrustContext,
-				}),
-			(error: unknown) => error === failure,
-		);
+		const thrown = await captureRejection(async () => {
+			await resolveProjectTrusted({
+				cwd,
+				trustStore: new ProjectTrustStore(join(cwd, "agent")),
+				projectTrustContext,
+			});
+		});
+		assert.equal(thrown, failure);
 		assert.deepEqual(getOpenUserBlocks(), []);
 	});
 

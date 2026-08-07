@@ -8,6 +8,7 @@ import type { ExtensionContext, ExtensionUIContext, UserBlockChange } from "../s
 import { getOpenUserBlocks, subscribeUserBlocks } from "../src/core/extensions/user-blocks.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { captureRejection, captureThrow } from "./error-capture.ts";
 import { fakeModelRuntime } from "./model-runtime-test-utils.ts";
 
 /**
@@ -43,13 +44,25 @@ function contextOver(ui: ExtensionUIContext): ExtensionContext {
 	return createExtensionContext(source);
 }
 
+/**
+ * The argument shapes the five blocking dialogs actually receive: a title, an
+ * option list, a placeholder or prefill, or a dialog-options bag.
+ */
+type RecordedUiArgument = string | string[] | ExtensionUIDialogOptions | undefined;
+
+interface RecordedUiCall {
+	method: string;
+	args: RecordedUiArgument[];
+	openBlocksDuringCall: number;
+}
+
 /** A UI whose five blocking methods record their calls and return fixed values. */
 function recordingUi(overrides: Partial<ExtensionUIContext>): {
 	ui: ExtensionUIContext;
-	calls: Array<{ method: string; args: unknown[]; openBlocksDuringCall: number }>;
+	calls: RecordedUiCall[];
 } {
-	const calls: Array<{ method: string; args: unknown[]; openBlocksDuringCall: number }> = [];
-	const record = (method: string, args: unknown[]): void => {
+	const calls: RecordedUiCall[] = [];
+	const record = (method: string, args: RecordedUiArgument[]): void => {
 		calls.push({ method, args, openBlocksDuringCall: getOpenUserBlocks().length });
 	};
 	const base: ExtensionUIContext = {
@@ -154,13 +167,10 @@ describe("ctx.ui block wrapping", () => {
 		const { ui } = recordingUi({ custom: async () => Promise.reject(failure) });
 		const ctx = contextOver(ui);
 
-		await assert.rejects(
-			() => ctx.ui.custom(() => ({ render: () => [] })),
-			(error: unknown) => {
-				assert.equal(error, failure, "the very same error object reaches the caller");
-				return true;
-			},
-		);
+		const thrown = await captureRejection(async () => {
+			await ctx.ui.custom(() => ({ render: () => [] }));
+		});
+		assert.equal(thrown, failure, "the very same error object reaches the caller");
 		assert.deepEqual(getOpenUserBlocks(), []);
 	});
 
@@ -175,9 +185,11 @@ describe("ctx.ui block wrapping", () => {
 		};
 		const ctx = contextOver(throwing);
 
-		assert.throws(
-			() => ctx.ui.select("Pick", ["a"]),
-			(error: unknown) => error === failure,
+		assert.equal(
+			captureThrow(() => {
+				ctx.ui.select("Pick", ["a"]);
+			}),
+			failure,
 		);
 		assert.deepEqual(getOpenUserBlocks(), []);
 	});
@@ -199,6 +211,28 @@ describe("ctx.ui block wrapping", () => {
 				["agent_blocked", "Delete everything?", "dialog"],
 				["agent_unblocked", "Delete everything?", "dialog"],
 			],
+		);
+	});
+
+	it("uses an empty dialog title verbatim instead of the method name", async () => {
+		// Nothing requires a non-empty label — Herdr's own schema types `message`
+		// as a nullable string — so substituting "select" would invent text the
+		// caller never wrote.
+		const changes: UserBlockChange[] = [];
+		const unsubscribe = subscribeUserBlocks((change) => changes.push(change));
+		try {
+			const { ui } = recordingUi({});
+			const ctx = contextOver(ui);
+			await ctx.ui.select("", ["a"]);
+			await ctx.ui.input("");
+			await ctx.ui.editor("");
+			await ctx.ui.confirm("", "body");
+		} finally {
+			unsubscribe();
+		}
+		assert.deepEqual(
+			changes.filter((change) => change.type === "agent_blocked").map((change) => change.label),
+			["", "", "", ""],
 		);
 	});
 
@@ -426,7 +460,7 @@ describe("block-door source constraints", () => {
 	 * The repo rule against `any`/`unknown` is a source constraint, and `tsc`
 	 * accepts both, so it is checked here rather than assumed.
 	 */
-	it("adds no any or unknown types in the block door or the reporter", async () => {
+	it("adds no any or unknown types in the block door, the reporter, or their tests", async () => {
 		const files = [
 			"src/core/extensions/runner-ui-blocks.ts",
 			"src/core/extensions/user-blocks.ts",
@@ -438,6 +472,19 @@ describe("block-door source constraints", () => {
 			"src/extensions/herdr/sequence.ts",
 			"src/extensions/herdr/transport.ts",
 			"src/extensions/herdr/types.ts",
+			// The rule binds the tests this work added too. `tsc` accepts both
+			// spellings, and the previous scan covered production files only, so
+			// nine `unknown` annotations survived a full green check.
+			"test/error-capture.ts",
+			"test/extensions-ui-block-wrapping.test.ts",
+			"test/extensions-user-blocks.test.ts",
+			"test/herdr-activation.test.ts",
+			"test/herdr-extension-integration.test.ts",
+			"test/herdr-reducer.test.ts",
+			"test/herdr-reporter-wire.test.ts",
+			"test/herdr-single-writer.test.ts",
+			"test/herdr-socket-fixture.ts",
+			"test/project-trust-user-block.test.ts",
 		];
 		const banned = /(:|<|\bas\s+)\s*(any|unknown)\b|\b(any|unknown)\[\]/;
 		for (const file of files) {

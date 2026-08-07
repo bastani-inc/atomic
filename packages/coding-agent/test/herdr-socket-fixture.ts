@@ -32,15 +32,33 @@ export interface HerdrSocketFixture {
 
 let fixtureCounter = 0;
 
-function isRecordedRequest(value: unknown): value is RecordedRequest {
-	if (typeof value !== "object" || value === null) return false;
-	const candidate = value as { id?: unknown; method?: unknown; params?: unknown };
-	return (
-		typeof candidate.id === "string" &&
-		typeof candidate.method === "string" &&
-		typeof candidate.params === "object" &&
-		candidate.params !== null
-	);
+/** Anything `JSON.parse` can produce, named so the boundary needs no `unknown`. */
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+function parseJson(line: string): JsonValue {
+	return JSON.parse(line) as JsonValue;
+}
+
+function isJsonObject(value: JsonValue): value is { [key: string]: JsonValue } {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Convert a parsed line into a request, or return undefined when it is not one.
+ *
+ * Every parameter value is checked, so `RecordedRequest` is built only from
+ * values that really are strings or numbers.
+ */
+function toRecordedRequest(value: JsonValue): RecordedRequest | undefined {
+	if (!isJsonObject(value)) return undefined;
+	const { id, method, params } = value;
+	if (typeof id !== "string" || typeof method !== "string") return undefined;
+	if (!isJsonObject(params)) return undefined;
+	const recordedParams: Record<string, string | number> = {};
+	for (const [key, parameter] of Object.entries(params)) {
+		if (typeof parameter === "string" || typeof parameter === "number") recordedParams[key] = parameter;
+	}
+	return { id, method, params: recordedParams };
 }
 
 /**
@@ -89,11 +107,9 @@ export async function startHerdrSocketFixture(options: HerdrSocketFixtureOptions
 				const line = buffer.slice(0, newline);
 				buffer = buffer.slice(newline + 1);
 				if (line.trim().length > 0) {
-					const parsed: unknown = JSON.parse(line);
-					if (isRecordedRequest(parsed)) requests.push(parsed);
-					if (respond) {
-						socket.write(`${JSON.stringify({ id: isRecordedRequest(parsed) ? parsed.id : "", result: {} })}\n`);
-					}
+					const request = toRecordedRequest(parseJson(line));
+					if (request) requests.push(request);
+					if (respond) socket.write(`${JSON.stringify({ id: request?.id ?? "", result: {} })}\n`);
 				}
 				newline = buffer.indexOf("\n");
 			}
