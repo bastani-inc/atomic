@@ -497,6 +497,58 @@ describe("ctx.ui block wrapping", () => {
 		assert.deepEqual(getOpenUserBlocks(), []);
 	});
 
+	it("releases the block when reading a result's then getter throws", () => {
+		// The thenable probe used to sit outside the cleanup guard, so a host that
+		// returned an object with a throwing `then` getter propagated its error and
+		// left the pane stuck in blocked with nothing left to release it.
+		const failure = new Error("then-getter-boom");
+		// biome-ignore lint/suspicious/noThenProperty: a hostile `then` getter is the subject of this test.
+		const hostile = Object.defineProperty({}, "then", {
+			get() {
+				throw failure;
+			},
+			configurable: true,
+		});
+		const { ui } = recordingUi({});
+		const ctx = contextOver({ ...ui, select: () => hostile } as ExtensionUIContext);
+
+		assert.equal(
+			captureThrow(() => {
+				ctx.ui.select("Pick", ["a"]);
+			}),
+			failure,
+			"the caller still receives the exact error",
+		);
+		assert.deepEqual(getOpenUserBlocks(), [], "and the block did not outlive it");
+	});
+
+	it("refuses a non-configurable definition without touching the host", () => {
+		// Forwarding first mutated the host and then threw on the proxy invariant,
+		// so the caller saw a failure against a host that had already changed.
+		const { ui } = recordingUi({});
+		const host: ExtensionUIContext = { ...ui };
+		const ctx = contextOver(host);
+
+		assert.throws(() => Object.defineProperty(ctx.ui, "zz", { value: 1, configurable: false }));
+		assert.equal(Object.hasOwn(host, "zz"), false, "the host is exactly as it was");
+		assert.equal("zz" in ctx.ui, false);
+		assert.deepEqual(Object.keys(ctx.ui).sort(), Object.keys(host).sort(), "enumeration still works");
+	});
+
+	it("refuses to seal the wrapper and stays usable afterwards", () => {
+		// Sealing used to make the *surrogate* non-extensible, after which reporting
+		// the host's keys violated a proxy invariant and every later Object.keys or
+		// spread threw.
+		const { ui } = recordingUi({});
+		for (const seal of [Object.preventExtensions, Object.freeze]) {
+			const ctx = contextOver({ ...ui });
+			assert.throws(() => seal(ctx.ui), "sealing a wrapped context fails immediately");
+			assert.ok(Object.keys(ctx.ui).length > 0, "keys still readable afterwards");
+			assert.doesNotThrow(() => ({ ...ctx.ui }));
+			assert.equal(typeof ctx.ui.notify, "function");
+		}
+	});
+
 	it("works on a frozen host UI context", async () => {
 		// A proxy may not substitute a value for a non-configurable, non-writable
 		// data property on its target. Proxying the host directly therefore threw

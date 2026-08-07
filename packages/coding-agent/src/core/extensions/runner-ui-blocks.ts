@@ -93,7 +93,18 @@ function wrapBlockingMethod<M extends BlockingUiMethod>(
 		// either one released the block before the user had answered. Ask
 		// structurally instead, and keep the synchronous path for a genuine
 		// synchronous return so a test double still behaves as before.
-		if (!isThenable(result)) {
+		//
+		// Reading `then` can itself throw, because it may be a getter. That is
+		// inside the guard too: an error here used to reach the caller with the
+		// block still open, stranding the pane in `blocked` forever.
+		let settlesLater: boolean;
+		try {
+			settlesLater = isThenable(result);
+		} catch (error) {
+			block.release();
+			throw error;
+		}
+		if (!settlesLater) {
 			block.release();
 			return result;
 		}
@@ -162,16 +173,14 @@ const wrappedContexts = new WeakMap<ExtensionUIContext, ExtensionUIContext>();
  * surrogate carries no such invariant, so every trap can answer from the host
  * while still substituting the forwarder.
  *
- * One case cannot be forwarded: defining a *non-configurable* property on
- * `ctx.ui`. A proxy may only report that as succeeding if its own target has a
- * matching non-configurable property, and mirroring one onto the surrogate
- * would force `get` to return the raw function instead of the host-receiver
- * forwarder — losing the receiver fix for that member and making a later host
- * deletion incompatible. Such a definition therefore throws rather than
- * silently being normalized to a configurable one, since inventing a descriptor
- * the caller did not ask for is the worse failure. No host in this repository
- * does it; a caller that needs it should seal its own object before handing it
- * over, which is supported.
+ * Two meta-object operations are refused rather than forwarded, because a proxy
+ * cannot both keep an empty extensible target and satisfy them: defining a
+ * *non-configurable* property, and sealing the wrapper with
+ * `Object.preventExtensions` or `Object.freeze`. Both now fail immediately and
+ * leave the host and the wrapper exactly as they were; the alternative was
+ * mutating the host and then throwing, or silently breaking every later
+ * `Object.keys` on the wrapper. Freeze or seal the host *before* wrapping it —
+ * that is supported, and tested.
  */
 export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 	const existing = wrappedContexts.get(ui);
@@ -219,10 +228,36 @@ export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 			return Reflect.set(ui, property, value, ui);
 		},
 		defineProperty(_surrogate, property, descriptor) {
+			// Refused before the host is touched. A proxy may only report a
+			// non-configurable definition as succeeding if its own target carries a
+			// matching property, and the surrogate deliberately carries none — so
+			// forwarding first mutated the host and *then* threw, leaving the caller
+			// with an error and the host already changed. Failing up front keeps the
+			// two consistent: `Object.defineProperty` throws, and the host is exactly
+			// as it was.
+			if (descriptor.configurable === false) return false;
 			return Reflect.defineProperty(ui, property, descriptor);
 		},
 		deleteProperty(_surrogate, property) {
 			return Reflect.deleteProperty(ui, property);
+		},
+		/**
+		 * Refuse to seal the wrapper.
+		 *
+		 * Without this the default trap sealed the *surrogate*, and an empty
+		 * non-extensible target cannot report the host's keys — so `Object.keys`,
+		 * spread, and `JSON.stringify` all began throwing on a context that had
+		 * merely been passed to `Object.freeze`. Refusing makes the freeze fail
+		 * loudly and immediately while leaving the wrapper fully usable.
+		 *
+		 * Sealing a wrapped context is not something Phase 1 defines, and making it
+		 * succeed through to the host needs a mirrored shadow target rather than an
+		 * empty surrogate — a redesign that would give up the frozen-host and
+		 * host-receiver behavior this wrapper exists to preserve. Freeze the host
+		 * before wrapping it instead; that is supported and tested.
+		 */
+		preventExtensions() {
+			return false;
 		},
 	});
 	wrappedContexts.set(ui, wrapped);
