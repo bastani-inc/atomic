@@ -37,70 +37,90 @@ const nativeBinaryNames = [
 	"atomic_natives.win32-x64-msvc.node",
 ] as const;
 
-test("prepared native root tarball contains all eight exact-version optional dependencies", async () => {
-	const stage = mkdtempSync(join(tmpdir(), "atomic-native-release-contract-"));
-	const nativeDir = join(stage, "native");
-	const outputDir = join(stage, "packed");
-	const version = packageVersion;
-	try {
-		mkdirSync(nativeDir);
-		mkdirSync(outputDir);
-		for (const file of ["README.md", "CHANGELOG.md"]) {
-			copyFileSync(join(root, "packages/natives", file), join(stage, file));
-		}
-		for (const file of ["index.js", "index.d.ts"]) {
-			copyFileSync(join(root, "packages/natives/native", file), join(nativeDir, file));
-		}
-		const sourceManifest = (await readJson(join(root, "packages/natives/package.json"))) as NativeManifest;
-		writeFileSync(join(stage, "package.json"), `${JSON.stringify({ ...sourceManifest, version }, null, 2)}\n`);
-		for (const file of nativeBinaryNames) writeFileSync(join(nativeDir, file), "fixture");
+/**
+ * This test stages a native package, then spawns four real CLI child processes
+ * -- `napi create-npm-dirs`, `napi artifacts`, `napi prepublish`, and
+ * `bun pm pack` -- plus a `tar` extraction, which is the publish pipeline's own
+ * command sequence rather than a stub of it. Idle it lands near 22s, which is
+ * 73% of the 30000 ms suite default: over the flaky-test gate's 70% fail line,
+ * and over the budget outright on a loaded or Windows runner.
+ *
+ * Named and kept at the call site, per the per-test timeout policy in AGENTS.md
+ * -- a bare literal here says nothing about why the cost is structural rather
+ * than a slow test nobody fixed. The commands themselves are already sub-second
+ * each; the cost is process startup, so making the test faster means not
+ * exercising the real pipeline.
+ */
+const NATIVE_RELEASE_PACK_TIMEOUT_MS = 120_000;
 
-		// The publish pipeline runs `bun run --cwd packages/natives <script>`, which
-		// resolves bins from packages/natives/node_modules/.bin first. Since the
-		// @napi-rs/cli 3.8.1 bump npm nests the CLI there instead of hoisting it to
-		// the root .bin, so this staged copy needs the same lookup order.
-		const toolPath = [
-			join(root, "packages/natives/node_modules/.bin"),
-			join(root, "node_modules/.bin"),
-			process.env.PATH,
-		]
-			.filter(Boolean)
-			.join(delimiter);
-		const env = { ...process.env, PATH: toolPath };
-		// Bun's `$` shell was the only import of the `bun` module in the suites. The
-		// commands themselves are unchanged, including `bun pm pack`, which is what
-		// the publish pipeline actually runs.
-		const run = (command: string, args: string[]): void => {
-			const result = spawnSyncCollect([command, ...args], { cwd: stage, env });
-			assert.equal(result.exitCode, 0, `${command} ${args.join(" ")}\n${result.stderr.toString()}`);
-		};
-		const bun = bunExecutable();
-		run(bun, ["run", "create-npm-dirs"]);
-		run(bun, ["run", "artifacts"]);
-		run(bun, ["run", "prepublish:native", "--", "--skip-optional-publish"]);
-		run(bun, ["pm", "pack", "--destination", outputDir, "--quiet"]);
+test(
+	"prepared native root tarball contains all eight exact-version optional dependencies",
+	async () => {
+		const stage = mkdtempSync(join(tmpdir(), "atomic-native-release-contract-"));
+		const nativeDir = join(stage, "native");
+		const outputDir = join(stage, "packed");
+		const version = packageVersion;
+		try {
+			mkdirSync(nativeDir);
+			mkdirSync(outputDir);
+			for (const file of ["README.md", "CHANGELOG.md"]) {
+				copyFileSync(join(root, "packages/natives", file), join(stage, file));
+			}
+			for (const file of ["index.js", "index.d.ts"]) {
+				copyFileSync(join(root, "packages/natives/native", file), join(nativeDir, file));
+			}
+			const sourceManifest = (await readJson(join(root, "packages/natives/package.json"))) as NativeManifest;
+			writeFileSync(join(stage, "package.json"), `${JSON.stringify({ ...sourceManifest, version }, null, 2)}\n`);
+			for (const file of nativeBinaryNames) writeFileSync(join(nativeDir, file), "fixture");
 
-		const tarballs = readdirSync(outputDir).filter((file) => file.endsWith(".tgz"));
-		assert.equal(tarballs.length, 1);
-		const extracted = spawnSyncCollect([
-			"tar",
-			"-xOf",
-			join(outputDir, tarballs[0] as string),
-			"package/package.json",
-		]);
-		assert.equal(extracted.exitCode, 0, extracted.stderr.toString());
-		const packedJson = extracted.stdout.toString();
-		const packed = JSON.parse(packedJson) as NativeManifest;
-		assert.equal(packed.name, "@bastani/atomic-natives");
-		assert.equal(packed.version, version);
-		assert.deepEqual(Object.keys(packed.optionalDependencies ?? {}).sort(), [...nativePackageNames].sort());
-		for (const dependency of nativePackageNames) {
-			assert.equal(packed.optionalDependencies?.[dependency], version, dependency);
+			// The publish pipeline runs `bun run --cwd packages/natives <script>`, which
+			// resolves bins from packages/natives/node_modules/.bin first. Since the
+			// @napi-rs/cli 3.8.1 bump npm nests the CLI there instead of hoisting it to
+			// the root .bin, so this staged copy needs the same lookup order.
+			const toolPath = [
+				join(root, "packages/natives/node_modules/.bin"),
+				join(root, "node_modules/.bin"),
+				process.env.PATH,
+			]
+				.filter(Boolean)
+				.join(delimiter);
+			const env = { ...process.env, PATH: toolPath };
+			// Bun's `$` shell was the only import of the `bun` module in the suites. The
+			// commands themselves are unchanged, including `bun pm pack`, which is what
+			// the publish pipeline actually runs.
+			const run = (command: string, args: string[]): void => {
+				const result = spawnSyncCollect([command, ...args], { cwd: stage, env });
+				assert.equal(result.exitCode, 0, `${command} ${args.join(" ")}\n${result.stderr.toString()}`);
+			};
+			const bun = bunExecutable();
+			run(bun, ["run", "create-npm-dirs"]);
+			run(bun, ["run", "artifacts"]);
+			run(bun, ["run", "prepublish:native", "--", "--skip-optional-publish"]);
+			run(bun, ["pm", "pack", "--destination", outputDir, "--quiet"]);
+
+			const tarballs = readdirSync(outputDir).filter((file) => file.endsWith(".tgz"));
+			assert.equal(tarballs.length, 1);
+			const extracted = spawnSyncCollect([
+				"tar",
+				"-xOf",
+				join(outputDir, tarballs[0] as string),
+				"package/package.json",
+			]);
+			assert.equal(extracted.exitCode, 0, extracted.stderr.toString());
+			const packedJson = extracted.stdout.toString();
+			const packed = JSON.parse(packedJson) as NativeManifest;
+			assert.equal(packed.name, "@bastani/atomic-natives");
+			assert.equal(packed.version, version);
+			assert.deepEqual(Object.keys(packed.optionalDependencies ?? {}).sort(), [...nativePackageNames].sort());
+			for (const dependency of nativePackageNames) {
+				assert.equal(packed.optionalDependencies?.[dependency], version, dependency);
+			}
+		} finally {
+			rmSync(stage, { recursive: true, force: true });
 		}
-	} finally {
-		rmSync(stage, { recursive: true, force: true });
-	}
-});
+	},
+	NATIVE_RELEASE_PACK_TIMEOUT_MS,
+);
 
 test("publish pipeline prepares exact native package set and publishes in dependency order", async () => {
 	const workflow = await readText(`${root}/.github/workflows/publish.yml`);
