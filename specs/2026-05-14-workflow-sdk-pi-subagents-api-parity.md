@@ -32,13 +32,7 @@ The pi extension currently registers:
 - Slash commands `/workflow` and `/workflows-doctor`.
 - Background/detached run execution, store-backed status, cancellation, read-only resume snapshots, lifecycle hooks, widgets, and intercom control subscription (`research/docs/2026-05-12-extension-intercom-pi-integration-surfaces.md`).
 
-By contrast, upstream `nicobailon/pi-subagents` centers on a single high-surface-area tool named `subagent` with mutually exclusive direct execution modes (`agent`, `tasks`, `chain`), management/control actions, async controls, output/session controls, slash commands, package-level skills/prompts, and intercom-oriented parent orchestration guidance (`research/docs/2026-05-14-pi-subagents-api-parity-for-atomic-workflows.md`).
-
-> **Since this RFC was drafted:** Atomic's own `@bastani/subagents` removed CHAIN execution mode
-> entirely — the `chain` parameter, saved chain definitions, dynamic fan-out, and the `/chain` and
-> `/run-chain` commands are gone, leaving single and top-level parallel. The parity baseline above
-> still describes upstream `nicobailon/pi-subagents`, which continues to ship chain mode. Workflow-native
-> `ctx.chain`, `WorkflowChainStep`, `chainDir`, and `mode: "chain"` in this document are unaffected.
+By contrast, `pi-subagents` centers on a single high-surface-area tool named `subagent` with mutually exclusive direct execution modes (`agent`, `tasks`, `chain`), management/control actions, async controls, output/session controls, slash commands, package-level skills/prompts, and intercom-oriented parent orchestration guidance (`research/docs/2026-05-14-pi-subagents-api-parity-for-atomic-workflows.md`).
 
 ### 2.2 The Problem
 
@@ -484,7 +478,7 @@ Future consideration: if saved recipes are reintroduced, prefer a non-executable
 | Clean rewrite of `workflow`                                     | Produces one coherent API without shims; matches the user's rewrite intent | Requires migrating existing callers/tests                                                    | Selected.                                                                    |
 | Manage executable workflow files through `create/update/delete` | Closer to code-generation workflow authoring                               | Security, validation, and trust risks; hard to maintain raw TS safely                        | Rejected for MVP.                                                            |
 | Manage saved JSON recipes                                       | Safe, inspectable, workflow-native; supports pi-subagents-style management | Less powerful than authoring real workflows                                                  | Deferred; no CRUD in MVP.                                                    |
-| Copy `/run` and `/parallel` exactly                             | Strong slash parity                                                        | Namespace conflicts with other extensions; direct orchestration should live in workflow code | Rejected for MVP.                                                            |
+| Copy `/run`, `/chain`, `/parallel` exactly                      | Strong slash parity                                                        | Namespace conflicts with other extensions; direct orchestration should live in workflow code | Rejected for MVP.                                                            |
 
 ## 7. Cross-Cutting Concerns
 
