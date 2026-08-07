@@ -4,20 +4,12 @@ import { type AgentSource, discoverAgentsAll } from "../agents/agents.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
 import { isAsyncAvailable } from "../runs/inprocess/background.ts";
-import {
-	ASYNC_DIR,
-	CHAIN_RUNS_DIR,
-	type ExtensionConfig,
-	RESULTS_DIR,
-	type SubagentState,
-	TEMP_ROOT_DIR,
-} from "../shared/types.ts";
+import { ASYNC_DIR, type ExtensionConfig, RESULTS_DIR, type SubagentState, TEMP_ROOT_DIR } from "../shared/types.ts";
 
 interface DoctorPaths {
 	tempRootDir: string;
 	asyncDir: string;
 	resultsDir: string;
-	chainRunsDir: string;
 }
 
 interface DoctorDeps {
@@ -46,7 +38,6 @@ const DEFAULT_PATHS: DoctorPaths = {
 	tempRootDir: TEMP_ROOT_DIR,
 	asyncDir: ASYNC_DIR,
 	resultsDir: RESULTS_DIR,
-	chainRunsDir: CHAIN_RUNS_DIR,
 };
 
 const DEFAULT_DEPS: DoctorDeps = {
@@ -126,24 +117,14 @@ function formatSessionLines(input: DoctorReportInput): string[] {
 
 function formatDiscovery(input: DoctorReportInput, deps: DoctorDeps): string[] {
 	return [
-		lineFromCheck("agents/chains", () => {
+		lineFromCheck("agents", () => {
 			const discovered = deps.discoverAgentsAll(input.cwd);
 			const agentCounts = {
 				builtin: discovered.builtin.length,
 				user: discovered.user.length,
 				project: discovered.project.length,
 			};
-			const chainCounts = discovered.chains.reduce<Record<AgentSource, number>>(
-				(counts, chain) => {
-					counts[chain.source] += 1;
-					return counts;
-				},
-				{ builtin: 0, user: 0, project: 0 },
-			);
-			return [
-				`- agents: total ${agentCounts.builtin + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`,
-				`- chains: total ${discovered.chains.length} (${formatSourceCounts(chainCounts)})`,
-			].join("\n");
+			return `- agents: total ${agentCounts.builtin + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`;
 		}),
 		lineFromCheck("skills", () => {
 			const skills = deps.discoverAvailableSkills(input.cwd);
@@ -188,7 +169,6 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		formatExistingDirectory("temp root", paths.tempRootDir),
 		formatExistingDirectory("async runs", paths.asyncDir),
 		formatExistingDirectory("results", paths.resultsDir),
-		formatExistingDirectory("chain runs", paths.chainRunsDir),
 		"",
 		"Discovery",
 		...formatDiscovery(input, deps),

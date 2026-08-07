@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ExtensionAPI, type ExtensionContext, keyHintIfBound } from "@bastani/atomic";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import { type ChainConfig, discoverAgents, discoverAgentsAll } from "../agents/agents.ts";
+import { discoverAgents } from "../agents/agents.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import {
 	type SingleResult,
@@ -15,7 +15,6 @@ import {
 	SLASH_SUBAGENT_UPDATE_EVENT,
 	type SubagentState,
 } from "../shared/types.ts";
-import { mapSavedChainSteps } from "./saved-chain-mapping.ts";
 import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.ts";
 import { applySlashUpdate, buildSlashInitialResult, failSlashResult, finalizeSlashResult } from "./slash-live-state.ts";
 
@@ -119,21 +118,6 @@ const makeAgentCompletions = (state: SubagentState, multiAgent: boolean) => (pre
 	return agents
 		.filter((a) => a.name.startsWith(lastWord))
 		.map((a) => ({ value: `${beforeLastWord}${a.name}`, label: a.name }));
-};
-
-const discoverSavedChains = (cwd: string): ChainConfig[] => {
-	const chainsByName = new Map<string, ChainConfig>();
-	for (const chain of discoverAgentsAll(cwd).chains) {
-		chainsByName.set(chain.name, chain);
-	}
-	return Array.from(chainsByName.values());
-};
-
-const makeChainCompletions = (state: SubagentState) => (prefix: string) => {
-	if (prefix.includes(" ") || !state.baseCwd) return null;
-	return discoverSavedChains(state.baseCwd)
-		.filter((chain) => chain.name.startsWith(prefix))
-		.map((chain) => ({ value: chain.name, label: chain.name }));
 };
 
 async function requestSlashRun(
@@ -332,9 +316,7 @@ const parseAgentArgs = (
 	const usage = `Usage: /${command} agent1 "task1" -> agent2 "task2"`;
 	let steps: ParsedStep[];
 	let sharedTask: string;
-	let perStep = false;
 	if (input.includes(" -> ")) {
-		perStep = true;
 		const segments = input.split(" -> ");
 		steps = [];
 		for (const seg of segments) {
@@ -391,10 +373,6 @@ const parseAgentArgs = (
 			return null;
 		}
 	}
-	if (command === "chain" && !steps[0]?.task && (perStep || !sharedTask)) {
-		ctx.ui.notify(`First step must have a task: /chain agent "task" -> agent2`, "error");
-		return null;
-	}
 	if (command === "parallel" && !steps.some((s) => s.task) && !sharedTask) {
 		ctx.ui.notify("At least one step must have a task", "error");
 		return null;
@@ -432,61 +410,6 @@ export function registerSlashCommands(pi: ExtensionAPI, state: SubagentState): v
 			if (inline.outputMode !== undefined) params.outputMode = inline.outputMode;
 			if (inline.skill !== undefined) params.skill = inline.skill;
 			if (inline.model) params.model = inline.model;
-			if (bg) params.async = true;
-			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
-		},
-	});
-	pi.registerCommand("chain", {
-		description: 'Run agents in sequence: /chain scout "task" -> planner [--bg] [--fork]',
-		getArgumentCompletions: makeAgentCompletions(state, true),
-		handler: async (args, ctx) => {
-			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
-			const parsed = parseAgentArgs(state, cleanedArgs, "chain", ctx);
-			if (!parsed) return;
-			const chain = parsed.steps.map(({ name, config, task: stepTask }, i) => ({
-				agent: name,
-				...(stepTask ? { task: stepTask } : i === 0 && parsed.task ? { task: parsed.task } : {}),
-				...(config.output !== undefined ? { output: config.output } : {}),
-				...(config.outputMode !== undefined ? { outputMode: config.outputMode } : {}),
-				...(config.reads !== undefined ? { reads: config.reads } : {}),
-				...(config.model ? { model: config.model } : {}),
-				...(config.skill !== undefined ? { skill: config.skill } : {}),
-				...(config.progress !== undefined ? { progress: config.progress } : {}),
-			}));
-			const params: SubagentParamsLike = { chain, task: parsed.task, agentScope: "both" };
-			if (bg) params.async = true;
-			if (fork) params.context = "fork";
-			await runSlashSubagent(pi, ctx, params);
-		},
-	});
-	pi.registerCommand("run-chain", {
-		description: "Run a saved chain: /run-chain chainName -- task [--bg] [--fork]",
-		getArgumentCompletions: makeChainCompletions(state),
-		handler: async (args, ctx) => {
-			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
-			const delimiterIndex = cleanedArgs.indexOf(" -- ");
-			const usage = "Usage: /run-chain <chainName> -- <task> [--bg] [--fork]";
-			if (delimiterIndex === -1) {
-				ctx.ui.notify(usage, "error");
-				return;
-			}
-			const chainName = cleanedArgs.slice(0, delimiterIndex).trim();
-			const task = cleanedArgs.slice(delimiterIndex + 4).trim();
-			if (!chainName || !task) {
-				ctx.ui.notify(usage, "error");
-				return;
-			}
-			if (!state.baseCwd) {
-				ctx.ui.notify("Subagent session cwd is not initialized yet", "error");
-				return;
-			}
-			const chain = discoverSavedChains(state.baseCwd).find((candidate) => candidate.name === chainName);
-			if (!chain) {
-				ctx.ui.notify(`Unknown chain: ${chainName}`, "error");
-				return;
-			}
-			const params: SubagentParamsLike = { chain: mapSavedChainSteps(chain), task, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);

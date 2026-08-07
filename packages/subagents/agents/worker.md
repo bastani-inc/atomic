@@ -26,7 +26,7 @@ Do not end with a question requiring the supervisor to choose before work can co
 
 ## Work and validation
 
-Use the provided tools directly. Use `bash` for inspection and appropriate non-destructive validation. Keep `progress.md` accurate when requested. If chain instructions specify files to read, progress tracking, or an output artifact, follow them.
+Use the provided tools directly. Use `bash` for inspection and appropriate non-destructive validation. Keep `progress.md` accurate when requested. If instructions specify files to read, progress tracking, or an output artifact, follow them.
 
 If edits were required but none were made, do not claim success: make them, escalate a blocker, or explicitly report that no edits were made. Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.
 

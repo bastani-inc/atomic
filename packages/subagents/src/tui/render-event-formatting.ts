@@ -17,17 +17,6 @@ import {
 	statJoin,
 } from "./render-status-progress.ts";
 
-function flatToLogicalStepIndex(
-	currentStep: number,
-	_total: number,
-	groups: Array<{ start: number; count: number; stepIndex?: number }>,
-): number {
-	return (
-		groups.find((group) => currentStep >= group.start && currentStep < group.start + group.count)?.stepIndex ??
-		currentStep
-	);
-}
-
 export function formatWidgetAgents(agents: string[]): string {
 	const distinct = [...new Set(agents)];
 	if (distinct.length === 1 && agents.length > 1) return `${distinct[0]} ×${agents.length}`;
@@ -37,7 +26,6 @@ export function formatWidgetAgents(agents: string[]): string {
 
 export function widgetJobName(job: AsyncJobState): string {
 	if (job.mode === "parallel") return "parallel";
-	if (job.mode === "chain") return "chain";
 	if (job.mode === "single" && job.agents?.length === 1) return job.agents[0]!;
 	if (job.agents?.length) return formatWidgetAgents(job.agents);
 	return job.mode ?? "subagent";
@@ -112,32 +100,11 @@ export function widgetStepActivity(step: NonNullable<AsyncJobState["steps"]>[num
 export function widgetStats(job: AsyncJobState, theme: Theme): string {
 	const parts: string[] = [];
 	const stepsTotal = job.stepsTotal ?? job.agents?.length ?? 1;
-	if (job.activeParallelGroup) {
+	if (job.mode === "parallel") {
 		const running = job.runningSteps ?? (job.status === "running" ? 1 : 0);
 		const done = job.completedSteps ?? (job.status === "complete" ? stepsTotal : 0);
-		if (job.mode === "parallel") {
-			if (job.status === "running" && running > 0) parts.push(formatAgentRunningLabel(running));
-			if (stepsTotal > 0) parts.push(`${done}/${stepsTotal} done`);
-		} else {
-			const activeGroup =
-				job.currentStep !== undefined
-					? job.parallelGroups?.find(
-							(group) => job.currentStep! >= group.start && job.currentStep! < group.start + group.count,
-						)
-					: job.parallelGroups?.find((group) => group.start === 0);
-			const logicalStep = activeGroup?.stepIndex ?? job.currentStep ?? 0;
-			const total = job.chainStepCount ?? stepsTotal;
-			const groupParts = [`${done}/${stepsTotal} done`];
-			if (job.status === "running" && running > 0) groupParts.unshift(formatAgentRunningLabel(running));
-			parts.push(`step ${logicalStep + 1}/${total} · parallel group: ${groupParts.join(" · ")}`);
-		}
-	} else if (job.currentStep !== undefined) {
-		if (job.mode === "chain" && job.parallelGroups?.length) {
-			const total = job.chainStepCount ?? stepsTotal;
-			parts.push(`step ${flatToLogicalStepIndex(job.currentStep, total, job.parallelGroups) + 1}/${total}`);
-		} else {
-			parts.push(`step ${job.currentStep + 1}/${stepsTotal}`);
-		}
+		if (job.status === "running" && running > 0) parts.push(formatAgentRunningLabel(running));
+		if (stepsTotal > 0) parts.push(`${done}/${stepsTotal} done`);
 	} else if (stepsTotal > 1) {
 		parts.push(`steps ${stepsTotal}`);
 	}

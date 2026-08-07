@@ -153,12 +153,26 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 			);
 			assert.equal(result.isError, undefined);
 		}
+		const parallelResult = await executor.execute(
+			"parallel-call",
+			{
+				tasks: [
+					{ agent: "worker", task: "parallel inherited" },
+					{ agent: "worker", task: "parallel default", group: "default" },
+				],
+				group: "parallel-group",
+			},
+			new AbortController().signal,
+			undefined,
+			context,
+		);
+		assert.equal(parallelResult.isError, undefined);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 
 	const workflowGroup = stageOrchestrationContext.intercomGroup;
-	assert.deepEqual(childGroups, [workflowGroup, "child-group", "default"]);
+	assert.deepEqual(childGroups, [workflowGroup, "child-group", "default", "parallel-group", "default"]);
 	assert.ok(workflowGroup);
 	const childSocket = {} as net.Socket;
 	const mainSocket = {} as net.Socket;
@@ -195,74 +209,4 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 		writes.some((write) => write.socket === childSocket && write.message.type === "delivery_failed"),
 		true,
 	);
-});
-
-test("foreground chain children inherit the workflow group and keep explicit overrides", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-workflow-group-chain-"));
-	const childGroups: Array<string | undefined> = [];
-	const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (_cwd, _agents, agent, task, options) => {
-		childGroups.push(options.intercomGroup);
-		return { agent, task, status: "ok", messages: [], usage, finalOutput: "done" };
-	};
-	const pi: Pick<ExecutorDeps["pi"], "events" | "getSessionName"> = {
-		events: { on: () => () => {}, emit: () => {} },
-		getSessionName: () => "workflow-stage",
-	};
-	try {
-		const executor = createSubagentExecutor({
-			pi: pi as ExecutorDeps["pi"],
-			state: makeState(),
-			config: { maxSubagentDepth: 2, parallel: { concurrency: 2, maxTasks: 10 } },
-			asyncByDefault: false,
-			tempArtifactsDir: join(root, "artifacts"),
-			getSubagentSessionRoot: () => join(root, "sessions"),
-			expandTilde: (path) => path,
-			discoverAgents: () => ({
-				agents: [
-					{
-						name: "worker",
-						description: "test worker",
-						systemPromptMode: "replace",
-						inheritProjectContext: false,
-						inheritSkills: false,
-						systemPrompt: "work",
-						source: "project",
-						filePath: join(root, "worker.md"),
-					},
-				],
-			}),
-			runtime: { runSync },
-		});
-		const context = stageContext(root, {
-			kind: "workflow-stage",
-			workflowRunId: "root",
-			workflowStageId: "launcher",
-			workflowStageName: "launcher",
-			intercomGroup: "workflow:root",
-			constraints: { disableWorkflowTool: true, maxSubagentDepth: 2 },
-		});
-		const result = await executor.execute(
-			"chain",
-			{
-				chain: [
-					{ agent: "worker", task: "inherit" },
-					{ agent: "worker", task: "default", group: "default" },
-					{
-						parallel: [
-							{ agent: "worker", task: "parallel-set" },
-							{ agent: "worker", task: "parallel-default", group: "default" },
-						],
-						group: "parallel-group",
-					},
-				],
-			},
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-		assert.equal(result.isError, undefined);
-		assert.deepEqual(childGroups, ["workflow:root", "default", "parallel-group", "default"]);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
 });

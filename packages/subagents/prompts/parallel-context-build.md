@@ -12,14 +12,14 @@ $@
 
 ## Constraints and tools
 
-Use the `subagent` tool in chain mode with one parallel step so relative outputs stay under the temporary chain directory. Use `context: "fresh"` unless I explicitly request forked context. Give every task a distinct `output` path, `label`, and `as` name, such as:
+Use the `subagent` tool in top-level parallel mode. Use `context: "fresh"` unless I explicitly request forked context. Give every task a distinct `output` path and label, such as:
 
 - `context-build/where-it-lives.md`
 - `context-build/how-it-works.md`
 - `context-build/existing-patterns.md`
 - `context-build/prior-research.md`
 
-Use one phase such as `phase: "Context build"` so async status is readable. A synthesis step can cite `{outputs.requestScope}`, `{outputs.codebasePatterns}`, and `{outputs.validationRisks}` when available, using `{previous}` only for the whole fan-in. Do not persist context artifacts in the repository unless I explicitly request it.
+Use one phase such as `phase: "Context build"` so async status is readable. Do not persist context artifacts in the repository unless I explicitly request it.
 
 Read or fetch any supplied URL, issue link, file path, plan path, or freeform request before assigning angles, and pass that target into every specialist task. Choose two to four specialists according to the request:
 

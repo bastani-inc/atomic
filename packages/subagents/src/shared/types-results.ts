@@ -14,50 +14,6 @@ export interface MaxOutputConfig {
 
 export type OutputMode = "inline" | "file-only";
 
-export type JsonSchemaObject = Record<string, unknown>;
-
-export interface ChainOutputMapEntry {
-	text: string;
-	structured?: unknown;
-	agent: string;
-	stepIndex: number;
-}
-
-export type ChainOutputMap = Record<string, ChainOutputMapEntry>;
-
-export type WorkflowNodeStatus = "pending" | "running" | "completed" | "failed" | "paused" | "detached";
-
-export interface WorkflowGraphNode {
-	id: string;
-	kind: "step" | "parallel-group" | "dynamic-parallel-group" | "agent";
-	agent?: string;
-	phase?: string;
-	label: string;
-	status: WorkflowNodeStatus;
-	flatIndex?: number;
-	stepIndex?: number;
-	children?: WorkflowGraphNode[];
-	dynamic?: {
-		sourceOutput: string;
-		sourcePath: string;
-		itemName: string;
-		maxItems?: number;
-		collectAs?: string;
-	};
-	itemKey?: string;
-	outputName?: string;
-	structured?: boolean;
-	error?: string;
-}
-
-export interface WorkflowGraphSnapshot {
-	runId: string;
-	mode: "chain" | "parallel" | "single";
-	phases: Array<{ title: string; nodeIds: string[] }>;
-	nodes: WorkflowGraphNode[];
-	currentNodeId?: string;
-}
-
 export interface SavedOutputReference {
 	path: string;
 	bytes: number;
@@ -137,7 +93,7 @@ export interface ControlEvent {
 }
 
 export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached";
-export type SubagentRunMode = "single" | "parallel" | "chain";
+export type SubagentRunMode = "single" | "parallel";
 
 export type PublicNestedStepSummary = Pick<
 	NestedStepSummary,
@@ -177,9 +133,6 @@ export type PublicNestedRunSummary = Pick<
 	| "state"
 	| "agent"
 	| "agents"
-	| "currentStep"
-	| "chainStepCount"
-	| "parallelGroups"
 	| "activityState"
 	| "lastActivityAt"
 	| "currentTool"
@@ -220,7 +173,6 @@ export interface SubagentResultIntercomPayload {
 	children: SubagentResultIntercomChild[];
 	asyncId?: string;
 	asyncDir?: string;
-	chainSteps?: number;
 	agent?: string;
 	index?: number;
 	artifactPath?: string;
@@ -311,9 +263,6 @@ export interface SingleResult {
 	savedOutputPath?: string;
 	outputReference?: SavedOutputReference;
 	outputSaveError?: string;
-	structuredOutput?: unknown;
-	structuredOutputPath?: string;
-	structuredOutputSchemaPath?: string;
 }
 
 export interface Details {
@@ -325,6 +274,7 @@ export interface Details {
 	asyncId?: string;
 	asyncDir?: string;
 	progress?: AgentProgress[];
+	totalSteps?: number;
 	progressSummary?: ProgressSummary;
 	artifacts?: {
 		dir: string;
@@ -336,12 +286,6 @@ export interface Details {
 		originalLines?: number;
 		artifactPath?: string;
 	};
-	// Chain metadata for observability
-	chainAgents?: string[]; // Agent names in order, e.g., ["scout", "planner"]
-	totalSteps?: number; // Total steps in chain
-	currentStepIndex?: number; // 0-indexed current step (for running chains)
-	workflowGraph?: WorkflowGraphSnapshot;
-	outputs?: ChainOutputMap;
 }
 
 // Upstream AgentToolResult omits the runtime isError flag that subagent tool results still emit/read.

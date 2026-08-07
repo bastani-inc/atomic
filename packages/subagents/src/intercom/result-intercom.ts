@@ -86,9 +86,6 @@ function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth 
 		state: run.state,
 		...(run.agent ? { agent: run.agent } : {}),
 		...(run.agents?.length ? { agents: run.agents.slice(0, 12) } : {}),
-		...(run.currentStep !== undefined ? { currentStep: run.currentStep } : {}),
-		...(run.chainStepCount !== undefined ? { chainStepCount: run.chainStepCount } : {}),
-		...(run.parallelGroups?.length ? { parallelGroups: run.parallelGroups.slice(0, 8) } : {}),
 		...(run.activityState ? { activityState: run.activityState } : {}),
 		...(run.lastActivityAt !== undefined ? { lastActivityAt: run.lastActivityAt } : {}),
 		...(run.currentTool ? { currentTool: run.currentTool } : {}),
@@ -197,7 +194,6 @@ export interface GroupedResultIntercomMessageInput {
 	children: SubagentResultIntercomChild[];
 	asyncId?: string;
 	asyncDir?: string;
-	chainSteps?: number;
 }
 
 function asyncResumeGuidance(input: {
@@ -227,7 +223,6 @@ function formatSubagentResultIntercomMessage(input: {
 	children: SubagentResultIntercomChild[];
 	asyncId?: string;
 	asyncDir?: string;
-	chainSteps?: number;
 }): string {
 	const counts = countStatuses(input.children);
 	const lines: string[] = [
@@ -238,9 +233,6 @@ function formatSubagentResultIntercomMessage(input: {
 		`Status: ${input.status}`,
 		`Children: ${formatStatusCounts(counts)}`,
 	];
-	if (input.mode === "chain" && typeof input.chainSteps === "number") {
-		lines.push(`Chain steps: ${input.chainSteps}`);
-	}
 	if (input.asyncId) lines.push(`Async id: ${input.asyncId}`);
 	if (input.asyncDir) lines.push(`Async dir: ${input.asyncDir}`);
 	const resumeGuidance = asyncResumeGuidance(input);
@@ -293,7 +285,6 @@ export function buildSubagentResultIntercomPayload(
 		children,
 		...(input.asyncId ? { asyncId: input.asyncId } : {}),
 		...(input.asyncDir ? { asyncDir: input.asyncDir } : {}),
-		...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
 		...(firstChild?.agent ? { agent: firstChild.agent } : {}),
 		...(firstChild?.index !== undefined ? { index: firstChild.index } : {}),
 		...(firstChild?.artifactPath ? { artifactPath: firstChild.artifactPath } : {}),
@@ -375,12 +366,7 @@ export function formatSubagentResultReceipt(input: {
 	payload: SubagentResultIntercomPayload;
 }): string {
 	const counts = countStatuses(input.payload.children);
-	const modeLabel =
-		input.mode === "single"
-			? "single subagent result"
-			: input.mode === "parallel"
-				? "parallel subagent results"
-				: "chain subagent results";
+	const modeLabel = input.mode === "single" ? "single subagent result" : "parallel subagent results";
 	const lines = [
 		`Delivered ${modeLabel} via intercom.`,
 		`Run: ${input.runId}`,

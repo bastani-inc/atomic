@@ -102,9 +102,6 @@ function resultFromOutcome(
 			: {}),
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
-		...(outcome.status === "ok" && outcome.structuredOutput !== undefined
-			? { structuredOutput: outcome.structuredOutput }
-			: {}),
 		progress: progressFor(agent, task, outcome, startedAt),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,
@@ -205,9 +202,6 @@ export async function runSingleInProcess(
 		testSession: testSession,
 		sessionFile: options.sessionFile,
 		...(options.maxSubagentDepth === undefined ? {} : { maxSubagentDepth: options.maxSubagentDepth }),
-		structuredOutput: options.structuredOutput
-			? { schema: options.structuredOutput.schema, outputPath: options.structuredOutput.outputPath }
-			: undefined,
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,

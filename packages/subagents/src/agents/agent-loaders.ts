@@ -6,13 +6,10 @@ import { shouldPreserveAgentExtraField } from "./agent-serializer.ts";
 import {
 	type AgentConfig,
 	type AgentSource,
-	type ChainConfig,
-	type ChainDiscoveryDiagnostic,
 	defaultInheritProjectContext,
 	defaultInheritSkills,
 	defaultSystemPromptMode,
 } from "./agent-types.ts";
-import { parseChain, parseJsonChain } from "./chain-serializer.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { buildRuntimeName, parsePackageName } from "./identity.ts";
 
@@ -51,10 +48,7 @@ function parseCommaSeparatedList(value: string | undefined): string[] | undefine
 export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
-	for (const filePath of listFilesRecursive(
-		dir,
-		(fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md"),
-	)) {
+	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md"))) {
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
@@ -151,37 +145,4 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 	}
 
 	return agents;
-}
-
-export function loadChainsFromDir(
-	dir: string,
-	source: "user" | "project",
-): { chains: ChainConfig[]; diagnostics: ChainDiscoveryDiagnostic[] } {
-	const chains = new Map<string, ChainConfig>();
-	const diagnostics: ChainDiscoveryDiagnostic[] = [];
-
-	for (const filePath of listFilesRecursive(
-		dir,
-		(fileName) => fileName.endsWith(".chain.md") || fileName.endsWith(".chain.json"),
-	)) {
-		let content: string;
-		try {
-			content = fs.readFileSync(filePath, "utf-8");
-		} catch {
-			continue;
-		}
-
-		try {
-			const chain = filePath.endsWith(".chain.json")
-				? parseJsonChain(content, source, filePath)
-				: parseChain(content, source, filePath);
-			const existing = chains.get(chain.name);
-			if (existing?.filePath.endsWith(".chain.json") && filePath.endsWith(".chain.md")) continue;
-			chains.set(chain.name, chain);
-		} catch (error) {
-			diagnostics.push({ source, filePath, error: error instanceof Error ? error.message : String(error) });
-		}
-	}
-
-	return { chains: Array.from(chains.values()), diagnostics };
 }

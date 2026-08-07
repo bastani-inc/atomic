@@ -14,9 +14,6 @@ export type {
 	AgentScope,
 	AgentSource,
 	BuiltinAgentOverrideBase,
-	ChainConfig,
-	ChainDiscoveryDiagnostic,
-	ChainStepConfig,
 } from "./agent-types.ts";
 export {
 	defaultInheritProjectContext,

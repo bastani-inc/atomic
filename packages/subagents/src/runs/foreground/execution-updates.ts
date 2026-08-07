@@ -1,7 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Details } from "../../shared/types.ts";
 import { isRetryableModelFailure } from "../shared/model-fallback.ts";
-import { isStructuredOutputContractError } from "../shared/structured-output.ts";
 
 export type RunSyncUpdate = AgentToolResult<Details>;
 
@@ -24,8 +23,4 @@ function terminalUpdateFailureText(update: RunSyncUpdate): string | undefined {
 
 export function shouldSuppressIntermediateRetryableFailureUpdate(update: RunSyncUpdate): boolean {
 	return isRetryableModelFailure(terminalUpdateFailureText(update));
-}
-
-export function shouldSuppressIntermediateStructuredOutputFailureUpdate(update: RunSyncUpdate): boolean {
-	return isStructuredOutputContractError(terminalUpdateFailureText(update));
 }

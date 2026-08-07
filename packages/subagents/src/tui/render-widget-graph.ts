@@ -1,7 +1,5 @@
 import { keyHintIfBound } from "@bastani/atomic";
-import { aggregateStepStatus, formatParallelOutcome } from "../shared/status-format.ts";
 import type { AsyncJobState } from "../shared/types.ts";
-import { buildAsyncChainStepSpans } from "./render-chain-graph.ts";
 import {
 	formatNestedWidgetLines,
 	modelThinkingBadge,
@@ -18,47 +16,6 @@ import {
 import { getTermWidth, type Theme, truncLine } from "./render-layout.ts";
 import { buildLiveStatusLine, themeBold } from "./render-status-progress.ts";
 
-export function widgetChainDetails(
-	job: AsyncJobState,
-	theme: Theme,
-	expanded = false,
-	width = getTermWidth(),
-	pulseFrame?: number,
-): string[] {
-	if (!job.steps?.length) return [];
-	const total = job.chainStepCount ?? job.steps.length;
-	const lines: string[] = [];
-	for (const span of buildAsyncChainStepSpans(total, job.steps.length, job.parallelGroups)) {
-		const steps = job.steps.slice(span.start, span.start + span.count);
-		if (span.isParallel) {
-			const status = aggregateStepStatus(steps);
-			lines.push(
-				`  ${widgetStepPulseGlyph(status, theme, pulseFrame)} Step ${span.stepIndex + 1}/${total}: ${themeBold(theme, "parallel group")} ${theme.fg("dim", "·")} ${theme.fg("dim", formatParallelOutcome(steps, span.count))}`,
-			);
-			continue;
-		}
-		const step = steps[0];
-		if (!step) {
-			lines.push(`  ${theme.fg("dim", `◦ Step ${span.stepIndex + 1}/${total}: pending`)}`);
-			continue;
-		}
-		lines.push(
-			...foregroundStyleWidgetStepLines(
-				job,
-				theme,
-				step,
-				"Step",
-				span.stepIndex + 1,
-				total,
-				expanded,
-				width,
-				pulseFrame,
-			),
-		);
-	}
-	return lines;
-}
-
 export function widgetParallelAgentDetails(
 	job: AsyncJobState,
 	theme: Theme,
@@ -68,15 +25,13 @@ export function widgetParallelAgentDetails(
 	pulseFrame?: number,
 ): string[] {
 	if (!job.steps?.length) return [];
-	if (job.mode !== "parallel" && job.mode !== "chain") return [];
-	if (job.mode === "chain" && !job.activeParallelGroup && job.parallelGroups?.length)
-		return widgetChainDetails(job, theme, expanded, width, pulseFrame);
+	if (job.mode !== "parallel") return [];
 	const total = job.stepsTotal ?? job.steps.length;
 	const lines: string[] = [];
 	for (const [index, step] of job.steps.entries()) {
 		const marker = index === job.steps.length - 1 ? "└" : "├";
 		const activity = widgetStepActivity(step, job.updatedAt);
-		const itemTitle = job.mode === "parallel" || job.activeParallelGroup ? "Agent" : "Step";
+		const itemTitle = "Agent";
 		const modelDisplay = modelThinkingBadge(theme, step.model, step.thinking, step.fastMode);
 		lines.push(
 			`  ${theme.fg("dim", `${marker} ${widgetStepPulseGlyph(step.status, theme, pulseFrame)} ${itemTitle} ${index + 1}/${total}: ${step.agent} · ${widgetStepStatus(step.status, theme)}${modelDisplay}${activity ? ` · ${activity}` : ""}`)}`,
@@ -164,10 +119,8 @@ export function foregroundStyleWidgetDetails(
 				pulseFrame,
 			).map((line) => `  ${line}`),
 		];
-	if (job.mode === "chain" && !job.activeParallelGroup && job.parallelGroups?.length)
-		return widgetChainDetails(job, theme, expanded, width, pulseFrame);
 	const total = job.stepsTotal ?? job.steps.length;
-	const itemTitle = job.mode === "parallel" || job.activeParallelGroup ? "Agent" : "Step";
+	const itemTitle = job.mode === "parallel" ? "Agent" : "Step";
 	const lines: string[] = [];
 	for (const [index, step] of job.steps.entries()) {
 		lines.push(
@@ -199,8 +152,7 @@ export function buildSingleWidgetLines(
 	pulseFrame?: number,
 ): string[] {
 	const stats = widgetStats(job, theme);
-	const count =
-		job.mode === "chain" ? job.chainStepCount : (job.stepsTotal ?? job.agents?.length ?? job.steps?.length);
+	const count = job.stepsTotal ?? job.agents?.length ?? job.steps?.length;
 	const mode = widgetJobName(job);
 	const title = `async subagent ${mode}${count && count > 1 ? ` (${count})` : ""}`;
 	return [
@@ -218,11 +170,10 @@ export function compactSingleWidgetLines(
 	pulseFrame?: number,
 ): string[] {
 	const fullLines = buildSingleWidgetLines(job, theme, width, false, _now, pulseFrame);
-	if (fullLines.length <= 10 || !job.steps?.length || (job.mode !== "parallel" && !job.activeParallelGroup))
-		return fullLines;
+	if (fullLines.length <= 10 || !job.steps?.length || job.mode !== "parallel") return fullLines;
 
 	const total = job.stepsTotal ?? job.steps.length;
-	const itemTitle = job.mode === "parallel" || job.activeParallelGroup ? "Agent" : "Step";
+	const itemTitle = "Agent";
 	const lines = fullLines.slice(0, 2);
 	for (const [index, step] of job.steps.entries()) {
 		const status = widgetStepStatus(step.status, theme);

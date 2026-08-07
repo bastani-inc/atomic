@@ -11,7 +11,7 @@ import {
 } from "../../shared/types.ts";
 import type { CompletionNotificationEnvelope } from "./completion-notification.ts";
 
-interface ChainStepResult {
+interface SubagentStepResult {
 	agent: string;
 	output: string;
 	status: SubagentAttemptStatus;
@@ -43,7 +43,7 @@ interface SubagentResult {
 	shareUrl?: string;
 	gistUrl?: string;
 	shareError?: string;
-	results?: ChainStepResult[];
+	results?: SubagentStepResult[];
 	taskIndex?: number;
 	totalTasks?: number;
 	noticeLabel?: string;

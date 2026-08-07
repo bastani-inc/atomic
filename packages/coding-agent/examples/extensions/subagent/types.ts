@@ -23,11 +23,10 @@ export interface SingleResult {
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
-	step?: number;
 }
 
 export interface SubagentDetails {
-	mode: "single" | "parallel" | "chain";
+	mode: "single" | "parallel";
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
 	results: SingleResult[];

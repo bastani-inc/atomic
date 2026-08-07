@@ -5,7 +5,7 @@ description: "Run focused Atomic child agents"
 
 # Subagents
 
-Atomic bundles `@bastani/subagents`, an extension for bounded specialist delegation with separate context while the parent remains in control. Use a single agent, chain, or parallel fan-out when isolation or a specialist pass materially helps with locating code, analyzing behavior, researching references, reproducing actual failures, or simplifying code. Keep interactive, exploratory, conceptual, and conversation-led work inline when direct user steering is more useful.
+Atomic bundles `@bastani/subagents`, an extension for bounded specialist delegation with separate context while the parent remains in control. Use a single agent or parallel fan-out when isolation or a specialist pass materially helps with locating code, analyzing behavior, researching references, reproducing actual failures, or simplifying code. Keep interactive, exploratory, conceptual, and conversation-led work inline when direct user steering is more useful.
 
 You do not need to install anything separately when you use `@bastani/atomic`.
 
@@ -25,11 +25,11 @@ Run a parallel review composition: one pass for current behavior, one for failur
 Research the upstream library behavior online, then compare it with our local implementation.
 ```
 
-Atomic decides whether delegation adds value, which specialist fits each bounded part, and whether the work should run as a single child, parallel group, chain, foreground run, or selective background run. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow; clearly delegated long-running autonomous work that needs durable stages, checkpoints, resumability, HIL, gates, retries, or loops is usually better served by a workflow.
+Atomic decides whether delegation adds value, which specialist fits each bounded part, and whether the work should run as a single child, parallel group, foreground run, or selective background run. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow; clearly delegated long-running autonomous work that needs durable stages, checkpoints, resumability, HIL, gates, retries, or loops is usually better served by a workflow.
 
 ## Subagent execution is non-interactive
 
-Supported subagent launches start immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, chain, foreground, background, fanout, prompt-template, and human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` execution. Ask any necessary questions in the parent conversation before delegating.
+Supported subagent launches start immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, foreground, background, fanout, prompt-template, and human-entered `/run` and `/parallel` execution. Ask any necessary questions in the parent conversation before delegating.
 
 The human slash commands remain registered and continue to use their separate parsing and event-bridge path, including background and fork flags.
 
@@ -51,9 +51,9 @@ Atomic's implementation adapts the prompt foreground release and later-result re
 
 ## Migration from acceptance gates
 
-If you have older subagent calls, saved chains, or custom agents that used the removed gate fields:
+If you have older subagent calls or custom agents that used the removed gate fields:
 
-- Remove `acceptance` properties from `subagent()` calls, `tasks` entries, `chain` steps, static parallel task items, and dynamic fanout parallel templates. Atomic no longer reads these fields; JSON chain rewrites drop legacy copies.
+- Remove `acceptance` properties from `subagent()` calls, task entries, and parallel task items. Atomic no longer reads these fields.
 - Remove `completionGuard: false` from agent frontmatter and custom agent definitions. The no-mutation completion guard no longer exists, so the override has no effect and management rewrites strip it.
 - Move validation, command, evidence, review, or residual-risk requirements into the natural-language task text passed to the parent or child agent.
 
@@ -136,11 +136,11 @@ When a workflow graph overlay is open, Atomic also publishes the live async suba
 
 ## Orchestrator model and group policy
 
-Atomic applies the same delegation policy to any parent chat or workflow stage that orchestrates subagents. A named agent uses the model and fallback chain declared by its agent definition, so the orchestrator normally omits the subagent tool's explicit `model` argument. An override needs either the user's exact model request or a documented task-specific reason recorded before launch; model diversity alone is not enough.
+Atomic applies the same delegation policy to any parent chat or workflow stage that orchestrates subagents. A named agent uses the model and fallback sequence declared by its agent definition, so the orchestrator normally omits the subagent tool's explicit `model` argument. An override needs either the user's exact model request or a documented task-specific reason recorded before launch; model diversity alone is not enough.
 
 If an agent declares no model or fallback policy, the orchestrator consults the role guidance in [Model selection](/models/model-selection), then calls `workflow({ action: "models" })` when that tool is available. It may pin only a returned `fullId` and may add a thinking suffix only when the model entry lists that level. When the catalog tool is unavailable, the catalog is empty, or no recommended model is present, the child stays unpinned and the orchestrator reports the limit instead of inventing a model or inspecting credentials.
 
-Each workflow invocation automatically receives one stable, non-`"default"` Intercom group as typed admission policy. Its stages and delegated children carry that group across single, parallel, chain, async, and follow-up work unless a call explicitly overrides `group`. Outside workflows, children inherit the launching session's resolved group. This isolates workflow runs from unrelated runs and the main chat while `contact_supervisor` retains its authorized cross-group route.
+Each workflow invocation automatically receives one stable, non-`"default"` Intercom group as typed admission policy. Its stages and delegated children carry that group across single, parallel, async, and follow-up work unless a call explicitly overrides `group`. Outside workflows, children inherit the launching session's resolved group. This isolates workflow runs from unrelated runs and the main chat while `contact_supervisor` retains its authorized cross-group route.
 
 ## Context and execution modes
 
@@ -157,9 +157,9 @@ Fresh child sessions use normal Atomic package discovery when an agent omits `ex
 
 Top-level parallel calls support up to 50 subagents after expanding each task's optional `count`. The extension's `parallel.maxTasks` setting defaults to 50 and can enforce a lower task limit; `parallel.concurrency` independently controls how many of those children run at once, while the Rust turn limiter admits at most four running turns per parent.
 
-Subagent tasks, parallel/chain items, and the top-level call accept a `group` field that sets the spawned child's [Intercom](/intercom) home group, so same-group subagents can intercom each other while staying isolated from other groups. A named string joins that group; `true` auto-generates one shared UUID group per parallel set. Precedence is `explicit subagent group > inherited current-session group > config > "default"`. Workflow stages carry their runtime-owned invocation group, so children launched without `group` automatically join the workflow group; callers do not need to copy or generate an ID. In other sessions, omission inherits that launching session's resolved group. The child group is applied only when the child has Intercom access (the peer `intercom` tool or subagent-only `contact_supervisor` tool); a child without Intercom receives no group. `contact_supervisor` still reaches the supervisor across group boundaries because Atomic requests a broker capability during typed admission and binds the child's registration to the issuing supervisor. Foreground and single-child paths use exact child scopes; asynchronous chains use bounded per-child slots so indexes shifted by dynamic fanout remain valid. The lightweight Intercom wrapper lazy-loads the authorization provider; provider failures abort launch, while hosts without a provider omit supervisor metadata instead of exposing a broken channel.
+Subagent tasks, parallel items, and the top-level call accept a `group` field that sets the spawned child's [Intercom](/intercom) home group, so same-group subagents can intercom each other while staying isolated from other groups. A named string joins that group; `true` auto-generates one shared UUID group per parallel set. Precedence is `explicit subagent group > inherited current-session group > config > "default"`. Workflow stages carry their runtime-owned invocation group, so children launched without `group` automatically join the workflow group; callers do not need to copy or generate an ID. In other sessions, omission inherits that launching session's resolved group. The child group is applied only when the child has Intercom access (the peer `intercom` tool or subagent-only `contact_supervisor` tool); a child without Intercom receives no group. `contact_supervisor` still reaches the supervisor across group boundaries because Atomic requests a broker capability during typed admission and binds the child's registration to the issuing supervisor. Foreground and single-child paths use exact child scopes; asynchronous runs use bounded per-child slots. The lightweight Intercom wrapper lazy-loads the authorization provider; provider failures abort launch, while hosts without a provider omit supervisor metadata instead of exposing a broken channel.
 
-When a subagent call, parallel task, chain step, or background run uses a `cwd`, Atomic validates that working directory before starting the child runtime. Missing or non-directory paths are reported as `cwd` problems instead of lower-level runtime errors.
+When a subagent call, parallel task, or background run uses a `cwd`, Atomic validates that working directory before starting the child runtime. Missing or non-directory paths are reported as `cwd` problems instead of lower-level runtime errors.
 
 Single-agent calls also accept `reads: string[] | false`. Atomic prepends those files as read context for foreground and background execution through the same in-process session path, including `/run agent[reads=a.md+b.md]`. Relative entries resolve against the effective child `cwd` (including a relative top-level `cwd` resolved from the parent); absolute entries are unchanged. Invalid values fail before the child session starts.
 
@@ -214,30 +214,11 @@ Cite each actionable issue with file:line evidence and the observed failure or r
 Return only issues worth fixing now. Stop when the relevant diff and affected call paths have been inspected, or name the evidence you could not access.
 ```
 
-If an agent or chain step uses an explicit empty `tools: []` allowlist together with `outputSchema`, Atomic starts the child with only `structured_output` enabled for the required final answer. It does not omit `--tools` and accidentally restore default tools. Path-only tool entries remain extension paths and do not create a builtin allowlist by themselves. The typed child session construction registers its schema-backed `structured_output` tool before explicit allowlists are applied.
-
-## Structured output schemas
-
-Chain and parallel steps can declare an `outputSchema` when the parent needs reliable machine-readable handoff data. Atomic passes that schema directly to a `structured_output` tool backed by the shared Atomic factory. The child should call `structured_output` when it is done:
-
-```ts
-structured_output({
-  files: ["src/auth.ts"],
-  risks: ["missing regression test"],
-})
-```
-
-`outputSchema` is a plain JSON Schema descriptor object. It may describe object, array, or primitive final values, and the child should pass a JSON value that matches that schema directly. Atomic no longer adds object-root restrictions, sidecar metadata, transcript-finality checks, or duplicate-call guards. The child runtime writes the tool arguments to `output.json`; the parent validates that captured JSON against the schema, reads it back as `result.structuredOutput`, and exposes it in named-chain references under `outputs.name.structured`. If the child exits without calling `structured_output`, or the captured value fails schema validation, Atomic retries up to three times with a corrective prompt that quotes the exact contract/validation error and reminds the child to call `structured_output` rather than returning plain JSON.
-
-Children without `outputSchema` do not receive `structured_output` from Atomic's default tool registry. They can still use a custom extension-provided terminating tool if you explicitly add one.
-
-Dynamic fanout `collect.outputSchema` validates the collected result array after child runs finish.
-
 ## Fallback models
 
 Agents can define ordered `fallbackModels` for retryable provider or model failures such as rate limits, quota/usage-limit exhaustion (for example a provider reporting `The usage limit has been reached`, or `usage_limit_reached`/`insufficient_quota` codes), auth problems, unavailable models, network timeouts, or 5xx errors. Atomic tries the requested primary model first, then configured fallbacks, and finally appends the current user-selected model as the last fallback candidate when available. The main chat and workflow stages share one failure classifier, so auth, model-availability, request-incompatibility, and transport signals are handled consistently. Cancellations, safety refusals, and task/tool failures are never retried on another model.
 
-A candidate that cannot serve the current request — for example an HTTP 400/413/422 bad/unprocessable/payload-too-large request, an unsupported tool or parameter, a context-length/context-window overflow, or a `too large` / `invalid_request` error — is treated as request/context incompatible and the chain advances to the next candidate rather than stopping. This means that if none of the configured candidates are applicable to the request, Atomic falls back to the currently selected user model instead of failing outright.
+A candidate that cannot serve the current request — for example an HTTP 400/413/422 bad/unprocessable/payload-too-large request, an unsupported tool or parameter, a context-length/context-window overflow, or a `too large` / `invalid_request` error — is treated as request/context incompatible and the fallback sequence advances to the next candidate rather than stopping. This means that if none of the configured candidates are applicable to the request, Atomic falls back to the currently selected user model instead of failing outright.
 
 Model fallback decisions use structured provider and attempt causes. There is no per-attempt idle watchdog, no child wall-clock kill cap, and no timeout-regex classification: a quiet provider response is allowed to finish, and only an explicit termination or provider failure supplies a retryable cause. Numeric process exit codes are not used as an outcome discriminator.
 

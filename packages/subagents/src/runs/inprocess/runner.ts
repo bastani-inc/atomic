@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
 	type AgentSession,
@@ -30,16 +30,10 @@ import {
 	type AgentProgress,
 	type ArtifactPaths,
 	DEFAULT_MAX_OUTPUT,
-	type JsonSchemaObject,
 	type MaxOutputConfig,
 	normalizeMaxSubagentDepth,
 	truncateOutput,
 } from "../../shared/types.ts";
-import {
-	formatStructuredOutputCorrectionPrompt,
-	readStructuredOutput,
-	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
-} from "../shared/structured-output.ts";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.ts";
 import { type InProcessNestedResumeOutcome, registerInProcessNestedAttempt } from "./nested-routing.ts";
 import { createInProcessChildPromptBehavior } from "./prompt-behavior.ts";
@@ -59,7 +53,6 @@ export interface ParentContext {
 
 export interface TestSessionOptions {
 	readonly output?: string;
-	readonly structuredOutputAfterPrompt?: number;
 	readonly promptLogPath?: string;
 	/** Hold a test prompt open until the caller releases the supplied promise. */
 	readonly promptGate?: Promise<void>;
@@ -90,7 +83,6 @@ export interface ChildSpec {
 	 */
 	readonly maxSubagentDepth?: number;
 	readonly testSession?: boolean | TestSessionOptions;
-	readonly structuredOutput?: { readonly schema: JsonSchemaObject; readonly outputPath: string };
 	readonly artifactJsonlPath?: string;
 	/**
 	 * Fallback model candidates (full ids, optional `:thinking` suffix) handed to
@@ -136,7 +128,6 @@ export type AttemptOutcome =
 			readonly path: string;
 			readonly envelope: string;
 			readonly sessionFile?: string;
-			readonly structuredOutput?: unknown;
 			readonly model?: string;
 			readonly attemptedModels?: readonly string[];
 	  }
@@ -317,7 +308,6 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			else reject(new Error("aborted"));
 		};
 	});
-	let promptCount = 0;
 	let userMessages = 0;
 	let assistantMessages = 0;
 	const zeroTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
@@ -335,7 +325,6 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		prompt: async (text: string) => {
 			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
 			if (aborted) throw new Error("aborted");
-			promptCount += 1;
 			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
 			sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 			userMessages += 1;
@@ -345,13 +334,6 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 					promptAbort,
 				]);
 				if (gateResult === "aborted") return "";
-			}
-			if (
-				spec.structuredOutput &&
-				testOptions.structuredOutputAfterPrompt !== undefined &&
-				promptCount >= testOptions.structuredOutputAfterPrompt
-			) {
-				writeFileSync(spec.structuredOutput.outputPath, JSON.stringify({ answer: "ok" }), "utf8");
 			}
 			lastAssistantText = testOptions.output ?? "done";
 			sessionManager.appendMessage({
@@ -845,28 +827,7 @@ export class SubagentControlRuntime {
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
-			let structuredOutput: unknown;
-			let prompt = admitted.spec.task;
-			for (let correction = 0; ; correction += 1) {
-				await session.prompt(prompt);
-				if (!admitted.spec.structuredOutput) break;
-				const structured = readStructuredOutput({
-					schema: admitted.spec.structuredOutput.schema,
-					schemaPath: "",
-					outputPath: admitted.spec.structuredOutput.outputPath,
-				});
-				if (structured.value !== undefined) {
-					structuredOutput = structured.value;
-					break;
-				}
-				const error = structured.error ?? "Structured output contract failed.";
-				if (correction >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) throw new Error(error);
-				prompt = formatStructuredOutputCorrectionPrompt({
-					originalTask: admitted.spec.task,
-					error,
-					attempt: correction + 1,
-				});
-			}
+			await session.prompt(admitted.spec.task);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
@@ -889,7 +850,6 @@ export class SubagentControlRuntime {
 					sessionFile,
 					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
-					...(structuredOutput === undefined ? {} : { structuredOutput }),
 				};
 			return {
 				status,

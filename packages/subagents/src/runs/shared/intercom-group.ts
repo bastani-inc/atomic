@@ -18,8 +18,8 @@ export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): s
 }
 
 /**
- * Resolve the intercom group for a spawned subagent child. Precedence:
- * explicit task/parallel/chain group > inherited current-session (stage) group.
+ * Resolve the intercom group for a spawned subagent child. Explicit task group
+ * takes precedence over the inherited current-session group.
  * `true` resolves to `sharedAutoGroup` (a single UUID minted once per parallel
  * set) so every child in the set shares one isolated group. Returns undefined
  * when nothing applies, so the child inherits env/config/default itself.

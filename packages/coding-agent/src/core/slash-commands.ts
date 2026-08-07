@@ -325,8 +325,6 @@ export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand
 		getArgumentCompletions: getBundledWorkflowArgumentCompletions,
 	},
 	{ name: "run", description: "Run a subagent directly: /run agent[output=file] [task] [--bg] [--fork]" },
-	{ name: "chain", description: "Run agents in sequence: /chain scout task -> planner [--bg] [--fork]" },
-	{ name: "run-chain", description: "Run a saved chain: /run-chain chainName -- task [--bg] [--fork]" },
 	{ name: "parallel", description: "Run agents in parallel: /parallel scout task1 -> reviewer task2 [--bg] [--fork]" },
 	{ name: "subagents-doctor", description: "Show subagent diagnostics" },
 	{ name: "mcp", description: "Show MCP server status" },

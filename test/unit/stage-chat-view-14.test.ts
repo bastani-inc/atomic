@@ -87,28 +87,6 @@ function runningSubagentDetails() {
 		mode: "single",
 		results: [{ agent: "worker", task: "fix spinner", exitCode: 0, usage: {}, progress }],
 		progress: [progress],
-		workflowGraph: {
-			runId: "subagent-run-1",
-			mode: "chain",
-			phases: [],
-			currentNodeId: "step-0-child",
-			nodes: [
-				{
-					id: "step-0",
-					kind: "parallel-group",
-					label: "Parallel",
-					status: "running",
-					children: [
-						{
-							id: "step-0-child",
-							kind: "agent",
-							label: "worker",
-							status: "running",
-						},
-					],
-				},
-			],
-		},
 	};
 }
 
@@ -321,19 +299,12 @@ describe("StageChatView streaming lifecycle", () => {
 			| {
 					progress?: Array<{ status?: string; currentTool?: string }>;
 					results?: Array<{ progress?: { status?: string; currentTool?: string } }>;
-					workflowGraph?: {
-						currentNodeId?: string;
-						nodes?: Array<{ status?: string; children?: Array<{ status?: string }> }>;
-					};
 			  }
 			| undefined;
 		assert.equal(finalizedDetails?.progress?.[0]?.status, "detached");
 		assert.equal(finalizedDetails?.progress?.[0]?.currentTool, undefined);
 		assert.equal(finalizedDetails?.results?.[0]?.progress?.status, "detached");
 		assert.equal(finalizedDetails?.results?.[0]?.progress?.currentTool, undefined);
-		assert.equal(finalizedDetails?.workflowGraph?.currentNodeId, undefined);
-		assert.equal(finalizedDetails?.workflowGraph?.nodes?.[0]?.status, "detached");
-		assert.equal(finalizedDetails?.workflowGraph?.nodes?.[0]?.children?.[0]?.status, "detached");
 		assert.doesNotMatch(renderText(view), /Working/);
 		assert.equal(view._hasAnimationTick, false);
 		view.dispose();

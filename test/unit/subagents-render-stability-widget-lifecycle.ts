@@ -123,8 +123,8 @@ describe("async widget animation ticker lifecycle", () => {
 		renderWidget(ctx, [
 			{
 				...runningJob(),
-				mode: "chain",
-				chainStepCount: 1,
+				mode: "parallel",
+				stepsTotal: 1,
 				steps: [
 					{
 						agent: "worker",

@@ -9,14 +9,6 @@ const TaskItem = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 });
 
-const ChainItem = Type.Object({
-	agent: Type.String({ description: "Name of the agent to invoke" }),
-	task: Type.String({
-		description: "Task with optional {previous} placeholder for prior output",
-	}),
-	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
-});
-
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 	description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
 	default: "user",
@@ -33,11 +25,6 @@ export const SubagentParams = Type.Object({
 		Type.Array(TaskItem, {
 			description: `Array of {agent, task} for parallel execution (max ${MAX_PARALLEL_TASKS})`,
 			maxItems: MAX_PARALLEL_TASKS,
-		}),
-	),
-	chain: Type.Optional(
-		Type.Array(ChainItem, {
-			description: "Array of {agent, task} for sequential execution",
 		}),
 	),
 	agentScope: Type.Optional(AgentScopeSchema),

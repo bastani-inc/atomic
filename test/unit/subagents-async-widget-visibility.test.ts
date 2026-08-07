@@ -108,7 +108,6 @@ function makeStatus(runId: string, cwd: string, overrides: Partial<AsyncStatus> 
 		cwd,
 		startedAt: 1_000,
 		lastUpdate: 2_000,
-		currentStep: 0,
 		steps: [{ agent: "worker", status: "running", startedAt: 1_000 }],
 		...overrides,
 	};

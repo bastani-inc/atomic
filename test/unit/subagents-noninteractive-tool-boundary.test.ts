@@ -366,45 +366,6 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("foreground sequential chain stays non-interactive and hands {previous} to the next step", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-chain-"));
-		try {
-			let customCalls = 0;
-			const runCalls: Array<{ agent: string; task: string }> = [];
-			const executor = makeExecutor(cwd, [makeAgent("scout"), makeAgent("worker")], {
-				runSync: async (_cwd, _agents, agent, task) => {
-					runCalls.push({ agent, task });
-					return makeResult(agent, task, agent === "scout" ? "handoff payload" : "implemented");
-				},
-			});
-			const result = await executor.execute(
-				"chain",
-				{
-					chain: [
-						{ agent: "scout", task: "inspect the failure" },
-						{ agent: "worker", task: "implement from {previous}" },
-					],
-				},
-				new AbortController().signal,
-				undefined,
-				makeContext(cwd, () => {
-					customCalls += 1;
-					throw new Error("unexpected UI prompt");
-				}),
-			);
-
-			assert.equal(result.isError, undefined);
-			assert.equal(customCalls, 0);
-			assert.deepEqual(
-				runCalls.map((call) => call.agent),
-				["scout", "worker"],
-			);
-			assert.equal(runCalls[1]?.task, "implement from handoff payload");
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
 	test("foreground parallel execution stays non-interactive", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-parallel-"));
 		try {
@@ -440,7 +401,7 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("async single, parallel, and sequential-chain launches stay non-interactive", async () => {
+	test("async single and parallel launches stay non-interactive", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-async-"));
 		try {
 			let customCalls = 0;
@@ -477,29 +438,9 @@ describe("programmatic subagent tool boundary", () => {
 				undefined,
 				ctx,
 			);
-			const chain = await executor.execute(
-				"async-chain",
-				{
-					chain: [
-						{ agent: "alpha", task: "first" },
-						{ agent: "beta", task: "continue from {previous}" },
-					],
-					async: true,
-				},
-				signal,
-				undefined,
-				ctx,
-			);
-			await new Promise<void>((resolve) => setImmediate(resolve));
-
 			assert.equal(customCalls, 0);
 			assert.deepEqual(asyncSingle, [{ agent: "alpha", task: "one" }]);
 			assert.equal(parallel.details.results[0]?.status, "continued");
-			assert.equal(chain.details.results[0]?.status, "continued");
-			assert.deepEqual(
-				runCalls.map((call) => call.agent),
-				["alpha", "beta", "alpha", "beta"],
-			);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -532,8 +473,8 @@ describe("programmatic subagent tool boundary", () => {
 
 		let customCalls = 0;
 		const result = await registered.execute(
-			"parent-chain",
-			{ chain: [{ agent: "debugger" }] },
+			"parent-parallel",
+			{ tasks: [{ agent: "debugger", task: "inspect" }] },
 			new AbortController().signal,
 			undefined,
 			makeContext(process.cwd(), () => {
@@ -542,23 +483,14 @@ describe("programmatic subagent tool boundary", () => {
 			}),
 		);
 		assert.equal(customCalls, 0);
-		assert.match(
-			result.content[0]?.type === "text" ? result.content[0].text : "",
-			/First step in chain must have a task/,
-		);
+		assert.equal((result as { details?: { mode?: string } }).details?.mode, "parallel");
 
-		assert.deepEqual(commands.filter((name) => ["run", "chain", "parallel", "run-chain"].includes(name)).sort(), [
-			"chain",
-			"parallel",
-			"run",
-			"run-chain",
-		]);
+		assert.deepEqual(commands.filter((name) => ["run", "parallel"].includes(name)).sort(), ["parallel", "run"]);
 
 		const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
 		for (const args of [
 			{ agent: "worker", async: true },
 			{ tasks: [{ agent: "worker", task: "one" }], async: true },
-			{ chain: [{ agent: "worker", task: "one" }], async: true },
 		]) {
 			const component = registered.renderCall?.(args as never, theme, {} as never);
 			assert.match(component?.render(120).join("\n") ?? "", /\[async\]/);
@@ -583,17 +515,17 @@ describe("programmatic subagent tool boundary", () => {
 				}),
 			execute: async (_id, params) => {
 				received = params as unknown as Record<string, unknown>;
-				return { content: [{ type: "text", text: "done" }], details: { mode: "chain", results: [] } };
+				return { content: [{ type: "text", text: "done" }], details: { mode: "parallel", results: [] } };
 			},
 		});
 
 		events.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
-			requestId: "slash-chain",
-			params: { chain: [{ agent: "worker", task: "one" }], async: true },
+			requestId: "slash-parallel",
+			params: { tasks: [{ agent: "worker", task: "one" }], async: true },
 		});
 		await response;
 
-		assert.deepEqual(received, { chain: [{ agent: "worker", task: "one" }], async: true });
+		assert.deepEqual(received, { tasks: [{ agent: "worker", task: "one" }], async: true });
 		bridge.dispose();
 	});
 });

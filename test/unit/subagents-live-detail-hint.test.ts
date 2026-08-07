@@ -54,23 +54,6 @@ test("parallel run with progress-only details renders rows and the live-detail h
 	}
 });
 
-test("chain run with a running step and no results renders the live-detail hint", () => {
-	const details: Details = {
-		mode: "chain",
-		results: [],
-		chainAgents: ["alpha", "beta"],
-		totalSteps: 2,
-		currentStepIndex: 0,
-		progress: [runningProgress(0, "alpha")],
-	};
-	for (const expanded of [false, true]) {
-		const text = renderSubagentResult(toolResult(details), { expanded, now: 12_000 }, theme).render(200).join("\n");
-		assert.match(text, /for live detail/, `expanded=${expanded} must offer the live-detail hint`);
-		assert.match(text, /alpha/);
-		assert.match(text, /pending/, `expanded=${expanded} must keep the not-started step pending`);
-	}
-});
-
 test("completed multi run renders no live-detail hint", () => {
 	const details: Details = {
 		mode: "parallel",

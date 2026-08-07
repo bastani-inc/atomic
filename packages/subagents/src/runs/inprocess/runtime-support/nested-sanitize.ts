@@ -109,7 +109,7 @@ export function sanitizeSummary(input: unknown, depth = 0): NestedRunSummary | u
 			: {}),
 		...(stringValue(raw.controlInbox, 2048) ? { controlInbox: stringValue(raw.controlInbox, 2048) } : {}),
 		...(stringValue(raw.capabilityToken, 128) ? { capabilityToken: stringValue(raw.capabilityToken, 128) } : {}),
-		...(raw.mode === "single" || raw.mode === "parallel" || raw.mode === "chain" ? { mode: raw.mode } : {}),
+		...(raw.mode === "single" || raw.mode === "parallel" ? { mode: raw.mode } : {}),
 		...(stringValue(raw.agent, 128) ? { agent: stringValue(raw.agent, 128) } : {}),
 		...(Array.isArray(raw.agents)
 			? {
@@ -119,8 +119,6 @@ export function sanitizeSummary(input: unknown, depth = 0): NestedRunSummary | u
 						.slice(0, MAX_NESTED_STEPS),
 				}
 			: {}),
-		...(clampNumber(raw.currentStep) !== undefined ? { currentStep: clampNumber(raw.currentStep) } : {}),
-		...(clampNumber(raw.chainStepCount) !== undefined ? { chainStepCount: clampNumber(raw.chainStepCount) } : {}),
 		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention"
 			? { activityState: raw.activityState }
 			: {}),

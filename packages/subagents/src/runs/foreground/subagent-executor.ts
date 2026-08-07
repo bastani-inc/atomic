@@ -31,7 +31,6 @@ import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
 import { currentModelFullId } from "../shared/model-fallback.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { runAsyncPath } from "./subagent-executor-async.ts";
-import { runChainPath } from "./subagent-executor-chain.ts";
 import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.ts";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.ts";
 import { runParallelPath } from "./subagent-executor-parallel.ts";
@@ -274,8 +273,7 @@ async function handleManagementRequest(input: {
 	return handleManagementAction(action, paramsWithResolvedCwd, { ...ctx, cwd: requestCwd });
 }
 
-function inferExecutionMode(params: SubagentParamsLike): "single" | "parallel" | "chain" {
-	if ((params.chain?.length ?? 0) > 0) return "chain";
+function inferExecutionMode(params: SubagentParamsLike): "single" | "parallel" {
 	if ((params.tasks?.length ?? 0) > 0) return "parallel";
 	return "single";
 }
@@ -344,11 +342,6 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			if (prepared.foregroundControl) {
 				prepared.writeNestedForegroundEvent("subagent.nested.started");
 				nestedForegroundStarted = true;
-			}
-			if (prepared.hasChain && prepared.effectiveParams.chain) {
-				const result = await runChainPath(prepared.execData, deps);
-				prepared.writeNestedForegroundEvent("subagent.nested.completed", result);
-				return withForkContext(result, prepared.effectiveParams.context);
 			}
 			if (prepared.hasTasks && prepared.effectiveParams.tasks) {
 				const result = await runParallelPath(prepared.execData, deps);

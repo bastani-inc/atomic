@@ -10,7 +10,6 @@ import type {
 	ControlConfig,
 	ControlEvent,
 	Details,
-	JsonSchemaObject,
 	MaxOutputConfig,
 	OutputMode,
 	ResolvedControlConfig,
@@ -111,15 +110,9 @@ export interface RunSyncOptions {
 	currentModel?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
-	structuredOutput?: {
-		schema: JsonSchemaObject;
-		schemaPath: string;
-		outputPath: string;
-	};
 	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */
 	testSession?: {
 		output?: string;
-		structuredOutputAfterPrompt?: number;
 		promptLogPath?: string;
 		/** Hold a test prompt open until the caller releases the supplied promise. */
 		promptGate?: Promise<void>;
@@ -140,12 +133,6 @@ interface TopLevelParallelConfig {
 	concurrency?: number;
 }
 
-interface ExtensionChainConfig {
-	dynamicFanout?: {
-		maxItems?: number;
-	};
-}
-
 export interface ExtensionConfig {
 	asyncByDefault?: boolean;
 	forceTopLevelAsync?: boolean;
@@ -153,7 +140,6 @@ export interface ExtensionConfig {
 	maxSubagentDepth?: number;
 	control?: ControlConfig;
 	parallel?: TopLevelParallelConfig;
-	chain?: ExtensionChainConfig;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	intercomBridge?: IntercomBridgeConfig;

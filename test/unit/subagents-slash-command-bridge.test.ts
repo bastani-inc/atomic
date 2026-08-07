@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import { CONFIG_DIR_NAME } from "../../packages/coding-agent/src/config.js";
+import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
 import type { SubagentParamsLike } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { SubagentState } from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
@@ -44,44 +45,6 @@ function writeAgent(cwd: string, name: string): void {
 	);
 }
 
-function writeSavedChain(cwd: string): void {
-	const chainsDir = join(cwd, CONFIG_DIR_NAME, "chains");
-	mkdirSync(chainsDir, { recursive: true });
-	writeFileSync(
-		join(chainsDir, "saved-review.chain.json"),
-		JSON.stringify(
-			{
-				name: "saved-review",
-				description: "Saved slash command fixture",
-				chain: [
-					{
-						agent: "slash-alpha",
-						task: "Analyze {task}",
-						phase: "Research",
-						label: "Inspect",
-						output: "research.md",
-						reads: ["brief.md"],
-						progress: true,
-						skills: ["tdd"],
-						model: "test/saved",
-					},
-					{
-						agent: "slash-beta",
-						task: "Finish from {previous}",
-						output: false,
-						outputMode: "inline",
-						reads: false,
-						progress: false,
-						skills: false,
-					},
-				],
-			},
-			null,
-			2,
-		),
-	);
-}
-
 function makeContext(cwd: string): ExtensionCommandContext {
 	return {
 		cwd,
@@ -98,6 +61,7 @@ function makeContext(cwd: string): ExtensionCommandContext {
 
 interface SlashHarness {
 	invoke(command: string, args: string): Promise<SubagentParamsLike>;
+	registeredCommands(): string[];
 	dispose(): void;
 }
 
@@ -105,7 +69,6 @@ function createSlashHarness(): SlashHarness {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-slash-handler-"));
 	writeAgent(cwd, "slash-alpha");
 	writeAgent(cwd, "slash-beta");
-	writeSavedChain(cwd);
 
 	const events = new FakeEvents();
 	const commands = new Map<string, CommandOptions>();
@@ -123,7 +86,7 @@ function createSlashHarness(): SlashHarness {
 		getContext: () => ctx,
 		execute: async (_id, params) => {
 			received.push(params);
-			const mode = params.tasks ? "parallel" : params.chain ? "chain" : "single";
+			const mode = params.tasks ? "parallel" : "single";
 			return { content: [{ type: "text", text: "done" }], details: { mode, results: [] } };
 		},
 	});
@@ -142,6 +105,7 @@ function createSlashHarness(): SlashHarness {
 			assert.equal(sent.length, sentBefore + 2, `expected /${command} to publish initial and final results`);
 			return received.at(-1)!;
 		},
+		registeredCommands: () => [...commands.keys()],
 		dispose() {
 			bridge.dispose();
 			rmSync(cwd, { recursive: true, force: true });
@@ -181,27 +145,22 @@ describe("human subagent slash command bridge", () => {
 		});
 	});
 
-	test("/chain dispatches parsed sequential params through the slash event bridge", async () => {
-		await withSlashHarness(async ({ invoke }) => {
-			const params = await invoke(
-				"chain",
-				'slash-alpha[output=alpha.md,reads=input.md,progress] "inspect" -> slash-beta[outputMode=file-only,skills=false] "finish {previous}" --fork --bg',
+	test("removed slash commands are not registered", async () => {
+		await withSlashHarness(async ({ registeredCommands }) => {
+			const removed = ["ch" + "ain", "run-" + "ch" + "ain"];
+			const commands = registeredCommands();
+			assert.deepEqual(
+				commands.filter((command) => removed.includes(command)),
+				[],
 			);
-
-			assert.deepEqual(params, {
-				chain: [
-					{ agent: "slash-alpha", task: "inspect", output: "alpha.md", reads: ["input.md"], progress: true },
-					{ agent: "slash-beta", task: "finish {previous}", outputMode: "file-only", skill: false },
-				],
-				task: "inspect",
-				agentScope: "both",
-				async: true,
-				context: "fork",
-			});
+			assert.deepEqual(
+				BUNDLED_EXTENSION_SLASH_COMMANDS.filter((command) => removed.includes(command.name)),
+				[],
+			);
 		});
 	});
 
-	test("/parallel dispatches parsed fan-out params through the slash event bridge", async () => {
+	test("/parallel dispatches parsed parallel params through the slash event bridge", async () => {
 		await withSlashHarness(async ({ invoke }) => {
 			const params = await invoke(
 				"parallel",
@@ -213,43 +172,6 @@ describe("human subagent slash command bridge", () => {
 					{ agent: "slash-alpha", task: "inspect alpha", output: false, progress: false },
 					{ agent: "slash-beta", task: "inspect beta", reads: ["one.md", "two.md"], model: "test/beta" },
 				],
-				agentScope: "both",
-				async: true,
-				context: "fork",
-			});
-		});
-	});
-
-	test("/run-chain dispatches mapped saved-chain params through the slash event bridge", async () => {
-		await withSlashHarness(async ({ invoke }) => {
-			const params = await invoke("run-chain", "saved-review -- review the patch --fork --bg");
-
-			assert.deepEqual(params, {
-				chain: [
-					{
-						agent: "slash-alpha",
-						task: "Analyze {task}",
-						phase: "Research",
-						label: "Inspect",
-						output: "research.md",
-						outputMode: undefined,
-						reads: ["brief.md"],
-						progress: true,
-						skill: ["tdd"],
-						model: "test/saved",
-					},
-					{
-						agent: "slash-beta",
-						task: "Finish from {previous}",
-						output: false,
-						outputMode: "inline",
-						reads: false,
-						progress: false,
-						skill: false,
-						model: undefined,
-					},
-				],
-				task: "review the patch",
 				agentScope: "both",
 				async: true,
 				context: "fork",

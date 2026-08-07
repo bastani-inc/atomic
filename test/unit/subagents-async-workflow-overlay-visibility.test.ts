@@ -86,7 +86,6 @@ function makeStatus(runId: string, cwd: string): AsyncStatus {
 		sessionId: "session-current",
 		startedAt: 1_000,
 		lastUpdate: 2_000,
-		currentStep: 0,
 		steps: [{ agent: "worker", status: "running", startedAt: 1_000 }],
 	};
 }

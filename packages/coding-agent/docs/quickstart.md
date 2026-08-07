@@ -108,7 +108,7 @@ Atomic ships with nine workflows you can run immediately. Use `/workflow list` t
 | `loop-until-done` | Iterate with a durable ledger until completion or bound exhaustion. | `/workflow loop-until-done prompt="Repair failures until the test suite passes"` |
 | `goal` | Autonomous work that needs a durable ledger, bounded sub-agent orchestration, receipts, and reviewer-gated completion. | `/workflow goal objective="Update the CLI docs, add one example, and validate the docs build"` |
 | `ralph` | Research-first autonomous work with prompt refinement, delegated implementation, and iterative multi-model review. | `/workflow ralph prompt="Implement specs/rate-limit.md and validate burst traffic"` |
-| `open-claude-design` | UI and design-system work with separate generate and feedback chains and a live `preview.html`. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
+| `open-claude-design` | UI and design-system work with separate generate and feedback passes and a live `preview.html`. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
 

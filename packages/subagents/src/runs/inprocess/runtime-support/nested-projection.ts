@@ -89,8 +89,6 @@ export function nestedSummaryFromAsyncStatus(
 		...(status.sessionId ? { sessionId: status.sessionId } : {}),
 		mode: status.mode ?? fallback.mode,
 		state: status.state,
-		...(status.currentStep !== undefined ? { currentStep: status.currentStep } : {}),
-		...(status.chainStepCount !== undefined ? { chainStepCount: status.chainStepCount } : {}),
 		...(status.activityState ? { activityState: status.activityState } : {}),
 		...(status.lastActivityAt !== undefined ? { lastActivityAt: status.lastActivityAt } : {}),
 		...(status.currentTool ? { currentTool: status.currentTool } : {}),

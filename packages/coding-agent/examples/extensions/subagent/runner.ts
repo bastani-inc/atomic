@@ -65,7 +65,6 @@ export async function runSingleAgent(
 	agentName: string,
 	task: string,
 	cwd: string | undefined,
-	step: number | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
@@ -90,7 +89,6 @@ export async function runSingleAgent(
 				contextTokens: 0,
 				turns: 0,
 			},
-			step,
 		};
 	}
 
@@ -118,7 +116,6 @@ export async function runSingleAgent(
 			turns: 0,
 		},
 		model: agent.model,
-		step,
 	};
 
 	const emitUpdate = () => {

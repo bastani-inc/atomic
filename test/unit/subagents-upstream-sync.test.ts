@@ -234,7 +234,7 @@ describe("recent upstream subagent syncs", () => {
 		]);
 	});
 
-	test("omits provider-rejected chain schema keywords", () => {
+	test("omits provider-rejected schema keywords", () => {
 		const serialized = JSON.stringify(SubagentParams);
 		for (const keyword of ["allOf", "const", "if", "then", "not"]) {
 			assert.equal(serialized.includes(`"${keyword}"`), false, `schema should omit ${keyword}`);
@@ -284,45 +284,6 @@ describe("recent upstream subagent syncs", () => {
 
 			assert.equal(output.isError, true);
 			assert.equal(text, "Max 50 tasks");
-			assert.equal(runCount, 0);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
-	test("returns clear runtime errors for malformed dynamic fanout shapes", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-malformed-chain-"));
-		try {
-			let runCount = 0;
-			const executor = makeExecutor({
-				cwd,
-				agents: [makeAgent("scout"), makeAgent("reviewer")],
-				runSync: async (_parentCwd, _agents, agentName, task) => {
-					runCount += 1;
-					return result(agentName, task);
-				},
-			});
-
-			const output = await executor.execute(
-				"malformed-chain",
-				{
-					chain: [
-						{ agent: "scout", task: "Find targets", as: "targets", outputSchema: { type: "object" } },
-						{
-							expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
-							parallel: [{ agent: "reviewer", task: "Review" }],
-							collect: { as: "reviews" },
-						},
-					] as never,
-				},
-				new AbortController().signal,
-				undefined,
-				makeContext(cwd),
-			);
-			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
-
-			assert.equal(output.isError, true);
-			assert.match(text, /requires expand, a single parallel template object, and collect/);
 			assert.equal(runCount, 0);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });

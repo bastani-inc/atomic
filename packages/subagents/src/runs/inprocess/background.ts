@@ -76,7 +76,7 @@ export function isAsyncAvailable(): boolean {
 	return true;
 }
 
-export function formatAsyncStartError(mode: "single" | "parallel" | "chain", message: string): AsyncExecutionResult {
+export function formatAsyncStartError(mode: "single" | "parallel", message: string): AsyncExecutionResult {
 	return {
 		content: [{ type: "text", text: message }],
 		isError: true,

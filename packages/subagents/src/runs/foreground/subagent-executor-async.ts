@@ -2,7 +2,6 @@ import { APP_NAME } from "@bastani/atomic";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.ts";
-import type { ChainStep } from "../../shared/settings.ts";
 import type { SingleResult, SubagentToolResult } from "../../shared/types.ts";
 import {
 	resolveChildMaxSubagentDepth,
@@ -12,16 +11,11 @@ import {
 	wrapForkTask,
 } from "../../shared/types.ts";
 import { formatAsyncStartedMessage } from "../inprocess/background.ts";
-import { runChainPath } from "./subagent-executor-chain.ts";
 import { runParallelPath } from "./subagent-executor-parallel.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
-import {
-	buildChainWorktreeTaskCwdError,
-	buildParallelModeError,
-	buildParallelWorktreeTaskCwdError,
-} from "./subagent-executor-worktree.ts";
+import { buildParallelModeError, buildParallelWorktreeTaskCwdError } from "./subagent-executor-worktree.ts";
 
-function continuedResult(data: ExecutionContextData, mode: "single" | "parallel" | "chain"): SingleResult {
+function continuedResult(data: ExecutionContextData, mode: "single" | "parallel"): SingleResult {
 	const path = `${data.runId}/orchestration_1`;
 	return {
 		agent: mode,
@@ -49,35 +43,20 @@ function continuedResult(data: ExecutionContextData, mode: "single" | "parallel"
 	};
 }
 
-function modeFor(data: ExecutionContextData): "single" | "parallel" | "chain" {
-	if ((data.params.chain?.length ?? 0) > 0) return "chain";
+function modeFor(data: ExecutionContextData): "single" | "parallel" {
 	if ((data.params.tasks?.length ?? 0) > 0) return "parallel";
 	return "single";
 }
 
-function runForegroundInBackground(
-	data: ExecutionContextData,
-	deps: ResolvedExecutorDeps,
-	mode: "parallel" | "chain",
-): void {
+function runForegroundInBackground(data: ExecutionContextData, deps: ResolvedExecutorDeps): void {
 	const backgroundData: ExecutionContextData = { ...data, effectiveAsync: false };
-	const work = mode === "chain" ? runChainPath(backgroundData, deps) : runParallelPath(backgroundData, deps);
-	void work.catch((error) => {
+	void runParallelPath(backgroundData, deps).catch((error) => {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(`[${APP_NAME}-subagents] in-process async ${mode} failed: ${message}`);
+		console.error(`[${APP_NAME}-subagents] in-process async parallel failed: ${message}`);
 	});
 }
 
-/**
- * Async is a don't-wait request over the same in-process foreground executor.
- *
- * Single runs retain the focused background-single helper because it owns the
- * child admission and terminal artifact delivery. Chain and parallel runs use
- * the existing foreground executors un-awaited; their child sessions are
- * admitted by runSync as the executor advances, so chain substitution,
- * dynamic fanout, worktrees, structured output, and fail-fast remain one code
- * path rather than a second serialized runner.
- */
+/** Async is a don't-wait request over the same in-process foreground executor. */
 export async function runAsyncPath(
 	data: ExecutionContextData,
 	deps: ResolvedExecutorDeps,
@@ -86,16 +65,6 @@ export async function runAsyncPath(
 
 	const mode = modeFor(data);
 	const { params, effectiveCwd } = data;
-	if (mode === "chain" && params.chain) {
-		const chainWorktreeTaskCwdError = buildChainWorktreeTaskCwdError(params.chain as ChainStep[], effectiveCwd);
-		if (chainWorktreeTaskCwdError) {
-			return {
-				content: [{ type: "text", text: chainWorktreeTaskCwdError }],
-				isError: true,
-				details: { mode: "chain", results: [] },
-			};
-		}
-	}
 	if (mode === "parallel" && params.tasks) {
 		const maxParallelTasks = resolveTopLevelParallelMaxTasks(deps.config.parallel?.maxTasks);
 		if (params.tasks.length > maxParallelTasks) return buildParallelModeError(`Max ${maxParallelTasks} tasks`);
@@ -178,7 +147,7 @@ export async function runAsyncPath(
 	}
 
 	const continued = continuedResult(data, mode);
-	if (mode === "chain" || mode === "parallel") runForegroundInBackground(data, deps, mode);
+	if (mode === "parallel") runForegroundInBackground(data, deps);
 	return {
 		content: [{ type: "text", text: formatAsyncStartedMessage(`Async ${mode}: ${data.runId}`) }],
 		details: {

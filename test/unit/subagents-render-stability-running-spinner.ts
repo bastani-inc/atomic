@@ -135,7 +135,7 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 		assert.equal(firstPulseChar(a), pulseGlyph(2));
 	});
 
-	test("foreground chain placeholder rows keep their existing running glyph", () => {
+	test("foreground placeholder rows keep their existing running glyph", () => {
 		const glyph = withMockedNow(10_000, () => widgetStepGlyph("running", theme));
 
 		assert.ok(firstSpinnerChar(glyph), "foreground placeholder helper keeps the preexisting running spinner glyph");

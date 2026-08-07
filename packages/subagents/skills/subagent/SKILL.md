@@ -1,7 +1,7 @@
 ---
 name: subagent
 description: |
-  Delegate work to builtin or custom subagents with single-agent, chain,
+  Delegate work to builtin or custom subagents with single-agent,
   parallel, selective async, forked-context, and intercom-coordinated runs.
   Use for bounded specialist delegation where a single parent agent stays in
   control while subagents contribute locate, analyze, pattern-find, research,
@@ -24,7 +24,7 @@ Use this skill when bounded specialist delegation adds value and the parent shou
 - **Adversarial review**: compose read-only specialists (`codebase-analyzer`, `codebase-pattern-finder`, `debugger` in inspect-only mode, `codebase-online-researcher`) into a parallel review pass — there is no generic `reviewer` agent.
 - **Long-running bounded delegation**: selectively launch async/background runs when the result is independently useful; otherwise use foreground execution.
 - **Subagent control**: watch needs-attention signals and soft-interrupt only when a delegated run is genuinely blocked.
-- **Agent authoring**: create, update, or override agents and chains for a project.
+- **Agent authoring**: create, update, or override agents for a project.
 
 ## Tool vs Slash Commands
 
@@ -32,9 +32,7 @@ Agents can use the `subagent(...)` tool directly for execution, management, stat
 Humans often use the slash-command layer instead:
 
 - `/run` — launch a single agent
-- `/chain` — launch a chain of steps
 - `/parallel` — launch top-level parallel tasks
-- `/run-chain` — launch a saved `.chain.md` or `.chain.json` workflow
 - `/subagents-doctor` — diagnose setup, discovery, async paths, and intercom bridge state
 
 Prefer the tool when you are writing agent logic. Prefer the slash commands when you are guiding a human through an interactive flow.
@@ -59,7 +57,7 @@ Use this when the user wants adversarial review of a diff, plan, issue, file, or
 
 ### Review-loop technique
 
-Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one writer (`debugger` for correctness-shaped work, `code-simplifier` for refinement-shaped work), fresh-context specialist reviewers inspect the actual repo and diff, the parent synthesizes accepted fixes, and one writer applies them. Choose foreground or async for each bounded run based on whether the parent needs its result next or has independent useful work. The parent can express the sequence up front as a background chain when that is genuinely useful, or continue with explicit follow-up subagent runs after each completion. Programmatic runs are non-interactive, so resolve only material unanswered questions before launching. Treat a writer handoff as an intermediate state, not final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
+Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one writer (`debugger` for correctness-shaped work or `code-simplifier` for refinement-shaped work), fresh-context specialist reviewers inspect the actual repo and diff, the parent synthesizes accepted fixes, and one writer applies them. Choose foreground or async for each bounded run based on whether the parent needs its result next or has independent useful work. The parent can express the sequence up front as a set of parallel tasks or continue with explicit follow-up runs after each completion. Programmatic runs are non-interactive, so resolve only material unanswered questions before launching. Treat a writer handoff as an intermediate state, not final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
 
 ### Parallel research technique
 
@@ -67,39 +65,35 @@ Use this when the question needs both external evidence and local implications. 
 
 ### Parallel context-build technique
 
-Use this before planning or implementation when a stronger handoff is needed. Run a chain with one parallel step of codebase specialists rather than top-level parallel tasks, so relative output files live under the temporary chain directory. Give every task a distinct output path such as `context-build/where-it-lives.md`, `context-build/how-it-works.md`, `context-build/existing-patterns.md`, and `context-build/prior-research.md`. Choose two to four specialists by angle: `codebase-locator` for the file map, `codebase-analyzer` for current behavior, `codebase-pattern-finder` for conventions, and `codebase-research-locator` → `codebase-research-analyzer` for history when the topic has prior docs. The parent synthesizes the outputs into important context, a recommended next meta-prompt, open questions, assumptions, and artifact paths.
+Use this before planning or implementation when a stronger handoff is needed. Run one top-level parallel call with codebase specialists, giving each task a distinct output path such as `context-build/where-it-lives.md`, `context-build/how-it-works.md`, `context-build/existing-patterns.md`, and `context-build/prior-research.md`. Choose two to four specialists by angle: `codebase-locator` for the file map, `codebase-analyzer` for current behavior, `codebase-pattern-finder` for conventions, and `codebase-research-locator` plus `codebase-research-analyzer` for history. The parent reads the outputs and synthesizes the important context, a recommended next meta-prompt, open questions, assumptions, and artifact paths.
 
 Example shape:
 
 ```typescript
 subagent({
-  chain: [{
-    parallel: [
-      { agent: "codebase-locator", task: "Map files, tests, fixtures, and configs that touch: ...", output: "context-build/where-it-lives.md" },
-      { agent: "codebase-analyzer", task: "Trace how this currently works with file:line refs: ...", output: "context-build/how-it-works.md" },
-      { agent: "codebase-pattern-finder", task: "Surface analogous patterns to model after: ...", output: "context-build/existing-patterns.md" }
-    ]
-  }],
+  tasks: [
+    { agent: "codebase-locator", task: "Map files, tests, fixtures, and configs that touch: ...", output: "context-build/where-it-lives.md" },
+    { agent: "codebase-analyzer", task: "Trace how this currently works with file:line refs: ...", output: "context-build/how-it-works.md" },
+    { agent: "codebase-pattern-finder", task: "Surface analogous patterns to model after: ...", output: "context-build/existing-patterns.md" }
+  ],
   context: "fresh"
 })
 ```
 
 ### Parallel handoff-plan technique
 
-Use this when the user needs a solution brief or implementation-ready handoff from an external reference plus local code context, such as "study this library behavior, inspect our codebase, then produce a writer prompt." Run a chain with a single parallel discovery step; the parent synthesizes the final handoff itself afterward (there is no dedicated synthesizer agent). The discovery group usually includes `codebase-online-researcher` for external projects/docs/prompt guidance, `codebase-locator` + `codebase-analyzer` for local code, and optionally `codebase-pattern-finder` for transferable conventions and `codebase-research-*` for prior decisions. Use distinct output paths under `handoff/`, then write `handoff/final-handoff-plan.md` yourself with the recommended approach, likely files, constraints, non-goals, validation, risks, unresolved questions, and final compact implementation-ready meta-prompt.
+Use this when the user needs a solution brief or implementation-ready handoff from an external reference plus local code context. Run one top-level parallel discovery call; the parent synthesizes the final handoff afterward. The discovery group usually includes `codebase-online-researcher` for external projects/docs/prompt guidance, `codebase-locator` and `codebase-analyzer` for local code, and optionally `codebase-pattern-finder` and `codebase-research-*` for transferable conventions and prior decisions. Use distinct output paths under `handoff/`, then write `handoff/final-handoff-plan.md` yourself with the recommended approach, likely files, constraints, non-goals, validation, risks, unresolved questions, and final compact implementation-ready meta-prompt.
 
 Example shape:
 
 ```typescript
 subagent({
-  chain: [{
-    parallel: [
-      { agent: "codebase-online-researcher", task: "Research the external reference and transferable implementation ideas for: ...", output: "handoff/external-reference.md" },
-      { agent: "codebase-locator", task: "Map local files that would change for: ...", output: "handoff/local-files.md" },
-      { agent: "codebase-analyzer", task: "Trace current behavior of those files: ...", output: "handoff/local-flow.md" },
-      { agent: "codebase-pattern-finder", task: "Find analogous local patterns for: ...", output: "handoff/local-patterns.md" }
-    ]
-  }],
+  tasks: [
+    { agent: "codebase-online-researcher", task: "Research the external reference and transferable implementation ideas for: ...", output: "handoff/external-reference.md" },
+    { agent: "codebase-locator", task: "Map local files that would change for: ...", output: "handoff/local-files.md" },
+    { agent: "codebase-analyzer", task: "Trace current behavior of those files: ...", output: "handoff/local-flow.md" },
+    { agent: "codebase-pattern-finder", task: "Find analogous local patterns for: ...", output: "handoff/local-patterns.md" }
+  ],
   context: "fresh"
 })
 // Parent then writes handoff/final-handoff-plan.md from the outputs.
@@ -113,38 +107,6 @@ Use this when unresolved requirements and genuinely missing repository context j
 
 Use this after implementation when the user wants cleanup review or when a final pass would reduce AI-slop. Launch two fresh-context `codebase-analyzer` scouts with `output: false` and `progress: false`: one deslop pass and one verbosity pass. If the `deslop` or `verbosity-cleaner` skills are available, pass the relevant skill to that scout; otherwise inline the criteria. Both scouts are read-only and should flag concrete issues with severity, file/line references, and smallest safe fixes. Phrase the constraint as “Do not modify project/source files; returning findings through the configured output artifact is allowed” when you use `output` or `outputMode: "file-only"`. The parent decides what to apply and asks before making changes unless cleanup was already authorized. When the user opts to autofix, the parent launches one async `code-simplifier` writer with the synthesized fixes as its explicit scope.
 
-### Staged fix orchestration technique
-
-Use this when a broad diff has known reviewer findings across several items and the user wants the parent to coordinate a safe multi-stage fix. Keep the active worktree safe with a three-stage chain:
-
-1. A parallel read-only planning fanout, one specialist per issue cluster. Use `codebase-analyzer`, `debugger` in inspect-only mode, or `codebase-pattern-finder` based on the angle. Each child inspects the real diff and returns exact files, line refs, proposed fixes, and focused validation. They must not edit.
-2. One writer worker (`debugger` for correctness fixes or `code-simplifier` for cleanup fixes). It receives the planner summaries through `{previous}` or named `{outputs.name}` values, the parent’s accepted scope, stop rules, and verification contract. It is the only child allowed to edit the active worktree.
-3. A parallel read-only validation fanout. Validators inspect the worker diff from fresh context with distinct angles, report pass/fail, remaining blockers, and missing verification.
-
-Prefer `async: true`, `context: "fresh"` for planners/validators, `outputMode: "file-only"` for large summaries, and per-stage output names that will not collide. Add `phase` and `label` to make async status readable, and use `as` plus `{outputs.name}` when a later step needs a specific earlier result instead of the whole `{previous}` blob. Use this pattern instead of launching several writer workers into a dirty worktree. Include non-blocking suggestions in the writer prompt only when they are small, safe, and do not expand product scope; otherwise record them as deferred.
-
-When the first step can return a structured target list, prefer dynamic fanout instead of hand-authoring a static parallel group. Use `outputSchema` and `as` on the producer, then an `expand` step with `from: { output, path }`, an explicit `maxItems`, one `parallel` child template, and `collect.as`. Item templates may use `{item}` or a named item such as `{target.path}`. Do not use dynamic fanout for prose outputs, nested fanout, dynamic agent selection, reducers, `when` conditions, or arbitrary expressions; `.chain.md` does not support this syntax, so use direct JSON or a saved `.chain.json`.
-
-Example shape:
-
-```typescript
-subagent({
-  async: true,
-  context: "fresh",
-  chain: [
-    { parallel: [
-      { agent: "codebase-analyzer", phase: "Planning", label: "Deploy docs", as: "deployPlan", task: "Plan fixes for deploy docs/workflow. Inspect the current diff. Do not modify project/source files; returning findings via the configured output artifact is allowed.", output: "plans/deploy.md", outputMode: "file-only" },
-      { agent: "debugger", phase: "Planning", label: "Scheduler contract", as: "schedulerPlan", task: "Inspect-only plan for scheduler contract fixes. Do not edit. Return exact fixes and focused validation.", output: "plans/scheduler.md", outputMode: "file-only" },
-      { agent: "codebase-pattern-finder", phase: "Planning", label: "Sandbox patterns", as: "sandboxPlan", task: "Find existing patterns relevant to sandbox/security fixes. Do not edit.", output: "plans/sandbox.md", outputMode: "file-only" }
-    ], concurrency: 3 },
-    { agent: "debugger", phase: "Implementation", label: "Apply accepted fixes", as: "workerResult", task: "Apply only the accepted fixes from these planning summaries. You are the sole writer for the active worktree. Run focused validation and report changed files, commands, failures, and remaining issues.\n\nDeploy plan:\n{outputs.deployPlan}\n\nScheduler plan:\n{outputs.schedulerPlan}\n\nSandbox plan:\n{outputs.sandboxPlan}", output: "worker/fixes.md", outputMode: "file-only", progress: true },
-    { parallel: [
-      { agent: "codebase-analyzer", phase: "Validation", label: "Deploy/scheduler validation", task: "Validate the post-worker diff for deploy and scheduler fixes. Start from the worker result: {outputs.workerResult}. Do not modify project/source files; returning findings via the configured output artifact is allowed.", output: "validation/deploy-scheduler.md", outputMode: "file-only" },
-      { agent: "debugger", phase: "Validation", label: "Failure-mode validation", task: "Inspect-only failure-mode hunt on the post-worker diff. Start from the worker result: {outputs.workerResult}. Do not edit.", output: "validation/failure-modes.md", outputMode: "file-only" }
-    ], concurrency: 2 }
-  ]
-})
-```
 
 ## Builtin Agents
 
@@ -161,7 +123,7 @@ Builtin agents load at the lowest priority. Project agents override user agents,
 | `code-simplifier`            | Clean up recently changed code without changing behavior          | `openai/gpt-5.5`      | low      | read, edit, write, search, find, ls, bash                                                | **Writer.** Scopes to recently modified code by default; preserves all observable behavior.                |
 | `debugger`                   | Reproduce, diagnose, and fix failing behavior                     | `openai-codex/gpt-5.6-sol:xhigh` | xhigh | read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo | **Writer.** Has the `tdd`, `playwright-cli`, and `tmux` skills. Can coordinate with the parent; inspect-only mode requires an explicit instruction. |
 
-Each builtin declares an explicit `model` and `fallbackModels` chain (typically `github-copilot/<same>`, then `anthropic/claude-opus-4-8`, then `github-copilot/claude-opus-4.7`). The current user-selected model is automatically appended as the last fallback and de-duplicated. Override per run with inline config:
+Each builtin declares an explicit `model` and `fallbackModels` sequence (typically `github-copilot/<same>`, then `anthropic/claude-opus-4-8`, then `github-copilot/claude-opus-4.7`). The current user-selected model is automatically appended as the last fallback and de-duplicated. Override per run with inline config:
 
 ```text
 /run codebase-analyzer[model=anthropic/claude-sonnet-4] "Trace the auth flow"
@@ -220,11 +182,7 @@ Agent files can live in:
 - `.atomic/agents/**/*.md` — canonical project scope
 - legacy `.agents/**/*.md` and `.pi/agents/**/*.md` — still read for compatibility, but `.atomic/agents/` wins on conflicts
 
-Chains live in:
-- `~/.atomic/agent/chains/**/*.chain.md` and `~/.atomic/agent/chains/**/*.chain.json` — user scope
-- `.atomic/chains/**/*.chain.md` and `.atomic/chains/**/*.chain.json` — project scope
-
-Discovery is recursive. `.chain.md` files do not define agents. Use `.chain.md` for simple saved chains and `.chain.json` for dynamic fanout or inline schema objects. Agents and chains can set optional frontmatter/package metadata; `name: codebase-analyzer` plus `package: code-analysis` registers as runtime name `code-analysis.codebase-analyzer` while serialization keeps `name` and `package` separate.
+Discovery is recursive. Agents can set optional frontmatter/package metadata; `name: codebase-analyzer` plus `package: code-analysis` registers as runtime name `code-analysis.codebase-analyzer` while serialization keeps `name` and `package` separate.
 
 Precedence is by parsed runtime name:
 
@@ -294,23 +252,10 @@ Avoid duplicate output paths in parallel tasks. Concurrent children should not w
 
 Concurrent writers conflict. `code-simplifier` and `debugger` change files. Do not run two writers in parallel against the same worktree unless you isolate them with `worktree: true`.
 
-### Chain execution
-
-```typescript
-subagent({
-  chain: [
-    { agent: "codebase-locator", task: "Map files relevant to the migration target" },
-    { agent: "codebase-analyzer", task: "Trace current behavior of the files in {previous}" },
-    { agent: "debugger", task: "Reproduce the failing case and patch it. Context: {previous}" }
-  ]
-})
-```
-
-Chain steps can use templated variables such as `{task}`, `{previous}`, `{chain_dir}`, and `{outputs.name}`. Use `as: "name"` on a successful step or parallel task to make that output available to later steps. Prefer named outputs when a later step needs one specific result; keep `{previous}` for simple linear handoffs or full fan-in summaries. Use `phase` and `label` for status readability. Use `outputSchema` when later steps need reliable structured data; the child must call `structured_output` with schema-valid JSON, or the step fails.
 
 ### Async/background
 
-Choose async/background mode selectively when delegated work is genuinely long-running or independently useful while the parent proceeds. Use foreground execution when the parent needs the result before the next step. This applies consistently to read-only specialists, writers, chains, and parallel groups; keep the write path single-threaded in either mode.
+Choose async/background mode selectively when delegated work is genuinely long-running or independently useful while the parent proceeds. Use foreground execution when the parent needs the result. This applies consistently to read-only specialists, writers, and parallel groups; keep the write path single-threaded in either mode.
 
 Async does not mean parallel writes. Do not edit the same active worktree while an async `debugger` or `code-simplifier` is changing it. Parent-side overlap should be reading, validation prep, synthesis, command planning, or review of unaffected context unless the writer is isolated in a separate worktree.
 
@@ -324,7 +269,7 @@ subagent({
 })
 ```
 
-File-only output mode also works for async single runs, top-level parallel task items, sequential chain steps, and chain parallel task items. In chains, `{previous}` receives the compact saved-file reference when the prior step used file-only mode.
+File-only output mode works for async single runs and top-level parallel task items. A compact saved-file reference is returned instead of the full saved content.
 
 For review fanout where the parent continues a local audit:
 
@@ -352,7 +297,7 @@ Resume behavior:
 - If an async child is still running and reachable, `resume` sends the follow-up to that live child over intercom (only when the child carries an intercom bridge target).
 - If an async child has completed, `resume` revives it by starting a new async child from the persisted child session file.
 - Multi-child async runs require `index` unless only one running child is selectable.
-- Completed foreground single, parallel, and chain runs can also be revived by `index` while their run metadata remains in extension state.
+- Completed foreground single and parallel runs can also be revived by `index` while their run metadata remains in extension state.
 - Revive starts a new child process from the old session context; it does not restart the same OS process.
 - If the chosen child has no persisted `.jsonl` session file, resume fails and reports that directly.
 
@@ -401,7 +346,7 @@ If the run already has an active intercom bridge target, needs-attention notific
 
 ## Non-Interactive Execution
 
-Every supported subagent launch starts immediately without a preview/editor prompt or terminal input. This applies to single, parallel, chain, foreground, background, fanout, prompt-template, and human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` execution.
+Every supported subagent launch starts immediately without a preview/editor prompt or terminal input. This applies to single, parallel, foreground, background, fanout, prompt-template, and human-entered `/run` and `/parallel` execution.
 
 Resolve questions in the parent conversation before launching children. Use `interview` when the user must answer a question, then put the resolved scope and validation contract in the child task. Human slash commands retain their separate parsing and event-bridge path.
 
@@ -462,7 +407,7 @@ If intercom messages do not show up, run `subagent({ action: "doctor" })` or `/s
 
 The `subagent(...)` tool also supports management actions.
 
-### List available agents and chains
+### List available agents
 
 ```typescript
 subagent({ action: "list" })
@@ -505,7 +450,7 @@ subagent({ action: "delete", agent: "code-analysis.my-agent" })
 
 Use management actions when the system needs to create or edit subagents on demand without dropping into raw file editing.
 
-Management actions create or update user/project agent files. `config.name` is the local frontmatter name; optional `config.package` registers and looks up the runtime name as `{package}.{name}`. Use the dotted runtime name for `get`, `update`, `delete`, slash commands, and chain steps. For small builtin changes such as a model swap, prefer `subagents.agentOverrides` in settings.
+Management actions create or update user/project agent files. `config.name` is the local frontmatter name; optional `config.package` registers and looks up the runtime name as `{package}.{name}`. Use the dotted runtime name for `get`, `update`, and `delete`. For small builtin changes such as a model swap, prefer `subagents.agentOverrides` in settings.
 
 ## Creating and Editing Agents by File
 
@@ -598,16 +543,14 @@ Use `/name` so intercom targeting stays stable.
 
 ## Common Workflows
 
-### Locate → Analyze → Fix
+### Locate, analyze, fix
+
+Use explicit follow-up calls when each result should guide the next task:
 
 ```typescript
-subagent({
-  chain: [
-    { agent: "codebase-locator", task: "Map the auth files and tests relevant to: ..." },
-    { agent: "codebase-analyzer", task: "Trace current behavior of the files in {previous}" },
-    { agent: "debugger", task: "Reproduce the failure and patch the root cause. Context: {previous}" }
-  ]
-})
+const context = await subagent({ agent: "codebase-locator", task: "Map the auth files and tests relevant to: ..." });
+const analysis = await subagent({ agent: "codebase-analyzer", task: "Trace current behavior of the mapped files. Use the returned context: ..." });
+await subagent({ agent: "debugger", task: "Reproduce the failure and patch the root cause. Use the returned analysis: ..." });
 ```
 
 ### Clarify → Discover → Implement → Review (self-orchestrated workflow)
@@ -622,7 +565,7 @@ When the user approves launching a subagent to carry out a workflow, treat that 
 - `/parallel-review` maps to: launch fresh-context specialist reviewers with distinct review angles; synthesize the feedback before applying anything.
 - `/review-loop` maps to: keep the parent in charge of writer → fresh specialist reviewers → synthesized fix writer cycles until no fixes worth doing now remain, an unapproved decision appears, or the review-round cap is reached.
 - `/parallel-research` maps to: combine local locator/analyzer/pattern-finder/research-analyzer context with external `codebase-online-researcher` evidence when current docs, ecosystem behavior, or API details matter.
-- `/parallel-context-build` maps to: run a chain-mode parallel group of codebase specialists with distinct temp output paths, then synthesize their context and meta-prompt sections.
+- `/parallel-context-build` maps to: run a top-level parallel group of codebase specialists with distinct output paths, then synthesize their context and meta-prompt sections.
 - `/parallel-handoff-plan` maps to: run external `codebase-online-researcher` plus local locator/analyzer/pattern-finder/research passes, then synthesize the final handoff plan and implementation-ready meta-prompt yourself.
 - `/parallel-cleanup` maps to: read-only `codebase-analyzer` scouts (deslop + verbosity) followed by an optional `code-simplifier` writer when the user authorizes autofix.
 
@@ -632,9 +575,9 @@ For feature work, use this sequence as scaffolding for parent-agent behavior:
 clarify when needed → validation contract → optional bounded discovery → one writer when delegated → fresh-context specialist review when warranted → one fix writer if needed → parent review
 ```
 
-The validation contract defines completion before code is written: expected behavior, checks, commands or user flows to exercise, and evidence the writer should return. Keep it lightweight for small tasks, but make it explicit enough that reviewers and validators are checking the intended outcome rather than the writer’s own assumptions. Subagent runs do not carry a structured `acceptance` field, infer acceptance policies, inject acceptance-report prompts, or run acceptance gates; put any evidence requirements directly in the task text. Do not set removed acceptance config fields on `subagent()` calls, chain steps, parallel task items, or agent frontmatter; move those requirements into the assigned task text instead.
+The validation contract defines completion before code is written: expected behavior, checks, commands or user flows to exercise, and evidence the writer should return. Keep it lightweight for small tasks, but make it explicit enough that reviewers and validators are checking the intended outcome rather than the writer’s own assumptions. Subagent runs do not carry a structured `acceptance` field, infer acceptance policies, inject acceptance-report prompts, or run acceptance gates; put any evidence requirements directly in the task text. Do not set removed acceptance config fields on `subagent()` calls, parallel task items, or agent frontmatter; move those requirements into the assigned task text instead.
 
-The first writer implements the approved change. When it runs in the background, the parent may continue independent inspection or validation prep, but not parallel edits to the same worktree. Treat the writer handoff as the transition into review, not as final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Specialist reviewers inspect the resulting diff from fresh context when warranted. The final fix writer applies synthesized review fixes, then the parent looks over the final diff before completing. The parent may launch these steps as a background chain when useful or as foreground/follow-up runs. Ask only needed questions before a non-interactive launch.
+The first writer implements the approved change. When it runs in the background, the parent may continue independent inspection or validation prep, but not parallel edits to the same worktree. Treat the writer handoff as the transition into review, not as final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Specialist reviewers inspect the resulting diff from fresh context when warranted. The final fix writer applies synthesized review fixes, then the parent looks over the final diff before completing. The parent may launch these steps as separate background or foreground runs. Ask only needed questions before a non-interactive launch.
 
 For complex or risky changes, increase review and validation fanout when user intent or correctness risk materially warrants it rather than automatically trusting one reviewer. Use distinct angles such as correctness/regressions (`codebase-analyzer`), failure-mode hunt (`debugger` inspect-only), pattern fit (`codebase-pattern-finder`), prior-decision conformance (`codebase-research-*`), and external-spec conformance (`codebase-online-researcher`). When reviewers find non-trivial issues or the fix writer touches many lines, consider another focused review round before final validation.
 
@@ -691,7 +634,7 @@ subagent({
 
 When implementation review is part of the requested shape, do not treat the first review as the final step: synthesize findings against user scope and the validation contract, then launch one writer for accepted fixes when implementation is authorized.
 
-When a writer completes, treat its handoff as an intermediate state when review is part of the requested shape. The next parent action is bounded review, then synthesis, then a fix writer if reviewers found fixes worth doing now. This can be planned as a background chain when useful or continued as foreground/follow-up subagent runs.
+When a writer completes, treat its handoff as an intermediate state when review is part of the requested shape. The next parent action is bounded review, then synthesis, then a fix writer if reviewers found fixes worth doing now. This can be planned as separate background or foreground runs.
 
 For explicit review-loop requests, repeat writer → fresh-specialist-reviewers → synthesized-fix-writer cycles until reviewers find no blockers or fixes worth doing now, remaining feedback is optional or intentionally deferred, an unapproved product/scope/architecture decision needs the user, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap.
 
@@ -706,13 +649,6 @@ subagent({
 })
 ```
 
-### Saved chain
-
-```text
-/run-chain review-chain -- review this branch
-```
-
-Use saved `.chain.md` or `.chain.json` workflows when the user wants a repeatable multi-agent flow without rewriting the chain each time. Prefer `.chain.json` for dynamic fanout or inline `outputSchema` objects; `.chain.md` remains the simple sequential/static authoring format.
 
 ## Error Handling
 
@@ -720,7 +656,7 @@ Use saved `.chain.md` or `.chain.json` workflows when the user wants a repeatabl
 
 ```typescript
 subagent({ action: "list" })
-// Check available agents and chains, then confirm scope/precedence.
+// Check available agents, then confirm scope and precedence.
 ```
 
 **Setup, discovery, or intercom confusion**

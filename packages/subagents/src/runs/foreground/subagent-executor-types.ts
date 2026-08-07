@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import type { AgentConfig, AgentScope } from "../../agents/agents.ts";
 import type { IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import type { ModelInfo } from "../../shared/model-info.ts";
-import type { ChainStep } from "../../shared/settings.ts";
 import type {
 	ArtifactConfig,
 	ControlConfig,
@@ -45,9 +44,7 @@ export interface SubagentParamsLike {
 	agent?: string;
 	task?: string;
 	message?: string;
-	chainName?: string;
 	config?: unknown;
-	chain?: ChainStep[];
 	tasks?: TaskParam[];
 	concurrency?: number;
 	worktree?: boolean;
@@ -68,7 +65,6 @@ export interface SubagentParamsLike {
 	reads?: string[] | false;
 	progress?: boolean;
 	agentScope?: string;
-	chainDir?: string;
 }
 
 export interface SubagentExecutorRuntimeDeps {
@@ -129,10 +125,9 @@ export interface PreparedExecutionContext {
 	effectiveParams: SubagentParamsLike;
 	effectiveCwd: string;
 	runId: string;
-	hasChain: boolean;
 	hasTasks: boolean;
 	hasSingle: boolean;
-	foregroundMode: "single" | "parallel" | "chain";
+	foregroundMode: "single" | "parallel";
 	execData: ExecutionContextData;
 	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
 	writeNestedForegroundEvent: (

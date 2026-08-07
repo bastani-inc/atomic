@@ -3,7 +3,4 @@
  */
 
 export { runSync } from "./execution-run-sync.ts";
-export {
-	shouldSuppressIntermediateRetryableFailureUpdate,
-	shouldSuppressIntermediateStructuredOutputFailureUpdate,
-} from "./execution-updates.ts";
+export { shouldSuppressIntermediateRetryableFailureUpdate } from "./execution-updates.ts";

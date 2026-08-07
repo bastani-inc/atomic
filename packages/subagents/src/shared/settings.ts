@@ -1,19 +1,11 @@
-/**
- * Chain behavior, template resolution, and directory management
- */
+/** Shared behavior, progress, and task instruction helpers. */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.ts";
-import { normalizeSkillInput } from "../agents/skills.ts";
-import { CHAIN_RUNS_DIR, type JsonSchemaObject, type OutputMode } from "./types.ts";
+import type { OutputMode } from "./types.ts";
 
-const CHAIN_DIR_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const INITIAL_PROGRESS_CONTENT = "# Progress\n\n## Status\nIn Progress\n\n## Tasks\n\n## Files Changed\n\n## Notes\n";
-
-// =============================================================================
-// Behavior Resolution Types
-// =============================================================================
 
 export interface ResolvedStepBehavior {
 	output: string | false;
@@ -37,242 +29,21 @@ function normalizeOutputOverride(output: string | false | undefined): string | f
 	return output === "false" ? false : output;
 }
 
-// =============================================================================
-// Chain Step Types
-// =============================================================================
-
-/** Sequential step: single agent execution */
-export interface SequentialStep {
-	agent: string;
-	task?: string;
-	phase?: string;
-	label?: string;
-	as?: string;
-	outputSchema?: JsonSchemaObject;
-	cwd?: string;
-	output?: string | false;
-	outputMode?: OutputMode;
-	reads?: string[] | false;
-	progress?: boolean;
-	skill?: string | string[] | false;
-	model?: string;
-	group?: string | true;
-}
-
-/** Parallel task item within a parallel step */
-export interface ParallelTaskItem {
-	agent: string;
-	task?: string;
-	phase?: string;
-	label?: string;
-	as?: string;
-	outputSchema?: JsonSchemaObject;
-	cwd?: string;
-	count?: number;
-	output?: string | false;
-	outputMode?: OutputMode;
-	reads?: string[] | false;
-	progress?: boolean;
-	skill?: string | string[] | false;
-	model?: string;
-	group?: string | true;
-}
-
-export interface DynamicExpandSpec {
-	from: {
-		output: string;
-		path: string;
-	};
-	item?: string;
-	key?: string;
-	maxItems?: number;
-	onEmpty?: "skip" | "fail";
-}
-
-export type DynamicParallelTemplate = Omit<ParallelTaskItem, "as" | "count">;
-
-export interface DynamicCollectSpec {
-	as: string;
-	outputSchema?: JsonSchemaObject;
-}
-
-export interface DynamicParallelStep {
-	expand: DynamicExpandSpec;
-	parallel: DynamicParallelTemplate;
-	collect: DynamicCollectSpec;
-	concurrency?: number;
-	failFast?: boolean;
-	phase?: string;
-	label?: string;
-	group?: string | true;
-}
-
-/** Parallel step: multiple agents running concurrently */
-export interface ParallelStep {
-	parallel: ParallelTaskItem[];
-	cwd?: string;
-	concurrency?: number;
-	failFast?: boolean;
-	worktree?: boolean;
-	group?: string | true;
-}
-
-/** Union type for chain steps */
-export type ChainStep = SequentialStep | ParallelStep | DynamicParallelStep;
-
-// =============================================================================
-// Type Guards
-// =============================================================================
-
-export function isParallelStep(step: ChainStep): step is ParallelStep {
-	return "parallel" in step && Array.isArray((step as ParallelStep).parallel);
-}
-
-export function isDynamicParallelStep(step: ChainStep): step is DynamicParallelStep {
-	return (
-		"expand" in step &&
-		"collect" in step &&
-		"parallel" in step &&
-		!Array.isArray((step as { parallel?: unknown }).parallel)
-	);
-}
-
-/** Get all agent names in a step (single for sequential, multiple for parallel) */
-export function getStepAgents(step: ChainStep): string[] {
-	if (isParallelStep(step)) {
-		return step.parallel.map((t) => t.agent);
-	}
-	if (isDynamicParallelStep(step)) {
-		return [step.parallel.agent];
-	}
-	return [step.agent];
-}
-
-// =============================================================================
-// Chain Directory Management
-// =============================================================================
-
-export function createChainDir(runId: string, baseDir?: string): string {
-	const chainDir = path.join(baseDir ? path.resolve(baseDir) : CHAIN_RUNS_DIR, runId);
-	fs.mkdirSync(chainDir, { recursive: true });
-	return chainDir;
-}
-
-export function removeChainDir(chainDir: string): void {
-	try {
-		fs.rmSync(chainDir, { recursive: true });
-	} catch {
-		// Chain cleanup is best-effort. Runs can already have cleaned their temp dir.
-	}
-}
-
-export function cleanupOldChainDirs(): void {
-	if (!fs.existsSync(CHAIN_RUNS_DIR)) return;
-	const now = Date.now();
-	let dirs: string[];
-	try {
-		dirs = fs.readdirSync(CHAIN_RUNS_DIR);
-	} catch {
-		// Startup cleanup is best-effort. If the scoped temp root is unreadable,
-		// skip cleanup instead of failing extension startup.
-		return;
-	}
-
-	for (const dir of dirs) {
-		try {
-			const dirPath = path.join(CHAIN_RUNS_DIR, dir);
-			const stat = fs.statSync(dirPath);
-			if (stat.isDirectory() && now - stat.mtimeMs > CHAIN_DIR_MAX_AGE_MS) {
-				fs.rmSync(dirPath, { recursive: true });
-			}
-		} catch {
-			// Skip directories that can't be processed; continue with others
-		}
-	}
-}
-
-// =============================================================================
-// Template Resolution
-// =============================================================================
-
-/** Resolved templates for a chain - string for sequential, string[] for parallel */
-export type ResolvedTemplates = (string | string[])[];
-
-/**
- * Resolve templates for a chain with parallel step support.
- * Returns string for sequential steps, string[] for parallel steps.
- */
-export function resolveChainTemplates(steps: ChainStep[]): ResolvedTemplates {
-	return steps.map((step, i) => {
-		if (isParallelStep(step)) {
-			// Parallel step: resolve each task's template
-			return step.parallel.map((task) => {
-				if (task.task) return task.task;
-				// Default for parallel tasks is {previous}
-				return "{previous}";
-			});
-		}
-		if (isDynamicParallelStep(step)) {
-			return step.parallel.task ?? "{previous}";
-		}
-		// Sequential step: existing logic
-		const seq = step as SequentialStep;
-		if (seq.task) return seq.task;
-		// Default: first step uses {task}, others use {previous}
-		return i === 0 ? "{task}" : "{previous}";
-	});
-}
-
-// =============================================================================
-// Behavior Resolution
-// =============================================================================
-
-/**
- * Resolve effective chain behavior per step.
- * Priority: step override > agent frontmatter > false (disabled)
- */
-export function resolveStepBehavior(
-	agentConfig: AgentConfig,
-	stepOverrides: StepOverrides,
-	chainSkills?: string[],
-): ResolvedStepBehavior {
-	// Output: step override > frontmatter > false (no output)
+export function resolveStepBehavior(agentConfig: AgentConfig, stepOverrides: StepOverrides): ResolvedStepBehavior {
 	const stepOutput = normalizeOutputOverride(stepOverrides.output);
 	const output = stepOutput !== undefined ? stepOutput : (normalizeOutputOverride(agentConfig.output) ?? false);
-
-	// Reads: step override > frontmatter defaultReads > false (no reads)
 	const reads = stepOverrides.reads !== undefined ? stepOverrides.reads : (agentConfig.defaultReads ?? false);
-
-	// Progress: step override > frontmatter defaultProgress > false
 	const progress =
 		stepOverrides.progress !== undefined ? stepOverrides.progress : (agentConfig.defaultProgress ?? false);
 
 	let skills: string[] | false;
-	if (stepOverrides.skills === false) {
-		skills = false;
-	} else if (stepOverrides.skills !== undefined) {
-		skills = [...stepOverrides.skills];
-		if (chainSkills && chainSkills.length > 0) {
-			skills = [...new Set([...skills, ...chainSkills])];
-		}
-	} else {
-		skills = agentConfig.skills ? [...agentConfig.skills] : [];
-		if (chainSkills && chainSkills.length > 0) {
-			skills = [...new Set([...skills, ...chainSkills])];
-		}
-	}
+	if (stepOverrides.skills === false) skills = false;
+	else if (stepOverrides.skills !== undefined) skills = [...stepOverrides.skills];
+	else skills = agentConfig.skills ? [...agentConfig.skills] : [];
 
 	const outputMode = stepOverrides.outputMode ?? "inline";
 	const model = stepOverrides.model ?? agentConfig.model;
 	return { output, outputMode, reads, progress, skills, model };
-}
-
-export function resolveTaskTextForFileUpdatePolicy(
-	task: string | undefined,
-	originalTask?: string,
-): string | undefined {
-	if (!task) return originalTask;
-	return originalTask ? task.replaceAll("{task}", originalTask) : task;
 }
 
 export function taskDisallowsFileUpdates(task: string | undefined): boolean {
@@ -289,13 +60,10 @@ export function taskDisallowsFileUpdates(task: string | undefined): boolean {
 export function suppressProgressForReadOnlyTask(
 	behavior: ResolvedStepBehavior,
 	task: string | undefined,
-	originalTask?: string,
 ): ResolvedStepBehavior {
-	const policyTask = resolveTaskTextForFileUpdatePolicy(task, originalTask);
-	return behavior.progress && taskDisallowsFileUpdates(policyTask) ? { ...behavior, progress: false } : behavior;
+	return behavior.progress && taskDisallowsFileUpdates(task) ? { ...behavior, progress: false } : behavior;
 }
 
-/** Resolve single-agent progress, preserving read-only suppression only for inherited defaults. */
 export function resolveSingleProgress(
 	agentConfig: AgentConfig,
 	override: boolean | undefined,
@@ -305,149 +73,45 @@ export function resolveSingleProgress(
 	return override !== undefined ? behavior.progress : suppressProgressForReadOnlyTask(behavior, task).progress;
 }
 
-// =============================================================================
-// Chain Instruction Injection
-// =============================================================================
-
-/** Build the common read prefix, resolving relative paths against the child's effective cwd. */
 export function buildReadInstruction(reads: string[] | false | undefined, cwd: string): string {
 	if (!reads || reads.length === 0) return "";
 	const files = reads.map((file) => path.resolve(cwd, file));
 	return `[Read from: ${files.join(", ")}]`;
 }
 
-/**
- * Build chain instructions from resolved behavior.
- * These are appended to the task to tell the agent what to read/write.
- */
 export function writeInitialProgressFile(progressDir: string): void {
 	fs.mkdirSync(progressDir, { recursive: true });
 	fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT);
 }
 
-/** Add the child-facing instruction for a single-agent progress file. */
 export function injectSingleProgressInstruction(task: string, progressDir: string): string {
 	return `${task}\n\n---\nCreate and maintain progress at: ${path.join(progressDir, "progress.md")}`;
 }
 
-export function buildChainInstructions(
+export function buildTaskInstructions(
 	behavior: ResolvedStepBehavior,
-	chainDir: string,
+	cwd: string,
 	isFirstProgressAgent: boolean,
-	previousSummary?: string,
 ): { prefix: string; suffix: string } {
 	const prefixParts: string[] = [];
 	const suffixParts: string[] = [];
-
-	// READS - prepend to override any hardcoded filenames in task text
-	const readInstruction = buildReadInstruction(behavior.reads, chainDir);
+	const readInstruction = buildReadInstruction(behavior.reads, cwd);
 	if (readInstruction) prefixParts.push(readInstruction);
 
-	// OUTPUT - prepend so agent knows where to write
 	if (behavior.output) {
-		const outputPath = path.isAbsolute(behavior.output) ? behavior.output : path.join(chainDir, behavior.output);
+		const outputPath = path.isAbsolute(behavior.output) ? behavior.output : path.join(cwd, behavior.output);
 		prefixParts.push(`[Write to: ${outputPath}]`);
 	}
 
-	// Progress instructions in suffix (less critical)
 	if (behavior.progress) {
-		const progressPath = path.join(chainDir, "progress.md");
-		if (isFirstProgressAgent) {
-			suffixParts.push(`Create and maintain progress at: ${progressPath}`);
-		} else {
-			suffixParts.push(`Update progress at: ${progressPath}`);
-		}
-	}
-
-	// Include previous step's summary in suffix if available
-	if (previousSummary?.trim()) {
-		suffixParts.push(`Previous step output:\n${previousSummary.trim()}`);
+		const progressPath = path.join(cwd, "progress.md");
+		if (isFirstProgressAgent) suffixParts.push(`Create and maintain progress at: ${progressPath}`);
+		else suffixParts.push(`Update progress at: ${progressPath}`);
 	}
 
 	const prefix = prefixParts.length > 0 ? `${prefixParts.join("\n")}\n\n` : "";
-
 	const suffix = suffixParts.length > 0 ? `\n\n---\n${suffixParts.join("\n")}` : "";
-
 	return { prefix, suffix };
-}
-
-// =============================================================================
-// Parallel Step Support
-// =============================================================================
-
-/**
- * Resolve behaviors for all tasks in a parallel step.
- * Creates namespaced output paths to avoid collisions.
- */
-export function resolveParallelBehaviors(
-	tasks: ParallelTaskItem[],
-	agentConfigs: AgentConfig[],
-	stepIndex: number,
-	chainSkills?: string[],
-): ResolvedStepBehavior[] {
-	return tasks.map((task, taskIndex) => {
-		const config = agentConfigs.find((a) => a.name === task.agent);
-		if (!config) {
-			throw new Error(`Unknown agent: ${task.agent}`);
-		}
-
-		// Build subdirectory path for this parallel task
-		const subdir = path.join(`parallel-${stepIndex}`, `${taskIndex}-${task.agent}`);
-
-		// Output: task override > agent default (namespaced) > false
-		// Absolute paths pass through unchanged; relative paths get namespaced under subdir
-		let output: string | false = false;
-		const taskOutput = normalizeOutputOverride(task.output);
-		const configOutput = normalizeOutputOverride(config.output);
-		if (taskOutput !== undefined) {
-			if (taskOutput === false) {
-				output = false;
-			} else if (path.isAbsolute(taskOutput)) {
-				output = taskOutput; // Absolute path: use as-is
-			} else {
-				output = path.join(subdir, taskOutput); // Relative: namespace under subdir
-			}
-		} else if (configOutput) {
-			// Agent defaults are always relative, so namespace them
-			output = path.join(subdir, configOutput);
-		}
-
-		// Reads: task override > agent default > false
-		const reads = task.reads !== undefined ? task.reads : (config.defaultReads ?? false);
-
-		// Progress: task override > agent default > false
-		const progress = task.progress !== undefined ? task.progress : (config.defaultProgress ?? false);
-
-		const taskSkillInput = normalizeSkillInput(task.skill);
-		let skills: string[] | false;
-		if (taskSkillInput === false) {
-			skills = false;
-		} else if (taskSkillInput !== undefined) {
-			skills = [...taskSkillInput];
-			if (chainSkills && chainSkills.length > 0) {
-				skills = [...new Set([...skills, ...chainSkills])];
-			}
-		} else {
-			skills = config.skills ? [...config.skills] : [];
-			if (chainSkills && chainSkills.length > 0) {
-				skills = [...new Set([...skills, ...chainSkills])];
-			}
-		}
-
-		const outputMode = task.outputMode ?? "inline";
-		const model = task.model ?? config.model;
-		return { output, outputMode, reads, progress, skills, model };
-	});
-}
-
-/**
- * Create subdirectories for parallel step outputs
- */
-export function createParallelDirs(chainDir: string, stepIndex: number, taskCount: number, agentNames: string[]): void {
-	for (let i = 0; i < taskCount; i++) {
-		const subdir = path.join(chainDir, `parallel-${stepIndex}`, `${i}-${agentNames[i]}`);
-		fs.mkdirSync(subdir, { recursive: true });
-	}
 }
 
 export type { ParallelTaskResult } from "../runs/shared/parallel-utils.ts";

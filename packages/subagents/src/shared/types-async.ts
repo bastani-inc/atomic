@@ -6,24 +6,16 @@ import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@bastani/atomic";
 import type {
 	ActivityState,
-	ChainOutputMap,
 	ModelAttempt,
 	SingleResult,
 	SubagentResultStatus,
 	SubagentRunMode,
 	TokenUsage,
-	WorkflowGraphSnapshot,
 } from "./types-results.ts";
 
 // ============================================================================
 // Async Execution
 // ============================================================================
-
-export interface AsyncParallelGroupStatus {
-	start: number;
-	count: number;
-	stepIndex: number;
-}
 
 export type NestedRunState = "queued" | "running" | "complete" | "failed" | "paused";
 export type NestedOwnerState = "live" | "gone" | "unknown";
@@ -69,9 +61,6 @@ export interface NestedRunSummary extends NestedRunAddress {
 	state: NestedRunState;
 	agent?: string;
 	agents?: string[];
-	currentStep?: number;
-	chainStepCount?: number;
-	parallelGroups?: AsyncParallelGroupStatus[];
 	steps?: NestedStepSummary[];
 	children?: NestedRunSummary[];
 	activityState?: ActivityState;
@@ -103,10 +92,6 @@ export interface AsyncStartedEvent {
 	mode?: SubagentRunMode;
 	agent?: string;
 	agents?: string[];
-	chain?: string[];
-	chainStepCount?: number;
-	parallelGroups?: AsyncParallelGroupStatus[];
-	workflowGraph?: WorkflowGraphSnapshot;
 	nestedRoute?: NestedRouteInfo;
 }
 
@@ -127,16 +112,8 @@ export interface AsyncStatus {
 	lastUpdate?: number;
 	pid?: number;
 	cwd?: string;
-	currentStep?: number;
-	chainStepCount?: number;
-	parallelGroups?: AsyncParallelGroupStatus[];
-	workflowGraph?: WorkflowGraphSnapshot;
 	steps?: Array<{
 		agent: string;
-		phase?: string;
-		label?: string;
-		outputName?: string;
-		structured?: boolean;
 		status: "pending" | "running" | "complete" | "completed" | "failed" | "paused";
 		children?: NestedRunSummary[];
 		sessionFile?: string;
@@ -161,15 +138,11 @@ export interface AsyncStatus {
 		attemptedModels?: string[];
 		modelAttempts?: ModelAttempt[];
 		error?: string;
-		structuredOutput?: unknown;
-		structuredOutputPath?: string;
-		structuredOutputSchemaPath?: string;
 	}>;
 	sessionDir?: string;
 	outputFile?: string;
 	totalTokens?: TokenUsage;
 	sessionFile?: string;
-	outputs?: ChainOutputMap;
 }
 
 export type AsyncJobStep = NonNullable<AsyncStatus["steps"]>[number] & {
@@ -191,15 +164,10 @@ export interface AsyncJobState {
 	toolCount?: number;
 	mode?: SubagentRunMode;
 	agents?: string[];
-	currentStep?: number;
-	chainStepCount?: number;
-	parallelGroups?: AsyncParallelGroupStatus[];
 	steps?: AsyncJobStep[];
 	stepsTotal?: number;
 	runningSteps?: number;
 	completedSteps?: number;
-	hasParallelGroups?: boolean;
-	activeParallelGroup?: boolean;
 	startedAt?: number;
 	updatedAt?: number;
 	sessionDir?: string;
@@ -219,7 +187,6 @@ export interface ForegroundResumeChild {
 	result?: SingleResult;
 	/**
 	 * Effective delegation limit this child ran under. Retained per child because
-	 * parallel and chain branches can carry different limits, and because a later
 	 * edit to the agent definition must not widen a resumed child's budget.
 	 */
 	maxSubagentDepth?: number;

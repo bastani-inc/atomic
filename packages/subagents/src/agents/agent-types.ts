@@ -1,5 +1,3 @@
-import type { OutputMode } from "../shared/types.ts";
-
 export type AgentScope = "user" | "project" | "both";
 
 export type AgentSource = "builtin" | "user" | "project";
@@ -91,44 +89,6 @@ export interface SubagentSettings {
 }
 
 export const EMPTY_SUBAGENT_SETTINGS: SubagentSettings = { overrides: {} };
-
-export interface ChainStepConfig {
-	agent?: string;
-	task?: string;
-	phase?: string;
-	label?: string;
-	as?: string;
-	outputSchema?: string | Record<string, unknown>;
-	output?: string | false;
-	outputMode?: OutputMode;
-	reads?: string[] | false;
-	model?: string;
-	skills?: string[] | false;
-	progress?: boolean;
-	parallel?: unknown;
-	expand?: unknown;
-	collect?: unknown;
-	concurrency?: number;
-	failFast?: boolean;
-	worktree?: boolean;
-}
-
-export interface ChainConfig {
-	name: string;
-	localName?: string;
-	packageName?: string;
-	description: string;
-	source: AgentSource;
-	filePath: string;
-	steps: ChainStepConfig[];
-	extraFields?: Record<string, string>;
-}
-
-export interface ChainDiscoveryDiagnostic {
-	source: "user" | "project";
-	filePath: string;
-	error: string;
-}
 
 export interface AgentDiscoveryResult {
 	agents: AgentConfig[];

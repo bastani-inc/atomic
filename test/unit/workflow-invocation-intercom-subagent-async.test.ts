@@ -61,7 +61,7 @@ function stageContext(cwd: string): ExtensionContext {
 	} satisfies ExtensionContext;
 }
 
-test("async single, parallel, and chain children inherit workflow groups through in-process execution", async () => {
+test("async single and parallel children inherit workflow groups through in-process execution", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-workflow-group-async-"));
 	const groups: Array<string | undefined> = [];
 	const agent = {
@@ -146,24 +146,6 @@ test("async single, parallel, and chain children inherit workflow groups through
 		);
 		assert.equal(parallel.isError, undefined);
 		assert.equal(parallel.details.results[0]?.status, "continued");
-
-		const chain = await executor.execute(
-			"async-chain",
-			{
-				chain: [
-					{ agent: "worker", task: "chain-inherit" },
-					{ agent: "worker", task: "chain-default", group: "default" },
-				],
-				group: "chain-top",
-				async: true,
-			},
-			new AbortController().signal,
-			undefined,
-			context,
-		);
-		assert.equal(chain.isError, undefined);
-		assert.equal(chain.details.results[0]?.status, "continued");
-		await new Promise<void>((resolve) => setImmediate(resolve));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -171,7 +153,6 @@ test("async single, parallel, and chain children inherit workflow groups through
 	assert.ok(groups.includes("workflow:root"));
 	assert.ok(groups.includes("default"));
 	assert.ok(groups.includes("parallel-set"));
-	assert.ok(groups.includes("chain-top"));
 });
 
 test("in-process child resolves intercom group through typed admission without an env bridge", async () => {

@@ -20,17 +20,6 @@ export interface SlashSnapshotStore {
 	versionCounter: number;
 }
 
-interface SequentialChainStepLike {
-	agent: string;
-	task?: string;
-}
-
-interface ParallelChainStepLike {
-	parallel: Array<{ agent: string; task?: string }>;
-}
-
-type ChainStepLike = SequentialChainStepLike | ParallelChainStepLike;
-
 const defaultStoreOwner = {};
 
 function getStoreRegistry(): WeakMap<object, SlashSnapshotStore> {
@@ -119,80 +108,6 @@ function buildParallelInitialResult(params: SubagentParamsLike): AgentToolResult
 	};
 }
 
-function isParallelChainStep(step: ChainStepLike): step is ParallelChainStepLike {
-	return "parallel" in step && Array.isArray(step.parallel);
-}
-
-function chainStepLabel(step: ChainStepLike): string {
-	if (isParallelChainStep(step)) {
-		return `[${step.parallel.map((entry) => entry.agent).join("+")}]`;
-	}
-	return step.agent;
-}
-
-function flattenChainResults(chain: ChainStepLike[], fallbackTask: string | undefined): SingleResult[] {
-	const results: SingleResult[] = [];
-	let flatIndex = 0;
-	for (const step of chain) {
-		if (isParallelChainStep(step)) {
-			for (const task of step.parallel) {
-				results.push(
-					createPlaceholderResult(
-						task.agent,
-						task.task ?? fallbackTask ?? "",
-						results.length === 0 ? "running" : "pending",
-						flatIndex,
-					),
-				);
-				flatIndex++;
-			}
-			continue;
-		}
-		results.push(
-			createPlaceholderResult(
-				step.agent,
-				step.task ?? fallbackTask ?? "",
-				results.length === 0 ? "running" : "pending",
-				flatIndex,
-			),
-		);
-		flatIndex++;
-	}
-	return results;
-}
-
-function buildChainInitialResult(params: SubagentParamsLike): AgentToolResult<Details> {
-	const chain = (params.chain ?? []) as ChainStepLike[];
-	const results = flattenChainResults(chain, params.task);
-	return {
-		content: [
-			{
-				type: "text",
-				text: results.map((result, index) => `Step ${index + 1}: ${result.agent}\n${result.task}`).join("\n\n"),
-			},
-		],
-		details: {
-			mode: "chain",
-			...(params.context ? { context: params.context } : {}),
-			results,
-			progress: results.map((result, index) => ({
-				index,
-				agent: result.agent,
-				status: index === 0 ? ("running" as const) : ("pending" as const),
-				task: result.task,
-				recentTools: [],
-				recentOutput: [],
-				toolCount: 0,
-				tokens: 0,
-				durationMs: 0,
-			})),
-			chainAgents: chain.map((step) => chainStepLabel(step)),
-			totalSteps: chain.length,
-			currentStepIndex: 0,
-		},
-	};
-}
-
 function buildSingleInitialResult(params: SubagentParamsLike): AgentToolResult<Details> {
 	const agent = params.agent ?? "subagent";
 	const task = params.task ?? "";
@@ -226,11 +141,7 @@ export function buildSlashInitialResult(
 ): SlashMessageDetails {
 	const store = getSlashSnapshotStore(owner);
 	const result =
-		(params.tasks?.length ?? 0) > 0
-			? buildParallelInitialResult(params)
-			: (params.chain?.length ?? 0) > 0
-				? buildChainInitialResult(params)
-				: buildSingleInitialResult(params);
+		(params.tasks?.length ?? 0) > 0 ? buildParallelInitialResult(params) : buildSingleInitialResult(params);
 	store.liveSnapshots.set(requestId, { result, version: nextVersion(store) });
 	store.finalSnapshots.delete(requestId);
 	return { requestId, result };
@@ -252,12 +163,10 @@ export function applySlashUpdate(requestId: string, update: SlashSubagentUpdate,
 	if (!snapshot) return;
 	const progress = update.progress;
 	if (!progress || !snapshot.result.details) return;
-	const currentStepIndex = progress.findIndex((entry) => entry.status === "running");
 	const nextDetails: Details = {
 		...snapshot.result.details,
 		progress,
 		results: cloneResultsWithProgress(snapshot.result.details.results, progress),
-		...(snapshot.result.details.mode === "chain" && currentStepIndex >= 0 ? { currentStepIndex } : {}),
 	};
 	store.liveSnapshots.set(requestId, {
 		result: {

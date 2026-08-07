@@ -12,11 +12,7 @@ import {
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import { createForkContextResolver } from "../../shared/fork-context.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import {
-	buildReadInstruction,
-	isParallelStep as isSettingsParallelStep,
-	type SequentialStep,
-} from "../../shared/settings.ts";
+import { buildReadInstruction } from "../../shared/settings.ts";
 import {
 	type ArtifactConfig,
 	checkSubagentDepth,
@@ -112,10 +108,9 @@ export function prepareExecutionContext(input: {
 	const nestedParentAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 	const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
 	const shareEnabled = effectiveParams.share === true;
-	const hasChain = (effectiveParams.chain?.length ?? 0) > 0;
 	const hasTasks = (effectiveParams.tasks?.length ?? 0) > 0;
-	const hasSingle = !hasChain && !hasTasks && Boolean(effectiveParams.agent);
-	const validationError = validateExecutionInput(effectiveParams, agents, hasChain, hasTasks, hasSingle);
+	const hasSingle = !hasTasks && Boolean(effectiveParams.agent);
+	const validationError = validateExecutionInput(effectiveParams, agents, hasTasks, hasSingle);
 	if (validationError) return { error: validationError };
 	if (hasSingle) {
 		const readInstruction = buildReadInstruction(effectiveParams.reads, effectiveCwd);
@@ -187,7 +182,7 @@ export function prepareExecutionContext(input: {
 		nestedRoute,
 	};
 
-	const foregroundMode: "single" | "parallel" | "chain" = hasChain ? "chain" : hasTasks ? "parallel" : "single";
+	const foregroundMode: "single" | "parallel" = hasTasks ? "parallel" : "single";
 	const foregroundControl = effectiveAsync
 		? undefined
 		: {
@@ -225,15 +220,9 @@ export function prepareExecutionContext(input: {
 		const agentsForSummary =
 			hasTasks && effectiveParams.tasks
 				? effectiveParams.tasks.map((task) => task.agent)
-				: hasChain && effectiveParams.chain
-					? effectiveParams.chain.flatMap((step) =>
-							isSettingsParallelStep(step)
-								? step.parallel.map((task) => task.agent)
-								: [(step as SequentialStep).agent],
-						)
-					: effectiveParams.agent
-						? [effectiveParams.agent]
-						: [];
+				: effectiveParams.agent
+					? [effectiveParams.agent]
+					: [];
 		const leafIntercomTarget =
 			intercomBridge.active && agentsForSummary[0]
 				? resolveSubagentIntercomTarget(runId, agentsForSummary[0], 0)
@@ -290,7 +279,6 @@ export function prepareExecutionContext(input: {
 			effectiveParams,
 			effectiveCwd,
 			runId,
-			hasChain,
 			hasTasks,
 			hasSingle,
 			foregroundMode,

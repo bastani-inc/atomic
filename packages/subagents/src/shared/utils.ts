@@ -133,8 +133,6 @@ export function findLatestSessionFile(sessionDir: string): string | null {
 // Message Parsing Utilities
 // ============================================================================
 
-const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
-
 type TextContentCandidate = {
 	type: string;
 	text?: string;
@@ -150,23 +148,6 @@ function getLastNonEmptyTextContent(content: readonly TextContentCandidate[]): s
 	return undefined;
 }
 
-function getCombinedNonEmptyTextContent(content: readonly TextContentCandidate[]): string | undefined {
-	let text = "";
-	for (const part of content) {
-		if (part.type === "text" && typeof part.text === "string") {
-			text += part.text;
-		}
-	}
-	return text.trim().length > 0 ? text : undefined;
-}
-
-function getStructuredOutputToolResultText(message: Message): string | undefined {
-	if (message.role !== "toolResult") return undefined;
-	if (message.toolName !== STRUCTURED_OUTPUT_TOOL_NAME) return undefined;
-	if (message.isError === true) return undefined;
-	return getCombinedNonEmptyTextContent(message.content);
-}
-
 function getAssistantOutputText(message: Message): string | undefined {
 	if (message.role !== "assistant") return undefined;
 	const hasAssistantError =
@@ -180,12 +161,6 @@ function getAssistantOutputText(message: Message): string | undefined {
  * Get the final text output from a list of messages
  */
 export function getFinalOutput(messages: Message[]): string {
-	const finalMessage = messages[messages.length - 1];
-	if (finalMessage) {
-		const finalStructuredOutput = getStructuredOutputToolResultText(finalMessage);
-		if (finalStructuredOutput !== undefined) return finalStructuredOutput;
-	}
-
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const assistantOutput = getAssistantOutputText(messages[i]);
 		if (assistantOutput !== undefined) return assistantOutput;

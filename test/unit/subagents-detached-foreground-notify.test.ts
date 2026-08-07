@@ -173,7 +173,7 @@ test("failed and interrupted detached children report failed/paused status", () 
 	notifyDetachedForegroundChildExit({
 		pi: harness.pi as never,
 		runId: "run-detach-4",
-		mode: "chain",
+		mode: "single",
 		index: 0,
 		result: makeResult({ status: "error", error: "boom" }),
 	});

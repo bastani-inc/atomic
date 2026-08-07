@@ -364,7 +364,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			},
 			renderCall(args, theme) {
 				if (args.action) {
-					const target = args.agent || args.chainName || "";
+					const target = args.agent || "";
 					return new Text(
 						`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg("accent", target)}` : ""}`,
 						0,
@@ -374,12 +374,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				const isParallel = (args.tasks?.length ?? 0) > 0;
 				const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
 				const asyncLabel = args.async === true ? theme.fg("warning", " [async]") : "";
-				if (args.chain?.length)
-					return new Text(
-						`${theme.fg("toolTitle", theme.bold("subagent "))}chain (${args.chain.length})${asyncLabel}`,
-						0,
-						0,
-					);
 				if (isParallel)
 					return new Text(
 						`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})${asyncLabel}`,

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, test } from "vitest";
+import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { createAsyncJobTracker } from "../../packages/subagents/src/runs/background/async-job-tracker.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
@@ -19,7 +20,7 @@ import {
 	type SubagentState,
 } from "../../packages/subagents/src/shared/types.js";
 import { stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
-import { sleep } from "../helpers/runtime.js";
+import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 type EventHandler = (data: unknown) => void;
 
@@ -174,6 +175,106 @@ test("public parallel dispatch retries capacity refusals until all six tasks com
 	);
 	assert.ok(result.details.results.every((child) => !child.cause?.includes("capacity")));
 	assert.match(text(result), /^6\/6 succeeded/);
+});
+
+test("public parallel count expansion preserves task multiplicity and concurrency", async () => {
+	const cwd = makeRoot();
+	let active = 0;
+	let maximumActive = 0;
+	const seenTasks: string[] = [];
+	const { execute } = executor(cwd, new TestEvents(), {
+		runSync: async (_cwd, _agents, agentName, task) => {
+			active += 1;
+			maximumActive = Math.max(maximumActive, active);
+			seenTasks.push(task);
+			await sleep(15);
+			active -= 1;
+			return {
+				agent: agentName,
+				task,
+				status: "ok" as const,
+				messages: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+				finalOutput: task,
+			};
+		},
+	});
+	const result = await execute.execute(
+		"parallel-count",
+		{
+			tasks: [
+				{ agent: "qa-echo", task: "repeat", count: 3 },
+				{ agent: "qa-echo", task: "once" },
+			],
+			concurrency: 2,
+			artifacts: false,
+		},
+		new AbortController().signal,
+		undefined,
+		context(cwd),
+	);
+
+	assert.equal(result.details.results.length, 4);
+	assert.deepEqual(seenTasks.sort(), ["once", "repeat", "repeat", "repeat"]);
+	assert.equal(maximumActive, 2);
+	assert.ok(result.details.results.every((child) => child.status === "ok"));
+});
+
+test("public parallel worktree mode gives each task an isolated checkout", async () => {
+	const cwd = makeRoot();
+	const runGit = (args: string[]): string => {
+		const result = spawnSyncCollect(["git", ...args], { cwd, env: createGitEnvironment() });
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		return result.stdout.toString("utf8");
+	};
+	runGit(["init", "--quiet"]);
+	runGit(["config", "user.name", "Atomic Fixture"]);
+	runGit(["config", "user.email", "fixture@example.invalid"]);
+	runGit(["config", "commit.gpgSign", "false"]);
+	writeFileSync(join(cwd, "seed.txt"), "seed\n");
+	runGit(["add", "seed.txt"]);
+	runGit(["commit", "--quiet", "-m", "initial"]);
+
+	const childCwds: string[] = [];
+	const { execute } = executor(cwd, new TestEvents(), {
+		runSync: async (_parentCwd, _agents, agentName, task, options) => {
+			const childCwd = options?.cwd ?? "";
+			childCwds.push(childCwd);
+			assert.notEqual(childCwd, cwd);
+			assert.equal(existsSync(join(childCwd, ".git")), true);
+			writeFileSync(join(childCwd, `${task}.txt`), `${task}\n`);
+			return {
+				agent: agentName,
+				task,
+				status: "ok" as const,
+				messages: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+				finalOutput: task,
+			};
+		},
+	});
+	const result = await execute.execute(
+		"parallel-worktree",
+		{
+			tasks: [
+				{ agent: "qa-echo", task: "alpha", progress: false },
+				{ agent: "qa-echo", task: "beta", progress: false },
+			],
+			worktree: true,
+			artifacts: false,
+		},
+		new AbortController().signal,
+		undefined,
+		context(cwd),
+	);
+
+	assert.equal(result.details.results.length, 2, text(result));
+	assert.equal(new Set(childCwds).size, 2);
+	assert.match(text(result), /=== Worktree Changes ===/);
+	const remainingWorktrees = runGit(["worktree", "list", "--porcelain"])
+		.split("\n")
+		.filter((line) => line.startsWith("worktree "));
+	assert.equal(remainingWorktrees.length, 1);
 });
 
 test("public interrupt and resume actions accept both bare run ids and canonical child paths", async () => {

@@ -30,12 +30,12 @@ function nested(
 	};
 }
 
-function nestedChain(level: number, maxLevel: number): NestedRunSummary {
+function nestedRuns(level: number, maxLevel: number): NestedRunSummary {
 	return nested(
 		`level${level}`,
 		level === 0 ? "root" : `level${level - 1}`,
 		undefined,
-		level < maxLevel ? [nestedChain(level + 1, maxLevel)] : [],
+		level < maxLevel ? [nestedRuns(level + 1, maxLevel)] : [],
 	);
 }
 
@@ -65,7 +65,7 @@ describe("subagent result intercom helpers", () => {
 	});
 
 	test("compacts nested result trees to bounded breadth and five-level depth", () => {
-		const deep = nestedChain(0, MAX_SUBAGENT_NESTING_DEPTH + 1);
+		const deep = nestedRuns(0, MAX_SUBAGENT_NESTING_DEPTH + 1);
 		const compact = compactNestedResultChildren(
 			Array.from({ length: 20 }, (_, index) => ({ ...deep, id: `run${index}` })),
 		);

@@ -1,6 +1,6 @@
 import { MAX_SUBAGENT_NESTING_DEPTH, type SubagentToolResult } from "../shared/types.ts";
 import type { ManagementContext, ManagementScope } from "./agent-management.ts";
-import type { AgentConfig, AgentScope, ChainConfig, ChainStepConfig } from "./agents.ts";
+import type { AgentConfig, AgentScope } from "./agents.ts";
 import { discoverAgentsAll, parsePackageName } from "./agents.ts";
 import { discoverAvailableSkills } from "./skills.ts";
 
@@ -66,10 +66,9 @@ export function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; proj
 	return [...d.builtin, ...d.user, ...d.project];
 }
 
-export function availableNames(cwd: string, kind: "agent" | "chain"): string[] {
+export function availableNames(cwd: string): string[] {
 	const d = discoverAgentsAll(cwd);
-	const items = kind === "agent" ? allAgents(d) : d.chains;
-	return [...new Set(items.map((x) => x.name))].sort((a, b) => a.localeCompare(b));
+	return [...new Set(allAgents(d).map((agent) => agent.name))].sort((a, b) => a.localeCompare(b));
 }
 
 export function findAgents(name: string, cwd: string, scope: AgentScope = "both"): AgentConfig[] {
@@ -81,71 +80,11 @@ export function findAgents(name: string, cwd: string, scope: AgentScope = "both"
 		.sort((a, b) => a.source.localeCompare(b.source));
 }
 
-export function findChains(name: string, cwd: string, scope: AgentScope = "both"): ChainConfig[] {
-	const raw = name.trim();
-	const sanitized = sanitizeName(raw);
-	return discoverAgentsAll(cwd)
-		.chains.filter((c) => (scope === "both" || c.source === scope) && (c.name === raw || c.name === sanitized))
-		.sort((a, b) => a.source.localeCompare(b.source));
-}
-
 export function nameExistsInScope(cwd: string, scope: ManagementScope, name: string, excludePath?: string): boolean {
 	const d = discoverAgentsAll(cwd);
-	for (const a of scope === "user" ? d.user : d.project) {
-		if (a.name === name && a.filePath !== excludePath) return true;
-	}
-	for (const c of d.chains) {
-		if (c.source === scope && c.name === name && c.filePath !== excludePath) return true;
-	}
-	return false;
-}
-
-export function chainStepAgentNames(step: ChainStepConfig): string[] {
-	const names: string[] = [];
-	if (typeof step.agent === "string") names.push(step.agent);
-	const parallel = step.parallel;
-	if (Array.isArray(parallel)) {
-		for (const item of parallel) {
-			if (item && typeof item === "object") {
-				const agent = (item as { agent?: unknown }).agent;
-				if (typeof agent === "string") names.push(agent);
-			}
-		}
-	} else if (parallel && typeof parallel === "object") {
-		const agent = (parallel as { agent?: unknown }).agent;
-		if (typeof agent === "string") names.push(agent);
-	}
-	return names;
-}
-
-export function unknownChainAgents(cwd: string, steps: ChainStepConfig[]): string[] {
-	const d = discoverAgentsAll(cwd);
-	const known = new Set(allAgents(d).map((a) => a.name));
-	const unknown = steps.flatMap((step) => chainStepAgentNames(step)).filter((agent) => !known.has(agent));
-	return [...new Set(unknown)].sort((a, b) => a.localeCompare(b));
-}
-
-export function chainStepWarnings(ctx: ManagementContext, steps: ChainStepConfig[]): string[] {
-	const warnings: string[] = [];
-	const available = new Set(discoverAvailableSkills(ctx.cwd).map((s) => s.name));
-	for (let i = 0; i < steps.length; i++) {
-		const s = steps[i]!;
-		if (s.model) {
-			const found = ctx.modelRegistry
-				.getAvailable()
-				.some((m) => `${m.provider}/${m.id}` === s.model || m.id === s.model);
-			if (!found)
-				warnings.push(
-					`Warning: step ${i + 1} (${s.agent}): model '${s.model}' is not in the current model registry.`,
-				);
-		}
-		if (Array.isArray(s.skills) && s.skills.length > 0) {
-			const missing = s.skills.filter((sk) => !available.has(sk));
-			if (missing.length)
-				warnings.push(`Warning: step ${i + 1} (${s.agent}): skills not found: ${missing.join(", ")}.`);
-		}
-	}
-	return warnings;
+	return (scope === "user" ? d.user : d.project).some(
+		(agent) => agent.name === name && agent.filePath !== excludePath,
+	);
 }
 
 export function modelWarning(ctx: ManagementContext, model: string | undefined): string | undefined {
@@ -171,74 +110,6 @@ export function skillsWarning(cwd: string, skills: string[] | undefined): string
 	const available = new Set(discoverAvailableSkills(cwd).map((s) => s.name));
 	const missing = skills.filter((s) => !available.has(s));
 	return missing.length ? `Warning: skills not found: ${missing.join(", ")}.` : undefined;
-}
-
-export function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: string } {
-	if (!Array.isArray(raw)) return { error: "config.steps must be an array." };
-	if (raw.length === 0) return { error: "config.steps must include at least one step." };
-	const steps: ChainStepConfig[] = [];
-	for (let i = 0; i < raw.length; i++) {
-		const item = raw[i];
-		if (!item || typeof item !== "object" || Array.isArray(item))
-			return { error: `config.steps[${i}] must be an object.` };
-		const s = item as Record<string, unknown>;
-		if (typeof s.agent !== "string" || !s.agent.trim())
-			return { error: `config.steps[${i}].agent must be a non-empty string.` };
-		const step: ChainStepConfig = { agent: s.agent.trim(), task: typeof s.task === "string" ? s.task : "" };
-		if (hasKey(s, "phase")) {
-			if (typeof s.phase === "string") step.phase = s.phase;
-			else return { error: `config.steps[${i}].phase must be a string.` };
-		}
-		if (hasKey(s, "label")) {
-			if (typeof s.label === "string") step.label = s.label;
-			else return { error: `config.steps[${i}].label must be a string.` };
-		}
-		if (hasKey(s, "as")) {
-			if (typeof s.as === "string") step.as = s.as;
-			else return { error: `config.steps[${i}].as must be a string.` };
-		}
-		if (hasKey(s, "outputSchema")) {
-			if (typeof s.outputSchema === "string") step.outputSchema = s.outputSchema;
-			else return { error: `config.steps[${i}].outputSchema must be a schema file path string for saved chains.` };
-		}
-		if (hasKey(s, "output")) {
-			if (s.output === false) step.output = false;
-			else if (typeof s.output === "string") step.output = s.output;
-			else return { error: `config.steps[${i}].output must be a string or false.` };
-		}
-		if (hasKey(s, "outputMode")) {
-			if (s.outputMode === "inline" || s.outputMode === "file-only") step.outputMode = s.outputMode;
-			else return { error: `config.steps[${i}].outputMode must be 'inline' or 'file-only'.` };
-		}
-		if (hasKey(s, "reads")) {
-			if (s.reads === false) step.reads = false;
-			else if (Array.isArray(s.reads))
-				step.reads = s.reads
-					.filter((v): v is string => typeof v === "string")
-					.map((v) => v.trim())
-					.filter(Boolean);
-			else return { error: `config.steps[${i}].reads must be an array or false.` };
-		}
-		if (hasKey(s, "model")) {
-			if (typeof s.model === "string") step.model = s.model;
-			else return { error: `config.steps[${i}].model must be a string.` };
-		}
-		if (hasKey(s, "skills")) {
-			if (s.skills === false) step.skills = false;
-			else if (Array.isArray(s.skills))
-				step.skills = s.skills
-					.filter((v): v is string => typeof v === "string")
-					.map((v) => v.trim())
-					.filter(Boolean);
-			else return { error: `config.steps[${i}].skills must be an array or false.` };
-		}
-		if (hasKey(s, "progress")) {
-			if (typeof s.progress === "boolean") step.progress = s.progress;
-			else return { error: `config.steps[${i}].progress must be a boolean.` };
-		}
-		steps.push(step);
-	}
-	return { steps };
 }
 
 export function parseTools(raw: string): { tools?: string[]; mcpDirectTools?: string[] } {

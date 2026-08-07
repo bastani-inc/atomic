@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { type ChainStep, isParallelStep, type ResolvedStepBehavior } from "../../shared/settings.ts";
+import type { ResolvedStepBehavior } from "../../shared/settings.ts";
 import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
 import { resolveSingleOutputPath } from "../shared/single-output.ts";
@@ -50,19 +50,6 @@ export function buildParallelWorktreeTaskCwdError(
 	const conflict = findWorktreeTaskCwdConflict(tasks, sharedCwd);
 	if (!conflict) return undefined;
 	return formatWorktreeTaskCwdConflict(conflict, sharedCwd);
-}
-
-export function buildChainWorktreeTaskCwdError(chain: ChainStep[], sharedCwd: string): string | undefined {
-	for (let stepIndex = 0; stepIndex < chain.length; stepIndex++) {
-		const step = chain[stepIndex]!;
-		if (!isParallelStep(step) || !step.worktree) continue;
-		const stepCwd = resolveChildCwd(sharedCwd, step.cwd);
-		const conflict = findWorktreeTaskCwdConflict(step.parallel, stepCwd);
-		if (!conflict) continue;
-		const detail = formatWorktreeTaskCwdConflict(conflict, stepCwd);
-		return `parallel chain step ${stepIndex + 1}: ${detail}`;
-	}
-	return undefined;
 }
 
 export function resolveParallelTaskCwd(

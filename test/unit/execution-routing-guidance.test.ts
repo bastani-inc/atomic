@@ -469,7 +469,6 @@ describe("workflow-first execution routing", () => {
 			"focused specialist work inside workflows",
 			"workflows are the default for non-trivial structured work",
 			"single subagent",
-			"chain",
 			"parallel tasks",
 			"debugger subagent for actual failures",
 		]) {
@@ -501,7 +500,7 @@ describe("workflow-first execution routing", () => {
 			"Do not inspect credentials",
 			"Workflow stages automatically receive their invocation-scoped Intercom group",
 			"inherit the launching session's group",
-			"single, parallel, chain, async, and follow-up work",
+			"single, parallel, async, and follow-up work",
 			"Do not create or propagate group identifiers",
 			"explicit group only for an intentional topology override",
 			"contact_supervisor available for cross-group escalation",

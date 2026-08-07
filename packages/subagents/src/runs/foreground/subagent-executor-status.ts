@@ -129,7 +129,7 @@ export function rememberForegroundRun(
 	state: SubagentState,
 	input: {
 		runId: string;
-		mode: "single" | "parallel" | "chain";
+		mode: "single" | "parallel";
 		cwd: string;
 		results: SingleResult[];
 		/** Effective delegation limit per child, aligned with `results` by index. */
@@ -308,7 +308,6 @@ async function emitForegroundResultIntercom(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	results: SingleResult[];
-	chainSteps?: number;
 	nestedChildren?: NestedRunSummary[];
 }): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
 	if (!input.intercomBridge.active || !input.intercomBridge.orchestratorTarget) return null;
@@ -338,7 +337,6 @@ async function emitForegroundResultIntercom(input: {
 		mode: input.mode,
 		source: "foreground",
 		children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
-		...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
 	});
 	const delivered = await deliverSubagentResultIntercomEvent(input.pi.events, payload);
 	if (!delivered) return null;
@@ -359,7 +357,6 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 		runId: input.runId,
 		mode: input.mode,
 		results: input.details.results,
-		...(typeof input.details.totalSteps === "number" ? { chainSteps: input.details.totalSteps } : {}),
 		...(input.nestedChildren?.length ? { nestedChildren: input.nestedChildren } : {}),
 	});
 	if (!payload) return null;

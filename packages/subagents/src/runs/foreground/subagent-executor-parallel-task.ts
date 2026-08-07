@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import type { ModelInfo } from "../../shared/model-info.ts";
-import { buildChainInstructions, type ResolvedStepBehavior } from "../../shared/settings.ts";
+import { buildTaskInstructions, type ResolvedStepBehavior } from "../../shared/settings.ts";
 import type {
 	AgentProgress,
 	ArtifactConfig,
@@ -78,10 +78,10 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		const effectiveSkills = behavior?.skills;
 		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
 		const readInstructions = behavior
-			? buildChainInstructions({ ...behavior, output: false, progress: false }, taskCwd, false)
+			? buildTaskInstructions({ ...behavior, output: false, progress: false }, taskCwd, false)
 			: { prefix: "", suffix: "" };
 		const progressInstructions = behavior
-			? buildChainInstructions(
+			? buildTaskInstructions(
 					{ ...behavior, output: false, reads: false },
 					input.paramsCwd,
 					index === input.firstProgressIndex,

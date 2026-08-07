@@ -272,11 +272,6 @@ describe("subagent child policy gates fanout, not management", () => {
 		assert.equal(resultText(parallel), FANOUT_MESSAGE);
 		assert.equal(parallel.details.mode, "parallel");
 
-		const chain = await runAction(executor, { chain: [{ agent: "alpha", task: "do work" }] });
-		assert.equal(chain.isError, true);
-		assert.equal(resultText(chain), FANOUT_MESSAGE);
-		assert.equal(chain.details.mode, "chain");
-
 		assert.deepEqual(runSyncCalls, []);
 	});
 

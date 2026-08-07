@@ -4,14 +4,6 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, getAgentConfigPaths, getProjectConfigDirs } from "@bastani/atomic";
 
-export function getUserChainDir(): string {
-	return getAgentConfigPaths("chains")[0] ?? path.join(os.homedir(), CONFIG_DIR_NAME, "agent", "chains");
-}
-
-export function getUserChainDirs(): string[] {
-	return getAgentConfigPaths("chains");
-}
-
 export function getUserAgentDirs(): string[] {
 	return getAgentConfigPaths("agents");
 }
@@ -70,20 +62,6 @@ export function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[
 
 	return {
 		readDirs,
-		preferredDir,
-	};
-}
-
-export function resolveNearestProjectChainDirs(cwd: string): { readDirs: string[]; preferredDir: string | null } {
-	const projectRoot = findNearestProjectRoot(cwd);
-	if (!projectRoot) return { readDirs: [], preferredDir: null };
-
-	const preferredDir = path.join(getProjectConfigDirs(projectRoot)[0]!, "chains");
-	return {
-		readDirs: getProjectConfigDirs(projectRoot)
-			.reverse()
-			.map((configDir) => path.join(configDir, "chains"))
-			.filter(isDirectory),
 		preferredDir,
 	};
 }

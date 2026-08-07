@@ -157,12 +157,12 @@ function makeExecutor(root: string, gate: Promise<void>) {
 
 /**
  * The process snapshot is taken while fixture turns are held open. It proves
- * that the real single, parallel, sequential-chain, and async executor paths
+ * that the real single, parallel, and async executor paths
  * do not add descendants to the Vitest worker. It does not assert the
  * interactive host's own engine topology or provider subprocesses outside this
  * runner boundary; those are covered by the coding-agent integration suites.
  */
-test("single, parallel, chain, and async subagent modes create no OS child processes", async () => {
+test("single, parallel, and async subagent modes create no OS child processes", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-subagents-zero-process-"));
 	clearSubagentControls();
 	try {
@@ -203,29 +203,6 @@ test("single, parallel, chain, and async subagent modes create no OS child proce
 		assert.deepEqual(
 			(await parallel).details.results.map((result) => result.status),
 			["ok", "ok", "ok"],
-		);
-
-		const chainGate = Promise.withResolvers<void>();
-		const chainExecutor = makeExecutor(root, chainGate.promise);
-		const chainBefore = probeChildren();
-		const chain = chainExecutor.executor.execute(
-			"chain",
-			{
-				chain: [
-					{ agent: "worker", task: "chain one" },
-					{ agent: "worker", task: "chain two" },
-				],
-			},
-			new AbortController().signal,
-			undefined,
-			chainExecutor.context,
-		);
-		await sleep(50);
-		assertNoNewChildren(chainBefore, "chain");
-		chainGate.resolve();
-		assert.deepEqual(
-			(await chain).details.results.map((result) => result.status),
-			["ok", "ok"],
 		);
 
 		const asyncGate = Promise.withResolvers<void>();

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
-import { runParallelChainTasks } from "../../packages/subagents/src/runs/foreground/chain-execution-parallel-runner.js";
 import { runForegroundParallelTasks } from "../../packages/subagents/src/runs/foreground/subagent-executor-parallel-task.js";
 import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
 
@@ -105,80 +104,6 @@ test("one parallel child's supervisor detach releases every active foreground si
 	assert.deepEqual(settled.toSorted(), [0, 1]);
 	assert.equal(output.length, 3);
 	assert.ok(output.slice(0, 2).every((entry) => entry.detached));
-	assert.equal(output[2]?.status, "skipped");
-	assert.match(output[2]?.error ?? "", /Skipped after foreground group detached/);
-});
-
-test("chain-parallel detach does not launch work that was still queued", async () => {
-	const started: number[] = [];
-	const output = await runParallelChainTasks({
-		step: {
-			parallel: [
-				{ agent: "fake-worker", task: "ask supervisor" },
-				{ agent: "fake-worker", task: "active sibling" },
-				{ agent: "fake-worker", task: "queued sibling" },
-			],
-			concurrency: 2,
-		},
-		parallelTemplates: ["ask supervisor", "active sibling", "queued sibling"],
-		parallelBehaviors: [
-			{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },
-			{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },
-			{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },
-		],
-		agents: [agentConfig()],
-		stepIndex: 0,
-		availableModels: [],
-		knownModelProviders: [],
-		chainDir: process.cwd(),
-		prev: "",
-		originalTask: "parallel chain",
-		ctx: { cwd: process.cwd() } as Parameters<typeof runParallelChainTasks>[0]["ctx"],
-		runId: "chain-parallel-detach",
-		globalTaskIndex: 10,
-		sessionDirForIndex: () => undefined,
-		shareEnabled: false,
-		artifactConfig: {
-			enabled: false,
-			includeInput: false,
-			includeOutput: false,
-			includeJsonl: false,
-			includeMetadata: false,
-			cleanupDays: 0,
-		},
-		artifactsDir: process.cwd(),
-		controlConfig: {
-			enabled: false,
-			needsAttentionAfterMs: 1,
-			activeNoticeAfterMs: 1,
-			failedToolAttemptsBeforeAttention: 1,
-			notifyOn: [],
-			notifyChannels: [],
-		},
-		results: [],
-		allProgress: [],
-		outputs: {},
-		chainAgents: [],
-		chainSteps: [],
-		totalSteps: 3,
-		maxSubagentDepth: 0,
-		async runSync(_cwd, _agents, _agentName, task, options) {
-			const index = options.index ?? -1;
-			started.push(index);
-			if (index === 10) {
-				await Promise.resolve();
-				options.onIntercomDetachCommit?.();
-			} else {
-				await new Promise<void>((resolve) => {
-					options.intercomDetachSignal?.addEventListener("abort", () => resolve(), { once: true });
-					if (options.intercomDetachSignal?.aborted) resolve();
-				});
-			}
-			return { ...result(index), task };
-		},
-	});
-
-	assert.deepEqual(started, [10, 11]);
 	assert.equal(output[2]?.status, "skipped");
 	assert.match(output[2]?.error ?? "", /Skipped after foreground group detached/);
 });

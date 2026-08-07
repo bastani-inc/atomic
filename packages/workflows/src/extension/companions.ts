@@ -65,7 +65,7 @@ export const COMPANIONS: readonly CompanionSpec[] = [
 		installSpec: "npm:pi-subagents",
 		purpose: "delegate stages to focused child agents",
 		pathHints: ["/pi-subagents/", "/pi-subagents-", "/pi-subagents."],
-		commandHints: ["subagents-doctor", "run", "chain", "parallel", "run-chain"],
+		commandHints: ["subagents-doctor", "run", "parallel"],
 		toolHints: ["subagent"],
 	},
 	{

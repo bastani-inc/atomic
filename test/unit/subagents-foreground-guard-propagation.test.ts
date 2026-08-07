@@ -205,30 +205,6 @@ beforeEach(() => {
 afterAll(clearSubagentGuardEnv);
 
 describe("foreground workflow-stage subagent guard propagation", () => {
-	test("passes workflow-stage guard to sequential and parallel chain children", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-chain-guard-"));
-		const executor = makeExecutor([makeAgent("alpha"), makeAgent("beta"), makeAgent("gamma")]);
-		const result = await executor.execute(
-			"subagent",
-			{
-				chain: [
-					{ agent: "alpha", task: "first" },
-					{
-						parallel: [
-							{ agent: "beta", task: "second" },
-							{ agent: "gamma", task: "third" },
-						],
-					},
-				],
-			},
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-		assertNoErrorFlag(result);
-		assertGuardedRunSyncCalls(["alpha", "beta", "gamma"]);
-	});
-
 	test("passes workflow-stage guard to foreground parallel children", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-parallel-guard-"));
 		const executor = makeExecutor([makeAgent("alpha"), makeAgent("beta")]);
@@ -332,32 +308,6 @@ describe("per-agent maximum narrows every delegation mode", () => {
 
 		assertNoErrorFlag(result);
 		assert.deepEqual(cappedRunSyncDepths(), { capped: 1, uncapped: 2 });
-	});
-
-	test("sequential and parallel chain steps each receive their own agent's maximum", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-chain-agent-max-"));
-		const executor = makeExecutor([...cappedAgents(), makeAgent("alsoCapped", 1)]);
-
-		const result = await executor.execute(
-			"subagent",
-			{
-				chain: [
-					{ agent: "capped", task: "first" },
-					{
-						parallel: [
-							{ agent: "alsoCapped", task: "second" },
-							{ agent: "uncapped", task: "third" },
-						],
-					},
-				],
-			},
-			new AbortController().signal,
-			undefined,
-			makeWorkflowStageContext(cwd),
-		);
-
-		assertNoErrorFlag(result);
-		assert.deepEqual(cappedRunSyncDepths(), { capped: 1, alsoCapped: 1, uncapped: 2 });
 	});
 
 	test("an async single child receives its agent's tightened maximum", async () => {

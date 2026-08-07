@@ -12,7 +12,7 @@ $@
 
 ## Constraints and tools
 
-First read or fetch every URL, issue, PR, screenshot, plan, doc, or local file named in the request; these define primary scope. Use the `subagent` tool in chain mode with `context: "fresh"` unless I explicitly request forked context. Run one parallel discovery step, then synthesize parent-side rather than launching a synthesizer subagent.
+First read or fetch every URL, issue, PR, screenshot, plan, doc, or local file named in the request; these define primary scope. Use a top-level parallel call with `context: "fresh"` unless I explicitly request forked context, then synthesize parent-side rather than launching a synthesizer subagent.
 
 Choose specialists by evidence need:
 
@@ -22,7 +22,7 @@ Choose specialists by evidence need:
 - Add `codebase-pattern-finder` when analogous implementations or conventions could shape the plan; include useful snippets with `file:line` references.
 - Add `codebase-research-locator` then `codebase-research-analyzer` when prior `research/` or `specs/` may apply. The locator finds relevant dated docs; the analyzer extracts current decisions, constraints, and lessons while flagging superseded guidance. Run them sequentially, or pair them in the parallel step with distinct outputs when the dependency is already resolved.
 
-Give tasks distinct `output` paths, `label` values, and `as` names under the chain directory, for example:
+Give tasks distinct `output` paths and labels, for example:
 
 - `handoff/external-reference.md`
 - `handoff/local-files.md`
@@ -30,7 +30,7 @@ Give tasks distinct `output` paths, `label` values, and `as` names under the cha
 - `handoff/local-patterns.md`
 - `handoff/prior-research.md`
 
-Use phases such as `Research`, `Local context`, and `Synthesis` for readable async status. In synthesis, prefer `{outputs.externalReference}`, `{outputs.localContext}`, and `{outputs.implementationStrategy}` when available; use `{previous}` only for the whole parallel fan-in. Do not persist these artifacts in the repository unless I explicitly request it.
+Use phases such as `Research`, `Local context`, and `Synthesis` for readable async status. In synthesis, use the saved task outputs when available. Do not persist these artifacts in the repository unless I explicitly request it.
 
 Delegate only independent work too large for a handful of tool calls; do not delegate auditing your own work, and prefer one subagent over several. Parallelize independent reads; stay sequential when one result determines the next; synthesize after retrieval. Keep work within the requested scope.
 

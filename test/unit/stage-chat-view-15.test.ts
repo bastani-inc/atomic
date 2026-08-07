@@ -66,28 +66,6 @@ function runningSubagentDetails() {
 		mode: "single",
 		results: [{ agent: "worker", task: "fix spinner", status: "continued", usage: {}, progress }],
 		progress: [progress],
-		workflowGraph: {
-			runId: "subagent-run-1",
-			mode: "chain",
-			phases: [],
-			currentNodeId: "step-0-child",
-			nodes: [
-				{
-					id: "step-0",
-					kind: "parallel-group",
-					label: "Parallel",
-					status: "running",
-					children: [
-						{
-							id: "step-0-child",
-							kind: "agent",
-							label: "worker",
-							status: "running",
-						},
-					],
-				},
-			],
-		},
 	};
 }
 
@@ -108,12 +86,11 @@ function runningChildProgress(index: number, agent: string): AgentProgress {
 	};
 }
 
-function runningMultiSubagentDetails(mode: "parallel" | "chain"): Details {
+function runningMultiSubagentDetails(): Details {
 	const first = runningChildProgress(0, "alpha");
 	const second = runningChildProgress(1, "beta");
 	return {
-		mode,
-		chainAgents: mode === "chain" ? ["alpha", "beta"] : undefined,
+		mode: "parallel",
 		results: [first, second].map((progress) => ({
 			agent: progress.agent,
 			task: progress.task,
@@ -131,32 +108,24 @@ function runningMultiSubagentDetails(mode: "parallel" | "chain"): Details {
 	};
 }
 
-function emitRunningMultiSubagent(emit: (event: AgentSessionEvent) => void, mode: "parallel" | "chain"): void {
+function emitRunningMultiSubagent(emit: (event: AgentSessionEvent) => void): void {
 	emit({
 		type: "tool_execution_start",
 		toolCallId: "subagent-1",
 		toolName: "subagent",
-		args:
-			mode === "parallel"
-				? {
-						tasks: [
-							{ agent: "alpha", task: "run alpha" },
-							{ agent: "beta", task: "run beta" },
-						],
-					}
-				: {
-						chain: [
-							{ agent: "alpha", task: "run alpha" },
-							{ agent: "beta", task: "run beta" },
-						],
-					},
+		args: {
+			tasks: [
+				{ agent: "alpha", task: "run alpha" },
+				{ agent: "beta", task: "run beta" },
+			],
+		},
 	} as AgentSessionEvent);
 	emit({
 		type: "tool_execution_update",
 		toolCallId: "subagent-1",
 		partialResult: {
-			content: [{ type: "text", text: `${mode} children are running` }],
-			details: runningMultiSubagentDetails(mode),
+			content: [{ type: "text", text: "parallel children are running" }],
+			details: runningMultiSubagentDetails(),
 		},
 	} as AgentSessionEvent);
 }
@@ -180,12 +149,7 @@ function emitRunningSubagent(emit: (event: AgentSessionEvent) => void): void {
 
 interface SubagentDetailsSnapshot {
 	progress?: Array<{ status?: string }>;
-	workflowGraph?: {
-		currentNodeId?: string;
-		nodes?: Array<{ status?: string; children?: Array<{ status?: string }> }>;
-	};
 }
-
 function subagentDetails(entry: ToolChatEntry | undefined): SubagentDetailsSnapshot | undefined {
 	return entry?.result?.details as SubagentDetailsSnapshot | undefined;
 }
@@ -208,23 +172,16 @@ function subagentRenderSettings(toolOutputExpanded = false) {
 	};
 }
 
-function subagentToolCallMessages(mode: "single" | "parallel" | "chain"): AgentSession["messages"] {
+function subagentToolCallMessages(mode: "single" | "parallel"): AgentSession["messages"] {
 	const args =
 		mode === "single"
 			? { agent: "worker", task: "fix spinner" }
-			: mode === "parallel"
-				? {
-						tasks: [
-							{ agent: "alpha", task: "run alpha" },
-							{ agent: "beta", task: "run beta" },
-						],
-					}
-				: {
-						chain: [
-							{ agent: "alpha", task: "run alpha" },
-							{ agent: "beta", task: "run beta" },
-						],
-					};
+			: {
+					tasks: [
+						{ agent: "alpha", task: "run alpha" },
+						{ agent: "beta", task: "run beta" },
+					],
+				};
 	return [
 		{
 			role: "assistant",
@@ -277,16 +234,13 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 		const details = subagentDetails(entry);
 		assert.equal(entry?.isPartial, false);
 		assert.equal(details?.progress?.[0]?.status, "detached");
-		assert.equal(details?.workflowGraph?.currentNodeId, undefined);
-		assert.equal(details?.workflowGraph?.nodes?.[0]?.status, "detached");
-		assert.equal(details?.workflowGraph?.nodes?.[0]?.children?.[0]?.status, "detached");
 		assert.doesNotMatch(renderText(view), /Working/);
 		assert.equal(view._hasAnimationTick, false);
 		view.dispose();
 	});
 
-	test("remount replays in-flight subagent partial results for single, parallel, and chain calls", () => {
-		for (const mode of ["single", "parallel", "chain"] as const) {
+	test("remount replays in-flight subagent partial results for single and parallel calls", () => {
+		for (const mode of ["single", "parallel"] as const) {
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a", "running");
 			const { handle, emit } = makeHandle(undefined, subagentToolCallMessages(mode));
@@ -303,7 +257,7 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 			});
 
 			if (mode === "single") emitRunningSubagent(emit);
-			else emitRunningMultiSubagent(emit, mode);
+			else emitRunningMultiSubagent(emit);
 			firstView.dispose();
 
 			const remounted = new StageChatView({
@@ -331,8 +285,8 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 		}
 	});
 
-	test("isolated RPC UI Ctrl+O repeatedly expands and collapses workflow graph details", () => {
-		for (const mode of ["parallel", "chain"] as const) {
+	test("isolated RPC UI Ctrl+O repeatedly expands and collapses parallel subagent details", () => {
+		for (const mode of ["parallel"] as const) {
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a", "running");
 			const { handle, emit } = makeHandle(undefined, subagentToolCallMessages(mode));
@@ -358,7 +312,7 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 				}),
 			});
 
-			emitRunningMultiSubagent(emit, mode);
+			emitRunningMultiSubagent(emit);
 			assert.doesNotMatch(renderText(view), /alpha-expanded-output/);
 			assert.equal(view.handleInput("\x0f"), true);
 			for (const width of [40, 96]) {
@@ -392,7 +346,7 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 			getChatRenderSettings: () => ({ toolOutputExpanded: false, getToolDefinition: () => undefined }),
 		});
 
-		emitRunningMultiSubagent(emit, "parallel");
+		emitRunningMultiSubagent(emit);
 		const rendered = renderText(view);
 		assert.match(rendered, /parallel/);
 		assert.match(rendered, /Press .*live detail/);
@@ -418,10 +372,10 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
 			getChatRenderSettings: () => subagentRenderSettings(false),
 		});
 		try {
-			emitRunningMultiSubagent(emit, "parallel");
+			emitRunningMultiSubagent(emit);
 			const rendered = stripAnsi(
 				renderSubagentResult(
-					{ content: [{ type: "text", text: "running" }], details: runningMultiSubagentDetails("parallel") },
+					{ content: [{ type: "text", text: "running" }], details: runningMultiSubagentDetails() },
 					{ expanded: false },
 					theme,
 				)

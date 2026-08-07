@@ -1,17 +1,11 @@
 import { keyHintIfBound } from "@bastani/atomic";
 import { type Component, Container, Text } from "@earendil-works/pi-tui";
 import { shortenPath } from "../shared/formatters.ts";
-import type { AgentProgress, AsyncJobStep, Details } from "../shared/types.ts";
+import type { AgentProgress, Details } from "../shared/types.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
-import {
-	buildChainRenderEntries,
-	buildMultiProgressLabel,
-	type ChainRenderEntry,
-	resultRowLabel,
-	workflowGraphHasStatus,
-} from "./render-chain-graph.ts";
-import { modelThinkingBadge, widgetStepGlyph, widgetStepStatus } from "./render-event-formatting.ts";
+import { modelThinkingBadge } from "./render-event-formatting.ts";
 import { getTermWidth, pulseGlyph, type Theme, truncLine } from "./render-layout.ts";
+import { buildMultiProgressLabel, resultRowLabel } from "./render-progress.ts";
 import {
 	buildLiveStatusLine,
 	compactCurrentActivity,
@@ -91,22 +85,17 @@ export function renderSingleCompact(
 
 export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulseFrame?: number): Component {
 	const hasRunning =
-		d.progress?.some((p) => p.status === "running") ||
-		d.results.some((r) => r.progress?.status === "running") ||
-		workflowGraphHasStatus(d, ["running"]);
-	const failed =
-		d.results.some((r) => r.status === "error" && r.progress?.status !== "running") ||
-		workflowGraphHasStatus(d, ["failed"]);
-	const paused =
-		d.results.some(
-			(r) =>
-				(r.interrupted ||
-					r.detached ||
-					r.status === "interrupted" ||
-					r.status === "continued" ||
-					r.status === "skipped") &&
-				r.progress?.status !== "running",
-		) || workflowGraphHasStatus(d, ["paused", "detached"]);
+		d.progress?.some((p) => p.status === "running") || d.results.some((r) => r.progress?.status === "running");
+	const failed = d.results.some((r) => r.status === "error" && r.progress?.status !== "running");
+	const paused = d.results.some(
+		(r) =>
+			(r.interrupted ||
+				r.detached ||
+				r.status === "interrupted" ||
+				r.status === "continued" ||
+				r.status === "skipped") &&
+			r.progress?.status !== "running",
+	);
 	let totalSummary = d.progressSummary;
 	if (!totalSummary) {
 		let sawProgress = false;
@@ -117,8 +106,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 			sawProgress = true;
 			summary.toolCount += prog.toolCount;
 			summary.tokens += prog.tokens;
-			summary.durationMs =
-				d.mode === "chain" ? summary.durationMs + prog.durationMs : Math.max(summary.durationMs, prog.durationMs);
+			summary.durationMs = Math.max(summary.durationMs, prog.durationMs);
 		}
 		if (sawProgress) totalSummary = summary;
 	}
@@ -146,52 +134,24 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 		),
 	);
 
-	const useResultsDirectly = multiLabel.hasParallelInChain || !d.chainAgents?.length;
 	const progressSpan = d.progress?.length ? Math.max(...d.progress.map((p) => p.index + 1)) : 0;
 	const resultsSpan = Math.max(d.results.length, progressSpan, d.mode === "parallel" ? (d.totalSteps ?? 0) : 0);
 	const displayStart = multiLabel.showActiveGroupOnly ? multiLabel.groupStartIndex : 0;
-	const displayEnd = multiLabel.showActiveGroupOnly
-		? multiLabel.groupEndIndex
-		: useResultsDirectly
-			? resultsSpan
-			: d.chainAgents!.length;
-	const chainEntries = buildChainRenderEntries(d, multiLabel);
-	const renderEntries =
-		chainEntries ??
-		Array.from({ length: displayEnd - displayStart }, (_, offset): ChainRenderEntry => {
-			const i = displayStart + offset;
-			const r = d.results[i];
-			const progressAgent = d.progress?.find((p) => p.index === i)?.agent;
-			const fallbackLabel = itemTitle.toLowerCase();
-			const rowNumber = multiLabel.showActiveGroupOnly ? i - multiLabel.groupStartIndex + 1 : i + 1;
-			return {
-				kind: "result",
-				resultIndex: i,
-				rowNumber,
-				agentName: useResultsDirectly
-					? r?.agent || progressAgent || `${fallbackLabel}-${rowNumber}`
-					: d.chainAgents![i] || r?.agent || progressAgent || `${fallbackLabel}-${rowNumber}`,
-			};
-		});
+	const displayEnd = multiLabel.showActiveGroupOnly ? multiLabel.groupEndIndex : resultsSpan;
+	const renderEntries = Array.from({ length: displayEnd - displayStart }, (_, offset) => {
+		const i = displayStart + offset;
+		const r = d.results[i];
+		const progressAgent = d.progress?.find((p) => p.index === i)?.agent;
+		const fallbackLabel = itemTitle.toLowerCase();
+		const rowNumber = multiLabel.showActiveGroupOnly ? i - multiLabel.groupStartIndex + 1 : i + 1;
+		return {
+			resultIndex: i,
+			rowNumber,
+			agentName: r?.agent || progressAgent || `${fallbackLabel}-${rowNumber}`,
+		};
+	});
 	let liveDetailHintShown = false;
 	for (const entry of renderEntries) {
-		if (entry.kind === "placeholder") {
-			const glyph = widgetStepGlyph(entry.status as AsyncJobStep["status"], theme);
-			const statusLabel = widgetStepStatus(entry.status as AsyncJobStep["status"], theme);
-			c.addChild(
-				new Text(
-					truncLine(
-						`  ${glyph} ${entry.stepLabel}: ${themeBold(theme, entry.agentName)} ${theme.fg("dim", "·")} ${statusLabel}`,
-						width,
-					),
-					0,
-					0,
-				),
-			);
-			if (entry.error)
-				c.addChild(new Text(truncLine(theme.fg("error", `    ⎿  Error: ${entry.error}`), width), 0, 0));
-			continue;
-		}
 		const i = entry.resultIndex;
 		const r = d.results[i];
 		const rowNumber = entry.rowNumber;

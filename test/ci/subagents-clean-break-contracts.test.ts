@@ -100,7 +100,7 @@ function trackedFiles(): string[] {
 	return result.stdout
 		.toString("utf8")
 		.split("\0")
-		.filter((file) => file.length > 0);
+		.filter((file) => file.length > 0 && existsSync(join(root, file)));
 }
 
 function isChangelogPath(file: string): boolean {

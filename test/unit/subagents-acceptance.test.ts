@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Value } from "typebox/value";
 import { describe, test } from "vitest";
 import { serializeAgent } from "../../packages/subagents/src/agents/agent-serializer.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
@@ -120,5 +121,15 @@ describe("subagent acceptance removal", () => {
 			extraFields: { [removedNoMutationField]: "false" },
 		});
 		assert.doesNotMatch(serializedLegacyAgent, removedNoMutationPattern);
+	});
+	test("subagent schema omits sequential execution and dynamic fan-out", () => {
+		const properties = (SubagentParams as { properties: Record<string, unknown> }).properties;
+		const removedExecutionField = "ch" + "ain";
+		assert.equal(removedExecutionField in properties, false);
+		assert.doesNotMatch(JSON.stringify(properties), /expand|collect|outputs\.name/);
+		assert.equal(
+			Value.Check(SubagentParams, { agent: "worker", task: "inspect", [removedExecutionField]: [] }),
+			false,
+		);
 	});
 });
