@@ -650,6 +650,14 @@ pi.on("agent_unblocked", async (event, ctx) => {
 });
 ```
 
+These are session-scoped: they reach handlers through the session's extension
+runner, so a block opened before any session exists has no one to deliver to.
+The one case in practice is Atomic's startup project-trust prompt, which runs
+before extensions are bound — it opens a `project_trust` block, but no
+`agent_blocked` handler is registered yet to receive it. Blocks opened once the
+session is running, including from a `project_trust` wait an extension raises
+itself, are delivered normally.
+
 #### turn_start / turn_end
 
 Fired for each turn (one LLM response + tool calls).

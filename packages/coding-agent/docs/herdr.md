@@ -44,8 +44,15 @@ whitespace and all; a longer one is sent as its first 119 characters followed by
 an ellipsis. Nothing else is rewritten.
 
 The label shown for a `blocked` pane is the title of the dialog waiting on you —
-"Trust project folder?", "Approve edit?" — taken from the oldest open dialog when
+"Approve edit?", "Overwrite this file?" — taken from the oldest open dialog when
 several are stacked.
+
+One wait is deliberately not reported: the project-trust prompt Atomic shows the
+first time you open an untrusted folder. That selector is displayed by the
+terminal host before the interactive engine child exists, and the reporter lives
+in that child, so nothing is on the socket yet. Reporting begins once trust is
+resolved and the session starts. Every later dialog, including a trust prompt
+raised by an extension mid-session, is reported normally.
 
 ## When it is active
 
