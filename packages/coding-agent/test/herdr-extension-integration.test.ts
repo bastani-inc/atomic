@@ -156,6 +156,41 @@ describe("herdr extension end to end", () => {
 		runner = built;
 		return built;
 	}
+	/**
+	 * A runner carrying the Herdr extension plus one slow handler for a single
+	 * block event, which is what makes the two events arrive out of order.
+	 */
+	async function buildRunnerWithSlowBlockHandler(
+		slowEvent: "agent_blocked" | "agent_unblocked",
+		delayMs = 60,
+	): Promise<ExtensionRunner> {
+		const runtime = createExtensionRuntime();
+		const herdr = await loadExtensionFromFactory(
+			herdrExtension,
+			tempDir,
+			createEventBus(),
+			runtime,
+			"<inline:herdr>",
+		);
+		const slow = await loadExtensionFromFactory(
+			(pi) => {
+				pi.on(slowEvent, async () => {
+					await new Promise((resolve) => setTimeout(resolve, delayMs));
+				});
+			},
+			tempDir,
+			createEventBus(),
+			runtime,
+			"<inline:slow>",
+		);
+		const modelRegistry = await createModelRegistry(AuthStorage.create(join(tempDir, "auth.json")));
+		// The slow extension is listed first so its handler runs before Herdr's for
+		// the event it subscribes to.
+		const built = new ExtensionRunner([slow, herdr], runtime, tempDir, SessionManager.inMemory(), modelRegistry);
+		built.setUIContext(noOpUIContext, "tui");
+		runner = built;
+		return built;
+	}
 
 	function paneStates(requests: RecordedRequest[]): string[] {
 		return requests
@@ -168,6 +203,17 @@ describe("herdr extension end to end", () => {
 		const deadline = Date.now() + 5000;
 		while (fixture.requests.length < count) {
 			if (Date.now() > deadline) throw new Error(`timed out waiting for ${count} requests`);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+	}
+
+	/** Wait until the newest pane report carries `state`. */
+	async function waitForPaneState(state: string): Promise<void> {
+		const deadline = Date.now() + 5000;
+		while (paneStates(fixture.requests).at(-1) !== state) {
+			if (Date.now() > deadline) {
+				throw new Error(`timed out waiting for ${state}; saw ${JSON.stringify(paneStates(fixture.requests))}`);
+			}
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 	}
@@ -320,6 +366,105 @@ describe("herdr extension end to end", () => {
 		assert.deepEqual(getOpenUserBlocks(), []);
 		assert.equal(paneStates(fixture.requests).at(-1), "idle");
 		void built;
+	});
+
+	it("never puts provider error text on the wire, only the fixed label", async () => {
+		// End to end through the real runner and socket: an assistant error whose
+		// errorMessage carries a bearer token and echoed prompt/model output.
+		const built = await buildRunner("tui", noOpUIContext);
+		await built.emit({ type: "session_start", reason: "startup" });
+		await built.emit({ type: "agent_start" });
+
+		const secret = "Authorization: Bearer sk-live-secret; user asked about their salary";
+		await built.emit({
+			type: "agent_end",
+			messages: [
+				{
+					role: "assistant",
+					content: [],
+					stopReason: "error",
+					errorMessage: secret,
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "m",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			],
+		});
+		await built.emit({ type: "agent_settled" });
+		await waitForPaneState("blocked");
+
+		const last = fixture.requests.at(-1);
+		assert.equal(last?.params.state, "blocked");
+		assert.equal(last?.params.message, "Agent turn failed");
+
+		const wire = JSON.stringify(fixture.requests);
+		assert.equal(wire.includes("sk-live-secret"), false, "no credential reached the socket");
+		assert.equal(wire.includes("Bearer"), false);
+		assert.equal(wire.includes("salary"), false, "no prompt content reached the socket");
+	});
+
+	it("ends idle when a slow agent_blocked handler delays that event past the release", async () => {
+		// Each block change is published with its own detached emit, and each emit
+		// awaits its handlers. One other extension subscribing slowly to just one
+		// of the two events reorders them, and the late agent_blocked payload still
+		// claims a block is open — which used to pin the pane at blocked forever.
+		const built = await buildRunnerWithSlowBlockHandler("agent_blocked");
+		await built.emit({ type: "session_start", reason: "startup" });
+		await waitForNewRequests(2);
+		const before = fixture.requests.length;
+
+		const block = openUserBlock("Approve edit?", "dialog");
+		block.release();
+		await new Promise((resolve) => setTimeout(resolve, 250));
+
+		assert.deepEqual(getOpenUserBlocks(), [], "the registry really is empty");
+		assert.notEqual(
+			paneStates(fixture.requests).at(-1),
+			"blocked",
+			`pane must not end blocked; saw ${JSON.stringify(paneStates(fixture.requests).slice(before - 1))}`,
+		);
+	});
+
+	it("ends idle when a slow agent_unblocked handler delays the release instead", async () => {
+		const built = await buildRunnerWithSlowBlockHandler("agent_unblocked");
+		await built.emit({ type: "session_start", reason: "startup" });
+		await waitForNewRequests(2);
+
+		const block = openUserBlock("Approve edit?", "dialog");
+		block.release();
+		await new Promise((resolve) => setTimeout(resolve, 250));
+
+		assert.deepEqual(getOpenUserBlocks(), []);
+		assert.notEqual(paneStates(fixture.requests).at(-1), "blocked");
+	});
+
+	it("still reports blocked while a block is genuinely open under a slow handler", async () => {
+		// The fix must not turn into "never report blocked": a real open wait is
+		// still reported, it is only a stale event that is ignored.
+		const built = await buildRunnerWithSlowBlockHandler("agent_blocked");
+		await built.emit({ type: "session_start", reason: "startup" });
+		await waitForNewRequests(2);
+
+		const block = openUserBlock("Approve edit?", "dialog");
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			assert.equal(paneStates(fixture.requests).at(-1), "blocked");
+			assert.equal(
+				fixture.requests.filter((request) => request.params.state === "blocked").at(-1)?.params.message,
+				"Approve edit?",
+			);
+		} finally {
+			block.release();
+		}
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		assert.notEqual(paneStates(fixture.requests).at(-1), "blocked");
 	});
 
 	it("does not activate from a detached callback that lands after shutdown", async () => {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { TURN_FAILURE_MESSAGE } from "../src/extensions/herdr/index.ts";
 import { HerdrReporter, MAX_REPORT_MESSAGE_LENGTH } from "../src/extensions/herdr/reporter.ts";
 import {
 	createSocketTransport,
@@ -143,19 +144,21 @@ describe("herdr reporter wire behavior", () => {
 		assert.deepEqual(states(fixture.requests).at(-1), { state: "working", message: undefined });
 	});
 
-	it("settles to blocked with a short error message when the turn ended in an error", async () => {
+	it("settles to blocked with the fixed failure label when the turn ended in an error", async () => {
+		// The extension only ever hands the reporter this fixed label; provider
+		// error text never gets this far. See herdr-activation for that boundary.
 		const reporter = createReporter();
 		await reporter.onSessionStart(sessionManager, false);
 		reporter.onAgentStart(sessionManager);
 		await reporter.drain();
-		reporter.onAgentEnd(sessionManager, "overloaded_error: upstream is busy");
+		reporter.onAgentEnd(sessionManager, TURN_FAILURE_MESSAGE);
 		reporter.onAgentSettled(sessionManager, true);
 		await reporter.drain();
 
 		await fixture.waitForRequests(3);
 		assert.deepEqual(states(fixture.requests).at(-1), {
 			state: "blocked",
-			message: "overloaded_error: upstream is busy",
+			message: "Agent turn failed",
 		});
 	});
 

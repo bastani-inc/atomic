@@ -8,6 +8,7 @@ import herdrExtension, {
 	fileIntegrationLoaded,
 	type HerdrExtensionApi,
 	readHerdrEnv,
+	TURN_FAILURE_MESSAGE,
 	turnFailureMessage,
 } from "../src/extensions/herdr/index.ts";
 import { type HerdrSocketFixture, startHerdrSocketFixture } from "./herdr-socket-fixture.ts";
@@ -170,32 +171,40 @@ describe("herdr env parsing", () => {
 });
 
 describe("herdr turn failure detection", () => {
-	it("reports the provider error of a failed final assistant message", () => {
-		assert.equal(
-			turnFailureMessage({
-				type: "agent_end",
-				messages: [
-					{ role: "user", content: "hi" },
-					{
-						role: "assistant",
-						content: [],
-						stopReason: "error",
-						errorMessage: "overloaded_error",
-						api: "anthropic-messages",
-						provider: "anthropic",
-						model: "m",
-						usage: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-						},
+	it("reports a fixed label, never the provider's own error text", () => {
+		// `errorMessage` is whatever the provider or a custom streamSimple put
+		// there: error.message, a normalized response body, raw request metadata.
+		// Observed examples carry authorization headers and echoed prompt and model
+		// output, and none of that may reach the socket.
+		const secret = "Authorization: Bearer sk-live-secret; echoed prompt and model output";
+		const reported = turnFailureMessage({
+			type: "agent_end",
+			messages: [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: [],
+					stopReason: "error",
+					errorMessage: secret,
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "m",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-				],
-			}),
-			"overloaded_error",
-		);
+				},
+			],
+		});
+
+		assert.equal(reported, TURN_FAILURE_MESSAGE);
+		assert.equal(reported, "Agent turn failed");
+		assert.equal(reported?.includes("sk-live-secret"), false);
+		assert.equal(reported?.includes("Bearer"), false);
+		assert.equal(reported?.includes("prompt"), false);
 	});
 
 	it("returns undefined for a turn whose final assistant message stopped normally", () => {

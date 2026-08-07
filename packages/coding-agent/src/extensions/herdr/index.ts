@@ -77,13 +77,27 @@ export function readHerdrEnv(env: NodeJS.ProcessEnv = process.env): HerdrEnv | u
 	return { paneId, socketEndpoint: resolveSocketEndpoint(socketPath) };
 }
 
-/** Short error text for a turn whose final assistant message failed. */
+/**
+ * The message reported when a turn's final assistant message failed.
+ *
+ * Deliberately fixed text, never the provider's own `errorMessage`. That field
+ * is whatever a provider or a custom `streamSimple` implementation put there:
+ * `error.message`, `String(error)`, a normalized response body, raw request
+ * metadata. Real examples carry authorization headers and echoed prompt and
+ * model output, and the privacy rule is that none of that reaches the socket.
+ *
+ * Redacting it is not a substitute. There is no typed error category to key on
+ * — `stopReason` supplies only the broad `"error"` — and no pattern list can be
+ * sound against arbitrary provider formats. The pane needs to know the turn
+ * failed, which this says, and the transcript already has the detail.
+ */
+export const TURN_FAILURE_MESSAGE = "Agent turn failed";
+
 export function turnFailureMessage(event: AgentEndEvent): string | undefined {
 	for (let index = event.messages.length - 1; index >= 0; index--) {
 		const message = event.messages[index];
 		if (message === undefined || message.role !== "assistant") continue;
-		if (message.stopReason !== "error") return undefined;
-		return message.errorMessage && message.errorMessage.length > 0 ? message.errorMessage : "Agent turn failed";
+		return message.stopReason === "error" ? TURN_FAILURE_MESSAGE : undefined;
 	}
 	return undefined;
 }
@@ -179,16 +193,37 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 		reporter.onAgentSettled(ctx.sessionManager, ctx.isIdle());
 	});
 
-	pi.on("agent_blocked", (event, ctx: ExtensionContext) => {
+	/**
+	 * Report the block door as it is *now*, ignoring the event's own counts.
+	 *
+	 * The runner publishes each block change with a detached `emit`, and each emit
+	 * awaits its handlers. A slow handler registered by another extension for only
+	 * one of the two events is enough to deliver them out of order, and the
+	 * payload of a late `agent_blocked` still says one block is open. Acting on it
+	 * pins the pane at `blocked` with an empty registry — a state nothing later
+	 * corrects for an idle agent.
+	 *
+	 * The registry is mutated synchronously before subscribers run, so reading it
+	 * here is always current. Branching on the live count rather than on which
+	 * event arrived is the point: a late `agent_blocked` for an already-closed
+	 * block correctly reports released.
+	 */
+	function reportLiveBlockState(): void {
+		const openBlocks = getOpenUserBlocks().length;
+		if (openBlocks > 0) reporter.onBlockOpened(openBlocks, getActiveUserBlockLabel() ?? "");
+		else reporter.onBlockReleased(0, undefined);
+	}
+
+	pi.on("agent_blocked", (_event, ctx: ExtensionContext) => {
 		// A block can be the first event a deferred extension sees, and activation
 		// seeds from the registry snapshot, so this event is already reflected.
 		if (!ensureActivated(ctx)) return;
-		reporter.onBlockOpened(event.openBlocks, event.activeLabel);
+		reportLiveBlockState();
 	});
 
-	pi.on("agent_unblocked", (event, ctx: ExtensionContext) => {
+	pi.on("agent_unblocked", (_event, ctx: ExtensionContext) => {
 		if (!ensureActivated(ctx)) return;
-		reporter.onBlockReleased(event.openBlocks, event.activeLabel);
+		reportLiveBlockState();
 	});
 
 	pi.on("session_shutdown", async (event) => {
