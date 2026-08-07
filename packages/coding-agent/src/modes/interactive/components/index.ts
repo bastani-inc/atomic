@@ -28,6 +28,7 @@ export {
 	type ChatTranscriptEntryLike,
 	type ChatTranscriptRenderer,
 	type ChatTranscriptRole,
+	type RowWindowSegment,
 	ScrollableChatTranscriptComponent,
 	ScrollableComponentViewport,
 } from "./chat-transcript.ts";

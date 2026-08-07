@@ -35,16 +35,36 @@ interface CachedChatTranscriptBlock<TEntry extends ChatTranscriptEntryLike> {
 
 type DisposableComponent = Component & { dispose?: () => void };
 
+/**
+ * A run of rows inside a windowed component, tagged with the identity of the
+ * thing that produced them.
+ *
+ * `id` is compared with `===` only, and is never rendered. Entry *objects* are
+ * the natural id for a transcript: cache keys carry the entry's index and so
+ * change for every survivor of a splice, while the entry objects themselves are
+ * moved, not rebuilt.
+ */
+export interface RowWindowSegment {
+	readonly id: unknown;
+	readonly rows: number;
+}
+
 interface RowWindowComponent extends Component {
 	readonly supportsRowWindow: true;
 	rowCount(width: number): number;
 	renderRows(width: number, startRow: number, endRow: number): string[];
+	/**
+	 * Optional row map, letting the viewport keep a scroll anchor that sits
+	 * *inside* this component when its interior changes height.
+	 */
+	rowSegments?(width: number): readonly RowWindowSegment[];
 }
 
 interface WindowedComponentRows {
 	readonly kind: "windowed";
 	readonly component: RowWindowComponent;
 	readonly rowCount: number;
+	readonly segments: readonly RowWindowSegment[] | undefined;
 }
 
 interface StaticComponentRows {
@@ -106,6 +126,19 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			if (block !== undefined) count += block.lines.length;
 		}
 		return count;
+	}
+
+	/**
+	 * One segment per cached entry block, identified by the entry object itself.
+	 */
+	rowSegments(width: number): readonly RowWindowSegment[] {
+		if (!this.supportsRowWindow) return [];
+		this.ensureBlockCache(width);
+		const segments: RowWindowSegment[] = [];
+		for (const block of this.blockCache) {
+			if (block !== undefined) segments.push({ id: block.entry, rows: block.lines.length });
+		}
+		return segments;
 	}
 
 	renderRows(width: number, startRow: number, endRow: number): string[] {
@@ -200,6 +233,7 @@ export class ScrollableComponentViewport implements Component {
 	private visibleRows = 1;
 	private scrollFromBottom = 0;
 	private lastLineCount = 0;
+	private lastComponentSegments: readonly (readonly RowWindowSegment[] | undefined)[] = [];
 	private lastComponentRowCounts: readonly number[] = [];
 	private lastWidth = 0;
 	private maxScroll = 0;
@@ -282,15 +316,27 @@ export class ScrollableComponentViewport implements Component {
 		// on the row the viewer is actually reading and re-derive the offset from
 		// it. A viewer already at the bottom keeps scrollFromBottom === 0 and is
 		// skipped entirely, so sticky-bottom following is untouched.
+		//
+		// Per-component row counts alone cannot place a change that happens
+		// inside the component holding the anchor -- and in the chat host the
+		// whole transcript is one component, so that is the normal case. Windowed
+		// components can hand over a row map, which turns the "where" question
+		// into "where did the anchored segment go".
+		const segments = componentRows.map((rows) => (rows.kind === "windowed" ? rows.segments : undefined));
 		if (this.scrollFromBottom > 0 && this.lastWidth === width) {
 			const previousMaxScroll = Math.max(0, this.lastLineCount - this.visibleRows);
 			const anchorRow = Math.max(0, previousMaxScroll - this.scrollFromBottom);
-			const shift = rowsShiftedAboveAnchor(this.lastComponentRowCounts, rowCounts, anchorRow);
+			const shift = rowsShiftedAboveAnchor(
+				{ rowCounts: this.lastComponentRowCounts, segments: this.lastComponentSegments },
+				{ rowCounts, segments },
+				anchorRow,
+			);
 			const nextAnchorRow = Math.max(0, Math.min(maxScroll, anchorRow + shift));
 			this.scrollFromBottom = maxScroll - nextAnchorRow;
 		}
 		this.lastLineCount = lineCount;
 		this.lastComponentRowCounts = rowCounts;
+		this.lastComponentSegments = segments;
 		this.lastWidth = width;
 		this.maxScroll = maxScroll;
 		this.clampScroll();
@@ -312,6 +358,7 @@ export class ScrollableComponentViewport implements Component {
 					kind: "windowed",
 					component,
 					rowCount: component.rowCount(width),
+					segments: component.rowSegments?.(width),
 				};
 			}
 			const lines = component.render(width);
@@ -358,13 +405,23 @@ export class ScrollableComponentViewport implements Component {
 	}
 }
 
+/** One rendered frame's row layout, as the viewport measured it. */
+interface ComponentRowLayout {
+	readonly rowCounts: readonly number[];
+	readonly segments: readonly (readonly RowWindowSegment[] | undefined)[];
+}
+
 /**
- * Net rows gained or lost by the components that sit entirely above `anchorRow`.
+ * Rows gained or lost above `anchorRow`, measured in the previous frame's rows.
  *
  * The anchored row moves down by exactly this many rows, so adding it to the
- * anchor keeps the same content under the viewer. Components at or across the
- * anchor are excluded: their own changes happen at or below the anchored row and
- * must not move it.
+ * anchor keeps the same content under the viewer.
+ *
+ * Components entirely above the anchor contribute their whole height delta.
+ * The component that *spans* the anchor contributes only what changed above the
+ * anchored row, which needs its row map (`rowSegments`); without one it
+ * contributes nothing, which is the old behaviour and is right for the
+ * append-and-mutate-at-the-tail widgets that have no interior.
  *
  * Row counts are compared positionally over the shared prefix, which is what the
  * chat stacks this viewport drives actually do — they append and mutate at the
@@ -372,22 +429,63 @@ export class ScrollableComponentViewport implements Component {
  * misattributed; the anchor then lands one component off rather than drifting on
  * every frame, and the next user scroll re-establishes it.
  */
-function rowsShiftedAboveAnchor(
-	previousRowCounts: readonly number[],
-	nextRowCounts: readonly number[],
-	anchorRow: number,
-): number {
+function rowsShiftedAboveAnchor(previous: ComponentRowLayout, next: ComponentRowLayout, anchorRow: number): number {
 	let cursor = 0;
 	let shift = 0;
-	const shared = Math.min(previousRowCounts.length, nextRowCounts.length);
+	const shared = Math.min(previous.rowCounts.length, next.rowCounts.length);
 	for (let index = 0; index < shared; index += 1) {
-		const previousRows = previousRowCounts[index] ?? 0;
+		const previousRows = previous.rowCounts[index] ?? 0;
 		const componentEnd = cursor + previousRows;
-		if (componentEnd > anchorRow) break;
-		shift += (nextRowCounts[index] ?? 0) - previousRows;
+		if (componentEnd > anchorRow) {
+			return shift + rowsShiftedInsideComponent(previous.segments[index], next.segments[index], anchorRow - cursor);
+		}
+		shift += (next.rowCounts[index] ?? 0) - previousRows;
 		cursor = componentEnd;
 	}
 	return shift;
+}
+
+/**
+ * Rows gained or lost above `anchorRow` *within* one windowed component.
+ *
+ * Rather than diffing heights, this finds the segment the viewer is parked on
+ * and reports how far that same segment moved. Segments are matched by `===` on
+ * their id, so a transcript splice that renumbers every cache key still lines
+ * up: the entry objects survive it. If the anchored segment itself is gone
+ * (the viewer was reading rows that were compacted away) the nearest surviving
+ * neighbour above it — then below it — stands in, so the viewer lands on the
+ * closest content that still exists instead of drifting by the whole delta.
+ */
+function rowsShiftedInsideComponent(
+	previousSegments: readonly RowWindowSegment[] | undefined,
+	nextSegments: readonly RowWindowSegment[] | undefined,
+	anchorRow: number,
+): number {
+	if (previousSegments === undefined || nextSegments === undefined) return 0;
+	const nextStarts = new Map<unknown, number>();
+	let cursor = 0;
+	for (const segment of nextSegments) {
+		if (!nextStarts.has(segment.id)) nextStarts.set(segment.id, cursor);
+		cursor += segment.rows;
+	}
+	const previousStarts: number[] = [];
+	let anchorIndex = -1;
+	cursor = 0;
+	for (let index = 0; index < previousSegments.length; index += 1) {
+		previousStarts.push(cursor);
+		cursor += previousSegments[index]?.rows ?? 0;
+		if (anchorIndex < 0 && cursor > anchorRow) anchorIndex = index;
+	}
+	if (anchorIndex < 0) return 0;
+	for (let index = anchorIndex; index >= 0; index -= 1) {
+		const nextStart = nextStarts.get(previousSegments[index]?.id);
+		if (nextStart !== undefined) return nextStart - (previousStarts[index] ?? 0);
+	}
+	for (let index = anchorIndex + 1; index < previousSegments.length; index += 1) {
+		const nextStart = nextStarts.get(previousSegments[index]?.id);
+		if (nextStart !== undefined) return nextStart - (previousStarts[index] ?? 0);
+	}
+	return 0;
 }
 
 function isRowWindowComponent(component: Component): component is RowWindowComponent {
