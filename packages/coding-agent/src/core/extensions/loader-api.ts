@@ -3,6 +3,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import type { UserBlock, UserBlockReason } from "./block-types.ts";
 import {
 	emptyWorkflowResourceProvider,
 	normalizeWorkflowResourceProvider,
@@ -21,6 +22,7 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types.ts";
+import { openUserBlock } from "./user-blocks.ts";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
@@ -209,6 +211,11 @@ export function createExtensionAPI(
 		getCommands() {
 			runtime.assertActive();
 			return runtime.getCommandsAfterRegistration?.(extension) ?? runtime.getCommands();
+		},
+
+		awaitUserDecision(label: string, reason: UserBlockReason): UserBlock {
+			runtime.assertActive();
+			return openUserBlock(label, reason);
 		},
 
 		setModel(model) {

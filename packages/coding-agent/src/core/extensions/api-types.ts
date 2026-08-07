@@ -33,6 +33,7 @@ import type {
 	TurnStartEvent,
 	UserBashEvent,
 } from "./agent-events.ts";
+import type { AgentBlockedEvent, AgentUnblockedEvent, UserBlock, UserBlockReason } from "./block-types.ts";
 import type { RegisteredCommand } from "./command-types.ts";
 import type { ExtensionContext } from "./context-types.ts";
 import type {
@@ -111,6 +112,8 @@ export interface ExtensionAPI {
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
+	on(event: "agent_blocked", handler: ExtensionHandler<AgentBlockedEvent>): void;
+	on(event: "agent_unblocked", handler: ExtensionHandler<AgentUnblockedEvent>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
@@ -246,6 +249,32 @@ export interface ExtensionAPI {
 
 	/** Get available slash commands in the current session. */
 	getCommands(): SlashCommandInfo[];
+
+	// =========================================================================
+	// User Decision Blocks
+	// =========================================================================
+
+	/**
+	 * Declare that the agent is now waiting on a user decision.
+	 *
+	 * Returns the only handle that can end the block. Call `release()` in a
+	 * `finally` so an abort or a thrown error cannot strand it; `release()` is
+	 * idempotent. Blocks are reference counted, so the agent stays blocked until
+	 * the last open block is released.
+	 *
+	 * Every blocking `ctx.ui` dialog (`select`, `confirm`, `input`, `custom`,
+	 * `editor`) already opens and releases a block on its own; call this only for
+	 * a wait the host cannot see, such as a dialog an extension renders itself.
+	 *
+	 * @example
+	 * const block = pi.awaitUserDecision("Approve deploy?", "dialog");
+	 * try {
+	 *   await myOwnPrompt();
+	 * } finally {
+	 *   block.release();
+	 * }
+	 */
+	awaitUserDecision(label: string, reason: UserBlockReason): UserBlock;
 
 	// =========================================================================
 	// Model and Thinking Level

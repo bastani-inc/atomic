@@ -13,6 +13,7 @@ import type {
 	ReloadHandler,
 	SwitchSessionHandler,
 } from "./runner-handlers.ts";
+import { withUserBlocks } from "./runner-ui-blocks.ts";
 import type {
 	CompactOptions,
 	ContextUsage,
@@ -111,7 +112,7 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 	return {
 		get ui() {
 			source.assertActive();
-			return source.getUIContext();
+			return withUserBlocks(source.getUIContext());
 		},
 		get mode() {
 			source.assertActive();
