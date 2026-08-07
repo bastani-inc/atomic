@@ -1,0 +1,82 @@
+name: CodeQL
+
+# This replaces GitHub's *default setup* for code scanning, which was migrated
+# to this advanced setup for one reason: default setup analyzes only pushes to
+# the default branch and pull requests **targeting** it, and that trigger set is
+# not configurable. Repository ruleset 9310196 carries a `code_scanning` rule
+# requiring CodeQL results, so a stacked pull request -- one whose base is
+# another feature branch rather than `main` -- arrived with no results and sat
+# at mergeStateStatus BLOCKED with every other check green. Retargeting it to
+# `main` did not help, because the head SHA had already been seen without an
+# analysis; only a fresh push produced one. PR #2235 hit exactly that.
+#
+# `pull_request:` below therefore carries no branch filter, matching test.yml:
+# every pull request is analyzed regardless of base, so a stacked PR satisfies
+# the rule on its first push.
+#
+# Default setup must be disabled for this workflow to upload results. The two
+# cannot coexist -- an advanced-setup run rejects its SARIF while default setup
+# owns the configuration -- so that switch is flipped as this lands rather than
+# as a follow-up.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Default setup ran on a weekly schedule. Keeping it means a newly published
+  # CodeQL query still reaches code that is not being actively changed.
+  schedule:
+    - cron: "31 4 * * 1"
+
+jobs:
+  analyze:
+    name: Analyze
+    # Blacksmith, not ubuntu-latest: `ci-workflow-contracts.test.ts` enumerates
+    # every workflow in this directory and allows exactly two GitHub-hosted jobs
+    # (macos-26-intel for the darwin-x64 native binding, ubuntu-latest for npm
+    # trusted publishing). Default setup escaped that check only because it was
+    # not a file here; an advanced setup is subject to it.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    permissions:
+      # Uploading the SARIF results is the whole point of the job.
+      security-events: write
+      # Lets the action read workflow run metadata when analyzing `actions`.
+      actions: read
+      contents: read
+    strategy:
+      # One language must not cancel the others: a partial upload still leaves
+      # the ruleset unsatisfied, and the failure is easier to read per language.
+      fail-fast: false
+      matrix:
+        # Mirrors the languages default setup had configured. `javascript` and
+        # `typescript` are aliases that CodeQL resolves to `javascript-typescript`,
+        # so listing that one covers both without analyzing the tree twice.
+        language: [actions, javascript-typescript, rust]
+    steps:
+      # Sticky disks are Blacksmith-Linux-only, and this job is Linux-only.
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # v1.1
+        with:
+          # No `lfs: true` and no `fetch-depth: 0`: CodeQL analyzes the working
+          # tree at one commit, so LFS fixtures and full history are cost with
+          # no analytical benefit.
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@18420e3271f74589575af831a523c833acda327f # codeql-bundle-v2.26.2
+        with:
+          languages: ${{ matrix.language }}
+          # `none` means CodeQL extracts without invoking a build. Every language
+          # here supports it, which keeps the job off the Rust toolchain and off
+          # `npm ci` entirely.
+          build-mode: none
+          # Default setup used the `default` query suite rather than
+          # `security-extended`; the ruleset thresholds were tuned against it.
+          queries: ""
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@18420e3271f74589575af831a523c833acda327f # codeql-bundle-v2.26.2
+        with:
+          category: "/language:${{ matrix.language }}"
