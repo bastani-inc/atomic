@@ -272,12 +272,67 @@ describe("ctx.ui block wrapping", () => {
 		assert.equal(ctx.ui.getEditorText(), secret);
 	});
 
-	it("keeps accessor and method identity stable", () => {
+	it("keeps accessor and member lookup stable", () => {
 		const { ui } = recordingUi({});
 		const ctx = contextOver(ui);
 		assert.equal(ctx.ui, ctx.ui);
 		assert.equal(ctx.ui.select, ctx.ui.select);
-		assert.equal(ctx.ui.notify, ui.notify, "an unwrapped member is the host's own function");
+		// Non-blocking members are forwarders too, so they are not the host's own
+		// function — a forwarder cannot be the function it forwards to. What has
+		// to hold is that repeated lookup is stable, which is what callers that
+		// store or compare a member actually depend on.
+		assert.equal(ctx.ui.notify, ctx.ui.notify);
+		assert.equal(ctx.ui.setStatus, ctx.ui.setStatus);
+		assert.equal(ctx.ui.requestRender, ctx.ui.requestRender);
+	});
+
+	it("calls non-blocking members on the host object too", () => {
+		// Keyed by receiver identity, so it answers only when the method actually
+		// ran on the host. This is the same shape as a class host reading a private
+		// field, which throws outright when `this` is the proxy.
+		const stateByReceiver = new WeakMap<object, string[]>();
+		const seen: string[] = [];
+		const host: ExtensionUIContext = {
+			...recordingUi({}).ui,
+			notify(this: ExtensionUIContext, message: string) {
+				stateByReceiver.get(this)?.push(`notify:${message}`);
+			},
+			setStatus(this: ExtensionUIContext, key: string, text: string | undefined) {
+				stateByReceiver.get(this)?.push(`status:${key}=${text}`);
+			},
+		};
+		stateByReceiver.set(host, seen);
+
+		const ctx = contextOver(host);
+		ctx.ui.notify("hello");
+		ctx.ui.setStatus("k", "v");
+		assert.deepEqual(seen, ["notify:hello", "status:k=v"], "members must run on the host, not the proxy");
+	});
+
+	it("returns a non-blocking member's value through the forwarder", () => {
+		const host: ExtensionUIContext = { ...recordingUi({}).ui, getEditorText: () => "typed text" };
+		const ctx = contextOver(host);
+		assert.equal(ctx.ui.getEditorText(), "typed text");
+	});
+
+	it("re-wraps when a host getter hands back a different function", () => {
+		let current = (message: string) => `first:${message}`;
+		const base = recordingUi({}).ui;
+		const host = Object.defineProperties(
+			{ ...base },
+			{
+				notify: {
+					get: () => current,
+					configurable: true,
+				},
+			},
+		) as ExtensionUIContext;
+		const ctx = contextOver(host);
+
+		const before = ctx.ui.notify;
+		assert.equal(ctx.ui.notify, before, "stable while the host returns the same function");
+		current = (message: string) => `second:${message}`;
+		assert.notEqual(ctx.ui.notify, before, "a new host function gets a new forwarder");
 	});
 
 	it("keeps optional members absent when the host omits them", () => {
