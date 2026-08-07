@@ -58,9 +58,10 @@ import { SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
-import { builtInExtensions } from "./extensions/index.ts";
+import { builtInExtensionsForHost } from "./extensions/index.ts";
 import {
 	type AppMode,
+	hostPresentsTerminalPane,
 	isPlainRuntimeMetadataCommand,
 	prepareInitialMessage,
 	resolveAppMode,
@@ -278,7 +279,11 @@ export async function main(argv: string[], options?: MainOptions) {
 		bootstrap.path === undefined ? undefined : readInteractiveEngineBootstrap(bootstrap.path),
 	);
 	resetTimings();
-	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
+	// Package and config subcommands never present a pane, so they get the
+	// headless builtin set. The session path recomputes this once `appMode` and
+	// the engine-child flag are known.
+	const userExtensionFactories = options?.extensionFactories ?? [];
+	const extensionFactories = [...builtInExtensionsForHost(false), ...userExtensionFactories];
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
 	if (offlineMode) {
 		setEnvValue(ENV_OFFLINE, "1");
@@ -342,6 +347,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	const isolateInteractiveHost =
 		appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && engineEnv.child !== "1";
+	// Withheld before the factory runs, not declined inside it: a headless host
+	// must register no Herdr listener at all, and `pi.on()` cannot be undone.
+	const sessionExtensionFactories = [
+		...builtInExtensionsForHost(hostPresentsTerminalPane(appMode, engineEnv.child === "1")),
+		...userExtensionFactories,
+	];
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
@@ -553,7 +564,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				noContextFiles: parsed.noContextFiles,
 				systemPrompt: parsed.systemPrompt,
 				appendSystemPrompt: parsed.appendSystemPrompt,
-				extensionFactories: isolateInteractiveHost ? undefined : extensionFactories,
+				extensionFactories: isolateInteractiveHost ? undefined : sessionExtensionFactories,
 			},
 		});
 		const { settingsManager, modelRuntime, resourceLoader } = services;

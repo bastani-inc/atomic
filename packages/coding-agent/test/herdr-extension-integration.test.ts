@@ -12,10 +12,11 @@ import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
 import type { ExtensionUIContext } from "../src/core/extensions/types.ts";
-import { getOpenUserBlocks } from "../src/core/extensions/user-blocks.ts";
+import { getActiveUserBlockLabel, getOpenUserBlocks, openUserBlock } from "../src/core/extensions/user-blocks.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import herdrExtension from "../src/extensions/herdr/index.ts";
-import { builtInExtensions } from "../src/extensions/index.ts";
+import { builtInExtensions, builtInExtensionsForHost } from "../src/extensions/index.ts";
+import { hostPresentsTerminalPane } from "../src/main-app-mode.ts";
 import { type HerdrSocketFixture, type RecordedRequest, startHerdrSocketFixture } from "./herdr-socket-fixture.ts";
 import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
@@ -30,6 +31,77 @@ describe("herdr builtin registration", () => {
 		assert.ok(herdr && typeof herdr !== "function");
 		assert.equal(herdr.hidden, true);
 		assert.equal(herdr.bundled, true);
+	});
+
+	it("is withheld from a host that presents no terminal pane", () => {
+		const headless = builtInExtensionsForHost(false).map((entry) =>
+			typeof entry === "function" ? undefined : entry.name,
+		);
+		assert.deepEqual(headless, ["llama.cpp"], "the Herdr row must not reach a headless factory run");
+
+		const withPane = builtInExtensionsForHost(true).map((entry) =>
+			typeof entry === "function" ? undefined : entry.name,
+		);
+		assert.deepEqual(withPane, ["llama.cpp", "herdr"]);
+	});
+
+	it("treats the isolated engine child as a terminal pane and headless modes as not", () => {
+		// The engine child is spawned with piped stdio and no --mode, so it
+		// resolves to "print"; gating on appMode alone would silence the one host
+		// that actually drives the pane.
+		assert.equal(hostPresentsTerminalPane("print", true), true);
+		assert.equal(hostPresentsTerminalPane("interactive", false), true);
+		assert.equal(hostPresentsTerminalPane("rpc", false), false);
+		assert.equal(hostPresentsTerminalPane("json", false), false);
+		assert.equal(hostPresentsTerminalPane("print", false), false);
+	});
+
+	it("registers zero handlers when the headless builtin set is loaded", async () => {
+		// Stronger than "opened no socket": with valid Herdr env, a headless host
+		// must not carry the reporter's listeners at all.
+		const saved = {
+			env: process.env.HERDR_ENV,
+			pane: process.env.HERDR_PANE_ID,
+			socket: process.env.HERDR_SOCKET_PATH,
+		};
+		process.env.HERDR_ENV = "1";
+		process.env.HERDR_PANE_ID = "pane-headless";
+		process.env.HERDR_SOCKET_PATH = "/tmp/never-connected.sock";
+		const dir = mkdtempSync(join(tmpdir(), "atomic-herdr-headless-"));
+		try {
+			const runtime = createExtensionRuntime();
+			const loaded = await Promise.all(
+				builtInExtensionsForHost(false).map((entry) =>
+					loadExtensionFromFactory(
+						typeof entry === "function" ? entry : entry.factory,
+						dir,
+						createEventBus(),
+						runtime,
+						`<inline:${typeof entry === "function" ? "anon" : entry.name}>`,
+					),
+				),
+			);
+			for (const eventName of [
+				"session_start",
+				"session_shutdown",
+				"agent_start",
+				"agent_end",
+				"agent_settled",
+				"agent_blocked",
+				"agent_unblocked",
+			]) {
+				const handlers = loaded.flatMap((extension) => extension.handlers.get(eventName) ?? []);
+				assert.deepEqual(handlers, [], `headless host registered a ${eventName} handler`);
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+			if (saved.env === undefined) delete process.env.HERDR_ENV;
+			else process.env.HERDR_ENV = saved.env;
+			if (saved.pane === undefined) delete process.env.HERDR_PANE_ID;
+			else process.env.HERDR_PANE_ID = saved.pane;
+			if (saved.socket === undefined) delete process.env.HERDR_SOCKET_PATH;
+			else process.env.HERDR_SOCKET_PATH = saved.socket;
+		}
 	});
 });
 
@@ -195,6 +267,68 @@ describe("herdr extension end to end", () => {
 
 		assert.equal(fixture.connectionCount(), 0);
 		assert.equal(fixture.requests.length, 0);
+	});
+
+	it("reports blocked when a block was already open before it activated", async () => {
+		// A deferred extension load can land while a dialog is already waiting.
+		// Events fired before the factory ran cannot be replayed, so activation
+		// must read the registry snapshot — otherwise the pane says idle while a
+		// person is being asked something.
+		const built = await buildRunner("tui", noOpUIContext);
+		const block = openUserBlock("Approve edit?", "dialog");
+		try {
+			assert.equal(getOpenUserBlocks().length, 1);
+			await built.emit({ type: "session_start", reason: "startup" });
+			await fixture.waitForRequests(2);
+
+			assert.equal(fixture.requests[0]?.method, "pane.report_agent_session");
+			assert.deepEqual(paneStates(fixture.requests), ["blocked"]);
+			assert.equal(fixture.requests[1]?.params.message, "Approve edit?");
+		} finally {
+			block.release();
+		}
+
+		// The live event still drives it back out of blocked afterwards.
+		await fixture.waitForRequests(3);
+		assert.equal(paneStates(fixture.requests).at(-1), "idle");
+	});
+
+	it("keeps the oldest open block's label when several span activation", async () => {
+		const built = await buildRunner("tui", noOpUIContext);
+		const first = openUserBlock("Trust project folder?", "project_trust");
+		const second = openUserBlock("Approve edit?", "dialog");
+		try {
+			assert.equal(getActiveUserBlockLabel(), "Trust project folder?");
+			await built.emit({ type: "session_start", reason: "startup" });
+			await fixture.waitForRequests(2);
+			assert.equal(fixture.requests[1]?.params.state, "blocked");
+			assert.equal(fixture.requests[1]?.params.message, "Trust project folder?");
+		} finally {
+			second.release();
+			first.release();
+		}
+	});
+
+	it("activates from an agent_blocked event alone", async () => {
+		const built = await buildRunner("tui", noOpUIContext);
+		const block = openUserBlock("Approve edit?", "dialog");
+		try {
+			// No session_start has reached this instance; the block event is the
+			// first lifecycle event it sees and must still bind and report.
+			await built.emit({
+				type: "agent_blocked",
+				blockId: block.id,
+				label: block.label,
+				reason: block.reason,
+				openBlocks: getOpenUserBlocks().length,
+				activeLabel: getActiveUserBlockLabel() ?? block.label,
+			});
+			await fixture.waitForRequests(2);
+			assert.equal(fixture.requests[0]?.method, "pane.report_agent_session");
+			assert.deepEqual(paneStates(fixture.requests), ["blocked"]);
+		} finally {
+			block.release();
+		}
 	});
 
 	it("uses no package assets, so it needs no __dirname or asset resolution", async () => {
