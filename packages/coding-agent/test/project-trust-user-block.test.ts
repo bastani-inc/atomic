@@ -311,3 +311,110 @@ describe("extension project_trust prompts mint a block", () => {
 		assert.deepEqual(changes, [], "a notification is not a wait");
 	});
 });
+
+/**
+ * A `ProjectTrustContext` may be a class instance, not a plain object.
+ *
+ * The type is structural and publicly exported, so nothing stops a host from
+ * putting `notify`, `cwd`, `mode`, or `hasUI` on a prototype or behind a getter.
+ * Building the handler context with a spread copied only enumerable own
+ * properties and silently dropped every one of those — `ctx.ui.notify` came back
+ * `undefined` inside a handler that had worked before.
+ */
+describe("prototype-backed project trust contexts survive wrapping", () => {
+	class PrototypeUi {
+		readonly notified: string[] = [];
+		select(_title: string, options: string[]): Promise<string | undefined> {
+			return Promise.resolve(options[0]);
+		}
+		confirm(): Promise<boolean> {
+			return Promise.resolve(true);
+		}
+		input(): Promise<string | undefined> {
+			return Promise.resolve("typed");
+		}
+		notify(message: string): void {
+			this.notified.push(message);
+		}
+	}
+
+	class PrototypeTrustContext {
+		readonly ui = new PrototypeUi();
+		get cwd(): string {
+			return "/tmp/prototype-project";
+		}
+		get mode(): ProjectTrustContext["mode"] {
+			return "tui";
+		}
+		get hasUI(): boolean {
+			return true;
+		}
+	}
+
+	async function extensionWith(handler: ProjectTrustHandler): Promise<LoadExtensionsResult> {
+		const runtime = createExtensionRuntime();
+		const extension = await loadExtensionFromFactory(
+			(pi) => {
+				pi.on("project_trust", handler);
+			},
+			tmpdir(),
+			createEventBus(),
+			runtime,
+			"<inline:trust-prototype>",
+		);
+		return { extensions: [extension], errors: [], runtime };
+	}
+
+	it("keeps prototype methods and getter-backed context members visible", async () => {
+		const host = new PrototypeTrustContext();
+		const seen: Record<string, string | boolean | undefined> = {};
+
+		const result = await emitProjectTrustEvent(
+			await extensionWith(async (_event, ctx) => {
+				seen.notifyKind = typeof ctx.ui.notify;
+				seen.cwd = ctx.cwd;
+				seen.mode = ctx.mode;
+				seen.hasUI = ctx.hasUI;
+				ctx.ui.notify("from the handler");
+				const trusted = await ctx.ui.confirm("Trust it?", "prototype host");
+				return { trusted: trusted ? "yes" : "no" };
+			}),
+			{ type: "project_trust", cwd: host.cwd },
+			host,
+		);
+
+		assert.deepEqual(result.errors, [], "no handler error");
+		assert.equal(result.result?.trusted, "yes");
+		assert.equal(seen.notifyKind, "function", "a prototype notify must survive wrapping");
+		assert.equal(seen.cwd, "/tmp/prototype-project");
+		assert.equal(seen.mode, "tui");
+		assert.equal(seen.hasUI, true);
+		assert.deepEqual(host.ui.notified, ["from the handler"], "notify ran on the host object");
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("still blocks around a prototype-backed prompt", async () => {
+		const host = new PrototypeTrustContext();
+		const changes: UserBlockChange[] = [];
+		const unsubscribe = subscribeUserBlocks((change) => changes.push(change));
+		try {
+			await emitProjectTrustEvent(
+				await extensionWith(async (_event, ctx) => {
+					await ctx.ui.select("Pick a trust option", ["always", "never"]);
+					return { trusted: "yes" };
+				}),
+				{ type: "project_trust", cwd: host.cwd },
+				host,
+			);
+		} finally {
+			unsubscribe();
+		}
+		assert.deepEqual(
+			changes.map((change) => [change.type, change.label, change.reason]),
+			[
+				["agent_blocked", "Pick a trust option", "project_trust"],
+				["agent_unblocked", "Pick a trust option", "project_trust"],
+			],
+		);
+	});
+});
