@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath } from "../utils/paths.ts";
+import { withLoadedFileExtensionPathCycle } from "./extensions/loaded-extension-paths.js";
 import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
@@ -95,6 +96,10 @@ function addCliMetadata(cliExtensionPaths: ResolvedPaths, metadataByPath: Map<st
 }
 
 export async function loadProjectTrustExtensions(loader: DefaultResourceLoader): Promise<LoadExtensionsResult> {
+	return withLoadedFileExtensionPathCycle(() => loadProjectTrustExtensionsInCycle(loader));
+}
+
+async function loadProjectTrustExtensionsInCycle(loader: DefaultResourceLoader): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
 	state.settingsManager.setProjectTrusted(false);
 	await state.settingsManager.reload();
@@ -136,6 +141,16 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 }
 
 export async function reloadDefaultResourceLoader(
+	loader: DefaultResourceLoader,
+	options?: ResourceLoaderReloadOptions,
+): Promise<void> {
+	// One cycle spans the whole reload, so the pre-trust and final loads share a
+	// single answer and a concurrent reload in the same process cannot overwrite
+	// it between an inline factory's load and its later re-check.
+	return withLoadedFileExtensionPathCycle(() => reloadDefaultResourceLoaderInCycle(loader, options));
+}
+
+async function reloadDefaultResourceLoaderInCycle(
 	loader: DefaultResourceLoader,
 	options?: ResourceLoaderReloadOptions,
 ): Promise<void> {

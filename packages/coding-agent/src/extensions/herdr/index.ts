@@ -14,7 +14,10 @@
  */
 
 import { basename } from "node:path";
-import { getLoadedFileExtensionPaths } from "../../core/extensions/loaded-extension-paths.js";
+import {
+	captureLoadedFileExtensionPathCycle,
+	loadedFileExtensionPathsOf,
+} from "../../core/extensions/loaded-extension-paths.js";
 import type {
 	AgentBlockedEvent,
 	AgentEndEvent,
@@ -88,7 +91,13 @@ export function turnFailureMessage(event: AgentEndEvent): string | undefined {
 export default function herdrExtension(pi: HerdrExtensionApi): void {
 	const env = readHerdrEnv();
 	if (!env) return;
-	if (fileIntegrationLoaded(getLoadedFileExtensionPaths())) return;
+	// Captured, not re-read later from module scope. Loading yields between
+	// inline factories and one process can run overlapping loaders, so a global
+	// read at activation time could answer with a different cycle's file set —
+	// and stand down for a cycle that has no file integration, or fail to stand
+	// down for one that does.
+	const loadCycle = captureLoadedFileExtensionPathCycle();
+	if (fileIntegrationLoaded(loadedFileExtensionPathsOf(loadCycle))) return;
 
 	const reporter = new HerdrReporter({ paneId: env.paneId, transport: createSocketTransport(env.socketEndpoint) });
 
@@ -138,7 +147,7 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 		if (closed || activation === "stand-down") return false;
 		if (ctx.mode !== "tui") return false;
 		if (activation === "active") return true;
-		if (fileIntegrationLoaded(getLoadedFileExtensionPaths())) {
+		if (fileIntegrationLoaded(loadedFileExtensionPathsOf(loadCycle))) {
 			activation = "stand-down";
 			return false;
 		}

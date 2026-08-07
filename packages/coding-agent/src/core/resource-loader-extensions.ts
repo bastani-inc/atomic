@@ -2,7 +2,7 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
-import { setLoadedFileExtensionPaths } from "./extensions/loaded-extension-paths.js";
+import { setLoadedFileExtensionPaths, withLoadedFileExtensionPathCycle } from "./extensions/loaded-extension-paths.js";
 import { loadExtensionFromFactory, loadExtensionsCached, type WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
@@ -15,6 +15,24 @@ function resolveExtensionLoadPath(loader: DefaultResourceLoader, path: string): 
 }
 
 export async function loadFinalExtensionSet(
+	loader: DefaultResourceLoader,
+	extensionPaths: string[],
+	preTrustExtensions: LoadExtensionsResult | undefined,
+	workflowResourceProvider: WorkflowResourceProvider,
+	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
+): Promise<LoadExtensionsResult> {
+	return withLoadedFileExtensionPathCycle(() =>
+		loadFinalExtensionSetInCycle(
+			loader,
+			extensionPaths,
+			preTrustExtensions,
+			workflowResourceProvider,
+			inheritanceSnapshotProvider,
+		),
+	);
+}
+
+async function loadFinalExtensionSetInCycle(
 	loader: DefaultResourceLoader,
 	extensionPaths: string[],
 	preTrustExtensions: LoadExtensionsResult | undefined,
