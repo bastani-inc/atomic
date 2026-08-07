@@ -95,7 +95,7 @@ export function createAsyncOutputAppender(
 	return {
 		append(chunk) {
 			if (fullOutputFile) fullOutputFile.write(chunk);
-			else bufferedChunks.push(chunk);
+			else if (!persistUnavailable) bufferedChunks.push(chunk);
 			appendDecodedText(decoder.decode(chunk, { stream: true }));
 		},
 		async close() {

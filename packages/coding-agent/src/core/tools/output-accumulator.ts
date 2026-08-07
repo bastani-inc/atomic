@@ -215,23 +215,32 @@ export class OutputAccumulator {
 		if (this.tempFilePath || this.tempFileUnavailable) {
 			return;
 		}
-		let path: string;
+		let file: PersistedOutputFile | undefined;
 		try {
-			path = defaultTempFilePath(this.tempFilePrefix, this.tempDir);
-		} catch {
-			// The session temp directory was refused (see ensureTempDir). Persisting
-			// is a convenience, so drop it — and the buffered chunks it was holding —
-			// rather than retrying on every append or failing the tool.
-			this.tempFileUnavailable = true;
+			const path = defaultTempFilePath(this.tempFilePrefix, this.tempDir);
+			file = new PersistedOutputFile(path);
+			for (const chunk of this.rawChunks) {
+				file.write(chunk);
+			}
+			// Publish the pair only after creation and replay both succeed. Callers
+			// must never observe a path for a writer that did not open or could not
+			// accept the output buffered before the spill threshold.
+			this.tempFile = file;
+			this.tempFilePath = path;
 			this.rawChunks = [];
-			return;
+		} catch {
+			// Persistence is a convenience. Refusal by the directory helper, EMFILE,
+			// ENOSPC, EACCES, or a replay failure must leave bounded output available
+			// without a dangling path, retained raw chunks, or retries on later appends.
+			this.tempFileUnavailable = true;
+			this.tempFilePath = undefined;
+			this.tempFile = undefined;
+			this.rawChunks = [];
+			try {
+				file?.end();
+			} catch {
+				// Best effort: there is no path to advertise and no writer to reuse.
+			}
 		}
-		this.tempFilePath = path;
-		const file = new PersistedOutputFile(path);
-		this.tempFile = file;
-		for (const chunk of this.rawChunks) {
-			file.write(chunk);
-		}
-		this.rawChunks = [];
 	}
 }
