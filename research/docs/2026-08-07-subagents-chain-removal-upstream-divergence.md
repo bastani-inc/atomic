@@ -1,7 +1,7 @@
 ---
 date: 2026-08-07 13:54:13 UTC
 researcher: Claude Opus 5
-git_commit: d5a2be633c0905a36dc88c5010da1c92f0d87e2e
+git_commit: 3090c32597567c4358ddb3feccfae01fb3e725c4
 branch: remove-subagent-chain
 repository: atomic-monorepo
 topic: "@bastani/subagents CHAIN removal and the resulting divergence from upstream pi-subagents"
@@ -23,7 +23,9 @@ last_updated_by: Claude Opus 5
 
 ## Why this file exists
 
-`@bastani/subagents` removed CHAIN execution mode entirely on branch `remove-subagent-chain`.
+`@bastani/subagents` removed CHAIN execution mode entirely on branch `remove-subagent-chain`; the
+`git_commit` above is `3090c3259`, the commit that performed the removal. Later commits on the branch
+repair regressions and documentation but do not change what this record describes.
 Several dated specs and RFCs in `specs/` describe pi-subagents as having a chain mode. Those
 documents are historical records of decisions taken at their own dates and are deliberately left
 byte-identical to their pre-removal state. This is the new dated record that supersedes their

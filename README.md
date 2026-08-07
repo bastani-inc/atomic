@@ -241,7 +241,7 @@ Skills are reusable expert instructions and process modules. Atomic can select o
 | ------------------- | -------------------------------------------------------------------------------------------- |
 | `research-codebase` | Analyze a focused area and write a dated research document.                                  |
 | `create-spec`       | Produce a technical execution spec grounded in research and engineer feedback.               |
-| `subagent`          | Delegate work through single agents, chains, parallel groups, async runs, or forked context. |
+| `subagent`          | Delegate work through single agents, parallel groups, async runs, or forked context.         |
 | `intercom`          | Coordinate parent, child, and peer sessions on the same machine.                             |
 | `prompt-engineer`   | Refine prompts, research questions, and workflow inputs.                                     |
 | `skill-creator`     | Create, improve, and evaluate reusable skills.                                               |

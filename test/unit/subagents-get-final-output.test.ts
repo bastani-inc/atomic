@@ -88,10 +88,55 @@ describe("subagents getFinalOutput", () => {
 		assert.equal(getFinalOutput(messages), " \n Summary \n ");
 	});
 
+	test("uses trailing structured_output tool result text when no assistant follow-up exists", () => {
+		const messages = [
+			assistantContent([{ type: "text", text: "Earlier prose" }]),
+			assistantContent([{ type: "toolCall", id: "call-1", name: "structured_output", arguments: { status: "ok" } }]),
+			toolResultContent("structured_output", [
+				{ type: "image", data: "ignored", mimeType: "image/png" },
+				{ type: "text", text: '{"status":' },
+				{ type: "text", text: '"ok"}' },
+			]),
+		];
+
+		assert.equal(getFinalOutput(messages), '{"status":"ok"}');
+	});
+
 	test("ignores final non-structured tool results and falls back to assistant text", () => {
 		const messages = [
 			assistantContent([{ type: "text", text: "Earlier prose" }]),
 			toolResultContent("read", [{ type: "text", text: "file contents" }]),
+		];
+
+		assert.equal(getFinalOutput(messages), "Earlier prose");
+	});
+
+	test("does not let an earlier structured_output result override later assistant text", () => {
+		const messages = [
+			assistantContent([{ type: "toolCall", id: "call-1", name: "structured_output", arguments: { status: "ok" } }]),
+			toolResultContent("structured_output", [{ type: "text", text: '{"status":"ok"}' }]),
+			assistantContent([{ type: "text", text: "Final prose" }]),
+		];
+
+		assert.equal(getFinalOutput(messages), "Final prose");
+	});
+
+	test("ignores error structured_output tool results and falls back to assistant text", () => {
+		const messages = [
+			assistantContent([{ type: "text", text: "Earlier prose" }]),
+			toolResultContent("structured_output", [{ type: "text", text: '{"status":"bad"}' }], true),
+		];
+
+		assert.equal(getFinalOutput(messages), "Earlier prose");
+	});
+
+	test("falls back when the final structured_output tool result has no text content", () => {
+		const messages = [
+			assistantContent([{ type: "text", text: "Earlier prose" }]),
+			toolResultContent("structured_output", [
+				{ type: "image", data: "ignored", mimeType: "image/png" },
+				{ type: "text", text: " \n\t " },
+			]),
 		];
 
 		assert.equal(getFinalOutput(messages), "Earlier prose");
