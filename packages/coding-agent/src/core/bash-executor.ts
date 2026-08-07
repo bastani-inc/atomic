@@ -71,13 +71,25 @@ export async function executeBashWithOperations(
 	let tempFile: PersistedOutputFile | undefined;
 	let totalBytes = 0;
 
+	let tempFileUnavailable = false;
+
 	const ensureTempFile = () => {
-		if (tempFilePath) {
+		if (tempFilePath || tempFileUnavailable) {
 			return;
 		}
-		const id = randomBytes(8).toString("hex");
-		tempFilePath = join(ensureSessionTempDir(options?.sessionTempDir), `${APP_NAME}-bash-${id}.log`);
-		tempFile = new PersistedOutputFile(tempFilePath);
+		try {
+			const dir = ensureSessionTempDir(options?.sessionTempDir);
+			const id = randomBytes(8).toString("hex");
+			tempFilePath = join(dir, `${APP_NAME}-bash-${id}.log`);
+			tempFile = new PersistedOutputFile(tempFilePath);
+		} catch {
+			// The session temp directory was refused (see ensureTempDir). Run without
+			// an overflow log rather than advertising a path outside the owned tree.
+			tempFileUnavailable = true;
+			tempFilePath = undefined;
+			tempFile = undefined;
+			return;
+		}
 		for (const chunk of outputChunks) {
 			tempFile.write(chunk);
 		}

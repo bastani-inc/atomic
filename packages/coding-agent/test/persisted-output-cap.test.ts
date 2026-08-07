@@ -125,6 +125,65 @@ describe("persisted-output cap", () => {
 		assert.equal(contents, `${"x".repeat(cap - markerBytes)}${PERSISTED_OUTPUT_TRUNCATION_MARKER}`);
 	});
 
+	it("never splits a character written across two chunks, even when the cap intervenes", async () => {
+		// The emoji straddles the cap: its first byte arrives in one write and the
+		// rest in the write that overruns. A lead byte flushed early would be
+		// orphaned in front of the marker and decode as U+FFFD.
+		const cap = markerBytes + 64;
+		const emoji = Buffer.from("🙂", "utf8");
+		const filler = Buffer.from("a".repeat(cap - markerBytes - 2), "utf8");
+
+		const file = new PersistedOutputFile(join(sandbox, "split-char.log"), { maxBytes: cap });
+		file.write(filler);
+		file.write(emoji.subarray(0, 1));
+		file.write(Buffer.concat([emoji.subarray(1), Buffer.from("b".repeat(cap), "utf8")]));
+		assert.equal(file.truncated, true);
+		await file.close();
+
+		const contents = readFileSync(file.path);
+		assert.ok(statSync(file.path).size <= cap);
+		const beforeMarker = contents.subarray(0, contents.length - markerBytes);
+		assert.equal(
+			beforeMarker.toString("utf8").includes("\uFFFD"),
+			false,
+			`content before the marker must decode cleanly, got ${beforeMarker.toString("hex")}`,
+		);
+		assert.equal(
+			contents.subarray(contents.length - markerBytes).toString("utf8"),
+			PERSISTED_OUTPUT_TRUNCATION_MARKER,
+		);
+	});
+
+	it("reassembles an exact-cap payload split mid-character across chunks", async () => {
+		const emoji = Buffer.from("🙂", "utf8");
+		const cap = markerBytes + 64;
+		const filler = Buffer.from("c".repeat(cap - emoji.length), "utf8");
+		const payload = Buffer.concat([filler, emoji]);
+		assert.equal(payload.length, cap);
+
+		const file = new PersistedOutputFile(join(sandbox, "exact-cap-split.log"), { maxBytes: cap });
+		file.write(payload.subarray(0, payload.length - 2));
+		file.write(payload.subarray(payload.length - 2));
+		assert.equal(file.truncated, false);
+		await file.close();
+
+		assert.deepEqual(readFileSync(file.path), payload);
+	});
+
+	it("passes raw binary through unchanged when it fits under the cap", async () => {
+		// 0xf0 followed by a non-continuation byte is not a UTF-8 sequence; holding
+		// it back forever, or decoding it, would corrupt binary command output.
+		const payload = Buffer.from([0x61, 0xf0, 0x00, 0xff, 0x62, 0x80]);
+		const file = new PersistedOutputFile(join(sandbox, "binary.log"), { maxBytes: markerBytes + 1024 });
+		for (const byte of payload) {
+			file.write(Buffer.from([byte]));
+		}
+		assert.equal(file.truncated, false);
+		await file.close();
+
+		assert.deepEqual(readFileSync(file.path), payload);
+	});
+
 	it("keeps a stream error off the fire-and-forget path", async () => {
 		// A directory cannot be opened for writing: the stream fails asynchronously,
 		// which is exactly the shape that used to escape as an uncaught exception.

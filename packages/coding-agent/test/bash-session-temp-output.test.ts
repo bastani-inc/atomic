@@ -4,7 +4,17 @@
  * system temp directory.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
@@ -13,7 +23,11 @@ import type { BashOperations } from "../src/core/tools/bash.ts";
 import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createAsyncOutputAppender } from "../src/core/tools/bash-async-output.ts";
 import { OutputAccumulator } from "../src/core/tools/output-accumulator.ts";
-import { resetSessionTempDirStateForTesting, resolveSessionTempDirPath } from "../src/core/tools/session-temp-dir.ts";
+import {
+	getTempRootDir,
+	resetSessionTempDirStateForTesting,
+	resolveSessionTempDirPath,
+} from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES } from "../src/core/tools/truncate.ts";
 
 const envKeys = ["TMPDIR", "TEMP", "TMP"] as const;
@@ -25,7 +39,7 @@ const LINE = `${"x".repeat(99)}\n`;
 const OVERSIZED_OUTPUT = LINE.repeat(Math.ceil((DEFAULT_MAX_BYTES * 2) / LINE.length));
 
 beforeAll(() => {
-	sandbox = mkdtempSync(join(tmpdir(), "atomic-bash-session-temp-"));
+	sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-bash-session-temp-")));
 	for (const key of envKeys) {
 		savedEnv.set(key, process.env[key]);
 		process.env[key] = sandbox;
@@ -144,4 +158,33 @@ describe("bash overflow logs live in the session temp directory", () => {
 		assert.ok(snapshot.fullOutputPath);
 		assert.ok(isInside(resolveSessionTempDirPath(), snapshot.fullOutputPath));
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"runs without an overflow log when the owner root is refused, instead of writing outside it",
+		async () => {
+			const outside = join(sandbox, "attacker-root-target");
+			mkdirSync(outside, { recursive: true });
+			const root = getTempRootDir();
+			rmSync(root, { recursive: true, force: true });
+			resetSessionTempDirStateForTesting();
+			symlinkSync(outside, root, "dir");
+
+			try {
+				const result = await executeBashWithOperations(
+					"echo big",
+					process.cwd(),
+					fakeOperations(OVERSIZED_OUTPUT),
+					{ sessionTempDir: resolveSessionTempDirPath("refused-session") },
+				);
+
+				assert.equal(result.truncated, true, "output is still truncated for the model");
+				assert.equal(result.fullOutputPath, undefined, "no path is advertised when the root is refused");
+				assert.deepEqual(readdirSync(outside), [], "nothing is written through the planted link");
+				assert.equal(lstatSync(root).isSymbolicLink(), true, "the link itself is untouched");
+			} finally {
+				rmSync(root, { force: true });
+				resetSessionTempDirStateForTesting();
+			}
+		},
+	);
 });

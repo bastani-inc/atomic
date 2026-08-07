@@ -228,7 +228,7 @@ describe("sweepToolResultsRoot", () => {
 		assert.equal(existsSync(join(project, TOOL_RESULTS_SUBDIR, "call-1.txt")), true);
 	});
 
-	it("drops only the stale entries of a still-live tool-results directory", () => {
+	it("keeps a tool-results tree intact when any entry is newer than the cutoff", () => {
 		const { project } = makeProject(sandbox, "--project-c--", 60);
 		const toolResults = join(project, TOOL_RESULTS_SUBDIR);
 		const fresh = join(toolResults, "call-2.txt");
@@ -238,7 +238,9 @@ describe("sweepToolResultsRoot", () => {
 		sweepToolResultsRoot(sandbox, { now: NOW, controlRoot });
 
 		assert.equal(existsSync(fresh), true);
-		assert.equal(existsSync(join(toolResults, "call-1.txt")), false);
+		// The directory's newest entry decides its fate, so a stale sibling survives
+		// alongside it — a path a tool result recorded weeks ago stays readable.
+		assert.equal(existsSync(join(toolResults, "call-1.txt")), true);
 	});
 
 	it("keeps its marker and lock in the control root, outside the scanned sessions root", () => {

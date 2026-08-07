@@ -4,7 +4,12 @@ import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
 import { capPersistedText } from "./persisted-output-file.ts";
-import { resolveSessionTempDirPath, SESSION_TEMP_DIR_MODE, SESSION_TEMP_FILE_MODE } from "./session-temp-dir.ts";
+import {
+	ensureTempDir,
+	resolveSessionTempDirPath,
+	SESSION_TEMP_DIR_MODE,
+	SESSION_TEMP_FILE_MODE,
+} from "./session-temp-dir.ts";
 import {
 	DEFAULT_MAX_RESULT_SIZE_CHARS,
 	PERSISTED_OUTPUT_CLOSING_TAG,
@@ -154,14 +159,21 @@ function sanitizePathComponent(value: string, fallback: string): string {
 	return sanitized.length > 0 ? sanitized : fallback;
 }
 
-/** Session-scoped directory for persisted tool results: `<sessionDir>/tool-results`. */
-function getToolResultsDir(input: { sessionDir?: string; sessionId: string }): string {
+/**
+ * Session-scoped directory for persisted tool results.
+ *
+ * A disk-backed session owns `<sessionDir>/tool-results` and creates it directly.
+ * An in-memory session falls back to the owner- and session-scoped temp tree, so
+ * the sweeper can reap it once the session is gone — and that path goes through
+ * {@link ensureTempDir}, which validates every component below the system temp
+ * directory instead of letting `mkdir -p` follow a planted link.
+ */
+function ensureToolResultsDir(input: { sessionDir?: string; sessionId: string }): Promise<string> | string {
 	if (input.sessionDir?.trim()) {
-		return join(input.sessionDir, TOOL_RESULTS_SUBDIR);
+		const dir = join(input.sessionDir, TOOL_RESULTS_SUBDIR);
+		return mkdir(dir, { recursive: true, mode: SESSION_TEMP_DIR_MODE }).then(() => dir);
 	}
-	// Fall back to the owner- and session-scoped temp tree for in-memory sessions,
-	// so the sweeper can reap it once the session is gone.
-	return join(resolveSessionTempDirPath(input.sessionId), TOOL_RESULTS_SUBDIR);
+	return ensureTempDir(join(resolveSessionTempDirPath(input.sessionId), TOOL_RESULTS_SUBDIR));
 }
 
 function getErrnoCode(error: unknown): string | undefined {
@@ -187,11 +199,16 @@ async function persistToolOutput(input: {
 	sessionId: string;
 	toolCallId: string;
 }): Promise<string | undefined> {
-	const dir = getToolResultsDir({ sessionDir: input.sessionDir, sessionId: input.sessionId });
-	const fileName = `${sanitizePathComponent(input.toolCallId, "tool-result")}.txt`;
-	const filepath = join(dir, fileName);
+	let dir: string;
 	try {
-		await mkdir(dir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		dir = await ensureToolResultsDir({ sessionDir: input.sessionDir, sessionId: input.sessionId });
+	} catch {
+		// Refused (see TempDirRefusedError) or unwritable: leave the result unchanged
+		// rather than pointing the model at a directory we do not own.
+		return undefined;
+	}
+	const filepath = join(dir, `${sanitizePathComponent(input.toolCallId, "tool-result")}.txt`);
+	try {
 		await writeFile(filepath, capPersistedText(input.text), {
 			encoding: "utf8",
 			mode: SESSION_TEMP_FILE_MODE,

@@ -27,6 +27,45 @@ export function truncateBufferAtUtf8Boundary(buffer: Buffer, maxBytes: number): 
 	return buffer.subarray(0, end);
 }
 
+/** Expected total byte length of a UTF-8 sequence starting with `byte`; 0 for ASCII or an invalid lead. */
+function utf8SequenceLength(byte: number): number {
+	if ((byte & 0x80) === 0) return 0;
+	if ((byte & 0xe0) === 0xc0) return 2;
+	if ((byte & 0xf0) === 0xe0) return 3;
+	if ((byte & 0xf8) === 0xf0) return 4;
+	return 0;
+}
+
+/**
+ * Length of the longest prefix of `buffer` that does not end mid-character.
+ *
+ * Only a trailing *incomplete but still valid* UTF-8 sequence is held back — a
+ * lead byte plus up to two continuation bytes, so at most three bytes. Bytes
+ * that cannot begin a sequence are treated as raw binary and reported as
+ * complete, because this writer also carries non-text command output and must
+ * not rewrite it. Nothing is decoded, so invalid bytes are never replaced.
+ */
+export function completeUtf8PrefixLength(buffer: Buffer): number {
+	const length = buffer.length;
+	for (let back = 1; back <= 3 && back <= length; back++) {
+		const index = length - back;
+		const byte = buffer[index]!;
+		if ((byte & 0xc0) === 0x80) {
+			// A continuation byte: its lead byte is further back.
+			continue;
+		}
+		const needed = utf8SequenceLength(byte);
+		if (needed === 0) {
+			// ASCII, or a byte that cannot start a sequence: nothing is pending.
+			return length;
+		}
+		return back >= needed ? length : index;
+	}
+	// Three continuation bytes with no lead in range: not a valid sequence tail,
+	// so there is nothing to wait for.
+	return length;
+}
+
 /**
  * Cap an in-memory string destined for a persisted-output file.
  *
@@ -128,12 +167,22 @@ export class PersistedOutputFile {
 		this.flushUpTo(stream, this.safeLimit - this.writtenBytes);
 	}
 
-	/** Write at most `room` pending bytes, cut at a UTF-8 character boundary. */
+	/**
+	 * Write at most `room` pending bytes, never ending mid-character.
+	 *
+	 * Both cuts matter. Cutting at `room` uses the boundary walk; flushing the
+	 * whole buffer still holds back an incomplete trailing sequence, because its
+	 * continuation bytes arrive in the *next* chunk — and if the cap intervenes
+	 * first, a lead byte already on disk would sit orphaned before the marker.
+	 */
 	private flushUpTo(stream: WriteStream, room: number): void {
 		if (room <= 0 || this.pending.length === 0) {
 			return;
 		}
-		const head = this.pending.length <= room ? this.pending : truncateBufferAtUtf8Boundary(this.pending, room);
+		const head =
+			this.pending.length <= room
+				? this.pending.subarray(0, completeUtf8PrefixLength(this.pending))
+				: truncateBufferAtUtf8Boundary(this.pending, room);
 		if (head.length === 0) {
 			return;
 		}

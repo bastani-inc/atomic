@@ -34,7 +34,6 @@ import { createHash } from "node:crypto";
 import {
 	closeSync,
 	lstatSync,
-	mkdirSync,
 	openSync,
 	readdirSync,
 	readFileSync,
@@ -47,7 +46,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { getAgentConfigPaths } from "../../config.ts";
-import { getProtectedSessionTempDirs, getTempRootDir, SESSION_TEMP_FILE_MODE } from "./session-temp-dir.ts";
+import {
+	ensureTempDir,
+	getProtectedSessionTempDirs,
+	getTempRootDir,
+	SESSION_TEMP_FILE_MODE,
+} from "./session-temp-dir.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tool-limits.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -282,7 +286,9 @@ function withCleanupGate(controlDir: string, options: SweepOptions, scan: (gate:
 	const now = options.now ?? Date.now();
 	const throttleMs = options.throttleMs ?? SESSION_TEMP_CLEANUP_INTERVAL_MS;
 	try {
-		mkdirSync(controlDir, { recursive: true, mode: 0o700 });
+		// The control root lives under the owner temp root, so create it through the
+		// same validated, non-recursive path the spill directories use.
+		ensureTempDir(controlDir);
 	} catch {
 		// Without a control directory there is nowhere to record the throttle;
 		// skip rather than sweep unthrottled and unlocked.
@@ -383,47 +389,27 @@ export function sweepSessionTempRoot(root: string = getTempRootDir(), options: S
 	});
 }
 
-/** Delete entries under a still-live `tool-results` directory that predate the cutoff. */
-function reapStaleEntries(dir: string, cutoff: number): void {
-	let entries: string[];
-	try {
-		entries = readdirSync(dir);
-	} catch {
-		return;
-	}
-	for (const entry of entries) {
-		const entryPath = join(dir, entry);
-		try {
-			if (hasEntryNewerThan(entryPath, cutoff)) {
-				continue;
-			}
-			rmSync(entryPath, { recursive: true, force: true });
-		} catch {
-			// Skip entries that vanish or cannot be removed.
-		}
-	}
-}
-
 /**
  * Reap one `<parent>/tool-results` directory.
  *
  * A symlinked (or otherwise non-directory) `tool-results` is skipped entirely —
  * neither descended into nor deleted — because `readdirSync`/`rmSync` resolve
- * links and would reach the outside directory the link points at. A directory
- * whose newest entry predates the cutoff is removed outright; one still holding
- * fresh results keeps them and loses only the stale entries, so a live session's
- * `Full output saved to:` paths stay valid.
+ * links and would reach the outside directory the link points at.
+ *
+ * The directory's newest entry decides its fate, exactly as it does for a session
+ * temp tree: one fresh descendant keeps the entire tree, stale siblings included.
+ * That is what makes every path inside a live tree stay valid, including one a
+ * tool result recorded weeks ago and the model may still read back.
  */
 function reapToolResultsDir(parent: string, cutoff: number): void {
 	const toolResultsDir = join(parent, TOOL_RESULTS_SUBDIR);
 	if (!isRealDirectory(toolResultsDir)) {
 		return;
 	}
-	if (!hasEntryNewerThan(toolResultsDir, cutoff)) {
-		rmSync(toolResultsDir, { recursive: true, force: true });
+	if (hasEntryNewerThan(toolResultsDir, cutoff)) {
 		return;
 	}
-	reapStaleEntries(toolResultsDir, cutoff);
+	rmSync(toolResultsDir, { recursive: true, force: true });
 }
 
 /**

@@ -60,6 +60,7 @@ export class OutputAccumulator {
 
 	private tempFilePath: string | undefined;
 	private tempFile: PersistedOutputFile | undefined;
+	private tempFileUnavailable = false;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
@@ -203,11 +204,22 @@ export class OutputAccumulator {
 	}
 
 	private ensureTempFile(): void {
-		if (this.tempFilePath) {
+		if (this.tempFilePath || this.tempFileUnavailable) {
 			return;
 		}
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix, this.tempDir);
-		const file = new PersistedOutputFile(this.tempFilePath);
+		let path: string;
+		try {
+			path = defaultTempFilePath(this.tempFilePrefix, this.tempDir);
+		} catch {
+			// The session temp directory was refused (see ensureTempDir). Persisting
+			// is a convenience, so drop it — and the buffered chunks it was holding —
+			// rather than retrying on every append or failing the tool.
+			this.tempFileUnavailable = true;
+			this.rawChunks = [];
+			return;
+		}
+		this.tempFilePath = path;
+		const file = new PersistedOutputFile(path);
 		this.tempFile = file;
 		for (const chunk of this.rawChunks) {
 			file.write(chunk);

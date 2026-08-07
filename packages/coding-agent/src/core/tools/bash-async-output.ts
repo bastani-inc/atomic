@@ -43,13 +43,23 @@ export function createAsyncOutputAppender(
 	let outputBytes = 0;
 	let truncated = false;
 	let fullOutputFile: PersistedOutputFile | undefined;
+	let persistUnavailable = false;
 	let bufferedChunks: Buffer[] = [];
 	const decoder = new TextDecoder();
 
-	const ensureFullOutputFile = (): PersistedOutputFile => {
-		if (fullOutputFile) return fullOutputFile;
-		job.fullOutputPath = outputPath(options?.sessionTempDir);
-		fullOutputFile = new PersistedOutputFile(job.fullOutputPath);
+	const ensureFullOutputFile = (): PersistedOutputFile | undefined => {
+		if (fullOutputFile || persistUnavailable) return fullOutputFile;
+		try {
+			job.fullOutputPath = outputPath(options?.sessionTempDir);
+			fullOutputFile = new PersistedOutputFile(job.fullOutputPath);
+		} catch {
+			// The session temp directory was refused (see ensureTempDir). Keep polling
+			// output flowing without advertising a spill path we could not own.
+			persistUnavailable = true;
+			job.fullOutputPath = undefined;
+			bufferedChunks = [];
+			return undefined;
+		}
 		for (const chunk of bufferedChunks) fullOutputFile.write(chunk);
 		bufferedChunks = [];
 		return fullOutputFile;
@@ -64,7 +74,8 @@ export function createAsyncOutputAppender(
 			ensureFullOutputFile();
 			const remaining = Math.max(0, DEFAULT_MAX_BYTES - outputBytes);
 			if (remaining > 0) job.output += utf8Prefix(text, remaining);
-			job.output += `\n[Output truncated at ${formatSize(DEFAULT_MAX_BYTES)} for async job polling. Full output: ${job.fullOutputPath}]`;
+			const fullOutputNote = job.fullOutputPath ? ` Full output: ${job.fullOutputPath}` : "";
+			job.output += `\n[Output truncated at ${formatSize(DEFAULT_MAX_BYTES)} for async job polling.${fullOutputNote}]`;
 			outputBytes += bytes;
 			truncated = true;
 			return;

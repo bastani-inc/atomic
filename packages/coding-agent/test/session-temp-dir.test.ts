@@ -3,13 +3,26 @@
  * owner-only permissions for the directories and files tools spill into.
  */
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
 import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
 import { PersistedOutputFile } from "../src/core/tools/persisted-output-file.ts";
 import {
+	ensureTempDir,
 	getSessionTempDir,
 	getTempRootDir,
 	registerActiveSessionTempDir,
@@ -18,6 +31,7 @@ import {
 	SESSION_TEMP_DIR_MODE,
 	SESSION_TEMP_FILE_MODE,
 	sanitizeTempPathComponent,
+	TempDirRefusedError,
 } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
 
@@ -36,7 +50,9 @@ function useSandboxTmpdir(dir: string): void {
 }
 
 beforeAll(() => {
-	sandbox = mkdtempSync(join(tmpdir(), "atomic-session-temp-dir-"));
+	// Canonicalized on purpose: the module resolves the system temp base with
+	// realpath, so an unresolved sandbox path would not compare equal.
+	sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-session-temp-dir-")));
 	useSandboxTmpdir(sandbox);
 });
 
@@ -151,6 +167,49 @@ describe("session temp directory scoping", () => {
 		assert.equal(statSync(dir).isDirectory(), true);
 		assert.equal(existsSync(join(outside, "keep.txt")), true, "the link target is left untouched");
 		assert.equal(existsSync(join(dir, "keep.txt")), false, "writes no longer reach the link target");
+	});
+
+	it.skipIf(!isPosix)("refuses a symlinked owner root instead of writing through it", () => {
+		const outside = join(sandbox, "attacker-target");
+		mkdirSync(outside, { recursive: true });
+		const root = getTempRootDir();
+		rmSync(root, { recursive: true, force: true });
+		symlinkSync(outside, root, "dir");
+
+		assert.throws(() => getSessionTempDir("through-root-link"), TempDirRefusedError);
+
+		assert.equal(lstatSync(root).isSymbolicLink(), true, "the planted link is left alone");
+		assert.equal(existsSync(join(outside, "through-root-link")), false, "no session directory outside the tree");
+		assert.deepEqual(readdirSync(outside), [], "nothing at all is written through the link");
+
+		rmSync(root, { force: true });
+	});
+
+	it.skipIf(!isPosix)("tightens a same-owner root that was left world-accessible", () => {
+		const root = getTempRootDir();
+		rmSync(root, { recursive: true, force: true });
+		mkdirSync(root, { recursive: true });
+		chmodSync(root, 0o777);
+
+		const dir = getSessionTempDir("loose-root");
+
+		assert.equal(statSync(root).mode & 0o777, SESSION_TEMP_DIR_MODE, "the root is tightened before use");
+		assert.equal(statSync(dir).mode & 0o777, SESSION_TEMP_DIR_MODE);
+	});
+
+	it.skipIf(!isPosix)("refuses a symlinked intermediate component below the root", () => {
+		const outside = join(sandbox, "attacker-nested");
+		mkdirSync(outside, { recursive: true });
+		const root = getTempRootDir();
+		rmSync(root, { recursive: true, force: true });
+		mkdirSync(root, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		const nestedParent = join(root, "linked-parent");
+		symlinkSync(outside, nestedParent, "dir");
+
+		assert.throws(() => ensureTempDir(join(nestedParent, "leaf")), TempDirRefusedError);
+
+		assert.equal(lstatSync(nestedParent).isSymbolicLink(), true);
+		assert.equal(existsSync(join(outside, "leaf")), false);
 	});
 });
 
