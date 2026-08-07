@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, describe, it } from "vitest";
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
@@ -226,6 +228,50 @@ describe("ctx.ui block wrapping", () => {
 		assert.equal(ctx.ui.getEditorText(), "");
 	});
 
+	it("calls host methods with the host object as receiver, not the wrapper", async () => {
+		// A host that keys per-instance state off its own identity — a WeakMap here,
+		// a private field in a class — must see exactly the receiver it saw before
+		// wrapping existed. Reading through the proxy receiver silently broke this.
+		const hostState = new WeakMap<object, string>();
+		const base = recordingUi({}).ui;
+		const host: ExtensionUIContext = {
+			...base,
+			select(this: ExtensionUIContext) {
+				return Promise.resolve(hostState.get(this));
+			},
+		};
+		hostState.set(host, "host-owned-value");
+
+		assert.equal(await host.select("Pick", ["a"]), "host-owned-value");
+		const ctx = contextOver(host);
+		assert.equal(
+			await ctx.ui.select("Pick", ["a"]),
+			"host-owned-value",
+			"wrapping must not change which object the host method runs on",
+		);
+	});
+
+	it("resolves host getters against the host object", async () => {
+		const base = recordingUi({}).ui;
+		const secret = "host-theme-token";
+		const host: ExtensionUIContext = Object.defineProperties(
+			{ ...base },
+			{
+				getEditorText: {
+					value(this: { marker?: string }) {
+						return this.marker ?? "wrong-receiver";
+					},
+					enumerable: true,
+					configurable: true,
+				},
+				marker: { value: secret, enumerable: false, configurable: true },
+			},
+		) as ExtensionUIContext;
+
+		const ctx = contextOver(host);
+		assert.equal(ctx.ui.getEditorText(), secret);
+	});
+
 	it("keeps accessor and method identity stable", () => {
 		const { ui } = recordingUi({});
 		const ctx = contextOver(ui);
@@ -255,5 +301,38 @@ describe("ctx.ui block wrapping", () => {
 		const ctx = contextOver(outerUi.ui);
 		assert.equal(await ctx.ui.select("Outer?", ["outer"]), "outer");
 		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+});
+
+describe("block-door source constraints", () => {
+	/**
+	 * The repo rule against `any`/`unknown` is a source constraint, and `tsc`
+	 * accepts both, so it is checked here rather than assumed.
+	 */
+	it("adds no any or unknown types in the block door or the reporter", async () => {
+		const files = [
+			"src/core/extensions/runner-ui-blocks.ts",
+			"src/core/extensions/user-blocks.ts",
+			"src/core/extensions/block-types.ts",
+			"src/core/extensions/loaded-extension-paths.ts",
+			"src/extensions/herdr/index.ts",
+			"src/extensions/herdr/reporter.ts",
+			"src/extensions/herdr/reducer.ts",
+			"src/extensions/herdr/sequence.ts",
+			"src/extensions/herdr/transport.ts",
+			"src/extensions/herdr/types.ts",
+		];
+		const banned = /(:|<|\bas\s+)\s*(any|unknown)\b|\b(any|unknown)\[\]/;
+		for (const file of files) {
+			const source = await readFile(join(import.meta.dirname, "..", file), "utf8");
+			const offenders = source
+				.split("\n")
+				.map((line, index) => ({ line: line.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, ""), index: index + 1 }))
+				.filter((entry) => banned.test(entry.line));
+			assert.deepEqual(
+				offenders.map((entry) => `${file}:${entry.index}: ${entry.line.trim()}`),
+				[],
+			);
+		}
 	});
 });
