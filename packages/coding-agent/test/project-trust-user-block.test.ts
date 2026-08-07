@@ -3,8 +3,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "vitest";
+import { createEventBus } from "../src/core/event-bus.ts";
+import { loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
+import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
+import { emitProjectTrustEvent } from "../src/core/extensions/runner-project-trust.ts";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
-import type { ProjectTrustContext, UserBlockChange } from "../src/core/extensions/types.ts";
+import type {
+	LoadExtensionsResult,
+	ProjectTrustContext,
+	ProjectTrustHandler,
+	UserBlockChange,
+} from "../src/core/extensions/types.ts";
 import { getOpenUserBlocks, subscribeUserBlocks } from "../src/core/extensions/user-blocks.ts";
 import { resolveProjectTrusted } from "../src/core/project-trust.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
@@ -185,5 +194,120 @@ describe("startup project trust reaches no extension subscriber", () => {
 		// change to a `pi.on("agent_blocked")` handler, because extensions are not
 		// bound until a session exists.
 		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+});
+
+/**
+ * An extension's own `project_trust` prompt is a wait too.
+ *
+ * Handlers run before the built-in fallback and receive the same restricted UI,
+ * so a prompt one of them opens stops the agent exactly like Atomic's does.
+ * Only the handler path is wrapped — the fallback opens its own block, and
+ * wrapping both would count one wait twice.
+ */
+describe("extension project_trust prompts mint a block", () => {
+	async function extensionWith(handler: ProjectTrustHandler): Promise<LoadExtensionsResult> {
+		const runtime = createExtensionRuntime();
+		const extension = await loadExtensionFromFactory(
+			(pi) => {
+				pi.on("project_trust", handler);
+			},
+			tmpdir(),
+			createEventBus(),
+			runtime,
+			"<inline:trust>",
+		);
+		return { extensions: [extension], errors: [], runtime };
+	}
+
+	function trustContext(ui: Partial<ProjectTrustContext["ui"]>): ProjectTrustContext {
+		return {
+			cwd: "/tmp/does-not-matter",
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				select: noOpUIContext.select,
+				confirm: noOpUIContext.confirm,
+				input: noOpUIContext.input,
+				notify: noOpUIContext.notify,
+				...ui,
+			},
+		};
+	}
+
+	it("holds a project_trust block while a handler's confirm is open", async () => {
+		const changes: UserBlockChange[] = [];
+		const unsubscribe = subscribeUserBlocks((change) => changes.push(change));
+		let openDuringPrompt = 0;
+		let reasonDuringPrompt: string | undefined;
+
+		try {
+			const result = await emitProjectTrustEvent(
+				await extensionWith(async (_event, ctx) => {
+					const trusted = await ctx.ui.confirm("Trust this workspace?", "from an extension");
+					return { trusted: trusted ? "yes" : "no" };
+				}),
+				{ type: "project_trust", cwd: "/tmp/does-not-matter" },
+				trustContext({
+					confirm: async () => {
+						openDuringPrompt = getOpenUserBlocks().length;
+						reasonDuringPrompt = getOpenUserBlocks()[0]?.reason;
+						return true;
+					},
+				}),
+			);
+			assert.deepEqual(result.errors, []);
+			assert.equal(result.result?.trusted, "yes", "the handler's decision is preserved");
+		} finally {
+			unsubscribe();
+		}
+
+		assert.equal(openDuringPrompt, 1);
+		assert.equal(reasonDuringPrompt, "project_trust");
+		assert.deepEqual(
+			changes.map((change) => [change.type, change.label, change.reason]),
+			[
+				["agent_blocked", "Trust this workspace?", "project_trust"],
+				["agent_unblocked", "Trust this workspace?", "project_trust"],
+			],
+		);
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("releases the block when a handler's prompt rejects", async () => {
+		const failure = new Error("host closed the prompt");
+		const result = await emitProjectTrustEvent(
+			await extensionWith(async (_event, ctx) => {
+				await ctx.ui.select("Pick one", ["a"]);
+				return { trusted: "yes" };
+			}),
+			{ type: "project_trust", cwd: "/tmp/does-not-matter" },
+			trustContext({ select: () => Promise.reject(failure) }),
+		);
+
+		// The runner reports a handler error rather than propagating it.
+		assert.equal(result.errors.length, 1);
+		assert.equal(result.errors[0]?.error, failure.message);
+		assert.deepEqual(getOpenUserBlocks(), [], "the block did not outlive the rejected prompt");
+	});
+
+	it("leaves notify unwrapped", async () => {
+		const notified: string[] = [];
+		const changes: UserBlockChange[] = [];
+		const unsubscribe = subscribeUserBlocks((change) => changes.push(change));
+		try {
+			await emitProjectTrustEvent(
+				await extensionWith((_event, ctx) => {
+					ctx.ui.notify("just telling you");
+					return { trusted: "undecided" };
+				}),
+				{ type: "project_trust", cwd: "/tmp/does-not-matter" },
+				trustContext({ notify: (message) => notified.push(message) }),
+			);
+		} finally {
+			unsubscribe();
+		}
+		assert.deepEqual(notified, ["just telling you"]);
+		assert.deepEqual(changes, [], "a notification is not a wait");
 	});
 });
