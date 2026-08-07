@@ -190,6 +190,17 @@ describe("herdr reporter wire behavior", () => {
 		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: label });
 	});
 
+	it("sends an empty message when the dialog title was empty", async () => {
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, true);
+		await reporter.drain();
+		reporter.onBlockOpened(1, "");
+		await reporter.drain();
+
+		await fixture.waitForRequests(3);
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: "" });
+	});
+
 	it("preserves a long value's raw prefix, including its whitespace", async () => {
 		const label = `${"  spaced  ".repeat(20)}tail`;
 		assert.ok(label.length > MAX_REPORT_MESSAGE_LENGTH);

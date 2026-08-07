@@ -13,7 +13,7 @@
 
 import type { UserBlock } from "./block-types.ts";
 import type { ExtensionUIContext } from "./ui-types.ts";
-import { openUserBlock } from "./user-blocks.ts";
+import { openUserBlock } from "./user-blocks.js";
 
 /** The dialog methods that stop the agent until the user answers. */
 const BLOCKING_UI_METHODS = ["select", "confirm", "input", "custom", "editor"] as const;
@@ -35,13 +35,19 @@ const isBlockingUiMethod = (property: string | symbol): property is BlockingUiMe
 /**
  * The short label reported while the dialog is open.
  *
- * `custom()` takes a component factory rather than a title, so there is no
- * caller-supplied text to use and a fixed label is reported instead.
+ * The caller's title is used exactly as given, empty string included. Nothing
+ * asks for a non-empty label — Herdr's own schema types `message` as nullable
+ * string — and substituting the method name for `ui.select("", ...)` would
+ * invent text the caller did not write.
+ *
+ * `custom()` is the one exception, because it takes a component factory and has
+ * no title argument at all. The method-name fallback remains only for the
+ * impossible case of a titled method called without a string title.
  */
 function blockLabel<M extends BlockingUiMethod>(method: M, args: BlockingUiArgs<M>): string {
 	if (method === "custom") return "Custom dialog";
 	const title = args[0];
-	return typeof title === "string" && title.length > 0 ? title : method;
+	return typeof title === "string" ? title : method;
 }
 
 /**
