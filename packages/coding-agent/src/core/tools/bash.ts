@@ -568,7 +568,13 @@ export function createBashToolDefinition(
 				clearUpdateTimer();
 				emitOutputUpdate();
 				const snapshot = output.snapshot({ persistIfTruncated: true });
-				await output.closeTempFile();
+				try {
+					await output.closeTempFile();
+				} catch {
+					// The spill file could not be flushed. Keep the truncated result, but
+					// re-read the snapshot so the now-cleared path is not advertised.
+					return output.snapshot();
+				}
 				return snapshot;
 			};
 			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
@@ -579,13 +585,18 @@ export function createBashToolDefinition(
 					details = { truncation, fullOutputPath: snapshot.fullOutputPath };
 					const startLine = truncation.totalLines - truncation.outputLines + 1;
 					const endLine = truncation.totalLines;
+					// Persistence can be refused (a temp directory we will not write
+					// through, a full or read-only disk), and then there is no path to
+					// name. Every other renderer already omits the clause; this one must
+					// too, rather than handing the model the string "undefined".
+					const fullOutputNote = snapshot.fullOutputPath ? ` Full output: ${snapshot.fullOutputPath}` : "";
 					if (truncation.lastLinePartial) {
 						const lastLineSize = formatSize(output.getLastLineBytes());
-						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}).${fullOutputNote}]`;
 					} else if (truncation.truncatedBy === "lines") {
-						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}.${fullOutputNote}]`;
 					} else {
-						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${snapshot.fullOutputPath}]`;
+						text += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit).${fullOutputNote}]`;
 					}
 				}
 				return { text, details };

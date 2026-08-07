@@ -6,11 +6,11 @@
  * exercised with an injected byte budget so the suite never has to write 64 MB.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { sleep } from "../../../test/helpers/runtime.ts";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import {
 	capPersistedText,
 	PersistedOutputFile,
@@ -29,14 +29,6 @@ afterAll(() => {
 });
 
 const markerBytes = Buffer.byteLength(PERSISTED_OUTPUT_TRUNCATION_MARKER, "utf8");
-
-/**
- * Budget for observing an asynchronous stream failure. Generous on purpose: the
- * assertion is that the error is *captured* rather than thrown, not that it
- * arrives quickly, and the loop exits as soon as it does.
- */
-const ERROR_POLL_ATTEMPTS = 200;
-const ERROR_POLL_INTERVAL_MS = 10;
 
 describe("persisted-output cap", () => {
 	it("is 64 MB", () => {
@@ -184,22 +176,72 @@ describe("persisted-output cap", () => {
 		assert.deepEqual(readFileSync(file.path), payload);
 	});
 
-	it("keeps a stream error off the fire-and-forget path", async () => {
-		// A directory cannot be opened for writing: the stream fails asynchronously,
-		// which is exactly the shape that used to escape as an uncaught exception.
+	it("refuses to create a spill file over anything that already exists", () => {
+		// Owning the descriptor moved this failure from an asynchronous stream error
+		// to a synchronous throw, which is what lets every caller fail closed before
+		// it has a path to advertise. A directory and a plain file both refuse.
 		const directoryPath = join(sandbox, "not-a-file");
 		mkdirSync(directoryPath, { recursive: true });
+		const occupiedPath = join(sandbox, "already-here.log");
+		writeFileSync(occupiedPath, "someone else's file");
 
-		const file = new PersistedOutputFile(directoryPath, { maxBytes: markerBytes + 1024 });
-		file.write("content");
-		file.end();
-		// Poll rather than sleeping a fixed span: how long the stream takes to report
-		// EISDIR is a property of the machine's load, not of the behaviour under test.
-		for (let attempt = 0; attempt < ERROR_POLL_ATTEMPTS && !file.error; attempt++) {
-			await sleep(ERROR_POLL_INTERVAL_MS);
-		}
+		assert.throws(() => new PersistedOutputFile(directoryPath, { maxBytes: markerBytes + 1024 }));
+		assert.throws(() => new PersistedOutputFile(occupiedPath, { maxBytes: markerBytes + 1024 }));
+		assert.equal(readFileSync(occupiedPath, "utf8"), "someone else's file", "the existing file is untouched");
+	});
 
-		assert.ok(file.error, "the failure is captured on the file rather than thrown at the process");
-		await assert.rejects(() => file.close());
+	it.skipIf(process.platform === "win32")("keeps persisted files at 0600 under any process umask", () => {
+		// `mode` on open is only a request: the umask subtracts from it, and a umask
+		// of 0o777 leaves the file at 000 — advertised but unreadable. The umask is
+		// process-wide, so this runs in a child rather than corrupting the suite.
+		const workDir = join(sandbox, "umask-child");
+		mkdirSync(workDir, { recursive: true });
+		const packageRoot = dirname(moduleDir(import.meta.url));
+		const scriptPath = join(workDir, "umask-probe.ts");
+		writeFileSync(
+			scriptPath,
+			`
+process.umask(0o777);
+const { statSync } = await import("node:fs");
+const { join } = await import("node:path");
+const { PersistedOutputFile } = await import(${JSON.stringify(join(packageRoot, "src/core/tools/persisted-output-file.ts"))});
+const { redirectOversizedToolResult } = await import(${JSON.stringify(join(packageRoot, "src/core/tools/oversized-tool-result.ts"))});
+const { DEFAULT_MAX_RESULT_SIZE_CHARS } = await import(${JSON.stringify(join(packageRoot, "src/core/tools/tool-limits.ts"))});
+
+const streamed = new PersistedOutputFile(join(${JSON.stringify(workDir)}, "streamed.log"));
+streamed.write("hello");
+await streamed.close();
+
+const replacement = await redirectOversizedToolResult({
+	toolName: "bash",
+	toolCallId: "umask-call",
+	result: { content: [{ type: "text", text: "z".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1) }], details: {} },
+	isError: false,
+	sessionId: "umask-session",
+	sessionDir: ${JSON.stringify(workDir)},
+});
+const completePath = replacement?.content[0]?.text.match(/Full output saved to: (.+)\\n/)?.[1];
+
+process.stdout.write(
+	JSON.stringify({
+		streamedMode: statSync(streamed.path).mode & 0o777,
+		completePath,
+		completeMode: completePath ? statSync(completePath).mode & 0o777 : undefined,
+	}),
+);
+`,
+		);
+
+		const result = spawnSyncCollect([bunExecutable(), scriptPath], { cwd: packageRoot });
+		assert.equal(result.exitCode, 0, `child failed: ${result.stderr}`);
+		const observed = JSON.parse(result.stdout) as {
+			streamedMode: number;
+			completePath?: string;
+			completeMode?: number;
+		};
+
+		assert.equal(observed.streamedMode, 0o600, "a streamed spill file must stay readable by its owner");
+		assert.ok(observed.completePath, "the oversized result must still be persisted");
+		assert.equal(observed.completeMode, 0o600, "a complete persisted result must stay readable by its owner");
 	});
 });

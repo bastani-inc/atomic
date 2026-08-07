@@ -6,6 +6,7 @@
  * stays focused.
  */
 
+import { join } from "node:path";
 import type { Agent, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
@@ -54,7 +55,8 @@ import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
-import { registerActiveSessionTempDir } from "./tools/session-temp-dir.ts";
+import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
+import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 
 export type { ParsedSkillBlock } from "./agent-session-skill-block.ts";
@@ -156,6 +158,8 @@ class AgentSessionBase {
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	protected _asyncJobManager: AsyncJobManager;
 	protected _asyncJobManagerSessionId: symbol;
+	/** Protection claim on this session's temp tree and tool-results directory. */
+	protected _tempStorageLease: ProtectedPathLease | undefined;
 	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -195,16 +199,24 @@ class AgentSessionBase {
 				isOpen: () => this._workflowStageAdmission?.isOpen() === true,
 			};
 		}
-		// Claim this session's temp tree before any tool can spill into it, so the
+		// Claim this session's storage before any tool can spill into it, so the
 		// sweeper below never reaps a directory this process is still writing to.
+		// The claim is a lease, released in dispose(): a session that is gone must
+		// stop protecting a tree the startup sweep exists to collect.
 		try {
-			registerActiveSessionTempDir(this.sessionManager.getSessionId());
+			const sessionId = this.sessionManager.getSessionId();
+			const sessionDir = this.sessionManager.getSessionDir() || undefined;
+			this._tempStorageLease = acquireProtectedPaths([
+				setActiveSessionTempId(sessionId),
+				// A disk-backed session's results are read back by path, and a replayed
+				// result reuses an old file without touching its mtime, so age alone
+				// cannot keep it alive.
+				...(sessionDir ? [join(sessionDir, TOOL_RESULTS_SUBDIR)] : []),
+			]);
 			// A custom `--session-dir` keeps its tool results directly under that
 			// directory, outside the project-nested roots the default sweep walks,
 			// so it has to be named as its own target.
-			const customSessionDir = this.sessionManager.usesDefaultSessionDir()
-				? undefined
-				: this.sessionManager.getSessionDir() || undefined;
+			const customSessionDir = this.sessionManager.usesDefaultSessionDir() ? undefined : sessionDir;
 			scheduleSessionTempCleanup(customSessionDir ? { sessionDirs: [customSessionDir] } : {});
 		} catch {
 			// Temp-storage housekeeping must never block session construction.

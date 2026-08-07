@@ -25,12 +25,12 @@ import {
 	ensureTempDir,
 	getSessionTempDir,
 	getTempRootDir,
-	registerActiveSessionTempDir,
 	resetSessionTempDirStateForTesting,
 	resolveSessionTempDirPath,
 	SESSION_TEMP_DIR_MODE,
 	SESSION_TEMP_FILE_MODE,
 	sanitizeTempPathComponent,
+	setActiveSessionTempId,
 	TempDirRefusedError,
 } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
@@ -120,8 +120,8 @@ describe("session temp directory scoping", () => {
 		assert.ok(dir.endsWith(`pid-${process.pid}`));
 	});
 
-	it("uses the registered active session for writers without a session handle", () => {
-		registerActiveSessionTempDir("live-session");
+	it("uses the active session id for writers without a session handle", () => {
+		setActiveSessionTempId("live-session");
 		assert.equal(resolveSessionTempDirPath(), resolveSessionTempDirPath("live-session"));
 	});
 

@@ -7,11 +7,40 @@
  * so the file stays readable and its size stays bounded even when the producing
  * command never stops.
  */
-
 import { Buffer } from "node:buffer";
-import { createWriteStream, type WriteStream } from "node:fs";
+import { closeSync, createWriteStream, fchmodSync, fstatSync, openSync, type WriteStream } from "node:fs";
 import { SESSION_TEMP_FILE_MODE } from "./session-temp-dir.ts";
 import { MAX_PERSISTED_OUTPUT_BYTES, PERSISTED_OUTPUT_TRUNCATION_MARKER } from "./tool-limits.js";
+
+/**
+ * Create a persisted-output file and prove it is owner-only before use.
+ *
+ * `wx` refuses to reuse anything already at the path, so a foreign file is never
+ * truncated or adopted; `fchmod` on the descriptor then removes whatever the
+ * umask took away, and the re-stat confirms it. Any failure throws, and every
+ * caller turns that into "no spill file, no advertised path".
+ */
+function openFileWithEnforcedMode(path: string): number {
+	const fd = openSync(path, "wx", SESSION_TEMP_FILE_MODE);
+	if (process.platform === "win32") {
+		return fd;
+	}
+	try {
+		fchmodSync(fd, SESSION_TEMP_FILE_MODE);
+		const stat = fstatSync(fd);
+		if ((stat.mode & 0o777) !== SESSION_TEMP_FILE_MODE) {
+			throw new Error(`persisted output file ${path} could not be restricted to 0600`);
+		}
+		const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+		if (typeof uid === "number" && stat.uid !== uid) {
+			throw new Error(`persisted output file ${path} is owned by another account`);
+		}
+	} catch (error) {
+		closeSync(fd);
+		throw error;
+	}
+	return fd;
+}
 
 /** Trim a buffer to at most `maxBytes` without splitting a UTF-8 sequence. */
 export function truncateBufferAtUtf8Boundary(buffer: Buffer, maxBytes: number): Buffer {
@@ -120,7 +149,13 @@ export class PersistedOutputFile {
 		this.maxBytes = options.maxBytes ?? MAX_PERSISTED_OUTPUT_BYTES;
 		const markerBytes = Buffer.byteLength(PERSISTED_OUTPUT_TRUNCATION_MARKER, "utf8");
 		this.safeLimit = Math.max(0, this.maxBytes - markerBytes);
-		const stream = createWriteStream(path, { mode: SESSION_TEMP_FILE_MODE });
+		// Own the descriptor so the mode can be enforced before a single byte is
+		// written and before the path is handed to anyone: `mode` on open is only a
+		// request, which the process umask then narrows — a umask of 0o077 is
+		// harmless, but 0o777 leaves the file at 000 and the advertised path
+		// unreadable. Enforcing after close would be too late to fail closed.
+		const fd = openFileWithEnforcedMode(path);
+		const stream = createWriteStream(path, { fd, autoClose: true });
 		stream.on("error", (error: Error) => {
 			this.failure ??= error;
 		});

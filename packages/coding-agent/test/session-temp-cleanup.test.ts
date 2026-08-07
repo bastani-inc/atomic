@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
 import {
 	CLEANUP_CONTROL_SUBDIR,
 	CLEANUP_LOCK_FILE,
@@ -23,7 +24,8 @@ import {
 	sweepSessionTempRoot,
 	sweepToolResultsRoot,
 } from "../src/core/tools/session-temp-cleanup.ts";
-import { TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
+import { acquireProtectedPaths } from "../src/core/tools/session-temp-dir.ts";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // Anchored to the real clock: the marker's freshness is read from its mtime, so a
@@ -386,5 +388,73 @@ describe("runSessionTempCleanup", () => {
 		assert.equal(existsSync(join(project, TOOL_RESULTS_SUBDIR)), false);
 		assert.equal(existsSync(join(customDir, TOOL_RESULTS_SUBDIR)), false);
 		assert.equal(existsSync(customTranscript), true, "a stale transcript is still never deleted");
+	});
+
+	it("keeps a live session's disk-backed results, including a replayed old file", async () => {
+		// A replayed result reuses the file written on an earlier turn and does not
+		// refresh its mtime, so the model can be handed a month-old path this turn.
+		// Age cannot protect that; the session's registered directory has to.
+		const sessionsRoot = join(sandbox, "live-sessions");
+		const project = join(sessionsRoot, "--live-project--");
+		const toolResults = join(project, TOOL_RESULTS_SUBDIR);
+		mkdirSync(toolResults, { recursive: true });
+		const transcript = join(project, "2026-01-01-session.jsonl");
+		const replayed = join(toolResults, "call-live.txt");
+		writeFileSync(transcript, "{}\n");
+		writeFileSync(replayed, "persisted on an earlier turn");
+		for (const path of [transcript, replayed, toolResults, project]) stampAge(path, 60);
+
+		const lease = acquireProtectedPaths([toolResults]);
+		try {
+			// The documented EEXIST replay path: same call id, existing file reused.
+			const replacement = await redirectOversizedToolResult({
+				toolName: "bash",
+				toolCallId: "call-live",
+				result: { content: [{ type: "text", text: "q".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1) }], details: {} },
+				isError: false,
+				sessionId: "live-session",
+				sessionDir: project,
+			});
+			const advertised = replacement?.content[0]?.text.match(/Full output saved to: (.+)\n/)?.[1];
+			assert.equal(advertised, replayed, "the replayed file is what the model was handed");
+
+			runSessionTempCleanup({
+				now: NOW,
+				tempRoot: join(sandbox, "absent"),
+				sessionsRoots: [sessionsRoot],
+				controlRoot,
+			});
+
+			assert.equal(existsSync(replayed), true, "an advertised path must survive the same process's sweep");
+			assert.equal(existsSync(transcript), true);
+		} finally {
+			lease.release();
+		}
+	});
+
+	it("reaps the same storage once the session's lease is released", () => {
+		const customDir = join(sandbox, "released-custom");
+		const toolResults = join(customDir, TOOL_RESULTS_SUBDIR);
+		mkdirSync(toolResults, { recursive: true });
+		const stale = join(toolResults, "call-1.txt");
+		writeFileSync(stale, "persisted");
+		for (const path of [stale, toolResults]) stampAge(path, 60);
+
+		const lease = acquireProtectedPaths([toolResults]);
+		runSessionTempCleanup({ now: NOW, tempRoot: join(sandbox, "absent"), sessionDirs: [customDir], controlRoot });
+		assert.equal(existsSync(toolResults), true, "protected while the session holds its lease");
+
+		lease.release();
+		// A fresh control root rather than a future clock: the marker's freshness is
+		// read from its real mtime, so an arithmetic "past the window" is only true
+		// while the test is fast, and this suite must not depend on machine load.
+		runSessionTempCleanup({
+			now: NOW,
+			tempRoot: join(sandbox, "absent"),
+			sessionDirs: [customDir],
+			controlRoot: join(controlRoot, "after-release"),
+		});
+
+		assert.equal(existsSync(toolResults), false, "released storage becomes reapable");
 	});
 });

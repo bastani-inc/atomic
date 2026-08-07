@@ -133,7 +133,15 @@ export class OutputAccumulator {
 			return;
 		}
 		this.tempFile = undefined;
-		await file.close();
+		try {
+			await file.close();
+		} catch (error) {
+			// A spill file that failed to flush must not be advertised: a later
+			// snapshot reports no path rather than one pointing at a broken file.
+			this.tempFilePath = undefined;
+			this.tempFileUnavailable = true;
+			throw error;
+		}
 	}
 
 	getLastLineBytes(): number {

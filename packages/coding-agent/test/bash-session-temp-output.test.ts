@@ -5,6 +5,7 @@
  */
 import assert from "node:assert/strict";
 import {
+	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -14,6 +15,7 @@ import {
 	realpathSync,
 	rmSync,
 	symlinkSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
@@ -29,6 +31,9 @@ import {
 	resolveSessionTempDirPath,
 } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES } from "../src/core/tools/truncate.ts";
+
+/** Captured before the sandbox override below, so tests can reach the real temp directory. */
+const realTmpdir = tmpdir();
 
 const envKeys = ["TMPDIR", "TEMP", "TMP"] as const;
 const savedEnv = new Map<string, string | undefined>();
@@ -187,4 +192,78 @@ describe("bash overflow logs live in the session temp directory", () => {
 			}
 		},
 	);
+});
+
+describe("the bash tool never advertises a path it could not write", () => {
+	/**
+	 * Run the real tool definition against a session temp directory that cannot be
+	 * created, and assert the model-facing result on every refusal mode.
+	 */
+	async function expectNoAdvertisedPath(sessionTempDir: string): Promise<void> {
+		const definition = createBashToolDefinition(process.cwd(), {
+			operations: fakeOperations(OVERSIZED_OUTPUT),
+			sessionTempDir: () => sessionTempDir,
+		});
+
+		const result = await definition.execute("call-refused", { command: "echo big" });
+		const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+
+		assert.ok(text.includes("[Showing lines"), `truncation must survive, got:\n${text.slice(-300)}`);
+		assert.equal(
+			text.includes("undefined"),
+			false,
+			`the model must never be handed "undefined":\n${text.slice(-300)}`,
+		);
+		assert.equal(text.includes("Full output:"), false, "no path clause when there is no path");
+		assert.equal(result.details?.fullOutputPath, undefined);
+		assert.equal(result.details?.truncation?.truncated, true);
+	}
+
+	it.skipIf(process.platform === "win32")("when the owner root is a symlink", async () => {
+		const outside = join(sandbox, "tool-symlink-target");
+		mkdirSync(outside, { recursive: true });
+		const root = getTempRootDir();
+		rmSync(root, { recursive: true, force: true });
+		resetSessionTempDirStateForTesting();
+		symlinkSync(outside, root, "dir");
+
+		try {
+			await expectNoAdvertisedPath(resolveSessionTempDirPath("symlink-refused"));
+			assert.deepEqual(readdirSync(outside), [], "nothing is written through the planted link");
+		} finally {
+			rmSync(root, { force: true });
+			resetSessionTempDirStateForTesting();
+		}
+	});
+
+	it.skipIf(process.platform === "win32")("when creating the session directory is denied", async () => {
+		// Outside the owner-scoped tree, where the component walk does not apply, so
+		// the write permission is genuinely missing rather than tightened back. This
+		// is the shape a locked-down volume or an exhausted quota produces.
+		const lockedRoot = realpathSync(mkdtempSync(join(realTmpdir, "atomic-locked-")));
+		const locked = join(lockedRoot, "locked");
+		mkdirSync(locked, { recursive: true });
+		chmodSync(locked, 0o500);
+		resetSessionTempDirStateForTesting();
+
+		try {
+			await expectNoAdvertisedPath(join(locked, "denied-session"));
+		} finally {
+			chmodSync(locked, 0o700);
+			rmSync(lockedRoot, { recursive: true, force: true });
+			resetSessionTempDirStateForTesting();
+		}
+	});
+
+	it("when the session directory's parent is not a directory", async () => {
+		const notADirectory = join(sandbox, "occupied-parent");
+		writeFileSync(notADirectory, "this is a file");
+		resetSessionTempDirStateForTesting();
+
+		try {
+			await expectNoAdvertisedPath(join(notADirectory, "child-session"));
+		} finally {
+			resetSessionTempDirStateForTesting();
+		}
+	});
 });

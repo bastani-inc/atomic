@@ -304,32 +304,70 @@ export function ensureSessionTempDir(explicitDir?: string): string {
 }
 
 let activeSessionId: string | undefined;
-const protectedTempDirs = new Set<string>();
 
 /**
- * Mark a session as live in this process.
+ * Refcounted protection for directories the sweeper must not reap.
  *
- * Two things follow: writers without a session handle default to this session's
- * directory, and the sweeper never reaps a directory belonging to a session this
- * process is still using — which is what keeps a `Full output saved to:` path
- * valid for the lifetime of the session that produced it.
+ * A count rather than a set, because protection has more than one holder and
+ * more than one lifetime: a session protects its own tree, an async spill writer
+ * outlives the session object it started under, and one session can be replaced
+ * by another wrapping the same paths. Releasing one holder must not unprotect a
+ * directory another is still writing to, and a session that is gone must stop
+ * protecting a tree the startup sweep exists to collect.
  */
-export function registerActiveSessionTempDir(sessionId: string): string {
-	activeSessionId = sessionId;
-	const dir = resolveSessionTempDirPath(sessionId);
-	protectedTempDirs.add(dir);
-	return dir;
+const protectedPathCounts = new Map<string, number>();
+
+/** A protection claim held by one owner; releasing twice is a no-op. */
+export interface ProtectedPathLease {
+	release(): void;
 }
 
-/** Session temp directories this process must not reap. */
+/** Protect `paths` until the returned lease is released. */
+export function acquireProtectedPaths(paths: readonly string[]): ProtectedPathLease {
+	const claimed = paths.filter((path) => path.length > 0);
+	for (const path of claimed) {
+		protectedPathCounts.set(path, (protectedPathCounts.get(path) ?? 0) + 1);
+	}
+	let released = false;
+	return {
+		release() {
+			if (released) {
+				return;
+			}
+			released = true;
+			for (const path of claimed) {
+				const remaining = (protectedPathCounts.get(path) ?? 0) - 1;
+				if (remaining > 0) {
+					protectedPathCounts.set(path, remaining);
+				} else {
+					protectedPathCounts.delete(path);
+				}
+			}
+		},
+	};
+}
+
+/**
+ * Make `sessionId` the default target for writers without a session handle.
+ *
+ * Deliberately separate from protection: a disposed session must stop protecting
+ * its tree, but whichever session ran last still names where an unattached
+ * writer spills.
+ */
+export function setActiveSessionTempId(sessionId: string): string {
+	activeSessionId = sessionId;
+	return resolveSessionTempDirPath(sessionId);
+}
+
+/** Directories this process must not reap: session temp trees and live tool-results. */
 export function getProtectedSessionTempDirs(): ReadonlySet<string> {
-	return protectedTempDirs;
+	return new Set(protectedPathCounts.keys());
 }
 
 /** Test seam: forget the process-level active/protected session state. */
 export function resetSessionTempDirStateForTesting(): void {
 	activeSessionId = undefined;
-	protectedTempDirs.clear();
+	protectedPathCounts.clear();
 	ensuredDirs.clear();
 	cachedOwnerComponent = undefined;
 	cachedBaseTempDir = undefined;

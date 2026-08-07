@@ -396,14 +396,18 @@ export function sweepSessionTempRoot(root: string = getTempRootDir(), options: S
  * neither descended into nor deleted — because `readdirSync`/`rmSync` resolve
  * links and would reach the outside directory the link points at.
  *
- * The directory's newest entry decides its fate, exactly as it does for a session
- * temp tree: one fresh descendant keeps the entire tree, stale siblings included.
- * That is what makes every path inside a live tree stay valid, including one a
- * tool result recorded weeks ago and the model may still read back.
+ * A directory a live session registered is skipped whatever its age. Age alone
+ * is not enough here: replaying a persisted result reuses the existing file
+ * without touching its mtime, so a month-old file can be advertised to the model
+ * this very turn.
+ *
+ * Otherwise the directory's newest entry decides its fate, exactly as it does for
+ * a session temp tree: one fresh descendant keeps the entire tree, stale siblings
+ * included.
  */
-function reapToolResultsDir(parent: string, cutoff: number): void {
+function reapToolResultsDir(parent: string, cutoff: number, protectedPaths: ReadonlySet<string>): void {
 	const toolResultsDir = join(parent, TOOL_RESULTS_SUBDIR);
-	if (!isRealDirectory(toolResultsDir)) {
+	if (protectedPaths.has(toolResultsDir) || !isRealDirectory(toolResultsDir)) {
 		return;
 	}
 	if (hasEntryNewerThan(toolResultsDir, cutoff)) {
@@ -421,7 +425,11 @@ export function sweepToolResultsRoot(sessionsRoot: string, options: SweepOptions
 	if (!isRealDirectory(sessionsRoot)) {
 		return "missing";
 	}
-	return withCleanupGate(getCleanupControlDir(sessionsRoot, options.controlRoot), options, (gate) => {
+	const gateOptions: SweepOptions = {
+		...options,
+		protectedPaths: options.protectedPaths ?? getProtectedSessionTempDirs(),
+	};
+	return withCleanupGate(getCleanupControlDir(sessionsRoot, options.controlRoot), gateOptions, (gate) => {
 		let entries: string[];
 		try {
 			entries = readdirSync(sessionsRoot);
@@ -437,7 +445,7 @@ export function sweepToolResultsRoot(sessionsRoot: string, options: SweepOptions
 				return;
 			}
 			try {
-				reapToolResultsDir(projectDir, gate.cutoff);
+				reapToolResultsDir(projectDir, gate.cutoff, gate.protectedPaths);
 			} catch {
 				// Keep going so one unreadable project directory does not block the rest.
 			}
@@ -456,12 +464,16 @@ export function sweepSessionDirToolResults(sessionDir: string, options: SweepOpt
 	if (!isRealDirectory(sessionDir)) {
 		return "missing";
 	}
-	return withCleanupGate(getCleanupControlDir(sessionDir, options.controlRoot), options, (gate) => {
+	const gateOptions: SweepOptions = {
+		...options,
+		protectedPaths: options.protectedPaths ?? getProtectedSessionTempDirs(),
+	};
+	return withCleanupGate(getCleanupControlDir(sessionDir, options.controlRoot), gateOptions, (gate) => {
 		if (!gate.ownsLock()) {
 			return;
 		}
 		try {
-			reapToolResultsDir(sessionDir, gate.cutoff);
+			reapToolResultsDir(sessionDir, gate.cutoff, gate.protectedPaths);
 		} catch {
 			// Best effort.
 		}
@@ -493,19 +505,20 @@ export function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): 
 	} catch {
 		// Best effort.
 	}
-	// Session-storage sweeps protect nothing by path: a live session's results are
-	// fresh, and the retention cutoff is what keeps them.
-	const storageOptions: SweepOptions = { ...sweepOptions, protectedPaths: [] };
+	// Session storage carries the same protection as the temp trees: a live
+	// session registers its own `tool-results` directory, and a replayed result
+	// reuses an old file without refreshing its mtime, so age alone cannot keep
+	// an advertised path alive.
 	for (const root of sessionsRoots ?? safeSessionsRoots()) {
 		try {
-			sweepToolResultsRoot(root, storageOptions);
+			sweepToolResultsRoot(root, sweepOptions);
 		} catch {
 			// Best effort.
 		}
 	}
 	for (const dir of sessionDirs ?? []) {
 		try {
-			sweepSessionDirToolResults(dir, storageOptions);
+			sweepSessionDirToolResults(dir, sweepOptions);
 		} catch {
 			// Best effort.
 		}

@@ -526,6 +526,11 @@ export function dispose(this: AgentSession): void {
 	this._disconnectFromAgent();
 	this._eventListeners = [];
 	cleanupSessionResources(this.sessionId);
+	// Last: an async spill writer started by this session holds its own lease, so
+	// releasing here stops protecting a tree nothing is using without cutting a
+	// writer that outlived the session object.
+	this._tempStorageLease?.release();
+	this._tempStorageLease = undefined;
 }
 
 // =========================================================================

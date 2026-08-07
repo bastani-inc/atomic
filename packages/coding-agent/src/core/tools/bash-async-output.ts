@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { APP_NAME } from "../../config.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../../utils/shell.ts";
 import { PersistedOutputFile } from "./persisted-output-file.ts";
-import { ensureSessionTempDir } from "./session-temp-dir.ts";
+import { acquireProtectedPaths, ensureSessionTempDir, type ProtectedPathLease } from "./session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES, formatSize } from "./truncate.ts";
 
 export interface BashAsyncOutputTarget {
@@ -44,19 +44,27 @@ export function createAsyncOutputAppender(
 	let truncated = false;
 	let fullOutputFile: PersistedOutputFile | undefined;
 	let persistUnavailable = false;
+	let writerLease: ProtectedPathLease | undefined;
 	let bufferedChunks: Buffer[] = [];
 	const decoder = new TextDecoder();
 
 	const ensureFullOutputFile = (): PersistedOutputFile | undefined => {
 		if (fullOutputFile || persistUnavailable) return fullOutputFile;
 		try {
-			job.fullOutputPath = outputPath(options?.sessionTempDir);
-			fullOutputFile = new PersistedOutputFile(job.fullOutputPath);
+			const path = outputPath(options?.sessionTempDir);
+			// A background job outlives the session that started it, so this writer
+			// holds its own protection claim rather than relying on the session's.
+			writerLease = acquireProtectedPaths([dirname(path)]);
+			fullOutputFile = new PersistedOutputFile(path);
+			job.fullOutputPath = path;
 		} catch {
-			// The session temp directory was refused (see ensureTempDir). Keep polling
-			// output flowing without advertising a spill path we could not own.
+			// The session temp directory was refused (see ensureTempDir), or the file
+			// could not be created owner-only. Keep polling output flowing without
+			// advertising a spill path we could not own.
 			persistUnavailable = true;
 			job.fullOutputPath = undefined;
+			writerLease?.release();
+			writerLease = undefined;
 			bufferedChunks = [];
 			return undefined;
 		}
@@ -92,10 +100,23 @@ export function createAsyncOutputAppender(
 		},
 		async close() {
 			appendDecodedText(decoder.decode());
-			if (!fullOutputFile) return;
+			if (!fullOutputFile) {
+				writerLease?.release();
+				writerLease = undefined;
+				return;
+			}
 			const file = fullOutputFile;
 			fullOutputFile = undefined;
-			await file.close();
+			try {
+				await file.close();
+			} catch (error) {
+				// A spill file that failed to flush must not be advertised.
+				job.fullOutputPath = undefined;
+				throw error;
+			} finally {
+				writerLease?.release();
+				writerLease = undefined;
+			}
 		},
 	};
 }
