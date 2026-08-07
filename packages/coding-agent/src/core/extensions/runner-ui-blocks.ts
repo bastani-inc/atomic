@@ -12,6 +12,7 @@
  */
 
 import type { UserBlock } from "./block-types.js";
+import { observeSettlement } from "./settlement-observer.js";
 import type { ExtensionUIContext } from "./ui-types.ts";
 import { openUserBlock } from "./user-blocks.js";
 
@@ -50,13 +51,6 @@ function blockLabel<M extends BlockingUiMethod>(method: M, args: BlockingUiArgs<
 	return typeof title === "string" ? title : method;
 }
 
-/** Whether a value settles later, across realms and for plain thenables alike. */
-function isThenable(value: BlockingUiResult<BlockingUiMethod>): boolean {
-	if (value === null) return false;
-	if (typeof value !== "object" && typeof value !== "function") return false;
-	return typeof Reflect.get(value, "then") === "function";
-}
-
 /**
  * Wrap one blocking dialog so it mints a block for its duration.
  *
@@ -87,28 +81,22 @@ function wrapBlockingMethod<M extends BlockingUiMethod>(
 			throw error;
 		}
 
-		// `instanceof Promise` is the wrong question. A dialog implemented in
-		// another realm — a `vm` context, an isolated host bridge — returns a
-		// promise that fails that check, and so does an ordinary thenable, and
-		// either one released the block before the user had answered. Ask
-		// structurally instead, and keep the synchronous path for a genuine
-		// synchronous return so a test double still behaves as before.
+		// `instanceof Promise` is the wrong question: a dialog from another realm —
+		// a `vm` context, an isolated host bridge — fails it, and so does an
+		// ordinary thenable, and either one released the block before the user had
+		// answered. `observeSettlement` asks structurally, and hands back the host's
+		// own promise rather than a `.finally()` derivative, so promise identity
+		// survives wrapping.
 		//
 		// Reading `then` can itself throw, because it may be a getter. That is
-		// inside the guard too: an error here used to reach the caller with the
+		// inside the guard too: an error there used to reach the caller with the
 		// block still open, stranding the pane in `blocked` forever.
-		let settlesLater: boolean;
 		try {
-			settlesLater = isThenable(result);
+			return observeSettlement(result, () => block.release());
 		} catch (error) {
 			block.release();
 			throw error;
 		}
-		if (!settlesLater) {
-			block.release();
-			return result;
-		}
-		return Promise.resolve(result).finally(() => block.release()) as BlockingUiResult<M>;
 	};
 	return wrapped as BlockingUiFunction<M>;
 }
@@ -140,6 +128,12 @@ type UiCallable = (...args: never[]) => void;
 function wrapHostMethod(host: ExtensionUIContext, original: UiCallable): UiCallable {
 	return (...args: never[]) => Reflect.apply(original, host, args);
 }
+
+/**
+ * Whatever a member read resolves to: a wrapped callable, or any non-callable
+ * value the host holds. Named so the resolver needs no `unknown` annotation.
+ */
+type UiMemberValue = UiCallable | ReturnType<typeof Reflect.get>;
 
 /** One member's forwarder, kept only while the host still returns the same function. */
 interface CachedUiMember {
@@ -188,35 +182,82 @@ export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 
 	const memberCache = new Map<PropertyKey, CachedUiMember>();
 	const surrogate = Object.create(Object.getPrototypeOf(ui) as object | null) as ExtensionUIContext;
+
+	/**
+	 * Resolve a member the way the proxy hands it out: host value, wrapped when
+	 * callable, memoized so repeated lookup is stable.
+	 */
+	const resolveMember = (property: string | symbol): UiMemberValue => {
+		const value = Reflect.get(ui, property, ui);
+		if (typeof value !== "function") return value;
+		const callable = value as UiCallable;
+		const cached = memberCache.get(property);
+		// A getter may hand back a different function later; only reuse the
+		// forwarder while it still wraps the function the host just returned.
+		if (cached && cached.original === callable) return cached.wrapped;
+		const created = isBlockingUiMethod(property)
+			? (wrapBlockingMethod(property, ui, value as BlockingUiFunction<BlockingUiMethod>) as UiCallable)
+			: wrapHostMethod(ui, callable);
+		memberCache.set(property, { original: callable, wrapped: created });
+		return created;
+	};
+
+	/**
+	 * Copy the host's own keys onto the surrogate, holding the *wrapped* values.
+	 *
+	 * Only ever called when the wrapper is about to become non-extensible. Until
+	 * then the surrogate stays empty, which is what lets `get` substitute
+	 * forwarders for a frozen host's non-configurable methods. Storing the
+	 * forwarder rather than the raw function is what keeps the receiver fix alive
+	 * once the target really does own the property.
+	 */
+	const materializeTarget = (): void => {
+		for (const key of Reflect.ownKeys(ui)) {
+			const descriptor = Reflect.getOwnPropertyDescriptor(ui, key);
+			if (!descriptor) continue;
+			Reflect.defineProperty(surrogate, key, {
+				value: resolveMember(key),
+				writable: descriptor.writable ?? true,
+				enumerable: descriptor.enumerable ?? true,
+				configurable: true,
+			});
+		}
+	};
+
+	// A host that is already sealed must not look extensible through the wrapper.
+	// Mirroring now keeps `Object.isExtensible` truthful from the first read.
+	if (!Object.isExtensible(ui)) {
+		materializeTarget();
+		Object.preventExtensions(surrogate);
+	}
+
+	const targetIsSealed = (): boolean => !Object.isExtensible(surrogate);
+
 	const wrapped = new Proxy(surrogate, {
 		// Reads resolve against the host object, not the proxy, so a getter on the
 		// host sees its own `this` and cannot trip over a private field.
 		get(_surrogate, property) {
-			const value = Reflect.get(ui, property, ui);
-			if (typeof value !== "function") return value;
-			const callable = value as UiCallable;
-			const cached = memberCache.get(property);
-			// A getter may hand back a different function later; only reuse the
-			// forwarder while it still wraps the function the host just returned.
-			if (cached && cached.original === callable) return cached.wrapped;
-			const created = isBlockingUiMethod(property)
-				? (wrapBlockingMethod(property, ui, value as BlockingUiFunction<BlockingUiMethod>) as UiCallable)
-				: wrapHostMethod(ui, callable);
-			memberCache.set(property, { original: callable, wrapped: created });
-			return created;
+			// Once the target owns the property and is sealed, the proxy must return
+			// exactly what it holds — which is the same forwarder `resolveMember`
+			// produced when it was mirrored.
+			if (targetIsSealed() && Object.hasOwn(surrogate, property)) return Reflect.get(surrogate, property);
+			return resolveMember(property);
 		},
 		has(_surrogate, property) {
-			return Reflect.has(ui, property);
+			return targetIsSealed() ? Reflect.has(surrogate, property) : Reflect.has(ui, property);
 		},
 		ownKeys() {
-			return Reflect.ownKeys(ui);
+			// A non-extensible target fixes its key set, so reporting the host's
+			// would violate the invariant the moment the two diverge.
+			return targetIsSealed() ? Reflect.ownKeys(surrogate) : Reflect.ownKeys(ui);
 		},
 		getOwnPropertyDescriptor(_surrogate, property) {
+			if (targetIsSealed()) return Reflect.getOwnPropertyDescriptor(surrogate, property);
 			const descriptor = Reflect.getOwnPropertyDescriptor(ui, property);
 			if (!descriptor) return undefined;
-			// The surrogate holds no own properties, so a reported descriptor must
-			// be configurable for the proxy invariants to accept it. This is what
-			// keeps `Object.keys`, spread, and `JSON.stringify` seeing the host.
+			// While the surrogate holds no own properties, a reported descriptor
+			// must be configurable for the proxy invariants to accept it. This is
+			// what keeps `Object.keys`, spread, and `JSON.stringify` seeing the host.
 			return { ...descriptor, configurable: true };
 		},
 		// Writes must reach the host too. Without these the surrogate quietly
@@ -228,36 +269,49 @@ export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 			return Reflect.set(ui, property, value, ui);
 		},
 		defineProperty(_surrogate, property, descriptor) {
-			// Refused before the host is touched. A proxy may only report a
-			// non-configurable definition as succeeding if its own target carries a
-			// matching property, and the surrogate deliberately carries none — so
-			// forwarding first mutated the host and *then* threw, leaving the caller
-			// with an error and the host already changed. Failing up front keeps the
-			// two consistent: `Object.defineProperty` throws, and the host is exactly
-			// as it was.
-			if (descriptor.configurable === false) return false;
+			// A non-configurable definition can only be reported as succeeding if
+			// the target carries a matching property. Once the target is mirrored
+			// that is achievable — this is the path `Object.freeze` takes, which
+			// redefines every own key non-writable and non-configurable.
+			if (descriptor.configurable === false) {
+				if (!targetIsSealed() || !Object.hasOwn(surrogate, property)) return false;
+				if (!Reflect.defineProperty(ui, property, descriptor)) return false;
+				// `Object.freeze` redefines each key with only `writable` and
+				// `configurable`. Spreading that over the mirror would blank the
+				// forwarder it holds, so an absent `value` keeps the current one.
+				if (Object.hasOwn(descriptor, "get") || Object.hasOwn(descriptor, "set")) {
+					return Reflect.defineProperty(surrogate, property, descriptor);
+				}
+				const mirrored = Reflect.getOwnPropertyDescriptor(surrogate, property);
+				return Reflect.defineProperty(surrogate, property, {
+					...descriptor,
+					value: Object.hasOwn(descriptor, "value") ? resolveMember(property) : mirrored?.value,
+				});
+			}
 			return Reflect.defineProperty(ui, property, descriptor);
 		},
 		deleteProperty(_surrogate, property) {
-			return Reflect.deleteProperty(ui, property);
+			if (!Reflect.deleteProperty(ui, property)) return false;
+			if (Object.hasOwn(surrogate, property)) Reflect.deleteProperty(surrogate, property);
+			return true;
 		},
 		/**
-		 * Refuse to seal the wrapper.
+		 * Seal the wrapper the way sealing the host would.
 		 *
-		 * Without this the default trap sealed the *surrogate*, and an empty
-		 * non-extensible target cannot report the host's keys — so `Object.keys`,
-		 * spread, and `JSON.stringify` all began throwing on a context that had
-		 * merely been passed to `Object.freeze`. Refusing makes the freeze fail
-		 * loudly and immediately while leaving the wrapper fully usable.
+		 * The host's own keys are mirrored onto the surrogate first — holding the
+		 * wrapped values, so the receiver fix survives — and both objects become
+		 * non-extensible together. That keeps `isExtensible` truthful without a
+		 * trap of its own, and keeps `ownKeys` legal against a fixed key set.
 		 *
-		 * Sealing a wrapped context is not something Phase 1 defines, and making it
-		 * succeed through to the host needs a mirrored shadow target rather than an
-		 * empty surrogate — a redesign that would give up the frozen-host and
-		 * host-receiver behavior this wrapper exists to preserve. Freeze the host
-		 * before wrapping it instead; that is supported and tested.
+		 * Refusing instead was tried and was worse: `Object.freeze(ctx.ui)` threw
+		 * where freezing the raw context succeeds, which is precisely the kind of
+		 * difference wrapping must not introduce.
 		 */
 		preventExtensions() {
-			return false;
+			materializeTarget();
+			if (!Object.preventExtensions(ui)) return false;
+			Object.preventExtensions(surrogate);
+			return true;
 		},
 	});
 	wrappedContexts.set(ui, wrapped);

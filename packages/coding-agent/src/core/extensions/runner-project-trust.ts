@@ -1,3 +1,4 @@
+import { observeSettlement } from "./settlement-observer.js";
 import type {
 	ExtensionError,
 	LoadExtensionsResult,
@@ -19,12 +20,6 @@ type TrustPromptFunction<M extends TrustPromptMethod> = TrustUi[M];
 type TrustPromptArgs<M extends TrustPromptMethod> = Parameters<TrustPromptFunction<M>>;
 
 type TrustPromptResult<M extends TrustPromptMethod> = ReturnType<TrustPromptFunction<M>>;
-
-function settlesLater(value: TrustPromptResult<TrustPromptMethod>): boolean {
-	if (value === null) return false;
-	if (typeof value !== "object" && typeof value !== "function") return false;
-	return typeof Reflect.get(value, "then") === "function";
-}
 
 /**
  * Wrap one restricted prompt so it reports the agent as waiting on a person.
@@ -50,18 +45,12 @@ function wrapTrustPrompt<M extends TrustPromptMethod>(
 			throw error;
 		}
 
-		let pending: boolean;
 		try {
-			pending = settlesLater(result);
+			return observeSettlement(result, () => block.release());
 		} catch (error) {
 			block.release();
 			throw error;
 		}
-		if (!pending) {
-			block.release();
-			return result;
-		}
-		return Promise.resolve(result).finally(() => block.release()) as TrustPromptResult<M>;
 	};
 	return wrapped as TrustPromptFunction<M>;
 }
@@ -71,11 +60,18 @@ function wrapTrustPrompt<M extends TrustPromptMethod>(
  *
  * An extension's `project_trust` handler receives the same restricted UI the
  * host built, and a prompt it opens stops the agent exactly like the built-in
- * one does — so it has to be reported the same way. `notify` is left alone; it
- * does not wait for anyone.
+ * one does — so it has to be reported the same way. `notify` still forwards to
+ * the host; it just does not open a block, because it waits for nobody.
  *
  * Only the handler path is wrapped. `selectProjectTrustOption()` opens its own
  * block for the fallback prompt, and wrapping both would count one wait twice.
+ *
+ * Built with explicit members and accessors rather than a spread.
+ * `ProjectTrustContext` is structurally typed and publicly exported, so a host
+ * may hand over a class instance whose `notify`, `cwd`, `mode`, or `hasUI` live
+ * on a prototype or behind a getter — and a spread copies only enumerable own
+ * properties, which silently dropped every one of those. Accessors also keep
+ * the values live rather than snapshotting them at wrap time.
  *
  * The public `ProjectTrustContext` shape is unchanged: this is a derived object
  * with the same members.
@@ -83,12 +79,24 @@ function wrapTrustPrompt<M extends TrustPromptMethod>(
 function withTrustPromptBlocks(ctx: ProjectTrustContext): ProjectTrustContext {
 	const ui = ctx.ui;
 	const wrappedUi: TrustUi = {
-		...ui,
 		select: wrapTrustPrompt("select", ui, ui.select),
 		confirm: wrapTrustPrompt("confirm", ui, ui.confirm),
 		input: wrapTrustPrompt("input", ui, ui.input),
+		notify: (...args: Parameters<TrustUi["notify"]>): ReturnType<TrustUi["notify"]> =>
+			Reflect.apply(ui.notify, ui, args),
 	};
-	return { ...ctx, ui: wrappedUi };
+	return {
+		get cwd() {
+			return ctx.cwd;
+		},
+		get mode() {
+			return ctx.mode;
+		},
+		get hasUI() {
+			return ctx.hasUI;
+		},
+		ui: wrappedUi,
+	};
 }
 
 export async function emitProjectTrustEvent(

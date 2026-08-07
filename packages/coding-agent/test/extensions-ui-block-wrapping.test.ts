@@ -97,6 +97,80 @@ describe("ctx.ui block wrapping", () => {
 		assert.deepEqual(getOpenUserBlocks(), [], "no block may outlive its dialog");
 	});
 
+	it("returns the host's own promise object, not a derivative", async () => {
+		// `Promise.resolve(result).finally(cleanup)` returns a *derived* promise, so
+		// a host that caches or cancels by the object it handed back silently
+		// stopped matching. Identity has to survive wrapping.
+		type TrackedPromise = Promise<string> | Promise<boolean>;
+		const promises = new Map<string, TrackedPromise>();
+		const remember = <T extends string | boolean>(key: string, value: Promise<T>): Promise<T> => {
+			promises.set(key, value);
+			return value;
+		};
+		const base = recordingUi({}).ui;
+		const host: ExtensionUIContext = {
+			...base,
+			select: (_t, options) => remember("select", Promise.resolve(options[0])),
+			confirm: () => remember("confirm", Promise.resolve(true)),
+			input: () => remember("input", Promise.resolve("typed")),
+			editor: () => remember("editor", Promise.resolve("edited")),
+			custom: <T>() => remember("custom", Promise.resolve("done" as T)) as Promise<T>,
+		};
+		const ctx = contextOver(host);
+
+		const returned = [
+			["select", ctx.ui.select("Pick", ["a"])],
+			["confirm", ctx.ui.confirm("Sure?", "really")],
+			["input", ctx.ui.input("Name")],
+			["editor", ctx.ui.editor("Edit")],
+			["custom", ctx.ui.custom(() => ({ render: () => [] }))],
+		] as const;
+
+		for (const [key, value] of returned) {
+			assert.equal(value, promises.get(key), `${key} must hand back the host's own promise`);
+		}
+		await Promise.all(returned.map(([, value]) => value));
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("keeps rejection identity and the original promise object", async () => {
+		const failure = new Error("host rejected");
+		const rejected = Promise.reject(failure);
+		rejected.catch(() => {});
+		const base = recordingUi({}).ui;
+		const ctx = contextOver({ ...base, select: () => rejected } as ExtensionUIContext);
+
+		const returned = ctx.ui.select("Pick", ["a"]);
+		assert.equal(returned, rejected, "the caller receives the host's own promise");
+		assert.equal(
+			await captureRejection(async () => {
+				await returned;
+			}),
+			failure,
+		);
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("holds the block for a cross-realm promise without replacing it", async () => {
+		const realm = createContext({});
+		const makeDeferred = runInContext(
+			"(() => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; })",
+			realm,
+		) as () => { promise: PromiseLike<string>; resolve: (value: string) => void };
+		const deferred = makeDeferred();
+		assert.equal(deferred.promise instanceof Promise, false, "the fixture must be a foreign promise");
+
+		const base = recordingUi({}).ui;
+		const ctx = contextOver({ ...base, select: () => deferred.promise } as ExtensionUIContext);
+
+		const returned = ctx.ui.select("Approve edit?", ["yes"]);
+		assert.equal(returned, deferred.promise, "a cross-realm promise is returned unchanged");
+		assert.equal(getOpenUserBlocks().length, 1);
+		deferred.resolve("yes");
+		assert.equal(await returned, "yes");
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
 	it("returns exactly what the host returned for each blocking dialog", async () => {
 		const { ui } = recordingUi({});
 		const ctx = contextOver(ui);
@@ -535,18 +609,53 @@ describe("ctx.ui block wrapping", () => {
 		assert.deepEqual(Object.keys(ctx.ui).sort(), Object.keys(host).sort(), "enumeration still works");
 	});
 
-	it("refuses to seal the wrapper and stays usable afterwards", () => {
-		// Sealing used to make the *surrogate* non-extensible, after which reporting
-		// the host's keys violated a proxy invariant and every later Object.keys or
-		// spread threw.
-		const { ui } = recordingUi({});
-		for (const seal of [Object.preventExtensions, Object.freeze]) {
-			const ctx = contextOver({ ...ui });
-			assert.throws(() => seal(ctx.ui), "sealing a wrapped context fails immediately");
-			assert.ok(Object.keys(ctx.ui).length > 0, "keys still readable afterwards");
+	it("seals, freezes, and preventExtensions like the raw context does", () => {
+		// Refusing these threw where the raw object succeeds, which is the kind of
+		// difference wrapping must not introduce. Sealing now mirrors the host's own
+		// keys onto the proxy target — holding the wrapped values — and makes both
+		// non-extensible together.
+		for (const seal of [Object.preventExtensions, Object.seal, Object.freeze]) {
+			const { ui } = recordingUi({});
+			const host: ExtensionUIContext = { ...ui };
+			const ctx = contextOver(host);
+			const keysBefore = Object.keys(ctx.ui).sort();
+
+			assert.doesNotThrow(() => seal(ctx.ui), `${seal.name} must succeed on a wrapped context`);
+			assert.equal(Object.isExtensible(ctx.ui), false, "the wrapper reports itself sealed");
+			assert.equal(Object.isExtensible(host), false, "and the host really is sealed");
+
+			// Everything a caller does afterwards still works.
+			assert.deepEqual(Object.keys(ctx.ui).sort(), keysBefore);
 			assert.doesNotThrow(() => ({ ...ctx.ui }));
 			assert.equal(typeof ctx.ui.notify, "function");
+			assert.equal(typeof ctx.ui.select, "function");
 		}
+	});
+
+	it("still mints a block for a dialog on a sealed wrapper", async () => {
+		let openDuringDialog = 0;
+		const base = recordingUi({}).ui;
+		const host: ExtensionUIContext = {
+			...base,
+			confirm: async () => {
+				openDuringDialog = getOpenUserBlocks().length;
+				return true;
+			},
+		};
+		const ctx = contextOver(host);
+		Object.freeze(ctx.ui);
+
+		assert.equal(await ctx.ui.confirm("Approve edit?", "really"), true);
+		assert.equal(openDuringDialog, 1, "sealing must not disable block tracking");
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("reports a host that was already sealed before wrapping as non-extensible", () => {
+		const { ui } = recordingUi({});
+		const frozen = Object.freeze({ ...ui });
+		const ctx = contextOver(frozen);
+		assert.equal(Object.isExtensible(ctx.ui), false, "the wrapper must not look extensible when the host is not");
+		assert.deepEqual(Object.keys(ctx.ui).sort(), Object.keys(frozen).sort());
 	});
 
 	it("works on a frozen host UI context", async () => {
@@ -643,6 +752,8 @@ describe("block-door source constraints", () => {
 	it("adds no any or unknown types in the block door, the reporter, or their tests", async () => {
 		const files = [
 			"src/core/extensions/runner-ui-blocks.ts",
+			"src/core/extensions/settlement-observer.ts",
+			"src/core/extensions/runner-project-trust.ts",
 			"src/core/extensions/user-blocks.ts",
 			"src/core/extensions/block-types.ts",
 			"src/core/extensions/loaded-extension-paths.ts",
