@@ -46,9 +46,11 @@ describe("herdr builtin registration", () => {
 	});
 
 	it("treats the isolated engine child as a terminal pane and headless modes as not", () => {
-		// The engine child is spawned with piped stdio and no --mode, so it
-		// resolves to "print"; gating on appMode alone would silence the one host
-		// that actually drives the pane.
+		// The engine child is spawned through the RPC client, which passes
+		// `--mode rpc`, so it resolves to "rpc" even though it drives the host's
+		// terminal UI. Gating on appMode alone would silence the one process that
+		// actually reports the pane.
+		assert.equal(hostPresentsTerminalPane("rpc", true), true);
 		assert.equal(hostPresentsTerminalPane("print", true), true);
 		assert.equal(hostPresentsTerminalPane("interactive", false), true);
 		assert.equal(hostPresentsTerminalPane("rpc", false), false);
@@ -161,6 +163,15 @@ describe("herdr extension end to end", () => {
 			.map((request) => String(request.params.state));
 	}
 
+	/** Wait until the fixture has at least `count` requests in total. */
+	async function waitForNewRequests(count: number): Promise<void> {
+		const deadline = Date.now() + 5000;
+		while (fixture.requests.length < count) {
+			if (Date.now() > deadline) throw new Error(`timed out waiting for ${count} requests`);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+	}
+
 	it("reports the pane through the real runner, socket, and block door", async () => {
 		let openDuringDialog = 0;
 		const ui: ExtensionUIContext = {
@@ -267,6 +278,62 @@ describe("herdr extension end to end", () => {
 
 		assert.equal(fixture.connectionCount(), 0);
 		assert.equal(fixture.requests.length, 0);
+	});
+
+	it("ends idle when a block opens and closes while activation is still pending", async () => {
+		// The runner publishes block changes with a detached emit, so the open and
+		// close handlers race. When activation suspended, the close handler took
+		// the already-active fast path and reported openBlocks 0 first, then the
+		// open handler reported 1 — leaving the pane blocked with an empty
+		// registry. Nothing here awaits between open and release, which is exactly
+		// the interleaving that exposed it.
+		const built = await buildRunner("tui", noOpUIContext);
+		const before = fixture.requests.length;
+
+		const block = openUserBlock("Approve edit?", "dialog");
+		block.release();
+
+		await waitForNewRequests(before + 1);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		assert.deepEqual(getOpenUserBlocks(), [], "the registry is empty");
+		assert.equal(
+			paneStates(fixture.requests).at(-1),
+			"idle",
+			`pane must not end blocked with no open blocks; saw ${JSON.stringify(paneStates(fixture.requests))}`,
+		);
+		void built;
+	});
+
+	it("keeps open-before-close ordering for several blocks opened during activation", async () => {
+		const built = await buildRunner("tui", noOpUIContext);
+		const before = fixture.requests.length;
+
+		const first = openUserBlock("First", "dialog");
+		const second = openUserBlock("Second", "dialog");
+		second.release();
+		first.release();
+
+		await waitForNewRequests(before + 1);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		assert.deepEqual(getOpenUserBlocks(), []);
+		assert.equal(paneStates(fixture.requests).at(-1), "idle");
+		void built;
+	});
+
+	it("does not activate from a detached callback that lands after shutdown", async () => {
+		const built = await buildRunner("tui", noOpUIContext);
+		await built.emit({ type: "session_shutdown", reason: "reload" });
+		const after = fixture.requests.length;
+
+		// A block change published just after teardown must not revive this
+		// instance; the successor owns the pane from here.
+		const block = openUserBlock("Too late", "dialog");
+		block.release();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		assert.equal(fixture.requests.length, after, "a silenced instance writes nothing further");
 	});
 
 	it("reports blocked when a block was already open before it activated", async () => {

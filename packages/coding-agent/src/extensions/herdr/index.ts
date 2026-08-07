@@ -14,7 +14,7 @@
  */
 
 import { basename } from "node:path";
-import { getLoadedFileExtensionPaths } from "../../core/extensions/loaded-extension-paths.ts";
+import { getLoadedFileExtensionPaths } from "../../core/extensions/loaded-extension-paths.js";
 import type {
 	AgentBlockedEvent,
 	AgentEndEvent,
@@ -26,7 +26,7 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "../../core/extensions/types.ts";
-import { getActiveUserBlockLabel, getOpenUserBlocks } from "../../core/extensions/user-blocks.ts";
+import { getActiveUserBlockLabel, getOpenUserBlocks } from "../../core/extensions/user-blocks.js";
 import { HerdrReporter } from "./reporter.js";
 import { createSocketTransport, resolveSocketEndpoint } from "./transport.js";
 import type { HerdrEnv } from "./types.js";
@@ -101,6 +101,9 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 	 */
 	let activation: "pending" | "active" | "stand-down" = "pending";
 
+	/** Latched at shutdown so a late detached callback cannot revive this instance. */
+	let closed = false;
+
 	/**
 	 * Adopt this session on the first TUI lifecycle event, whichever it is.
 	 *
@@ -121,9 +124,18 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 	 * discovered `herdr-agent-state` could land after this one; re-reading the
 	 * cycle's loaded paths at activation means the pane can never end up with two
 	 * writers regardless of load order.
+	 *
+	 * This is synchronous on purpose, and must stay that way. The runner
+	 * publishes block changes with a detached `emit`, so the open and close
+	 * handlers for one dialog run concurrently. If activation could suspend, the
+	 * first handler would wait through it while the second took the already-active
+	 * fast path, and a block that opened and closed during activation would be
+	 * reported in the wrong order — leaving the pane blocked with an empty
+	 * registry. With no await anywhere on this path every concurrent handler runs
+	 * to completion in arrival order.
 	 */
-	async function ensureActivated(ctx: ExtensionContext): Promise<boolean> {
-		if (activation === "stand-down") return false;
+	function ensureActivated(ctx: ExtensionContext): boolean {
+		if (closed || activation === "stand-down") return false;
 		if (ctx.mode !== "tui") return false;
 		if (activation === "active") return true;
 		if (fileIntegrationLoaded(getLoadedFileExtensionPaths())) {
@@ -131,46 +143,51 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 			return false;
 		}
 		activation = "active";
-		await reporter.onSessionStart(ctx.sessionManager, ctx.isIdle(), {
+		reporter.onSessionStart(ctx.sessionManager, ctx.isIdle(), {
 			openBlocks: getOpenUserBlocks().length,
 			activeLabel: getActiveUserBlockLabel(),
 		});
 		return true;
 	}
 
-	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
-		await ensureActivated(ctx);
+	pi.on("session_start", (_event, ctx: ExtensionContext) => {
+		ensureActivated(ctx);
 	});
 
-	pi.on("agent_start", async (_event, ctx: ExtensionContext) => {
+	pi.on("agent_start", (_event, ctx: ExtensionContext) => {
 		// A first activation here already seeded `working` from ctx.isIdle().
-		if (!(await ensureActivated(ctx))) return;
+		if (!ensureActivated(ctx)) return;
 		reporter.onAgentStart(ctx.sessionManager);
 	});
 
-	pi.on("agent_end", async (event, ctx: ExtensionContext) => {
-		if (!(await ensureActivated(ctx))) return;
+	pi.on("agent_end", (event, ctx: ExtensionContext) => {
+		if (!ensureActivated(ctx)) return;
 		reporter.onAgentEnd(ctx.sessionManager, turnFailureMessage(event));
 	});
 
-	pi.on("agent_settled", async (_event, ctx: ExtensionContext) => {
-		if (!(await ensureActivated(ctx))) return;
+	pi.on("agent_settled", (_event, ctx: ExtensionContext) => {
+		if (!ensureActivated(ctx)) return;
 		reporter.onAgentSettled(ctx.sessionManager, ctx.isIdle());
 	});
 
-	pi.on("agent_blocked", async (event, ctx: ExtensionContext) => {
+	pi.on("agent_blocked", (event, ctx: ExtensionContext) => {
 		// A block can be the first event a deferred extension sees, and activation
 		// seeds from the registry snapshot, so this event is already reflected.
-		if (!(await ensureActivated(ctx))) return;
+		if (!ensureActivated(ctx)) return;
 		reporter.onBlockOpened(event.openBlocks, event.activeLabel);
 	});
 
-	pi.on("agent_unblocked", async (event, ctx: ExtensionContext) => {
-		if (!(await ensureActivated(ctx))) return;
+	pi.on("agent_unblocked", (event, ctx: ExtensionContext) => {
+		if (!ensureActivated(ctx)) return;
 		reporter.onBlockReleased(event.openBlocks, event.activeLabel);
 	});
 
 	pi.on("session_shutdown", async (event) => {
+		// Latched before anything else, so a detached block callback that lands
+		// after teardown cannot activate an instance the session has finished
+		// with. `_buildRuntime()` detaches the outgoing runner but cannot cancel
+		// an emit already in flight.
+		closed = true;
 		if (activation !== "active") return;
 		await reporter.onSessionShutdown(event.reason);
 	});

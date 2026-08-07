@@ -111,14 +111,14 @@ export class HerdrReporter {
 	 * The seed is applied before the first state is queued: seeding afterwards
 	 * would let the pane report idle while a dialog was already open.
 	 *
-	 * This does not wait for the socket. Blocking `session_start` on a round trip
-	 * would let a hung Herdr delay the session it is describing.
+	 * Synchronous, and must stay so. Callers activate this reporter from inside
+	 * concurrently dispatched lifecycle handlers; an await here would let a later
+	 * handler overtake an earlier one and report a block's close before its open.
+	 * It queues work rather than waiting for the socket, so there is nothing to
+	 * await: blocking `session_start` on a round trip would also let a hung Herdr
+	 * delay the session it is describing.
 	 */
-	async onSessionStart(
-		sessionManager: ReadonlySessionManager,
-		idle: boolean,
-		blocks?: OpenBlockSnapshot,
-	): Promise<void> {
+	onSessionStart(sessionManager: ReadonlySessionManager, idle: boolean, blocks?: OpenBlockSnapshot): void {
 		if (this.isSilenced()) return;
 		if (this.boundSessionManager && this.boundSessionManager !== sessionManager) return;
 		this.boundSessionManager = sessionManager;
