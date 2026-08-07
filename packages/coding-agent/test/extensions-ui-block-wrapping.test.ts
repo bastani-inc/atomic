@@ -335,6 +335,68 @@ describe("ctx.ui block wrapping", () => {
 		assert.notEqual(ctx.ui.notify, before, "a new host function gets a new forwarder");
 	});
 
+	it("works on a frozen host UI context", async () => {
+		// A proxy may not substitute a value for a non-configurable, non-writable
+		// data property on its target. Proxying the host directly therefore threw
+		// on the first blocking call, and a frozen ExtensionUIContext is a
+		// perfectly valid one to hand to AgentSession.bindExtensions.
+		const { ui } = recordingUi({});
+		const frozen = Object.freeze({ ...ui });
+		const ctx = contextOver(frozen);
+
+		assert.equal(await ctx.ui.select("Pick one", ["a", "b"]), "a");
+		assert.equal(await ctx.ui.confirm("Sure?", "really"), true);
+		ctx.ui.notify("still fine");
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("works when a single dialog method is non-configurable and non-writable", async () => {
+		const { ui } = recordingUi({});
+		const host = { ...ui };
+		Object.defineProperty(host, "select", {
+			value: async (_title: string, options: string[]) => options[1],
+			writable: false,
+			configurable: false,
+			enumerable: true,
+		});
+		const ctx = contextOver(host);
+
+		assert.equal(await ctx.ui.select("Pick one", ["a", "b"]), "b");
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("still mints a block for a frozen host's dialog", async () => {
+		let openDuringDialog = 0;
+		const base = recordingUi({}).ui;
+		const frozen = Object.freeze({
+			...base,
+			confirm: async () => {
+				openDuringDialog = getOpenUserBlocks().length;
+				return true;
+			},
+		});
+		const ctx = contextOver(frozen);
+
+		assert.equal(await ctx.ui.confirm("Approve edit?", "really"), true);
+		assert.equal(openDuringDialog, 1, "freezing the host must not disable block tracking");
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("reports the host's own keys and sees members added later", () => {
+		const { ui } = recordingUi({});
+		const host: ExtensionUIContext = { ...ui };
+		const ctx = contextOver(host);
+
+		assert.deepEqual(Object.keys(ctx.ui).sort(), Object.keys(host).sort());
+
+		// The proxy resolves against the live host, so a member the host gains
+		// afterwards is visible rather than frozen out by a one-time copy.
+		assert.equal("hostInputForm" in ctx.ui, false);
+		host.hostInputForm = async () => ({ field: "value" });
+		assert.equal("hostInputForm" in ctx.ui, true);
+		assert.equal(typeof ctx.ui.hostInputForm, "function");
+	});
+
 	it("keeps optional members absent when the host omits them", () => {
 		const { ui } = recordingUi({});
 		const ctx = contextOver(ui);

@@ -127,25 +127,35 @@ const wrappedContexts = new WeakMap<ExtensionUIContext, ExtensionUIContext>();
  * Memoized per underlying context so `ctx.ui === ctx.ui` holds, and per member
  * so `ctx.ui.select === ctx.ui.select` and `ctx.ui.notify === ctx.ui.notify`
  * hold too. A proxy rather than a copy, so the host's optional members stay
- * absent when the host omits them and `"member" in ctx.ui` still answers what it
- * did before.
+ * absent when the host omits them, `"member" in ctx.ui` still answers what it
+ * did before, and a member added to the host later is still visible.
  *
  * Every callable member is forwarded on the host object. Raw host-function
  * identity and a forced host receiver cannot both hold — a forwarder is by
  * definition not the function it forwards to — so this keeps the receiver,
  * which is what actually changes behavior, and keeps lookup stable within the
  * wrapped context.
+ *
+ * The proxy target is a fresh empty surrogate rather than the host itself. A
+ * proxy may not return anything but the exact stored value for a
+ * non-configurable, non-writable data property on its target, so proxying the
+ * host directly makes `withUserBlocks(Object.freeze(host)).select(...)` throw a
+ * `TypeError` — and a frozen or individually sealed `ExtensionUIContext` is a
+ * perfectly valid one to hand to `AgentSession.bindExtensions`. An extensible
+ * surrogate carries no such invariant, so every trap can answer from the host
+ * while still substituting the forwarder.
  */
 export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 	const existing = wrappedContexts.get(ui);
 	if (existing) return existing;
 
 	const memberCache = new Map<PropertyKey, CachedUiMember>();
-	const wrapped = new Proxy(ui, {
+	const surrogate = Object.create(Object.getPrototypeOf(ui) as object | null) as ExtensionUIContext;
+	const wrapped = new Proxy(surrogate, {
 		// Reads resolve against the host object, not the proxy, so a getter on the
 		// host sees its own `this` and cannot trip over a private field.
-		get(target, property) {
-			const value = Reflect.get(target, property, target);
+		get(_surrogate, property) {
+			const value = Reflect.get(ui, property, ui);
 			if (typeof value !== "function") return value;
 			const callable = value as UiCallable;
 			const cached = memberCache.get(property);
@@ -153,10 +163,24 @@ export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 			// forwarder while it still wraps the function the host just returned.
 			if (cached && cached.original === callable) return cached.wrapped;
 			const created = isBlockingUiMethod(property)
-				? (wrapBlockingMethod(property, target, value as BlockingUiFunction<BlockingUiMethod>) as UiCallable)
-				: wrapHostMethod(target, callable);
+				? (wrapBlockingMethod(property, ui, value as BlockingUiFunction<BlockingUiMethod>) as UiCallable)
+				: wrapHostMethod(ui, callable);
 			memberCache.set(property, { original: callable, wrapped: created });
 			return created;
+		},
+		has(_surrogate, property) {
+			return Reflect.has(ui, property);
+		},
+		ownKeys() {
+			return Reflect.ownKeys(ui);
+		},
+		getOwnPropertyDescriptor(_surrogate, property) {
+			const descriptor = Reflect.getOwnPropertyDescriptor(ui, property);
+			if (!descriptor) return undefined;
+			// The surrogate holds no own properties, so a reported descriptor must
+			// be configurable for the proxy invariants to accept it. This is what
+			// keeps `Object.keys`, spread, and `JSON.stringify` seeing the host.
+			return { ...descriptor, configurable: true };
 		},
 	});
 	wrappedContexts.set(ui, wrapped);
