@@ -59,7 +59,19 @@ function allocateSocketPath(): { socketPath: string; cleanupDir: string } {
 	return { socketPath: join(dir, `s${fixtureCounter}`), cleanupDir: dir };
 }
 
-export async function startHerdrSocketFixture(): Promise<HerdrSocketFixture> {
+/** Options for the stand-in server. */
+export interface HerdrSocketFixtureOptions {
+	/**
+	 * Acknowledge each request. Default true.
+	 *
+	 * Set false to model a Herdr that accepts the connection and never replies —
+	 * the case that makes the reporter spend its full attempt budget.
+	 */
+	respond?: boolean;
+}
+
+export async function startHerdrSocketFixture(options: HerdrSocketFixtureOptions = {}): Promise<HerdrSocketFixture> {
+	const respond = options.respond ?? true;
 	const { socketPath, cleanupDir } = allocateSocketPath();
 	const endpoint = resolveSocketEndpoint(socketPath);
 	const requests: RecordedRequest[] = [];
@@ -79,7 +91,9 @@ export async function startHerdrSocketFixture(): Promise<HerdrSocketFixture> {
 				if (line.trim().length > 0) {
 					const parsed: unknown = JSON.parse(line);
 					if (isRecordedRequest(parsed)) requests.push(parsed);
-					socket.write(`${JSON.stringify({ id: isRecordedRequest(parsed) ? parsed.id : "", result: {} })}\n`);
+					if (respond) {
+						socket.write(`${JSON.stringify({ id: isRecordedRequest(parsed) ? parsed.id : "", result: {} })}\n`);
+					}
 				}
 				newline = buffer.indexOf("\n");
 			}

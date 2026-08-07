@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { HerdrReporter } from "../src/extensions/herdr/reporter.ts";
-import { createSocketTransport, resolveSocketEndpoint } from "../src/extensions/herdr/transport.ts";
+import { HerdrReporter, MAX_REPORT_MESSAGE_LENGTH } from "../src/extensions/herdr/reporter.ts";
+import {
+	createSocketTransport,
+	FIRST_ATTEMPT_TIMEOUT_MS,
+	RETRY_ATTEMPT_TIMEOUT_MS,
+	resolveSocketEndpoint,
+} from "../src/extensions/herdr/transport.ts";
 import { HERDR_AGENT, HERDR_SOURCE } from "../src/extensions/herdr/types.ts";
 import { type HerdrSocketFixture, type RecordedRequest, startHerdrSocketFixture } from "./herdr-socket-fixture.ts";
 
@@ -166,7 +171,36 @@ describe("herdr reporter wire behavior", () => {
 		await fixture.waitForRequests(3);
 		const last = states(fixture.requests).at(-1);
 		assert.equal(last?.state, "blocked");
-		assert.ok((last?.message?.length ?? 0) <= 120, `message length ${last?.message?.length}`);
+		assert.equal(last?.message?.length, MAX_REPORT_MESSAGE_LENGTH);
+		// A raw prefix of the input plus one ellipsis, not a rewritten value.
+		assert.equal(last?.message, `${"e".repeat(MAX_REPORT_MESSAGE_LENGTH - 1)}…`);
+	});
+
+	it("sends a message that fits the cap exactly as it was given", async () => {
+		// Nothing in the contract asks for whitespace normalization, so a label
+		// within the cap must reach the wire character for character.
+		const label = "  Keep\n  spacing  ";
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, true);
+		await reporter.drain();
+		reporter.onBlockOpened(1, label);
+		await reporter.drain();
+
+		await fixture.waitForRequests(3);
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: label });
+	});
+
+	it("preserves a long value's raw prefix, including its whitespace", async () => {
+		const label = `${"  spaced  ".repeat(20)}tail`;
+		assert.ok(label.length > MAX_REPORT_MESSAGE_LENGTH);
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, true);
+		await reporter.drain();
+		reporter.onBlockOpened(1, label);
+		await reporter.drain();
+
+		await fixture.waitForRequests(3);
+		assert.equal(states(fixture.requests).at(-1)?.message, `${label.slice(0, MAX_REPORT_MESSAGE_LENGTH - 1)}…`);
 	});
 
 	it("ignores a duplicate settle and a settle while still streaming", async () => {
@@ -336,5 +370,69 @@ describe("herdr reporter wire behavior", () => {
 		await reporter.drain();
 		await reporter.onSessionShutdown("quit");
 		assert.equal(fixture.requests.length, 0);
+	});
+});
+
+/**
+ * A Herdr that accepts connections and never answers.
+ *
+ * This is the case the documentation has to be honest about: ordinary reporting
+ * callbacks still return at once, but quit waits for the release attempt, and
+ * that wait is bounded by the transport budgets rather than by nothing.
+ */
+describe("herdr reporter latency against an unresponsive socket", () => {
+	let fixture: HerdrSocketFixture;
+
+	beforeEach(async () => {
+		fixture = await startHerdrSocketFixture({ respond: false });
+	});
+
+	afterEach(async () => {
+		await fixture.close();
+	});
+
+	/** One request's full budget: first attempt, then the single retry. */
+	const REQUEST_BUDGET_MS = FIRST_ATTEMPT_TIMEOUT_MS + RETRY_ATTEMPT_TIMEOUT_MS;
+
+	it("keeps ordinary lifecycle callbacks off the socket, and bounds the quit wait", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const reporter = new HerdrReporter({
+			paneId: PANE_ID,
+			transport: createSocketTransport(resolveSocketEndpoint(fixture.socketPath)),
+		});
+
+		const startedAt = Date.now();
+		await reporter.onSessionStart(sessionManager, false);
+		reporter.onAgentStart(sessionManager);
+		reporter.onAgentSettled(sessionManager, true);
+		const lifecycleMs = Date.now() - startedAt;
+		assert.ok(
+			lifecycleMs < FIRST_ATTEMPT_TIMEOUT_MS,
+			`lifecycle callbacks waited ${lifecycleMs} ms; they must not wait for socket I/O`,
+		);
+
+		const quitStartedAt = Date.now();
+		await reporter.onSessionShutdown("quit");
+		const quitMs = Date.now() - quitStartedAt;
+
+		// L1 requires the release to be attempted after the queue drains, so this
+		// wait is by design. What must hold is that it is bounded.
+		assert.ok(quitMs >= REQUEST_BUDGET_MS, `quit returned in ${quitMs} ms without spending a request budget`);
+		// Three requests at most: session identity, one coalesced state, release.
+		assert.ok(quitMs <= 4 * REQUEST_BUDGET_MS, `quit waited ${quitMs} ms, beyond the documented bound`);
+	});
+
+	it("drops queued work immediately on a non-quit shutdown", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const reporter = new HerdrReporter({
+			paneId: PANE_ID,
+			transport: createSocketTransport(resolveSocketEndpoint(fixture.socketPath)),
+		});
+		await reporter.onSessionStart(sessionManager, false);
+
+		const startedAt = Date.now();
+		await reporter.onSessionShutdown("reload");
+		const elapsed = Date.now() - startedAt;
+		assert.ok(elapsed < FIRST_ATTEMPT_TIMEOUT_MS, `non-quit shutdown waited ${elapsed} ms`);
 	});
 });

@@ -23,10 +23,18 @@ import { type DesiredPaneState, HERDR_AGENT, HERDR_SOURCE, type HerdrRequest, ty
  */
 export const MAX_REPORT_MESSAGE_LENGTH = 120;
 
+/**
+ * Bound a label or error string to the cap, leaving anything within it alone.
+ *
+ * A value already under the cap is passed through character for character.
+ * Collapsing its whitespace would rewrite a caller's dialog title for no reason
+ * the cap requires, and the cap is the only thing being enforced here. Embedded
+ * newlines are safe on the wire because the transport serializes through
+ * `JSON.stringify`, which escapes them before the framing newline is added.
+ */
 export function shortenReportMessage(message: string): string {
-	const collapsed = message.replace(/\s+/g, " ").trim();
-	if (collapsed.length <= MAX_REPORT_MESSAGE_LENGTH) return collapsed;
-	return `${collapsed.slice(0, MAX_REPORT_MESSAGE_LENGTH - 1)}…`;
+	if (message.length <= MAX_REPORT_MESSAGE_LENGTH) return message;
+	return `${message.slice(0, MAX_REPORT_MESSAGE_LENGTH - 1)}…`;
 }
 
 function requestId(kind: string): string {
