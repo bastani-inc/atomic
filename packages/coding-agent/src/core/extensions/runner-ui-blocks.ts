@@ -11,7 +11,7 @@
  * block too.
  */
 
-import type { UserBlock } from "./block-types.ts";
+import type { UserBlock } from "./block-types.js";
 import type { ExtensionUIContext } from "./ui-types.ts";
 import { openUserBlock } from "./user-blocks.js";
 
@@ -50,6 +50,13 @@ function blockLabel<M extends BlockingUiMethod>(method: M, args: BlockingUiArgs<
 	return typeof title === "string" ? title : method;
 }
 
+/** Whether a value settles later, across realms and for plain thenables alike. */
+function isThenable(value: BlockingUiResult<BlockingUiMethod>): boolean {
+	if (value === null) return false;
+	if (typeof value !== "object" && typeof value !== "function") return false;
+	return typeof Reflect.get(value, "then") === "function";
+}
+
 /**
  * Wrap one blocking dialog so it mints a block for its duration.
  *
@@ -80,13 +87,17 @@ function wrapBlockingMethod<M extends BlockingUiMethod>(
 			throw error;
 		}
 
-		// The host methods all return promises, but a test double or a future
-		// synchronous implementation must not strand the block.
-		if (!(result instanceof Promise)) {
+		// `instanceof Promise` is the wrong question. A dialog implemented in
+		// another realm — a `vm` context, an isolated host bridge — returns a
+		// promise that fails that check, and so does an ordinary thenable, and
+		// either one released the block before the user had answered. Ask
+		// structurally instead, and keep the synchronous path for a genuine
+		// synchronous return so a test double still behaves as before.
+		if (!isThenable(result)) {
 			block.release();
 			return result;
 		}
-		return result.finally(() => block.release()) as BlockingUiResult<M>;
+		return Promise.resolve(result).finally(() => block.release()) as BlockingUiResult<M>;
 	};
 	return wrapped as BlockingUiFunction<M>;
 }
@@ -150,6 +161,17 @@ const wrappedContexts = new WeakMap<ExtensionUIContext, ExtensionUIContext>();
  * perfectly valid one to hand to `AgentSession.bindExtensions`. An extensible
  * surrogate carries no such invariant, so every trap can answer from the host
  * while still substituting the forwarder.
+ *
+ * One case cannot be forwarded: defining a *non-configurable* property on
+ * `ctx.ui`. A proxy may only report that as succeeding if its own target has a
+ * matching non-configurable property, and mirroring one onto the surrogate
+ * would force `get` to return the raw function instead of the host-receiver
+ * forwarder — losing the receiver fix for that member and making a later host
+ * deletion incompatible. Such a definition therefore throws rather than
+ * silently being normalized to a configurable one, since inventing a descriptor
+ * the caller did not ask for is the worse failure. No host in this repository
+ * does it; a caller that needs it should seal its own object before handing it
+ * over, which is supported.
  */
 export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 	const existing = wrappedContexts.get(ui);
@@ -187,6 +209,20 @@ export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 			// be configurable for the proxy invariants to accept it. This is what
 			// keeps `Object.keys`, spread, and `JSON.stringify` seeing the host.
 			return { ...descriptor, configurable: true };
+		},
+		// Writes must reach the host too. Without these the surrogate quietly
+		// absorbed every assignment: the host never saw it, and the surrogate
+		// gained an own property that then contradicted the descriptor this proxy
+		// reports, so the very next read or `Object.keys` threw. The receiver is
+		// the host, not the proxy, so a host setter sees its own object.
+		set(_surrogate, property, value) {
+			return Reflect.set(ui, property, value, ui);
+		},
+		defineProperty(_surrogate, property, descriptor) {
+			return Reflect.defineProperty(ui, property, descriptor);
+		},
+		deleteProperty(_surrogate, property) {
+			return Reflect.deleteProperty(ui, property);
 		},
 	});
 	wrappedContexts.set(ui, wrapped);
