@@ -130,3 +130,60 @@ describe("project trust prompt block", () => {
 		assert.deepEqual(changes, []);
 	});
 });
+
+/**
+ * The startup trust prompt mints a block, and no subscriber exists to hear it.
+ *
+ * This pins the boundary the Herdr docs describe rather than leaving it as
+ * prose. `resolveProjectTrusted()` runs during resource loading, before any
+ * `ExtensionRunner` is built — and under isolated interactive mode, in a
+ * different process from the reporter entirely. Closing it needs pre-session
+ * reporting or a host-to-child ownership handoff, neither of which Phase 1
+ * defines. If a later phase adds one, this test is the one that should fail.
+ */
+describe("startup project trust reaches no extension subscriber", () => {
+	it("mints the block but delivers no lifecycle event, because no runner exists yet", async () => {
+		const cwd = createUntrustedProject();
+		const registryChanges: UserBlockChange[] = [];
+		const unsubscribe = subscribeUserBlocks((change) => registryChanges.push(change));
+		let openDuringPrompt = 0;
+
+		try {
+			await resolveProjectTrusted({
+				cwd,
+				trustStore: new ProjectTrustStore(join(cwd, "agent")),
+				projectTrustContext: {
+					cwd,
+					mode: "tui",
+					hasUI: true,
+					ui: {
+						select: async (_title, options) => {
+							openDuringPrompt = getOpenUserBlocks().length;
+							return options[0];
+						},
+						confirm: noOpUIContext.confirm,
+						input: noOpUIContext.input,
+						notify: noOpUIContext.notify,
+					},
+				},
+			});
+		} finally {
+			unsubscribe();
+		}
+
+		// B4 holds: the prompt really does open a project_trust block.
+		assert.equal(openDuringPrompt, 1);
+		assert.deepEqual(
+			registryChanges.map((change) => [change.type, change.reason]),
+			[
+				["agent_blocked", "project_trust"],
+				["agent_unblocked", "project_trust"],
+			],
+		);
+
+		// And the boundary: the registry is the only observer. Nothing routed the
+		// change to a `pi.on("agent_blocked")` handler, because extensions are not
+		// bound until a session exists.
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+});

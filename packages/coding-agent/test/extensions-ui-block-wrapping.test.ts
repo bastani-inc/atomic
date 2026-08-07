@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createContext, runInContext } from "node:vm";
 import { afterEach, describe, it } from "vitest";
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
@@ -369,6 +370,133 @@ describe("ctx.ui block wrapping", () => {
 		assert.notEqual(ctx.ui.notify, before, "a new host function gets a new forwarder");
 	});
 
+	it("forwards assignment, definition, and deletion to the host", () => {
+		// The surrogate target used to swallow every write: the host never saw it,
+		// and the surrogate gained an own property that contradicted the descriptor
+		// this proxy reports, so the next read or Object.keys threw outright.
+		const { ui } = recordingUi({});
+		const host: ExtensionUIContext = { ...ui };
+		const ctx = contextOver(host);
+
+		const replacement = (): void => {};
+		ctx.ui.notify = replacement;
+		assert.equal(host.notify, replacement, "assignment reaches the host");
+		assert.equal(typeof ctx.ui.notify, "function", "the wrapper still reads cleanly afterwards");
+		assert.deepEqual(Object.keys(ctx.ui).sort(), Object.keys(host).sort());
+		// `Object.keys` is the interesting part; JSON.stringify would additionally
+		// read the host's `theme` getter, which is not initialized in this suite.
+
+		Object.defineProperty(ctx.ui, "setTitle", {
+			value: () => {},
+			configurable: true,
+			writable: true,
+			enumerable: true,
+		});
+		assert.equal(Object.hasOwn(host, "setTitle"), true, "a configurable definition reaches the host");
+
+		assert.equal("hostSessionPicker" in ctx.ui, false, "absent before the host defines it");
+		host.hostSessionPicker = () => ({
+			result: Promise.resolve(undefined),
+			update: () => {},
+			error: () => {},
+			close: () => {},
+		});
+		assert.equal("hostSessionPicker" in ctx.ui, true);
+		delete ctx.ui.hostSessionPicker;
+		assert.equal("hostSessionPicker" in host, false, "deletion reaches the host");
+		assert.equal("hostSessionPicker" in ctx.ui, false);
+	});
+
+	it("routes an assignment through a host setter on the host object", () => {
+		const seen: string[] = [];
+		let stored = "";
+		const host = Object.defineProperties(
+			{ ...recordingUi({}).ui },
+			{
+				editorText: {
+					set(this: ExtensionUIContext, value: string) {
+						seen.push(`set:${value}`);
+						stored = value;
+					},
+					get(this: ExtensionUIContext) {
+						return stored;
+					},
+					configurable: true,
+					enumerable: true,
+				},
+			},
+		) as ExtensionUIContext;
+		const wrapped = contextOver(host).ui as ExtensionUIContext & { editorText: string };
+
+		wrapped.editorText = "typed";
+		assert.deepEqual(seen, ["set:typed"], "the host setter ran, not a surrogate write");
+		assert.equal(stored, "typed");
+	});
+
+	it("holds the block until a cross-realm promise settles", async () => {
+		// An isolated host bridge or a vm realm returns a promise that fails
+		// `instanceof Promise`, and the block used to be released immediately —
+		// reporting the agent free while the user was still being asked.
+		const realm = createContext({});
+		const makeDeferred = runInContext(
+			"(() => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; })",
+			realm,
+		) as () => { promise: PromiseLike<string>; resolve: (value: string) => void };
+		const deferred = makeDeferred();
+		assert.equal(deferred.promise instanceof Promise, false, "the fixture must be a foreign promise");
+
+		const { ui } = recordingUi({});
+		const host: ExtensionUIContext = { ...ui, select: () => deferred.promise };
+		const ctx = contextOver(host);
+
+		const pending = ctx.ui.select("Approve edit?", ["yes"]);
+		assert.equal(getOpenUserBlocks().length, 1, "the block is held while the dialog is open");
+		deferred.resolve("yes");
+		assert.equal(await pending, "yes");
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("holds the block until a plain thenable settles, and releases on rejection", async () => {
+		let settle: ((value: string) => void) | undefined;
+		let fail: ((reason: Error) => void) | undefined;
+		const thenable = {
+			// biome-ignore lint/suspicious/noThenProperty: a plain thenable is the subject of this test.
+			then(onFulfilled: (value: string) => void, onRejected: (reason: Error) => void) {
+				settle = onFulfilled;
+				fail = onRejected;
+			},
+		};
+		// `Promise.resolve(thenable)` calls `then` in a later microtask, so the
+		// callbacks are not available on the turn the dialog was opened.
+		const untilThenCalled = async (): Promise<void> => {
+			for (let index = 0; index < 10 && settle === undefined; index++) await Promise.resolve();
+		};
+
+		const { ui } = recordingUi({});
+		const ctx = contextOver({ ...ui, select: () => thenable } as ExtensionUIContext);
+
+		const pending = ctx.ui.select("Approve edit?", ["yes"]);
+		assert.equal(getOpenUserBlocks().length, 1, "held while the thenable is pending");
+		await untilThenCalled();
+		settle?.("yes");
+		assert.equal(await pending, "yes");
+		assert.deepEqual(getOpenUserBlocks(), []);
+
+		settle = undefined;
+		const failure = new Error("dialog failed");
+		const rejecting = ctx.ui.select("Approve edit?", ["yes"]);
+		assert.equal(getOpenUserBlocks().length, 1);
+		await untilThenCalled();
+		fail?.(failure);
+		assert.equal(
+			await captureRejection(async () => {
+				await rejecting;
+			}),
+			failure,
+		);
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
 	it("works on a frozen host UI context", async () => {
 		// A proxy may not substitute a value for a non-configurable, non-writable
 		// data property on its target. Proxying the host directly therefore threw
@@ -484,6 +612,7 @@ describe("block-door source constraints", () => {
 			"test/herdr-reporter-wire.test.ts",
 			"test/herdr-single-writer.test.ts",
 			"test/herdr-socket-fixture.ts",
+			"test/loaded-extension-paths-cycle.test.ts",
 			"test/project-trust-user-block.test.ts",
 		];
 		const banned = /(:|<|\bas\s+)\s*(any|unknown)\b|\b(any|unknown)\[\]/;
