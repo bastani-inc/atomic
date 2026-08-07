@@ -142,6 +142,7 @@ describe("herdr reporter wire behavior", () => {
 		const reporter = createReporter();
 		await reporter.onSessionStart(sessionManager, false);
 		reporter.onAgentStart(sessionManager);
+		await reporter.drain();
 		reporter.onAgentEnd(sessionManager, "overloaded_error: upstream is busy");
 		reporter.onAgentSettled(sessionManager, true);
 		await reporter.drain();
@@ -157,6 +158,7 @@ describe("herdr reporter wire behavior", () => {
 		const reporter = createReporter();
 		await reporter.onSessionStart(sessionManager, false);
 		reporter.onAgentStart(sessionManager);
+		await reporter.drain();
 		reporter.onAgentEnd(sessionManager, "e".repeat(500));
 		reporter.onAgentSettled(sessionManager, true);
 		await reporter.drain();
@@ -257,6 +259,7 @@ describe("herdr reporter wire behavior", () => {
 		const reporter = createReporter();
 		await reporter.onSessionStart(sessionManager, false);
 		reporter.onAgentStart(sessionManager);
+		await reporter.drain();
 		reporter.onAgentSettled(sessionManager, true);
 		await reporter.onSessionShutdown("quit");
 

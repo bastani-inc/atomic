@@ -26,6 +26,7 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "../../core/extensions/types.ts";
+import { getActiveUserBlockLabel, getOpenUserBlocks } from "../../core/extensions/user-blocks.ts";
 import { HerdrReporter } from "./reporter.ts";
 import { createSocketTransport, resolveSocketEndpoint } from "./transport.ts";
 import type { HerdrEnv } from "./types.ts";
@@ -106,8 +107,14 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 	 * Extension loading can be deferred until after the first frame, so
 	 * `session_start` may already have been emitted — to an extension set this
 	 * one was not yet in — by the time it loads. Binding on any lifecycle event
-	 * and seeding the active flag from `ctx.isIdle()` makes the reporter correct
-	 * whether it arrived before or after the turn it is describing.
+	 * and seeding from the host makes the reporter correct whether it arrived
+	 * before or after the turn it is describing.
+	 *
+	 * The block state is seeded from the registry's live snapshot rather than
+	 * from replayed events. Events that fired before this extension loaded cannot
+	 * be replayed at all, and the registry is module scope so a block can outlive
+	 * the runner that was detached during a reload. Without the snapshot a pane
+	 * with a dialog already open would report idle.
 	 *
 	 * The stand-down check runs again here, not only in the factory. File
 	 * extensions load before inline factories today, but a deferred or lazily
@@ -124,7 +131,10 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 			return false;
 		}
 		activation = "active";
-		await reporter.onSessionStart(ctx.sessionManager, ctx.isIdle());
+		await reporter.onSessionStart(ctx.sessionManager, ctx.isIdle(), {
+			openBlocks: getOpenUserBlocks().length,
+			activeLabel: getActiveUserBlockLabel(),
+		});
 		return true;
 	}
 
@@ -148,13 +158,15 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 		reporter.onAgentSettled(ctx.sessionManager, ctx.isIdle());
 	});
 
-	pi.on("agent_blocked", (event) => {
-		if (activation !== "active") return;
+	pi.on("agent_blocked", async (event, ctx: ExtensionContext) => {
+		// A block can be the first event a deferred extension sees, and activation
+		// seeds from the registry snapshot, so this event is already reflected.
+		if (!(await ensureActivated(ctx))) return;
 		reporter.onBlockOpened(event.openBlocks, event.activeLabel);
 	});
 
-	pi.on("agent_unblocked", (event) => {
-		if (activation !== "active") return;
+	pi.on("agent_unblocked", async (event, ctx: ExtensionContext) => {
+		if (!(await ensureActivated(ctx))) return;
 		reporter.onBlockReleased(event.openBlocks, event.activeLabel);
 	});
 

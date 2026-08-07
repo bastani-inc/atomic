@@ -38,9 +38,17 @@ export interface HerdrReporterOptions {
 	transport: HerdrTransport;
 }
 
-interface QueuedReport {
-	state: DesiredPaneState;
-	seq: number;
+/** One outbound request, complete and sequenced at the moment it was enqueued. */
+interface QueuedRequest {
+	/** Only adjacent `state` entries may coalesce; a session or release entry is a barrier. */
+	kind: "session" | "state" | "release";
+	request: HerdrRequest;
+}
+
+/** A snapshot of the block door, used to seed a reporter that activated mid-wait. */
+export interface OpenBlockSnapshot {
+	openBlocks: number;
+	activeLabel: string | undefined;
 }
 
 export class HerdrReporter {
@@ -60,8 +68,17 @@ export class HerdrReporter {
 	private silenced = false;
 	private released = false;
 
-	private queued: QueuedReport | undefined;
+	/**
+	 * Every outbound write, in order.
+	 *
+	 * Session, state, and release all go through this one queue. Splitting them
+	 * would let a state report drawn later start while a session report is still
+	 * in flight, and Herdr silently drops whichever arrives with the lower
+	 * sequence — so the pane would lose a report and never say why.
+	 */
+	private queue: QueuedRequest[] = [];
 	private draining: Promise<void> | undefined;
+	private quitting = false;
 
 	constructor(options: HerdrReporterOptions) {
 		this.paneId = options.paneId;
@@ -80,15 +97,30 @@ export class HerdrReporter {
 	/**
 	 * Bind the first session and report its identity and current state.
 	 *
-	 * A reload can re-create this reporter in the middle of a turn, so the
-	 * active flag is seeded from the host rather than assumed idle.
+	 * A reload, or a deferred extension load, can create this reporter in the
+	 * middle of a turn and in the middle of a wait, so both the active flag and
+	 * the open-block state are seeded from the host rather than assumed empty.
+	 * The seed is applied before the first state is queued: seeding afterwards
+	 * would let the pane report idle while a dialog was already open.
+	 *
+	 * This does not wait for the socket. Blocking `session_start` on a round trip
+	 * would let a hung Herdr delay the session it is describing.
 	 */
-	async onSessionStart(sessionManager: ReadonlySessionManager, idle: boolean): Promise<void> {
+	async onSessionStart(
+		sessionManager: ReadonlySessionManager,
+		idle: boolean,
+		blocks?: OpenBlockSnapshot,
+	): Promise<void> {
 		if (this.isSilenced()) return;
 		if (this.boundSessionManager && this.boundSessionManager !== sessionManager) return;
 		this.boundSessionManager = sessionManager;
 		this.refreshSessionRef();
-		await this.reportSession();
+		this.enqueueSession();
+		if (blocks) {
+			this.openBlockCount = blocks.openBlocks;
+			this.activeBlockLabel =
+				blocks.activeLabel === undefined ? undefined : shortenReportMessage(blocks.activeLabel);
+		}
 		this.agentActive = !idle;
 		this.publish(true);
 	}
@@ -143,30 +175,39 @@ export class HerdrReporter {
 	/**
 	 * The session is shutting down.
 	 *
-	 * Only a quit releases the pane, and only after the queue drains, so the
-	 * release is the last write. Any other reason means a successor instance is
-	 * about to take over: this one drops its queued work and goes quiet so the
-	 * two never interleave.
+	 * Only a quit releases the pane. The release goes through the same writer as
+	 * everything else, enqueued after the existing work has drained, so it is the
+	 * last write attempted and can never overtake a state report.
+	 *
+	 * Any other reason means a successor instance is about to take over: this one
+	 * drops its queued work and goes quiet so the two never interleave.
 	 */
 	async onSessionShutdown(reason: "quit" | "reload" | "new" | "resume" | "fork"): Promise<void> {
 		if (this.isSilenced()) return;
 		if (reason !== "quit") {
-			this.queued = undefined;
+			this.queue = [];
 			this.silenced = true;
 			return;
 		}
+		// Latch first, so a lifecycle callback arriving during the drain cannot
+		// enqueue a state report behind the release.
+		this.quitting = true;
 		await this.drain();
-		this.released = true;
-		await this.send({
-			id: requestId("release"),
-			method: "pane.release_agent",
-			params: {
-				pane_id: this.paneId,
-				source: HERDR_SOURCE,
-				agent: HERDR_AGENT,
-				seq: nextReportSeq(),
+		this.enqueue({
+			kind: "release",
+			request: {
+				id: requestId("release"),
+				method: "pane.release_agent",
+				params: {
+					pane_id: this.paneId,
+					source: HERDR_SOURCE,
+					agent: HERDR_AGENT,
+					seq: nextReportSeq(),
+				},
 			},
 		});
+		await this.drain();
+		this.released = true;
 	}
 
 	/** Resolve once every queued report has been written. */
@@ -199,22 +240,27 @@ export class HerdrReporter {
 		this.sessionRef = typeof id === "string" && id.length > 0 ? { agent_session_id: id } : {};
 	}
 
-	private async reportSession(): Promise<void> {
+	/** Queue this session's identity. Skipped when there is no reference to send. */
+	private enqueueSession(): void {
 		if (this.sessionRef.agent_session_path === undefined && this.sessionRef.agent_session_id === undefined) return;
-		await this.send({
-			id: requestId("session"),
-			method: "pane.report_agent_session",
-			params: {
-				pane_id: this.paneId,
-				source: HERDR_SOURCE,
-				agent: HERDR_AGENT,
-				seq: nextReportSeq(),
-				...this.sessionRef,
+		this.enqueue({
+			kind: "session",
+			request: {
+				id: requestId("session"),
+				method: "pane.report_agent_session",
+				params: {
+					pane_id: this.paneId,
+					source: HERDR_SOURCE,
+					agent: HERDR_AGENT,
+					seq: nextReportSeq(),
+					...this.sessionRef,
+				},
 			},
 		});
 	}
 
 	private publish(force: boolean): void {
+		if (this.quitting) return;
 		const next = desiredPaneState({
 			activeBlockLabel: this.activeBlockLabel,
 			openBlockCount: this.openBlockCount,
@@ -223,43 +269,60 @@ export class HerdrReporter {
 		});
 		if (!force && this.lastState?.state === next.state && this.lastState.message === next.message) return;
 		this.lastState = next;
-		// The sequence is taken at enqueue time so reports keep the order in which
-		// the state actually changed, even when the queue coalesces.
-		this.queued = { state: next, seq: nextReportSeq() };
-		if (!this.draining) void this.startDrain();
-	}
-
-	private startDrain(): Promise<void> {
-		const run = (async () => {
-			try {
-				while (this.queued) {
-					const next = this.queued;
-					this.queued = undefined;
-					if (this.isSilenced()) return;
-					await this.sendState(next);
-				}
-			} finally {
-				this.draining = undefined;
-			}
-		})();
-		this.draining = run;
-		return run;
-	}
-
-	private async sendState(report: QueuedReport): Promise<void> {
-		await this.send({
-			id: requestId("state"),
-			method: "pane.report_agent",
-			params: {
-				pane_id: this.paneId,
-				source: HERDR_SOURCE,
-				agent: HERDR_AGENT,
-				state: report.state.state,
-				message: report.state.message,
-				seq: report.seq,
-				...this.sessionRef,
+		// The request is built and sequenced here, at enqueue time, so the wire
+		// order matches the order the state actually changed in.
+		this.enqueue({
+			kind: "state",
+			request: {
+				id: requestId("state"),
+				method: "pane.report_agent",
+				params: {
+					pane_id: this.paneId,
+					source: HERDR_SOURCE,
+					agent: HERDR_AGENT,
+					state: next.state,
+					message: next.message,
+					seq: nextReportSeq(),
+					...this.sessionRef,
+				},
 			},
 		});
+	}
+
+	/**
+	 * Append one request, coalescing consecutive state reports.
+	 *
+	 * Only an adjacent pair of state entries may collapse. A session or release
+	 * entry is a barrier: coalescing across one would drop a report the pane
+	 * needs, and would strand the sequence that was already drawn for it.
+	 */
+	private enqueue(entry: QueuedRequest): void {
+		const tail = this.queue.at(-1);
+		if (entry.kind === "state" && tail?.kind === "state") this.queue[this.queue.length - 1] = entry;
+		else this.queue.push(entry);
+		if (!this.draining) this.startDrain();
+	}
+
+	private startDrain(): void {
+		// The promise is assigned before the body can run, so a caller that
+		// enqueues and immediately awaits drain() can never observe an empty
+		// `draining` slot while work is still pending.
+		const run = Promise.resolve().then(() => this.runDrain());
+		this.draining = run;
+		void run;
+	}
+
+	private async runDrain(): Promise<void> {
+		try {
+			for (;;) {
+				if (this.silenced || this.released) return;
+				const next = this.queue.shift();
+				if (!next) return;
+				await this.send(next.request);
+			}
+		} finally {
+			this.draining = undefined;
+		}
 	}
 
 	private async send(request: HerdrRequest): Promise<void> {
