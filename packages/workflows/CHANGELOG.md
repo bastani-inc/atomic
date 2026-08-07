@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the Ralph research stage model configuration. The primary model moves from `openai-codex/gpt-5.6-luna:max` to `anthropic/claude-opus-5:high`, and the fallback chain is rebuilt around high/xhigh thinking levels: GPT-5.6 Sol at `xhigh` replaces the Luna variants, Claude Fable 5 and Claude Opus 4.8 step up from `low`/`medium` to `high`, GPT-5.5 and GLM-5.2 step up to `xhigh`, and Kimi K3 (`kimi-coding`, `moonshotai`, `moonshotai-cn`, and OpenRouter) plus `openrouter/sakana/fugu-ultra:high` join the chain.
+
 ### Fixed
 
 - Fixed the `DISPATCHED` confirmation panel being torn apart by any workflow input containing a newline. Input values were truncated by visible width, which a control character does not have, so an embedded newline survived truncation and emitted extra physical lines that no border ever wrapped — the box was destroyed from that row down. Multi-line inputs are ordinary, so this fired for most real launches: a `prompt` or an `acceptance_criteria` block reliably reproduced it. String values and the object/array JSON projection now collapse control characters, `U+2028`, and `U+2029` to single spaces before truncation, so a run card stays one row per value. `U+2028`/`U+2029` are included because `JSON.stringify` does not escape them and some terminals still break lines on them. As a side effect, escape sequences in an input value can no longer inject ANSI styling into the chat surface.
