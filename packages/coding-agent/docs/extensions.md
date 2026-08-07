@@ -627,6 +627,29 @@ pi.on("agent_settled", async (_event, ctx) => {
 });
 ```
 
+#### agent_blocked / agent_unblocked
+
+Fired when the agent starts and stops waiting on a person. Every blocking
+`ctx.ui` dialog opens a block, so these events fire without any extension having
+to declare anything; `pi.awaitUserDecision()` opens one for a wait the host
+cannot see. Blocks are reference counted, and the oldest open block's label is
+the one presented as the current wait.
+
+```typescript
+pi.on("agent_blocked", async (event, ctx) => {
+  // event.blockId    - identifier of the block that opened
+  // event.label      - short label for this block
+  // event.reason     - "dialog" | "project_trust" | "workflow_prompt" | "supervisor_ask"
+  // event.openBlocks - number of blocks open, at least 1
+  // event.activeLabel - label of the oldest open block
+});
+
+pi.on("agent_unblocked", async (event, ctx) => {
+  // event.openBlocks  - blocks still open, 0 when the agent is free again
+  // event.activeLabel - oldest still-open label, undefined when none remain
+});
+```
+
 #### turn_start / turn_end
 
 Fired for each turn (one LLM response + tool calls).
@@ -1819,6 +1842,39 @@ Get or set the thinking level. Level is clamped to model capabilities (non-reaso
 const current = pi.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 pi.setThinkingLevel("high");
 ```
+
+### pi.awaitUserDecision(label, reason)
+
+Declare that the agent is waiting on a person. Returns a `UserBlock`, the only
+handle that can end the block. While at least one block is open, Atomic reports
+the agent as blocked rather than working or idle, and `agent_blocked` /
+`agent_unblocked` fire around it.
+
+```typescript
+const block = pi.awaitUserDecision("Approve deploy?", "dialog");
+try {
+  await myOwnPromptComponent();
+} finally {
+  block.release();
+}
+```
+
+`reason` is one of `"dialog"`, `"project_trust"`, `"workflow_prompt"`, or
+`"supervisor_ask"`. `release()` is idempotent, so calling it in a `finally` is
+correct even when the wait was cancelled or threw.
+
+You rarely need this. Every blocking `ctx.ui` dialog — `select`, `confirm`,
+`input`, `custom`, `editor` — already opens and releases its own block, and so
+does Atomic's project-trust prompt. Call `awaitUserDecision()` only for a wait
+Atomic cannot see, such as a component your extension mounts and drives itself.
+
+Blocks are reference counted: opening a dialog from inside another dialog holds
+two, and the agent leaves the blocked state only when the last one releases. The
+oldest open block's label is the one reported as the current wait.
+
+There is deliberately no release-by-id, release-by-label, or release-all call.
+A block can only be ended by the code that opened it, so one extension can never
+end another's wait.
 
 ### pi.events
 
