@@ -1,0 +1,341 @@
+a5f43bf8aff3c55752432655f7334e3dafd1e256 2026-08-06 Armin Ronacher Release v0.84.0
+d6442dd4863ee55380dde1f75006ba585196a70f 2026-08-06 Armin Ronacher fix: avoid registry resolution during version bumps
+6d0455ff64ffc7a9b1b35b4207cf795c1899fe8e 2026-08-06 Armin Ronacher docs: audit unreleased changelogs
+5cd46ee118e0f51d859843797857674c61cbd213 2026-08-06 Mario Zechner docs(agent): simplify harness work package workflow
+6189e53b3372519bd8dac65b53410676e15940e4 2026-08-06 Christian Klotz fix: replace session summaries with durable metadata (#7708)
+29ad292f77400dfde14e30556859a0b1345465b7 2026-08-06 David Brailovsky fix(agent): simplify jsonl append failure test
+a838c069e6318edee8317eff759b74c3934745f0 2026-08-06 David Brailovsky harness-v2 jsonl session atomic writes for forks & torn-tail truncation (#7707)
+fadb74f684aaa7755463593e0564b58f9ed081e2 2026-08-06 Mario Zechner docs(agent): separate harness design from implementation status
+35f5c265d3d0af7eea3889dbfde03e77e23b8f11 2026-08-06 Mario Zechner feat: add telemetry reference adapter and span composition
+b9497c8c1f2bfd922856c09d3f19117fea90ac74 2026-08-06 David Brailovsky fix(ai): correct Fireworks GLM prompt caching, closes #7676
+7f63f3783284a5e08f56cd431446d3aa331d7625 2026-08-06 Cristina Poncela Cubeiro docs: add missed JSONL matrix rows
+77f4840320f28b8796af33bef58f6cb488b67e24 2026-08-06 Cristina Poncela Cubeiro chore: qa2 tests (#7706)
+9859eaa2690b4ffb92f32128826d76979a684709 2026-08-06 Cristina Poncela Cubeiro docs: reserve QA2
+2920265ea72686faa76f960d10d3fb63c69af749 2026-08-06 Cristina Poncela Cubeiro docs: update harness v2 md on how to use test matrix
+95bfbdc910c24da6b5364ec10e93f0dee369d7f4 2026-08-06 Cristina Poncela Cubeiro docs: mark QA1 done
+22db569a79fbd739349c0a8ad0d99fdbcb407357 2026-08-06 Cristina Poncela Cubeiro docs: harness v2 test matrix
+8ed232548e366b594e2b9db122e98e73422153b9 2026-08-06 Cristina Poncela Cubeiro docs: reserve QA1
+bbbc73b6864de34d94d3fee87da79a307b63b52e 2026-08-06 github-actions[bot] chore: approve contributors from issue #7687
+ffa40c32d886dc178d14de9074c73a97ae36a7f8 2026-08-06 github-actions[bot] chore: approve contributors from issue #7683
+fb92f1348f3da2e50e1e059fdcd220635a7e47f9 2026-08-06 github-actions[bot] chore: approve contributors from issue #7668
+6282221b6ab7fe8825b4b25b647f9e8cec253d83 2026-08-06 David Brailovsky fix(agent): scope JSONL session IDs to working directories
+69bab864d5d1ec1442887a176b9f3d1a21d017db 2026-08-06 Vegard Stikbakke docs(agent): reserve harness v2 R3
+c0947e6448e2003771faee2fdf2b4de866a8c423 2026-08-06 Vegard Stikbakke fix(ai): remove stale adaptive thinking model expectation
+b0bd0ff9d5d9e2e41d0b23583bc5c1bd880e0ba7 2026-08-06 Armin Ronacher fix(coding-agent): only label known subscriptions in footer
+6b461b75b39b5a19b378dc42fbfbd1655bc446a6 2026-08-05 Mario Zechner feat: extract telemetry package
+db48124e9d4ae9648eff90599472a00cd9dbac56 2026-08-05 Armin Ronacher docs: audit unreleased changelogs
+639a4664a5bf5267e003b847d92a9ea79a6fe6e3 2026-08-05 Armin Ronacher fix(ai): update Anthropic abort test model
+5446cd7545a07c9b6be00dcfba516b3d82e5a8d1 2026-08-05 Armin Ronacher feat(coding-agent): rename UI mode to TUI mode
+2c819a41ff1065f81e498d52d40597a7c20ecdc1 2026-08-05 Mario Zechner docs(agent): align telemetry design with implementation
+d07889da0e818627708e667874a1cdbd7dea47bf 2026-08-05 Ben feat(ai): support thinking_token_budget on openai-completions (#7638)
+6ca423447f55719f24815b34f29ffbb4596c80bd 2026-08-05 Ted event bus leak fix (#7656)
+7e45ddc422c1808063985f98c32ab43a81011a36 2026-08-05 Petr Houška fix: recognize comma after lgtm in approval comments (fixes #7399) (#7663)
+2bb7ba49661e88e0c692facb537972287792af69 2026-08-05 Cristina Poncela Cubeiro feat: harness v2 r2 (#7669)
+2f7f75a20ec0ef3537883e847ff8e44cafb8cf84 2026-08-06 QuintinShaw fix(ai): replace qwen3.8-max-preview with qwen3.8-max on token plan (#7670)
+14cc26e86dfbb68d54e8bab0f955940bcf61b130 2026-08-06 muyiyr fix(ai): restore Copilot models from account policy (#7672)
+04d6447f7c492aafac97e2d2450b532650a85556 2026-08-05 Mario Zechner feat: add typed telemetry contracts
+d4eaf052b25ee6fd28985e0b8a408eab16e3afba 2026-08-05 Armin Ronacher fix(coding-agent): support path globs on Windows
+05e89b4188d1b0b4631d470300ce5960baf85a62 2026-08-05 Armin Ronacher feat(tui): render LaTeX math in Markdown
+16ad96ae89c028f9058c8de2fad0ab45c20ce233 2026-08-05 Armin Ronacher feat(tui): add configurable prompt history actions
+229afb825cfc880714a6f38044531e8d4bcc6ef8 2026-08-05 Kurt Himebauch fix(tui): skip OSC 8 scan for plain prefixes (#7665)
+8ecf8a9883d1cb7c78d07c0fd64d32d6a1fd2c4c 2026-08-05 m3 feat(coding-agent): support AGENTS.override.md (#7681)
+3852cb2b813243f3c81a873ed97827798aa7dbeb 2026-08-05 Armin Ronacher fix(coding-agent): send prompts queued during compaction
+459eb5eba8582fcedd713e0c160903ce3e972a51 2026-08-05 Mario Zechner docs(agent): finalize harness telemetry design
+4254e0d93a9fe32d1d9592e747d8ec4b871ab4c7 2026-08-05 Armin Ronacher fix(tui): include Windows native rebuild sources
+29d9f087cc7b9064998f91e97ab5e89e5b67dff7 2026-08-05 Armin Ronacher fix(tui): avoid throttling keyboard input
+9524d3a580ec508e7c82788446ab9692799d53be 2026-08-05 Armin Ronacher fix(coding-agent): normalize Windows shell drive paths
+17f720489fab02413c549c73bb407b8d6ef500c4 2026-08-05 David Brailovsky fix(agent): validate required JSONL mutation fields
+104364f4c5d48b8136461227e9be0a490c1f72bc 2026-08-05 David Brailovsky docs(agent): mark JSONL J2 complete
+e61d8f4f4447cdaf0dd76d79a95c512fec900623 2026-08-05 David Brailovsky docs(agent): mark JSONL J1 complete
+acb2fd984997448b53a60e1034d045a4bfe56f51 2026-08-05 David Brailovsky fix(agent): complete JSONL storage round-trip coverage
+d3d2c2ec7c10a69e4290553e3e625b96d5536d11 2026-08-05 github-actions[bot] chore: approve contributors from issue #7642
+48b8b547c8b3ccc53ac819416a92b0e918809e70 2026-08-05 David Brailovsky fix(agent): require JSONL session cwd at creation
+c7fc779408f7b36742608f03d047b45f470594a3 2026-08-05 David Brailovsky feat(agent): complete JSONL codec contract coverage
+2f550d827d468a00d91626ab54118f5802387a46 2026-08-05 Cristina Poncela Cubeiro fix: project open operation id to lanes (#7654)
+b3ec7c00688480737146b58114fc05420f5cc09e 2026-08-05 David Brailovsky fix(agent): stop JSONL repositories from retaining sessions
+ce5d98cc001ee4a7ddea5e287aca7ed7088f6f3b 2026-08-05 Armin Ronacher fix(coding-agent): keep unit model stores in memory
+4d68d9355131361a831b361b58d89b028bf5d247 2026-08-05 Armin Ronacher fix(coding-agent): shorten file lock retry delays
+2c79ce45321626d76857415c4670442e7be769eb 2026-08-05 Armin Ronacher fix(coding-agent): avoid custom store lock convoys
+a79b22622a4def33465a7a16b6c7040c394b76f0 2026-08-05 David Brailovsky fix(agent): match coding-agent JSONL session layout
+7a103289d9e45b0f9c9bf08e0046829900af8224 2026-08-05 Cristina Poncela Cubeiro docs: f0 done
+ed303b9bd61cb2c5d2870590074b044ad9ed98ec 2026-08-05 Cristina Poncela Cubeiro chore: scaffold test
+14c89ad9992ce19857f59555ec1342594b9fc0fa 2026-08-05 Cristina Poncela Cubeiro chore: UnavailableRegistry
+abac29f671f320f497502628592a6882d2c166f6 2026-08-05 Vegard Stikbakke docs(agent): reserve harness R2 work package
+c518004666033ade0de072dbf4ceb6b94dcd0882 2026-08-05 Vegard Stikbakke docs(agent): clarify lane reduction contract (#7662)
+2901362533b848cfe3a3269070280e8caa033b1f 2026-08-05 Mario Zechner docs(agent): reserve harness I0 and L1-L3 work packages
+ac27947f7bb7df3182f189be8bc4f099986b3191 2026-08-05 David Brailovsky feat(agent): split JSONL session backend modules
+162b1883bd806e02cf4db2dbfc15f900c23f1494 2026-08-05 David Brailovsky feat(agent): add JSONL metadata contracts
+ea7bfdc08bc2859cde8292655f075b37ae1da1a9 2026-08-05 Vegard Stikbakke docs(agent): unreserve R2 work package
+b780d20aa17c4144ace7bff728150993236b88ee 2026-08-05 Kurt Himebauch fix(tui): close truncated OSC 8 links (#7657)
+6bfd50261dfa103a761c2638965248381251827c 2026-08-05 github-actions[bot] chore: approve contributors from issue #7657
+c38319ea10ea98e5caedaad2ea1750f4baedd111 2026-08-05 David Brailovsky fix(agent): share state between memory and JSONL sessions
+a5953d2e1530e44d905b836ebad32dfd8d4145a8 2026-08-05 Vegard Stikbakke feat(agent): validate harness recovery record logs
+1022a9e8244df5c35e2288196069c7cec3b4dd70 2026-08-05 Christian Klotz fix(agent): list SQLite sessions without writer claims (#7655)
+afdf73661b980e8ced8d40aaa5cc9c6ae52df4ae 2026-08-05 Vegard Stikbakke docs(agent): reserve harness R1 work package
+e77e2b751cbd28313073ed2de43d4b3294c73dcd 2026-08-05 David Brailovsky fix(agent): correct JSONL fork entry semantics
+651d5d6a53690b3ec87b72fca0b3f993ac5ec748 2026-08-05 David Brailovsky partial harness v2/json backend (#7611)
+7cf90c1d183bd6de8b113677f05f5daffcd80fdf 2026-08-05 Armin Ronacher fix(coding-agent): avoid model store read lock contention
+1e95e16b61f4a561b932df83d58df52589e58635 2026-08-05 Vegard Stikbakke fix(agent): remove redundant SQLite read clones
+591f22a618639ae65c5e29fb7cd7fbc4a6260dbc 2026-08-05 Vegard Stikbakke feat(agent): add indexed harness recovery queries (#7646)
+f909da2bf0e39ebeca9b2608f511d4167435360e 2026-08-05 Vegard Stikbakke docs(agent): reserve harness R0 work package
+dab70b2cd47c39d6c42365683f9fbf26fa2c8b0b 2026-08-05 Christian Klotz fix(server): sanitize service failures (#7644)
+7bdeeb8f9358624dc76652cd701acd5ece65e64c 2026-08-05 David Brailovsky fix(agent): count copied messages in fork stats
+845bb970f315918f5505e9a51d209b359109f820 2026-08-05 Cristina Poncela Cubeiro fix: build error on request info (#7645)
+2c233a5c04f12ada58e3908c376c5e28bfdb38ef 2026-08-05 Ramiz Wachtler fix(tui): add iterm payload size for xterm.js image addon (#7612)
+bb6a1cddc72de48b12257df83fd04495303dbd22 2026-08-05 Christian Klotz refactor(server): rename backend contract to service (#7643)
+66534fbdc7bb09492b40142471bbbb87b4a4d5bc 2026-08-05 Alexey Zaytsev feat(coding-agent): render Mermaid diagrams (#7624)
+46b53b995b4c1e4fa2a29318cba4163cc63f86c4 2026-08-05 Petr Houška fix: retry transient management HTTP requests (#7632)
+a80008b96c933dd13346f8504e425279c5b6a68f 2026-08-05 Cristina Poncela Cubeiro chore: rename storage package to session-backends
+0df5a69e5e119f8421f4f572d9a3c2ba4c0f5a39 2026-08-05 David Brailovsky docs(agent): harness-v2: count forked messages in session stats
+464804e1561191585f208e730d8373a1b21d4e56 2026-08-05 Armin Ronacher fix(tui): merge upstream main
+73dd066ee5384883477d1e9fbebec48976e5a810 2026-08-05 Armin Ronacher fix(tui): detect Windows Shift+Enter
+35074a30b77efc462d743c8753423446cac65bce 2026-08-05 github-actions[bot] chore: approve contributors from issue #7631
+588915ec71714688cee8b7153339e8bdebb3e82e 2026-08-04 Mario Zechner docs(agent): clarify JSONL fork entry replay
+cc4aa1a2e0ac1f56a79c2c57435b6d90c06834fb 2026-08-04 Armin Ronacher fix(tui): include Darwin native rebuild sources
+6a140371d6fa1069f89724741de912ab2f266ef8 2026-08-04 Armin Ronacher fix(agent): handle Windows resource paths
+7830975233e4f94583dff2117a68a0ed289cdf15 2026-08-04 Armin Ronacher feat(tui): add Darwin native build recipe
+b08e114f7a5a890edb2d6ddc4eb682440d91f54f 2026-08-04 Mario Zechner docs(agent): define harness implementation packages
+fc4a3d99bc03b3f2ba01529ef8f0369669b48272 2026-08-04 Armin Ronacher fix(coding-agent): honor output padding for errors
+79cc1ef00ae0643a747f399c267dc8c6c39b5d01 2026-08-04 Christian Klotz fix(agent): own SQLite backend tests in storage package (#7626)
+b0d382e25afd7bdf0bbce4300ec8b26ec78f4ca4 2026-08-04 Armin Ronacher fix(tui): add editor viewport key aliases (closes #7574)
+71f6c25c369fcbb03dc52fe631790b9b556f609d 2026-08-04 Armin Ronacher fix(ai): update Groq Qwen reasoning override
+05bf9df65155e047e4ba8459eaee9735e29a2e53 2026-08-04 Christian Klotz feat: remove legacy server implementation (#7614)
+4b85cd9786d736e22dc1f3ae91067b4cc5a24b2c 2026-08-04 David Brailovsky harness-v2 mark task in progress
+44289550aa06750542c0ace8ab4bac0c7e68ce54 2026-08-04 Mario Zechner feat(agent): promote durable harness API
+f119b01cb122ea55e17905caff62d4523f6cce1d 2026-08-04 Cristina Poncela Cubeiro refactor: update sqlite for lanes (#7591)
+04133eb01b082248f7d667c1214e09477a1c3db1 2026-08-04 Mario Zechner docs(agent): remove superseded design docs
+4756e7d1220cd5bb4e88cd28690a8597fa50d89c 2026-08-04 Mario Zechner docs(agent): make harness v2 telemetry self-contained
+b68decede07c06a8a3905ecb8c10b6e966877082 2026-08-04 Mario Zechner docs(agent): fix coherence defects found by independent review
+97f0ccdd96cc207b6ad3630c56eea4d32dbdcf53 2026-08-04 Vegard Stikbakke fix(coding-agent): recursively merge nested settings, closes #7572
+d3da2e968a19fdd0b06e0bd1e532164b1baecbd1 2026-08-04 Vegard Stikbakke fix(ai): test composite OAuth refresh cancellation
+686f193e51ccdc56fdf3366ce5d092530c1007ac 2026-08-04 Mario Zechner fix(ai): separate deferred request options
+f24ab6e14c0be7e623ec9beab0fc792cbb041cc0 2026-08-04 Mario Zechner fix(tui): honor nested stack minimum sizes
+720f0e8eeb1295a8030c50e165bc283f3d5fa6ff 2026-08-04 Vegard Stikbakke fix(ai): route Copilot Grok 4.5 through Responses, closes #7560
+e741cb05ca7c1c7bc5a9664c99697df32de9fac6 2026-08-04 Vegard Stikbakke fix(coding-agent): preserve extension auth endpoints
+42a06f9477ce6b92f39d9467f64019f08767401e 2026-08-04 Vegard Stikbakke fix(coding-agent): test composite OAuth cancellation signal
+b784c80961c29451c4665a6ccca15089cb36e0eb 2026-08-04 Vegard Stikbakke fix(ai): remove OAuth refresh lock test
+acbdc0d25e12522b4f8277c1206d2cead51d9b4e 2026-08-04 Vegard Stikbakke fix(ai): bound OAuth refresh duration
+f7ea2ef38c867be5e0ef53fab18de9c426234e1f 2026-08-04 Mario Zechner docs(agent): resolve open questions, add mechanical test constructions
+382aa641cc4c197dfa95ed684f187b5a39bc30ce 2026-08-04 David Brailovsky DRAFT: add openai background mode responses (#7339)
+ab5f8d88ee1d400c0c8fb5c50ac10b2f4a4851d1 2026-08-04 Vegard Stikbakke fix(coding-agent): retain heterogeneous auth model types
+18d65de623db390914fa19638c821d8ea24fcda9 2026-08-04 Vegard Stikbakke fix(coding-agent): preserve Copilot summary endpoint
+221a842c136ab3af23aef9e70034af86061d27c1 2026-08-04 Mario Zechner fix(coding-agent): update undici to 8.9.0 and brace-expansion to 5.0.9 for npm audit advisories
+cd20a8d2e555fb747780c1bb00e36039657fcf35 2026-08-04 Cristina Poncela Cubeiro refactor(agent): split harness experimental changes (#7587)
+0524d6897f171d63a79e00946df8ce7f53c605fe 2026-08-04 Vegard Stikbakke fix(coding-agent): prevent flaky RPC prompt tests
+1d0c97471359a7c1dc6bfc9ac7ce5b4aa9afd705 2026-08-04 Christian Klotz feat(agent): implement harness v2 for in-memory storage (#7503)
+95249a72700d3b18fd1c8257845d95564abdb3cd 2026-08-04 Vegard Stikbakke fix: repair tests after model refresh cancellation changes
+f27aaf66c0a27a26b8bab02b81ab3b7768484725 2026-08-04 muyiyr docs(coding-agent): document streamSimple hook contract (#7576)
+e8a17822de1076c3048701118a8a5f25c1e98565 2026-08-04 Vegard Stikbakke fix(tui): correct terminal progress clear sequence (#7581)
+bd3440e5b945a03ddffb066ebdc1fde57e078d17 2026-08-04 github-actions[bot] chore: approve contributors from issue #7565
+a96fb984d8c8b065fc5d193309fc812a882adee0 2026-08-03 github-actions[bot] chore: approve contributors from issue #7554
+523b5a4917ea46c20fb7b24a41311b158b7eeb05 2026-08-04 Petr Houška fix(coding-agent): normalize find root results (#7569)
+25a2c8dcfec4e017720c163a6166200a9bef98ae 2026-08-04 Duncan Ogilvie Add support for generic sampling parameters (#7568)
+fed6009cc9ccfb15088bc55244120918b5fe23f2 2026-08-04 Mario Zechner fix(coding-agent): make model refresh cancellation caller-owned
+b06dc76fd7b17d890403386cc5147ae5ea9f68ac 2026-08-04 Duncan Ogilvie fix(coding-agent): reinstall dependencies if `git clean` fails (#7570)
+a0014c1a83ea0b6fd98762a9bdaa90f517a73cbf 2026-08-03 Mario Zechner docs(agent): finalize harness v2 on the effects variant
+fa07e7bd92c90a0210a269354733c274e9fc11e6 2026-08-03 Armin Ronacher fix(tui): detect truecolor for Windows consoles
+3d264e85b4f870a93c5b763b95dd988a4f225da4 2026-08-03 Armin Ronacher fix(coding-agent): avoid terminal query leak on fullscreen exit
+c72728bc1a5ba08abc7e3c8d791d44995306f4e4 2026-08-03 Armin Ronacher fix(coding-agent): remove obsolete --alt shortcut
+da66636cc4e607bf7f05d9cb64bf6963b10a007d 2026-08-04 muyiyr fix(coding-agent): discover sessions through symlinked directories (#7552)
+a4475344fb765850ec5321efe3c67e6f364ead5c 2026-08-03 Christian Klotz fix(coding-agent): make JSON streaming output linear (#7394)
+32850ef7c5edff7a6eee0214516fbb7382bf292d 2026-08-03 David Brailovsky fix(coding-agent): resume after context-limited length stops (#7540)
+e56893f4cd6545ab1498b72ae4e1e2241a0926f4 2026-08-03 David Brailovsky fix(coding-agent): prevent auto-compaction race during manual compaction (#7370)
+b103937d3c003a48d32de9763856f2dae55ab605 2026-08-03 Armin Ronacher feat(coding-agent): switch UI modes at runtime (#7555)
+e563301dd332677561d5bf9e85ade509d860b5fd 2026-08-03 Armin Ronacher fix(ai): avoid stale Copilot model in overflow test
+305c014dcccfe97ebd3f4057ac16c436f1e2c71e 2026-08-03 Christian Klotz fix: make session authentication transport-specific (#7551)
+0e633790c5a007f6d4bf35ba67ced457287c25ac 2026-08-03 Ramiz Wachtler fix(tui): handle batched color scheme reports (#7550)
+c1019d9202b648143d123b7e6fb76543a6b82de6 2026-08-03 David Brailovsky feat(ai): add Baseten provider
+a24fb9e96a3fbc7be2a87e81aa1aa5c0ddf95d35 2026-08-03 Vegard Stikbakke fix(coding-agent): preserve auth header deletion markers (#7539)
+a8ee03b8156c2232d67ad2cdb79683b4a5c8fdbe 2026-08-03 Armin Ronacher fix(tui): cache recently offscreen Kitty images
+b0e05b442305067b0021238a6e2f217c1bf65416 2026-08-03 Jeremy Gayed fix(coding-agent): resize images returned by tools (#7330)
+0f5286d8ab86942d12c85a9df2893c98c1157405 2026-08-03 yaogangqiang feat(agent): expose shouldStopAfterTurn on Agent (#7367)
+b04faa2dae8d06b31208ace84ca4d8911c2d3c27 2026-08-03 Cristina Poncela Cubeiro fix: --model collects authed providers (#7366)
+2e95584dab802ae2f7c8d1a4994d6e0e9f67ec09 2026-08-03 Cristina Poncela Cubeiro fix: validateToolArguments() coerces nullable union (#7373)
+816237c101645954d2a0ecf4bb9360a9cc71ddf1 2026-08-03 David Brailovsky fix(coding-agent): target baseline x64 CPUs (#7390)
+d93e7e88fae51e698efd2921ccb38aa26f592470 2026-08-03 David Brailovsky Merge pull request #7383 from earendil-works/fix-issue-7150
+4f4762f06de104d7f108bb6cfa387259dc825c84 2026-08-03 Renaud Hartert feat(coding-agent): set AI_AGENT environment variable (#7493)
+cbaca60389f5d7097a43c95f56a19d344ecf2195 2026-08-03 muyiyr fix(ai): preserve Gemini 3 tool call IDs (#7494)
+786c76cb76bea452fa7287cc1014c4a3d3cad2b1 2026-08-03 xu0o0 docs(coding-agent): fix branch summary diagram (#7526)
+b9d360a2c753e058a90dc0a252950631501c10d0 2026-08-03 Jadugar fix(ai): retry transient provider errors in Google adapters (#7471)
+ebf33c0c2282fb8c027174d3d2b53519d8f564e3 2026-08-03 Armin Ronacher fix(coding-agent): flash fullscreen copy confirmation
+c6eb6281a806a9c5d7ec41d2850692f7f7ebcb59 2026-08-03 Vegard Stikbakke fix(coding-agent): bound post-login catalog refresh
+a077fff0b248878229784ff608256aa6d0922026 2026-08-03 Vegard Stikbakke fix(coding-agent): identify failed model catalogs
+f0deb8dd8e9611e89b5bc4145ca92c03ae6ed4ee 2026-08-03 Christian Klotz Revert docs changes
+01eeafd14a81dadf9ff8e5e1675a0b27351eae12 2026-08-02 Mario Zechner docs(agent): add durable queue-item cancellation to harness v2 variants
+88ed89dbab71bf2a5158102d9ac01a18f6df5f71 2026-08-02 Mario Zechner docs(agent): split harness v2 into effects and generator variants
+35fe55573cc1f49377ca2c63b369a559e4c699ce 2026-08-02 Christian Klotz Merge pull request #7459 from earendil-works/feat/experimental-cli-composition
+4c01c709380621c5ff2719162cd7a7973dcb2799 2026-08-02 Armin Ronacher fix(tui): skip clipped rows during layout painting
+73414d08b94d7db46d3fa66582c8fe3b02dabf72 2026-08-02 Armin Ronacher fix(tui): optimize alternate-screen image and layout redraws
+4279da1b7f27926216836393dc1a50bd6a2487b3 2026-08-02 Christian Klotz Merge pull request #7478 from earendil-works/feat/session-storage-api
+e05cc6e12cd5d4fb919785c3da5b2d40961e386a 2026-08-02 Christian Klotz docs: remove contributor changelog updates
+f07af611d360a7cf53b00fbe4d980d1741e1a669 2026-08-02 Christian Klotz feat(agent): compose session storage through repositories
+a4c7cb025d3a784d1fba18d4c8f4846d56bd2336 2026-08-02 Christian Klotz feat(agent): reject unsupported session search
+cbc893b0d41301b70c914216cb0c262eafe84b6c 2026-08-02 Christian Klotz feat(agent): prepare session storage foundation for harness v2
+1ee411a282132b0a3519664e14dcf457f43259ed 2026-08-02 Christian Klotz feat(coding-agent): compose experimental CLI commands
+14551e769493f1c6ceac55954332ab14747ee05c 2026-08-02 muyiyr fix(coding-agent): increase connection attempt timeout (#7435)
+b70c0f5b4e8d661bbf771ff384e093a45d28a87a 2026-08-02 Mario Zechner Revert "feat(tui): add switchable terminal renderers (#7440)" (#7473)
+1fdf21621d1f536a5991fccb0fd65b87ae27cf87 2026-08-02 Armin Ronacher feat(tui): add switchable terminal renderers (#7440)
+aa0ec808b970db31822e07835a46647cb51d9d66 2026-08-01 Christian Klotz Merge pull request #7411 from earendil-works/feat/experimental-cli-parser
+15b6617fac803d062195b90bff0d3013020ffbbf 2026-08-01 Christian Klotz fix(coding-agent): preserve existing CLI option values
+b0944d75cfe2d797c41ed532fa1dade05167cda4 2026-08-01 Christian Klotz fix(coding-agent): validate Unix transport URLs
+c2923b641c73aef4d5d484b9544922d05028b962 2026-08-01 Christian Klotz refactor(coding-agent): simplify experimental command names
+68ad320af13d699279b690d3e3f6eb23a85b9c2b 2026-08-01 Christian Klotz refactor(coding-agent): model experimental CLI commands
+15fb81a6f3a60a808bf8187428d82136b1ba79d3 2026-08-01 Christian Klotz refactor(coding-agent): limit experimental parser to transport options
+c95e877e2d0f08148536711ac913191acca8e1a7 2026-08-01 Christian Klotz refactor(coding-agent): keep thinking validation parser-local
+0ac010b746cebcc0b54e3a38c1c920349b1b1a65 2026-08-01 Christian Klotz refactor(coding-agent): rename transport endpoint to address
+1ea4ccad0472817fd117ecf03bd8e84ba72bfd5d 2026-08-01 Christian Klotz refactor(coding-agent): generalize experimental endpoints
+f9a5c75f208cd3a825631294852e7452f580dfe4 2026-08-01 Christian Klotz feat(coding-agent): add experimental CLI option parser
+a6f7317dfca61e357aee65faafe012a1be6c3734 2026-08-01 Christian Klotz Merge pull request #7454 from earendil-works/fix/models-json-hot-reload-test
+960d271cb823711444f69358257d2fe6cd167b05 2026-08-01 Christian Klotz fix(coding-agent): synchronize model reload regression
+6374a95fb247dd898086ed28bbfe307e444a1d8d 2026-08-01 Christian Klotz fix(coding-agent): make model reload test deterministic
+6e48c10f5b1f5cfc90d6cb21abf26a3e1e8a6bd7 2026-08-01 Christian Klotz Merge pull request #7448 from earendil-works/feat/agent-branch-queries-v2
+b5c7e554926575de4d0adebcf9d6398f1c66d405 2026-08-01 Christian Klotz Merge pull request #7450 from earendil-works/fix/sqlite-compaction-discovery
+eb2683fc59957abc93db8c06f657aa953fbba044 2026-08-01 Christian Klotz fix(agent): use type index for compaction discovery
+374c5b6dd0eae23b8ab94d2024b9f29673192ace 2026-08-01 Christian Klotz Merge pull request #7449 from earendil-works/fix/agent-timeout-output-test
+4ecd1bbe6719786f0d30c3e0f65f3857fbbba246 2026-08-01 Christian Klotz test(agent): derive timeout output size from truncation limit
+8750a38c4c6e9e96eb868c3a24dbf041f1ecf8c3 2026-08-01 Christian Klotz fix(coding-agent): make child output test deterministic
+081d7fbfca102aec2ee9f052c7804637cebebc4c 2026-08-01 Christian Klotz fix(agent): harden bounded branch queries
+9b75872017b7aac00e12542992fdd28afbeaae60 2026-08-01 Christian Klotz feat(agent): add bounded branch queries
+8f9e7697428477e8b206d1902060875689d5010f 2026-08-01 a-yeyang fix(coding-agent): recover stalled availability refreshes
+583f153d502aa8e958eefdb9af0fbd3344e68f95 2026-08-01 Armin Ronacher fix(tui): normalize source filenames
+a1403af8ec8552ba35bff82aaaba2dd27426d2f8 2026-08-01 Armin Ronacher fix(agent): make timeout output test deterministic
+a116523434806910336b9de3e38a41aa5860030b 2026-08-01 Christian Klotz Merge pull request #7431 from earendil-works/refactor/sqlite-branch-cache
+e92bf60a5804e1640b9ea7390a03c4063adc880f 2026-08-01 Christian Klotz fix(agent): make SQLite branch caching scalable
+4488ad55c18f07ae89a489096c90de8667b3adfb 2026-08-01 Christian Klotz Merge pull request #7410 from earendil-works/fix/sqlite-session-linear-time
+5cd0f98e93b299a0d3c297cc6f63d48e221ea898 2026-08-01 Christian Klotz docs(agent): clarify staged branch handling
+c2adb4d1da5f2e521154d7b56bafdb3171c0a32c 2026-08-01 Christian Klotz fix(agent): use SQLite trigger for rollback test
+06a1ceb8d83640ca764269307199a20323dee754 2026-08-01 Christian Klotz Merge pull request #7409 from earendil-works/feat/coding-agent-remote-client-controller
+57583617eff0df1b26f022e208de74bf8aa769a6 2026-08-01 Christian Klotz fix(agent): make SQLite session operations linear
+e07511645924249aa157b54dc73f73b235192d78 2026-08-01 Christian Klotz docs: remove contributor changelog entries
+a3ec51d2a18c69bd1c74a0a70075497794f47257 2026-08-01 Christian Klotz feat: add remote session client coordination
+0d43c5804b57f5fb19e67f62051103a85d38fb42 2026-08-01 Christian Klotz Merge pull request #7408 from earendil-works/refactor/session-reader
+2366649ba4966d9b7c057b0a19ec54c135fa9f3b 2026-08-01 Christian Klotz fix(agent): avoid counting entries when opening sessions
+2cc51b9d7611f9330ea3d7c39796ec6aceabfb7d 2026-08-01 Christian Klotz fix(agent): rename session fork module
+53422a241a9018c99081226a502e5fbabb8b5fed 2026-08-01 Christian Klotz feat(agent): add storage-owned session readers
+a0bb4a489b188beac7c06034141db86ffb357730 2026-07-31 Christian Klotz Merge pull request #7400 from earendil-works/refactor/sqlite-session-connection-cleanup
+b777865828728767c1e161f3fd51bc0414d70f09 2026-07-31 Christian Klotz Merge pull request #7398 from earendil-works/refactor/session-store-per-session-queues
+03eba409c0dba1f8906ae4169f839abf0100e0a2 2026-07-31 Christian Klotz Merge pull request #7397 from earendil-works/fix/server-protocol-invariants
+62f3c61b68e9ece242eb4de79861542651dc5401 2026-07-31 Christian Klotz feat(agent): add per-session store queues
+9f4dfdddbffe171ac3143c57c32708cc1cd4e1ce 2026-07-31 Christian Klotz fix(agent): remove obsolete SQLite session internals
+91957b3a01fed3619bf7cf41f326aade9518bbcf 2026-07-31 Christian Klotz fix(server): enforce protocol adapter invariants
+fbab971da2c2eb0ed9e4deefc04560c5bc1bf71f 2026-07-31 Christian Klotz Merge pull request #7401 from earendil-works/fix-model-tests
+0c611753d9933fc26b92279155b8a1eac3594a6e 2026-07-31 Christian Klotz fix(ai): update Z.AI model test references
+977ec833bbb86e245057e9162dbc1443c7b6e707 2026-07-31 Christian Klotz Merge pull request #7391 from earendil-works/refactor/remove-session-search-index
+af187eee4b718dbcf01e60e164f5919ae03bacfc 2026-07-31 Armin Ronacher fix(tui): clip Kitty images to layout boundaries
+b3ed27b3fe33ad006df66709ccf7f2edb33871eb 2026-07-31 Armin Ronacher feat(coding-agent): add scrollbar thumb theme color
+9c3b271be00fd6035c4a5464f77d34c5b54942d0 2026-07-31 Christian Klotz fix(agent): make session search query-only
+7724472eab2da7dcd1be0bc025e0e66a80404486 2026-07-31 Christian Klotz Merge pull request #7387 from earendil-works/issue/7248
+6129a353b18310eb06085e2f17f58cf501f725f3 2026-07-31 Armin Ronacher feat(tui): add configurable fullscreen scrollbars
+12a4b242927acd647bfe462a194c1def38029439 2026-07-31 Christian Klotz Merge pull request #7379 from earendil-works/refactor/session-store-file-names
+bfc679d5e4e0a41fc1953456be0e1b223461189b 2026-07-31 Christian Klotz fix(coding-agent): read clipboard text on Wayland
+73b24639fd9794d462b40a3bfa0cbb5e456dc2e8 2026-07-31 Christian Klotz Merge pull request #7386 from earendil-works/feat/server-core
+546e002353980e1789106cc3b2f3a843f9d74b31 2026-07-31 Christian Klotz test(server): consolidate reusable test infrastructure
+15f719489b439a81d3736cb34619250b66ad8363 2026-07-31 Christian Klotz fix(agent): scope JSONL entry IDs by path
+e36b150f71c736a4b13dae401035c292badf276f 2026-07-31 Christian Klotz test(server): avoid Unix socket inode reuse assumption
+cb86f0844747f80df1e4dd9fd6aa35d7de9a565b 2026-07-31 Christian Klotz fix(server): enforce protocol adapter invariants
+bf4a90d81985bd45052eeeae59d84fe13e0bd2c8 2026-07-31 Armin Ronacher fix(tui): preserve spaces in settings searches
+2e60d3cbdff5f3ca682e1abc1188160edd88a978 2026-07-31 Christian Klotz feat(server): add composable protocol server
+3c717842e87f9d6b60587665fb52817f83c87a98 2026-07-31 Armin Ronacher feat(tui): add fullscreen transcript navigation
+2b765ef529ae79d5bfa6990668f74cf717277f4a 2026-07-31 Christian Klotz fix(agent): restore forward session cursor reads
+8eda4f5b256009b8e752651683701b041e1632d3 2026-07-31 David Brailovsky fix(coding-agent): reject prompts during manual compaction
+4e81b796153ca5c304ba867269088049831ed987 2026-07-31 Christian Klotz fix(agent): restrict session construction to repositories
+f4a96c62b324546986db06197e4b9c2993b72f60 2026-07-31 Christian Klotz docs(agent): simplify session store guidance
+0b229f1046cee084271682b3e50bb532d9c3467e 2026-07-31 Christian Klotz docs(agent): document session persistence migration
+f074efd921848bf5d858154e852d47ea82c60bf2 2026-07-31 Vegard Stikbakke feat(coding-agent): add ui mode setting
+d937ee15d6d1f2395b8f8474c340c480e9af2024 2026-07-31 Christian Klotz docs(agent): remove session API migration example
+f90b8595db49a542d4ce37ed21484b8bccd062d5 2026-07-31 Christian Klotz fix(agent): update harness lifecycle tests
+11679808c7580b6638a0b7b1951cb075b0162233 2026-07-31 Christian Klotz Merge remote-tracking branch 'origin/main' into refactor/session-store-file-names
+2132f8f75f0d19bdd26444d58ee7e75bc6a1a9ae 2026-07-31 Christian Klotz fix(agent): clarify session persistence ownership
+696a828a4d4473ba06bb1353d5976c53f78bb43a 2026-07-31 Armin Ronacher fix(tui): prevent phantom alt-screen selections
+8ac92f831c67c3642fa321a182a6c91044adec9c 2026-07-31 Armin Ronacher feat(tui): add draggable transient scrollbars
+784653468c42387f607d41ed5ca533100e7eb2fe 2026-07-31 Christian Klotz Merge pull request #7364 from earendil-works/fix/codex-account-websocket
+d2be68dbebaca6361ce83dd7b27a8e45c8cea97d 2026-07-31 Armin Ronacher fix(coding-agent): avoid auth read lock contention
+7d5fc9499bf2385c1168f7d0a487742d87e76629 2026-07-31 Christian Klotz Merge pull request #7371 from earendil-works/feat/unix-client-transport
+a688e257c5faab8872c0a972f079c43154a770d1 2026-07-31 David Brailovsky fix(ai): route Fireworks Kimi K3 through OpenAI compatibility
+e44c1297492041aa2bc31c069556005b54a27500 2026-07-31 Christian Klotz docs(client): document Bun Unix transport support
+1c418f624578f26834a1b977e276c99d93889bf1 2026-07-31 Christian Klotz feat(client): add Unix socket transport
+ea781d68f296bea36db3a540d2c53746f1a90bdd 2026-07-31 Cristina Poncela Cubeiro fix: forward autocompleteMaxVisible to custom editors (#7369)
+cfe6b6a058d352c954918f61b414bad4b36e1e5e 2026-07-31 Christian Klotz fix(ai): scope Codex sockets to accounts
+5a38a1c127c5cbd157bd46bf802a264df204e36a 2026-07-31 Christian Klotz Merge pull request #7348 from earendil-works/feat/runtime-neutral-client
+f9b06345348f13799cdc5c0c8acec74e13e01276 2026-07-31 Christian Klotz docs(client): note promise helper removal
+6e16f771610359b959501acd4c42ab73a1c914e8 2026-07-31 Christian Klotz refactor(client): retain ES2022 compatibility
+ee3156715d3c7def800c6aaaa2bd664a2f315d38 2026-07-31 Christian Klotz refactor(client): simplify lifecycle architecture
+7e121c67cff54c44f963787a103179b3c7baadae 2026-07-31 Christian Klotz refactor(client): tighten lifecycle state modeling
+33bc0a7b83cde2a3cd2b568ed3107d9bdf7a768a 2026-07-31 Christian Klotz feat(client): add runtime-neutral session client
+e6fb3ec68f39660d27709a1a36dd66b5b3f6ad95 2026-07-31 Christian Klotz Merge pull request #7365 from earendil-works/fix/auth-storage-lock-tests
+8ee22078242ef82d378b3a41b9adc5eb9c6837a0 2026-07-31 Christian Klotz fix(coding-agent): decouple auth lock error tests
+ab366ebe94cacd419d986be454f12b1b9913aaca 2026-07-31 Cristina Poncela Cubeiro fix: custom-compaction through provider via new model runtime complete (#7325)
+59ad3dead30322217f6f027a3b67931074c0e163 2026-07-31 David Brailovsky fix(ai): preserve Anthropic initial stream block content (#7358)
+9786716d4de2a0a23c53b011f5bbc1f4084f700f 2026-07-31 Mario Zechner fix(coding-agent): update vulnerable brace-expansion
+6138f5a079b4e81ba1b30d998020df187512a0e8 2026-07-31 jingtao fix(ai): keep signed empty text/thinking blocks in google history (#7362)
+17090d4b9964957c7e7473506f93225c42d9e6fd 2026-07-31 Armin Ronacher feat(tui): add stacked alt-screen flashes (#7361)
+57cde86906679fd0581b277a179ab46fa2a09ab6 2026-07-31 Mario Zechner fix(coding-agent): reload credentials before reads
+2b5097644dc32bfec300527eeae48ee72ebf695b 2026-07-31 github-actions[bot] chore: approve contributors from issue #7319
+32761383d2487cadab26c3466a720525c0509e23 2026-07-31 Mario Zechner fix(coding-agent): update Doom WAD download source
+3c5a1b2393e910aa521d312320b1459240e2e656 2026-07-31 David Brailovsky fix(tui): reduce default mouse wheel scroll speed
+e187887886a2c92126a7814c97f02c2f1987ea88 2026-07-31 github-actions[bot] chore: approve contributors from issue #7357
+5f10deb5c990e35850281feb7670257002e097d1 2026-07-31 github-actions[bot] chore: approve contributors from issue #7356
+97cfd708d47f4ca8c7fdd93493f14d7d39def989 2026-07-31 Christian Klotz Merge pull request #7359 from earendil-works/refactor/session-repository-factory-names
+4523528b21c66084fdece7ed3ffa10888bc5ac60 2026-07-31 Erik Ogenvik fix(ai): treat only plain objects as provider error bodies (#7205)
+66cd061ab468aeae9fd2e38715d3931f7f77f569 2026-07-31 github-actions[bot] chore: approve contributors from issue #7330
+8eda7d502075850dea8d02eb6bf27922444995f4 2026-07-31 Christian Klotz fix(agent): type composed session stores explicitly
+a1bb7e44831a8114d0bbb4e76a5ccc83e8ea0e2a 2026-07-31 Christian Klotz fix(agent): expose session stores through factories
+ea1e77e2db5cd07bf83365490bd3f52c881efa77 2026-07-31 Mario Zechner feat(tui): add alternate-screen viewport layouts
+471c3390fe015de9b7308fce0ada5bc7c3bb7d3c 2026-07-31 github-actions[bot] chore: approve contributors from issue #7299
+2700511e4594b1066f316f50fc0005df73a093f4 2026-07-31 Christian Klotz fix(agent): refine session repository API
+9b50b046d328d589a81400d2e184175d0bf19734 2026-07-31 Christian Klotz Merge pull request #7163 from cristinaponcela/feat/search
+aa784e5eedfadb64b67cd58d7878db5132a1dd6d 2026-07-31 Cristina Poncela Cubeiro refactor, cleanup and conditionals for fts5
+c984b7c9e2b93ce9c8cf1d3b635229757cf51536 2026-07-31 Cristina Poncela Cubeiro cleanup
+fb0f0f7cd5fd18afb98abef133174d59c27ac4e5 2026-07-31 Cristina Poncela Cubeiro rename: vars
+74caa2649f10ed71b4378ce69f5d9fbfd2466ca5 2026-07-30 Mario Zechner fix(coding-agent): validate package manifests
+714978bf51225520a9b1e153115f0c5ff057be9e 2026-07-30 Alexey Zaytsev Markdown api (#7231)
+70bbe47a9d28303c87f77ddf46aef70ed8c2c910 2026-07-30 Brian feat(ai): preserve structured metadata for Bedrock provider errors (#7286)
+dfe47d3fbd8bf27841becaf8ec042dc0e73804a6 2026-07-30 Petr Houška fix(tui): align grapheme widths with terminal cells (#6987)
+2c3041242040179b63841922ac58188f8499d2cd 2026-07-30 Mario Zechner fix(ai): support streams without finish reasons
+393c34422981cc910acc78f96dd546d90f3096de 2026-07-31 muyiyr fix(coding-agent): replace deprecated getModel in SDK example (#7306)
+c066d01a40c8063df48afebcedb1117ea00f6d8e 2026-07-30 Christian Klotz Merge pull request #7344 from earendil-works/feat/protocol-package
+b2a1a065500ff2566bc434f49e3c8493d69de04f 2026-07-30 Christian Klotz docs(protocol): add package changelog
+9cde1725d7ca51d0fe06e03f89a87000a18abf36 2026-07-30 Christian Klotz fix(agent): preserve waitForIdle semantics
+871a99047944f060b85a30c7d5b6add89685c9a8 2026-07-30 Christian Klotz refactor(agent): unify harness task tracking
+bd2cfabc5f886447eb7ae9193cc9f87e85a52390 2026-07-30 Christian Klotz fix(protocol): reject cyclic values and organize sources
+bc031ae4571081d2edae18787dd45486d0a17ce1 2026-07-30 Christian Klotz fix(agent): await mutations during harness shutdown
+b889a0ce3dc08e20078b822c5380f71c4fdec6cf 2026-07-30 Armin Ronacher fix(ai): update GPT-5.6 pricing
+56eb685b69bb1a6c158c9eb8ead147e1d31e9d3f 2026-07-30 Christian Klotz feat(protocol): add remote session wire protocol
+7d86e6233ae96dc8ea62b455b3cd43641db8224e 2026-07-30 Christian Klotz Merge pull request #7343 from earendil-works/feat/agent-harness-shutdown
+82c485983967a69d45fe957cf942cb0999723362 2026-07-30 Christian Klotz feat(agent): add harness shutdown lifecycle
+83a7f755cc14a8f36ff822c24f5017494fed554e 2026-07-30 Cristina Poncela Cubeiro refactor and cleanup
+5e48d41ecd8c750c954e6c4152fd343f7705e182 2026-07-30 Cristina Poncela Cubeiro refactor: repo facade
+c13ffe1877c3a47ce9f2fc98d9880447d64a0e87 2026-07-30 Mario Zechner feat(tui): add alternate-screen renderer
+96eda8b47f01dd795ee5b8633c253db1e903ba0c 2026-07-30 Mario Zechner docs(agent): agent-loop building blocks in harness v2
+bb226f9c1f38d3c029156a690e97bbfc602336b9 2026-07-30 Cristina Poncela Cubeiro fix: redundancy in setToolsExpanded (#7313)
+7659e1c98df9338229a9b0cc7b7e75922f95163f 2026-07-30 Christian Klotz Merge pull request #7289 from earendil-works/worktree/evals-baseline
+743e1595c40e6eeacd206b9372fb859765770135 2026-07-30 Christian Klotz fix(coding-agent): remove custom eval shuffling
+ca11823f72b8ef72d4d8bbc6e53b6bb7e97b3cf6 2026-07-30 Christian Klotz fix(coding-agent): streamline comparative eval ergonomics
+fce7445b1c14451cb3b7d201bff2df7dd7f91b3e 2026-07-30 Christian Klotz fix(coding-agent): make eval comparison direction explicit
+6bcc29a06cee8b9ac1643df901468e3c51d6a48f 2026-07-30 github-actions[bot] chore: approve contributors from issue #7300
+ac033d1865c71c3919072c8f0ab5088dd74c3934 2026-07-30 Christian Klotz fix(coding-agent): align eval comparison report output
+29f97c20f3ef18dcbc11306a94ef670d397a0d1d 2026-07-30 Christian Klotz fix(coding-agent): simplify harness table tests
+05558a79280a2f1356bd390a573aeb28726d26b5 2026-07-30 David Brailovsky fix(ai): correct OpenCode Go provider display name from 'OpenCode Zen Go' to 'OpenCode Go'
+fe1f7230f27419772083c9fdcf05441d57b230c3 2026-07-30 github-actions[bot] chore: approve contributors from issue #7271
+d9ae6e2b07980bda34936752879737c4f45dad0c 2026-07-30 Christian Klotz fix(coding-agent): simplify comparative eval internals
+6a3eae8e484833e83fed93cb8ec4cfbd22e3afd7 2026-07-30 Christian Klotz fix(coding-agent): normalize eval inputs before hashing
+56e6a8a3fa6fe1c71f1106345f3f3dfa60f71d04 2026-07-30 Christian Klotz fix(coding-agent): record eval sessions after each test
+2a2e677bedc9ac21dc69e02d69a5bdcdbb4c7895 2026-07-30 Christian Klotz fix(coding-agent): make source artifacts language neutral
+3631e82d0e60125fa9d1996178b1f8faa752b7a9 2026-07-30 Christian Klotz fix(coding-agent): generalize eval source artifacts
+eb08aa8fa2b07d736c3995888410157001ed19e3 2026-07-30 Christian Klotz fix(coding-agent): specialize eval attachment types
+2eed6d219af7793a2d966dcc530a1730b2d3a36d 2026-07-30 Christian Klotz fix(coding-agent): remove redundant artifact names module
+af00848d6ba4fefa1c9870353d4d462d7a222d4f 2026-07-30 Christian Klotz fix(coding-agent): record eval artifacts with explicit tasks
+71efc6f0c1909874ec8c944637a9ae7fc0e2d508 2026-07-30 Armin Ronacher Add [Unreleased] section for next cycle
+32f3a972827a659559146888ced7934efc92e47d 2026-07-30 Christian Klotz feat(coding-agent): add comparative Pi eval harness
+6a9591ae78faa1dab24ab7d626444ba40c89a567 2026-07-29 Cristina Poncela Cubeiro refactor: repo owns session and storage separately
+3627c01179d58f353830b6d28e039a12cc88eeb8 2026-07-29 Cristina Poncela Cubeiro fix: do not require index
+d5c37c65bfd0cb10d227ee7a1b16ec8aae34165c 2026-07-29 Cristina Poncela Cubeiro refactor: composable Storage vs Search
+c63bf0ee4b3258fc768b33e70ed2156a602a8455 2026-07-27 Cristina Poncela Cubeiro cleanup
+c2bd0eda7fd36719a21f659485fdb0fafd32dd69 2026-07-27 Cristina Poncela Cubeiro fix: default sqlite search backend to fts5
+499dd8c5449ab334ddd3d61f3147c9eff8763b9f 2026-07-27 Cristina Poncela Cubeiro cleanup
+5d6237ab343c296be8910884315075b1cf2c9fc0 2026-07-27 Cristina Poncela Cubeiro fix: helper owns create
+3c2b71b5700fce63e996e852f9317e0031ba4b08 2026-07-27 Cristina Poncela Cubeiro refactor: search index swappable
+0ee1ec00303da6e4ed64da9caea955340138c5d0 2026-07-27 Cristina Poncela Cubeiro rename: may not be index
+bd8dc676bf6628d6aa78fae481105d2c0652125a 2026-07-27 Cristina Poncela Cubeiro Merge branch 'main' into feat/search
+b92e5e8614d90d5c2aa403dbca5c232fbf6e91e2 2026-07-27 Cristina Poncela Cubeiro feat: search index factory
+0f5a6e422baa5eaade271f9ba92ceb7692144a0d 2026-07-27 Cristina Poncela Cubeiro feat: search index sqlite

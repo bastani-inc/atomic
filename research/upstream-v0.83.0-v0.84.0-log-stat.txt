@@ -1,0 +1,4149 @@
+commit a5f43bf8aff3c55752432655f7334e3dafd1e256
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 12:32:57 2026 +0200
+
+    Release v0.84.0
+
+ package-lock.json                                  | 60 +++++++++++-----------
+ packages/agent/CHANGELOG.md                        |  2 +-
+ packages/agent/package.json                        |  6 +--
+ packages/ai/CHANGELOG.md                           |  2 +-
+ packages/ai/package.json                           |  4 +-
+ packages/ai/src/image-models.generated.ts          | 34 +++++++++++-
+ packages/client/CHANGELOG.md                       |  2 +-
+ packages/client/package.json                       | 29 ++++++++---
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ .../custom-provider-anthropic/package-lock.json    |  4 +-
+ .../custom-provider-anthropic/package.json         |  2 +-
+ .../custom-provider-gitlab-duo/package.json        |  2 +-
+ .../examples/extensions/gondolin/package-lock.json |  4 +-
+ .../examples/extensions/gondolin/package.json      |  2 +-
+ .../examples/extensions/sandbox/package-lock.json  |  4 +-
+ .../examples/extensions/sandbox/package.json       |  2 +-
+ .../extensions/with-deps/package-lock.json         |  4 +-
+ .../examples/extensions/with-deps/package.json     |  2 +-
+ .../coding-agent/install-lock/package-lock.json    | 52 +++++++++----------
+ packages/coding-agent/install-lock/package.json    |  4 +-
+ packages/coding-agent/npm-shrinkwrap.json          | 46 ++++++++---------
+ packages/coding-agent/package.json                 | 12 ++---
+ packages/evals/package.json                        |  6 +--
+ packages/protocol/CHANGELOG.md                     |  2 +-
+ packages/protocol/package.json                     | 28 +++++++---
+ packages/server/CHANGELOG.md                       |  2 +-
+ packages/server/package.json                       |  6 +--
+ packages/session-backends/sqlite-node/CHANGELOG.md |  2 +-
+ packages/session-backends/sqlite-node/package.json |  6 +--
+ packages/telemetry/CHANGELOG.md                    |  2 +-
+ packages/telemetry/package.json                    |  2 +-
+ packages/tui/CHANGELOG.md                          |  2 +-
+ packages/tui/package.json                          |  2 +-
+ 33 files changed, 202 insertions(+), 139 deletions(-)
+
+commit d6442dd4863ee55380dde1f75006ba585196a70f
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 12:31:40 2026 +0200
+
+    fix: avoid registry resolution during version bumps
+
+ package.json        | 8 ++++----
+ scripts/release.mjs | 2 +-
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+commit 6d0455ff64ffc7a9b1b35b4207cf795c1899fe8e
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 12:23:55 2026 +0200
+
+    docs: audit unreleased changelogs
+
+ packages/agent/CHANGELOG.md                        | 3 +++
+ packages/client/CHANGELOG.md                       | 4 ++++
+ packages/coding-agent/CHANGELOG.md                 | 7 +++++++
+ packages/protocol/CHANGELOG.md                     | 2 ++
+ packages/server/CHANGELOG.md                       | 2 ++
+ packages/session-backends/sqlite-node/CHANGELOG.md | 4 ++++
+ 6 files changed, 22 insertions(+)
+
+commit 5cd46ee118e0f51d859843797857674c61cbd213
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Thu Aug 6 12:26:13 2026 +0200
+
+    docs(agent): simplify harness work package workflow
+
+ packages/agent/docs/harness-v2-test-matrix.md |   8 +-
+ packages/agent/docs/harness-v2.md             | 111 +++++++++-----------------
+ 2 files changed, 40 insertions(+), 79 deletions(-)
+
+commit 6189e53b3372519bd8dac65b53410676e15940e4
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Thu Aug 6 13:09:02 2026 +0300
+
+    fix: replace session summaries with durable metadata (#7708)
+
+ packages/client/README.md                          |  2 +-
+ packages/client/src/client.ts                      |  4 +-
+ packages/client/src/state.ts                       |  2 -
+ packages/client/test/state.test.ts                 | 29 ++++++++++-
+ packages/coding-agent/src/client/remote-session.ts |  4 +-
+ packages/protocol/README.md                        |  2 +
+ packages/protocol/src/schemas.ts                   | 21 ++++----
+ packages/protocol/test/protocol.test.ts            | 32 ++++++++++++
+ packages/server/README.md                          |  2 +
+ packages/server/src/server.ts                      |  6 +--
+ packages/server/src/sessions.ts                    | 33 +++++-------
+ packages/server/src/snapshots.ts                   | 18 +++----
+ packages/server/src/testing/service.ts             | 13 ++---
+ packages/server/src/types.ts                       |  4 +-
+ packages/server/test/conformance.test.ts           |  5 +-
+ packages/server/test/protocol.test.ts              |  8 +--
+ packages/server/test/sessions.test.ts              | 59 +++++++++++++++++++---
+ 17 files changed, 168 insertions(+), 76 deletions(-)
+
+commit 29ad292f77400dfde14e30556859a0b1345465b7
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Thu Aug 6 11:49:54 2026 +0200
+
+    fix(agent): simplify jsonl append failure test
+
+ packages/agent/test/harness/session/jsonl.test.ts | 17 ++++-------------
+ 1 file changed, 4 insertions(+), 13 deletions(-)
+
+commit a838c069e6318edee8317eff759b74c3934745f0
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Thu Aug 6 11:46:58 2026 +0200
+
+    harness-v2 jsonl session atomic writes for forks & torn-tail truncation (#7707)
+    
+    * fix(agent): make JSONL publication crash-safe
+    
+    * fix(agent): move JSONL file creation from repo to storage
+    
+    * fix(agent): move JSONL forking from repo to storage
+    
+    * fix(agent): move fork mutation creation into session state
+
+ packages/agent/src/harness/env/nodejs.ts           |  28 ++-
+ packages/agent/src/harness/session/jsonl/repo.ts   |  59 ++----
+ .../agent/src/harness/session/jsonl/storage.ts     |  77 ++++---
+ packages/agent/src/harness/session/jsonl/types.ts  |   1 +
+ packages/agent/src/harness/session/memory.ts       |  49 +----
+ packages/agent/src/harness/session/state.ts        |  42 ++++
+ packages/agent/src/harness/types.ts                |   2 +
+ packages/agent/test/harness/nodejs-env.test.ts     |  30 +++
+ .../test/harness/session/jsonl-storage.test.ts     |  22 +-
+ packages/agent/test/harness/session/jsonl.test.ts  | 223 ++++++++++++++++++++-
+ 10 files changed, 407 insertions(+), 126 deletions(-)
+
+commit fadb74f684aaa7755463593e0564b58f9ed081e2
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Thu Aug 6 11:44:50 2026 +0200
+
+    docs(agent): separate harness design from implementation status
+
+ packages/agent/docs/harness-v2.md | 229 +++++++++++++-------------------------
+ 1 file changed, 80 insertions(+), 149 deletions(-)
+
+commit 35f5c265d3d0af7eea3889dbfde03e77e23b8f11
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Thu Aug 6 11:44:41 2026 +0200
+
+    feat: add telemetry reference adapter and span composition
+
+ README.md                                     |   2 +-
+ packages/agent/CHANGELOG.md                   |   2 +-
+ packages/agent/src/harness/agent-harness.ts   |  21 +-
+ packages/agent/src/harness/telemetry.ts       |   4 +
+ packages/agent/src/index.ts                   |  11 +-
+ packages/agent/test/harness/telemetry.test.ts |  33 +-
+ packages/coding-agent/CHANGELOG.md            |   2 +-
+ packages/telemetry/CHANGELOG.md               |   2 +-
+ packages/telemetry/README.md                  | 461 +++++++++++++++++++++++++-
+ packages/telemetry/package.json               |   4 +
+ packages/telemetry/src/index.ts               | 123 ++++++-
+ packages/telemetry/src/memory.ts              | 219 ++++++++++++
+ packages/telemetry/src/noop.ts                |  20 ++
+ packages/telemetry/src/testing/conformance.ts | 315 ++++++++++++++++++
+ packages/telemetry/src/testing/index.ts       |   6 +
+ packages/telemetry/src/testing/types.ts       |  18 +
+ packages/telemetry/test/conformance.test.ts   |  46 +++
+ packages/telemetry/test/telemetry.test.ts     |  83 +++++
+ tsconfig.json                                 |   1 +
+ vitest.base.ts                                |   2 +
+ 20 files changed, 1331 insertions(+), 44 deletions(-)
+
+commit b9497c8c1f2bfd922856c09d3f19117fea90ac74
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Thu Aug 6 11:30:04 2026 +0200
+
+    fix(ai): correct Fireworks GLM prompt caching, closes #7676
+
+ packages/ai/CHANGELOG.md                           |   1 +
+ packages/ai/scripts/generate-models.ts             | 134 ++++++++++++---------
+ packages/ai/test/fireworks-models.test.ts          |  25 ++++
+ .../test/openai-completions-prompt-cache.test.ts   |  10 ++
+ 4 files changed, 115 insertions(+), 55 deletions(-)
+
+commit 7f63f3783284a5e08f56cd431446d3aa331d7625
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Thu Aug 6 11:28:31 2026 +0200
+
+    docs: add missed JSONL matrix rows
+
+ packages/agent/docs/harness-v2-test-matrix.md | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 77f4840320f28b8796af33bef58f6cb488b67e24
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Thu Aug 6 11:24:09 2026 +0200
+
+    chore: qa2 tests (#7706)
+    
+    * 1. rejects corrupt parent chains in array-backed readers
+    
+    * 2. does not decode SQLite branch entries outside query bounds
+    
+    * 3. validates SQLite entries before filtering and limiting branch results
+    
+    * 4. does not validate SQLite ancestors beyond newest-first stop bounds
+    
+    * 5. rejects repository operations and session writes after disposal
+    
+    * 6. supports lexical ownership with await using
+    
+    * 7. uses listing as a barrier between accepted session operations
+    
+    * 8. waits for every accepted session operation during disposal
+    
+    * 9. waits for accepted appends before disposal and rejects later writes
+    
+    * 10. repository disposal closes its owned storage
+    
+    * 11. stops branch traversal at retained-tail compaction
+    
+    * docs: mark QA2 done
+
+ packages/agent/docs/harness-v2-test-matrix.md      |  28 ++--
+ packages/agent/docs/harness-v2.md                  |   4 +-
+ packages/agent/test/harness/session/jsonl.test.ts  |  30 +++++
+ .../sqlite-node/test/branch-query.test.ts          | 143 +++++++++++++++++++++
+ .../sqlite-node/test/repository.test.ts            |  15 +++
+ 5 files changed, 203 insertions(+), 17 deletions(-)
+
+commit 9859eaa2690b4ffb92f32128826d76979a684709
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Thu Aug 6 10:09:01 2026 +0200
+
+    docs: reserve QA2
+
+ packages/agent/docs/harness-v2.md | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit 2920265ea72686faa76f960d10d3fb63c69af749
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Thu Aug 6 10:07:21 2026 +0200
+
+    docs: update harness v2 md on how to use test matrix
+
+ packages/agent/docs/harness-v2.md | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+commit 95bfbdc910c24da6b5364ec10e93f0dee369d7f4
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Thu Aug 6 09:52:56 2026 +0200
+
+    docs: mark QA1 done
+
+ packages/agent/docs/harness-v2.md | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+commit 22db569a79fbd739349c0a8ad0d99fdbcb407357
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Thu Aug 6 09:49:44 2026 +0200
+
+    docs: harness v2 test matrix
+
+ packages/agent/docs/harness-v2-test-matrix.md | 193 ++++++++++++++++++++++++++
+ 1 file changed, 193 insertions(+)
+
+commit 8ed232548e366b594e2b9db122e98e73422153b9
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Thu Aug 6 09:45:18 2026 +0200
+
+    docs: reserve QA1
+
+ packages/agent/docs/harness-v2.md | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit bbbc73b6864de34d94d3fee87da79a307b63b52e
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Thu Aug 6 07:44:27 2026 +0000
+
+    chore: approve contributors from issue #7687
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit ffa40c32d886dc178d14de9074c73a97ae36a7f8
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Thu Aug 6 07:41:25 2026 +0000
+
+    chore: approve contributors from issue #7683
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit fb92f1348f3da2e50e1e059fdcd220635a7e47f9
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Thu Aug 6 07:34:55 2026 +0000
+
+    chore: approve contributors from issue #7668
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 6282221b6ab7fe8825b4b25b647f9e8cec253d83
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Thu Aug 6 09:31:17 2026 +0200
+
+    fix(agent): scope JSONL session IDs to working directories
+
+ packages/agent/src/harness/session/jsonl/repo.ts  | 16 ++++++--------
+ packages/agent/test/harness/session/jsonl.test.ts | 27 ++++++++---------------
+ 2 files changed, 16 insertions(+), 27 deletions(-)
+
+commit 69bab864d5d1ec1442887a176b9f3d1a21d017db
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Thu Aug 6 09:14:56 2026 +0200
+
+    docs(agent): reserve harness v2 R3
+
+ packages/agent/docs/harness-v2.md | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit c0947e6448e2003771faee2fdf2b4de866a8c423
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Thu Aug 6 08:16:28 2026 +0200
+
+    fix(ai): remove stale adaptive thinking model expectation
+    
+    models.dev was updated and no longer includes the Vercel AI Gateway claude-opus-5-fast model.
+
+ packages/ai/test/anthropic-adaptive-thinking-models.test.ts | 1 -
+ 1 file changed, 1 deletion(-)
+
+commit b0bd0ff9d5d9e2e41d0b23583bc5c1bd880e0ba7
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 07:46:53 2026 +0200
+
+    fix(coding-agent): only label known subscriptions in footer
+
+ packages/ai/CHANGELOG.md                           |  1 +
+ packages/ai/src/auth/helpers.ts                    |  8 ++++-
+ packages/ai/src/auth/oauth/anthropic.ts            |  1 +
+ packages/ai/src/auth/oauth/github-copilot.ts       |  1 +
+ packages/ai/src/auth/oauth/kimi-coding.ts          |  1 +
+ packages/ai/src/auth/oauth/openai-codex.ts         |  1 +
+ packages/ai/src/auth/oauth/xai.ts                  |  1 +
+ packages/ai/src/auth/types.ts                      |  5 ++-
+ packages/ai/src/providers/anthropic.ts             |  6 +++-
+ packages/ai/src/providers/github-copilot.ts        |  2 +-
+ packages/ai/src/providers/kimi-coding.ts           |  1 +
+ packages/ai/src/providers/openai-codex.ts          |  6 +++-
+ packages/ai/src/providers/xai.ts                   |  1 +
+ packages/ai/test/oauth-auth.test.ts                |  8 +++++
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/extensions/types.ts |  2 ++
+ packages/coding-agent/src/core/model-runtime.ts    |  4 +++
+ .../coding-agent/src/core/provider-composer.ts     |  3 ++
+ .../src/modes/interactive/components/footer.ts     |  2 +-
+ packages/coding-agent/test/footer-width.test.ts    | 29 ++++++++++++++++-
+ .../test/model-runtime-auth-options.test.ts        | 36 +++++++++++++++++++++-
+ 21 files changed, 112 insertions(+), 8 deletions(-)
+
+commit 6b461b75b39b5a19b378dc42fbfbd1655bc446a6
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Wed Aug 5 23:22:51 2026 +0200
+
+    feat: extract telemetry package
+
+ README.md                                          |   1 +
+ package-lock.json                                  |  35 +++++
+ package.json                                       |   4 +-
+ packages/agent/CHANGELOG.md                        |   2 +-
+ packages/agent/docs/harness-v2.md                  |  46 +++---
+ packages/agent/docs/telemetry-schema.md            | 140 +++++++++++++------
+ packages/agent/package.json                        |   1 +
+ packages/agent/scripts/generate-telemetry-docs.ts  | 114 ++++++++++++++-
+ packages/agent/src/harness/telemetry.ts            | 109 ++++++++++++++-
+ packages/agent/src/index.ts                        |  34 ++---
+ packages/agent/test/harness/telemetry.test.ts      |  70 ++++++++--
+ packages/agent/tsconfig.build.json                 |   1 +
+ packages/agent/vitest.config.ts                    |   2 +
+ packages/agent/vitest.harness.config.ts            |   2 +
+ packages/ai/CHANGELOG.md                           |   2 +-
+ packages/ai/docs/telemetry-schema.md               |  49 -------
+ packages/ai/package.json                           |   3 +-
+ packages/ai/scripts/generate-telemetry-docs.ts     | 120 ----------------
+ packages/ai/src/index.ts                           |   1 -
+ packages/ai/src/types.ts                           |   2 +-
+ packages/ai/test/telemetry-options.test.ts         |   2 +-
+ packages/ai/test/telemetry.test.ts                 | 154 ---------------------
+ packages/ai/vitest.config.ts                       |  22 +--
+ .../coding-agent/install-lock/package-lock.json    |  10 ++
+ packages/coding-agent/npm-shrinkwrap.json          |  10 ++
+ packages/coding-agent/package.json                 |   2 +-
+ .../session-backends/sqlite-node/vitest.config.ts  |   2 +
+ packages/telemetry/CHANGELOG.md                    |   7 +
+ packages/telemetry/README.md                       |   5 +
+ packages/telemetry/package.json                    |  43 ++++++
+ .../src/telemetry.ts => telemetry/src/index.ts}    | 105 --------------
+ packages/telemetry/test/telemetry.test.ts          | 114 +++++++++++++++
+ packages/telemetry/tsconfig.build.json             |   9 ++
+ scripts/local-release.mjs                          |   1 +
+ scripts/profile-coding-agent-node.mjs              |   4 +-
+ scripts/publish.mjs                                |   1 +
+ tsconfig.json                                      |   1 +
+ vitest.base.ts                                     |   2 +
+ 38 files changed, 686 insertions(+), 546 deletions(-)
+
+commit db48124e9d4ae9648eff90599472a00cd9dbac56
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 23:10:19 2026 +0200
+
+    docs: audit unreleased changelogs
+
+ packages/agent/CHANGELOG.md        |  6 ++-
+ packages/ai/CHANGELOG.md           | 14 +++++++
+ packages/coding-agent/CHANGELOG.md | 79 ++++++++++++++++++++++++++++++++++----
+ packages/tui/CHANGELOG.md          | 38 +++++++++++-------
+ 4 files changed, 114 insertions(+), 23 deletions(-)
+
+commit 639a4664a5bf5267e003b847d92a9ea79a6fe6e3
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 23:03:00 2026 +0200
+
+    fix(ai): update Anthropic abort test model
+
+ packages/ai/test/abort.test.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 5446cd7545a07c9b6be00dcfba516b3d82e5a8d1
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 22:56:58 2026 +0200
+
+    feat(coding-agent): rename UI mode to TUI mode
+
+ packages/coding-agent/CHANGELOG.md                 |  6 ++--
+ packages/coding-agent/README.md                    |  2 +-
+ packages/coding-agent/docs/keybindings.md          |  2 +-
+ packages/coding-agent/docs/settings.md             |  4 +--
+ packages/coding-agent/docs/usage.md                |  4 +--
+ packages/coding-agent/src/cli/args.ts              | 14 ++++----
+ packages/coding-agent/src/core/settings-manager.ts | 18 +++++-----
+ packages/coding-agent/src/index.ts                 |  2 +-
+ packages/coding-agent/src/main.ts                  |  2 +-
+ .../interactive/components/settings-selector.ts    | 16 ++++-----
+ .../src/modes/interactive/interactive-mode.ts      | 40 +++++++++++-----------
+ packages/coding-agent/test/args.test.ts            | 20 +++++++----
+ .../test/experimental-cli-resolution.test.ts       |  6 ++--
+ packages/coding-agent/test/interactive-tui.test.ts | 30 ++++++++--------
+ .../coding-agent/test/settings-manager.test.ts     | 22 ++++++++----
+ packages/tui/test/settings-list.test.ts            | 12 +++----
+ 16 files changed, 107 insertions(+), 93 deletions(-)
+
+commit 2c819a41ff1065f81e498d52d40597a7c20ecdc1
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Wed Aug 5 22:43:16 2026 +0200
+
+    docs(agent): align telemetry design with implementation
+
+ packages/agent/docs/harness-v2.md | 90 +++++++++++++++++++++++----------------
+ 1 file changed, 54 insertions(+), 36 deletions(-)
+
+commit d07889da0e818627708e667874a1cdbd7dea47bf
+Author: Ben <bnsd55@gmail.com>
+Date:   Wed Aug 5 23:27:51 2026 +0300
+
+    feat(ai): support thinking_token_budget on openai-completions (#7638)
+    
+    vLLM caps the reasoning phase with a top-level thinking_token_budget. On
+    OpenAI-compatible endpoints reasoning and the answer share max_tokens, so a
+    reasoning-heavy turn can consume the entire response ceiling and return no
+    answer and no tool call — the agent loop then sees a message without tool
+    calls and ends the run as if it had finished.
+    
+    thinkingBudgets from #529 already carries per-level budgets, but only the
+    Anthropic and Google paths read it. This wires it into openai-completions
+    behind a new opt-in compat flag, and clamps the budget so at least
+    MIN_ANSWER_TOKENS remain for the answer.
+    
+    The flag is independent of thinkingFormat because one vLLM server can serve
+    zai, qwen and chat-template models.
+    
+    Co-authored-by: Ben Shaharizad <ben.shaharizad@taboola.com>
+
+ packages/ai/src/api/openai-completions.ts          |  32 +++++-
+ packages/ai/src/api/simple-options.ts              |   6 +-
+ packages/ai/src/types.ts                           |   2 +
+ .../openai-completions-thinking-as-text.test.ts    |   1 +
+ ...penai-completions-thinking-token-budget.test.ts | 124 +++++++++++++++++++++
+ .../openai-completions-tool-result-images.test.ts  |   1 +
+ 6 files changed, 162 insertions(+), 4 deletions(-)
+
+commit 6ca423447f55719f24815b34f29ffbb4596c80bd
+Author: Ted <61800691+tudoroancea@users.noreply.github.com>
+Date:   Wed Aug 5 22:23:44 2026 +0200
+
+    event bus leak fix (#7656)
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/agent-session.ts    |  6 +-
+ .../coding-agent/src/core/extensions/loader.ts     | 28 ++++++++-
+ packages/coding-agent/src/core/extensions/types.ts |  2 +
+ .../regressions/7193-event-bus-lifecycle.test.ts   | 70 ++++++++++++++++++++++
+ 5 files changed, 103 insertions(+), 4 deletions(-)
+
+commit 7e45ddc422c1808063985f98c32ab43a81011a36
+Author: Petr Houška <houskape@gmail.com>
+Date:   Wed Aug 5 22:18:25 2026 +0200
+
+    fix: recognize comma after lgtm in approval comments (fixes #7399) (#7663)
+    
+    * fix: recognize comma after lgtm in approval comments (fixes #7399)
+    
+    * fix: accept punctuation around lgtm approvals
+
+ .github/workflows/approve-contributor.yml | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 2bb7ba49661e88e0c692facb537972287792af69
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Wed Aug 5 22:18:08 2026 +0200
+
+    feat: harness v2 r2 (#7669)
+    
+    * feat(agent): reduce durable lane state
+    
+    * fix: exclude captured initial-message ids from pendingNextRun
+    
+    * fix: validate deferred handles
+    
+    ---------
+    
+    Co-authored-by: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+
+ packages/agent/src/harness/reducer.ts       | 372 +++++++++++++++++++-
+ packages/agent/test/harness/reducer.test.ts | 508 ++++++++++++++++++++++++++++
+ 2 files changed, 879 insertions(+), 1 deletion(-)
+
+commit 2f7f75a20ec0ef3537883e847ff8e44cafb8cf84
+Author: QuintinShaw <github@xyt.email>
+Date:   Thu Aug 6 04:16:20 2026 +0800
+
+    fix(ai): replace qwen3.8-max-preview with qwen3.8-max on token plan (#7670)
+    
+    GA qwen3.8-max is on models.dev for alibaba-token-plan[-cn]. Point the
+    Qwen3.8 effort map at the GA id and exclude the retired preview so
+    regenerate does not revive it.
+
+ packages/ai/scripts/generate-models.ts          |  5 ++++-
+ packages/ai/test/qwen-token-plan-models.test.ts | 20 ++++++++++++++------
+ 2 files changed, 18 insertions(+), 7 deletions(-)
+
+commit 14cc26e86dfbb68d54e8bab0f955940bcf61b130
+Author: muyiyr <940955635@qq.com>
+Date:   Thu Aug 6 04:15:51 2026 +0800
+
+    fix(ai): restore Copilot models from account policy (#7672)
+    
+    * fix(ai): fall back to Copilot model policy
+    
+    fixes #7634
+    
+    * fix(ai): scope Copilot policy fallback
+
+ packages/ai/src/auth/oauth/github-copilot.ts  |  30 ++---
+ packages/ai/test/github-copilot-oauth.test.ts | 151 ++++++++++++++++++--------
+ 2 files changed, 121 insertions(+), 60 deletions(-)
+
+commit 04d6447f7c492aafac97e2d2450b532650a85556
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Wed Aug 5 22:03:14 2026 +0200
+
+    feat: add typed telemetry contracts
+
+ packages/agent/CHANGELOG.md                       |   1 +
+ packages/agent/docs/harness-v2.md                 |  23 +-
+ packages/agent/docs/telemetry-schema.md           | 331 ++++++++++++++
+ packages/agent/package.json                       |   2 +
+ packages/agent/scripts/generate-telemetry-docs.ts |  13 +
+ packages/agent/src/harness/telemetry.ts           | 506 ++++++++++++++++++++++
+ packages/agent/src/index.ts                       |  58 ++-
+ packages/agent/test/harness/telemetry.test.ts     | 103 +++++
+ packages/ai/CHANGELOG.md                          |   1 +
+ packages/ai/docs/telemetry-schema.md              |  49 +++
+ packages/ai/package.json                          |   2 +
+ packages/ai/scripts/generate-telemetry-docs.ts    | 120 +++++
+ packages/ai/src/api/simple-options.ts             |   1 +
+ packages/ai/src/index.ts                          |   1 +
+ packages/ai/src/telemetry.ts                      | 375 ++++++++++++++++
+ packages/ai/src/types.ts                          |   3 +
+ packages/ai/test/telemetry-options.test.ts        | 171 ++++++++
+ packages/ai/test/telemetry.test.ts                | 154 +++++++
+ 18 files changed, 1900 insertions(+), 14 deletions(-)
+
+commit d4eaf052b25ee6fd28985e0b8a408eab16e3afba
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 21:56:27 2026 +0200
+
+    fix(coding-agent): support path globs on Windows
+
+ packages/coding-agent/CHANGELOG.md           | 1 +
+ packages/coding-agent/src/core/tools/find.ts | 3 +++
+ 2 files changed, 4 insertions(+)
+
+commit 05e89b4188d1b0b4631d470300ce5960baf85a62
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 21:41:19 2026 +0200
+
+    feat(tui): render LaTeX math in Markdown
+
+ packages/tui/CHANGELOG.md               |    1 +
+ packages/tui/src/components/markdown.ts |  151 +++-
+ packages/tui/src/index.ts               |    2 +
+ packages/tui/src/latex.ts               | 1225 +++++++++++++++++++++++++++++++
+ packages/tui/test/latex.test.ts         |  426 +++++++++++
+ packages/tui/test/markdown.test.ts      |  165 +++++
+ 6 files changed, 1969 insertions(+), 1 deletion(-)
+
+commit 16ad96ae89c028f9058c8de2fad0ab45c20ce233
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 21:33:57 2026 +0200
+
+    feat(tui): add configurable prompt history actions
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/docs/keybindings.md          | 16 +++++---
+ .../modes/interactive/components/custom-editor.ts  | 10 +++++
+ .../test/custom-editor-history-keybindings.test.ts | 34 +++++++++++++++++
+ packages/tui/CHANGELOG.md                          |  1 +
+ packages/tui/src/components/editor.ts              | 12 ++++++
+ packages/tui/src/keybindings.ts                    | 10 +++++
+ .../tui/test/editor-history-keybindings.test.ts    | 43 ++++++++++++++++++++++
+ packages/tui/test/keybindings.test.ts              |  7 ++++
+ 9 files changed, 128 insertions(+), 6 deletions(-)
+
+commit 229afb825cfc880714a6f38044531e8d4bcc6ef8
+Author: Kurt Himebauch <136133082+xXJSONDeruloXx@users.noreply.github.com>
+Date:   Wed Aug 5 15:28:59 2026 -0400
+
+    fix(tui): skip OSC 8 scan for plain prefixes (#7665)
+
+ packages/tui/src/utils.ts | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+commit 8ecf8a9883d1cb7c78d07c0fd64d32d6a1fd2c4c
+Author: m3 <Marvae@users.noreply.github.com>
+Date:   Wed Aug 5 15:24:31 2026 -0400
+
+    feat(coding-agent): support AGENTS.override.md (#7681)
+
+ packages/coding-agent/README.md                    |  2 ++
+ packages/coding-agent/docs/quickstart.md           |  2 ++
+ packages/coding-agent/docs/security.md             |  2 +-
+ packages/coding-agent/docs/usage.md                |  2 ++
+ packages/coding-agent/src/core/resource-loader.ts  |  4 ++--
+ packages/coding-agent/src/core/tools/read.ts       |  2 +-
+ packages/coding-agent/test/resource-loader.test.ts | 24 +++++++++++++++++++++-
+ .../test/tool-execution-component.test.ts          |  8 ++++++++
+ 8 files changed, 41 insertions(+), 5 deletions(-)
+
+commit 3852cb2b813243f3c81a873ed97827798aa7dbeb
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 21:20:26 2026 +0200
+
+    fix(coding-agent): send prompts queued during compaction
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/agent-session.ts    |  3 ++
+ .../test/suite/agent-session-compaction.test.ts    | 38 +++++++++++++++++++++-
+ 3 files changed, 41 insertions(+), 1 deletion(-)
+
+commit 459eb5eba8582fcedd713e0c160903ce3e972a51
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Wed Aug 5 21:06:13 2026 +0200
+
+    docs(agent): finalize harness telemetry design
+
+ packages/agent/docs/harness-v2.md | 518 +++++++++++++++++++++++++++++---------
+ 1 file changed, 406 insertions(+), 112 deletions(-)
+
+commit 4254e0d93a9fe32d1d9592e747d8ec4b871ab4c7
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 20:54:32 2026 +0200
+
+    fix(tui): include Windows native rebuild sources
+
+ packages/tui/CHANGELOG.md | 1 +
+ packages/tui/package.json | 3 +++
+ 2 files changed, 4 insertions(+)
+
+commit 29d9f087cc7b9064998f91e97ab5e89e5b67dff7
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 20:41:32 2026 +0200
+
+    fix(tui): avoid throttling keyboard input
+
+ packages/tui/CHANGELOG.md            |  1 +
+ packages/tui/src/tui.ts              | 52 +++++++++++++++++++++---------------
+ packages/tui/test/tui-render.test.ts | 39 +++++++++++++++++++++++++++
+ 3 files changed, 70 insertions(+), 22 deletions(-)
+
+commit 9524d3a580ec508e7c82788446ab9692799d53be
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 20:23:38 2026 +0200
+
+    fix(coding-agent): normalize Windows shell drive paths
+    
+    Refs #7547
+
+ packages/coding-agent/CHANGELOG.md       |  1 +
+ packages/coding-agent/src/utils/paths.ts | 12 +++++++++++
+ packages/coding-agent/test/paths.test.ts | 36 +++++++++++++++++++++++++++++++-
+ 3 files changed, 48 insertions(+), 1 deletion(-)
+
+commit 17f720489fab02413c549c73bb407b8d6ef500c4
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 19:01:36 2026 +0200
+
+    fix(agent): validate required JSONL mutation fields
+
+ packages/agent/src/harness/session/jsonl/codec.ts  | 10 +++++++
+ .../agent/test/harness/session/jsonl-codec.test.ts | 33 ++++++++++++++++++++++
+ packages/agent/test/harness/session/jsonl.test.ts  |  6 ++--
+ 3 files changed, 47 insertions(+), 2 deletions(-)
+
+commit 104364f4c5d48b8136461227e9be0a490c1f72bc
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 18:23:22 2026 +0200
+
+    docs(agent): mark JSONL J2 complete
+
+ packages/agent/docs/harness-v2.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit e61d8f4f4447cdaf0dd76d79a95c512fec900623
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 18:15:36 2026 +0200
+
+    docs(agent): mark JSONL J1 complete
+
+ packages/agent/docs/harness-v2.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit acb2fd984997448b53a60e1034d045a4bfe56f51
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 18:13:51 2026 +0200
+
+    fix(agent): complete JSONL storage round-trip coverage
+
+ .../test/harness/session/jsonl-storage.test.ts     | 477 +++++++++++++++++++++
+ 1 file changed, 477 insertions(+)
+
+commit d3d2c2ec7c10a69e4290553e3e625b96d5536d11
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Wed Aug 5 16:09:39 2026 +0000
+
+    chore: approve contributors from issue #7642
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 48b8b547c8b3ccc53ac819416a92b0e918809e70
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 17:51:28 2026 +0200
+
+    fix(agent): require JSONL session cwd at creation
+
+ packages/agent/src/harness/session/jsonl/repo.ts  |  7 +------
+ packages/agent/src/harness/session/jsonl/types.ts |  2 --
+ packages/agent/test/harness/session/jsonl.test.ts | 25 ++++++++++++++++++-----
+ 3 files changed, 21 insertions(+), 13 deletions(-)
+
+commit c7fc779408f7b36742608f03d047b45f470594a3
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 17:17:33 2026 +0200
+
+    feat(agent): complete JSONL codec contract coverage
+
+ packages/agent/docs/harness-v2.md                  |   2 +-
+ .../agent/test/harness/session/jsonl-codec.test.ts | 134 +++++++++++++++++++++
+ 2 files changed, 135 insertions(+), 1 deletion(-)
+
+commit 2f550d827d468a00d91626ab54118f5802387a46
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Wed Aug 5 16:57:41 2026 +0200
+
+    fix: project open operation id to lanes (#7654)
+    
+    * fix: project open operation id to lanes
+    
+    * delete: idx_lanes_session_leaf
+    
+    * fix: split, over-defensive
+    
+    * delete: unnecessary assertion
+
+ packages/agent/docs/harness-v2.md                  | 11 ++-
+ .../agent/src/harness/session/jsonl/storage.ts     |  7 ++
+ packages/agent/src/harness/session/memory.ts       |  7 ++
+ .../src/harness/session/testing/conformance.ts     | 95 ++++++++++------------
+ .../src/sqlite/migrations/001_initial.sql          |  4 +-
+ .../sqlite-node/src/sqlite/repo.ts                 |  9 ++
+ .../sqlite-node/src/sqlite/storage/lanes.ts        | 39 ++++++++-
+ .../sqlite-node/src/sqlite/storage/records.ts      | 42 +++++-----
+ .../sqlite-node/test/migrations.test.ts            |  4 +-
+ 9 files changed, 130 insertions(+), 88 deletions(-)
+
+commit b3ec7c00688480737146b58114fc05420f5cc09e
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 16:50:01 2026 +0200
+
+    fix(agent): stop JSONL repositories from retaining sessions
+    
+    Load storage for each create or open without caching it in the repository. Remove repository-wide serialization and disposal because write queues belong to returned sessions.
+
+ packages/agent/docs/harness-v2.md                 |   1 +
+ packages/agent/src/harness/session/jsonl/repo.ts  | 151 +++++++---------------
+ packages/agent/test/harness/session/jsonl.test.ts |  39 ++----
+ 3 files changed, 65 insertions(+), 126 deletions(-)
+
+commit ce5d98cc001ee4a7ddea5e287aca7ed7088f6f3b
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 16:23:31 2026 +0200
+
+    fix(coding-agent): keep unit model stores in memory
+
+ packages/coding-agent/test/extensions-input-event.test.ts     |  4 ++--
+ packages/coding-agent/test/extensions-runner.test.ts          |  5 ++---
+ packages/coding-agent/test/model-registry.test.ts             |  2 +-
+ packages/coding-agent/test/model-runtime-test-utils.ts        | 11 ++++++++++-
+ packages/coding-agent/test/sdk-openrouter-attribution.test.ts |  9 +++++----
+ packages/coding-agent/test/test-harness.ts                    |  9 +++++----
+ 6 files changed, 25 insertions(+), 15 deletions(-)
+
+commit 4d68d9355131361a831b361b58d89b028bf5d247
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 16:15:42 2026 +0200
+
+    fix(coding-agent): shorten file lock retry delays
+
+ packages/coding-agent/src/core/auth-storage.ts  | 17 +++++++++++------
+ packages/coding-agent/test/auth-storage.test.ts | 18 ++++++++++++++++++
+ 2 files changed, 29 insertions(+), 6 deletions(-)
+
+commit 2c79ce45321626d76857415c4670442e7be769eb
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 15:53:19 2026 +0200
+
+    fix(coding-agent): avoid custom store lock convoys
+
+ packages/coding-agent/src/core/auth-storage.ts  | 59 +++++++++++++++++--------
+ packages/coding-agent/src/core/models-store.ts  | 17 +++----
+ packages/coding-agent/test/auth-storage.test.ts | 36 ++++++++++++---
+ packages/coding-agent/test/models-store.test.ts |  2 +-
+ packages/coding-agent/test/test-harness.test.ts |  5 ++-
+ 5 files changed, 82 insertions(+), 37 deletions(-)
+
+commit a79b22622a4def33465a7a16b6c7040c394b76f0
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 16:06:12 2026 +0200
+
+    fix(agent): match coding-agent JSONL session layout
+    
+    Store sessions under cwd-encoded directories with timestamped filenames, scan project directories for listing and explicit-id collisions, and skip global scans for generated UUIDv7 ids. Document and test the shared layout.
+
+ packages/agent/docs/harness-v2.md                 |   2 +
+ packages/agent/src/harness/session/jsonl/repo.ts  | 179 ++++++++++++----------
+ packages/agent/src/harness/session/jsonl/types.ts |   1 +
+ packages/agent/test/harness/session/jsonl.test.ts |  56 ++++++-
+ 4 files changed, 151 insertions(+), 87 deletions(-)
+
+commit 7a103289d9e45b0f9c9bf08e0046829900af8224
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Wed Aug 5 15:54:48 2026 +0200
+
+    docs: f0 done
+
+ packages/agent/docs/harness-v2.md | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+commit ed303b9bd61cb2c5d2870590074b044ad9ed98ec
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Wed Aug 5 15:41:14 2026 +0200
+
+    chore: scaffold test
+
+ packages/agent/test/harness/agent-harness-scaffold.test.ts | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+commit 14c89ad9992ce19857f59555ec1342594b9fc0fa
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Wed Aug 5 15:37:05 2026 +0200
+
+    chore: UnavailableRegistry
+
+ packages/agent/docs/harness-v2.md                  |   2 +
+ packages/agent/src/harness/agent-harness.ts        |  69 ++++----
+ .../test/harness/agent-harness-scaffold.test.ts    | 189 +++++++++++++++++++--
+ 3 files changed, 208 insertions(+), 52 deletions(-)
+
+commit abac29f671f320f497502628592a6882d2c166f6
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 5 15:28:37 2026 +0200
+
+    docs(agent): reserve harness R2 work package
+
+ packages/agent/docs/harness-v2.md | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit c518004666033ade0de072dbf4ceb6b94dcd0882
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 5 15:16:20 2026 +0200
+
+    docs(agent): clarify lane reduction contract (#7662)
+    
+    The harness v2 plan is a bit underspecified for the state needed in R1. LaneState was missing the lane's config (model, thinking, tools). And the LaneReductionResult was missing, which is needed so we have failure information. Here's a suggestion at resolving.
+
+ packages/agent/docs/harness-v2.md | 49 ++++++++++++++++++++++++++++++++-------
+ 1 file changed, 41 insertions(+), 8 deletions(-)
+
+commit 2901362533b848cfe3a3269070280e8caa033b1f
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Wed Aug 5 15:08:04 2026 +0200
+
+    docs(agent): reserve harness I0 and L1-L3 work packages
+
+ packages/agent/docs/harness-v2.md | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+commit ac27947f7bb7df3182f189be8bc4f099986b3191
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 14:48:39 2026 +0200
+
+    feat(agent): split JSONL session backend modules
+    
+    Separate codec, storage, repository, errors, and public contracts while retaining the existing JSONL session API and behavior.
+
+ packages/agent/src/harness/session/jsonl.ts        | 694 +--------------------
+ packages/agent/src/harness/session/jsonl/codec.ts  | 183 ++++++
+ packages/agent/src/harness/session/jsonl/errors.ts |  17 +
+ packages/agent/src/harness/session/jsonl/repo.ts   | 249 ++++++++
+ .../agent/src/harness/session/jsonl/storage.ts     | 236 +++++++
+ packages/agent/src/harness/session/jsonl/types.ts  |  22 +
+ 6 files changed, 710 insertions(+), 691 deletions(-)
+
+commit 162b1883bd806e02cf4db2dbfc15f900c23f1494
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 14:37:03 2026 +0200
+
+    feat(agent): add JSONL metadata contracts
+    
+    Define JSONL create, list, metadata, and v4 header types. Persist opaque metadata and legacy parent paths, expose filesystem mtimes and source format, filter listings by cwd, and sort them by current mtime. Add metadata and ordering coverage.
+
+ packages/agent/src/harness/session/index.ts        |   2 +
+ packages/agent/src/harness/session/jsonl.ts        | 132 ++++++++++++---------
+ packages/agent/src/harness/session/jsonl/types.ts  |  34 ++++++
+ .../src/harness/session/testing/conformance.ts     |   6 +-
+ packages/agent/test/harness/session/jsonl.test.ts  |  79 ++++++++++--
+ 5 files changed, 182 insertions(+), 71 deletions(-)
+
+commit ea7bfdc08bc2859cde8292655f075b37ae1da1a9
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 5 14:03:24 2026 +0200
+
+    docs(agent): unreserve R2 work package
+
+ packages/agent/docs/harness-v2.md | 2 --
+ 1 file changed, 2 deletions(-)
+
+commit b780d20aa17c4144ace7bff728150993236b88ee
+Author: Kurt Himebauch <136133082+xXJSONDeruloXx@users.noreply.github.com>
+Date:   Wed Aug 5 07:50:37 2026 -0400
+
+    fix(tui): close truncated OSC 8 links (#7657)
+    
+    When truncateToWidth() cut through an OSC 8 hyperlink label, the retained prefix could leave the hyperlink open. Close an active hyperlink before the existing reset and ellipsis, preserving its BEL or ST terminator.
+    Added a focused regression test for the reported BEL-terminated case.
+
+ packages/tui/src/utils.ts                   | 23 +++++++++++++++++++++--
+ packages/tui/test/truncate-to-width.test.ts |  8 ++++++++
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+commit 6bfd50261dfa103a761c2638965248381251827c
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Wed Aug 5 11:25:20 2026 +0000
+
+    chore: approve contributors from issue #7657
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit c38319ea10ea98e5caedaad2ea1750f4baedd111
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 13:00:30 2026 +0200
+
+    fix(agent): share state between memory and JSONL sessions
+    
+    Replace the duplicate in-memory indexes and query implementations in the Memory and JSONL backends with a shared SessionState projection. It applies backend-neutral mutations and maintains sequence numbers, IDs, entries, lanes, records, open operations, facts, statistics, and the chronological log.
+    
+    Memory applies mutations directly. JSONL first appends the encoded mutation, then updates SessionState; replay decodes each line and applies it through the same relational validation. Fork imports remain lane-less and final lane pointers remain explicit.
+
+ packages/agent/src/harness/session/jsonl.ts  | 320 +++++----------------------
+ packages/agent/src/harness/session/memory.ts | 294 +++++++-----------------
+ packages/agent/src/harness/session/state.ts  | 302 +++++++++++++++++++++++++
+ 3 files changed, 429 insertions(+), 487 deletions(-)
+
+commit a5953d2e1530e44d905b836ebad32dfd8d4145a8
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 5 12:49:20 2026 +0200
+
+    feat(agent): validate harness recovery record logs
+
+ packages/agent/docs/harness-v2.md           |   7 +-
+ packages/agent/src/harness/reducer.ts       | 297 +++++++++++++
+ packages/agent/src/harness/session/types.ts |   6 +
+ packages/agent/test/harness/reducer.test.ts | 619 ++++++++++++++++++++++++++++
+ 4 files changed, 926 insertions(+), 3 deletions(-)
+
+commit 1022a9e8244df5c35e2288196069c7cec3b4dd70
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Wed Aug 5 13:25:37 2026 +0300
+
+    fix(agent): list SQLite sessions without writer claims (#7655)
+    
+    * fix(agent): list SQLite sessions without writer claims
+    
+    * fix(agent): reject null SQLite session names
+
+ packages/agent/docs/harness-v2.md                  |  6 +-
+ packages/agent/src/harness/session/types.ts        |  2 +
+ .../src/sqlite/migrations/001_initial.sql          |  2 +-
+ .../sqlite-node/src/sqlite/repo.ts                 | 67 ++++++++++----------
+ .../sqlite-node/src/sqlite/search-backend.ts       | 23 ++++++-
+ .../sqlite-node/src/sqlite/storage/sessions.ts     | 73 ++++++++++++++++++----
+ .../sqlite/storage/{leases.ts => writer-leases.ts} | 28 ++++-----
+ .../sqlite-node/src/sqlite/types.ts                |  3 +
+ .../sqlite-node/test/migrations.test.ts            |  2 +-
+ .../sqlite-node/test/repository.test.ts            | 30 +++++++++
+ .../sqlite-node/test/search.test.ts                | 36 ++++++++++-
+ .../test/{leases.test.ts => writer-leases.test.ts} | 67 ++++++++++++++++++--
+ 12 files changed, 266 insertions(+), 73 deletions(-)
+
+commit afdf73661b980e8ced8d40aaa5cc9c6ae52df4ae
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 5 12:12:31 2026 +0200
+
+    docs(agent): reserve harness R1 work package
+
+ packages/agent/docs/harness-v2.md | 3 +++
+ 1 file changed, 3 insertions(+)
+
+commit e77e2b751cbd28313073ed2de43d4b3294c73dcd
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 12:00:36 2026 +0200
+
+    fix(agent): correct JSONL fork entry semantics
+    
+    Persist copied fork entries without lane metadata so imports do not advance lane pointers. Write final fork lane positions explicitly, validate lane-bound parent chains during replay, and cover import and corruption behavior with focused tests.
+
+ packages/agent/src/harness/session/jsonl.ts       | 60 ++++++-----------------
+ packages/agent/test/harness/session/jsonl.test.ts | 58 ++++++++++++++++++++++
+ 2 files changed, 74 insertions(+), 44 deletions(-)
+
+commit 651d5d6a53690b3ec87b72fca0b3f993ac5ec748
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 11:42:47 2026 +0200
+
+    partial harness v2/json backend (#7611)
+    
+    * feat(agent): add experimental JSONL v4 session backend
+    
+    * fix(agent): align JSONL sessions with harness v2
+    
+    * Remove changelog
+    
+    * fix(agent): store JSONL fork stats boundary in header
+    
+    * fix(agent): count forked messages in JSONL stats
+    
+    * remove todos file
+    
+    * feat(agent): add JSONL recovery queries
+    
+    * fix(agent): narrow JSONL session exports
+    
+    ---------
+    
+    Co-authored-by: Christian Klotz <hello@christianklotz.co.uk>
+
+ packages/agent/src/harness/session/index.ts       |   7 +
+ packages/agent/src/harness/session/jsonl.ts       | 921 ++++++++++++++++++++++
+ packages/agent/test/harness/session/jsonl.test.ts | 255 ++++++
+ 3 files changed, 1183 insertions(+)
+
+commit 7cf90c1d183bd6de8b113677f05f5daffcd80fdf
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 11:29:32 2026 +0200
+
+    fix(coding-agent): avoid model store read lock contention
+
+ packages/coding-agent/CHANGELOG.md              |   1 +
+ packages/coding-agent/src/core/auth-storage.ts  |  39 +++++----
+ packages/coding-agent/src/core/models-store.ts  | 101 ++++++++++++++++++++++--
+ packages/coding-agent/src/utils/paths.ts        |  11 ++-
+ packages/coding-agent/test/auth-storage.test.ts |  23 ++++--
+ packages/coding-agent/test/models-store.test.ts | 100 ++++++++++++++++++-----
+ 6 files changed, 223 insertions(+), 52 deletions(-)
+
+commit 1e95e16b61f4a561b932df83d58df52589e58635
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 5 10:51:46 2026 +0200
+
+    fix(agent): remove redundant SQLite read clones
+
+ packages/session-backends/sqlite-node/src/sqlite/repo.ts | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+commit 591f22a618639ae65c5e29fb7cd7fbc4a6260dbc
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 5 10:41:44 2026 +0200
+
+    feat(agent): add indexed harness recovery queries (#7646)
+    
+    Implements R0 of the harness v2 plan, which adds RecordQuery.operationKind filtering and adds Session.findOpenOperations() for recovery purposes. The in-memory implementation keeps the open-operation projections in memory. SQLite implementation adds an index idx_records_session_lane_run_id_type.
+
+ packages/agent/docs/harness-v2.md                  |   4 +-
+ packages/agent/src/harness/session/memory.ts       |  21 +++
+ packages/agent/src/harness/session/session.ts      |  11 +-
+ .../src/harness/session/testing/conformance.ts     | 194 +++++++++++++++++++--
+ packages/agent/src/harness/session/types.ts        |   3 +
+ .../src/sqlite/migrations/001_initial.sql          |   1 +
+ .../sqlite-node/src/sqlite/repo.ts                 |  22 ++-
+ .../sqlite-node/src/sqlite/storage/records.ts      |  36 ++++
+ .../sqlite-node/test/migrations.test.ts            |   2 +
+ 9 files changed, 273 insertions(+), 21 deletions(-)
+
+commit f909da2bf0e39ebeca9b2608f511d4167435360e
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Wed Aug 5 08:52:35 2026 +0200
+
+    docs(agent): reserve harness R0 work package
+
+ packages/agent/docs/harness-v2.md | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit dab70b2cd47c39d6c42365683f9fbf26fa2c8b0b
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Wed Aug 5 11:06:39 2026 +0300
+
+    fix(server): sanitize service failures (#7644)
+
+ packages/protocol/src/schemas.ts         |  2 ++
+ packages/protocol/test/protocol.test.ts  | 10 +++++++
+ packages/server/src/errors.ts            | 20 ++++++++++++-
+ packages/server/src/server.ts            | 16 +++++++++--
+ packages/server/test/conformance.test.ts | 48 ++++++++++++++++++++++++++++++--
+ 5 files changed, 91 insertions(+), 5 deletions(-)
+
+commit 7bdeeb8f9358624dc76652cd701acd5ece65e64c
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 09:57:30 2026 +0200
+
+    fix(agent): count copied messages in fork stats
+
+ packages/agent/src/harness/session/memory.ts                        | 1 +
+ packages/agent/src/harness/session/testing/conformance.ts           | 5 ++++-
+ packages/session-backends/sqlite-node/src/sqlite/repo.ts            | 2 +-
+ .../sqlite-node/src/sqlite/storage/session-stats.ts                 | 6 +++---
+ 4 files changed, 9 insertions(+), 5 deletions(-)
+
+commit 845bb970f315918f5505e9a51d209b359109f820
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Wed Aug 5 09:56:43 2026 +0200
+
+    fix: build error on request info (#7645)
+
+ packages/coding-agent/src/utils/management-http.ts | 4 +++-
+ packages/coding-agent/src/utils/version-check.ts   | 4 +++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+commit 2c233a5c04f12ada58e3908c376c5e28bfdb38ef
+Author: Ramiz Wachtler <ramiz@earendil.com>
+Date:   Wed Aug 5 09:50:58 2026 +0200
+
+    fix(tui): add iterm payload size for xterm.js image addon (#7612)
+    
+    - include decoded byte count in iterm2 osc 1337 sequences
+    - satisfy @xterm/addon-image@0.9.0 image validation
+    - fixes #7465
+
+ packages/tui/src/terminal-image.ts       | 5 ++++-
+ packages/tui/test/terminal-image.test.ts | 8 ++++++++
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+commit bb6a1cddc72de48b12257df83fd04495303dbd22
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Wed Aug 5 10:50:10 2026 +0300
+
+    refactor(server): rename backend contract to service (#7643)
+
+ packages/server/README.md                          |  10 +-
+ packages/server/src/errors.ts                      |   2 +-
+ packages/server/src/server.ts                      |   8 +-
+ packages/server/src/sessions.ts                    |  12 +-
+ packages/server/src/snapshots.ts                   |   8 +-
+ packages/server/src/testing/client.ts              |   2 +-
+ packages/server/src/testing/index.ts               |   2 +-
+ packages/server/src/testing/server.ts              |  14 +--
+ .../server/src/testing/{backend.ts => service.ts}  |   4 +-
+ packages/server/src/transports/unix/preset.ts      |   6 +-
+ packages/server/src/types.ts                       |   7 +-
+ packages/server/test/conformance.test.ts           |  90 +++++++--------
+ packages/server/test/server.test.ts                |  20 ++--
+ packages/server/test/sessions.test.ts              | 124 ++++++++++-----------
+ packages/server/test/unix.test.ts                  |   4 +-
+ 15 files changed, 156 insertions(+), 157 deletions(-)
+
+commit 66534fbdc7bb09492b40142471bbbb87b4a4d5bc
+Author: Alexey Zaytsev <alexey.zaytsev@gmail.com>
+Date:   Wed Aug 5 04:43:24 2026 -0300
+
+    feat(coding-agent): render Mermaid diagrams (#7624)
+
+ package-lock.json                                  | 10 +++
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/docs/settings.md             |  1 +
+ .../coding-agent/install-lock/package-lock.json    | 10 +++
+ packages/coding-agent/npm-shrinkwrap.json          | 10 +++
+ packages/coding-agent/package.json                 |  1 +
+ packages/coding-agent/src/core/settings-manager.ts | 15 ++++
+ .../src/modes/interactive/components/mermaid.ts    | 89 +++++++++++++++++++
+ .../interactive/components/settings-selector.ts    | 19 ++++-
+ .../src/modes/interactive/interactive-mode.ts      | 13 ++-
+ packages/coding-agent/test/mermaid.test.ts         | 99 ++++++++++++++++++++++
+ .../coding-agent/test/settings-manager.test.ts     | 21 +++++
+ 12 files changed, 287 insertions(+), 2 deletions(-)
+
+commit 46b53b995b4c1e4fa2a29318cba4163cc63f86c4
+Author: Petr Houška <houskape@gmail.com>
+Date:   Wed Aug 5 09:38:28 2026 +0200
+
+    fix: retry transient management HTTP requests (#7632)
+    
+    Retry idempotent coding-agent management requests for transient transport and HTTP failures while keeping one overall timeout budget across attempts.
+    
+    Keep install telemetry single-shot because retrying it has no user-facing impact and could duplicate a side-effecting report.
+
+ .../src/core/remote-catalog-provider.ts            |  3 +-
+ packages/coding-agent/src/package-manager-cli.ts   |  9 +--
+ packages/coding-agent/src/utils/management-http.ts | 66 ++++++++++++++++++++++
+ packages/coding-agent/src/utils/tools-manager.ts   | 16 +++---
+ packages/coding-agent/src/utils/version-check.ts   | 41 +++++++++++---
+ packages/coding-agent/test/management-http.test.ts | 52 +++++++++++++++++
+ .../test/package-command-paths.test.ts             | 24 ++++++++
+ .../test/remote-catalog-provider.test.ts           |  4 +-
+ packages/coding-agent/test/version-check.test.ts   | 32 +++++++++++
+ 9 files changed, 226 insertions(+), 21 deletions(-)
+
+commit a80008b96c933dd13346f8504e425279c5b6a68f
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Wed Aug 5 09:28:44 2026 +0200
+
+    chore: rename storage package to session-backends
+
+ biome.json                                                     |  4 ++--
+ package-lock.json                                              | 10 +++++-----
+ package.json                                                   |  6 +++---
+ packages/agent/README.md                                       |  2 +-
+ packages/agent/docs/harness-v2.md                              |  8 ++++----
+ .../{storage => session-backends}/sqlite-node/CHANGELOG.md     |  1 +
+ packages/{storage => session-backends}/sqlite-node/README.md   |  4 ++--
+ .../{storage => session-backends}/sqlite-node/package.json     |  6 +++---
+ .../sqlite-node/scripts/prepare-dist.mjs                       |  0
+ .../{storage => session-backends}/sqlite-node/src/index.ts     |  0
+ .../sqlite-node/src/sqlite/branch-cache.ts                     |  0
+ .../sqlite-node/src/sqlite/index.ts                            |  0
+ .../sqlite-node/src/sqlite/migrations.ts                       |  0
+ .../sqlite-node/src/sqlite/migrations/001_initial.sql          |  0
+ .../sqlite-node/src/sqlite/repo.ts                             |  0
+ .../sqlite-node/src/sqlite/search-backend.ts                   |  0
+ .../sqlite-node/src/sqlite/storage/branch-entries.ts           |  0
+ .../sqlite-node/src/sqlite/storage/branch-tips.ts              |  0
+ .../sqlite-node/src/sqlite/storage/entries.ts                  |  0
+ .../sqlite-node/src/sqlite/storage/facts.ts                    |  0
+ .../sqlite-node/src/sqlite/storage/lanes.ts                    |  0
+ .../sqlite-node/src/sqlite/storage/leases.ts                   |  0
+ .../sqlite-node/src/sqlite/storage/records.ts                  |  0
+ .../sqlite-node/src/sqlite/storage/session-sequences.ts        |  0
+ .../sqlite-node/src/sqlite/storage/session-stats.ts            |  0
+ .../sqlite-node/src/sqlite/storage/sessions.ts                 |  0
+ .../sqlite-node/src/sqlite/types.ts                            |  0
+ .../sqlite-node/test/adapter.test.ts                           |  0
+ .../sqlite-node/test/branch-cache.test.ts                      |  0
+ .../sqlite-node/test/conformance.test.ts                       |  0
+ .../sqlite-node/test/leases.test.ts                            |  0
+ .../sqlite-node/test/migrations.test.ts                        |  0
+ .../sqlite-node/test/repository.test.ts                        |  0
+ .../sqlite-node/test/search.test.ts                            |  0
+ .../sqlite-node/test/test-utils.ts                             |  2 +-
+ .../sqlite-node/tsconfig.build.json                            |  0
+ .../{storage => session-backends}/sqlite-node/vitest.config.ts |  0
+ scripts/local-release.mjs                                      |  2 +-
+ scripts/publish.mjs                                            |  2 +-
+ tsconfig.json                                                  |  4 ++--
+ 40 files changed, 26 insertions(+), 25 deletions(-)
+
+commit 0df5a69e5e119f8421f4f572d9a3c2ba4c0f5a39
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Wed Aug 5 09:14:57 2026 +0200
+
+    docs(agent): harness-v2: count forked messages in session stats
+
+ packages/agent/docs/harness-v2.md | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 464804e1561191585f208e730d8373a1b21d4e56
+Merge: 73dd066ee 35074a30b
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 09:12:18 2026 +0200
+
+    fix(tui): merge upstream main
+
+commit 73dd066ee5384883477d1e9fbebec48976e5a810
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Wed Aug 5 09:05:20 2026 +0200
+
+    fix(tui): detect Windows Shift+Enter
+
+ packages/tui/CHANGELOG.md                          |   1 +
+ packages/tui/native/win32/README.md                |  22 ++
+ packages/tui/native/win32/build.mjs                | 229 +++++++++++++++++++++
+ .../prebuilds/win32-arm64/win32-console-mode.node  | Bin 3072 -> 4096 bytes
+ .../prebuilds/win32-x64/win32-console-mode.node    | Bin 3072 -> 4608 bytes
+ packages/tui/native/win32/src/win32-console-mode.c |  72 ++++++-
+ packages/tui/package.json                          |   1 +
+ packages/tui/src/native-modifiers.ts               |  11 +-
+ packages/tui/src/terminal.ts                       |  23 ++-
+ packages/tui/test/terminal.test.ts                 |  21 +-
+ 10 files changed, 367 insertions(+), 13 deletions(-)
+
+commit 35074a30b77efc462d743c8753423446cac65bce
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Wed Aug 5 07:04:54 2026 +0000
+
+    chore: approve contributors from issue #7631
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 588915ec71714688cee8b7153339e8bdebb3e82e
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 23:31:11 2026 +0200
+
+    docs(agent): clarify JSONL fork entry replay
+
+ packages/agent/docs/harness-v2.md | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+commit cc4aa1a2e0ac1f56a79c2c57435b6d90c06834fb
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 4 23:25:26 2026 +0200
+
+    fix(tui): include Darwin native rebuild sources
+
+ packages/tui/CHANGELOG.md | 1 +
+ packages/tui/package.json | 3 +++
+ 2 files changed, 4 insertions(+)
+
+commit 6a140371d6fa1069f89724741de912ab2f266ef8
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 4 23:11:21 2026 +0200
+
+    fix(agent): handle Windows resource paths
+
+ packages/agent/CHANGELOG.md                    |  4 +++
+ packages/agent/src/harness/env/nodejs.ts       |  4 +--
+ packages/agent/src/harness/prompt-templates.ts | 13 +++------
+ packages/agent/src/harness/skills.ts           | 40 +++++++++++++-------------
+ 4 files changed, 30 insertions(+), 31 deletions(-)
+
+commit 7830975233e4f94583dff2117a68a0ed289cdf15
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 4 22:10:55 2026 +0200
+
+    feat(tui): add Darwin native build recipe
+
+ packages/tui/native/darwin/README.md | 20 ++++++++++++
+ packages/tui/native/darwin/build.sh  | 62 ++++++++++++++++++++++++++++++++++++
+ packages/tui/package.json            |  1 +
+ 3 files changed, 83 insertions(+)
+
+commit b08e114f7a5a890edb2d6ddc4eb682440d91f54f
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 22:12:41 2026 +0200
+
+    docs(agent): define harness implementation packages
+
+ packages/agent/docs/harness-v2.md | 319 ++++++++++++++++++++++++++++++++++----
+ 1 file changed, 293 insertions(+), 26 deletions(-)
+
+commit fc4a3d99bc03b3f2ba01529ef8f0369669b48272
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 4 22:00:27 2026 +0200
+
+    fix(coding-agent): honor output padding for errors
+
+ packages/coding-agent/src/modes/interactive/interactive-mode.ts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 79cc1ef00ae0643a747f399c267dc8c6c39b5d01
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Tue Aug 4 22:54:15 2026 +0300
+
+    fix(agent): own SQLite backend tests in storage package (#7626)
+    
+    * fix(agent): own SQLite backend tests in storage package
+    
+    * fix(agent): use lexical disposal for SQLite tests
+
+ package-lock.json                                  | 144 ++++-----
+ .../src/harness/session/testing/conformance.ts     |   1 +
+ packages/agent/test/harness/session-test-utils.ts  | 124 +-------
+ packages/storage/sqlite-node/package.json          |   6 +
+ packages/storage/sqlite-node/src/sqlite/repo.ts    |   4 +-
+ .../sqlite-node/test/adapter.test.ts}              |  25 +-
+ .../sqlite-node/test/branch-cache.test.ts}         |  66 ++---
+ .../sqlite-node/test/conformance.test.ts}          |  14 +-
+ .../sqlite-node/test/leases.test.ts}               |  66 +++--
+ .../storage/sqlite-node/test/migrations.test.ts    |  41 +++
+ .../sqlite-node/test/repository.test.ts}           | 325 +++++----------------
+ .../sqlite-node/test/search.test.ts}               | 167 +++++------
+ packages/storage/sqlite-node/test/test-utils.ts    | 144 +++++++++
+ packages/storage/sqlite-node/vitest.config.ts      |  31 ++
+ tsconfig.json                                      |   6 +-
+ 15 files changed, 543 insertions(+), 621 deletions(-)
+
+commit b0d382e25afd7bdf0bbce4300ec8b26ec78f4ca4
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 4 21:25:39 2026 +0200
+
+    fix(tui): add editor viewport key aliases (closes #7574)
+
+ packages/coding-agent/CHANGELOG.md        |  1 +
+ packages/coding-agent/docs/keybindings.md | 19 ++++++++++---
+ packages/tui/CHANGELOG.md                 |  1 +
+ packages/tui/src/keybindings.ts           |  9 ++++---
+ packages/tui/test/keybindings.test.ts     | 11 +++++++-
+ packages/tui/test/keys.test.ts            | 11 ++++++++
+ packages/tui/test/tui-alt-screen.test.ts  | 44 +++++++++++++++++++++++++++++++
+ 7 files changed, 87 insertions(+), 9 deletions(-)
+
+commit 71f6c25c369fcbb03dc52fe631790b9b556f609d
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Tue Aug 4 21:24:56 2026 +0200
+
+    fix(ai): update Groq Qwen reasoning override
+
+ packages/ai/CHANGELOG.md                                | 1 +
+ packages/ai/scripts/generate-models.ts                  | 2 +-
+ packages/ai/test/openai-completions-tool-choice.test.ts | 4 ++--
+ 3 files changed, 4 insertions(+), 3 deletions(-)
+
+commit 05bf9df65155e047e4ba8459eaee9735e29a2e53
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Tue Aug 4 20:03:37 2026 +0300
+
+    feat: remove legacy server implementation (#7614)
+
+ package-lock.json                          |   4 -
+ package.json                               |   4 +-
+ packages/server/README.md                  |  18 +-
+ packages/server/package.json               |  10 +-
+ packages/server/src/index.ts               |   1 -
+ packages/server/src/legacy/cli.ts          | 161 -----------
+ packages/server/src/legacy/config.ts       |  69 -----
+ packages/server/src/legacy/handler.ts      | 161 -----------
+ packages/server/src/legacy/index.ts        |  11 -
+ packages/server/src/legacy/ipc/client.ts   |  63 -----
+ packages/server/src/legacy/ipc/protocol.ts | 142 ----------
+ packages/server/src/legacy/ipc/server.ts   | 209 --------------
+ packages/server/src/legacy/radius.ts       | 440 -----------------------------
+ packages/server/src/legacy/rpc-process.ts  | 201 -------------
+ packages/server/src/legacy/serve.ts        |  77 -----
+ packages/server/src/legacy/storage.ts      |  70 -----
+ packages/server/src/legacy/supervisor.ts   | 354 -----------------------
+ packages/server/src/legacy/types.ts        |  25 --
+ 18 files changed, 8 insertions(+), 2012 deletions(-)
+
+commit 4b85cd9786d736e22dc1f3ae91067b4cc5a24b2c
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Tue Aug 4 15:08:44 2026 +0000
+
+    harness-v2 mark task in progress
+
+ packages/agent/docs/harness-v2.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 44289550aa06750542c0ace8ab4bac0c7e68ce54
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 17:01:43 2026 +0200
+
+    feat(agent): promote durable harness API
+
+ packages/agent/CHANGELOG.md                        |    6 +-
+ packages/agent/docs/harness-v2.md                  |   76 +-
+ packages/agent/docs/harness.md                     | 2320 --------------------
+ packages/agent/package.json                        |   10 +-
+ packages/agent/src/experimental.ts                 |    1 -
+ packages/agent/src/harness/agent-harness.ts        | 1541 ++++---------
+ .../src/harness/compaction/branch-summarization.ts |   63 +-
+ .../agent/src/harness/compaction/compaction.ts     |  116 +-
+ .../src/harness/experimental/session/session.ts    |  281 ---
+ packages/agent/src/harness/messages.ts             |   16 +-
+ packages/agent/src/harness/result.ts               |   63 +
+ .../src/harness/session/array-session-index.ts     |  187 --
+ packages/agent/src/harness/session/context.ts      |  100 +
+ .../harness/{experimental => }/session/index.ts    |    1 +
+ packages/agent/src/harness/session/jsonl-repo.ts   |  487 ----
+ .../src/harness/session/keyed-operation-queue.ts   |   69 -
+ packages/agent/src/harness/session/memory-repo.ts  |  172 --
+ .../harness/{experimental => }/session/memory.ts   |    0
+ packages/agent/src/harness/session/repository.ts   |   71 -
+ packages/agent/src/harness/session/search.ts       |   47 +-
+ packages/agent/src/harness/session/session.ts      |  569 ++---
+ .../session/testing/conformance.ts                 |    2 +-
+ .../{experimental => }/session/testing/index.ts    |    0
+ .../{experimental => }/session/testing/types.ts    |    0
+ .../harness/{experimental => }/session/types.ts    |   13 +-
+ packages/agent/src/harness/types.ts                |  683 +-----
+ packages/agent/src/index.ts                        |   61 +-
+ .../test/harness/agent-harness-scaffold.test.ts    |   34 +
+ .../test/harness/agent-harness-stream.test.ts      |  208 --
+ packages/agent/test/harness/agent-harness.test.ts  | 1280 -----------
+ packages/agent/test/harness/branch-query.test.ts   |  303 ---
+ .../test/harness/branch-summarization.test.ts      |   39 +
+ packages/agent/test/harness/compaction.test.ts     |  147 +-
+ packages/agent/test/harness/repo.test.ts           |  645 ------
+ .../agent/test/harness/session-backends.test.ts    |  199 --
+ packages/agent/test/harness/session-test-utils.ts  |   49 +-
+ packages/agent/test/harness/session.test.ts        |  291 ---
+ .../agent/test/harness/session/context.test.ts     |  124 ++
+ .../{experimental => }/session/memory.test.ts      |    4 +-
+ .../{experimental => }/session/sqlite.test.ts      |   10 +-
+ .../agent/test/harness/sqlite-branch-cache.test.ts |   21 +-
+ .../agent/test/harness/sqlite-migrations.test.ts   |   10 +-
+ packages/agent/test/harness/sqlite-node.test.ts    |   26 +-
+ packages/agent/test/harness/tool-context.types.ts  |   17 -
+ packages/agent/test/scratch/simple.ts              |   79 -
+ packages/agent/vitest.config.ts                    |    2 -
+ packages/agent/vitest.harness.config.ts            |    2 -
+ packages/storage/sqlite-node/CHANGELOG.md          |    6 +-
+ .../storage/sqlite-node/src/sqlite/branch-cache.ts |    2 +-
+ packages/storage/sqlite-node/src/sqlite/index.ts   |    7 +-
+ packages/storage/sqlite-node/src/sqlite/repo.ts    |   35 +-
+ .../src/sqlite/storage/branch-entries.ts           |    2 +-
+ .../sqlite-node/src/sqlite/storage/entries.ts      |    2 +-
+ .../sqlite-node/src/sqlite/storage/lanes.ts        |    2 +-
+ .../src/sqlite/storage/session-sequences.ts        |    2 +-
+ .../src/sqlite/storage/session-stats.ts            |    2 +-
+ .../sqlite-node/src/sqlite/storage/sessions.ts     |    4 +-
+ scripts/browser-smoke-entry.ts                     |    4 +-
+ tsconfig.json                                      |    1 -
+ 59 files changed, 1333 insertions(+), 9181 deletions(-)
+
+commit f119b01cb122ea55e17905caff62d4523f6cce1d
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Tue Aug 4 15:56:56 2026 +0200
+
+    refactor: update sqlite for lanes (#7591)
+    
+    * feat: align sqlite storage with session lanes
+    
+    * fix: delete lane from entry, action
+    
+    * fix: errors and types
+    
+    * fix: tests
+    
+    * fix: usage records instead of session materialized
+    
+    * chore: 1 mig
+    
+    * fix
+    
+    * refactor(agent): move harness experimental changes to split branch
+    
+    * refactor and cleanup
+    
+    * fix: use assertJsonSerializable for session metadata
+    
+    * fix(sqlite): reject corrupt lane leafs on open
+    
+    * fix: rebuild cache
+    
+    * refactor: branch cache
+    
+    * feat: session stats
+    
+    * fix: enforce leases
+    
+    * feat(agent): enforce fenced SQLite writer leases
+    
+    * fix(agent): keep SQLite transactions synchronous
+    
+    * fix(agent): align SQLite storage with conformance suite
+    
+    ---------
+    
+    Co-authored-by: Christian Klotz <hello@christianklotz.co.uk>
+
+ packages/agent/docs/harness-v2.md                  |    4 +-
+ .../src/harness/experimental/session/session.ts    |    2 +-
+ packages/agent/test/harness/branch-query.test.ts   |   51 +-
+ .../harness/experimental/session/sqlite.test.ts    |   58 ++
+ packages/agent/test/harness/session-test-utils.ts  |  128 +++
+ packages/agent/test/harness/sqlite-adapter.test.ts |   36 +
+ .../agent/test/harness/sqlite-branch-cache.test.ts |  139 ++-
+ packages/agent/test/harness/sqlite-leases.test.ts  |  136 +++
+ .../agent/test/harness/sqlite-migrations.test.ts   |  387 ++++---
+ packages/agent/test/harness/sqlite-node.test.ts    |   50 +-
+ packages/agent/vitest.config.ts                    |    2 +
+ packages/agent/vitest.harness.config.ts            |    2 +
+ packages/storage/sqlite-node/src/index.ts          |   23 +-
+ .../storage/sqlite-node/src/sqlite/branch-cache.ts |  105 ++
+ packages/storage/sqlite-node/src/sqlite/index.ts   |   11 +-
+ .../storage/sqlite-node/src/sqlite/migrations.ts   |   24 +-
+ .../src/sqlite/migrations/001_initial.sql          |   97 +-
+ .../src/sqlite/migrations/002_branch_tips.sql      |   12 -
+ packages/storage/sqlite-node/src/sqlite/repo.ts    | 1054 +++++++++++++++-----
+ .../sqlite-node/src/sqlite/search-backend.ts       |   42 +-
+ .../sqlite-node/src/sqlite/storage/branch-cache.ts |  326 ------
+ .../src/sqlite/storage/branch-entries.ts           |  146 +++
+ .../sqlite-node/src/sqlite/storage/branch-tips.ts  |   40 +
+ .../sqlite-node/src/sqlite/storage/entries.ts      |   75 ++
+ .../sqlite-node/src/sqlite/storage/facts.ts        |   73 ++
+ .../sqlite-node/src/sqlite/storage/index.ts        |  459 ---------
+ .../sqlite-node/src/sqlite/storage/lanes.ts        |  116 +++
+ .../sqlite-node/src/sqlite/storage/leases.ts       |   65 ++
+ .../sqlite-node/src/sqlite/storage/records.ts      |   95 ++
+ .../src/sqlite/storage/session-entries.ts          |  217 ----
+ .../src/sqlite/storage/session-materialized.ts     |  355 -------
+ .../src/sqlite/storage/session-sequences.ts        |   24 +-
+ .../src/sqlite/storage/session-stats.ts            |   63 ++
+ .../sqlite-node/src/sqlite/storage/sessions.ts     |   62 +-
+ .../sqlite-node/src/sqlite/storage/shared.ts       |   17 -
+ packages/storage/sqlite-node/src/sqlite/types.ts   |   13 +-
+ tsconfig.json                                      |    1 +
+ 37 files changed, 2501 insertions(+), 2009 deletions(-)
+
+commit 04133eb01b082248f7d667c1214e09477a1c3db1
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 15:19:23 2026 +0200
+
+    docs(agent): remove superseded design docs
+
+ packages/agent/docs/agent-harness.md   | 506 -----------------
+ packages/agent/docs/durable-harness.md | 212 --------
+ packages/agent/docs/hooks.md           | 445 ---------------
+ packages/agent/docs/models.md          | 964 ---------------------------------
+ packages/agent/docs/observability.md   | 376 -------------
+ 5 files changed, 2503 deletions(-)
+
+commit 4756e7d1220cd5bb4e88cd28690a8597fa50d89c
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 15:14:30 2026 +0200
+
+    docs(agent): make harness v2 telemetry self-contained
+    
+    Section 18 no longer references observability.md, which described the
+    superseded ALS/global-context mechanism and is being removed. Absorbed
+    the two load-bearing points: the multi-runtime rationale for rejecting
+    ambient context (explicit arguments are the only portable abstraction),
+    and the adapter framing - the application supplies ExecutionContext to
+    bridge spans into OTel/Sentry/logs/metrics, pi ships no exporter and no
+    vendor dependency, adapters allocate their own span/trace ids, and may
+    use AsyncLocalStorage internally. Dropped the reading-list entry.
+
+ packages/agent/docs/harness-v2.md | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+commit b68decede07c06a8a3905ecb8c10b6e966877082
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 15:07:26 2026 +0200
+
+    docs(agent): fix coherence defects found by independent review
+    
+    Full-document review by a fresh-context subagent found 2 blockers, 15
+    minors, and 12 nits; a second subagent verified every fix. All applied:
+    
+    - autoCompact ran before_compaction only when no step was unfinished,
+      making the hook unreachable on the live overflow path where the
+      abandoned assistant step still occupies LaneState; now keyed on
+      "not resuming a compaction step".
+    - Hook-supplied overflow compactions wrote no step_attempt, so the
+      once-per-input guard never counted them and hook-driven compact-and-
+      retry was unbounded; for reason overflow the hook path now writes the
+      compaction step_attempt first.
+    - Empty compaction preparation is a real code branch, terminal for
+      overflow. before_resume is invoked in the resume() dispatch. Pending
+      deferred re-park verifies handle equality. resume() re-tags operation
+      results as ResumeResult. MessageEntry declares terminate; options gain
+      toolExecution; before_navigation loses its orphaned result fields;
+      AbortRequestedRecord loses its unreachable reason field.
+    - Reduction bullets restated (newest-attempt closure, newest-own entry);
+      Tier B records lane moves and covers the overflow and cancellation
+      traces; hook-measured usage is written as hook ledger records at all
+      three append sites; assorted stale wording from before the deferred-
+      closure, ledger, and B2 changes brought current.
+
+ packages/agent/docs/harness-v2.md | 22 ++++++++++++----------
+ 1 file changed, 12 insertions(+), 10 deletions(-)
+
+commit 97f0ccdd96cc207b6ad3630c56eea4d32dbdcf53
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 13:04:02 2026 +0200
+
+    fix(coding-agent): recursively merge nested settings, closes #7572
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/settings-manager.ts | 37 ++++++++++------------
+ .../7572-provider-retry-settings-merge.test.ts     | 35 ++++++++++++++++++++
+ 3 files changed, 53 insertions(+), 20 deletions(-)
+
+commit d3da2e968a19fdd0b06e0bd1e532164b1baecbd1
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 13:00:22 2026 +0200
+
+    fix(ai): test composite OAuth refresh cancellation
+
+ packages/ai/test/models-runtime.test.ts | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+commit 686f193e51ccdc56fdf3366ce5d092530c1007ac
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 12:44:55 2026 +0200
+
+    fix(ai): separate deferred request options
+
+ packages/agent/docs/harness-v2.md                  | 152 ++++++++++++++-------
+ packages/ai/CHANGELOG.md                           |   2 +
+ packages/ai/src/models.ts                          |  40 ++++--
+ packages/ai/src/providers/faux.ts                  |  10 +-
+ packages/ai/src/types.ts                           | 144 ++++++++-----------
+ packages/ai/test/providers.test.ts                 |  87 +++++++++++-
+ packages/coding-agent/src/core/model-runtime.ts    |  34 +++--
+ .../model-runtime-modify-models-compat.test.ts     |  59 ++++++--
+ 8 files changed, 347 insertions(+), 181 deletions(-)
+
+commit f24ab6e14c0be7e623ec9beab0fc792cbb041cc0
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 12:41:01 2026 +0200
+
+    fix(tui): honor nested stack minimum sizes
+
+ packages/tui/src/components/v-stack.ts | 13 +++++++++++--
+ packages/tui/test/layout.test.ts       | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 41 insertions(+), 2 deletions(-)
+
+commit 720f0e8eeb1295a8030c50e165bc283f3d5fa6ff
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 12:42:01 2026 +0200
+
+    fix(ai): route Copilot Grok 4.5 through Responses, closes #7560
+
+ packages/ai/CHANGELOG.md                     | 1 +
+ packages/ai/scripts/generate-models.ts       | 9 ++++++---
+ packages/ai/test/model-catalog-types.test.ts | 8 +++++++-
+ packages/coding-agent/CHANGELOG.md           | 1 +
+ 4 files changed, 15 insertions(+), 4 deletions(-)
+
+commit e741cb05ca7c1c7bc5a9664c99697df32de9fac6
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 12:37:02 2026 +0200
+
+    fix(coding-agent): preserve extension auth endpoints
+    
+    closes #7579
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../examples/extensions/custom-compaction.ts       | 14 ------------
+ .../coding-agent/examples/extensions/handoff.ts    |  8 -------
+ packages/coding-agent/examples/extensions/qna.ts   |  6 +-----
+ .../coding-agent/examples/extensions/summarize.ts  | 25 ++++++----------------
+ packages/coding-agent/src/core/model-registry.ts   |  2 ++
+ .../test/compaction-extensions-example.test.ts     |  8 +++++--
+ 7 files changed, 17 insertions(+), 47 deletions(-)
+
+commit 42a06f9477ce6b92f39d9467f64019f08767401e
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 12:36:04 2026 +0200
+
+    fix(coding-agent): test composite OAuth cancellation signal
+
+ packages/coding-agent/test/model-runtime-auth-options.test.ts | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+commit b784c80961c29451c4665a6ccca15089cb36e0eb
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 12:19:19 2026 +0200
+
+    fix(ai): remove OAuth refresh lock test
+
+ packages/ai/test/oauth-auth.test.ts | 44 -------------------------------------
+ 1 file changed, 44 deletions(-)
+
+commit acbdc0d25e12522b4f8277c1206d2cead51d9b4e
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 12:12:10 2026 +0200
+
+    fix(ai): bound OAuth refresh duration
+    
+    closes #7508
+
+ packages/ai/CHANGELOG.md            |  1 +
+ packages/ai/src/auth/resolve.ts     |  7 +++++-
+ packages/ai/test/oauth-auth.test.ts | 44 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 51 insertions(+), 1 deletion(-)
+
+commit f7ea2ef38c867be5e0ef53fab18de9c426234e1f
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 12:06:53 2026 +0200
+
+    docs(agent): resolve open questions, add mechanical test constructions
+    
+    - Tier B: executable append-only-context assertion - every request in a
+      run extends the previous request as an exact prefix, except across a
+      compaction entry.
+    - Tier C: crash sites derived mechanically - snapshot the backend after
+      every executeAction() of each section 6 trace, reopen and resume every
+      snapshot, run recovery twice per snapshot.
+    - Section 15: fixed-point self-check as a production rule - after every
+      resume() outcome, recompute the section 7 reduction and compare to live
+      LaneState; mismatch faults the harness. Matching Tier C invariant.
+    - Section 19 becomes "Resolved questions": per-lane hook registration
+      rejected (harness-global with lane field stands); replication stays out
+      of scope - the append-only single-writer log replicates by log shipping
+      if ever wanted. Cross-references in sections 1 and 11 updated.
+    - Section 21: implementation goes to src/harness/experimental/ with tests
+      in test/harness/experimental/; everything under src/harness/ outside
+      experimental/ is removed when the experimental implementation replaces
+      it wholesale.
+
+ packages/agent/docs/harness-v2.md | 22 ++++++++++++++++------
+ 1 file changed, 16 insertions(+), 6 deletions(-)
+
+commit 382aa641cc4c197dfa95ed684f187b5a39bc30ce
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Tue Aug 4 11:27:47 2026 +0200
+
+    DRAFT: add openai background mode responses (#7339)
+    
+    * initial attempt at implementing openai background responses api
+    
+    * feat(ai): align deferred responses with harness spec
+    
+    * fix: reject deferred messages in protocol v1
+
+ packages/ai/src/api/lazy.ts                        |  27 ++-
+ packages/ai/src/models.ts                          |  66 ++++++-
+ packages/ai/src/providers/faux.ts                  | 193 +++++++++++++++++++--
+ packages/ai/src/types.ts                           |  40 ++++-
+ packages/ai/test/providers.test.ts                 |  84 ++++++++-
+ packages/coding-agent/src/core/model-runtime.ts    |  25 +++
+ .../coding-agent/src/core/provider-composer.ts     |  13 +-
+ .../model-runtime-modify-models-compat.test.ts     | 102 ++++++++++-
+ packages/server/src/protocol.ts                    |   3 +
+ 9 files changed, 532 insertions(+), 21 deletions(-)
+
+commit ab5f8d88ee1d400c0c8fb5c50ac10b2f4a4851d1
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 11:05:27 2026 +0200
+
+    fix(coding-agent): retain heterogeneous auth model types
+    
+    closes #6768
+
+ packages/coding-agent/src/core/agent-session.ts | 13 ++++---------
+ 1 file changed, 4 insertions(+), 9 deletions(-)
+
+commit 18d65de623db390914fa19638c821d8ea24fcda9
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 10:59:38 2026 +0200
+
+    fix(coding-agent): preserve Copilot summary endpoint
+    
+    closes #6768
+
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/src/core/agent-session.ts    |  45 ++++----
+ .../6768-copilot-compaction-base-url.test.ts       | 114 +++++++++++++++++++++
+ 3 files changed, 141 insertions(+), 19 deletions(-)
+
+commit 221a842c136ab3af23aef9e70034af86061d27c1
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 10:50:44 2026 +0200
+
+    fix(coding-agent): update undici to 8.9.0 and brace-expansion to 5.0.9 for npm audit advisories
+    
+    Resolves GHSA-8xcm-r25x-g524, GHSA-4cwx-7wf7-3272, GHSA-m8rv-5g2x-5cg5,
+    GHSA-jr45-8vmc-qm54, GHSA-v3r7-h72x-cjcm, and GHSA-rgw5-rvv9-x895.
+    undici 8.10.0 is blocked by the npm min-release-age gate; 8.9.0 is the
+    first fixed 8.x release. Reviewed undici 8.6.0-8.9.0 release notes
+    against http-dispatcher usage; no breaking changes. Adds an AGENTS.md
+    rule requiring changelog review for future undici updates.
+
+ AGENTS.md                                            |  1 +
+ package-lock.json                                    | 20 ++++++++++----------
+ packages/coding-agent/CHANGELOG.md                   |  1 +
+ packages/coding-agent/install-lock/package-lock.json | 14 +++++++-------
+ packages/coding-agent/npm-shrinkwrap.json            | 14 +++++++-------
+ packages/coding-agent/package.json                   |  2 +-
+ 6 files changed, 27 insertions(+), 25 deletions(-)
+
+commit cd20a8d2e555fb747780c1bb00e36039657fcf35
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Tue Aug 4 10:34:15 2026 +0200
+
+    refactor(agent): split harness experimental changes (#7587)
+
+ .../src/harness/experimental/session/memory.ts     | 28 ++++------------------
+ .../experimental/session/testing/conformance.ts    | 10 ++++----
+ .../src/harness/experimental/session/types.ts      |  5 ++--
+ 3 files changed, 13 insertions(+), 30 deletions(-)
+
+commit 0524d6897f171d63a79e00946df8ce7f53c605fe
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 09:46:17 2026 +0200
+
+    fix(coding-agent): prevent flaky RPC prompt tests
+
+ packages/coding-agent/test/rpc-prompt-response-semantics.test.ts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit 1d0c97471359a7c1dc6bfc9ac7ce5b4aa9afd705
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Tue Aug 4 10:24:43 2026 +0300
+
+    feat(agent): implement harness v2 for in-memory storage (#7503)
+    
+    * feat(agent): add experimental in-memory sessions
+    
+    * fix(agent): align session entry ID provisioning
+    
+    * fix(agent): align v4 compaction entries
+    
+    * fix(agent): persist tool-result termination decisions
+    
+    * feat: compaction reason
+    
+    * fix: get rid of deleteLane
+    
+    * fix(agent): align lane record schema
+    
+    * fix(agent): separate lane moves from record appends
+    
+    * fix(agent): validate durable session payloads
+    
+    * fix(agent): align lane record type names
+    
+    * feat(agent): add session backend conformance suite
+    
+    * Add `undefined` value case to conformance test
+    
+    * fix(agent): centralize session query validation
+    
+    * Rename to `SessionRepo`
+    
+    Rename to `InMemorySessionRepo`
+    
+    * fix(agent): align in-memory sessions with harness v2
+    
+    ---------
+    
+    Co-authored-by: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+
+ packages/agent/package.json                        |   8 +
+ packages/agent/src/experimental.ts                 |   1 +
+ .../src/harness/experimental/session/index.ts      |   3 +
+ .../src/harness/experimental/session/memory.ts     | 374 ++++++++++
+ .../src/harness/experimental/session/session.ts    | 281 +++++++
+ .../experimental/session/testing/conformance.ts    | 830 +++++++++++++++++++++
+ .../harness/experimental/session/testing/index.ts  |   6 +
+ .../harness/experimental/session/testing/types.ts  |  16 +
+ .../src/harness/experimental/session/types.ts      | 361 +++++++++
+ .../harness/experimental/session/memory.test.ts    |  38 +
+ 10 files changed, 1918 insertions(+)
+
+commit 95249a72700d3b18fd1c8257845d95564abdb3cd
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 09:14:16 2026 +0200
+
+    fix: repair tests after model refresh cancellation changes
+    
+    Follow-up to fed6009cc.
+
+ packages/agent/test/harness/agent-harness.test.ts          | 6 ++++--
+ packages/coding-agent/test/interactive-mode-status.test.ts | 9 +++++----
+ packages/coding-agent/test/package-command-paths.test.ts   | 1 +
+ 3 files changed, 10 insertions(+), 6 deletions(-)
+
+commit f27aaf66c0a27a26b8bab02b81ab3b7768484725
+Author: muyiyr <940955635@qq.com>
+Date:   Tue Aug 4 14:44:41 2026 +0800
+
+    docs(coding-agent): document streamSimple hook contract (#7576)
+    
+    closes #7372
+
+ packages/coding-agent/src/core/extensions/types.ts | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+commit e8a17822de1076c3048701118a8a5f25c1e98565
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Tue Aug 4 08:44:00 2026 +0200
+
+    fix(tui): correct terminal progress clear sequence (#7581)
+    
+    Co-authored-by: Felix Rath <felixm.rath@gmail.com>
+
+ packages/tui/src/terminal.ts       |  2 +-
+ packages/tui/test/terminal.test.ts | 20 ++++++++++++++++++++
+ 2 files changed, 21 insertions(+), 1 deletion(-)
+
+commit bd3440e5b945a03ddffb066ebdc1fde57e078d17
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Tue Aug 4 06:29:54 2026 +0000
+
+    chore: approve contributors from issue #7565
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit a96fb984d8c8b065fc5d193309fc812a882adee0
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Mon Aug 3 22:50:31 2026 +0000
+
+    chore: approve contributors from issue #7554
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit 523b5a4917ea46c20fb7b24a41311b158b7eeb05
+Author: Petr Houška <houskape@gmail.com>
+Date:   Tue Aug 4 00:05:48 2026 +0200
+
+    fix(coding-agent): normalize find root results (#7569)
+    
+    Relativize absolute find results with path.relative() instead of slicing
+    at searchPath.length + 1. path.resolve() keeps the trailing separator for
+    root paths (POSIX / and Windows bare drive roots like I:\), so the slice
+    dropped the first character of the first path segment. Preserve directory
+    markers using platform-aware separators so Windows paths do not gain "//"
+    and valid POSIX backslashes remain unchanged.
+    
+    This also avoids treating sibling paths with a shared prefix as children.
+    Relative results returned by custom glob operations now pass through
+    unchanged instead of being resolved against process.cwd(), which produced
+    invalid paths whenever cwd differed from the search path.
+    
+    Fixes #6104
+
+ packages/coding-agent/CHANGELOG.md                 |  4 +
+ packages/coding-agent/src/core/tools/find.ts       | 28 ++++---
+ .../6104-find-root-relativization.test.ts          | 91 ++++++++++++++++++++++
+ 3 files changed, 108 insertions(+), 15 deletions(-)
+
+commit 25a2c8dcfec4e017720c163a6166200a9bef98ae
+Author: Duncan Ogilvie <mr.exodia.tpodt@gmail.com>
+Date:   Tue Aug 4 00:05:29 2026 +0200
+
+    Add support for generic sampling parameters (#7568)
+
+ packages/agent/src/proxy.ts                        |   2 +
+ packages/ai/src/api/azure-openai-responses.ts      |   5 +
+ packages/ai/src/api/openai-completions.ts          |   5 +
+ packages/ai/src/api/openai-responses.ts            |   5 +
+ packages/ai/src/api/simple-options.ts              |   5 +
+ packages/ai/src/types.ts                           |  10 ++
+ packages/ai/test/sampling-options.test.ts          | 128 +++++++++++++++++++++
+ packages/coding-agent/docs/models.md               |  21 +++-
+ packages/coding-agent/src/core/model-config.ts     |   2 +
+ .../coding-agent/src/core/provider-composer.ts     |   5 +
+ packages/coding-agent/test/model-registry.test.ts  |  33 ++++++
+ packages/server/src/protocol.ts                    |   4 +-
+ 12 files changed, 223 insertions(+), 2 deletions(-)
+
+commit fed6009cc9ccfb15088bc55244120918b5fe23f2
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Tue Aug 4 00:00:12 2026 +0200
+
+    fix(coding-agent): make model refresh cancellation caller-owned
+    
+    Add generation-safe catalog publication, cancellable auth and storage operations, locally consistent credential mutations, and cache-first interactive model flows.
+
+ packages/ai/CHANGELOG.md                           |  70 ++++
+ packages/ai/README.md                              |  18 +-
+ packages/ai/src/auth/credential-store.ts           |  58 ++-
+ packages/ai/src/auth/helpers.ts                    |   8 +-
+ packages/ai/src/auth/oauth/anthropic.ts            |  53 ++-
+ packages/ai/src/auth/oauth/device-code.ts          |  12 +-
+ packages/ai/src/auth/oauth/github-copilot.ts       |  72 +++-
+ packages/ai/src/auth/oauth/kimi-coding.ts          |  37 +-
+ packages/ai/src/auth/oauth/openai-codex.ts         |  29 +-
+ packages/ai/src/auth/oauth/openrouter.ts           |  28 +-
+ packages/ai/src/auth/oauth/radius.ts               |  33 +-
+ packages/ai/src/auth/oauth/xai.ts                  |  16 +-
+ packages/ai/src/auth/resolve.ts                    |  76 +++-
+ packages/ai/src/auth/types.ts                      |  33 +-
+ packages/ai/src/cli.ts                             |   1 +
+ packages/ai/src/images-models.ts                   |   1 +
+ packages/ai/src/models-store.ts                    |  26 +-
+ packages/ai/src/models.ts                          | 357 ++++++++++++-----
+ packages/ai/src/providers/amazon-bedrock.ts        |  22 +-
+ packages/ai/src/providers/anthropic.ts             |  15 +-
+ packages/ai/src/providers/cloudflare-auth.ts       |  23 +-
+ packages/ai/src/providers/google-vertex.ts         |  23 +-
+ packages/ai/src/providers/radius.ts                |  65 ++--
+ packages/ai/src/utils/abort.ts                     |  50 +++
+ packages/ai/test/anthropic-auth-token.test.ts      |   4 +
+ packages/ai/test/anthropic-oauth.test.ts           |  19 +-
+ packages/ai/test/github-copilot-oauth.test.ts      |  19 +-
+ packages/ai/test/kimi-coding-oauth.test.ts         |  40 +-
+ packages/ai/test/models-runtime.test.ts            | 426 ++++++++++++++++++++-
+ packages/ai/test/oauth-auth.test.ts                |  26 +-
+ packages/ai/test/oauth-device-code.test.ts         |   6 +
+ packages/ai/test/oauth.ts                          |   4 +-
+ packages/ai/test/openai-codex-oauth.test.ts        |  21 +-
+ packages/ai/test/openrouter-oauth.test.ts          |   9 +
+ packages/ai/test/providers.test.ts                 |  62 ++-
+ packages/ai/test/radius-oauth.test.ts              |  10 +-
+ packages/ai/test/xai-oauth.test.ts                 |   9 +-
+ packages/coding-agent/CHANGELOG.md                 |  72 +++-
+ packages/coding-agent/docs/custom-provider.md      |   6 +-
+ packages/coding-agent/docs/extensions.md           |   9 +-
+ packages/coding-agent/docs/sdk.md                  |  23 +-
+ .../extensions/custom-provider-anthropic/index.ts  |   3 +-
+ .../extensions/custom-provider-gitlab-duo/index.ts |   3 +-
+ .../examples/sdk/09-api-keys-and-oauth.ts          |   2 +-
+ .../coding-agent/examples/sdk/12-full-control.ts   |   2 +-
+ packages/coding-agent/examples/sdk/README.md       |   2 +-
+ packages/coding-agent/src/cli/credential-print.ts  |  13 +-
+ packages/coding-agent/src/cli/list-models.ts       |   8 +-
+ .../src/core/agent-session-services.ts             |   2 +
+ packages/coding-agent/src/core/agent-session.ts    |  13 +-
+ packages/coding-agent/src/core/auth-storage.ts     | 138 +++++--
+ packages/coding-agent/src/core/extensions/types.ts |   4 +-
+ packages/coding-agent/src/core/model-registry.ts   |   6 +-
+ packages/coding-agent/src/core/model-resolver.ts   |  36 +-
+ packages/coding-agent/src/core/model-runtime.ts    | 303 ++++++++++-----
+ packages/coding-agent/src/core/models-store.ts     |  33 +-
+ .../coding-agent/src/core/provider-composer.ts     |  33 +-
+ .../src/core/remote-catalog-provider.ts            | 138 +++----
+ .../coding-agent/src/core/runtime-credentials.ts   |  20 +-
+ .../coding-agent/src/extensions/llama/index.ts     |  11 +-
+ .../coding-agent/src/extensions/llama/provider.ts  |  28 +-
+ packages/coding-agent/src/index.ts                 |   2 +
+ packages/coding-agent/src/main.ts                  |  28 +-
+ .../modes/interactive/components/model-selector.ts |  15 +-
+ .../components/scoped-models-selector.ts           |  28 ++
+ .../src/modes/interactive/interactive-mode.ts      | 289 +++++++++-----
+ packages/coding-agent/src/modes/rpc/rpc-mode.ts    |   4 +-
+ packages/coding-agent/src/package-manager-cli.ts   |  11 +-
+ packages/coding-agent/src/utils/abort.ts           |  48 +++
+ packages/coding-agent/test/auth-storage.test.ts    | 209 ++++++++++
+ .../coding-agent/test/extensions-runner.test.ts    |   2 +-
+ packages/coding-agent/test/llama-extension.test.ts |  33 +-
+ packages/coding-agent/test/model-registry.test.ts  |   4 +-
+ packages/coding-agent/test/model-resolver.test.ts  |   4 +-
+ .../test/model-runtime-auth-options.test.ts        |  32 ++
+ .../test/model-runtime-credential-sync.test.ts     | 375 ++++++++++++++++++
+ packages/coding-agent/test/models-store.test.ts    |  25 +-
+ packages/coding-agent/test/radius.test.ts          |  20 +-
+ .../test/remote-catalog-provider.test.ts           | 111 ++++--
+ .../coding-agent/test/runtime-credentials.test.ts  |  46 ++-
+ .../6949-unavailable-scoped-model.test.ts          |  12 +-
+ .../7027-credential-refresh-hang.test.ts           | 125 ++++++
+ .../regressions/7153-scoped-models-refresh.test.ts | 107 ++++++
+ .../7301-stalled-availability-refresh.test.ts      |  27 ++
+ .../7443-model-command-cached-match.test.ts        |  46 +++
+ packages/coding-agent/test/utilities.ts            |   2 +-
+ 86 files changed, 3425 insertions(+), 869 deletions(-)
+
+commit b06dc76fd7b17d890403386cc5147ae5ea9f68ac
+Author: Duncan Ogilvie <mr.exodia.tpodt@gmail.com>
+Date:   Tue Aug 4 00:02:49 2026 +0200
+
+    fix(coding-agent): reinstall dependencies if `git clean` fails (#7570)
+    
+    On Windows some files might be held open causing `git clean` to error.
+    This would leave the extension in a broken state and fail next startup.
+
+ packages/coding-agent/src/core/package-manager.ts  | 70 +++++++++++++++++++---
+ packages/coding-agent/test/package-manager.test.ts | 57 ++++++++++++++++++
+ 2 files changed, 118 insertions(+), 9 deletions(-)
+
+commit a0014c1a83ea0b6fd98762a9bdaa90f517a73cbf
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Mon Aug 3 23:45:58 2026 +0200
+
+    docs(agent): finalize harness v2 on the effects variant
+    
+    Choose the effects variant as the harness v2 design: rename
+    harness-v2-effects.md to harness-v2.md with the decision rationale, delete
+    the rejected generator variant (preserved at 01eeafd1).
+    
+    Fold in everything decided since the split:
+    
+    - run/turn/step nomenclature and XxxRecord suffixes for op-log records
+    - restore rework decisions: TaggedError/matchError result surface, section
+      18 ExecutionContext telemetry contract (with in-effect usage example),
+      step_attempt.resultEntryId with stable structural ids, hook-durability
+      wording, Models-level deferred API, typed record plumbing
+    - context-overflow/length handling per the superseding PR-7540 review:
+      isRecoverableLength against the intended output cap, discard-don't-append,
+      one recovery per conversational input, decline/nothing-to-compact
+      terminal, Responses incomplete_details mapping, neutral truncation
+      wording, crash-site table and test shapes
+    - UsageRecord cost ledger: union-shaped record (request/tool/hook/
+      adjustment causes), cost durability independent of result durability,
+      immutable entry usage snapshots with read-time effective cost,
+      lane.recordUsage(), harness-global usage event carrying session totals,
+      stats as ledger sum via maintained projection, fork/v3-import rules
+    - prompt normalization, deferred-fulfillment nuance, overflow guard
+      reduction, ledger and overflow test coverage
+
+ packages/agent/docs/harness-v2-generator.md        | 2532 --------------------
+ .../docs/{harness-v2-effects.md => harness-v2.md}  |  829 +++++--
+ 2 files changed, 617 insertions(+), 2744 deletions(-)
+
+commit fa07e7bd92c90a0210a269354733c274e9fc11e6
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Mon Aug 3 21:57:44 2026 +0200
+
+    fix(tui): detect truecolor for Windows consoles
+
+ packages/tui/CHANGELOG.md          | 1 +
+ packages/tui/src/terminal-image.ts | 8 ++++++++
+ 2 files changed, 9 insertions(+)
+
+commit 3d264e85b4f870a93c5b763b95dd988a4f225da4
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Mon Aug 3 19:18:39 2026 +0200
+
+    fix(coding-agent): avoid terminal query leak on fullscreen exit
+
+ packages/coding-agent/CHANGELOG.md                              | 1 +
+ packages/coding-agent/src/modes/interactive/interactive-mode.ts | 5 +++--
+ packages/coding-agent/test/interactive-tui.test.ts              | 9 +++++++--
+ 3 files changed, 11 insertions(+), 4 deletions(-)
+
+commit c72728bc1a5ba08abc7e3c8d791d44995306f4e4
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Mon Aug 3 19:00:03 2026 +0200
+
+    fix(coding-agent): remove obsolete --alt shortcut
+
+ packages/coding-agent/src/cli/args.ts   | 2 --
+ packages/coding-agent/test/args.test.ts | 6 ------
+ 2 files changed, 8 deletions(-)
+
+commit da66636cc4e607bf7f05d9cb64bf6963b10a007d
+Author: muyiyr <940955635@qq.com>
+Date:   Tue Aug 4 00:34:12 2026 +0800
+
+    fix(coding-agent): discover sessions through symlinked directories (#7552)
+    
+    fixes #7497
+
+ packages/coding-agent/src/core/session-manager.ts  |  4 +-
+ .../7497-session-discovery-symlink.test.ts         | 75 ++++++++++++++++++++++
+ 2 files changed, 78 insertions(+), 1 deletion(-)
+
+commit a4475344fb765850ec5321efe3c67e6f364ead5c
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Mon Aug 3 19:33:22 2026 +0300
+
+    fix(coding-agent): make JSON streaming output linear (#7394)
+    
+    Fixes #7290
+    
+    Co-authored-by: Mario Zechner <badlogicgames@gmail.com>
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/docs/json.md                 | 33 +++++++++-------
+ packages/coding-agent/docs/rpc.md                  | 24 ++++++------
+ packages/coding-agent/src/index.ts                 |  1 +
+ packages/coding-agent/src/modes/index.ts           |  1 +
+ packages/coding-agent/src/modes/json-event.ts      | 40 ++++++++++++++++++++
+ packages/coding-agent/src/modes/print-mode.ts      | 14 ++++++-
+ packages/coding-agent/src/modes/rpc/rpc-client.ts  | 13 ++++---
+ packages/coding-agent/src/modes/rpc/rpc-mode.ts    |  3 +-
+ packages/coding-agent/test/print-mode.test.ts      |  4 +-
+ .../regressions/7290-json-stream-linear.test.ts    | 44 ++++++++++++++++++++++
+ 11 files changed, 142 insertions(+), 36 deletions(-)
+
+commit 32850ef7c5edff7a6eee0214516fbb7382bf292d
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Mon Aug 3 18:07:53 2026 +0200
+
+    fix(coding-agent): resume after context-limited length stops (#7540)
+    
+    * fix(coding-agent): resume after context-limited length stops
+    
+    Treat length stops as context overflow when prompt usage is within 1% of
+    Pi's configured context window. Include cache-write tokens in that usage
+    and allow non-zero output because OpenAI may emit reasoning tokens before
+    returning an incomplete response.
+    
+    After compaction, remove any retryable error or truncated-length assistant
+    message restored from persisted session history so the interrupted agent
+    turn can continue.
+    
+    This is specifically for handling this case for openai models:
+    https://developers.openai.com/api/docs/guides/reasoning
+    
+    > If the generated tokens reach the context window limit or the max_output_tokens value you’ve set, you’ll receive a response with a status of incomplete and incomplete_details with reason set to max_output_tokens. This might occur before any visible output tokens are produced, meaning you could incur costs for input and reasoning tokens without receiving a visible response.
+    
+    This detection currently assumes the reported prompt usage is within 1% of
+    the context window configured in Pi. Its reliability therefore depends on
+    Pi's model contextWindow metadata matching the provider's effective limit.
+    
+    Maybe we should consider treating OpenAI incomplete responses as requiring compaction
+    regardless of the local context-window estimate?
+    
+    fixes #7020
+    
+    * fix(coding-agent): recover truncated responses after compaction
+    
+    Classify length stops by comparing provider-reported output usage with the model's intended output limit. Compact and retry once when generation ends below that limit, avoiding unreliable context-window estimates while preserving genuine max-output stops.
+    
+    Normalize OpenAI Responses incomplete reasons so only max_output_tokens is treated as a length stop. Preserve qualified provider reasons for diagnostics, surface other reasons as errors, and use neutral truncation wording in the TUI.
+
+ packages/ai/src/api/azure-openai-responses.ts      |  2 +-
+ packages/ai/src/api/openai-responses-shared.ts     | 34 +++++++---
+ packages/ai/src/api/openai-responses.ts            |  2 +-
+ packages/ai/src/utils/overflow.ts                  | 14 +++-
+ .../test/openai-responses-terminal-event.test.ts   | 35 +++++++++-
+ packages/ai/test/overflow.test.ts                  | 68 +++++++++++++++----
+ packages/coding-agent/src/core/agent-session.ts    | 28 +++++---
+ .../interactive/components/assistant-message.ts    |  9 +--
+ .../coding-agent/test/assistant-message.test.ts    |  5 +-
+ .../test/suite/agent-session-compaction.test.ts    | 79 ++++++++++++++++++++++
+ 10 files changed, 225 insertions(+), 51 deletions(-)
+
+commit e56893f4cd6545ab1498b72ae4e1e2241a0926f4
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Mon Aug 3 18:00:21 2026 +0200
+
+    fix(coding-agent): prevent auto-compaction race during manual compaction (#7370)
+    
+    * fix(coding-agent): preserve agent events during compaction
+    
+    Manual compaction already waits for the active agent run to settle, and summary generation does not emit Agent events. Keep the agent subscription connected so unexpected concurrent events are not dropped, and remove the obsolete reconnect helper.
+    
+    closes #7253
+
+ packages/coding-agent/src/core/agent-session.ts    | 17 +----
+ .../7253-manual-compact-during-response.test.ts    | 75 ++++++++++++++++++++++
+ 2 files changed, 76 insertions(+), 16 deletions(-)
+
+commit b103937d3c003a48d32de9763856f2dae55ab605
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Mon Aug 3 17:32:48 2026 +0200
+
+    feat(coding-agent): switch UI modes at runtime (#7555)
+
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/docs/settings.md             |   2 +-
+ packages/coding-agent/docs/usage.md                |   2 +-
+ .../interactive/components/settings-selector.ts    |   2 +-
+ .../src/modes/interactive/interactive-mode.ts      | 202 ++++++++++++++++-----
+ .../modes/interactive/theme/theme-controller.ts    |  15 +-
+ packages/coding-agent/test/interactive-tui.test.ts |  74 +++++++-
+ packages/tui/CHANGELOG.md                          |   1 +
+ packages/tui/src/index.ts                          |   3 +-
+ packages/tui/src/tui-alt-screen.ts                 |  45 +++--
+ packages/tui/src/tui-main-screen.ts                |  39 +++-
+ packages/tui/src/tui.ts                            |  39 +++-
+ packages/tui/test/tui-alt-screen.test.ts           |  16 ++
+ 13 files changed, 355 insertions(+), 86 deletions(-)
+
+commit e563301dd332677561d5bf9e85ade509d860b5fd
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Mon Aug 3 17:20:49 2026 +0200
+
+    fix(ai): avoid stale Copilot model in overflow test
+
+ packages/ai/test/context-overflow.test.ts | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+commit 305c014dcccfe97ebd3f4057ac16c436f1e2c71e
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Mon Aug 3 16:40:00 2026 +0300
+
+    fix: make session authentication transport-specific (#7551)
+    
+    Set the initial protocol version to 1 and remove bearer authentication from framed messages. Require transports to establish authorized connections.
+
+ packages/client/README.md                     |  7 ++--
+ packages/client/src/client.ts                 |  1 -
+ packages/client/src/connection.ts             |  6 +---
+ packages/client/src/transport.ts              |  2 +-
+ packages/client/src/types.ts                  |  1 -
+ packages/client/test/connection.test.ts       | 23 +++++-------
+ packages/client/test/disposal.test.ts         |  4 +--
+ packages/client/test/support.ts               |  7 ++--
+ packages/client/test/unix.test.ts             |  2 --
+ packages/coding-agent/test/client/support.ts  |  2 +-
+ packages/protocol/README.md                   |  7 ++--
+ packages/protocol/src/schemas.ts              |  4 +--
+ packages/protocol/test/protocol.test.ts       | 52 +++++++++++++++++----------
+ packages/server/README.md                     |  3 +-
+ packages/server/src/connection.ts             |  2 +-
+ packages/server/src/listener.ts               |  3 +-
+ packages/server/src/server.ts                 | 17 +--------
+ packages/server/src/testing/backend.ts        |  1 -
+ packages/server/src/testing/client.ts         |  6 ++--
+ packages/server/src/testing/index.ts          |  2 +-
+ packages/server/src/testing/server.ts         |  6 ++--
+ packages/server/src/transports/unix/preset.ts |  1 -
+ packages/server/src/types.ts                  |  1 -
+ packages/server/test/conformance.test.ts      | 28 ++++-----------
+ packages/server/test/listener.test.ts         |  4 +--
+ packages/server/test/server.test.ts           | 25 ++++++-------
+ packages/server/test/sessions.test.ts         |  3 --
+ packages/server/test/unix.test.ts             |  9 ++---
+ 28 files changed, 89 insertions(+), 140 deletions(-)
+
+commit 0e633790c5a007f6d4bf35ba67ced457287c25ac
+Author: Ramiz Wachtler <ramiz@earendil.com>
+Date:   Mon Aug 3 15:24:34 2026 +0200
+
+    fix(tui): handle batched color scheme reports (#7550)
+    
+    - fixes #7538
+
+ packages/tui/src/terminal-colors.ts       | 2 +-
+ packages/tui/test/terminal-colors.test.ts | 2 ++
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+commit c1019d9202b648143d123b7e6fb76543a6b82de6
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Mon Aug 3 14:33:21 2026 +0200
+
+    feat(ai): add Baseten provider
+    
+    Closes #7405
+
+ packages/ai/CHANGELOG.md                           |   4 +
+ packages/ai/README.md                              |   5 +-
+ packages/ai/scripts/generate-models.ts             | 105 ++++++++++++++-
+ packages/ai/src/api/openai-completions.ts          |  33 ++++-
+ packages/ai/src/env-api-keys.ts                    |   1 +
+ packages/ai/src/models.generated.ts                |   3 +
+ packages/ai/src/providers/all.ts                   |   2 +
+ packages/ai/src/providers/baseten.models.ts        |   8 ++
+ packages/ai/src/providers/baseten.ts               |  15 +++
+ packages/ai/src/types.ts                           |   6 +-
+ packages/ai/test/abort.test.ts                     |  12 ++
+ packages/ai/test/baseten-models.test.ts            | 141 +++++++++++++++++++++
+ packages/ai/test/cross-provider-handoff.test.ts    |   2 +
+ packages/ai/test/deferred-tools.test.ts            |   1 +
+ packages/ai/test/empty.test.ts                     |  21 +++
+ packages/ai/test/image-tool-result.test.ts         |  13 ++
+ .../openai-completions-thinking-as-text.test.ts    |   1 +
+ .../ai/test/openai-completions-tool-choice.test.ts |   1 +
+ .../openai-completions-tool-result-images.test.ts  |   1 +
+ packages/ai/test/stream.test.ts                    |  25 ++++
+ packages/ai/test/tokens.test.ts                    |   8 ++
+ packages/ai/test/tool-call-without-result.test.ts  |   8 ++
+ packages/ai/test/total-tokens.test.ts              |  22 ++++
+ packages/ai/test/unicode-surrogate.test.ts         |  17 +++
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/README.md                    |   1 +
+ packages/coding-agent/docs/custom-provider.md      |   5 +-
+ packages/coding-agent/docs/models.md               |   5 +-
+ packages/coding-agent/docs/providers.md            |   1 +
+ packages/coding-agent/src/cli/args.ts              |   1 +
+ packages/coding-agent/src/core/model-config.ts     |   2 +
+ packages/coding-agent/src/core/model-resolver.ts   |   1 +
+ .../coding-agent/src/core/provider-composer.ts     |   2 +-
+ packages/coding-agent/test/model-registry.test.ts  |  27 +++-
+ 34 files changed, 480 insertions(+), 21 deletions(-)
+
+commit a24fb9e96a3fbc7be2a87e81aa1aa5c0ddf95d35
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Mon Aug 3 14:28:26 2026 +0200
+
+    fix(coding-agent): preserve auth header deletion markers (#7539)
+    
+    Fixes #7030
+
+ packages/coding-agent/CHANGELOG.md                 |  4 ++++
+ packages/coding-agent/src/core/model-registry.ts   | 26 ++++++++--------------
+ packages/coding-agent/test/model-registry.test.ts  |  2 ++
+ .../test/model-runtime-cloudflare-compat.test.ts   |  7 ++++++
+ 4 files changed, 22 insertions(+), 17 deletions(-)
+
+commit a8ee03b8156c2232d67ad2cdb79683b4a5c8fdbe
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Mon Aug 3 14:02:27 2026 +0200
+
+    fix(tui): cache recently offscreen Kitty images
+
+ packages/tui/CHANGELOG.md                |   2 +-
+ packages/tui/src/terminal-image.ts       |   4 +
+ packages/tui/src/tui-alt-screen.ts       |  63 ++++++++++++----
+ packages/tui/test/terminal-image.test.ts |   2 +
+ packages/tui/test/tui-alt-screen.test.ts | 124 +++++++++++++++++++++++++++++++
+ 5 files changed, 181 insertions(+), 14 deletions(-)
+
+commit b0e05b442305067b0021238a6e2f217c1bf65416
+Author: Jeremy Gayed <244704+tizmagik@users.noreply.github.com>
+Date:   Mon Aug 3 08:02:03 2026 -0400
+
+    fix(coding-agent): resize images returned by tools (#7330)
+    
+    Images produced by tools (extensions, MCP bridges, screenshot tools) went into
+    session history at full resolution because processImage was only wired to the
+    read tool and @file CLI attachments. Providers validate every image in the
+    request, so one oversized image poisons the whole conversation: Anthropic drops
+    its per-image cap from 8000px to 2000px once a request carries many images, and
+    every later turn re-sends the same payload. Switching models does not help.
+    
+    Normalize tool result images in AgentSession.afterToolCall, after the extension
+    tool_result hook so extension-injected images are covered too. Honors
+    images.autoResize, and keeps the original block when processing fails so an
+    unavailable image backend does not delete tool output.
+    
+    Refs #5369
+    
+    Assisted-By: devx/86bf3b09-9aba-4d03-8154-50fca3ffc9b5
+
+ packages/coding-agent/docs/settings.md             |   2 +-
+ packages/coding-agent/src/core/agent-session.ts    |  41 +++---
+ .../coding-agent/src/utils/tool-result-images.ts   |  62 ++++++++++
+ .../suite/agent-session-tool-result-images.test.ts | 109 ++++++++++++++++
+ .../coding-agent/test/tool-result-images.test.ts   | 137 +++++++++++++++++++++
+ 5 files changed, 332 insertions(+), 19 deletions(-)
+
+commit 0f5286d8ab86942d12c85a9df2893c98c1157405
+Author: yaogangqiang <acmerfight@gmail.com>
+Date:   Mon Aug 3 20:01:16 2026 +0800
+
+    feat(agent): expose shouldStopAfterTurn on Agent (#7367)
+
+ packages/agent/README.md          | 10 +++++++--
+ packages/agent/src/agent.ts       | 11 ++++++++++
+ packages/agent/test/agent.test.ts | 44 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 63 insertions(+), 2 deletions(-)
+
+commit b04faa2dae8d06b31208ace84ca4d8911c2d3c27
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Mon Aug 3 13:59:55 2026 +0200
+
+    fix: --model collects authed providers (#7366)
+    
+    * fix: --model collects authed providers
+    
+    * changeloggg
+    
+    ---------
+    
+    Co-authored-by: Mario Zechner <badlogicgames@gmail.com>
+
+ packages/coding-agent/CHANGELOG.md                |  1 +
+ packages/coding-agent/src/core/model-resolver.ts  | 35 ++++++++++++--
+ packages/coding-agent/test/model-resolver.test.ts | 58 +++++++++++++++++++++++
+ 3 files changed, 91 insertions(+), 3 deletions(-)
+
+commit 2e95584dab802ae2f7c8d1a4994d6e0e9f67ec09
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Mon Aug 3 13:58:51 2026 +0200
+
+    fix: validateToolArguments() coerces nullable union (#7373)
+    
+    * fix: validateToolArguments() coerces values that already match a nullable union
+    
+    * changeloggg
+
+ packages/ai/CHANGELOG.md            |  1 +
+ packages/ai/src/utils/validation.ts |  7 +++++++
+ packages/ai/test/validation.test.ts | 36 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 44 insertions(+)
+
+commit 816237c101645954d2a0ecf4bb9360a9cc71ddf1
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Mon Aug 3 13:57:51 2026 +0200
+
+    fix(coding-agent): target baseline x64 CPUs (#7390)
+    
+    Fixes #7149
+    
+    Co-authored-by: Mario Zechner <badlogicgames@gmail.com>
+
+ packages/coding-agent/CHANGELOG.md | 1 +
+ scripts/build-binaries.sh          | 9 +++++++--
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+commit d93e7e88fae51e698efd2921ccb38aa26f592470
+Merge: 4f4762f06 8eda4f5b2
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Mon Aug 3 13:53:27 2026 +0200
+
+    Merge pull request #7383 from earendil-works/fix-issue-7150
+    
+    fix(coding-agent): reject prompts during manual compaction
+
+commit 4f4762f06de104d7f108bb6cfa387259dc825c84
+Author: Renaud Hartert <renaud.hartert@databricks.com>
+Date:   Mon Aug 3 13:45:32 2026 +0200
+
+    feat(coding-agent): set AI_AGENT environment variable (#7493)
+
+ packages/coding-agent/README.md        | 1 +
+ packages/coding-agent/src/cli.ts       | 1 +
+ packages/coding-agent/src/rpc-entry.ts | 1 +
+ 3 files changed, 3 insertions(+)
+
+commit cbaca60389f5d7097a43c95f56a19d344ecf2195
+Author: muyiyr <32588751+muyiyr@users.noreply.github.com>
+Date:   Mon Aug 3 19:45:01 2026 +0800
+
+    fix(ai): preserve Gemini 3 tool call IDs (#7494)
+    
+    fixes #7047
+
+ packages/ai/src/api/google-shared.ts               |  7 ++-
+ ...oogle-shared-gemini3-unsigned-tool-call.test.ts | 59 ++++++++++++++++++++--
+ 2 files changed, 61 insertions(+), 5 deletions(-)
+
+commit 786c76cb76bea452fa7287cc1014c4a3d3cad2b1
+Author: xu0o0 <hq.xu0o0@gmail.com>
+Date:   Mon Aug 3 19:41:03 2026 +0800
+
+    docs(coding-agent): fix branch summary diagram (#7526)
+
+ packages/coding-agent/docs/compaction.md | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit b9d360a2c753e058a90dc0a252950631501c10d0
+Author: Jadugar <112567110+vish-pr@users.noreply.github.com>
+Date:   Mon Aug 3 16:15:45 2026 +0530
+
+    fix(ai): retry transient provider errors in Google adapters (#7471)
+    
+    The google-vertex and google-generative-ai adapters called
+    client.models.generateContentStream bare, so a transient 429/5xx before
+    the first token became a terminal errored assistant message instead of
+    being retried like in the Anthropic, OpenAI, Azure, and OpenRouter
+    adapters. Wrap the initial request in the shared retryProviderRequest
+    via a new retryGoogleRequest helper that also normalizes @google/genai's
+    ApiError, which has a status property but no headers property, so
+    retryProviderRequest's provider-error guard recognizes it.
+    
+    Opt-in via the existing maxRetries stream option; default behavior is
+    unchanged.
+    
+    Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+ packages/ai/src/api/google-generative-ai.ts  |  3 ++-
+ packages/ai/src/api/google-shared.ts         | 35 +++++++++++++++++++++++-
+ packages/ai/src/api/google-vertex.ts         |  3 ++-
+ packages/ai/test/google-shared-retry.test.ts | 40 ++++++++++++++++++++++++++++
+ 4 files changed, 78 insertions(+), 3 deletions(-)
+
+commit ebf33c0c2282fb8c027174d3d2b53519d8f564e3
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Mon Aug 3 12:00:39 2026 +0200
+
+    fix(coding-agent): flash fullscreen copy confirmation
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/src/core/settings-manager.ts |  4 +-
+ .../src/modes/interactive/interactive-mode.ts      | 14 ++--
+ packages/coding-agent/test/interactive-tui.test.ts | 90 +++++++++++++++++++++-
+ packages/tui/CHANGELOG.md                          |  1 +
+ packages/tui/src/index.ts                          |  1 +
+ packages/tui/src/tui-alt-screen.ts                 |  1 +
+ packages/tui/src/tui-main-screen.ts                |  1 +
+ packages/tui/src/tui.ts                            |  4 +
+ 9 files changed, 108 insertions(+), 9 deletions(-)
+
+commit c6eb6281a806a9c5d7ec41d2850692f7f7ebcb59
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Mon Aug 3 08:55:38 2026 +0200
+
+    fix(coding-agent): bound post-login catalog refresh
+    
+    closes #7027
+
+ packages/coding-agent/CHANGELOG.md              |  1 +
+ packages/coding-agent/src/core/model-runtime.ts | 10 ++++++++--
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+commit a077fff0b248878229784ff608256aa6d0922026
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Mon Aug 3 08:43:30 2026 +0200
+
+    fix(coding-agent): identify failed model catalogs
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../modes/interactive/components/model-selector.ts |  2 +-
+ packages/coding-agent/test/model-selector.test.ts  | 49 ++++++++++++++++++++++
+ 3 files changed, 51 insertions(+), 1 deletion(-)
+
+commit f0deb8dd8e9611e89b5bc4145ca92c03ae6ed4ee
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Mon Aug 3 01:43:37 2026 +0300
+
+    Revert docs changes
+
+ packages/agent/docs/agent-harness.md |  2 +-
+ packages/agent/docs/harness.md       | 89 +++++-------------------------------
+ 2 files changed, 12 insertions(+), 79 deletions(-)
+
+commit 01eeafd14a81dadf9ff8e5e1675a0b27351eae12
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sun Aug 2 23:09:59 2026 +0200
+
+    docs(agent): add durable queue-item cancellation to harness v2 variants
+    
+    Queued steer/followUp/nextRun items get a durable identity and retraction,
+    mirrored in both design variants so the diff stays mechanism-only:
+    
+    - queue_enqueued acceptance returns the provisioned entryId; snapshots and
+      queue_update events carry QueuedItem { entryId, message }.
+    - New queue_cancelled record: without it, recovery would resurrect a
+      cancelled item (record-without-entry restores as pending). Validity rules
+      reject cancels of unknown or already-consumed items.
+    - cancelQueued(entryId) is one conditional mutation-line job; race-catalog
+      row 12 covers cancel-vs-consume with exactly two histories. Reduction now
+      also excludes abort-killed items (baseline omission).
+    - Adds the LaneRecord/NewRecord unions that sections 12/13 already
+      referenced but section 5 never defined.
+    
+    Adopted from the effect-durable-agent comparison (pending-message identity
+    and cancellation), trimmed to the minimal slice.
+
+ packages/agent/docs/harness-v2-effects.md   | 61 ++++++++++++++++++++++++-----
+ packages/agent/docs/harness-v2-generator.md | 61 ++++++++++++++++++++++++-----
+ 2 files changed, 104 insertions(+), 18 deletions(-)
+
+commit 88ed89dbab71bf2a5158102d9ac01a18f6df5f71
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sun Aug 2 21:45:38 2026 +0200
+
+    docs(agent): split harness v2 into effects and generator variants
+    
+    Replace harness-v2.md with two candidate designs that share Parts I and II
+    verbatim and differ only in the Part III stepping mechanism:
+    
+    - harness-v2-effects.md: straight-line async procedures; deterministic
+      stepping via a gated effect boundary (drive: "manual").
+    - harness-v2-generator.md: synchronous state machine; stepping via yielded
+      actions and an execution controller.
+    
+    Both fold in the fixes for the baseline defects found during the audit:
+    per-lane mutation line with conditional commits (finish/steer/abort/queue
+    races), nextRun capture at acceptance, terminal-failure recovery, terminate
+    persisted on tool-result entries, move-first navigation commit (closes the
+    open question, removes the only multi-object atomic write), corrected v3
+    normalization, and #7339-aligned deferred redemption.
+    
+    Only one variant will be implemented; diff the two files to see the
+    mechanism trade-offs in isolation.
+
+ .../docs/{harness-v2.md => harness-v2-effects.md}  | 1006 ++++++--
+ packages/agent/docs/harness-v2-generator.md        | 2489 ++++++++++++++++++++
+ 2 files changed, 3261 insertions(+), 234 deletions(-)
+
+commit 35fe55573cc1f49377ca2c63b369a559e4c699ce
+Merge: 4c01c7093 1ee411a28
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sun Aug 2 22:45:39 2026 +0300
+
+    Merge pull request #7459 from earendil-works/feat/experimental-cli-composition
+    
+    feat(coding-agent): compose experimental CLI commands
+
+commit 4c01c709380621c5ff2719162cd7a7973dcb2799
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Sun Aug 2 16:56:38 2026 +0200
+
+    fix(tui): skip clipped rows during layout painting
+
+ packages/tui/CHANGELOG.md        |  2 +-
+ packages/tui/src/layout.ts       |  8 ++++----
+ packages/tui/test/layout.test.ts | 20 ++++++++++++++++++++
+ 3 files changed, 25 insertions(+), 5 deletions(-)
+
+commit 73414d08b94d7db46d3fa66582c8fe3b02dabf72
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Sun Aug 2 14:10:44 2026 +0200
+
+    fix(tui): optimize alternate-screen image and layout redraws
+
+ packages/coding-agent/CHANGELOG.md       |  1 +
+ packages/tui/CHANGELOG.md                |  1 +
+ packages/tui/src/layout.ts               |  8 ++-
+ packages/tui/src/terminal-image.ts       | 89 ++++++++++++++++++++++++++++++--
+ packages/tui/src/tui-alt-screen.ts       | 46 +++++++++++++++--
+ packages/tui/test/layout.test.ts         | 17 ++++++
+ packages/tui/test/terminal-image.test.ts | 20 +++++++
+ packages/tui/test/tui-alt-screen.test.ts | 50 ++++++++++++++++++
+ 8 files changed, 224 insertions(+), 8 deletions(-)
+
+commit 4279da1b7f27926216836393dc1a50bd6a2487b3
+Merge: 14551e769 e05cc6e12
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sun Aug 2 13:42:19 2026 +0300
+
+    Merge pull request #7478 from earendil-works/feat/session-storage-api
+    
+    feat(agent): compose session storage through repositories
+
+commit e05cc6e12cd5d4fb919785c3da5b2d40961e386a
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sun Aug 2 13:06:07 2026 +0300
+
+    docs: remove contributor changelog updates
+
+ packages/agent/CHANGELOG.md               | 4 ++--
+ packages/storage/sqlite-node/CHANGELOG.md | 5 -----
+ 2 files changed, 2 insertions(+), 7 deletions(-)
+
+commit f07af611d360a7cf53b00fbe4d980d1741e1a669
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sun Aug 2 12:31:27 2026 +0300
+
+    feat(agent): compose session storage through repositories
+
+ packages/agent/CHANGELOG.md                        |   6 +-
+ packages/agent/docs/agent-harness.md               |   2 +-
+ packages/agent/docs/harness.md                     | 107 +++++-------
+ packages/agent/src/harness/session/fork.ts         |  32 ----
+ .../session/{jsonl-collection.ts => jsonl-repo.ts} |  81 +++++++--
+ .../{memory-collection.ts => memory-repo.ts}       |  66 +++++--
+ packages/agent/src/harness/session/repository.ts   | 100 +++++------
+ .../{scanning-session-search.ts => search.ts}      |  31 ++--
+ packages/agent/src/harness/session/session.ts      |   2 +-
+ packages/agent/src/harness/types.ts                |  20 +--
+ packages/agent/src/index.ts                        |  18 +-
+ packages/agent/test/harness/agent-harness.test.ts  |  16 +-
+ packages/agent/test/harness/branch-query.test.ts   |  47 +++--
+ packages/agent/test/harness/repo.test.ts           | 193 +++++++++------------
+ .../agent/test/harness/session-backends.test.ts    |  55 +++---
+ packages/agent/test/harness/session-test-utils.ts  |   6 +-
+ packages/agent/test/harness/session.test.ts        |  38 ++--
+ .../agent/test/harness/sqlite-branch-cache.test.ts |  35 +---
+ .../agent/test/harness/sqlite-migrations.test.ts   |  60 +++----
+ packages/agent/test/harness/sqlite-node.test.ts    |  74 ++++----
+ packages/agent/test/scratch/simple.ts              |   7 +-
+ packages/storage/sqlite-node/CHANGELOG.md          |   5 +
+ packages/storage/sqlite-node/README.md             |  13 +-
+ packages/storage/sqlite-node/src/sqlite/index.ts   |   5 +-
+ .../src/sqlite/{session-collection.ts => repo.ts}  |  73 ++++++--
+ .../sqlite-node/src/sqlite/search-backend.ts       |   4 +-
+ packages/storage/sqlite-node/src/sqlite/types.ts   |   2 +-
+ scripts/browser-smoke-entry.ts                     |   5 +-
+ 28 files changed, 548 insertions(+), 555 deletions(-)
+
+commit a4c7cb025d3a784d1fba18d4c8f4846d56bd2336
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sun Aug 2 11:14:03 2026 +0300
+
+    feat(agent): reject unsupported session search
+
+ packages/agent/CHANGELOG.md                        |  1 +
+ packages/agent/docs/harness.md                     |  3 ++-
+ packages/agent/src/harness/session/repository.ts   | 26 +++++-----------------
+ ...earch-backend.ts => scanning-session-search.ts} | 14 ++++++++++--
+ packages/agent/src/harness/types.ts                |  1 +
+ packages/agent/src/index.ts                        |  2 +-
+ packages/agent/test/harness/repo.test.ts           |  9 ++++++++
+ packages/agent/test/harness/sqlite-node.test.ts    |  2 +-
+ 8 files changed, 33 insertions(+), 25 deletions(-)
+
+commit cbc893b0d41301b70c914216cb0c262eafe84b6c
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sun Aug 2 10:48:55 2026 +0300
+
+    feat(agent): prepare session storage foundation for harness v2
+
+ packages/agent/CHANGELOG.md                        |   5 +-
+ packages/agent/docs/agent-harness.md               |   2 +-
+ packages/agent/docs/harness.md                     |  83 ++++----
+ .../src/harness/session/array-session-index.ts     | 187 ++++++++++++++++
+ .../src/harness/session/array-session-reader.ts    | 107 ----------
+ packages/agent/src/harness/session/fork.ts         |  21 +-
+ .../{jsonl-store.ts => jsonl-collection.ts}        | 164 +++++++--------
+ .../agent/src/harness/session/memory-collection.ts | 128 +++++++++++
+ packages/agent/src/harness/session/memory-store.ts | 134 ------------
+ packages/agent/src/harness/session/repository.ts   |  32 ++-
+ .../agent/src/harness/session/search-backend.ts    |   8 +-
+ packages/agent/src/harness/session/session.ts      | 156 ++------------
+ packages/agent/src/harness/types.ts                |  23 +-
+ packages/agent/src/index.ts                        |  12 +-
+ packages/agent/test/harness/agent-harness.test.ts  |  23 +-
+ packages/agent/test/harness/branch-query.test.ts   |  66 +++---
+ packages/agent/test/harness/repo.test.ts           | 234 +++++++++++----------
+ .../agent/test/harness/session-backends.test.ts    |  36 ++--
+ packages/agent/test/harness/session-test-utils.ts  |   6 +-
+ packages/agent/test/harness/session.test.ts        |  30 +--
+ .../agent/test/harness/sqlite-branch-cache.test.ts |  34 ++-
+ .../agent/test/harness/sqlite-migrations.test.ts   |  64 +++---
+ packages/agent/test/harness/sqlite-node.test.ts    |  36 ++--
+ packages/agent/test/scratch/simple.ts              |   6 +-
+ packages/storage/sqlite-node/README.md             |   8 +-
+ packages/storage/sqlite-node/src/sqlite/index.ts   |   2 +-
+ .../sqlite-node/src/sqlite/search-backend.ts       |   9 +-
+ .../{session-store.ts => session-collection.ts}    |  98 ++++-----
+ .../sqlite-node/src/sqlite/storage/index.ts        |  17 +-
+ packages/storage/sqlite-node/src/sqlite/types.ts   |   2 +-
+ scripts/browser-smoke-entry.ts                     |   4 +-
+ 31 files changed, 887 insertions(+), 850 deletions(-)
+
+commit 1ee411a282132b0a3519664e14dcf457f43259ed
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sun Aug 2 11:50:56 2026 +0300
+
+    feat(coding-agent): compose experimental CLI commands
+
+ packages/coding-agent/src/cli/experimental/cli.ts  |   7 +
+ .../src/cli/experimental/command-options.ts        |  38 +++
+ .../coding-agent/src/cli/experimental/command.ts   | 291 +++++++++++++--------
+ .../src/cli/experimental/commands/client.ts        |  44 ++++
+ .../src/cli/experimental/commands/pi.ts            |  47 ++++
+ .../src/cli/experimental/commands/server.ts        |  44 ++++
+ .../test/experimental-cli-command.test.ts          | 145 +++++-----
+ .../test/experimental-cli-resolution.test.ts       |  96 +++++++
+ 8 files changed, 515 insertions(+), 197 deletions(-)
+
+commit 14551e769493f1c6ceac55954332ab14747ee05c
+Author: muyiyr <32588751+muyiyr@users.noreply.github.com>
+Date:   Sun Aug 2 15:26:23 2026 +0800
+
+    fix(coding-agent): increase connection attempt timeout (#7435)
+    
+    fixes #7315
+
+ packages/coding-agent/src/core/http-dispatcher.ts  |  5 ++
+ packages/coding-agent/test/http-dispatcher.test.ts | 64 +++++++++++++++++++++-
+ 2 files changed, 67 insertions(+), 2 deletions(-)
+
+commit b70c0f5b4e8d661bbf771ff384e093a45d28a87a
+Author: Mario Zechner <badlogicgames@gmail.com>
+Date:   Sun Aug 2 09:21:45 2026 +0200
+
+    Revert "feat(tui): add switchable terminal renderers (#7440)" (#7473)
+    
+    This reverts commit 1fdf21621d1f536a5991fccb0fd65b87ae27cf87.
+
+ packages/coding-agent/CHANGELOG.md                 |   1 -
+ packages/coding-agent/docs/settings.md             |   2 +-
+ packages/coding-agent/docs/usage.md                |   2 +-
+ .../interactive/components/settings-selector.ts    |   2 +-
+ .../src/modes/interactive/interactive-mode.ts      | 100 +++++++------
+ .../src/modes/interactive/interactive-tui.ts       |  34 -----
+ packages/coding-agent/test/interactive-tui.test.ts | 165 ++++-----------------
+ packages/tui/CHANGELOG.md                          |   1 -
+ packages/tui/README.md                             |  16 --
+ packages/tui/src/index.ts                          |   1 -
+ packages/tui/src/switchable-tui.ts                 |  83 -----------
+ packages/tui/src/terminal.ts                       |  59 +++-----
+ packages/tui/src/tui-alt-screen.ts                 |  76 +++-------
+ packages/tui/src/tui-main-screen.ts                |   2 +-
+ packages/tui/src/tui.ts                            |  51 -------
+ packages/tui/test/terminal.test.ts                 |  18 ---
+ 16 files changed, 136 insertions(+), 477 deletions(-)
+
+commit 1fdf21621d1f536a5991fccb0fd65b87ae27cf87
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Sun Aug 2 09:21:17 2026 +0200
+
+    feat(tui): add switchable terminal renderers (#7440)
+    
+    Allow coding-agent UI modes to switch at runtime while preserving terminal, focus, input, and renderer state.
+
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/docs/settings.md             |   2 +-
+ packages/coding-agent/docs/usage.md                |   2 +-
+ .../interactive/components/settings-selector.ts    |   2 +-
+ .../src/modes/interactive/interactive-mode.ts      | 100 ++++++-------
+ .../src/modes/interactive/interactive-tui.ts       |  34 +++++
+ packages/coding-agent/test/interactive-tui.test.ts | 165 +++++++++++++++++----
+ packages/tui/CHANGELOG.md                          |   1 +
+ packages/tui/README.md                             |  16 ++
+ packages/tui/src/index.ts                          |   1 +
+ packages/tui/src/switchable-tui.ts                 |  83 +++++++++++
+ packages/tui/src/terminal.ts                       |  59 +++++---
+ packages/tui/src/tui-alt-screen.ts                 |  76 +++++++---
+ packages/tui/src/tui-main-screen.ts                |   2 +-
+ packages/tui/src/tui.ts                            |  51 +++++++
+ packages/tui/test/terminal.test.ts                 |  18 +++
+ 16 files changed, 477 insertions(+), 136 deletions(-)
+
+commit aa0ec808b970db31822e07835a46647cb51d9d66
+Merge: a6f7317df 15b6617fa
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 23:42:18 2026 +0300
+
+    Merge pull request #7411 from earendil-works/feat/experimental-cli-parser
+    
+    feat(coding-agent): add experimental CLI option parser
+
+commit 15b6617fac803d062195b90bff0d3013020ffbbf
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 21:53:55 2026 +0300
+
+    fix(coding-agent): preserve existing CLI option values
+
+ .../coding-agent/src/cli/experimental/command.ts   | 10 +++---
+ .../src/cli/experimental/transport-address.ts      |  3 ++
+ .../test/experimental-cli-command.test.ts          | 38 +++++++++++++++++++++-
+ 3 files changed, 46 insertions(+), 5 deletions(-)
+
+commit b0944d75cfe2d797c41ed532fa1dade05167cda4
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 20:59:09 2026 +0300
+
+    fix(coding-agent): validate Unix transport URLs
+
+ packages/coding-agent/src/cli/experimental/transport-address.ts | 9 +++++++++
+ packages/coding-agent/test/experimental-cli-command.test.ts     | 3 +++
+ 2 files changed, 12 insertions(+)
+
+commit c2923b641c73aef4d5d484b9544922d05028b962
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 20:52:01 2026 +0300
+
+    refactor(coding-agent): simplify experimental command names
+
+ .../coding-agent/src/cli/experimental/command.ts   |  8 ++++----
+ .../test/experimental-cli-command.test.ts          | 22 +++++++++++-----------
+ 2 files changed, 15 insertions(+), 15 deletions(-)
+
+commit 68ad320af13d699279b690d3e3f6eb23a85b9c2b
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 14:31:28 2026 +0300
+
+    refactor(coding-agent): model experimental CLI commands
+
+ .../cli/experimental/{auth-options.ts => auth.ts}  |  0
+ .../cli/experimental/{options.ts => command.ts}    | 55 +++++++++++-----------
+ ...ns.test.ts => experimental-cli-command.test.ts} | 54 ++++++++++-----------
+ 3 files changed, 53 insertions(+), 56 deletions(-)
+
+commit 15fb81a6f3a60a808bf8187428d82136b1ba79d3
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 13:26:04 2026 +0300
+
+    refactor(coding-agent): limit experimental parser to transport options
+
+ .../coding-agent/src/cli/experimental/options.ts   | 146 +++----------------
+ .../test/experimental-cli-options.test.ts          | 160 +++++++++++----------
+ 2 files changed, 104 insertions(+), 202 deletions(-)
+
+commit c95e877e2d0f08148536711ac913191acca8e1a7
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 13:17:51 2026 +0300
+
+    refactor(coding-agent): keep thinking validation parser-local
+
+ packages/coding-agent/src/cli/args.ts                 | 9 ++++++---
+ packages/coding-agent/src/cli/experimental/options.ts | 7 ++++++-
+ packages/coding-agent/src/cli/thinking-level.ts       | 7 -------
+ packages/coding-agent/src/core/model-resolver.ts      | 2 +-
+ 4 files changed, 13 insertions(+), 12 deletions(-)
+
+commit 0ac010b746cebcc0b54e3a38c1c920349b1b1a65
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 12:47:12 2026 +0300
+
+    refactor(coding-agent): rename transport endpoint to address
+
+ .../coding-agent/src/cli/experimental/endpoint.ts  | 36 ----------------------
+ .../coding-agent/src/cli/experimental/options.ts   | 16 +++++-----
+ .../src/cli/experimental/transport-address.ts      | 36 ++++++++++++++++++++++
+ .../test/experimental-cli-options.test.ts          |  6 ++--
+ 4 files changed, 47 insertions(+), 47 deletions(-)
+
+commit 1ea4ccad0472817fd117ecf03bd8e84ba72bfd5d
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 10:48:18 2026 +0300
+
+    refactor(coding-agent): generalize experimental endpoints
+
+ .../src/cli/experimental/auth-options.ts           | 30 +-------
+ .../coding-agent/src/cli/experimental/endpoint.ts  | 36 +++++++++
+ .../coding-agent/src/cli/experimental/options.ts   | 85 +++++++++++++++-------
+ .../test/experimental-cli-options.test.ts          | 43 ++++++++---
+ 4 files changed, 130 insertions(+), 64 deletions(-)
+
+commit f9a5c75f208cd3a825631294852e7452f580dfe4
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 03:19:39 2026 +0300
+
+    feat(coding-agent): add experimental CLI option parser
+
+ packages/coding-agent/src/cli/args.ts              |   9 +-
+ .../src/cli/experimental/auth-options.ts           |  43 +++++
+ .../coding-agent/src/cli/experimental/options.ts   | 205 +++++++++++++++++++++
+ packages/coding-agent/src/cli/thinking-level.ts    |   7 +
+ packages/coding-agent/src/core/model-resolver.ts   |   2 +-
+ .../test/experimental-cli-options.test.ts          | 124 +++++++++++++
+ 6 files changed, 383 insertions(+), 7 deletions(-)
+
+commit a6f7317dfca61e357aee65faafe012a1be6c3734
+Merge: 6e48c10f5 960d271cb
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 23:13:49 2026 +0300
+
+    Merge pull request #7454 from earendil-works/fix/models-json-hot-reload-test
+    
+    fix(coding-agent): make model reload test deterministic
+
+commit 960d271cb823711444f69358257d2fe6cd167b05
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 23:03:11 2026 +0300
+
+    fix(coding-agent): synchronize model reload regression
+
+ .../6999-models-json-hot-reload.test.ts            | 32 ++++++++++++++--------
+ 1 file changed, 21 insertions(+), 11 deletions(-)
+
+commit 6374a95fb247dd898086ed28bbfe307e444a1d8d
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 22:53:41 2026 +0300
+
+    fix(coding-agent): make model reload test deterministic
+
+ .../6999-models-json-hot-reload.test.ts            | 30 +++++++++++++---------
+ 1 file changed, 18 insertions(+), 12 deletions(-)
+
+commit 6e48c10f5b1f5cfc90d6cb21abf26a3e1e8a6bd7
+Merge: b5c7e5549 8750a38c4
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 22:14:17 2026 +0300
+
+    Merge pull request #7448 from earendil-works/feat/agent-branch-queries-v2
+    
+    feat(agent): add bounded branch entry queries
+
+commit b5c7e554926575de4d0adebcf9d6398f1c66d405
+Merge: 374c5b6dd eb2683fc5
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 22:10:46 2026 +0300
+
+    Merge pull request #7450 from earendil-works/fix/sqlite-compaction-discovery
+    
+    Use type index for SQLite compaction discovery
+
+commit eb2683fc59957abc93db8c06f657aa953fbba044
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 21:38:36 2026 +0300
+
+    fix(agent): use type index for compaction discovery
+
+ .../storage/sqlite-node/src/sqlite/storage/branch-cache.ts | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+commit 374c5b6dd0eae23b8ab94d2024b9f29673192ace
+Merge: 8f9e76974 4ecd1bbe6
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 21:36:41 2026 +0300
+
+    Merge pull request #7449 from earendil-works/fix/agent-timeout-output-test
+    
+    test(agent): derive timeout output size from truncation limit
+
+commit 4ecd1bbe6719786f0d30c3e0f65f3857fbbba246
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 21:30:35 2026 +0300
+
+    test(agent): derive timeout output size from truncation limit
+
+ packages/agent/test/harness/tools.test.ts | 20 ++++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+commit 8750a38c4c6e9e96eb868c3a24dbf041f1ecf8c3
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 21:26:49 2026 +0300
+
+    fix(coding-agent): make child output test deterministic
+
+ .../5303-bash-output-truncation.test.ts            | 93 +++++++++++-----------
+ 1 file changed, 48 insertions(+), 45 deletions(-)
+
+commit 081d7fbfca102aec2ee9f052c7804637cebebc4c
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 20:54:36 2026 +0300
+
+    fix(agent): harden bounded branch queries
+
+ .../src/harness/session/array-session-reader.ts    |  17 +-
+ packages/agent/test/harness/branch-query.test.ts   | 194 ++++++++++++++++++++-
+ .../agent/test/harness/sqlite-branch-cache.test.ts |  41 +++++
+ .../sqlite-node/src/sqlite/storage/branch-cache.ts | 123 +++++++++++++
+ .../sqlite-node/src/sqlite/storage/index.ts        |  93 ++++++++--
+ 5 files changed, 443 insertions(+), 25 deletions(-)
+
+commit 9b75872017b7aac00e12542992fdd28afbeaae60
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 10:31:56 2026 +0300
+
+    feat(agent): add bounded branch queries
+
+ packages/agent/CHANGELOG.md                        |   4 +
+ .../src/harness/session/array-session-reader.ts    |  30 ++++
+ packages/agent/src/harness/session/jsonl-store.ts  |   4 +
+ packages/agent/src/harness/session/memory-store.ts |   4 +
+ packages/agent/src/harness/session/session.ts      |  16 +++
+ packages/agent/src/harness/types.ts                |  18 +++
+ packages/agent/test/harness/branch-query.test.ts   | 153 +++++++++++++++++++++
+ packages/agent/test/harness/repo.test.ts           |   1 +
+ packages/storage/sqlite-node/CHANGELOG.md          |   4 +
+ .../sqlite-node/src/sqlite/session-store.ts        |   4 +
+ .../sqlite-node/src/sqlite/storage/index.ts        |  40 +++++-
+ 11 files changed, 277 insertions(+), 1 deletion(-)
+
+commit 8f9e7697428477e8b206d1902060875689d5010f
+Author: a-yeyang <a-yeyang@users.noreply.github.com>
+Date:   Sat Aug 1 20:17:00 2026 +0200
+
+    fix(coding-agent): recover stalled availability refreshes
+    
+    Start forced availability rebuilds independently and discard stale snapshot and error publication. This fixes #7301 and reuses the implementation from #7421 by @a-yeyang with expanded race coverage.
+
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ packages/coding-agent/src/core/model-runtime.ts    |  28 ++++--
+ .../7301-stalled-availability-refresh.test.ts      | 106 +++++++++++++++++++++
+ 3 files changed, 128 insertions(+), 7 deletions(-)
+
+commit 583f153d502aa8e958eefdb9af0fbd3344e68f95
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Sat Aug 1 14:38:13 2026 +0200
+
+    fix(tui): normalize source filenames
+
+ packages/coding-agent/test/interactive-mode-status.test.ts | 2 +-
+ packages/tui/src/index.ts                                  | 4 ++--
+ packages/tui/src/{TuiAltScreen.ts => tui-alt-screen.ts}    | 0
+ packages/tui/src/{TuiMainScreen.ts => tui-main-screen.ts}  | 0
+ packages/tui/test/chat-simple.ts                           | 2 +-
+ packages/tui/test/editor.test.ts                           | 2 +-
+ packages/tui/test/image-test.ts                            | 2 +-
+ packages/tui/test/key-tester.ts                            | 2 +-
+ packages/tui/test/markdown.test.ts                         | 2 +-
+ packages/tui/test/overlay-non-capturing.test.ts            | 2 +-
+ packages/tui/test/overlay-options.test.ts                  | 2 +-
+ packages/tui/test/overlay-short-content.test.ts            | 2 +-
+ packages/tui/test/tab-width.test.ts                        | 2 +-
+ packages/tui/test/tui-alt-screen.test.ts                   | 2 +-
+ packages/tui/test/tui-cell-size-input.test.ts              | 2 +-
+ packages/tui/test/tui-overlay-style-leak.test.ts           | 2 +-
+ packages/tui/test/tui-render.test.ts                       | 2 +-
+ packages/tui/test/tui-shrink.test.ts                       | 2 +-
+ packages/tui/test/viewport-overwrite-repro.ts              | 2 +-
+ tui-plan.md                                                | 2 +-
+ 20 files changed, 19 insertions(+), 19 deletions(-)
+
+commit a1403af8ec8552ba35bff82aaaba2dd27426d2f8
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Sat Aug 1 14:06:00 2026 +0200
+
+    fix(agent): make timeout output test deterministic
+
+ packages/agent/test/harness/tools.test.ts | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
+
+commit a116523434806910336b9de3e38a41aa5860030b
+Merge: 4488ad55c1 e92bf60a58
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 10:28:11 2026 +0300
+
+    Merge pull request #7431 from earendil-works/refactor/sqlite-branch-cache
+    
+    Make SQLite branch caching scalable
+
+commit e92bf60a5804e1640b9ea7390a03c4063adc880f
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 10:08:56 2026 +0300
+
+    fix(agent): make SQLite branch caching scalable
+
+ .../agent/test/harness/sqlite-branch-cache.test.ts | 224 +++++++++++++++++++++
+ .../agent/test/harness/sqlite-migrations.test.ts   |  61 +++++-
+ .../storage/sqlite-node/src/sqlite/migrations.ts   |   5 +
+ .../src/sqlite/migrations/002_branch_tips.sql      |  12 ++
+ .../sqlite-node/src/sqlite/session-store.ts        |   1 +
+ .../sqlite-node/src/sqlite/storage/branch-cache.ts | 199 ++++++++++++++++++
+ .../sqlite-node/src/sqlite/storage/index.ts        | 213 ++++++++++----------
+ 7 files changed, 605 insertions(+), 110 deletions(-)
+
+commit 4488ad55c18f07ae89a489096c90de8667b3adfb
+Merge: 06a1ceb8d8 5cd0f98e93
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 03:00:02 2026 +0300
+
+    Merge pull request #7410 from earendil-works/fix/sqlite-session-linear-time
+    
+    fix(agent): make SQLite session operations linear
+
+commit 5cd0f98e93b299a0d3c297cc6f63d48e221ea898
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 02:55:49 2026 +0300
+
+    docs(agent): clarify staged branch handling
+
+ packages/storage/sqlite-node/src/sqlite/storage/index.ts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+commit c2adb4d1da5f2e521154d7b56bafdb3171c0a32c
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 02:52:21 2026 +0300
+
+    fix(agent): use SQLite trigger for rollback test
+
+ .../agent/test/harness/sqlite-migrations.test.ts   | 23 +++++++++++-----------
+ 1 file changed, 12 insertions(+), 11 deletions(-)
+
+commit 06a1ceb8d83640ca764269307199a20323dee754
+Merge: 0d43c5804b e075116459
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 02:42:45 2026 +0300
+
+    Merge pull request #7409 from earendil-works/feat/coding-agent-remote-client-controller
+    
+    feat: add remote session client coordination
+
+commit 57583617eff0df1b26f022e208de74bf8aa769a6
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 01:50:06 2026 +0300
+
+    fix(agent): make SQLite session operations linear
+
+ packages/agent/test/harness/session.test.ts        |  4 +-
+ .../agent/test/harness/sqlite-migrations.test.ts   | 34 ++++++++----
+ .../sqlite-node/src/sqlite/storage/index.ts        | 64 +++++++++-------------
+ 3 files changed, 51 insertions(+), 51 deletions(-)
+
+commit e07511645924249aa157b54dc73f73b235192d78
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 02:06:46 2026 +0300
+
+    docs: remove contributor changelog entries
+
+ packages/client/CHANGELOG.md       | 5 -----
+ packages/coding-agent/CHANGELOG.md | 1 -
+ packages/server/CHANGELOG.md       | 4 ----
+ 3 files changed, 10 deletions(-)
+
+commit a3ec51d2a18c69bd1c74a0a70075497794f47257
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 02:05:17 2026 +0300
+
+    feat: add remote session client coordination
+
+ package-lock.json                                  |   2 +
+ packages/client/CHANGELOG.md                       |   5 +
+ packages/client/README.md                          |   4 +-
+ packages/client/src/client.ts                      | 327 +++++++++++-----
+ packages/client/src/connection.ts                  |   4 +-
+ packages/client/src/errors.ts                      |  17 +
+ packages/client/src/index.ts                       |  10 +-
+ packages/client/src/session-handle.ts              | 111 ++++++
+ packages/client/src/state.ts                       |   8 +
+ packages/client/test/disposal.test.ts              |  54 +++
+ packages/client/test/sessions.test.ts              | 191 +++++++++-
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ .../coding-agent/install-lock/package-lock.json    |  24 ++
+ packages/coding-agent/npm-shrinkwrap.json          |  24 ++
+ packages/coding-agent/package.json                 |   8 +-
+ packages/coding-agent/src/client/index.ts          |  15 +
+ packages/coding-agent/src/client/remote-session.ts | 420 +++++++++++++++++++++
+ packages/coding-agent/src/client/transcript.ts     | 101 +++++
+ .../test/client/remote-session-lifecycle.test.ts   | 190 ++++++++++
+ .../test/client/remote-session-ownership.test.ts   | 174 +++++++++
+ .../test/client/remote-session.test.ts             | 196 ++++++++++
+ packages/coding-agent/test/client/support.ts       | 111 ++++++
+ .../coding-agent/test/client/transcript.test.ts    | 220 +++++++++++
+ packages/coding-agent/tsconfig.build.json          |   2 +
+ packages/coding-agent/vitest.config.ts             |   9 +
+ packages/server/CHANGELOG.md                       |   4 +
+ packages/server/src/sessions.ts                    |  22 +-
+ packages/server/test/sessions.test.ts              |   2 +
+ 28 files changed, 2142 insertions(+), 114 deletions(-)
+
+commit 0d43c5804b57f5fb19e67f62051103a85d38fb42
+Merge: a0bb4a489b 2366649ba4
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 01:48:53 2026 +0300
+
+    Merge pull request #7408 from earendil-works/refactor/session-reader
+    
+    feat(agent): add storage-owned session readers
+
+commit 2366649ba4966d9b7c057b0a19ec54c135fa9f3b
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 01:39:12 2026 +0300
+
+    fix(agent): avoid counting entries when opening sessions
+
+ packages/agent/src/harness/session/array-session-reader.ts | 4 ++--
+ packages/agent/src/harness/types.ts                        | 1 -
+ packages/storage/sqlite-node/src/sqlite/storage/index.ts   | 7 +++----
+ 3 files changed, 5 insertions(+), 7 deletions(-)
+
+commit 2cc51b9d7611f9330ea3d7c39796ec6aceabfb7d
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 01:32:53 2026 +0300
+
+    fix(agent): rename session fork module
+
+ packages/agent/src/harness/session/{fork-selection.ts => fork.ts} | 0
+ packages/agent/src/harness/session/jsonl-store.ts                 | 2 +-
+ packages/agent/src/harness/session/memory-store.ts                | 2 +-
+ packages/agent/src/harness/session/repository.ts                  | 2 +-
+ packages/agent/src/index.ts                                       | 2 +-
+ 5 files changed, 4 insertions(+), 4 deletions(-)
+
+commit 53422a241a9018c99081226a502e5fbabb8b5fed
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Sat Aug 1 01:13:17 2026 +0300
+
+    feat(agent): add storage-owned session readers
+
+ packages/agent/docs/harness.md                     |  48 ++++++--
+ .../src/harness/session/array-session-reader.ts    |  70 ++++++++++++
+ .../agent/src/harness/session/fork-selection.ts    |  23 ++++
+ packages/agent/src/harness/session/jsonl-store.ts  |  91 +++++++++++----
+ packages/agent/src/harness/session/memory-store.ts |  54 ++++++---
+ packages/agent/src/harness/session/repository.ts   |  31 ++---
+ .../agent/src/harness/session/search-backend.ts    |   8 +-
+ packages/agent/src/harness/session/session.ts      | 126 +++++++--------------
+ packages/agent/src/harness/types.ts                |  34 ++++--
+ packages/agent/src/index.ts                        |   1 +
+ packages/agent/test/harness/agent-harness.test.ts  |   2 +-
+ packages/agent/test/harness/repo.test.ts           | 116 +++++++++++++++++--
+ .../agent/test/harness/sqlite-migrations.test.ts   |  30 ++++-
+ .../sqlite-node/src/sqlite/session-store.ts        |  59 ++++++++--
+ .../sqlite-node/src/sqlite/storage/index.ts        |  56 ++++++---
+ 15 files changed, 545 insertions(+), 204 deletions(-)
+
+commit a0bb4a489b188beac7c06034141db86ffb357730
+Merge: b777865828 9f4dfdddbf
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 23:00:50 2026 +0300
+
+    Merge pull request #7400 from earendil-works/refactor/sqlite-session-connection-cleanup
+    
+    Remove obsolete SQLite session connection internals
+
+commit b777865828728767c1e161f3fd51bc0414d70f09
+Merge: 03eba409c0 62f3c61b68
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 23:00:39 2026 +0300
+
+    Merge pull request #7398 from earendil-works/refactor/session-store-per-session-queues
+    
+    feat(agent): add per-session store queues
+
+commit 03eba409c0dba1f8906ae4169f839abf0100e0a2
+Merge: fbab971da2 91957b3a01
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 22:58:30 2026 +0300
+
+    Merge pull request #7397 from earendil-works/fix/server-protocol-invariants
+    
+    fix(server): enforce protocol adapter invariants
+
+commit 62f3c61b68e9ece242eb4de79861542651dc5401
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 21:52:53 2026 +0300
+
+    feat(agent): add per-session store queues
+
+ packages/agent/src/harness/session/jsonl-store.ts  |  90 ++++--
+ .../src/harness/session/keyed-operation-queue.ts   |  69 +++++
+ packages/agent/src/harness/session/memory-store.ts |  38 +--
+ packages/agent/test/harness/repo.test.ts           | 322 ++++++++++++++++++++-
+ 4 files changed, 462 insertions(+), 57 deletions(-)
+
+commit 9f4dfdddbffe171ac3143c57c32708cc1cd4e1ce
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 22:45:02 2026 +0300
+
+    fix(agent): remove obsolete SQLite session internals
+
+ .../agent/test/harness/sqlite-migrations.test.ts   |   8 +-
+ .../src/sqlite/storage/branch-entries.ts           |  58 ----------
+ .../sqlite-node/src/sqlite/storage/index.ts        | 126 ++-------------------
+ .../src/sqlite/storage/session-materialized.ts     |  15 +--
+ .../sqlite-node/src/sqlite/storage/shared.ts       |  12 --
+ 5 files changed, 14 insertions(+), 205 deletions(-)
+
+commit 91957b3a01fed3619bf7cf41f326aade9518bbcf
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 21:03:28 2026 +0300
+
+    fix(server): enforce protocol adapter invariants
+
+ packages/protocol/CHANGELOG.md          |   4 +
+ packages/protocol/src/schemas.ts        |  77 +++++++---
+ packages/protocol/test/protocol.test.ts | 120 ++++++++++++++++
+ packages/server/CHANGELOG.md            |   8 ++
+ packages/server/README.md               |   2 +-
+ packages/server/src/protocol.ts         | 244 +++++++++++++++++++++++---------
+ packages/server/src/testing/backend.ts  |  33 +++--
+ packages/server/test/protocol.test.ts   | 100 ++++++++++++-
+ 8 files changed, 482 insertions(+), 106 deletions(-)
+
+commit fbab971da2c2eb0ed9e4deefc04560c5bc1bf71f
+Merge: 977ec833bb 0c611753d9
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 22:53:01 2026 +0300
+
+    Merge pull request #7401 from earendil-works/fix-model-tests
+    
+    fix(ai): update Z.AI model test references
+
+commit 0c611753d9933fc26b92279155b8a1eac3594a6e
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 22:48:17 2026 +0300
+
+    fix(ai): update Z.AI model test references
+
+ packages/ai/test/context-overflow.test.ts          |  4 +-
+ packages/ai/test/empty.test.ts                     |  2 +-
+ .../ai/test/openai-completions-tool-choice.test.ts | 50 +++-------------------
+ packages/ai/test/stream.test.ts                    |  4 +-
+ packages/ai/test/tokens.test.ts                    |  2 +-
+ packages/ai/test/tool-call-without-result.test.ts  |  2 +-
+ packages/ai/test/total-tokens.test.ts              | 22 ++++------
+ packages/ai/test/unicode-surrogate.test.ts         |  2 +-
+ 8 files changed, 23 insertions(+), 65 deletions(-)
+
+commit 977ec833bbb86e245057e9162dbc1443c7b6e707
+Merge: af187eee4b 9c3b271be0
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 18:51:52 2026 +0300
+
+    Merge pull request #7391 from earendil-works/refactor/remove-session-search-index
+    
+    fix(agent): make session search query-only
+
+commit af187eee4b718dbcf01e60e164f5919ae03bacfc
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Jul 31 17:49:05 2026 +0200
+
+    fix(tui): clip Kitty images to layout boundaries
+
+ packages/coding-agent/CHANGELOG.md |  1 +
+ packages/tui/CHANGELOG.md          |  1 +
+ packages/tui/src/layout.ts         |  8 +++++++-
+ packages/tui/src/terminal-image.ts |  8 +++++---
+ packages/tui/test/layout.test.ts   | 19 +++++++++++++++++++
+ 5 files changed, 33 insertions(+), 4 deletions(-)
+
+commit b3ed27b3fe33ad006df66709ccf7f2edb33871eb
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Jul 31 17:41:15 2026 +0200
+
+    feat(coding-agent): add scrollbar thumb theme color
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ packages/coding-agent/docs/themes.md               |  8 ++--
+ .../src/modes/interactive/interactive-mode.ts      |  2 +-
+ .../src/modes/interactive/theme/dark.json          |  1 +
+ .../src/modes/interactive/theme/light.json         |  1 +
+ .../src/modes/interactive/theme/theme-schema.json  |  6 ++-
+ .../src/modes/interactive/theme/theme.ts           | 24 ++++++++---
+ packages/coding-agent/test/scrollbar-theme.test.ts | 48 ++++++++++++++++++++++
+ 8 files changed, 81 insertions(+), 10 deletions(-)
+
+commit 9c3b271be00fd6035c4a5464f77d34c5b54942d0
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 18:31:04 2026 +0300
+
+    fix(agent): make session search query-only
+
+ packages/agent/docs/harness.md                     |   4 +-
+ packages/agent/src/harness/session/search-index.ts |  18 ---
+ packages/agent/src/harness/types.ts                |  10 +-
+ packages/agent/src/index.ts                        |   1 -
+ packages/agent/test/harness/sqlite-node.test.ts    | 146 +-----------------
+ packages/storage/sqlite-node/README.md             |   2 +-
+ .../sqlite-node/src/sqlite/search-backend.ts       | 165 +++------------------
+ 7 files changed, 27 insertions(+), 319 deletions(-)
+
+commit 7724472eab2da7dcd1be0bc025e0e66a80404486
+Merge: 6129a353b1 bfc679d5e4
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 18:18:23 2026 +0300
+
+    Merge pull request #7387 from earendil-works/issue/7248
+    
+    fix(coding-agent): read clipboard text on Wayland
+
+commit 6129a353b18310eb06085e2f17f58cf501f725f3
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Jul 31 17:16:25 2026 +0200
+
+    feat(tui): add configurable fullscreen scrollbars
+
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ packages/coding-agent/docs/settings.md             |  1 +
+ packages/coding-agent/src/core/settings-manager.ts | 13 ++++++++
+ .../interactive/components/settings-selector.ts    | 13 ++++++++
+ .../src/modes/interactive/interactive-mode.ts      | 33 +++++++++----------
+ .../coding-agent/test/settings-manager.test.ts     | 12 +++++++
+ .../coding-agent/test/settings-selector.test.ts    | 37 ++++++++++++++++++++++
+ packages/tui/CHANGELOG.md                          |  2 +-
+ packages/tui/src/components/scroll-view.ts         | 32 +++++++++++++++----
+ packages/tui/src/index.ts                          |  2 +-
+ packages/tui/src/layout-node.ts                    |  1 +
+ packages/tui/src/layout.ts                         | 17 +++++++---
+ packages/tui/test/layout.test.ts                   | 27 +++++++++++-----
+ 13 files changed, 153 insertions(+), 39 deletions(-)
+
+commit 12a4b242927acd647bfe462a194c1def38029439
+Merge: 73b24639fd 15f719489b
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 18:10:45 2026 +0300
+
+    Merge pull request #7379 from earendil-works/refactor/session-store-file-names
+    
+    fix(agent): clarify session persistence ownership
+
+commit bfc679d5e4e0a41fc1953456be0e1b223461189b
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 15:43:16 2026 +0300
+
+    fix(coding-agent): read clipboard text on Wayland
+    
+    Prefer wl-paste on Wayland while preserving the native clipboard fallback when the command is unavailable.
+    
+    Fixes #7248
+    
+    Co-authored-by: Ston Jia <ston.jia@outlook.com>
+
+ packages/coding-agent/src/utils/clipboard.ts | 28 +++++++++++++++--
+ packages/coding-agent/test/clipboard.test.ts | 46 +++++++++++++++++++++++++++-
+ 2 files changed, 71 insertions(+), 3 deletions(-)
+
+commit 73b24639fd9794d462b40a3bfa0cbb5e456dc2e8
+Merge: bf4a90d819 546e002353
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 18:03:15 2026 +0300
+
+    Merge pull request #7386 from earendil-works/feat/server-core
+    
+    feat(server): add composable protocol server
+
+commit 546e002353980e1789106cc3b2f3a843f9d74b31
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 17:59:17 2026 +0300
+
+    test(server): consolidate reusable test infrastructure
+
+ packages/server/README.md                          |   6 +-
+ packages/server/package.json                       |   4 +
+ .../{test/support.ts => src/testing/backend.ts}    | 245 ++----
+ packages/server/src/testing/client.ts              | 147 ++++
+ packages/server/src/testing/index.ts               |   5 +
+ packages/server/src/testing/server.ts              |  29 +
+ packages/server/test/conformance.test.ts           |  38 +-
+ ...stener-composition.test.ts => listener.test.ts} |  22 +-
+ packages/server/test/server.test.ts                | 821 ++-------------------
+ packages/server/test/sessions.test.ts              | 387 ++++++++++
+ packages/server/test/transport-smoke.test.ts       | 158 ----
+ .../test/{unix-lifecycle.test.ts => unix.test.ts}  |  15 +-
+ 12 files changed, 767 insertions(+), 1110 deletions(-)
+
+commit 15f719489b439a81d3736cb34619250b66ad8363
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 17:59:16 2026 +0300
+
+    fix(agent): scope JSONL entry IDs by path
+
+ packages/agent/src/harness/session/jsonl-store.ts    | 12 ++++++------
+ packages/agent/test/harness/session-backends.test.ts | 17 +++++++++++++++++
+ 2 files changed, 23 insertions(+), 6 deletions(-)
+
+commit e36b150f71c736a4b13dae401035c292badf276f
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 17:43:24 2026 +0300
+
+    test(server): avoid Unix socket inode reuse assumption
+
+ packages/server/test/unix-lifecycle.test.ts | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
+
+commit cb86f0844747f80df1e4dd9fd6aa35d7de9a565b
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 17:38:00 2026 +0300
+
+    fix(server): enforce protocol adapter invariants
+
+ packages/server/src/protocol.ts       | 45 ++++++++++++++++-----
+ packages/server/test/protocol.test.ts | 76 ++++++++++++++++++++++++++++++++---
+ 2 files changed, 104 insertions(+), 17 deletions(-)
+
+commit bf4a90d81985bd45052eeeae59d84fe13e0bd2c8
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Jul 31 16:34:27 2026 +0200
+
+    fix(tui): preserve spaces in settings searches
+
+ packages/coding-agent/CHANGELOG.md           |  1 +
+ packages/tui/CHANGELOG.md                    |  1 +
+ packages/tui/src/components/settings-list.ts | 11 +++---
+ packages/tui/test/settings-list.test.ts      | 58 ++++++++++++++++++++++++++++
+ 4 files changed, 65 insertions(+), 6 deletions(-)
+
+commit 2e60d3cbdff5f3ca682e1abc1188160edd88a978
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 17:32:25 2026 +0300
+
+    feat(server): add composable protocol server
+
+ package-lock.json                                  |   9 +-
+ packages/protocol/src/schemas.ts                   |   6 +-
+ packages/server/README.md                          |  42 ++
+ packages/server/package.json                       |  21 +-
+ packages/server/src/connection.ts                  |  36 +
+ packages/server/src/errors.ts                      |  40 ++
+ packages/server/src/index.ts                       |  14 +-
+ packages/server/src/{ => legacy}/cli.ts            |   0
+ packages/server/src/{ => legacy}/config.ts         |   0
+ packages/server/src/{ => legacy}/handler.ts        |   0
+ packages/server/src/legacy/index.ts                |  11 +
+ packages/server/src/{ => legacy}/ipc/client.ts     |   0
+ packages/server/src/{ => legacy}/ipc/protocol.ts   |   0
+ packages/server/src/{ => legacy}/ipc/server.ts     |   0
+ packages/server/src/{ => legacy}/radius.ts         |   0
+ packages/server/src/{ => legacy}/rpc-process.ts    |   0
+ packages/server/src/{ => legacy}/serve.ts          |   0
+ packages/server/src/{ => legacy}/storage.ts        |   0
+ packages/server/src/{ => legacy}/supervisor.ts     |   0
+ packages/server/src/legacy/types.ts                |  25 +
+ packages/server/src/listener.ts                    |   9 +
+ packages/server/src/protocol.ts                    | 249 +++++++
+ packages/server/src/server.ts                      | 399 +++++++++++
+ packages/server/src/sessions.ts                    | 351 ++++++++++
+ packages/server/src/snapshots.ts                   |  64 ++
+ packages/server/src/transports/unix/index.ts       |   3 +
+ packages/server/src/transports/unix/listener.ts    | 434 ++++++++++++
+ packages/server/src/transports/unix/preset.ts      |  24 +
+ packages/server/src/transports/unix/types.ts       |  15 +
+ packages/server/src/types.ts                       |  76 +-
+ packages/server/test/conformance.test.ts           | 339 +++++++++
+ .../server/test/fixtures/stale-socket-server.mjs   |   9 +
+ packages/server/test/listener-composition.test.ts  |  73 ++
+ packages/server/test/protocol.test.ts              | 145 ++++
+ packages/server/test/server.test.ts                | 768 +++++++++++++++++++++
+ packages/server/test/support.ts                    | 375 ++++++++++
+ packages/server/test/transport-smoke.test.ts       | 158 +++++
+ packages/server/test/unix-connection.test.ts       |  65 ++
+ packages/server/test/unix-lifecycle.test.ts        | 118 ++++
+ packages/server/tsconfig.test.json                 |  13 +
+ packages/server/vitest.config.ts                   |  15 +
+ 41 files changed, 3869 insertions(+), 37 deletions(-)
+
+commit 3c717842e87f9d6b60587665fb52817f83c87a98
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Jul 31 16:23:58 2026 +0200
+
+    feat(tui): add fullscreen transcript navigation
+
+ packages/coding-agent/CHANGELOG.md        |  1 +
+ packages/coding-agent/docs/keybindings.md | 10 +++--
+ packages/tui/CHANGELOG.md                 |  1 +
+ packages/tui/README.md                    |  4 +-
+ packages/tui/src/TuiAltScreen.ts          | 38 ++++++++++++++++--
+ packages/tui/src/keybindings.ts           | 20 +++++++++-
+ packages/tui/test/keybindings.test.ts     |  6 ++-
+ packages/tui/test/tui-alt-screen.test.ts  | 65 +++++++++++++++++++++++++++----
+ 8 files changed, 125 insertions(+), 20 deletions(-)
+
+commit 2b765ef529ae79d5bfa6990668f74cf717277f4a
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 17:17:41 2026 +0300
+
+    fix(agent): restore forward session cursor reads
+    
+    Document complete session store and search composition for scanning and canonical SQLite search.
+
+ packages/agent/CHANGELOG.md                           |  2 +-
+ packages/agent/docs/harness.md                        | 14 +++++++++-----
+ packages/agent/src/harness/session/session.ts         |  6 +++---
+ packages/agent/src/harness/types.ts                   |  1 +
+ packages/agent/test/harness/session.test.ts           | 17 +++++++++++++++++
+ packages/agent/test/harness/sqlite-migrations.test.ts | 17 ++++++++---------
+ packages/storage/sqlite-node/README.md                |  3 ++-
+ 7 files changed, 41 insertions(+), 19 deletions(-)
+
+commit 8eda4f5b256009b8e752651683701b041e1632d3
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Jul 31 16:04:46 2026 +0200
+
+    fix(coding-agent): reject prompts during manual compaction
+    
+    closes #7150
+
+ packages/coding-agent/src/core/agent-session.ts    |  6 ++
+ .../test/suite/agent-session-prompt.test.ts        | 46 +++++++++++
+ .../7150-rpc-prompt-during-compaction.test.ts      | 91 ++++++++++++++++++++++
+ 3 files changed, 143 insertions(+)
+
+commit 4e81b796153ca5c304ba867269088049831ed987
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 16:56:51 2026 +0300
+
+    fix(agent): restrict session construction to repositories
+
+ packages/agent/CHANGELOG.md                       |  1 +
+ packages/agent/docs/agent-harness.md              |  2 +-
+ packages/agent/src/harness/session/repository.ts  | 16 +++++--
+ packages/agent/src/harness/session/session.ts     | 50 +++++++++++++++++++-
+ packages/agent/src/index.ts                       | 10 +++-
+ packages/agent/test/harness/agent-harness.test.ts | 16 +++++--
+ packages/agent/test/harness/session-test-utils.ts |  5 +-
+ packages/agent/test/harness/session.test.ts       | 56 +++++++++++------------
+ 8 files changed, 113 insertions(+), 43 deletions(-)
+
+commit f4a96c62b324546986db06197e4b9c2993b72f60
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 16:42:14 2026 +0300
+
+    docs(agent): simplify session store guidance
+
+ packages/agent/docs/harness.md | 68 +++++++++++++++++++++++++-----------------
+ 1 file changed, 40 insertions(+), 28 deletions(-)
+
+commit 0b229f1046cee084271682b3e50bb532d9c3467e
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 16:37:13 2026 +0300
+
+    docs(agent): document session persistence migration
+
+ packages/agent/CHANGELOG.md | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+commit f074efd921848bf5d858154e852d47ea82c60bf2
+Author: Vegard Stikbakke <vegard.stikbakke@gmail.com>
+Date:   Fri Jul 31 14:33:51 2026 +0200
+
+    feat(coding-agent): add ui mode setting
+
+ packages/coding-agent/CHANGELOG.md                 |  6 +++---
+ packages/coding-agent/README.md                    |  2 +-
+ packages/coding-agent/docs/keybindings.md          |  4 ++--
+ packages/coding-agent/docs/settings.md             |  1 +
+ packages/coding-agent/docs/usage.md                |  6 ++++--
+ packages/coding-agent/src/cli/args.ts              | 21 +++++++++++++++++---
+ packages/coding-agent/src/core/settings-manager.ts | 13 ++++++++++++
+ packages/coding-agent/src/index.ts                 |  1 +
+ packages/coding-agent/src/main.ts                  |  2 +-
+ .../interactive/components/settings-selector.ts    | 14 ++++++++++++-
+ .../src/modes/interactive/interactive-mode.ts      | 21 +++++++++++++-------
+ packages/coding-agent/test/args.test.ts            | 23 +++++++++++++++++++---
+ packages/coding-agent/test/interactive-tui.test.ts | 14 ++++++-------
+ .../coding-agent/test/settings-manager.test.ts     | 23 ++++++++++++++++++++++
+ 14 files changed, 121 insertions(+), 30 deletions(-)
+
+commit d937ee15d6d1f2395b8f8474c340c480e9af2024
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 16:23:57 2026 +0300
+
+    docs(agent): remove session API migration example
+
+ packages/agent/docs/harness.md | 35 +++++++++++------------------------
+ 1 file changed, 11 insertions(+), 24 deletions(-)
+
+commit f90b8595db49a542d4ce37ed21484b8bccd062d5
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 16:20:59 2026 +0300
+
+    fix(agent): update harness lifecycle tests
+
+ packages/agent/test/harness/agent-harness.test.ts | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+commit 11679808c7580b6638a0b7b1951cb075b0162233
+Merge: 2132f8f75f 696a828a4d
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 16:20:00 2026 +0300
+
+    Merge remote-tracking branch 'origin/main' into refactor/session-store-file-names
+    
+    * origin/main: (25 commits)
+      fix(tui): prevent phantom alt-screen selections
+      feat(tui): add draggable transient scrollbars
+      fix(coding-agent): avoid auth read lock contention
+      fix(ai): route Fireworks Kimi K3 through OpenAI compatibility
+      docs(client): document Bun Unix transport support
+      feat(client): add Unix socket transport
+      fix: forward autocompleteMaxVisible to custom editors (#7369)
+      fix(ai): scope Codex sockets to accounts
+      docs(client): note promise helper removal
+      refactor(client): retain ES2022 compatibility
+      refactor(client): simplify lifecycle architecture
+      refactor(client): tighten lifecycle state modeling
+      feat(client): add runtime-neutral session client
+      fix(coding-agent): decouple auth lock error tests
+      fix: custom-compaction through provider via new model runtime complete (#7325)
+      fix(ai): preserve Anthropic initial stream block content (#7358)
+      fix(coding-agent): update vulnerable brace-expansion
+      fix(ai): keep signed empty text/thinking blocks in google history (#7362)
+      feat(tui): add stacked alt-screen flashes (#7361)
+      fix(coding-agent): reload credentials before reads
+      ...
+
+commit 2132f8f75f0d19bdd26444d58ee7e75bc6a1a9ae
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 16:16:42 2026 +0300
+
+    fix(agent): clarify session persistence ownership
+
+ packages/agent/docs/harness.md                     |  53 ++-
+ packages/agent/src/harness/session/jsonl-repo.ts   | 226 ---------
+ .../agent/src/harness/session/jsonl-storage.ts     | 377 ---------------
+ packages/agent/src/harness/session/jsonl-store.ts  | 355 +++++++++++++++
+ packages/agent/src/harness/session/memory-repo.ts  | 102 -----
+ .../agent/src/harness/session/memory-storage.ts    | 190 --------
+ packages/agent/src/harness/session/memory-store.ts | 116 +++++
+ packages/agent/src/harness/session/repo-utils.ts   | 241 ----------
+ packages/agent/src/harness/session/repository.ts   | 112 +++++
+ .../agent/src/harness/session/search-backend.ts    |   6 +-
+ packages/agent/src/harness/session/search-index.ts |   6 +-
+ packages/agent/src/harness/session/session.ts      | 399 +++++++++++-----
+ packages/agent/src/harness/types.ts                |  44 +-
+ packages/agent/src/index.ts                        |  15 +-
+ .../test/harness/agent-harness-stream.test.ts      |  11 +-
+ packages/agent/test/harness/agent-harness.test.ts  | 124 ++---
+ packages/agent/test/harness/repo.test.ts           | 118 ++++-
+ .../agent/test/harness/session-backends.test.ts    | 177 ++++++++
+ packages/agent/test/harness/session-test-utils.ts  |  11 +-
+ packages/agent/test/harness/session.test.ts        |  87 ++--
+ .../agent/test/harness/sqlite-migrations.test.ts   | 126 +++++-
+ packages/agent/test/harness/sqlite-node.test.ts    | 278 +++++++-----
+ packages/agent/test/harness/storage.test.ts        | 504 ---------------------
+ packages/agent/test/scratch/simple.ts              |   7 +-
+ packages/storage/sqlite-node/README.md             |   8 +-
+ packages/storage/sqlite-node/src/index.ts          |   2 +-
+ packages/storage/sqlite-node/src/sqlite/index.ts   |   3 +-
+ packages/storage/sqlite-node/src/sqlite/repo.ts    | 262 -----------
+ .../sqlite-node/src/sqlite/search-backend.ts       |   9 +
+ .../sqlite-node/src/sqlite/session-store.ts        | 240 ++++++++++
+ .../src/sqlite/storage/branch-entries.ts           |   5 +-
+ .../sqlite-node/src/sqlite/storage/index.ts        |  51 +--
+ scripts/browser-smoke-entry.ts                     |   5 +-
+ 33 files changed, 1907 insertions(+), 2363 deletions(-)
+
+commit 696a828a4d4473ba06bb1353d5976c53f78bb43a
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Jul 31 15:13:53 2026 +0200
+
+    fix(tui): prevent phantom alt-screen selections
+
+ packages/tui/CHANGELOG.md                |  1 +
+ packages/tui/src/TuiAltScreen.ts         | 32 +++++++++++++++++++++++++++++---
+ packages/tui/test/tui-alt-screen.test.ts | 32 ++++++++++++++++++++++++++++++++
+ 3 files changed, 62 insertions(+), 3 deletions(-)
+
+commit 8ac92f831c67c3642fa321a182a6c91044adec9c
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Jul 31 15:02:27 2026 +0200
+
+    feat(tui): add draggable transient scrollbars
+
+ packages/coding-agent/CHANGELOG.md                 |   1 +
+ .../src/modes/interactive/interactive-mode.ts      |   2 +
+ packages/tui/CHANGELOG.md                          |   1 +
+ packages/tui/src/TuiAltScreen.ts                   | 109 ++++++++++++++++++++-
+ packages/tui/src/components/scroll-view.ts         |  72 +++++++++++++-
+ packages/tui/src/keybindings.ts                    |   4 +-
+ packages/tui/src/layout.ts                         |  74 +++++++++++++-
+ packages/tui/test/keybindings.test.ts              |   7 ++
+ packages/tui/test/layout.test.ts                   |  82 ++++++++++++++++
+ packages/tui/test/tui-alt-screen.test.ts           |  91 ++++++++++++++++-
+ 10 files changed, 432 insertions(+), 11 deletions(-)
+
+commit 784653468c42387f607d41ed5ca533100e7eb2fe
+Merge: d2be68dbeb cfe6b6a058
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 14:43:08 2026 +0300
+
+    Merge pull request #7364 from earendil-works/fix/codex-account-websocket
+    
+    fix(ai): scope Codex sockets to accounts
+
+commit d2be68dbebaca6361ce83dd7b27a8e45c8cea97d
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Jul 31 13:22:38 2026 +0200
+
+    fix(coding-agent): avoid auth read lock contention
+    
+    closes #7319
+
+ packages/coding-agent/CHANGELOG.md              |  2 +-
+ packages/coding-agent/src/core/auth-storage.ts  | 87 ++++++++++++++++++++-----
+ packages/coding-agent/test/auth-storage.test.ts | 32 +++++++++
+ 3 files changed, 103 insertions(+), 18 deletions(-)
+
+commit 7d5fc9499bf2385c1168f7d0a487742d87e76629
+Merge: a688e257c5 e44c129749
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 14:13:35 2026 +0300
+
+    Merge pull request #7371 from earendil-works/feat/unix-client-transport
+    
+    feat(client): add Unix socket transport
+
+commit a688e257c5faab8872c0a972f079c43154a770d1
+Author: David Brailovsky <davidbrai@gmail.com>
+Date:   Fri Jul 31 12:47:07 2026 +0200
+
+    fix(ai): route Fireworks Kimi K3 through OpenAI compatibility
+    
+    closes #7199
+    
+    Co-authored-by: Fedir Skitsko <fedya@skitsko.com>
+
+ packages/ai/CHANGELOG.md                  |  1 +
+ packages/ai/scripts/generate-models.ts    | 13 ++++++++
+ packages/ai/test/fireworks-models.test.ts | 51 ++++++++++++++++++++++++++++++-
+ 3 files changed, 64 insertions(+), 1 deletion(-)
+
+commit e44c1297492041aa2bc31c069556005b54a27500
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 13:12:38 2026 +0300
+
+    docs(client): document Bun Unix transport support
+
+ packages/client/README.md   | 4 ++--
+ packages/client/src/unix.ts | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+commit 1c418f624578f26834a1b977e276c99d93889bf1
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 13:01:12 2026 +0300
+
+    feat(client): add Unix socket transport
+
+ packages/client/README.md         |  22 ++++
+ packages/client/package.json      |   4 +
+ packages/client/src/unix.ts       | 156 ++++++++++++++++++++++++++
+ packages/client/test/unix.test.ts | 225 ++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 407 insertions(+)
+
+commit ea781d68f296bea36db3a540d2c53746f1a90bdd
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Fri Jul 31 12:00:17 2026 +0200
+
+    fix: forward autocompleteMaxVisible to custom editors (#7369)
+
+ packages/coding-agent/CHANGELOG.md                              | 1 +
+ packages/coding-agent/src/modes/interactive/interactive-mode.ts | 3 +++
+ 2 files changed, 4 insertions(+)
+
+commit cfe6b6a058d352c954918f61b414bad4b36e1e5e
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 11:38:25 2026 +0300
+
+    fix(ai): scope Codex sockets to accounts
+    
+    Fixes #7284
+    
+    Co-authored-by: vince <vincelwt@users.noreply.github.com>
+
+ packages/ai/src/api/openai-codex-responses.ts | 49 +++++++++-----
+ packages/ai/test/openai-codex-stream.test.ts  | 95 ++++++++++++++++++++++++++-
+ 2 files changed, 125 insertions(+), 19 deletions(-)
+
+commit 5a38a1c127c5cbd157bd46bf802a264df204e36a
+Merge: e6fb3ec68f f9b0634534
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 12:26:12 2026 +0300
+
+    Merge pull request #7348 from earendil-works/feat/runtime-neutral-client
+    
+    feat(client): add runtime-neutral session client
+
+commit f9b06345348f13799cdc5c0c8acec74e13e01276
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 11:43:52 2026 +0300
+
+    docs(client): note promise helper removal
+
+ packages/client/src/promise.ts | 1 +
+ 1 file changed, 1 insertion(+)
+
+commit 6e16f771610359b959501acd4c42ab73a1c914e8
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 11:38:43 2026 +0300
+
+    refactor(client): retain ES2022 compatibility
+
+ packages/client/src/client.ts     |  3 ++-
+ packages/client/src/connection.ts |  7 ++++---
+ packages/client/src/promise.ts    | 15 +++++++++++++++
+ tsconfig.base.json                |  2 +-
+ 4 files changed, 22 insertions(+), 5 deletions(-)
+
+commit ee3156715d3c7def800c6aaaa2bd664a2f315d38
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 11:17:51 2026 +0300
+
+    refactor(client): simplify lifecycle architecture
+
+ packages/client/CHANGELOG.md                       |   2 +-
+ packages/client/README.md                          |   6 +-
+ packages/client/src/client.ts                      | 437 +++++++++------------
+ packages/client/src/connection.ts                  | 239 +++++++++++
+ packages/client/src/errors.ts                      |   4 +-
+ packages/client/src/index.ts                       |   4 +-
+ packages/client/src/listeners.ts                   |  21 -
+ packages/client/src/pending-requests.ts            |  33 --
+ packages/client/src/session-client.ts              |  74 ----
+ packages/client/src/{state-store.ts => state.ts}   |  43 +-
+ packages/client/test/client-state.test.ts          | 200 ----------
+ ...lient-connection.test.ts => connection.test.ts} | 237 +++++------
+ packages/client/test/requests.test.ts              |  68 ++++
+ packages/client/test/sessions.test.ts              |  74 ++++
+ packages/client/test/state.test.ts                 | 119 ++++++
+ packages/client/test/support.ts                    |  20 +-
+ 16 files changed, 860 insertions(+), 721 deletions(-)
+
+commit 7e121c67cff54c44f963787a103179b3c7baadae
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Fri Jul 31 01:11:12 2026 +0300
+
+    refactor(client): tighten lifecycle state modeling
+
+ packages/agent/src/harness/agent-harness.ts       |   5 +-
+ packages/agent/test/harness/agent-harness.test.ts |  13 +
+ packages/client/README.md                         |   2 +
+ packages/client/src/client.ts                     | 422 ++++++++++------------
+ packages/client/src/index.ts                      |   1 +
+ packages/client/src/listeners.ts                  |  18 +-
+ packages/client/src/pending-requests.ts           |  33 ++
+ packages/client/src/session-client.ts             |  63 ++--
+ packages/client/src/state-store.ts                | 141 ++++++++
+ packages/client/src/types.ts                      |  32 +-
+ packages/client/test/client-connection.test.ts    |  27 ++
+ tsconfig.base.json                                |   2 +-
+ 12 files changed, 470 insertions(+), 289 deletions(-)

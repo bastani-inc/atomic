@@ -1,0 +1,2596 @@
+commit a5f43bf8aff3c55752432655f7334e3dafd1e256 Release v0.84.0
+
+package-lock.json
+packages/agent/CHANGELOG.md
+packages/agent/package.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/ai/src/image-models.generated.ts
+packages/client/CHANGELOG.md
+packages/client/package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+packages/coding-agent/examples/extensions/gondolin/package-lock.json
+packages/coding-agent/examples/extensions/gondolin/package.json
+packages/coding-agent/examples/extensions/sandbox/package-lock.json
+packages/coding-agent/examples/extensions/sandbox/package.json
+packages/coding-agent/examples/extensions/with-deps/package-lock.json
+packages/coding-agent/examples/extensions/with-deps/package.json
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/install-lock/package.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/evals/package.json
+packages/protocol/CHANGELOG.md
+packages/protocol/package.json
+packages/server/CHANGELOG.md
+packages/server/package.json
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/session-backends/sqlite-node/package.json
+packages/telemetry/CHANGELOG.md
+packages/telemetry/package.json
+packages/tui/CHANGELOG.md
+packages/tui/package.json
+commit d6442dd4863ee55380dde1f75006ba585196a70f fix: avoid registry resolution during version bumps
+
+package.json
+scripts/release.mjs
+commit 6d0455ff64ffc7a9b1b35b4207cf795c1899fe8e docs: audit unreleased changelogs
+
+packages/agent/CHANGELOG.md
+packages/client/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/protocol/CHANGELOG.md
+packages/server/CHANGELOG.md
+packages/session-backends/sqlite-node/CHANGELOG.md
+commit 5cd46ee118e0f51d859843797857674c61cbd213 docs(agent): simplify harness work package workflow
+
+packages/agent/docs/harness-v2-test-matrix.md
+packages/agent/docs/harness-v2.md
+commit 6189e53b3372519bd8dac65b53410676e15940e4 fix: replace session summaries with durable metadata (#7708)
+
+packages/client/README.md
+packages/client/src/client.ts
+packages/client/src/state.ts
+packages/client/test/state.test.ts
+packages/coding-agent/src/client/remote-session.ts
+packages/protocol/README.md
+packages/protocol/src/schemas.ts
+packages/protocol/test/protocol.test.ts
+packages/server/README.md
+packages/server/src/server.ts
+packages/server/src/sessions.ts
+packages/server/src/snapshots.ts
+packages/server/src/testing/service.ts
+packages/server/src/types.ts
+packages/server/test/conformance.test.ts
+packages/server/test/protocol.test.ts
+packages/server/test/sessions.test.ts
+commit 29ad292f77400dfde14e30556859a0b1345465b7 fix(agent): simplify jsonl append failure test
+
+packages/agent/test/harness/session/jsonl.test.ts
+commit a838c069e6318edee8317eff759b74c3934745f0 harness-v2 jsonl session atomic writes for forks & torn-tail truncation (#7707)
+
+packages/agent/src/harness/env/nodejs.ts
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/src/harness/session/jsonl/storage.ts
+packages/agent/src/harness/session/jsonl/types.ts
+packages/agent/src/harness/session/memory.ts
+packages/agent/src/harness/session/state.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/nodejs-env.test.ts
+packages/agent/test/harness/session/jsonl-storage.test.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit fadb74f684aaa7755463593e0564b58f9ed081e2 docs(agent): separate harness design from implementation status
+
+packages/agent/docs/harness-v2.md
+commit 35f5c265d3d0af7eea3889dbfde03e77e23b8f11 feat: add telemetry reference adapter and span composition
+
+README.md
+packages/agent/CHANGELOG.md
+packages/agent/src/harness/agent-harness.ts
+packages/agent/src/harness/telemetry.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/telemetry.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/telemetry/CHANGELOG.md
+packages/telemetry/README.md
+packages/telemetry/package.json
+packages/telemetry/src/index.ts
+packages/telemetry/src/memory.ts
+packages/telemetry/src/noop.ts
+packages/telemetry/src/testing/conformance.ts
+packages/telemetry/src/testing/index.ts
+packages/telemetry/src/testing/types.ts
+packages/telemetry/test/conformance.test.ts
+packages/telemetry/test/telemetry.test.ts
+tsconfig.json
+vitest.base.ts
+commit b9497c8c1f2bfd922856c09d3f19117fea90ac74 fix(ai): correct Fireworks GLM prompt caching, closes #7676
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/test/fireworks-models.test.ts
+packages/ai/test/openai-completions-prompt-cache.test.ts
+commit 7f63f3783284a5e08f56cd431446d3aa331d7625 docs: add missed JSONL matrix rows
+
+packages/agent/docs/harness-v2-test-matrix.md
+commit 77f4840320f28b8796af33bef58f6cb488b67e24 chore: qa2 tests (#7706)
+
+packages/agent/docs/harness-v2-test-matrix.md
+packages/agent/docs/harness-v2.md
+packages/agent/test/harness/session/jsonl.test.ts
+packages/session-backends/sqlite-node/test/branch-query.test.ts
+packages/session-backends/sqlite-node/test/repository.test.ts
+commit 9859eaa2690b4ffb92f32128826d76979a684709 docs: reserve QA2
+
+packages/agent/docs/harness-v2.md
+commit 2920265ea72686faa76f960d10d3fb63c69af749 docs: update harness v2 md on how to use test matrix
+
+packages/agent/docs/harness-v2.md
+commit 95bfbdc910c24da6b5364ec10e93f0dee369d7f4 docs: mark QA1 done
+
+packages/agent/docs/harness-v2.md
+commit 22db569a79fbd739349c0a8ad0d99fdbcb407357 docs: harness v2 test matrix
+
+packages/agent/docs/harness-v2-test-matrix.md
+commit 8ed232548e366b594e2b9db122e98e73422153b9 docs: reserve QA1
+
+packages/agent/docs/harness-v2.md
+commit bbbc73b6864de34d94d3fee87da79a307b63b52e chore: approve contributors from issue #7687
+
+.github/APPROVED_CONTRIBUTORS
+commit ffa40c32d886dc178d14de9074c73a97ae36a7f8 chore: approve contributors from issue #7683
+
+.github/APPROVED_CONTRIBUTORS
+commit fb92f1348f3da2e50e1e059fdcd220635a7e47f9 chore: approve contributors from issue #7668
+
+.github/APPROVED_CONTRIBUTORS
+commit 6282221b6ab7fe8825b4b25b647f9e8cec253d83 fix(agent): scope JSONL session IDs to working directories
+
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit 69bab864d5d1ec1442887a176b9f3d1a21d017db docs(agent): reserve harness v2 R3
+
+packages/agent/docs/harness-v2.md
+commit c0947e6448e2003771faee2fdf2b4de866a8c423 fix(ai): remove stale adaptive thinking model expectation
+
+packages/ai/test/anthropic-adaptive-thinking-models.test.ts
+commit b0bd0ff9d5d9e2e41d0b23583bc5c1bd880e0ba7 fix(coding-agent): only label known subscriptions in footer
+
+packages/ai/CHANGELOG.md
+packages/ai/src/auth/helpers.ts
+packages/ai/src/auth/oauth/anthropic.ts
+packages/ai/src/auth/oauth/github-copilot.ts
+packages/ai/src/auth/oauth/kimi-coding.ts
+packages/ai/src/auth/oauth/openai-codex.ts
+packages/ai/src/auth/oauth/xai.ts
+packages/ai/src/auth/types.ts
+packages/ai/src/providers/anthropic.ts
+packages/ai/src/providers/github-copilot.ts
+packages/ai/src/providers/kimi-coding.ts
+packages/ai/src/providers/openai-codex.ts
+packages/ai/src/providers/xai.ts
+packages/ai/test/oauth-auth.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/src/core/model-runtime.ts
+packages/coding-agent/src/core/provider-composer.ts
+packages/coding-agent/src/modes/interactive/components/footer.ts
+packages/coding-agent/test/footer-width.test.ts
+packages/coding-agent/test/model-runtime-auth-options.test.ts
+commit 6b461b75b39b5a19b378dc42fbfbd1655bc446a6 feat: extract telemetry package
+
+README.md
+package-lock.json
+package.json
+packages/agent/CHANGELOG.md
+packages/agent/docs/harness-v2.md
+packages/agent/docs/telemetry-schema.md
+packages/agent/package.json
+packages/agent/scripts/generate-telemetry-docs.ts
+packages/agent/src/harness/telemetry.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/telemetry.test.ts
+packages/agent/tsconfig.build.json
+packages/agent/vitest.config.ts
+packages/agent/vitest.harness.config.ts
+packages/ai/CHANGELOG.md
+packages/ai/docs/telemetry-schema.md
+packages/ai/package.json
+packages/ai/scripts/generate-telemetry-docs.ts
+packages/ai/src/index.ts
+packages/ai/src/types.ts
+packages/ai/test/telemetry-options.test.ts
+packages/ai/test/telemetry.test.ts
+packages/ai/vitest.config.ts
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/session-backends/sqlite-node/vitest.config.ts
+packages/telemetry/CHANGELOG.md
+packages/telemetry/README.md
+packages/telemetry/package.json
+packages/telemetry/src/index.ts
+packages/telemetry/test/telemetry.test.ts
+packages/telemetry/tsconfig.build.json
+scripts/local-release.mjs
+scripts/profile-coding-agent-node.mjs
+scripts/publish.mjs
+tsconfig.json
+vitest.base.ts
+commit db48124e9d4ae9648eff90599472a00cd9dbac56 docs: audit unreleased changelogs
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+commit 639a4664a5bf5267e003b847d92a9ea79a6fe6e3 fix(ai): update Anthropic abort test model
+
+packages/ai/test/abort.test.ts
+commit 5446cd7545a07c9b6be00dcfba516b3d82e5a8d1 feat(coding-agent): rename UI mode to TUI mode
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/README.md
+packages/coding-agent/docs/keybindings.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/index.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/args.test.ts
+packages/coding-agent/test/experimental-cli-resolution.test.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/coding-agent/test/settings-manager.test.ts
+packages/tui/test/settings-list.test.ts
+commit 2c819a41ff1065f81e498d52d40597a7c20ecdc1 docs(agent): align telemetry design with implementation
+
+packages/agent/docs/harness-v2.md
+commit d07889da0e818627708e667874a1cdbd7dea47bf feat(ai): support thinking_token_budget on openai-completions (#7638)
+
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/simple-options.ts
+packages/ai/src/types.ts
+packages/ai/test/openai-completions-thinking-as-text.test.ts
+packages/ai/test/openai-completions-thinking-token-budget.test.ts
+packages/ai/test/openai-completions-tool-result-images.test.ts
+commit 6ca423447f55719f24815b34f29ffbb4596c80bd event bus leak fix (#7656)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/extensions/loader.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/test/suite/regressions/7193-event-bus-lifecycle.test.ts
+commit 7e45ddc422c1808063985f98c32ab43a81011a36 fix: recognize comma after lgtm in approval comments (fixes #7399) (#7663)
+
+.github/workflows/approve-contributor.yml
+commit 2bb7ba49661e88e0c692facb537972287792af69 feat: harness v2 r2 (#7669)
+
+packages/agent/src/harness/reducer.ts
+packages/agent/test/harness/reducer.test.ts
+commit 2f7f75a20ec0ef3537883e847ff8e44cafb8cf84 fix(ai): replace qwen3.8-max-preview with qwen3.8-max on token plan (#7670)
+
+packages/ai/scripts/generate-models.ts
+packages/ai/test/qwen-token-plan-models.test.ts
+commit 14cc26e86dfbb68d54e8bab0f955940bcf61b130 fix(ai): restore Copilot models from account policy (#7672)
+
+packages/ai/src/auth/oauth/github-copilot.ts
+packages/ai/test/github-copilot-oauth.test.ts
+commit 04d6447f7c492aafac97e2d2450b532650a85556 feat: add typed telemetry contracts
+
+packages/agent/CHANGELOG.md
+packages/agent/docs/harness-v2.md
+packages/agent/docs/telemetry-schema.md
+packages/agent/package.json
+packages/agent/scripts/generate-telemetry-docs.ts
+packages/agent/src/harness/telemetry.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/telemetry.test.ts
+packages/ai/CHANGELOG.md
+packages/ai/docs/telemetry-schema.md
+packages/ai/package.json
+packages/ai/scripts/generate-telemetry-docs.ts
+packages/ai/src/api/simple-options.ts
+packages/ai/src/index.ts
+packages/ai/src/telemetry.ts
+packages/ai/src/types.ts
+packages/ai/test/telemetry-options.test.ts
+packages/ai/test/telemetry.test.ts
+commit d4eaf052b25ee6fd28985e0b8a408eab16e3afba fix(coding-agent): support path globs on Windows
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/tools/find.ts
+commit 05e89b4188d1b0b4631d470300ce5960baf85a62 feat(tui): render LaTeX math in Markdown
+
+packages/tui/CHANGELOG.md
+packages/tui/src/components/markdown.ts
+packages/tui/src/index.ts
+packages/tui/src/latex.ts
+packages/tui/test/latex.test.ts
+packages/tui/test/markdown.test.ts
+commit 16ad96ae89c028f9058c8de2fad0ab45c20ce233 feat(tui): add configurable prompt history actions
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/keybindings.md
+packages/coding-agent/src/modes/interactive/components/custom-editor.ts
+packages/coding-agent/test/custom-editor-history-keybindings.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/src/components/editor.ts
+packages/tui/src/keybindings.ts
+packages/tui/test/editor-history-keybindings.test.ts
+packages/tui/test/keybindings.test.ts
+commit 229afb825cfc880714a6f38044531e8d4bcc6ef8 fix(tui): skip OSC 8 scan for plain prefixes (#7665)
+
+packages/tui/src/utils.ts
+commit 8ecf8a9883d1cb7c78d07c0fd64d32d6a1fd2c4c feat(coding-agent): support AGENTS.override.md (#7681)
+
+packages/coding-agent/README.md
+packages/coding-agent/docs/quickstart.md
+packages/coding-agent/docs/security.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/core/resource-loader.ts
+packages/coding-agent/src/core/tools/read.ts
+packages/coding-agent/test/resource-loader.test.ts
+packages/coding-agent/test/tool-execution-component.test.ts
+commit 3852cb2b813243f3c81a873ed97827798aa7dbeb fix(coding-agent): send prompts queued during compaction
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/test/suite/agent-session-compaction.test.ts
+commit 459eb5eba8582fcedd713e0c160903ce3e972a51 docs(agent): finalize harness telemetry design
+
+packages/agent/docs/harness-v2.md
+commit 4254e0d93a9fe32d1d9592e747d8ec4b871ab4c7 fix(tui): include Windows native rebuild sources
+
+packages/tui/CHANGELOG.md
+packages/tui/package.json
+commit 29d9f087cc7b9064998f91e97ab5e89e5b67dff7 fix(tui): avoid throttling keyboard input
+
+packages/tui/CHANGELOG.md
+packages/tui/src/tui.ts
+packages/tui/test/tui-render.test.ts
+commit 9524d3a580ec508e7c82788446ab9692799d53be fix(coding-agent): normalize Windows shell drive paths
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/utils/paths.ts
+packages/coding-agent/test/paths.test.ts
+commit 17f720489fab02413c549c73bb407b8d6ef500c4 fix(agent): validate required JSONL mutation fields
+
+packages/agent/src/harness/session/jsonl/codec.ts
+packages/agent/test/harness/session/jsonl-codec.test.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit 104364f4c5d48b8136461227e9be0a490c1f72bc docs(agent): mark JSONL J2 complete
+
+packages/agent/docs/harness-v2.md
+commit e61d8f4f4447cdaf0dd76d79a95c512fec900623 docs(agent): mark JSONL J1 complete
+
+packages/agent/docs/harness-v2.md
+commit acb2fd984997448b53a60e1034d045a4bfe56f51 fix(agent): complete JSONL storage round-trip coverage
+
+packages/agent/test/harness/session/jsonl-storage.test.ts
+commit d3d2c2ec7c10a69e4290553e3e625b96d5536d11 chore: approve contributors from issue #7642
+
+.github/APPROVED_CONTRIBUTORS
+commit 48b8b547c8b3ccc53ac819416a92b0e918809e70 fix(agent): require JSONL session cwd at creation
+
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/src/harness/session/jsonl/types.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit c7fc779408f7b36742608f03d047b45f470594a3 feat(agent): complete JSONL codec contract coverage
+
+packages/agent/docs/harness-v2.md
+packages/agent/test/harness/session/jsonl-codec.test.ts
+commit 2f550d827d468a00d91626ab54118f5802387a46 fix: project open operation id to lanes (#7654)
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/session/jsonl/storage.ts
+packages/agent/src/harness/session/memory.ts
+packages/agent/src/harness/session/testing/conformance.ts
+packages/session-backends/sqlite-node/src/sqlite/migrations/001_initial.sql
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/lanes.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/records.ts
+packages/session-backends/sqlite-node/test/migrations.test.ts
+commit b3ec7c00688480737146b58114fc05420f5cc09e fix(agent): stop JSONL repositories from retaining sessions
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit ce5d98cc001ee4a7ddea5e287aca7ed7088f6f3b fix(coding-agent): keep unit model stores in memory
+
+packages/coding-agent/test/extensions-input-event.test.ts
+packages/coding-agent/test/extensions-runner.test.ts
+packages/coding-agent/test/model-registry.test.ts
+packages/coding-agent/test/model-runtime-test-utils.ts
+packages/coding-agent/test/sdk-openrouter-attribution.test.ts
+packages/coding-agent/test/test-harness.ts
+commit 4d68d9355131361a831b361b58d89b028bf5d247 fix(coding-agent): shorten file lock retry delays
+
+packages/coding-agent/src/core/auth-storage.ts
+packages/coding-agent/test/auth-storage.test.ts
+commit 2c79ce45321626d76857415c4670442e7be769eb fix(coding-agent): avoid custom store lock convoys
+
+packages/coding-agent/src/core/auth-storage.ts
+packages/coding-agent/src/core/models-store.ts
+packages/coding-agent/test/auth-storage.test.ts
+packages/coding-agent/test/models-store.test.ts
+packages/coding-agent/test/test-harness.test.ts
+commit a79b22622a4def33465a7a16b6c7040c394b76f0 fix(agent): match coding-agent JSONL session layout
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/src/harness/session/jsonl/types.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit 7a103289d9e45b0f9c9bf08e0046829900af8224 docs: f0 done
+
+packages/agent/docs/harness-v2.md
+commit ed303b9bd61cb2c5d2870590074b044ad9ed98ec chore: scaffold test
+
+packages/agent/test/harness/agent-harness-scaffold.test.ts
+commit 14c89ad9992ce19857f59555ec1342594b9fc0fa chore: UnavailableRegistry
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/agent-harness.ts
+packages/agent/test/harness/agent-harness-scaffold.test.ts
+commit abac29f671f320f497502628592a6882d2c166f6 docs(agent): reserve harness R2 work package
+
+packages/agent/docs/harness-v2.md
+commit c518004666033ade0de072dbf4ceb6b94dcd0882 docs(agent): clarify lane reduction contract (#7662)
+
+packages/agent/docs/harness-v2.md
+commit 2901362533b848cfe3a3269070280e8caa033b1f docs(agent): reserve harness I0 and L1-L3 work packages
+
+packages/agent/docs/harness-v2.md
+commit ac27947f7bb7df3182f189be8bc4f099986b3191 feat(agent): split JSONL session backend modules
+
+packages/agent/src/harness/session/jsonl.ts
+packages/agent/src/harness/session/jsonl/codec.ts
+packages/agent/src/harness/session/jsonl/errors.ts
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/src/harness/session/jsonl/storage.ts
+packages/agent/src/harness/session/jsonl/types.ts
+commit 162b1883bd806e02cf4db2dbfc15f900c23f1494 feat(agent): add JSONL metadata contracts
+
+packages/agent/src/harness/session/index.ts
+packages/agent/src/harness/session/jsonl.ts
+packages/agent/src/harness/session/jsonl/types.ts
+packages/agent/src/harness/session/testing/conformance.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit ea7bfdc08bc2859cde8292655f075b37ae1da1a9 docs(agent): unreserve R2 work package
+
+packages/agent/docs/harness-v2.md
+commit b780d20aa17c4144ace7bff728150993236b88ee fix(tui): close truncated OSC 8 links (#7657)
+
+packages/tui/src/utils.ts
+packages/tui/test/truncate-to-width.test.ts
+commit 6bfd50261dfa103a761c2638965248381251827c chore: approve contributors from issue #7657
+
+.github/APPROVED_CONTRIBUTORS
+commit c38319ea10ea98e5caedaad2ea1750f4baedd111 fix(agent): share state between memory and JSONL sessions
+
+packages/agent/src/harness/session/jsonl.ts
+packages/agent/src/harness/session/memory.ts
+packages/agent/src/harness/session/state.ts
+commit a5953d2e1530e44d905b836ebad32dfd8d4145a8 feat(agent): validate harness recovery record logs
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/reducer.ts
+packages/agent/src/harness/session/types.ts
+packages/agent/test/harness/reducer.test.ts
+commit 1022a9e8244df5c35e2288196069c7cec3b4dd70 fix(agent): list SQLite sessions without writer claims (#7655)
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/session/types.ts
+packages/session-backends/sqlite-node/src/sqlite/migrations/001_initial.sql
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/search-backend.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/sessions.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/writer-leases.ts
+packages/session-backends/sqlite-node/src/sqlite/types.ts
+packages/session-backends/sqlite-node/test/migrations.test.ts
+packages/session-backends/sqlite-node/test/repository.test.ts
+packages/session-backends/sqlite-node/test/search.test.ts
+packages/session-backends/sqlite-node/test/writer-leases.test.ts
+commit afdf73661b980e8ced8d40aaa5cc9c6ae52df4ae docs(agent): reserve harness R1 work package
+
+packages/agent/docs/harness-v2.md
+commit e77e2b751cbd28313073ed2de43d4b3294c73dcd fix(agent): correct JSONL fork entry semantics
+
+packages/agent/src/harness/session/jsonl.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit 651d5d6a53690b3ec87b72fca0b3f993ac5ec748 partial harness v2/json backend (#7611)
+
+packages/agent/src/harness/session/index.ts
+packages/agent/src/harness/session/jsonl.ts
+packages/agent/test/harness/session/jsonl.test.ts
+commit 7cf90c1d183bd6de8b113677f05f5daffcd80fdf fix(coding-agent): avoid model store read lock contention
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/auth-storage.ts
+packages/coding-agent/src/core/models-store.ts
+packages/coding-agent/src/utils/paths.ts
+packages/coding-agent/test/auth-storage.test.ts
+packages/coding-agent/test/models-store.test.ts
+commit 1e95e16b61f4a561b932df83d58df52589e58635 fix(agent): remove redundant SQLite read clones
+
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+commit 591f22a618639ae65c5e29fb7cd7fbc4a6260dbc feat(agent): add indexed harness recovery queries (#7646)
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/session/memory.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/session/testing/conformance.ts
+packages/agent/src/harness/session/types.ts
+packages/session-backends/sqlite-node/src/sqlite/migrations/001_initial.sql
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/records.ts
+packages/session-backends/sqlite-node/test/migrations.test.ts
+commit f909da2bf0e39ebeca9b2608f511d4167435360e docs(agent): reserve harness R0 work package
+
+packages/agent/docs/harness-v2.md
+commit dab70b2cd47c39d6c42365683f9fbf26fa2c8b0b fix(server): sanitize service failures (#7644)
+
+packages/protocol/src/schemas.ts
+packages/protocol/test/protocol.test.ts
+packages/server/src/errors.ts
+packages/server/src/server.ts
+packages/server/test/conformance.test.ts
+commit 7bdeeb8f9358624dc76652cd701acd5ece65e64c fix(agent): count copied messages in fork stats
+
+packages/agent/src/harness/session/memory.ts
+packages/agent/src/harness/session/testing/conformance.ts
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/session-stats.ts
+commit 845bb970f315918f5505e9a51d209b359109f820 fix: build error on request info (#7645)
+
+packages/coding-agent/src/utils/management-http.ts
+packages/coding-agent/src/utils/version-check.ts
+commit 2c233a5c04f12ada58e3908c376c5e28bfdb38ef fix(tui): add iterm payload size for xterm.js image addon (#7612)
+
+packages/tui/src/terminal-image.ts
+packages/tui/test/terminal-image.test.ts
+commit bb6a1cddc72de48b12257df83fd04495303dbd22 refactor(server): rename backend contract to service (#7643)
+
+packages/server/README.md
+packages/server/src/errors.ts
+packages/server/src/server.ts
+packages/server/src/sessions.ts
+packages/server/src/snapshots.ts
+packages/server/src/testing/client.ts
+packages/server/src/testing/index.ts
+packages/server/src/testing/server.ts
+packages/server/src/testing/service.ts
+packages/server/src/transports/unix/preset.ts
+packages/server/src/types.ts
+packages/server/test/conformance.test.ts
+packages/server/test/server.test.ts
+packages/server/test/sessions.test.ts
+packages/server/test/unix.test.ts
+commit 66534fbdc7bb09492b40142471bbbb87b4a4d5bc feat(coding-agent): render Mermaid diagrams (#7624)
+
+package-lock.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/modes/interactive/components/mermaid.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/mermaid.test.ts
+packages/coding-agent/test/settings-manager.test.ts
+commit 46b53b995b4c1e4fa2a29318cba4163cc63f86c4 fix: retry transient management HTTP requests (#7632)
+
+packages/coding-agent/src/core/remote-catalog-provider.ts
+packages/coding-agent/src/package-manager-cli.ts
+packages/coding-agent/src/utils/management-http.ts
+packages/coding-agent/src/utils/tools-manager.ts
+packages/coding-agent/src/utils/version-check.ts
+packages/coding-agent/test/management-http.test.ts
+packages/coding-agent/test/package-command-paths.test.ts
+packages/coding-agent/test/remote-catalog-provider.test.ts
+packages/coding-agent/test/version-check.test.ts
+commit a80008b96c933dd13346f8504e425279c5b6a68f chore: rename storage package to session-backends
+
+biome.json
+package-lock.json
+package.json
+packages/agent/README.md
+packages/agent/docs/harness-v2.md
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/session-backends/sqlite-node/README.md
+packages/session-backends/sqlite-node/package.json
+packages/session-backends/sqlite-node/scripts/prepare-dist.mjs
+packages/session-backends/sqlite-node/src/index.ts
+packages/session-backends/sqlite-node/src/sqlite/branch-cache.ts
+packages/session-backends/sqlite-node/src/sqlite/index.ts
+packages/session-backends/sqlite-node/src/sqlite/migrations.ts
+packages/session-backends/sqlite-node/src/sqlite/migrations/001_initial.sql
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/search-backend.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/branch-tips.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/facts.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/lanes.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/leases.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/records.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/session-sequences.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/session-stats.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/sessions.ts
+packages/session-backends/sqlite-node/src/sqlite/types.ts
+packages/session-backends/sqlite-node/test/adapter.test.ts
+packages/session-backends/sqlite-node/test/branch-cache.test.ts
+packages/session-backends/sqlite-node/test/conformance.test.ts
+packages/session-backends/sqlite-node/test/leases.test.ts
+packages/session-backends/sqlite-node/test/migrations.test.ts
+packages/session-backends/sqlite-node/test/repository.test.ts
+packages/session-backends/sqlite-node/test/search.test.ts
+packages/session-backends/sqlite-node/test/test-utils.ts
+packages/session-backends/sqlite-node/tsconfig.build.json
+packages/session-backends/sqlite-node/vitest.config.ts
+scripts/local-release.mjs
+scripts/publish.mjs
+tsconfig.json
+commit 0df5a69e5e119f8421f4f572d9a3c2ba4c0f5a39 docs(agent): harness-v2: count forked messages in session stats
+
+packages/agent/docs/harness-v2.md
+commit 464804e1561191585f208e730d8373a1b21d4e56 fix(tui): merge upstream main
+commit 73dd066ee5384883477d1e9fbebec48976e5a810 fix(tui): detect Windows Shift+Enter
+
+packages/tui/CHANGELOG.md
+packages/tui/native/win32/README.md
+packages/tui/native/win32/build.mjs
+packages/tui/native/win32/prebuilds/win32-arm64/win32-console-mode.node
+packages/tui/native/win32/prebuilds/win32-x64/win32-console-mode.node
+packages/tui/native/win32/src/win32-console-mode.c
+packages/tui/package.json
+packages/tui/src/native-modifiers.ts
+packages/tui/src/terminal.ts
+packages/tui/test/terminal.test.ts
+commit 35074a30b77efc462d743c8753423446cac65bce chore: approve contributors from issue #7631
+
+.github/APPROVED_CONTRIBUTORS
+commit 588915ec71714688cee8b7153339e8bdebb3e82e docs(agent): clarify JSONL fork entry replay
+
+packages/agent/docs/harness-v2.md
+commit cc4aa1a2e0ac1f56a79c2c57435b6d90c06834fb fix(tui): include Darwin native rebuild sources
+
+packages/tui/CHANGELOG.md
+packages/tui/package.json
+commit 6a140371d6fa1069f89724741de912ab2f266ef8 fix(agent): handle Windows resource paths
+
+packages/agent/CHANGELOG.md
+packages/agent/src/harness/env/nodejs.ts
+packages/agent/src/harness/prompt-templates.ts
+packages/agent/src/harness/skills.ts
+commit 7830975233e4f94583dff2117a68a0ed289cdf15 feat(tui): add Darwin native build recipe
+
+packages/tui/native/darwin/README.md
+packages/tui/native/darwin/build.sh
+packages/tui/package.json
+commit b08e114f7a5a890edb2d6ddc4eb682440d91f54f docs(agent): define harness implementation packages
+
+packages/agent/docs/harness-v2.md
+commit fc4a3d99bc03b3f2ba01529ef8f0369669b48272 fix(coding-agent): honor output padding for errors
+
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+commit 79cc1ef00ae0643a747f399c267dc8c6c39b5d01 fix(agent): own SQLite backend tests in storage package (#7626)
+
+package-lock.json
+packages/agent/src/harness/session/testing/conformance.ts
+packages/agent/test/harness/session-test-utils.ts
+packages/storage/sqlite-node/package.json
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/test/adapter.test.ts
+packages/storage/sqlite-node/test/branch-cache.test.ts
+packages/storage/sqlite-node/test/conformance.test.ts
+packages/storage/sqlite-node/test/leases.test.ts
+packages/storage/sqlite-node/test/migrations.test.ts
+packages/storage/sqlite-node/test/repository.test.ts
+packages/storage/sqlite-node/test/search.test.ts
+packages/storage/sqlite-node/test/test-utils.ts
+packages/storage/sqlite-node/vitest.config.ts
+tsconfig.json
+commit b0d382e25afd7bdf0bbce4300ec8b26ec78f4ca4 fix(tui): add editor viewport key aliases (closes #7574)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/keybindings.md
+packages/tui/CHANGELOG.md
+packages/tui/src/keybindings.ts
+packages/tui/test/keybindings.test.ts
+packages/tui/test/keys.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 71f6c25c369fcbb03dc52fe631790b9b556f609d fix(ai): update Groq Qwen reasoning override
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+commit 05bf9df65155e047e4ba8459eaee9735e29a2e53 feat: remove legacy server implementation (#7614)
+
+package-lock.json
+package.json
+packages/server/README.md
+packages/server/package.json
+packages/server/src/index.ts
+packages/server/src/legacy/cli.ts
+packages/server/src/legacy/config.ts
+packages/server/src/legacy/handler.ts
+packages/server/src/legacy/index.ts
+packages/server/src/legacy/ipc/client.ts
+packages/server/src/legacy/ipc/protocol.ts
+packages/server/src/legacy/ipc/server.ts
+packages/server/src/legacy/radius.ts
+packages/server/src/legacy/rpc-process.ts
+packages/server/src/legacy/serve.ts
+packages/server/src/legacy/storage.ts
+packages/server/src/legacy/supervisor.ts
+packages/server/src/legacy/types.ts
+commit 4b85cd9786d736e22dc1f3ae91067b4cc5a24b2c harness-v2 mark task in progress
+
+packages/agent/docs/harness-v2.md
+commit 44289550aa06750542c0ace8ab4bac0c7e68ce54 feat(agent): promote durable harness API
+
+packages/agent/CHANGELOG.md
+packages/agent/docs/harness-v2.md
+packages/agent/docs/harness.md
+packages/agent/package.json
+packages/agent/src/experimental.ts
+packages/agent/src/harness/agent-harness.ts
+packages/agent/src/harness/compaction/branch-summarization.ts
+packages/agent/src/harness/compaction/compaction.ts
+packages/agent/src/harness/experimental/session/session.ts
+packages/agent/src/harness/messages.ts
+packages/agent/src/harness/result.ts
+packages/agent/src/harness/session/array-session-index.ts
+packages/agent/src/harness/session/context.ts
+packages/agent/src/harness/session/index.ts
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/keyed-operation-queue.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/memory.ts
+packages/agent/src/harness/session/repository.ts
+packages/agent/src/harness/session/search.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/session/testing/conformance.ts
+packages/agent/src/harness/session/testing/index.ts
+packages/agent/src/harness/session/testing/types.ts
+packages/agent/src/harness/session/types.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/agent-harness-scaffold.test.ts
+packages/agent/test/harness/agent-harness-stream.test.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/agent/test/harness/branch-query.test.ts
+packages/agent/test/harness/branch-summarization.test.ts
+packages/agent/test/harness/compaction.test.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/session-backends.test.ts
+packages/agent/test/harness/session-test-utils.ts
+packages/agent/test/harness/session.test.ts
+packages/agent/test/harness/session/context.test.ts
+packages/agent/test/harness/session/memory.test.ts
+packages/agent/test/harness/session/sqlite.test.ts
+packages/agent/test/harness/sqlite-branch-cache.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/agent/test/harness/tool-context.types.ts
+packages/agent/test/scratch/simple.ts
+packages/agent/vitest.config.ts
+packages/agent/vitest.harness.config.ts
+packages/storage/sqlite-node/CHANGELOG.md
+packages/storage/sqlite-node/src/sqlite/branch-cache.ts
+packages/storage/sqlite-node/src/sqlite/index.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/storage/sqlite-node/src/sqlite/storage/entries.ts
+packages/storage/sqlite-node/src/sqlite/storage/lanes.ts
+packages/storage/sqlite-node/src/sqlite/storage/session-sequences.ts
+packages/storage/sqlite-node/src/sqlite/storage/session-stats.ts
+packages/storage/sqlite-node/src/sqlite/storage/sessions.ts
+scripts/browser-smoke-entry.ts
+tsconfig.json
+commit f119b01cb122ea55e17905caff62d4523f6cce1d refactor: update sqlite for lanes (#7591)
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/experimental/session/session.ts
+packages/agent/test/harness/branch-query.test.ts
+packages/agent/test/harness/experimental/session/sqlite.test.ts
+packages/agent/test/harness/session-test-utils.ts
+packages/agent/test/harness/sqlite-adapter.test.ts
+packages/agent/test/harness/sqlite-branch-cache.test.ts
+packages/agent/test/harness/sqlite-leases.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/agent/vitest.config.ts
+packages/agent/vitest.harness.config.ts
+packages/storage/sqlite-node/src/index.ts
+packages/storage/sqlite-node/src/sqlite/branch-cache.ts
+packages/storage/sqlite-node/src/sqlite/index.ts
+packages/storage/sqlite-node/src/sqlite/migrations.ts
+packages/storage/sqlite-node/src/sqlite/migrations/001_initial.sql
+packages/storage/sqlite-node/src/sqlite/migrations/002_branch_tips.sql
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/storage/branch-cache.ts
+packages/storage/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/storage/sqlite-node/src/sqlite/storage/branch-tips.ts
+packages/storage/sqlite-node/src/sqlite/storage/entries.ts
+packages/storage/sqlite-node/src/sqlite/storage/facts.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+packages/storage/sqlite-node/src/sqlite/storage/lanes.ts
+packages/storage/sqlite-node/src/sqlite/storage/leases.ts
+packages/storage/sqlite-node/src/sqlite/storage/records.ts
+packages/storage/sqlite-node/src/sqlite/storage/session-entries.ts
+packages/storage/sqlite-node/src/sqlite/storage/session-materialized.ts
+packages/storage/sqlite-node/src/sqlite/storage/session-sequences.ts
+packages/storage/sqlite-node/src/sqlite/storage/session-stats.ts
+packages/storage/sqlite-node/src/sqlite/storage/sessions.ts
+packages/storage/sqlite-node/src/sqlite/storage/shared.ts
+packages/storage/sqlite-node/src/sqlite/types.ts
+tsconfig.json
+commit 04133eb01b082248f7d667c1214e09477a1c3db1 docs(agent): remove superseded design docs
+
+packages/agent/docs/agent-harness.md
+packages/agent/docs/durable-harness.md
+packages/agent/docs/hooks.md
+packages/agent/docs/models.md
+packages/agent/docs/observability.md
+commit 4756e7d1220cd5bb4e88cd28690a8597fa50d89c docs(agent): make harness v2 telemetry self-contained
+
+packages/agent/docs/harness-v2.md
+commit b68decede07c06a8a3905ecb8c10b6e966877082 docs(agent): fix coherence defects found by independent review
+
+packages/agent/docs/harness-v2.md
+commit 97f0ccdd96cc207b6ad3630c56eea4d32dbdcf53 fix(coding-agent): recursively merge nested settings, closes #7572
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/test/suite/regressions/7572-provider-retry-settings-merge.test.ts
+commit d3da2e968a19fdd0b06e0bd1e532164b1baecbd1 fix(ai): test composite OAuth refresh cancellation
+
+packages/ai/test/models-runtime.test.ts
+commit 686f193e51ccdc56fdf3366ce5d092530c1007ac fix(ai): separate deferred request options
+
+packages/agent/docs/harness-v2.md
+packages/ai/CHANGELOG.md
+packages/ai/src/models.ts
+packages/ai/src/providers/faux.ts
+packages/ai/src/types.ts
+packages/ai/test/providers.test.ts
+packages/coding-agent/src/core/model-runtime.ts
+packages/coding-agent/test/model-runtime-modify-models-compat.test.ts
+commit f24ab6e14c0be7e623ec9beab0fc792cbb041cc0 fix(tui): honor nested stack minimum sizes
+
+packages/tui/src/components/v-stack.ts
+packages/tui/test/layout.test.ts
+commit 720f0e8eeb1295a8030c50e165bc283f3d5fa6ff fix(ai): route Copilot Grok 4.5 through Responses, closes #7560
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/test/model-catalog-types.test.ts
+packages/coding-agent/CHANGELOG.md
+commit e741cb05ca7c1c7bc5a9664c99697df32de9fac6 fix(coding-agent): preserve extension auth endpoints
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-compaction.ts
+packages/coding-agent/examples/extensions/handoff.ts
+packages/coding-agent/examples/extensions/qna.ts
+packages/coding-agent/examples/extensions/summarize.ts
+packages/coding-agent/src/core/model-registry.ts
+packages/coding-agent/test/compaction-extensions-example.test.ts
+commit 42a06f9477ce6b92f39d9467f64019f08767401e fix(coding-agent): test composite OAuth cancellation signal
+
+packages/coding-agent/test/model-runtime-auth-options.test.ts
+commit b784c80961c29451c4665a6ccca15089cb36e0eb fix(ai): remove OAuth refresh lock test
+
+packages/ai/test/oauth-auth.test.ts
+commit acbdc0d25e12522b4f8277c1206d2cead51d9b4e fix(ai): bound OAuth refresh duration
+
+packages/ai/CHANGELOG.md
+packages/ai/src/auth/resolve.ts
+packages/ai/test/oauth-auth.test.ts
+commit f7ea2ef38c867be5e0ef53fab18de9c426234e1f docs(agent): resolve open questions, add mechanical test constructions
+
+packages/agent/docs/harness-v2.md
+commit 382aa641cc4c197dfa95ed684f187b5a39bc30ce DRAFT: add openai background mode responses (#7339)
+
+packages/ai/src/api/lazy.ts
+packages/ai/src/models.ts
+packages/ai/src/providers/faux.ts
+packages/ai/src/types.ts
+packages/ai/test/providers.test.ts
+packages/coding-agent/src/core/model-runtime.ts
+packages/coding-agent/src/core/provider-composer.ts
+packages/coding-agent/test/model-runtime-modify-models-compat.test.ts
+packages/server/src/protocol.ts
+commit ab5f8d88ee1d400c0c8fb5c50ac10b2f4a4851d1 fix(coding-agent): retain heterogeneous auth model types
+
+packages/coding-agent/src/core/agent-session.ts
+commit 18d65de623db390914fa19638c821d8ea24fcda9 fix(coding-agent): preserve Copilot summary endpoint
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/test/suite/regressions/6768-copilot-compaction-base-url.test.ts
+commit 221a842c136ab3af23aef9e70034af86061d27c1 fix(coding-agent): update undici to 8.9.0 and brace-expansion to 5.0.9 for npm audit advisories
+
+AGENTS.md
+package-lock.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+commit cd20a8d2e555fb747780c1bb00e36039657fcf35 refactor(agent): split harness experimental changes (#7587)
+
+packages/agent/src/harness/experimental/session/memory.ts
+packages/agent/src/harness/experimental/session/testing/conformance.ts
+packages/agent/src/harness/experimental/session/types.ts
+commit 0524d6897f171d63a79e00946df8ce7f53c605fe fix(coding-agent): prevent flaky RPC prompt tests
+
+packages/coding-agent/test/rpc-prompt-response-semantics.test.ts
+commit 1d0c97471359a7c1dc6bfc9ac7ce5b4aa9afd705 feat(agent): implement harness v2 for in-memory storage (#7503)
+
+packages/agent/package.json
+packages/agent/src/experimental.ts
+packages/agent/src/harness/experimental/session/index.ts
+packages/agent/src/harness/experimental/session/memory.ts
+packages/agent/src/harness/experimental/session/session.ts
+packages/agent/src/harness/experimental/session/testing/conformance.ts
+packages/agent/src/harness/experimental/session/testing/index.ts
+packages/agent/src/harness/experimental/session/testing/types.ts
+packages/agent/src/harness/experimental/session/types.ts
+packages/agent/test/harness/experimental/session/memory.test.ts
+commit 95249a72700d3b18fd1c8257845d95564abdb3cd fix: repair tests after model refresh cancellation changes
+
+packages/agent/test/harness/agent-harness.test.ts
+packages/coding-agent/test/interactive-mode-status.test.ts
+packages/coding-agent/test/package-command-paths.test.ts
+commit f27aaf66c0a27a26b8bab02b81ab3b7768484725 docs(coding-agent): document streamSimple hook contract (#7576)
+
+packages/coding-agent/src/core/extensions/types.ts
+commit e8a17822de1076c3048701118a8a5f25c1e98565 fix(tui): correct terminal progress clear sequence (#7581)
+
+packages/tui/src/terminal.ts
+packages/tui/test/terminal.test.ts
+commit bd3440e5b945a03ddffb066ebdc1fde57e078d17 chore: approve contributors from issue #7565
+
+.github/APPROVED_CONTRIBUTORS
+commit a96fb984d8c8b065fc5d193309fc812a882adee0 chore: approve contributors from issue #7554
+
+.github/APPROVED_CONTRIBUTORS
+commit 523b5a4917ea46c20fb7b24a41311b158b7eeb05 fix(coding-agent): normalize find root results (#7569)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/tools/find.ts
+packages/coding-agent/test/suite/regressions/6104-find-root-relativization.test.ts
+commit 25a2c8dcfec4e017720c163a6166200a9bef98ae Add support for generic sampling parameters (#7568)
+
+packages/agent/src/proxy.ts
+packages/ai/src/api/azure-openai-responses.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/api/simple-options.ts
+packages/ai/src/types.ts
+packages/ai/test/sampling-options.test.ts
+packages/coding-agent/docs/models.md
+packages/coding-agent/src/core/model-config.ts
+packages/coding-agent/src/core/provider-composer.ts
+packages/coding-agent/test/model-registry.test.ts
+packages/server/src/protocol.ts
+commit fed6009cc9ccfb15088bc55244120918b5fe23f2 fix(coding-agent): make model refresh cancellation caller-owned
+
+packages/ai/CHANGELOG.md
+packages/ai/README.md
+packages/ai/src/auth/credential-store.ts
+packages/ai/src/auth/helpers.ts
+packages/ai/src/auth/oauth/anthropic.ts
+packages/ai/src/auth/oauth/device-code.ts
+packages/ai/src/auth/oauth/github-copilot.ts
+packages/ai/src/auth/oauth/kimi-coding.ts
+packages/ai/src/auth/oauth/openai-codex.ts
+packages/ai/src/auth/oauth/openrouter.ts
+packages/ai/src/auth/oauth/radius.ts
+packages/ai/src/auth/oauth/xai.ts
+packages/ai/src/auth/resolve.ts
+packages/ai/src/auth/types.ts
+packages/ai/src/cli.ts
+packages/ai/src/images-models.ts
+packages/ai/src/models-store.ts
+packages/ai/src/models.ts
+packages/ai/src/providers/amazon-bedrock.ts
+packages/ai/src/providers/anthropic.ts
+packages/ai/src/providers/cloudflare-auth.ts
+packages/ai/src/providers/google-vertex.ts
+packages/ai/src/providers/radius.ts
+packages/ai/src/utils/abort.ts
+packages/ai/test/anthropic-auth-token.test.ts
+packages/ai/test/anthropic-oauth.test.ts
+packages/ai/test/github-copilot-oauth.test.ts
+packages/ai/test/kimi-coding-oauth.test.ts
+packages/ai/test/models-runtime.test.ts
+packages/ai/test/oauth-auth.test.ts
+packages/ai/test/oauth-device-code.test.ts
+packages/ai/test/oauth.ts
+packages/ai/test/openai-codex-oauth.test.ts
+packages/ai/test/openrouter-oauth.test.ts
+packages/ai/test/providers.test.ts
+packages/ai/test/radius-oauth.test.ts
+packages/ai/test/xai-oauth.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/custom-provider.md
+packages/coding-agent/docs/extensions.md
+packages/coding-agent/docs/sdk.md
+packages/coding-agent/examples/extensions/custom-provider-anthropic/index.ts
+packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/index.ts
+packages/coding-agent/examples/sdk/09-api-keys-and-oauth.ts
+packages/coding-agent/examples/sdk/12-full-control.ts
+packages/coding-agent/examples/sdk/README.md
+packages/coding-agent/src/cli/credential-print.ts
+packages/coding-agent/src/cli/list-models.ts
+packages/coding-agent/src/core/agent-session-services.ts
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/auth-storage.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/src/core/model-registry.ts
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/src/core/model-runtime.ts
+packages/coding-agent/src/core/models-store.ts
+packages/coding-agent/src/core/provider-composer.ts
+packages/coding-agent/src/core/remote-catalog-provider.ts
+packages/coding-agent/src/core/runtime-credentials.ts
+packages/coding-agent/src/extensions/llama/index.ts
+packages/coding-agent/src/extensions/llama/provider.ts
+packages/coding-agent/src/index.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/modes/interactive/components/model-selector.ts
+packages/coding-agent/src/modes/interactive/components/scoped-models-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/rpc/rpc-mode.ts
+packages/coding-agent/src/package-manager-cli.ts
+packages/coding-agent/src/utils/abort.ts
+packages/coding-agent/test/auth-storage.test.ts
+packages/coding-agent/test/extensions-runner.test.ts
+packages/coding-agent/test/llama-extension.test.ts
+packages/coding-agent/test/model-registry.test.ts
+packages/coding-agent/test/model-resolver.test.ts
+packages/coding-agent/test/model-runtime-auth-options.test.ts
+packages/coding-agent/test/model-runtime-credential-sync.test.ts
+packages/coding-agent/test/models-store.test.ts
+packages/coding-agent/test/radius.test.ts
+packages/coding-agent/test/remote-catalog-provider.test.ts
+packages/coding-agent/test/runtime-credentials.test.ts
+packages/coding-agent/test/suite/regressions/6949-unavailable-scoped-model.test.ts
+packages/coding-agent/test/suite/regressions/7027-credential-refresh-hang.test.ts
+packages/coding-agent/test/suite/regressions/7153-scoped-models-refresh.test.ts
+packages/coding-agent/test/suite/regressions/7301-stalled-availability-refresh.test.ts
+packages/coding-agent/test/suite/regressions/7443-model-command-cached-match.test.ts
+packages/coding-agent/test/utilities.ts
+commit b06dc76fd7b17d890403386cc5147ae5ea9f68ac fix(coding-agent): reinstall dependencies if `git clean` fails (#7570)
+
+packages/coding-agent/src/core/package-manager.ts
+packages/coding-agent/test/package-manager.test.ts
+commit a0014c1a83ea0b6fd98762a9bdaa90f517a73cbf docs(agent): finalize harness v2 on the effects variant
+
+packages/agent/docs/harness-v2-generator.md
+packages/agent/docs/harness-v2.md
+commit fa07e7bd92c90a0210a269354733c274e9fc11e6 fix(tui): detect truecolor for Windows consoles
+
+packages/tui/CHANGELOG.md
+packages/tui/src/terminal-image.ts
+commit 3d264e85b4f870a93c5b763b95dd988a4f225da4 fix(coding-agent): avoid terminal query leak on fullscreen exit
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-tui.test.ts
+commit c72728bc1a5ba08abc7e3c8d791d44995306f4e4 fix(coding-agent): remove obsolete --alt shortcut
+
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/test/args.test.ts
+commit da66636cc4e607bf7f05d9cb64bf6963b10a007d fix(coding-agent): discover sessions through symlinked directories (#7552)
+
+packages/coding-agent/src/core/session-manager.ts
+packages/coding-agent/test/suite/regressions/7497-session-discovery-symlink.test.ts
+commit a4475344fb765850ec5321efe3c67e6f364ead5c fix(coding-agent): make JSON streaming output linear (#7394)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/json.md
+packages/coding-agent/docs/rpc.md
+packages/coding-agent/src/index.ts
+packages/coding-agent/src/modes/index.ts
+packages/coding-agent/src/modes/json-event.ts
+packages/coding-agent/src/modes/print-mode.ts
+packages/coding-agent/src/modes/rpc/rpc-client.ts
+packages/coding-agent/src/modes/rpc/rpc-mode.ts
+packages/coding-agent/test/print-mode.test.ts
+packages/coding-agent/test/suite/regressions/7290-json-stream-linear.test.ts
+commit 32850ef7c5edff7a6eee0214516fbb7382bf292d fix(coding-agent): resume after context-limited length stops (#7540)
+
+packages/ai/src/api/azure-openai-responses.ts
+packages/ai/src/api/openai-responses-shared.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/utils/overflow.ts
+packages/ai/test/openai-responses-terminal-event.test.ts
+packages/ai/test/overflow.test.ts
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/modes/interactive/components/assistant-message.ts
+packages/coding-agent/test/assistant-message.test.ts
+packages/coding-agent/test/suite/agent-session-compaction.test.ts
+commit e56893f4cd6545ab1498b72ae4e1e2241a0926f4 fix(coding-agent): prevent auto-compaction race during manual compaction (#7370)
+
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/test/suite/regressions/7253-manual-compact-during-response.test.ts
+commit b103937d3c003a48d32de9763856f2dae55ab605 feat(coding-agent): switch UI modes at runtime (#7555)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/interactive/theme/theme-controller.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/src/index.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/src/tui-main-screen.ts
+packages/tui/src/tui.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit e563301dd332677561d5bf9e85ade509d860b5fd fix(ai): avoid stale Copilot model in overflow test
+
+packages/ai/test/context-overflow.test.ts
+commit 305c014dcccfe97ebd3f4057ac16c436f1e2c71e fix: make session authentication transport-specific (#7551)
+
+packages/client/README.md
+packages/client/src/client.ts
+packages/client/src/connection.ts
+packages/client/src/transport.ts
+packages/client/src/types.ts
+packages/client/test/connection.test.ts
+packages/client/test/disposal.test.ts
+packages/client/test/support.ts
+packages/client/test/unix.test.ts
+packages/coding-agent/test/client/support.ts
+packages/protocol/README.md
+packages/protocol/src/schemas.ts
+packages/protocol/test/protocol.test.ts
+packages/server/README.md
+packages/server/src/connection.ts
+packages/server/src/listener.ts
+packages/server/src/server.ts
+packages/server/src/testing/backend.ts
+packages/server/src/testing/client.ts
+packages/server/src/testing/index.ts
+packages/server/src/testing/server.ts
+packages/server/src/transports/unix/preset.ts
+packages/server/src/types.ts
+packages/server/test/conformance.test.ts
+packages/server/test/listener.test.ts
+packages/server/test/server.test.ts
+packages/server/test/sessions.test.ts
+packages/server/test/unix.test.ts
+commit 0e633790c5a007f6d4bf35ba67ced457287c25ac fix(tui): handle batched color scheme reports (#7550)
+
+packages/tui/src/terminal-colors.ts
+packages/tui/test/terminal-colors.test.ts
+commit c1019d9202b648143d123b7e6fb76543a6b82de6 feat(ai): add Baseten provider
+
+packages/ai/CHANGELOG.md
+packages/ai/README.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/env-api-keys.ts
+packages/ai/src/models.generated.ts
+packages/ai/src/providers/all.ts
+packages/ai/src/providers/baseten.models.ts
+packages/ai/src/providers/baseten.ts
+packages/ai/src/types.ts
+packages/ai/test/abort.test.ts
+packages/ai/test/baseten-models.test.ts
+packages/ai/test/cross-provider-handoff.test.ts
+packages/ai/test/deferred-tools.test.ts
+packages/ai/test/empty.test.ts
+packages/ai/test/image-tool-result.test.ts
+packages/ai/test/openai-completions-thinking-as-text.test.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+packages/ai/test/openai-completions-tool-result-images.test.ts
+packages/ai/test/stream.test.ts
+packages/ai/test/tokens.test.ts
+packages/ai/test/tool-call-without-result.test.ts
+packages/ai/test/total-tokens.test.ts
+packages/ai/test/unicode-surrogate.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/README.md
+packages/coding-agent/docs/custom-provider.md
+packages/coding-agent/docs/models.md
+packages/coding-agent/docs/providers.md
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/core/model-config.ts
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/src/core/provider-composer.ts
+packages/coding-agent/test/model-registry.test.ts
+commit a24fb9e96a3fbc7be2a87e81aa1aa5c0ddf95d35 fix(coding-agent): preserve auth header deletion markers (#7539)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/model-registry.ts
+packages/coding-agent/test/model-registry.test.ts
+packages/coding-agent/test/model-runtime-cloudflare-compat.test.ts
+commit a8ee03b8156c2232d67ad2cdb79683b4a5c8fdbe fix(tui): cache recently offscreen Kitty images
+
+packages/tui/CHANGELOG.md
+packages/tui/src/terminal-image.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/terminal-image.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit b0e05b442305067b0021238a6e2f217c1bf65416 fix(coding-agent): resize images returned by tools (#7330)
+
+packages/coding-agent/docs/settings.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/utils/tool-result-images.ts
+packages/coding-agent/test/suite/agent-session-tool-result-images.test.ts
+packages/coding-agent/test/tool-result-images.test.ts
+commit 0f5286d8ab86942d12c85a9df2893c98c1157405 feat(agent): expose shouldStopAfterTurn on Agent (#7367)
+
+packages/agent/README.md
+packages/agent/src/agent.ts
+packages/agent/test/agent.test.ts
+commit b04faa2dae8d06b31208ace84ca4d8911c2d3c27 fix: --model collects authed providers (#7366)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/test/model-resolver.test.ts
+commit 2e95584dab802ae2f7c8d1a4994d6e0e9f67ec09 fix: validateToolArguments() coerces nullable union (#7373)
+
+packages/ai/CHANGELOG.md
+packages/ai/src/utils/validation.ts
+packages/ai/test/validation.test.ts
+commit 816237c101645954d2a0ecf4bb9360a9cc71ddf1 fix(coding-agent): target baseline x64 CPUs (#7390)
+
+packages/coding-agent/CHANGELOG.md
+scripts/build-binaries.sh
+commit d93e7e88fae51e698efd2921ccb38aa26f592470 Merge pull request #7383 from earendil-works/fix-issue-7150
+commit 4f4762f06de104d7f108bb6cfa387259dc825c84 feat(coding-agent): set AI_AGENT environment variable (#7493)
+
+packages/coding-agent/README.md
+packages/coding-agent/src/cli.ts
+packages/coding-agent/src/rpc-entry.ts
+commit cbaca60389f5d7097a43c95f56a19d344ecf2195 fix(ai): preserve Gemini 3 tool call IDs (#7494)
+
+packages/ai/src/api/google-shared.ts
+packages/ai/test/google-shared-gemini3-unsigned-tool-call.test.ts
+commit 786c76cb76bea452fa7287cc1014c4a3d3cad2b1 docs(coding-agent): fix branch summary diagram (#7526)
+
+packages/coding-agent/docs/compaction.md
+commit b9d360a2c753e058a90dc0a252950631501c10d0 fix(ai): retry transient provider errors in Google adapters (#7471)
+
+packages/ai/src/api/google-generative-ai.ts
+packages/ai/src/api/google-shared.ts
+packages/ai/src/api/google-vertex.ts
+packages/ai/test/google-shared-retry.test.ts
+commit ebf33c0c2282fb8c027174d3d2b53519d8f564e3 fix(coding-agent): flash fullscreen copy confirmation
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/src/index.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/src/tui-main-screen.ts
+packages/tui/src/tui.ts
+commit c6eb6281a806a9c5d7ec41d2850692f7f7ebcb59 fix(coding-agent): bound post-login catalog refresh
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/model-runtime.ts
+commit a077fff0b248878229784ff608256aa6d0922026 fix(coding-agent): identify failed model catalogs
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/components/model-selector.ts
+packages/coding-agent/test/model-selector.test.ts
+commit f0deb8dd8e9611e89b5bc4145ca92c03ae6ed4ee Revert docs changes
+
+packages/agent/docs/agent-harness.md
+packages/agent/docs/harness.md
+commit 01eeafd14a81dadf9ff8e5e1675a0b27351eae12 docs(agent): add durable queue-item cancellation to harness v2 variants
+
+packages/agent/docs/harness-v2-effects.md
+packages/agent/docs/harness-v2-generator.md
+commit 88ed89dbab71bf2a5158102d9ac01a18f6df5f71 docs(agent): split harness v2 into effects and generator variants
+
+packages/agent/docs/harness-v2-effects.md
+packages/agent/docs/harness-v2-generator.md
+commit 35fe55573cc1f49377ca2c63b369a559e4c699ce Merge pull request #7459 from earendil-works/feat/experimental-cli-composition
+commit 4c01c709380621c5ff2719162cd7a7973dcb2799 fix(tui): skip clipped rows during layout painting
+
+packages/tui/CHANGELOG.md
+packages/tui/src/layout.ts
+packages/tui/test/layout.test.ts
+commit 73414d08b94d7db46d3fa66582c8fe3b02dabf72 fix(tui): optimize alternate-screen image and layout redraws
+
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+packages/tui/src/layout.ts
+packages/tui/src/terminal-image.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/layout.test.ts
+packages/tui/test/terminal-image.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 4279da1b7f27926216836393dc1a50bd6a2487b3 Merge pull request #7478 from earendil-works/feat/session-storage-api
+commit e05cc6e12cd5d4fb919785c3da5b2d40961e386a docs: remove contributor changelog updates
+
+packages/agent/CHANGELOG.md
+packages/storage/sqlite-node/CHANGELOG.md
+commit f07af611d360a7cf53b00fbe4d980d1741e1a669 feat(agent): compose session storage through repositories
+
+packages/agent/CHANGELOG.md
+packages/agent/docs/agent-harness.md
+packages/agent/docs/harness.md
+packages/agent/src/harness/session/fork.ts
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repository.ts
+packages/agent/src/harness/session/search.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/agent/test/harness/branch-query.test.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/session-backends.test.ts
+packages/agent/test/harness/session-test-utils.ts
+packages/agent/test/harness/session.test.ts
+packages/agent/test/harness/sqlite-branch-cache.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/agent/test/scratch/simple.ts
+packages/storage/sqlite-node/CHANGELOG.md
+packages/storage/sqlite-node/README.md
+packages/storage/sqlite-node/src/sqlite/index.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/types.ts
+scripts/browser-smoke-entry.ts
+commit a4c7cb025d3a784d1fba18d4c8f4846d56bd2336 feat(agent): reject unsupported session search
+
+packages/agent/CHANGELOG.md
+packages/agent/docs/harness.md
+packages/agent/src/harness/session/repository.ts
+packages/agent/src/harness/session/scanning-session-search.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+commit cbc893b0d41301b70c914216cb0c262eafe84b6c feat(agent): prepare session storage foundation for harness v2
+
+packages/agent/CHANGELOG.md
+packages/agent/docs/agent-harness.md
+packages/agent/docs/harness.md
+packages/agent/src/harness/session/array-session-index.ts
+packages/agent/src/harness/session/array-session-reader.ts
+packages/agent/src/harness/session/fork.ts
+packages/agent/src/harness/session/jsonl-collection.ts
+packages/agent/src/harness/session/memory-collection.ts
+packages/agent/src/harness/session/memory-store.ts
+packages/agent/src/harness/session/repository.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/agent/test/harness/branch-query.test.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/session-backends.test.ts
+packages/agent/test/harness/session-test-utils.ts
+packages/agent/test/harness/session.test.ts
+packages/agent/test/harness/sqlite-branch-cache.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/agent/test/scratch/simple.ts
+packages/storage/sqlite-node/README.md
+packages/storage/sqlite-node/src/sqlite/index.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/session-collection.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+packages/storage/sqlite-node/src/sqlite/types.ts
+scripts/browser-smoke-entry.ts
+commit 1ee411a282132b0a3519664e14dcf457f43259ed feat(coding-agent): compose experimental CLI commands
+
+packages/coding-agent/src/cli/experimental/cli.ts
+packages/coding-agent/src/cli/experimental/command-options.ts
+packages/coding-agent/src/cli/experimental/command.ts
+packages/coding-agent/src/cli/experimental/commands/client.ts
+packages/coding-agent/src/cli/experimental/commands/pi.ts
+packages/coding-agent/src/cli/experimental/commands/server.ts
+packages/coding-agent/test/experimental-cli-command.test.ts
+packages/coding-agent/test/experimental-cli-resolution.test.ts
+commit 14551e769493f1c6ceac55954332ab14747ee05c fix(coding-agent): increase connection attempt timeout (#7435)
+
+packages/coding-agent/src/core/http-dispatcher.ts
+packages/coding-agent/test/http-dispatcher.test.ts
+commit b70c0f5b4e8d661bbf771ff384e093a45d28a87a Revert "feat(tui): add switchable terminal renderers (#7440)" (#7473)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/interactive/interactive-tui.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/README.md
+packages/tui/src/index.ts
+packages/tui/src/switchable-tui.ts
+packages/tui/src/terminal.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/src/tui-main-screen.ts
+packages/tui/src/tui.ts
+packages/tui/test/terminal.test.ts
+commit 1fdf21621d1f536a5991fccb0fd65b87ae27cf87 feat(tui): add switchable terminal renderers (#7440)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/interactive/interactive-tui.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/README.md
+packages/tui/src/index.ts
+packages/tui/src/switchable-tui.ts
+packages/tui/src/terminal.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/src/tui-main-screen.ts
+packages/tui/src/tui.ts
+packages/tui/test/terminal.test.ts
+commit aa0ec808b970db31822e07835a46647cb51d9d66 Merge pull request #7411 from earendil-works/feat/experimental-cli-parser
+commit 15b6617fac803d062195b90bff0d3013020ffbbf fix(coding-agent): preserve existing CLI option values
+
+packages/coding-agent/src/cli/experimental/command.ts
+packages/coding-agent/src/cli/experimental/transport-address.ts
+packages/coding-agent/test/experimental-cli-command.test.ts
+commit b0944d75cfe2d797c41ed532fa1dade05167cda4 fix(coding-agent): validate Unix transport URLs
+
+packages/coding-agent/src/cli/experimental/transport-address.ts
+packages/coding-agent/test/experimental-cli-command.test.ts
+commit c2923b641c73aef4d5d484b9544922d05028b962 refactor(coding-agent): simplify experimental command names
+
+packages/coding-agent/src/cli/experimental/command.ts
+packages/coding-agent/test/experimental-cli-command.test.ts
+commit 68ad320af13d699279b690d3e3f6eb23a85b9c2b refactor(coding-agent): model experimental CLI commands
+
+packages/coding-agent/src/cli/experimental/auth.ts
+packages/coding-agent/src/cli/experimental/command.ts
+packages/coding-agent/test/experimental-cli-command.test.ts
+commit 15fb81a6f3a60a808bf8187428d82136b1ba79d3 refactor(coding-agent): limit experimental parser to transport options
+
+packages/coding-agent/src/cli/experimental/options.ts
+packages/coding-agent/test/experimental-cli-options.test.ts
+commit c95e877e2d0f08148536711ac913191acca8e1a7 refactor(coding-agent): keep thinking validation parser-local
+
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/cli/experimental/options.ts
+packages/coding-agent/src/cli/thinking-level.ts
+packages/coding-agent/src/core/model-resolver.ts
+commit 0ac010b746cebcc0b54e3a38c1c920349b1b1a65 refactor(coding-agent): rename transport endpoint to address
+
+packages/coding-agent/src/cli/experimental/endpoint.ts
+packages/coding-agent/src/cli/experimental/options.ts
+packages/coding-agent/src/cli/experimental/transport-address.ts
+packages/coding-agent/test/experimental-cli-options.test.ts
+commit 1ea4ccad0472817fd117ecf03bd8e84ba72bfd5d refactor(coding-agent): generalize experimental endpoints
+
+packages/coding-agent/src/cli/experimental/auth-options.ts
+packages/coding-agent/src/cli/experimental/endpoint.ts
+packages/coding-agent/src/cli/experimental/options.ts
+packages/coding-agent/test/experimental-cli-options.test.ts
+commit f9a5c75f208cd3a825631294852e7452f580dfe4 feat(coding-agent): add experimental CLI option parser
+
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/cli/experimental/auth-options.ts
+packages/coding-agent/src/cli/experimental/options.ts
+packages/coding-agent/src/cli/thinking-level.ts
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/test/experimental-cli-options.test.ts
+commit a6f7317dfca61e357aee65faafe012a1be6c3734 Merge pull request #7454 from earendil-works/fix/models-json-hot-reload-test
+commit 960d271cb823711444f69358257d2fe6cd167b05 fix(coding-agent): synchronize model reload regression
+
+packages/coding-agent/test/suite/regressions/6999-models-json-hot-reload.test.ts
+commit 6374a95fb247dd898086ed28bbfe307e444a1d8d fix(coding-agent): make model reload test deterministic
+
+packages/coding-agent/test/suite/regressions/6999-models-json-hot-reload.test.ts
+commit 6e48c10f5b1f5cfc90d6cb21abf26a3e1e8a6bd7 Merge pull request #7448 from earendil-works/feat/agent-branch-queries-v2
+commit b5c7e554926575de4d0adebcf9d6398f1c66d405 Merge pull request #7450 from earendil-works/fix/sqlite-compaction-discovery
+commit eb2683fc59957abc93db8c06f657aa953fbba044 fix(agent): use type index for compaction discovery
+
+packages/storage/sqlite-node/src/sqlite/storage/branch-cache.ts
+commit 374c5b6dd0eae23b8ab94d2024b9f29673192ace Merge pull request #7449 from earendil-works/fix/agent-timeout-output-test
+commit 4ecd1bbe6719786f0d30c3e0f65f3857fbbba246 test(agent): derive timeout output size from truncation limit
+
+packages/agent/test/harness/tools.test.ts
+commit 8750a38c4c6e9e96eb868c3a24dbf041f1ecf8c3 fix(coding-agent): make child output test deterministic
+
+packages/coding-agent/test/suite/regressions/5303-bash-output-truncation.test.ts
+commit 081d7fbfca102aec2ee9f052c7804637cebebc4c fix(agent): harden bounded branch queries
+
+packages/agent/src/harness/session/array-session-reader.ts
+packages/agent/test/harness/branch-query.test.ts
+packages/agent/test/harness/sqlite-branch-cache.test.ts
+packages/storage/sqlite-node/src/sqlite/storage/branch-cache.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+commit 9b75872017b7aac00e12542992fdd28afbeaae60 feat(agent): add bounded branch queries
+
+packages/agent/CHANGELOG.md
+packages/agent/src/harness/session/array-session-reader.ts
+packages/agent/src/harness/session/jsonl-store.ts
+packages/agent/src/harness/session/memory-store.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/branch-query.test.ts
+packages/agent/test/harness/repo.test.ts
+packages/storage/sqlite-node/CHANGELOG.md
+packages/storage/sqlite-node/src/sqlite/session-store.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+commit 8f9e7697428477e8b206d1902060875689d5010f fix(coding-agent): recover stalled availability refreshes
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/model-runtime.ts
+packages/coding-agent/test/suite/regressions/7301-stalled-availability-refresh.test.ts
+commit 583f153d502aa8e958eefdb9af0fbd3344e68f95 fix(tui): normalize source filenames
+
+packages/coding-agent/test/interactive-mode-status.test.ts
+packages/tui/src/index.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/src/tui-main-screen.ts
+packages/tui/test/chat-simple.ts
+packages/tui/test/editor.test.ts
+packages/tui/test/image-test.ts
+packages/tui/test/key-tester.ts
+packages/tui/test/markdown.test.ts
+packages/tui/test/overlay-non-capturing.test.ts
+packages/tui/test/overlay-options.test.ts
+packages/tui/test/overlay-short-content.test.ts
+packages/tui/test/tab-width.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+packages/tui/test/tui-cell-size-input.test.ts
+packages/tui/test/tui-overlay-style-leak.test.ts
+packages/tui/test/tui-render.test.ts
+packages/tui/test/tui-shrink.test.ts
+packages/tui/test/viewport-overwrite-repro.ts
+tui-plan.md
+commit a1403af8ec8552ba35bff82aaaba2dd27426d2f8 fix(agent): make timeout output test deterministic
+
+packages/agent/test/harness/tools.test.ts
+commit a116523434806910336b9de3e38a41aa5860030b Merge pull request #7431 from earendil-works/refactor/sqlite-branch-cache
+commit e92bf60a5804e1640b9ea7390a03c4063adc880f fix(agent): make SQLite branch caching scalable
+
+packages/agent/test/harness/sqlite-branch-cache.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/storage/sqlite-node/src/sqlite/migrations.ts
+packages/storage/sqlite-node/src/sqlite/migrations/002_branch_tips.sql
+packages/storage/sqlite-node/src/sqlite/session-store.ts
+packages/storage/sqlite-node/src/sqlite/storage/branch-cache.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+commit 4488ad55c18f07ae89a489096c90de8667b3adfb Merge pull request #7410 from earendil-works/fix/sqlite-session-linear-time
+commit 5cd0f98e93b299a0d3c297cc6f63d48e221ea898 docs(agent): clarify staged branch handling
+
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+commit c2adb4d1da5f2e521154d7b56bafdb3171c0a32c fix(agent): use SQLite trigger for rollback test
+
+packages/agent/test/harness/sqlite-migrations.test.ts
+commit 06a1ceb8d83640ca764269307199a20323dee754 Merge pull request #7409 from earendil-works/feat/coding-agent-remote-client-controller
+commit 57583617eff0df1b26f022e208de74bf8aa769a6 fix(agent): make SQLite session operations linear
+
+packages/agent/test/harness/session.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+commit e07511645924249aa157b54dc73f73b235192d78 docs: remove contributor changelog entries
+
+packages/client/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/server/CHANGELOG.md
+commit a3ec51d2a18c69bd1c74a0a70075497794f47257 feat: add remote session client coordination
+
+package-lock.json
+packages/client/CHANGELOG.md
+packages/client/README.md
+packages/client/src/client.ts
+packages/client/src/connection.ts
+packages/client/src/errors.ts
+packages/client/src/index.ts
+packages/client/src/session-handle.ts
+packages/client/src/state.ts
+packages/client/test/disposal.test.ts
+packages/client/test/sessions.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/coding-agent/src/client/index.ts
+packages/coding-agent/src/client/remote-session.ts
+packages/coding-agent/src/client/transcript.ts
+packages/coding-agent/test/client/remote-session-lifecycle.test.ts
+packages/coding-agent/test/client/remote-session-ownership.test.ts
+packages/coding-agent/test/client/remote-session.test.ts
+packages/coding-agent/test/client/support.ts
+packages/coding-agent/test/client/transcript.test.ts
+packages/coding-agent/tsconfig.build.json
+packages/coding-agent/vitest.config.ts
+packages/server/CHANGELOG.md
+packages/server/src/sessions.ts
+packages/server/test/sessions.test.ts
+commit 0d43c5804b57f5fb19e67f62051103a85d38fb42 Merge pull request #7408 from earendil-works/refactor/session-reader
+commit 2366649ba4966d9b7c057b0a19ec54c135fa9f3b fix(agent): avoid counting entries when opening sessions
+
+packages/agent/src/harness/session/array-session-reader.ts
+packages/agent/src/harness/types.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+commit 2cc51b9d7611f9330ea3d7c39796ec6aceabfb7d fix(agent): rename session fork module
+
+packages/agent/src/harness/session/fork.ts
+packages/agent/src/harness/session/jsonl-store.ts
+packages/agent/src/harness/session/memory-store.ts
+packages/agent/src/harness/session/repository.ts
+packages/agent/src/index.ts
+commit 53422a241a9018c99081226a502e5fbabb8b5fed feat(agent): add storage-owned session readers
+
+packages/agent/docs/harness.md
+packages/agent/src/harness/session/array-session-reader.ts
+packages/agent/src/harness/session/fork-selection.ts
+packages/agent/src/harness/session/jsonl-store.ts
+packages/agent/src/harness/session/memory-store.ts
+packages/agent/src/harness/session/repository.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/storage/sqlite-node/src/sqlite/session-store.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+commit a0bb4a489b188beac7c06034141db86ffb357730 Merge pull request #7400 from earendil-works/refactor/sqlite-session-connection-cleanup
+commit b777865828728767c1e161f3fd51bc0414d70f09 Merge pull request #7398 from earendil-works/refactor/session-store-per-session-queues
+commit 03eba409c0dba1f8906ae4169f839abf0100e0a2 Merge pull request #7397 from earendil-works/fix/server-protocol-invariants
+commit 62f3c61b68e9ece242eb4de79861542651dc5401 feat(agent): add per-session store queues
+
+packages/agent/src/harness/session/jsonl-store.ts
+packages/agent/src/harness/session/keyed-operation-queue.ts
+packages/agent/src/harness/session/memory-store.ts
+packages/agent/test/harness/repo.test.ts
+commit 9f4dfdddbffe171ac3143c57c32708cc1cd4e1ce fix(agent): remove obsolete SQLite session internals
+
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/storage/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+packages/storage/sqlite-node/src/sqlite/storage/session-materialized.ts
+packages/storage/sqlite-node/src/sqlite/storage/shared.ts
+commit 91957b3a01fed3619bf7cf41f326aade9518bbcf fix(server): enforce protocol adapter invariants
+
+packages/protocol/CHANGELOG.md
+packages/protocol/src/schemas.ts
+packages/protocol/test/protocol.test.ts
+packages/server/CHANGELOG.md
+packages/server/README.md
+packages/server/src/protocol.ts
+packages/server/src/testing/backend.ts
+packages/server/test/protocol.test.ts
+commit fbab971da2c2eb0ed9e4deefc04560c5bc1bf71f Merge pull request #7401 from earendil-works/fix-model-tests
+commit 0c611753d9933fc26b92279155b8a1eac3594a6e fix(ai): update Z.AI model test references
+
+packages/ai/test/context-overflow.test.ts
+packages/ai/test/empty.test.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+packages/ai/test/stream.test.ts
+packages/ai/test/tokens.test.ts
+packages/ai/test/tool-call-without-result.test.ts
+packages/ai/test/total-tokens.test.ts
+packages/ai/test/unicode-surrogate.test.ts
+commit 977ec833bbb86e245057e9162dbc1443c7b6e707 Merge pull request #7391 from earendil-works/refactor/remove-session-search-index
+commit af187eee4b718dbcf01e60e164f5919ae03bacfc fix(tui): clip Kitty images to layout boundaries
+
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+packages/tui/src/layout.ts
+packages/tui/src/terminal-image.ts
+packages/tui/test/layout.test.ts
+commit b3ed27b3fe33ad006df66709ccf7f2edb33871eb feat(coding-agent): add scrollbar thumb theme color
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/themes.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/interactive/theme/dark.json
+packages/coding-agent/src/modes/interactive/theme/light.json
+packages/coding-agent/src/modes/interactive/theme/theme-schema.json
+packages/coding-agent/src/modes/interactive/theme/theme.ts
+packages/coding-agent/test/scrollbar-theme.test.ts
+commit 9c3b271be00fd6035c4a5464f77d34c5b54942d0 fix(agent): make session search query-only
+
+packages/agent/docs/harness.md
+packages/agent/src/harness/session/search-index.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/README.md
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+commit 7724472eab2da7dcd1be0bc025e0e66a80404486 Merge pull request #7387 from earendil-works/issue/7248
+commit 6129a353b18310eb06085e2f17f58cf501f725f3 feat(tui): add configurable fullscreen scrollbars
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/settings-manager.test.ts
+packages/coding-agent/test/settings-selector.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/src/components/scroll-view.ts
+packages/tui/src/index.ts
+packages/tui/src/layout-node.ts
+packages/tui/src/layout.ts
+packages/tui/test/layout.test.ts
+commit 12a4b242927acd647bfe462a194c1def38029439 Merge pull request #7379 from earendil-works/refactor/session-store-file-names
+commit bfc679d5e4e0a41fc1953456be0e1b223461189b fix(coding-agent): read clipboard text on Wayland
+
+packages/coding-agent/src/utils/clipboard.ts
+packages/coding-agent/test/clipboard.test.ts
+commit 73b24639fd9794d462b40a3bfa0cbb5e456dc2e8 Merge pull request #7386 from earendil-works/feat/server-core
+commit 546e002353980e1789106cc3b2f3a843f9d74b31 test(server): consolidate reusable test infrastructure
+
+packages/server/README.md
+packages/server/package.json
+packages/server/src/testing/backend.ts
+packages/server/src/testing/client.ts
+packages/server/src/testing/index.ts
+packages/server/src/testing/server.ts
+packages/server/test/conformance.test.ts
+packages/server/test/listener.test.ts
+packages/server/test/server.test.ts
+packages/server/test/sessions.test.ts
+packages/server/test/transport-smoke.test.ts
+packages/server/test/unix.test.ts
+commit 15f719489b439a81d3736cb34619250b66ad8363 fix(agent): scope JSONL entry IDs by path
+
+packages/agent/src/harness/session/jsonl-store.ts
+packages/agent/test/harness/session-backends.test.ts
+commit e36b150f71c736a4b13dae401035c292badf276f test(server): avoid Unix socket inode reuse assumption
+
+packages/server/test/unix-lifecycle.test.ts
+commit cb86f0844747f80df1e4dd9fd6aa35d7de9a565b fix(server): enforce protocol adapter invariants
+
+packages/server/src/protocol.ts
+packages/server/test/protocol.test.ts
+commit bf4a90d81985bd45052eeeae59d84fe13e0bd2c8 fix(tui): preserve spaces in settings searches
+
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+packages/tui/src/components/settings-list.ts
+packages/tui/test/settings-list.test.ts
+commit 2e60d3cbdff5f3ca682e1abc1188160edd88a978 feat(server): add composable protocol server
+
+package-lock.json
+packages/protocol/src/schemas.ts
+packages/server/README.md
+packages/server/package.json
+packages/server/src/connection.ts
+packages/server/src/errors.ts
+packages/server/src/index.ts
+packages/server/src/legacy/cli.ts
+packages/server/src/legacy/config.ts
+packages/server/src/legacy/handler.ts
+packages/server/src/legacy/index.ts
+packages/server/src/legacy/ipc/client.ts
+packages/server/src/legacy/ipc/protocol.ts
+packages/server/src/legacy/ipc/server.ts
+packages/server/src/legacy/radius.ts
+packages/server/src/legacy/rpc-process.ts
+packages/server/src/legacy/serve.ts
+packages/server/src/legacy/storage.ts
+packages/server/src/legacy/supervisor.ts
+packages/server/src/legacy/types.ts
+packages/server/src/listener.ts
+packages/server/src/protocol.ts
+packages/server/src/server.ts
+packages/server/src/sessions.ts
+packages/server/src/snapshots.ts
+packages/server/src/transports/unix/index.ts
+packages/server/src/transports/unix/listener.ts
+packages/server/src/transports/unix/preset.ts
+packages/server/src/transports/unix/types.ts
+packages/server/src/types.ts
+packages/server/test/conformance.test.ts
+packages/server/test/fixtures/stale-socket-server.mjs
+packages/server/test/listener-composition.test.ts
+packages/server/test/protocol.test.ts
+packages/server/test/server.test.ts
+packages/server/test/support.ts
+packages/server/test/transport-smoke.test.ts
+packages/server/test/unix-connection.test.ts
+packages/server/test/unix-lifecycle.test.ts
+packages/server/tsconfig.test.json
+packages/server/vitest.config.ts
+commit 3c717842e87f9d6b60587665fb52817f83c87a98 feat(tui): add fullscreen transcript navigation
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/keybindings.md
+packages/tui/CHANGELOG.md
+packages/tui/README.md
+packages/tui/src/TuiAltScreen.ts
+packages/tui/src/keybindings.ts
+packages/tui/test/keybindings.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 2b765ef529ae79d5bfa6990668f74cf717277f4a fix(agent): restore forward session cursor reads
+
+packages/agent/CHANGELOG.md
+packages/agent/docs/harness.md
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/session.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/storage/sqlite-node/README.md
+commit 8eda4f5b256009b8e752651683701b041e1632d3 fix(coding-agent): reject prompts during manual compaction
+
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/test/suite/agent-session-prompt.test.ts
+packages/coding-agent/test/suite/regressions/7150-rpc-prompt-during-compaction.test.ts
+commit 4e81b796153ca5c304ba867269088049831ed987 fix(agent): restrict session construction to repositories
+
+packages/agent/CHANGELOG.md
+packages/agent/docs/agent-harness.md
+packages/agent/src/harness/session/repository.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/agent/test/harness/session-test-utils.ts
+packages/agent/test/harness/session.test.ts
+commit f4a96c62b324546986db06197e4b9c2993b72f60 docs(agent): simplify session store guidance
+
+packages/agent/docs/harness.md
+commit 0b229f1046cee084271682b3e50bb532d9c3467e docs(agent): document session persistence migration
+
+packages/agent/CHANGELOG.md
+commit f074efd921848bf5d858154e852d47ea82c60bf2 feat(coding-agent): add ui mode setting
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/README.md
+packages/coding-agent/docs/keybindings.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/index.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/args.test.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/coding-agent/test/settings-manager.test.ts
+commit d937ee15d6d1f2395b8f8474c340c480e9af2024 docs(agent): remove session API migration example
+
+packages/agent/docs/harness.md
+commit f90b8595db49a542d4ce37ed21484b8bccd062d5 fix(agent): update harness lifecycle tests
+
+packages/agent/test/harness/agent-harness.test.ts
+commit 11679808c7580b6638a0b7b1951cb075b0162233 Merge remote-tracking branch 'origin/main' into refactor/session-store-file-names
+commit 2132f8f75f0d19bdd26444d58ee7e75bc6a1a9ae fix(agent): clarify session persistence ownership
+
+packages/agent/docs/harness.md
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/jsonl-storage.ts
+packages/agent/src/harness/session/jsonl-store.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/memory-storage.ts
+packages/agent/src/harness/session/memory-store.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/repository.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/session/search-index.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/agent-harness-stream.test.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/session-backends.test.ts
+packages/agent/test/harness/session-test-utils.ts
+packages/agent/test/harness/session.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/agent/test/harness/storage.test.ts
+packages/agent/test/scratch/simple.ts
+packages/storage/sqlite-node/README.md
+packages/storage/sqlite-node/src/index.ts
+packages/storage/sqlite-node/src/sqlite/index.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/session-store.ts
+packages/storage/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
+scripts/browser-smoke-entry.ts
+commit 696a828a4d4473ba06bb1353d5976c53f78bb43a fix(tui): prevent phantom alt-screen selections
+
+packages/tui/CHANGELOG.md
+packages/tui/src/TuiAltScreen.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 8ac92f831c67c3642fa321a182a6c91044adec9c feat(tui): add draggable transient scrollbars
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/tui/CHANGELOG.md
+packages/tui/src/TuiAltScreen.ts
+packages/tui/src/components/scroll-view.ts
+packages/tui/src/keybindings.ts
+packages/tui/src/layout.ts
+packages/tui/test/keybindings.test.ts
+packages/tui/test/layout.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 784653468c42387f607d41ed5ca533100e7eb2fe Merge pull request #7364 from earendil-works/fix/codex-account-websocket
+commit d2be68dbebaca6361ce83dd7b27a8e45c8cea97d fix(coding-agent): avoid auth read lock contention
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/auth-storage.ts
+packages/coding-agent/test/auth-storage.test.ts
+commit 7d5fc9499bf2385c1168f7d0a487742d87e76629 Merge pull request #7371 from earendil-works/feat/unix-client-transport
+commit a688e257c5faab8872c0a972f079c43154a770d1 fix(ai): route Fireworks Kimi K3 through OpenAI compatibility
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/test/fireworks-models.test.ts
+commit e44c1297492041aa2bc31c069556005b54a27500 docs(client): document Bun Unix transport support
+
+packages/client/README.md
+packages/client/src/unix.ts
+commit 1c418f624578f26834a1b977e276c99d93889bf1 feat(client): add Unix socket transport
+
+packages/client/README.md
+packages/client/package.json
+packages/client/src/unix.ts
+packages/client/test/unix.test.ts
+commit ea781d68f296bea36db3a540d2c53746f1a90bdd fix: forward autocompleteMaxVisible to custom editors (#7369)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+commit cfe6b6a058d352c954918f61b414bad4b36e1e5e fix(ai): scope Codex sockets to accounts
+
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/test/openai-codex-stream.test.ts
+commit 5a38a1c127c5cbd157bd46bf802a264df204e36a Merge pull request #7348 from earendil-works/feat/runtime-neutral-client
+commit f9b06345348f13799cdc5c0c8acec74e13e01276 docs(client): note promise helper removal
+
+packages/client/src/promise.ts
+commit 6e16f771610359b959501acd4c42ab73a1c914e8 refactor(client): retain ES2022 compatibility
+
+packages/client/src/client.ts
+packages/client/src/connection.ts
+packages/client/src/promise.ts
+tsconfig.base.json
+commit ee3156715d3c7def800c6aaaa2bd664a2f315d38 refactor(client): simplify lifecycle architecture
+
+packages/client/CHANGELOG.md
+packages/client/README.md
+packages/client/src/client.ts
+packages/client/src/connection.ts
+packages/client/src/errors.ts
+packages/client/src/index.ts
+packages/client/src/listeners.ts
+packages/client/src/pending-requests.ts
+packages/client/src/session-client.ts
+packages/client/src/state.ts
+packages/client/test/client-state.test.ts
+packages/client/test/connection.test.ts
+packages/client/test/requests.test.ts
+packages/client/test/sessions.test.ts
+packages/client/test/state.test.ts
+packages/client/test/support.ts
+commit 7e121c67cff54c44f963787a103179b3c7baadae refactor(client): tighten lifecycle state modeling
+
+packages/agent/src/harness/agent-harness.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/client/README.md
+packages/client/src/client.ts
+packages/client/src/index.ts
+packages/client/src/listeners.ts
+packages/client/src/pending-requests.ts
+packages/client/src/session-client.ts
+packages/client/src/state-store.ts
+packages/client/src/types.ts
+packages/client/test/client-connection.test.ts
+tsconfig.base.json
+commit 33bc0a7b83cde2a3cd2b568ed3107d9bdf7a768a feat(client): add runtime-neutral session client
+
+package-lock.json
+package.json
+packages/agent/src/harness/agent-harness.ts
+packages/agent/test/harness/agent-harness.test.ts
+packages/client/CHANGELOG.md
+packages/client/README.md
+packages/client/package.json
+packages/client/src/client.ts
+packages/client/src/errors.ts
+packages/client/src/index.ts
+packages/client/src/listeners.ts
+packages/client/src/session-client.ts
+packages/client/src/transport.ts
+packages/client/src/types.ts
+packages/client/test/client-connection.test.ts
+packages/client/test/client-state.test.ts
+packages/client/test/support.ts
+packages/client/tsconfig.build.json
+packages/client/tsconfig.test.json
+packages/client/vitest.config.ts
+scripts/browser-smoke-entry.ts
+scripts/local-release.mjs
+scripts/publish.mjs
+tsconfig.json
+commit e6fb3ec68f39660d27709a1a36dd66b5b3f6ad95 Merge pull request #7365 from earendil-works/fix/auth-storage-lock-tests
+commit 8ee22078242ef82d378b3a41b9adc5eb9c6837a0 fix(coding-agent): decouple auth lock error tests
+
+packages/coding-agent/test/auth-storage.test.ts
+commit ab366ebe94cacd419d986be454f12b1b9913aaca fix: custom-compaction through provider via new model runtime complete (#7325)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-compaction.ts
+packages/coding-agent/examples/extensions/handoff.ts
+packages/coding-agent/examples/extensions/qna.ts
+packages/coding-agent/src/core/model-registry.ts
+packages/coding-agent/test/compaction-extensions-example.test.ts
+commit 59ad3dead30322217f6f027a3b67931074c0e163 fix(ai): preserve Anthropic initial stream block content (#7358)
+
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/test/anthropic-sse-parsing.test.ts
+commit 9786716d4de2a0a23c53b011f5bbc1f4084f700f fix(coding-agent): update vulnerable brace-expansion
+
+package-lock.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+commit 6138f5a079b4e81ba1b30d998020df187512a0e8 fix(ai): keep signed empty text/thinking blocks in google history (#7362)
+
+packages/ai/src/api/google-shared.ts
+packages/ai/test/google-shared-signed-empty-blocks.test.ts
+commit 17090d4b9964957c7e7473506f93225c42d9e6fd feat(tui): add stacked alt-screen flashes (#7361)
+
+packages/tui/src/TuiAltScreen.ts
+packages/tui/src/components/alt-screen-flash.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 57cde86906679fd0581b277a179ab46fa2a09ab6 fix(coding-agent): reload credentials before reads
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/auth-storage.ts
+commit 2b5097644dc32bfec300527eeae48ee72ebf695b chore: approve contributors from issue #7319
+
+.github/APPROVED_CONTRIBUTORS
+commit 32761383d2487cadab26c3466a720525c0509e23 fix(coding-agent): update Doom WAD download source
+
+packages/coding-agent/examples/extensions/doom-overlay/wad-finder.ts
+commit 3c5a1b2393e910aa521d312320b1459240e2e656 fix(tui): reduce default mouse wheel scroll speed
+
+packages/tui/src/TuiAltScreen.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit e187887886a2c92126a7814c97f02c2f1987ea88 chore: approve contributors from issue #7357
+
+.github/APPROVED_CONTRIBUTORS
+commit 5f10deb5c990e35850281feb7670257002e097d1 chore: approve contributors from issue #7356
+
+.github/APPROVED_CONTRIBUTORS
+commit 97cfd708d47f4ca8c7fdd93493f14d7d39def989 Merge pull request #7359 from earendil-works/refactor/session-repository-factory-names
+commit 4523528b21c66084fdece7ed3ffa10888bc5ac60 fix(ai): treat only plain objects as provider error bodies (#7205)
+
+packages/ai/src/utils/error-body.ts
+packages/ai/test/error-body.test.ts
+commit 66cd061ab468aeae9fd2e38715d3931f7f77f569 chore: approve contributors from issue #7330
+
+.github/APPROVED_CONTRIBUTORS
+commit 8eda7d502075850dea8d02eb6bf27922444995f4 fix(agent): type composed session stores explicitly
+
+packages/agent/test/harness/sqlite-node.test.ts
+commit a1bb7e44831a8114d0bbb4e76a5ccc83e8ea0e2a fix(agent): expose session stores through factories
+
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/README.md
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/types.ts
+scripts/browser-smoke-entry.ts
+commit ea1e77e2db5cd07bf83365490bd3f52c881efa77 feat(tui): add alternate-screen viewport layouts
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/keybindings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/README.md
+packages/tui/src/TuiAltScreen.ts
+packages/tui/src/components/h-stack.ts
+packages/tui/src/components/scroll-view.ts
+packages/tui/src/components/stack.ts
+packages/tui/src/components/v-stack.ts
+packages/tui/src/index.ts
+packages/tui/src/layout-node.ts
+packages/tui/src/layout.ts
+packages/tui/src/tui.ts
+packages/tui/test/layout.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+tui-plan.md
+commit 471c3390fe015de9b7308fce0ada5bc7c3bb7d3c chore: approve contributors from issue #7299
+
+.github/APPROVED_CONTRIBUTORS
+commit 2700511e4594b1066f316f50fc0005df73a093f4 fix(agent): refine session repository API
+
+packages/agent/docs/harness.md
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+scripts/browser-smoke-entry.ts
+commit 9b50b046d328d589a81400d2e184175d0bf19734 Merge pull request #7163 from cristinaponcela/feat/search
+commit aa784e5eedfadb64b67cd58d7878db5132a1dd6d refactor, cleanup and conditionals for fts5
+
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-index.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+commit c984b7c9e2b93ce9c8cf1d3b635229757cf51536 cleanup
+
+packages/agent/src/harness/session/session.ts
+packages/ai/test/openai-responses-reasoning-replay-e2e.test.ts
+commit fb0f0f7cd5fd18afb98abef133174d59c27ac4e5 rename: vars
+
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+scripts/browser-smoke-entry.ts
+commit 74caa2649f10ed71b4378ce69f5d9fbfd2466ca5 fix(coding-agent): validate package manifests
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/extensions/loader.ts
+packages/coding-agent/src/core/package-manager.ts
+packages/coding-agent/src/core/pi-manifest.ts
+packages/coding-agent/test/suite/regressions/7187-malformed-package-manifest.test.ts
+commit 714978bf51225520a9b1e153115f0c5ff057be9e Markdown api (#7231)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/extensions.md
+packages/coding-agent/src/core/extensions/index.ts
+packages/coding-agent/src/core/extensions/loader.ts
+packages/coding-agent/src/core/extensions/runner.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/src/index.ts
+packages/coding-agent/src/modes/interactive/components/assistant-message.ts
+packages/coding-agent/src/modes/interactive/components/markdown-transform.ts
+packages/coding-agent/src/modes/interactive/components/user-message.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/assistant-message.test.ts
+packages/coding-agent/test/extensions-discovery.test.ts
+packages/coding-agent/test/extensions-runner.test.ts
+packages/coding-agent/test/user-message.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/src/components/markdown.ts
+packages/tui/src/index.ts
+packages/tui/test/markdown.test.ts
+commit 70bbe47a9d28303c87f77ddf46aef70ed8c2c910 feat(ai): preserve structured metadata for Bedrock provider errors (#7286)
+
+packages/ai/src/api/bedrock-converse-stream.ts
+packages/ai/test/bedrock-error-metadata.test.ts
+commit dfe47d3fbd8bf27841becaf8ec042dc0e73804a6 fix(tui): align grapheme widths with terminal cells (#6987)
+
+packages/tui/CHANGELOG.md
+packages/tui/src/utils.ts
+packages/tui/test/truncate-to-width.test.ts
+commit 2c3041242040179b63841922ac58188f8499d2cd fix(ai): support streams without finish reasons
+
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/types.ts
+packages/ai/test/deferred-tools.test.ts
+packages/ai/test/openai-completions-thinking-as-text.test.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+packages/ai/test/openai-completions-tool-result-images.test.ts
+packages/coding-agent/docs/custom-provider.md
+packages/coding-agent/docs/models.md
+commit 393c34422981cc910acc78f96dd546d90f3096de fix(coding-agent): replace deprecated getModel in SDK example (#7306)
+
+packages/coding-agent/examples/sdk/02-custom-model.ts
+commit c066d01a40c8063df48afebcedb1117ea00f6d8e Merge pull request #7344 from earendil-works/feat/protocol-package
+commit b2a1a065500ff2566bc434f49e3c8493d69de04f docs(protocol): add package changelog
+
+packages/protocol/CHANGELOG.md
+packages/protocol/src/cbor/decoder.ts
+packages/protocol/src/cbor/encoder.ts
+packages/protocol/src/cbor/index.ts
+packages/protocol/src/cbor/options.ts
+commit 9cde1725d7ca51d0fe06e03f89a87000a18abf36 fix(agent): preserve waitForIdle semantics
+
+packages/agent/src/harness/agent-harness.ts
+packages/agent/test/harness/agent-harness.test.ts
+commit 871a99047944f060b85a30c7d5b6add89685c9a8 refactor(agent): unify harness task tracking
+
+packages/agent/src/harness/agent-harness.ts
+commit bd2cfabc5f886447eb7ae9193cc9f87e85a52390 fix(protocol): reject cyclic values and organize sources
+
+packages/protocol/src/cbor/decoder.ts
+packages/protocol/src/cbor/encoder.ts
+packages/protocol/src/cbor/index.ts
+packages/protocol/src/cbor/types.ts
+packages/protocol/src/codec.ts
+packages/protocol/src/index.ts
+packages/protocol/src/messages.ts
+packages/protocol/src/schemas.ts
+packages/protocol/test/cbor/cbor.test.ts
+packages/protocol/test/protocol.test.ts
+commit bc031ae4571081d2edae18787dd45486d0a17ce1 fix(agent): await mutations during harness shutdown
+
+packages/agent/src/harness/agent-harness.ts
+packages/agent/test/harness/agent-harness.test.ts
+commit b889a0ce3dc08e20078b822c5380f71c4fdec6cf fix(ai): update GPT-5.6 pricing
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+commit 56eb685b69bb1a6c158c9eb8ead147e1d31e9d3f feat(protocol): add remote session wire protocol
+
+package-lock.json
+package.json
+packages/protocol/README.md
+packages/protocol/package.json
+packages/protocol/src/cbor-decoder.ts
+packages/protocol/src/cbor-encoder.ts
+packages/protocol/src/cbor-options.ts
+packages/protocol/src/cbor.ts
+packages/protocol/src/codec.ts
+packages/protocol/src/framing.ts
+packages/protocol/src/index.ts
+packages/protocol/src/messages.ts
+packages/protocol/src/schemas.ts
+packages/protocol/test/cbor.test.ts
+packages/protocol/test/framing.test.ts
+packages/protocol/test/protocol.test.ts
+packages/protocol/tsconfig.build.json
+packages/protocol/tsconfig.test.json
+packages/protocol/vitest.config.ts
+scripts/browser-smoke-entry.ts
+scripts/local-release.mjs
+scripts/publish.mjs
+tsconfig.json
+commit 7d86e6233ae96dc8ea62b455b3cd43641db8224e Merge pull request #7343 from earendil-works/feat/agent-harness-shutdown
+commit 82c485983967a69d45fe957cf942cb0999723362 feat(agent): add harness shutdown lifecycle
+
+packages/agent/src/harness/agent-harness.ts
+packages/agent/test/harness/agent-harness.test.ts
+commit 83a7f755cc14a8f36ff822c24f5017494fed554e refactor and cleanup
+
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/session/search-index.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+commit 5e48d41ecd8c750c954e6c4152fd343f7705e182 refactor: repo facade
+
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/session/search-index.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+scripts/browser-smoke-entry.ts
+commit c13ffe1877c3a47ce9f2fc98d9880447d64a0e87 feat(tui): add alternate-screen renderer
+
+.pi/extensions/prompt-url-widget.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/README.md
+packages/coding-agent/docs/keybindings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/examples/rpc-extension-ui.ts
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/cli/config-selector.ts
+packages/coding-agent/src/cli/startup-ui.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/args.test.ts
+packages/coding-agent/test/edit-tool-no-full-redraw.test.ts
+packages/coding-agent/test/interactive-mode-status.test.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/coding-agent/test/streaming-render-debug.ts
+packages/tui/CHANGELOG.md
+packages/tui/README.md
+packages/tui/src/TuiAltScreen.ts
+packages/tui/src/TuiMainScreen.ts
+packages/tui/src/index.ts
+packages/tui/src/keybindings.ts
+packages/tui/src/terminal-image.ts
+packages/tui/src/tui.ts
+packages/tui/src/utils.ts
+packages/tui/test/chat-simple.ts
+packages/tui/test/editor.test.ts
+packages/tui/test/image-test.ts
+packages/tui/test/key-tester.ts
+packages/tui/test/markdown.test.ts
+packages/tui/test/overlay-non-capturing.test.ts
+packages/tui/test/overlay-options.test.ts
+packages/tui/test/overlay-short-content.test.ts
+packages/tui/test/regression-overlay-cjk-boundary.test.ts
+packages/tui/test/tab-width.test.ts
+packages/tui/test/terminal-colors.test.ts
+packages/tui/test/terminal-image.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+packages/tui/test/tui-cell-size-input.test.ts
+packages/tui/test/tui-overlay-style-leak.test.ts
+packages/tui/test/tui-render.test.ts
+packages/tui/test/tui-shrink.test.ts
+packages/tui/test/viewport-overwrite-repro.ts
+commit 96eda8b47f01dd795ee5b8633c253db1e903ba0c docs(agent): agent-loop building blocks in harness v2
+
+packages/agent/docs/harness-v2.md
+commit bb226f9c1f38d3c029156a690e97bbfc602336b9 fix: redundancy in setToolsExpanded (#7313)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+commit 7659e1c98df9338229a9b0cc7b7e75922f95163f Merge pull request #7289 from earendil-works/worktree/evals-baseline
+commit 743e1595c40e6eeacd206b9372fb859765770135 fix(coding-agent): remove custom eval shuffling
+
+packages/evals/README.md
+packages/evals/src/extensions.eval.ts
+packages/evals/src/vitest-evals/harness-table.ts
+packages/evals/src/vitest-evals/reporter.ts
+packages/evals/src/vitest-evals/summary.ts
+packages/evals/test/vitest-evals/harness-table.test.ts
+packages/evals/test/vitest-evals/summary.test.ts
+commit ca11823f72b8ef72d4d8bbc6e53b6bb7e97b3cf6 fix(coding-agent): streamline comparative eval ergonomics
+
+packages/evals/README.md
+packages/evals/src/extensions.eval.ts
+packages/evals/src/vitest-evals/harness-table.ts
+packages/evals/src/vitest-evals/summary.ts
+packages/evals/test/vitest-evals/harness-table.test.ts
+packages/evals/test/vitest-evals/summary.test.ts
+commit fce7445b1c14451cb3b7d201bff2df7dd7f91b3e fix(coding-agent): make eval comparison direction explicit
+
+packages/evals/README.md
+packages/evals/src/extensions.eval.ts
+packages/evals/src/vitest-evals/harness-table.ts
+packages/evals/src/vitest-evals/reporter.ts
+packages/evals/src/vitest-evals/summary.ts
+packages/evals/test/vitest-evals/harness-table.test.ts
+packages/evals/test/vitest-evals/summary.test.ts
+commit 6bcc29a06cee8b9ac1643df901468e3c51d6a48f chore: approve contributors from issue #7300
+
+.github/APPROVED_CONTRIBUTORS
+commit ac033d1865c71c3919072c8f0ab5088dd74c3934 fix(coding-agent): align eval comparison report output
+
+packages/evals/src/vitest-evals/summary.ts
+packages/evals/test/vitest-evals/summary.test.ts
+commit 29f97c20f3ef18dcbc11306a94ef670d397a0d1d fix(coding-agent): simplify harness table tests
+
+packages/evals/test/vitest-evals/harness-table.test.ts
+commit 05558a79280a2f1356bd390a573aeb28726d26b5 fix(ai): correct OpenCode Go provider display name from 'OpenCode Zen Go' to 'OpenCode Go'
+
+packages/ai/src/providers/opencode-go.ts
+commit fe1f7230f27419772083c9fdcf05441d57b230c3 chore: approve contributors from issue #7271
+
+.github/APPROVED_CONTRIBUTORS
+commit d9ae6e2b07980bda34936752879737c4f45dad0c fix(coding-agent): simplify comparative eval internals
+
+packages/evals/src/pi-harness.ts
+packages/evals/src/vitest-evals/harness-table.ts
+packages/evals/src/vitest-evals/reporter.ts
+packages/evals/src/vitest-evals/summary.ts
+packages/evals/test/vitest-evals/summary.test.ts
+commit 6a3eae8e484833e83fed93cb8ec4cfbd22e3afd7 fix(coding-agent): normalize eval inputs before hashing
+
+packages/evals/src/vitest-evals/harness-table.ts
+packages/evals/test/vitest-evals/harness-table.test.ts
+commit 56e6a8a3fa6fe1c71f1106345f3f3dfa60f71d04 fix(coding-agent): record eval sessions after each test
+
+packages/evals/README.md
+packages/evals/src/extensions.eval.ts
+packages/evals/src/smoke.eval.ts
+packages/evals/src/vitest-evals/setup.ts
+packages/evals/vitest.config.ts
+commit 2a2e677bedc9ac21dc69e02d69a5bdcdbb4c7895 fix(coding-agent): make source artifacts language neutral
+
+packages/evals/src/extensions.eval.ts
+packages/evals/src/vitest-evals/artifacts.ts
+packages/evals/test/vitest-evals/artifacts.test.ts
+commit 3631e82d0e60125fa9d1996178b1f8faa752b7a9 fix(coding-agent): generalize eval source artifacts
+
+packages/evals/src/extensions.eval.ts
+packages/evals/src/vitest-evals/artifacts.ts
+packages/evals/test/vitest-evals/artifacts.test.ts
+commit eb08aa8fa2b07d736c3995888410157001ed19e3 fix(coding-agent): specialize eval attachment types
+
+packages/evals/src/vitest-evals/artifacts.ts
+packages/evals/test/vitest-evals/artifacts.test.ts
+commit 2eed6d219af7793a2d966dcc530a1730b2d3a36d fix(coding-agent): remove redundant artifact names module
+
+packages/evals/src/pi-harness.ts
+packages/evals/src/vitest-evals/artifact-names.ts
+packages/evals/src/vitest-evals/artifacts.ts
+packages/evals/src/vitest-evals/reporter.ts
+commit af00848d6ba4fefa1c9870353d4d462d7a222d4f fix(coding-agent): record eval artifacts with explicit tasks
+
+packages/evals/README.md
+packages/evals/src/extensions.eval.ts
+packages/evals/src/pi-harness.ts
+packages/evals/src/smoke.eval.ts
+packages/evals/src/vitest-evals/artifact-names.ts
+packages/evals/src/vitest-evals/artifacts.ts
+packages/evals/src/vitest-evals/reporter.ts
+packages/evals/test/vitest-evals/artifacts.test.ts
+packages/evals/vitest.config.ts
+packages/evals/vitest.test.config.ts
+commit 71efc6f0c1909874ec8c944637a9ae7fc0e2d508 Add [Unreleased] section for next cycle
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/server/CHANGELOG.md
+packages/storage/sqlite-node/CHANGELOG.md
+packages/tui/CHANGELOG.md
+commit 32f3a972827a659559146888ced7934efc92e47d feat(coding-agent): add comparative Pi eval harness
+
+packages/coding-agent/src/core/extensions/loader.ts
+packages/evals/.gitignore
+packages/evals/README.md
+packages/evals/package.json
+packages/evals/scripts/run-evals.mjs
+packages/evals/src/extensions.eval.ts
+packages/evals/src/pi-harness.ts
+packages/evals/src/vitest-evals/artifacts.ts
+packages/evals/src/vitest-evals/harness-table.ts
+packages/evals/src/vitest-evals/reporter.ts
+packages/evals/src/vitest-evals/summary.ts
+packages/evals/test/pi-harness.test.ts
+packages/evals/test/vitest-evals/artifacts.test.ts
+packages/evals/test/vitest-evals/harness-table.test.ts
+packages/evals/test/vitest-evals/summary.test.ts
+packages/evals/vitest.config.ts
+packages/evals/vitest.test.config.ts
+commit 6a9591ae78faa1dab24ab7d626444ba40c89a567 refactor: repo owns session and storage separately
+
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/README.md
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/types.ts
+scripts/browser-smoke-entry.ts
+commit 3627c01179d58f353830b6d28e039a12cc88eeb8 fix: do not require index
+
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+commit d5c37c65bfd0cb10d227ee7a1b16ec8aae34165c refactor: composable Storage vs Search
+
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+commit c63bf0ee4b3258fc768b33e70ed2156a602a8455 cleanup
+
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+commit c2bd0eda7fd36719a21f659485fdb0fafd32dd69 fix: default sqlite search backend to fts5
+
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+commit 499dd8c5449ab334ddd3d61f3147c9eff8763b9f cleanup
+
+packages/agent/src/harness/session/search-backend.ts
+commit 5d6237ab343c296be8910884315075b1cf2c9fc0 fix: helper owns create
+
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+commit 3c2b71b5700fce63e996e852f9317e0031ba4b08 refactor: search index swappable
+
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/migrations.ts
+packages/storage/sqlite-node/src/sqlite/migrations/002_session_search.sql
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/types.ts
+commit 0ee1ec00303da6e4ed64da9caea955340138c5d0 rename: may not be index
+
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-backend.ts
+packages/agent/src/harness/session/search-index.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/index.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-backend.ts
+packages/storage/sqlite-node/src/sqlite/types.ts
+commit bd8dc676bf6628d6aa78fae481105d2c0652125a Merge branch 'main' into feat/search
+commit b92e5e8614d90d5c2aa403dbca5c232fbf6e91e2 feat: search index factory
+
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-index-sink.ts
+packages/agent/src/harness/session/search-index.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/storage/sqlite-node/src/sqlite/index.ts
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-index.ts
+packages/storage/sqlite-node/src/sqlite/types.ts
+commit 0f5a6e422baa5eaade271f9ba92ceb7692144a0d feat: search index sqlite
+
+packages/agent/src/harness/agent-harness.ts
+packages/agent/src/harness/session/jsonl-repo.ts
+packages/agent/src/harness/session/jsonl-storage.ts
+packages/agent/src/harness/session/memory-repo.ts
+packages/agent/src/harness/session/memory-storage.ts
+packages/agent/src/harness/session/repo-utils.ts
+packages/agent/src/harness/session/search-index-sink.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/types.ts
+packages/agent/src/index.ts
+packages/agent/test/harness/repo.test.ts
+packages/agent/test/harness/sqlite-migrations.test.ts
+packages/agent/test/harness/sqlite-node.test.ts
+packages/agent/vitest.config.ts
+packages/ai/test/openai-responses-reasoning-replay-e2e.test.ts
+packages/ai/test/xhigh.test.ts
+packages/storage/sqlite-node/src/sqlite/migrations.ts
+packages/storage/sqlite-node/src/sqlite/migrations/002_session_search.sql
+packages/storage/sqlite-node/src/sqlite/repo.ts
+packages/storage/sqlite-node/src/sqlite/search-index-sink.ts
+packages/storage/sqlite-node/src/sqlite/storage/index.ts
