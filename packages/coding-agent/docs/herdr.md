@@ -49,11 +49,13 @@ several are stacked.
 
 The reporter registers nothing at all unless every one of these holds:
 
+- The host presents a terminal pane: the interactive TUI, or the engine child
+  that drives it. Headless modes — RPC, JSON, print — have no pane to describe,
+  and RPC still reports a UI, so this is decided before the extension loads
+  rather than by the extension declining afterwards. In a headless host the
+  reporter is never constructed and registers no event handlers.
 - `HERDR_ENV` is exactly `"1"`, and both `HERDR_PANE_ID` and `HERDR_SOCKET_PATH`
   are set. Herdr exports these into each pane it opens.
-- The session is running the interactive TUI. Headless modes — RPC, JSON, print —
-  have no pane to describe, and RPC still reports a UI, so the mode is what
-  decides rather than UI availability.
 - No file-based `herdr-agent-state.ts` / `herdr-agent-state.js` integration
   loaded in the same cycle. If you installed Herdr's own file integration, that
   one wins and the builtin stands down, so the pane never gets two reporters.
@@ -63,9 +65,10 @@ Atomic settings and no environment knobs for tuning it.
 
 Atomic can defer extension loading so the TUI paints on the first frame, which
 means the reporter sometimes loads after `session_start` has already fired. It
-binds to the session on whichever lifecycle event it sees first and seeds its
-state from whether the agent is currently idle, so a pane is described correctly
-whether the reporter arrived before or after the turn it is describing.
+binds to the session on whichever lifecycle event it sees first, and seeds both
+whether a turn is running and whether a dialog is already open, so a pane is
+described correctly whether the reporter arrived before or after the wait it is
+describing.
 
 The stand-down check is applied both when the extension loads and again when it
 first activates. A file-based integration that loads after the builtin therefore
@@ -77,8 +80,12 @@ A dead, refusing, or hung Herdr socket degrades to silence. Each report gets one
 500 ms attempt and one 1500 ms retry, then is dropped. No Atomic lifecycle path
 can be delayed, blocked, or failed by the reporter.
 
-Writes are serialized: one report is in flight at a time, and state queued
-behind it collapses to the newest value rather than replaying a stale sequence.
+Writes are serialized. State, session identity, and the final release all go
+through one queue, so exactly one request is ever in flight; state queued behind
+an in-flight write collapses to the newest value, and never collapses across a
+session or release entry. Herdr silently drops a report whose sequence is not
+above the last one it accepted, so overlapping writes would lose reports rather
+than reorder them.
 
 ## Session lifecycle
 
