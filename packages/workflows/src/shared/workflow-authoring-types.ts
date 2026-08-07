@@ -97,6 +97,7 @@ export interface AuthoredWorkflowSpec<
 > {
 	readonly name?: string;
 	readonly autoAttach?: boolean;
+	readonly heartbeatIntervalMinutes?: number;
 	readonly description: string;
 	readonly inputs?: TInputs;
 	readonly outputs: TOutputs;

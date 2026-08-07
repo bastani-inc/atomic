@@ -662,6 +662,8 @@ Because human input is runtime-only and workflows no longer carry a declaration-
 
 For library or package authoring, define reusable workflows with `workflow({...})` and export the returned definition. Hand-written objects with `__piWorkflow: true` are rejected by discovery and composition; `workflow({...})` is the public authoring surface. Standalone TypeScript workflow packages import `workflow` from `@bastani/workflows` and `Type` from `typebox` directly with no local `.d.ts` file or `declare module` shim. Migration from the removed builder API is mechanical: move `.description(...)` to `description`, `.input(key, schema)` calls into `inputs`, `.output(key, schema)` calls into `outputs`, `.worktreeFromInputs(...)` to `worktreeFromInputs`, and the `.run(fn)` callback to `run: fn`; delete `.compile()`. The former imperative `runWorkflow` object-form API is removed; use workflow definitions with the exported `run()` / registry helpers for programmatic execution.
 
+Set `heartbeatIntervalMinutes` to declare the workflow's heartbeat cadence in minutes. Omitting it uses the `15`-minute default; `0` explicitly disables heartbeats. Negative and non-finite values are rejected when the workflow definition is authored. The definition stores this validated setting for the scheduler/delivery layer.
+
 ```ts
 import { workflow } from "@bastani/workflows";
 import { Type } from "typebox";
@@ -669,6 +671,7 @@ import { Type } from "typebox";
 export default workflow({
   name: "audit-auth",
   description: "Audit the authentication module.",
+  heartbeatIntervalMinutes: 30,
   inputs: {
     prompt: Type.String({ default: "Investigate the auth module" }),
   },

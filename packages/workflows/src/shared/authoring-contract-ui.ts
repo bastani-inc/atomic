@@ -235,6 +235,7 @@ export interface WorkflowDefinition<
 	readonly normalizedName: string;
 	readonly description: string;
 	readonly autoAttach?: true;
+	readonly heartbeatIntervalMinutes: number;
 	readonly inputs: WorkflowInputSchemaMap;
 	readonly outputs?: WorkflowOutputSchemaMap;
 	readonly inputBindings?: WorkflowInputBindings;
