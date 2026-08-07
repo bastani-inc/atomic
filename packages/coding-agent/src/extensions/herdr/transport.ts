@@ -12,7 +12,7 @@
  */
 
 import net from "node:net";
-import type { HerdrRequest } from "./types.ts";
+import type { HerdrRequest } from "./types.js";
 
 /** First attempt budget. */
 export const FIRST_ATTEMPT_TIMEOUT_MS = 500;

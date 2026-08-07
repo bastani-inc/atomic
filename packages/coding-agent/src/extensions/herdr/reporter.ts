@@ -9,10 +9,10 @@
  */
 
 import type { ReadonlySessionManager } from "../../core/session-manager-types.ts";
-import { desiredPaneState } from "./reducer.ts";
-import { nextReportSeq } from "./sequence.ts";
-import type { HerdrTransport } from "./transport.ts";
-import { type DesiredPaneState, HERDR_AGENT, HERDR_SOURCE, type HerdrRequest, type HerdrSessionRef } from "./types.ts";
+import { desiredPaneState } from "./reducer.js";
+import { nextReportSeq } from "./sequence.js";
+import type { HerdrTransport } from "./transport.js";
+import { type DesiredPaneState, HERDR_AGENT, HERDR_SOURCE, type HerdrRequest, type HerdrSessionRef } from "./types.js";
 
 /**
  * Upper bound on any free text that crosses the socket.

@@ -343,4 +343,26 @@ describe("herdr extension end to end", () => {
 			assert.equal(source.includes("readFile"), false);
 		}
 	});
+
+	it("uses .js extensions on its own sibling imports, like the llama builtin", async () => {
+		// The ESM `.js` form applies to modules this extension owns. Imports that
+		// reach into `src/core` deliberately keep `.ts`: those modules are spelled
+		// `.ts` everywhere else in the repository, and
+		// `test/unit/module-import-specifier-consistency.test.ts` requires one
+		// spelling per module. The llama builtin resolves the same tension the same
+		// way, so this asserts the sibling half and leaves the cross-directory half
+		// to that repository-wide test.
+		const files = ["index.ts", "reporter.ts", "transport.ts", "reducer.ts", "sequence.ts", "types.ts"];
+		const relativeImport = /\bfrom\s+"(\.[^"]*)"/g;
+		const offenders: string[] = [];
+		for (const file of files) {
+			const source = await readFile(join(import.meta.dirname, "..", "src", "extensions", "herdr", file), "utf8");
+			for (const match of source.matchAll(relativeImport)) {
+				const specifier = match[1] ?? "";
+				if (!specifier.startsWith("./")) continue;
+				if (!specifier.endsWith(".js")) offenders.push(`${file}: ${specifier}`);
+			}
+		}
+		assert.deepEqual(offenders, []);
+	});
 });

@@ -27,9 +27,9 @@ import type {
 	SessionStartEvent,
 } from "../../core/extensions/types.ts";
 import { getActiveUserBlockLabel, getOpenUserBlocks } from "../../core/extensions/user-blocks.ts";
-import { HerdrReporter } from "./reporter.ts";
-import { createSocketTransport, resolveSocketEndpoint } from "./transport.ts";
-import type { HerdrEnv } from "./types.ts";
+import { HerdrReporter } from "./reporter.js";
+import { createSocketTransport, resolveSocketEndpoint } from "./transport.js";
+import type { HerdrEnv } from "./types.js";
 
 /**
  * The subset of `ExtensionAPI` this extension uses.

@@ -8,7 +8,7 @@
  * blocked rather than silently idle.
  */
 
-import type { DesiredPaneState, PaneStateInputs } from "./types.ts";
+import type { DesiredPaneState, PaneStateInputs } from "./types.js";
 
 export function desiredPaneState(inputs: PaneStateInputs): DesiredPaneState {
 	if (inputs.openBlockCount > 0) {
