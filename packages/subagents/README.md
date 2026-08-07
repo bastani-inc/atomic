@@ -27,19 +27,19 @@ You can add optional pieces later.
 You do not need to create agents, write config, or learn slash commands. Ask Atomic for delegation in plain language:
 
 ```text
-Use reviewer to review this diff.
+Use codebase-analyzer to check what this diff actually changes.
 ```
 
 ```text
-Ask oracle for a second opinion on my current plan.
+Use codebase-locator to find the files behind the auth flow, then ask me clarification questions.
 ```
 
 ```text
-Use scout to understand this code based on our discussion then ask me clarification questions.
+Ask codebase-research-analyzer what we already decided about retries, and why.
 ```
 
 ```text
-Run parallel reviewers: one for correctness, one for tests, and one for unnecessary complexity.
+Run parallel reviewers on this diff: codebase-analyzer for correctness, debugger for failure modes, and code-simplifier for unnecessary complexity.
 ```
 
 That is enough to start.
@@ -50,10 +50,10 @@ Pi is the parent session. A subagent is a focused child Pi session with its own 
 
 When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground runs stream in the conversation. Background runs keep working and can be checked later.
 
-Installing the extension does not start an automatic reviewer in the background. It gives Pi a delegation tool. If you want every implementation reviewed, say that in your prompt or put it in your project instructions:
+Installing the extension does not start an automatic review in the background. It gives Pi a delegation tool. If you want every implementation reviewed, say that in your prompt or put it in your project instructions:
 
 ```text
-When you finish implementing, run a reviewer subagent before summarizing.
+When you finish implementing, run codebase-analyzer over the diff before summarizing.
 ```
 
 ## Good first prompts
@@ -61,15 +61,15 @@ When you finish implementing, run a reviewer subagent before summarizing.
 These cover most day-to-day use:
 
 ```text
-Ask oracle for a second opinion on my current plan. Challenge assumptions and tell me what I might be missing.
+Use codebase-analyzer to explain how this actually behaves before we change it.
 ```
 
 ```text
-Use oracle to help solve this hard bug. Have it inspect the code and propose the best next move before we edit anything.
+Use debugger to investigate this failure and propose the smallest fix before we edit anything.
 ```
 
 ```text
-Run parallel reviewers on this diff. I want one focused on correctness, one on tests, and one on unnecessary complexity.
+Run parallel reviewers on this diff. I want one focused on correctness, one on failure modes, and one on unnecessary complexity.
 ```
 
 ```text
@@ -81,7 +81,7 @@ Run a review loop on this change until reviewers stop finding fixes worth doing,
 ```
 
 ```text
-Use scout to understand the auth flow, then have planner turn that into an implementation plan.
+Use codebase-locator to map the auth flow, then codebase-analyzer to explain how it works today.
 ```
 
 Those are ordinary Pi requests. Pi decides whether to call `subagent`, which agent to use, and whether a single or parallel run makes sense.
@@ -90,17 +90,18 @@ Those are ordinary Pi requests. Pi decides whether to call `subagent`, which age
 
 | Want | Ask naturally |
 |------|---------------|
-| Get a second opinion | “Ask oracle to review this plan and challenge assumptions.” |
-| Solve a hard problem | “Use oracle to investigate this bug before we edit.” |
-| Review a diff | “Use reviewer to review this diff.” |
-| Run parallel reviewers | “Run reviewers for correctness, tests, and cleanup.” |
+| Understand unfamiliar code | “Use codebase-locator to find the auth files, then codebase-analyzer to explain them.” |
+| Recover a past decision | “Use codebase-research-analyzer to tell me what we decided about retries.” |
+| Check an external fact | “Use codebase-online-researcher to confirm this API's current contract.” |
+| Review a diff | “Use codebase-analyzer to review this diff for correctness.” |
+| Run parallel reviewers | “Run reviewers for correctness, failure modes, and cleanup.” |
 | Implement then review | “Implement this, then review it.” |
 | Review until clean | “Run a review loop on this change with a max of 3 rounds.” |
 | Execute a plan carefully | “Have worker implement this approved plan, then run reviewers and apply the feedback.” |
-| Scout before planning | “Use scout to inspect the auth flow before planning.” |
+| Diagnose a failure | “Use debugger to reproduce this test failure and fix it.” |
+| Simplify after it lands | “Use code-simplifier to clean up the change.” |
 | Run in the background | “Run this in the background.” |
 | Browse agents | “Show me the available subagents.” |
-| Use a saved workflow | “Run the review workflow on this branch.” |
 | See running work | “Show active async runs.” |
 | Check setup | “Check whether subagents are configured correctly.” |
 
@@ -110,17 +111,17 @@ The extension ships with builtin agents you can use immediately.
 
 | Agent | Use it when you want... |
 |-------|--------------------------|
-| `scout` | Fast local codebase recon: relevant files, entry points, data flow, risks, and where another agent should start. |
-| `researcher` | Web/docs research with sources: official docs, specs, benchmarks, recent changes, and a concise research brief. |
-| `planner` | A concrete implementation plan from existing context. It should read and plan, not edit code. |
-| `worker` | Implementation work, including approved oracle handoffs. It edits files, validates, and escalates unapproved decisions instead of guessing. |
-| `debugger` | Reproduction, root-cause diagnosis, and the smallest validated fix. It has the same write-capable tool set as `worker`, edits the code or content after diagnosis, and reruns the failing scenario. |
-| `reviewer` | Code review and small fixes. It checks the implementation against the task/plan, tests, edge cases, and simplicity. |
-| `context-builder` | A stronger setup pass before planning: gathers code context and writes handoff material such as `context.md` and `meta-prompt.md`. |
-| `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
-| `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
+| `codebase-locator` | Find the files, directories, and components behind a feature. A fast “super find/ls” pass that tells another agent where to start. |
+| `codebase-analyzer` | Explain how the code behaves today, with `file:line` references. The default choice for a correctness review. |
+| `codebase-pattern-finder` | Find existing implementations, usage examples, and patterns worth modeling a change on. |
+| `codebase-research-locator` | Discover prior docs, tickets, notes, and specs under `research/` and `specs/`. |
+| `codebase-research-analyzer` | Pull the decisions, constraints, and trade-offs back out of those documents. |
+| `codebase-online-researcher` | Authoritative external evidence: official docs, specs, release notes, benchmarks, and library source. |
+| `worker` | Implementation work and approved orchestrator handoffs. It edits files, validates, and escalates unapproved decisions instead of guessing. |
+| `debugger` | Reproduction, root-cause diagnosis, and the smallest validated fix. Write-capable, and it reruns the failing scenario. |
+| `code-simplifier` | Cleanup, refinement, and simplification once behavior is settled. |
 
-A simple rule of thumb: use `scout` before you understand the code, `researcher` before you trust external facts, `planner` before a bigger change, `worker` to implement, `debugger` to diagnose and fix a failure, `reviewer` to check, and `oracle` when the decision itself feels risky.
+There is no generic `reviewer` or `planner` agent; pick the specialist whose angle matches the question. Use `codebase-locator` before you know where the code lives, `codebase-analyzer` before you trust how it behaves, `codebase-online-researcher` before you trust an external fact, `worker` to implement, `debugger` to diagnose a failure, and `code-simplifier` to clean up afterward.
 
 ## Changing a builtin agent's model
 
@@ -129,16 +130,16 @@ Builtin agents inherit your current Pi default model by default. This keeps new 
 For one run, put the override in the command:
 
 ```text
-/run reviewer[model=anthropic/claude-sonnet-4:high] "Review this diff"
+/run codebase-analyzer[model=anthropic/claude-sonnet-4:high] "Review this diff"
 ```
 
-For a persistent override, edit settings. This example pins the reviewer everywhere, adds a backup model for provider failures, and keeps the other builtins on your normal default model:
+For a persistent override, edit settings. This example pins the codebase-analyzer everywhere, adds a backup model for provider failures, and keeps the other builtins on your normal default model:
 
 ```json
 {
   "subagents": {
     "agentOverrides": {
-      "reviewer": {
+      "codebase-analyzer": {
         "model": "anthropic/claude-sonnet-4",
         "thinking": "high",
         "fallbackModels": ["openai/gpt-5-mini"]
@@ -189,12 +190,12 @@ Check whether subagents and intercom are set up correctly.
 Use orchestration as parent-agent guidance, not as a runtime workflow mode. For implementation work, the recommended loop is:
 
 ```text
-clarify → planner → worker → fresh reviewers → worker
+clarify → gather context → worker → fresh reviewers → worker
 ```
 
 Use the optional prompt shortcuts below when you want the pattern to be repeatable.
 
-Packaged `planner`, `worker`, and `oracle` default to forked context when a launch omits `context`; pass `context: "fresh"` when you intentionally want a fresh child run.
+Packaged `worker` defaults to forked context when a launch omits `context`; every other builtin runs fresh. Pass `context: "fresh"` when you intentionally want a fresh `worker` run.
 
 Child-safety boundaries are enforced at runtime by typed admission policy. In-process child sessions load bundled extensions through normal discovery. The `subagent` tool may therefore be registered when the child's active tool selection permits it, including the default no-allowlist case; an explicit allowlist may omit it. Tool presence does not grant fanout: fanout is authorized only when the resolved builtin `tools` list includes `subagent`. Typed admission policy lets a non-fanout child use only `list`, `get`, `status`, and `doctor`; delegation, `resume`, and `interrupt` receive the fanout refusal. A management-restricted child is also refused `create`, `update`, and `delete`. The bundled `pi-subagents` skill remains parent-only and is stripped from child prompts, including fanout-authorized children. Non-fanout children receive boundary instructions that they are not the parent orchestrator and must not propose or run subagents; authorized fanout children get a narrower boundary that limits nested delegation to the assigned fanout. Forked child context filtering also removes parent-only subagent artifacts (including old hidden orchestration-instruction messages, slash/status/control messages, and prior parent `subagent` tool-call/tool-result history) while preserving ordinary prose and unrelated tool calls/results.
 
@@ -205,11 +206,11 @@ The package includes reusable prompt templates for common workflows. You do not 
 | Prompt | Use it for |
 |--------|------------|
 | `/parallel-review` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
-| `/review-loop` | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped. |
-| `/parallel-research` | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs. |
-| `/parallel-context-build` | Run `context-builder` agents in parallel to produce planning handoff context and meta-prompts. |
-| `/parallel-handoff-plan` | Combine external research and `context-builder` passes into an implementation handoff plan and meta-prompt. |
-| `/gather-context-and-clarify` | Scout/research first, then ask the user the clarification questions that matter. |
+| `/review-loop` | Run parent-controlled write, review, and fix cycles until clean or capped. `debugger` writes fixes for bugs, `code-simplifier` for cleanup. |
+| `/parallel-research` | Combine `codebase-online-researcher` with local code specialists for external evidence, local context, and practical tradeoffs. |
+| `/parallel-context-build` | Run local code and research specialists in parallel to produce handoff context and meta-prompts. |
+| `/parallel-handoff-plan` | Combine external research with local context passes into an implementation handoff plan and meta-prompt. |
+| `/gather-context-and-clarify` | Locate and analyze first, then ask the user the clarification questions that matter. |
 | `/parallel-cleanup` | Run review-only cleanup passes after implementation. |
 
 Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
@@ -231,7 +232,7 @@ Run this implementation in the background. If the worker gets blocked or needs a
 ```
 
 ```text
-Ask oracle to review this plan. If it sees a decision I need to make, have it ask me instead of assuming.
+Ask codebase-analyzer to review this plan. If it sees a decision I need to make, have it ask me instead of assuming.
 ```
 
 The child can use one dedicated coordination tool:
@@ -272,13 +273,13 @@ Commands validate agent names locally, support tab completion, and send results 
 Use `->` to separate tasks and give each task its own prompt:
 
 ```text
-/parallel scanner "find security issues" -> reviewer "check code style"
+/parallel codebase-pattern-finder "find security issues" -> codebase-analyzer "check code style"
 ```
 
 Both double and single quotes work. You can also use `--` as a delimiter:
 
 ```text
-/parallel scout reviewer -- check for security issues
+/parallel codebase-locator codebase-analyzer -- check for security issues
 ```
 
 Tasks without a prompt use the first available task as a fallback.
@@ -288,8 +289,8 @@ Tasks without a prompt use the first available task as a fallback.
 Append `[key=value,...]` to an agent name to override defaults for that step:
 
 ```text
-/run scout[model=anthropic/claude-sonnet-4] summarize this codebase
-/parallel reviewer[skills=code-review+security] "review backend" -> reviewer[model=openai/gpt-5-mini] "review frontend"
+/run codebase-locator[model=anthropic/claude-sonnet-4] summarize this codebase
+/parallel codebase-analyzer[skills=code-review+security] "review backend" -> codebase-analyzer[model=openai/gpt-5-mini] "review frontend"
 ```
 
 | Key | Example | Description |
@@ -308,27 +309,27 @@ Set `output=false`, `reads=false`, or `skills=false` to disable that behavior ex
 Add `--bg` to run in the background:
 
 ```text
-/run scout "audit the codebase" --bg
-/parallel scout "scan frontend" -> scout "scan backend" --bg
+/run codebase-locator "audit the codebase" --bg
+/parallel codebase-locator "scan frontend" -> codebase-locator "scan backend" --bg
 ```
 
 Add `--fork` to start each child from a real branched session created from the parent’s current leaf:
 
 ```text
-/run reviewer "review this diff" --fork
-/parallel scout "audit frontend" -> reviewer "audit backend" --fork
+/run codebase-analyzer "review this diff" --fork
+/parallel codebase-locator "audit frontend" -> codebase-analyzer "audit backend" --fork
 ```
 
 You can combine them in either order:
 
 ```text
-/run reviewer "review this diff" --fork --bg
-/run reviewer "review this diff" --bg --fork
+/run codebase-analyzer "review this diff" --fork --bg
+/run codebase-analyzer "review this diff" --bg --fork
 ```
 
 Background runs use the same in-process continuation as foreground detach. A successful acknowledgement means the canonical child path was returned and completion is pending; the live child remains owned by the parent process and the jobs widget tracks it. **`async: true` does not survive parent exit.** If the parent exits, the in-flight run ends; its persisted identity/session can be listed and resumed later.
 
-The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
+`worker` is designed for an explicit decision loop. A typical pattern is to ask a read-only specialist such as `codebase-analyzer` or `debugger` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
 ## Non-interactive execution
 
@@ -350,9 +351,9 @@ Agent locations, lowest to highest priority:
 
 Project discovery also reads legacy `.agents/**/*.md` and `.pi/agents/**/*.md` files. Nested subdirectories are discovered recursively. If primary Atomic and legacy paths define the same parsed runtime agent name, the primary `.atomic/agents/` definition wins. Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 
-Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Atomic default model unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
+Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Atomic default model unless you set `subagents.agentOverrides.<name>.model`. `worker` is the implementation agent for normal tasks and approved orchestrator handoffs.
 
-The `researcher` builtin uses `web_search`, `fetch_content`, and `get_search_content`; those require [pi-web-access](https://github.com/nicobailon/pi-web-access):
+The `codebase-online-researcher` builtin uses `web_search`, `fetch_content`, and `get_search_content`; those require [pi-web-access](https://github.com/nicobailon/pi-web-access):
 
 ```bash
 pi install npm:pi-web-access
@@ -371,7 +372,7 @@ Example:
 {
   "subagents": {
     "agentOverrides": {
-      "reviewer": {
+      "codebase-analyzer": {
         "inheritProjectContext": false
       }
     }
@@ -396,7 +397,7 @@ Use these fields when an agent should see more:
 | `inheritSkills: true` | Let the child see Pi’s discovered skills catalog. |
 | `defaultContext: fork` | Use forked session context when a launch omits `context`; explicit `context: "fresh"` still wins. |
 
-Builtin agents opt into project instruction inheritance by default so they follow repo-specific rules out of the box. `delegate` also uses append mode because its job is orchestration inside the parent workflow.
+Builtin agents opt into project instruction inheritance by default so they follow repo-specific rules out of the box.
 
 ### Agent frontmatter
 
@@ -404,8 +405,8 @@ A typical agent looks like this:
 
 ```yaml
 ---
-name: scout
-# Optional: registers this as code-analysis.scout while preserving name: scout
+name: api-auditor
+# Optional: registers this as code-analysis.api-auditor while preserving name: api-auditor
 package: code-analysis
 description: Fast codebase recon
 tools: read, search, find, ls, bash, mcp:chrome-devtools
@@ -431,7 +432,7 @@ Important fields:
 
 | Field | Notes |
 |-------|-------|
-| `package` | Optional package identifier. A file with `name: scout` and `package: code-analysis` registers as `code-analysis.scout`; serialization keeps `name` and `package` separate. |
+| `package` | Optional package identifier. A file with `name: api-auditor` and `package: code-analysis` registers as `code-analysis.api-auditor`; serialization keeps `name` and `package` separate. |
 | `tools` | Builtin tool allowlist. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
 | `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
@@ -494,9 +495,9 @@ Legacy `.pi` and `~/.pi/agent` skill/settings paths are also checked for compati
 Use agent defaults, override them at runtime, or disable them:
 
 ```ts
-{ agent: "scout", task: "..." }
-{ agent: "scout", task: "...", skill: "tmux, safe-bash" }
-{ agent: "scout", task: "...", skill: false }
+{ agent: "codebase-locator", task: "..." }
+{ agent: "codebase-locator", task: "...", skill: "tmux, safe-bash" }
+{ agent: "codebase-locator", task: "...", skill: false }
 ```
 
 For subagent calls, `skill` overrides the agent default; `false` disables skills for that call.
@@ -534,11 +535,11 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 ```ts
 // Single agent
 { agent: "worker", task: "refactor auth" }
-{ agent: "scout", task: "find todos", maxOutput: { lines: 1000 } }
-{ agent: "scout", task: "investigate", output: false }
-{ agent: "scout", task: "write a large report", output: "reports/scout.md", outputMode: "file-only" }
+{ agent: "codebase-locator", task: "find todos", maxOutput: { lines: 1000 } }
+{ agent: "codebase-locator", task: "investigate", output: false }
+{ agent: "codebase-locator", task: "write a large report", output: "reports/codebase-locator.md", outputMode: "file-only" }
 
-{ agent: "scout", task: "review the design", cwd: "packages/api", reads: ["docs/design.md", "../shared.md"] }
+{ agent: "codebase-locator", task: "review the design", cwd: "packages/api", reads: ["docs/design.md", "../shared.md"] }
 // Forked context
 { agent: "worker", task: "continue this thread", context: "fork" }
 // Maintain a run-scoped progress.md under isolated artifact storage
@@ -546,9 +547,9 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 
 
 // Parallel
-{ tasks: [{ agent: "scout", task: "a" }, { agent: "reviewer", task: "b" }] }
-{ tasks: [{ agent: "scout", task: "audit auth", count: 3 }] }
-{ tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "reviewer", task: "audit backend" }], context: "fork" }
+{ tasks: [{ agent: "codebase-locator", task: "a" }, { agent: "codebase-analyzer", task: "b" }] }
+{ tasks: [{ agent: "codebase-locator", task: "audit auth", count: 3 }] }
+{ tasks: [{ agent: "codebase-locator", task: "audit frontend" }, { agent: "codebase-analyzer", task: "audit backend" }], context: "fork" }
 
 
 // Worktree isolation
@@ -565,15 +566,15 @@ Agent definitions are not loaded into context by default. Management actions let
 ```ts
 { action: "list" }
 { action: "list", agentScope: "project" }
-{ action: "get", agent: "scout" }
-{ action: "get", agent: "code-analysis.scout" }
+{ action: "get", agent: "codebase-locator" }
+{ action: "get", agent: "code-analysis.api-auditor" }
 
 { action: "create", config: {
   name: "Code Scout",
   package: "code-analysis",
   description: "Scans codebases for patterns and issues",
   scope: "user",
-  systemPrompt: "You are a code scout...",
+  systemPrompt: "You are a code codebase-locator...",
   systemPromptMode: "replace",
   inheritProjectContext: false,
   inheritSkills: false,
@@ -581,7 +582,7 @@ Agent definitions are not loaded into context by default. Management actions let
   fallbackModels: ["openai/gpt-5-mini", "anthropic/claude-haiku-4-5"],
   tools: "read, bash, mcp:github/search_repositories",
   extensions: "",
-  skills: "parallel-scout",
+  skills: "parallel-codebase-locator",
   thinking: "high",
   output: "context.md",
   reads: "shared-context.md",
@@ -589,8 +590,8 @@ Agent definitions are not loaded into context by default. Management actions let
 }}
 
 
-{ action: "update", agent: "code-analysis.scout", config: { model: "openai/gpt-4o" } }
-{ action: "delete", agent: "scout" }
+{ action: "update", agent: "code-analysis.api-auditor", config: { model: "openai/gpt-4o" } }
+{ action: "delete", agent: "codebase-locator" }
 ```
 
 `create` uses `config.scope`, not `agentScope`. `config.name` is the local frontmatter name; optional `config.package` registers the runtime name as `{package}.{name}` and is saved as separate `name` and `package` frontmatter. `update` and `delete` use the runtime name and `agentScope` only when the same runtime name exists in multiple scopes. To clear optional string fields, including `package`, set them to `false` or `""`.
@@ -612,7 +613,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
-| `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |
+| `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `worker` defaults to `fork`; every other builtin runs fresh. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
 | `async` | boolean | false | Background execution. Programmatic calls start without prompting in either foreground or background mode. |
 | `cwd` | string | runtime cwd | Override working directory. |
@@ -809,7 +810,7 @@ Press `CTRL+O` to expand the full streaming view with complete output per step.
 Pass `share: true` to export a full session to HTML, upload it to a secret GitHub Gist through your `gh` credentials, and return a `https://shittycodingagent.ai/session/?<gistId>` URL.
 
 ```ts
-{ agent: "scout", task: "...", share: true }
+{ agent: "codebase-locator", task: "...", share: true }
 ```
 
 This is disabled by default. Session data may contain source code, paths, environment variables, credentials, or other sensitive output. You need `gh` installed and authenticated.
