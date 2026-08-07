@@ -1,0 +1,30 @@
+53fa77ccd8a279eb87e92294ef3687b03ff80112 2026-08-07 Armin Ronacher Release v0.84.1
+6ba4d23e7c953f601fca4bd3c8488e1e99d96fc8 2026-08-07 Armin Ronacher docs: audit changelogs since v0.84.0
+ae1e410e37ce335fd14b50c0a590349bd9cfc848 2026-08-07 Cristina Poncela Cubeiro fix: sqlite queries optimizations (#7727)
+79f72fccecd1465930516fffbb53bfbd5b430da3 2026-08-07 Thomas Mustier docs(tui): Clarify TUI test runner and remove stale Vitest  config (#7732)
+666d8972ff0b6da5067e05973249760964194769 2026-08-07 Armin Ronacher fix(coding-agent): preserve TUI wrapper routing (closes #7731)
+7cb2a51c0512097900bb9bfdd5eec3249eebb843 2026-08-07 Armin Ronacher fix(coding-agent): reduce automatic theme detection delay
+4688e4f92f38c9b82523454d8ba9eba7c8753700 2026-08-06 Zhichao Li docs(coding-agent): reconcile keybinding behavior (#7729)
+4e64de6950a16bebf40f067a5e735576fb8a33dd 2026-08-06 Armin Ronacher fix(coding-agent): soften PI environment guideline
+c96bfaccd00d85e946493bc009b9613e5890ca7a 2026-08-06 Armin Ronacher fix(coding-agent): support Windows fullscreen right-click paste
+7d046bcf21cb934bc46cd374e531801454e558fc 2026-08-06 Armin Ronacher fix(coding-agent): announce only verified npm releases
+a3e93ec85ea90ce94a305ab6c5ca96fba74baf24 2026-08-06 Armin Ronacher feat(tui): add half-page transcript scrolling
+171c6b520bee23bed76fd34b730332f43067dddd 2026-08-06 Volkan Sagcan fix(tui): correct multi-click text selection (#7733)
+6fb2d766aee340bed96fe81d55603c1670b3af2a 2026-08-06 Christian Klotz feat(coding-agent): add configurable Harness factory (#7686)
+a261366bde90c24826eb77bfc600f1bb62ad36e2 2026-08-06 Armin Ronacher feat(coding-agent): add auth preflight
+58fc0431a7e3bb573b5943aa8e3af7a4ce6109ad 2026-08-06 Armin Ronacher feat(tui): select words and lines with multi-click (closes #7725)
+fc3554e16defffcf76553b1bd12f676adf26d0a4 2026-08-06 Armin Ronacher fix(tui): reduce mouse tracking in terminal multiplexers
+9b17fd5bb3fe9be26e1e6099cbce3c6b5e1a6f5b 2026-08-06 Armin Ronacher fix: verify npm package registration before release
+9b4f6a9e1f8f1db0d9d324456db108e2adc9253d 2026-08-06 Armin Ronacher doc(changelog): Fix link
+055ecce080ab38a4ecf4e6f61e9773b3f0469b1b 2026-08-06 Armin Ronacher feat(agent): add SQLite SQL template queries
+c03d78bdce7b154672084dcf286f4fbe2de466ac 2026-08-06 Mehmet Aras feat(ai): add Qwen Token Plan Individual provider (#7659)
+9ab91fb93e6bb755051de8d000a347a903dd32ec 2026-08-06 Christian Klotz feat(coding-agent): expose tool prompt contributions (#7671)
+beeca6ab740b166a6bbcf5627a3844985215f1ef 2026-08-06 Ilya fix(coding-agent): disable bunfig autoload in compiled binaries (#7685)
+1eb988cfe88fb0ff740ff62583d2f16359f7b6b0 2026-08-06 muyiyr feat(agent): allow blocked tool calls to terminate (#7715)
+1532c99943b894fe1d12e15ac388c7b1887ca403 2026-08-06 wesleyzhangwq fix(agent): reject reset during active runs (#7717)
+bde81c84405514c8b0f57c34405c152fb129c0ce 2026-08-06 github-actions[bot] chore: approve contributors from issue #7703
+d406aa3946ce5c6da4e67afc94693dcf3f6ff084 2026-08-06 Cristina Poncela Cubeiro docs: reserve L1
+aa601d7ba0e64e063d2b16d850d7bf32787b49ab 2026-08-06 Armin Ronacher fix(tui): correct LaTeX whitespace and matrix layouts
+8199aca40c9cf27aff3de7ba852e420985a54bf5 2026-08-06 Armin Ronacher fix: publish server package
+95a6aa7bd02f37b19a4b19db7e134b07413b0bf3 2026-08-06 Armin Ronacher fix: isolate cross-platform native dependency install
+38e8f2811369c78e165a573df65f61d095645d02 2026-08-06 Armin Ronacher Add [Unreleased] section for next cycle
