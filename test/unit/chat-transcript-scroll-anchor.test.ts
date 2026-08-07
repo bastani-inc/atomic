@@ -3,6 +3,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { describe, test } from "vitest";
 import {
 	ChatTranscriptComponent,
+	ScrollableChatTranscriptComponent,
 	ScrollableComponentViewport,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
 
@@ -250,5 +251,64 @@ describe("ScrollableComponentViewport scroll anchor", () => {
 		const afterCompaction = viewport.render(WIDTH);
 		assert.equal(afterCompaction[0], "entry-10", "the viewer must stay on the entry they were reading");
 		assert.deepEqual(afterCompaction, anchored);
+	});
+});
+
+describe("ScrollableChatTranscriptComponent anchoring", () => {
+	/**
+	 * The exported scrollable transcript builds its inner component WITHOUT a
+	 * cache key, deliberately: that is what lets it reflect entries mutated in
+	 * place. It is therefore not a windowed component, so an earlier revision of
+	 * this fix did not reach it -- `rowSegments` returned `[]` for anything that
+	 * was not windowed, and the reviewer's drift survived on this class alone.
+	 *
+	 * A static component can still say which entry produced which rows, and it is
+	 * still the single component spanning the anchor, so the anchor asks it too.
+	 *
+	 * Entries use the assistant role: `needsLeadingSpacer` prepends a blank row to
+	 * user/custom/notice/system/summary entries, which would park the viewer on a
+	 * spacer rather than on an identifiable entry.
+	 */
+	const WIDE = 40;
+	const ROWS = 10;
+
+	function build(entries: Array<{ role: "assistant"; text: string }>) {
+		const scrollable = new ScrollableChatTranscriptComponent(entries, (entry) => ({
+			render: () => [entry.text],
+			invalidate: () => {},
+		}));
+		scrollable.setVisibleRows(ROWS);
+		return scrollable;
+	}
+
+	test("entries removed above the viewer keep the anchored entry in place", () => {
+		const entries = Array.from({ length: 30 }, (_, i) => ({ role: "assistant" as const, text: `entry-${i}` }));
+		const scrollable = build(entries);
+
+		scrollable.render(WIDE);
+		scrollable.handleInput("\x1b[5~"); // PageUp
+		scrollable.handleInput("\x1b[5~");
+		const anchored = scrollable.render(WIDE);
+		const firstRow = anchored[0];
+		assert.ok(firstRow?.startsWith("entry-"), `precondition: viewer parked on an entry, got ${firstRow}`);
+
+		// Remove three entries strictly above the anchored one.
+		const anchoredIndex = entries.findIndex((entry) => entry.text === firstRow);
+		assert.ok(anchoredIndex >= 3, "precondition: at least three entries sit above the anchor");
+		entries.splice(anchoredIndex - 3, 3);
+
+		const after = scrollable.render(WIDE);
+		assert.equal(after[0], firstRow, "removing entries above the viewer must not move the anchored entry");
+		assert.deepEqual(after, anchored);
+	});
+
+	test("an entry mutated in place is still reflected", () => {
+		// The reason this class has no cache key. Guarding the regression that
+		// switching it to a windowed component would have caused.
+		const entries = [{ role: "assistant" as const, text: "first" }];
+		const scrollable = build(entries);
+		assert.equal(scrollable.render(WIDE)[0], "first");
+		entries[0]!.text = "updated";
+		assert.equal(scrollable.render(WIDE)[0], "updated");
 	});
 });

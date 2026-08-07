@@ -71,6 +71,13 @@ interface StaticComponentRows {
 	readonly kind: "static";
 	readonly lines: readonly string[];
 	readonly rowCount: number;
+	/**
+	 * Present when a static component can still identify its own rows. A
+	 * transcript built without a cache key renders every row each frame rather
+	 * than windowing, but it knows just as well which entry produced which rows,
+	 * and the anchor needs that whenever it is the component spanning the anchor.
+	 */
+	readonly segments?: readonly RowWindowSegment[] | undefined;
 }
 
 type ComponentRows = WindowedComponentRows | StaticComponentRows;
@@ -101,6 +108,10 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 
 	private readonly cacheKey: ChatTranscriptCacheKey<TEntry> | undefined;
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
+	/** Per-entry heights recorded by the most recent `renderAllRows`. */
+	private staticSegments: readonly RowWindowSegment[] = [];
+	/** Width those heights were measured at; they mean nothing at another width. */
+	private staticSegmentsWidth: number | undefined;
 
 	constructor(
 		entries: readonly TEntry[],
@@ -132,7 +143,15 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	 * One segment per cached entry block, identified by the entry object itself.
 	 */
 	rowSegments(width: number): readonly RowWindowSegment[] {
-		if (!this.supportsRowWindow) return [];
+		if (!this.supportsRowWindow) {
+			// Recorded by the last renderAllRows. The viewport measures a static
+			// component by rendering it and only then reads its segments, so this
+			// is populated for the frame being measured. A width mismatch means the
+			// heights describe a different layout, and reporting them would move the
+			// anchor by a stale delta; the caller falls back to whole-component
+			// accounting instead.
+			return this.staticSegmentsWidth === width ? this.staticSegments : [];
+		}
 		this.ensureBlockCache(width);
 		const segments: RowWindowSegment[] = [];
 		for (const block of this.blockCache) {
@@ -198,12 +217,27 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		}
 	}
 
+	/**
+	 * Render every entry, recording each one's height as it goes.
+	 *
+	 * The heights are what `rowSegments` reports on this path. They are a
+	 * by-product of work this method already does, so identifying rows costs
+	 * nothing extra and, unlike a cache key, cannot miss an entry mutated in
+	 * place -- which is the behaviour a transcript without a cache key exists to
+	 * provide.
+	 */
 	private renderAllRows(width: number): string[] {
 		const lines: string[] = [];
+		const segments: RowWindowSegment[] = [];
 		for (let index = 0; index < this.entries.length; index += 1) {
 			const entry = this.entries[index];
-			if (entry !== undefined) lines.push(...this.renderEntryBlock(this.renderEntry(entry), entry, index, width));
+			if (entry === undefined) continue;
+			const block = this.renderEntryBlock(this.renderEntry(entry), entry, index, width);
+			segments.push({ id: entry, rows: block.length });
+			lines.push(...block);
 		}
+		this.staticSegments = segments;
+		this.staticSegmentsWidth = width;
 		return lines;
 	}
 
@@ -319,10 +353,12 @@ export class ScrollableComponentViewport implements Component {
 		//
 		// Per-component row counts alone cannot place a change that happens
 		// inside the component holding the anchor -- and in the chat host the
-		// whole transcript is one component, so that is the normal case. Windowed
-		// components can hand over a row map, which turns the "where" question
-		// into "where did the anchored segment go".
-		const segments = componentRows.map((rows) => (rows.kind === "windowed" ? rows.segments : undefined));
+		// whole transcript is one component, so that is the normal case. A
+		// component that can hand over a row map turns the "where" question into
+		// "where did the anchored segment go". Both kinds may supply one: a
+		// transcript built without a cache key is not windowed, but it is still
+		// one component spanning the anchor and still knows its own rows.
+		const segments = componentRows.map((rows) => rows.segments);
 		if (this.scrollFromBottom > 0 && this.lastWidth === width) {
 			const previousMaxScroll = Math.max(0, this.lastLineCount - this.visibleRows);
 			const anchorRow = Math.max(0, previousMaxScroll - this.scrollFromBottom);
@@ -362,10 +398,15 @@ export class ScrollableComponentViewport implements Component {
 				};
 			}
 			const lines = component.render(width);
+			// Read segments only after rendering: a static transcript records its
+			// per-entry heights as a by-product of that render, so asking first
+			// would return the previous frame's layout.
+			const segments = segmentReporter(component)?.rowSegments(width);
 			return {
 				kind: "static",
 				lines,
 				rowCount: lines.length,
+				segments: segments !== undefined && segments.length > 0 ? segments : undefined,
 			};
 		});
 	}
@@ -495,6 +536,24 @@ function isRowWindowComponent(component: Component): component is RowWindowCompo
 		typeof candidate.rowCount === "function" &&
 		typeof candidate.renderRows === "function"
 	);
+}
+
+/**
+ * A component that can identify its own rows without being windowed.
+ *
+ * `ScrollableChatTranscriptComponent` builds its transcript without a cache key
+ * — deliberately, because that is what lets it reflect entries mutated in place
+ * — so it is not a `RowWindowComponent` and renders every row each frame. It
+ * still knows which entry produced which rows, and it is still the component
+ * spanning the anchor, so the anchor needs to ask.
+ */
+function segmentReporter(
+	component: Component,
+): { rowSegments(width: number): readonly RowWindowSegment[] } | undefined {
+	const candidate = component as Partial<RowWindowComponent>;
+	return typeof candidate.rowSegments === "function"
+		? (candidate as { rowSegments(width: number): readonly RowWindowSegment[] })
+		: undefined;
 }
 
 export class ScrollableChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> implements Component {
