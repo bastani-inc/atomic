@@ -106,13 +106,13 @@ describe("StageChatView attached mid-stream", () => {
 		partial.content.push({ type: "text", text: "" });
 		emit({
 			type: "message_update",
-			assistantMessageEvent: { type: "text_start", contentIndex: 0, partial },
+			assistantMessageEvent: { type: "text_start", contentIndex: 0 },
 		} as unknown as AgentSessionEvent);
 		for (const delta of ["split ", "deltas"]) {
 			partial.content[0]!.text += delta;
 			emit({
 				type: "message_update",
-				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial },
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta },
 			} as unknown as AgentSessionEvent);
 		}
 
