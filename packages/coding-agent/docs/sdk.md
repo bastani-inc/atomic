@@ -474,8 +474,12 @@ const { session } = await createAgentSession({
   modelRuntime,
 });
 
-// Runtime API key override (not persisted to disk)
-await modelRuntime.setRuntimeApiKey("anthropic", "sk-my-temp-key");
+// Runtime API key override (not persisted to disk). Setting the key updates
+// auth state; refresh the provider explicitly when its catalog must be current.
+const providerId = "anthropic";
+const authController = new AbortController();
+await modelRuntime.setRuntimeApiKey(providerId, "sk-my-temp-key", { signal: authController.signal });
+await modelRuntime.refresh({ providers: [providerId], signal: authController.signal });
 
 // Custom credential and model configuration locations
 const customRuntime = await ModelRuntime.create({
@@ -1009,9 +1013,13 @@ import {
 const authStorage = AuthStorage.create("/custom/agent/auth.json");
 const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 
-// Runtime API key override (not persisted)
+// Runtime API key override (not persisted). setRuntimeApiKey updates auth state;
+// the scoped refresh updates that provider's catalog.
 if (process.env.MY_KEY) {
-  await modelRuntime.setRuntimeApiKey("anthropic", process.env.MY_KEY);
+  const providerId = "anthropic";
+  const authController = new AbortController();
+  await modelRuntime.setRuntimeApiKey(providerId, process.env.MY_KEY, { signal: authController.signal });
+  await modelRuntime.refresh({ providers: [providerId], signal: authController.signal });
 }
 
 // Inline tool

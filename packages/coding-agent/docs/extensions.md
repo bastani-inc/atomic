@@ -655,8 +655,7 @@ pi.on("message_start", async (event, ctx) => {
 });
 
 pi.on("message_update", async (event, ctx) => {
-  // event.message
-  // event.assistantMessageEvent (token-by-token stream event)
+  // event.assistantMessageEvent (token-by-token delta; no cumulative message)
 });
 
 pi.on("message_end", async (event, ctx) => {
@@ -1811,14 +1810,16 @@ pi.registerProvider("corporate-ai", {
   models: [...],
   oauth: {
     name: "Corporate AI (SSO)",
-    async login(callbacks) {
+    async login(callbacks, signal) {
       // Custom OAuth flow
       callbacks.onAuth({ url: "https://sso.corp.com/..." });
       const code = await callbacks.onPrompt({ message: "Enter code:" });
+      signal.throwIfAborted();
       return { refresh: code, access: code, expires: Date.now() + 3600000 };
     },
-    async refreshToken(credentials) {
-      // Refresh logic
+    async refreshToken(credentials, signal) {
+      // Forward signal to the refresh request.
+      signal?.throwIfAborted();
       return credentials;
     },
     getApiKey(credentials) {

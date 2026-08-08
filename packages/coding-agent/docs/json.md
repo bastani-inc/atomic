@@ -47,7 +47,7 @@ type AgentEvent =
   | { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }
   // Message lifecycle
   | { type: "message_start"; message: AgentMessage }
-  | { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent }
+  | { type: "message_update"; assistantMessageEvent: AssistantMessageEvent }
   | { type: "message_end"; message: AgentMessage }
   // Tool execution
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
@@ -81,7 +81,7 @@ Followed by events as they occur:
 {"type":"agent_start"}
 {"type":"turn_start"}
 {"type":"message_start","message":{"role":"assistant","content":[],...}}
-{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_delta","delta":"Hello",...}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Hello",...}}
 {"type":"message_end","message":{...}}
 {"type":"turn_end","message":{...},"toolResults":[]}
 {"type":"agent_end","messages":[...]}
