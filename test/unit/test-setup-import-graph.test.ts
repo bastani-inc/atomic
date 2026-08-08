@@ -30,9 +30,31 @@ const SETUP_FILE = "test/setup-workflow-durability.ts";
  */
 const MAX_REACHABLE_MODULES = 45;
 
+/**
+ * Every static and dynamic import form that can pull a module into the graph.
+ *
+ * A guard that only recognizes `from "…"` can be walked straight past: a
+ * side-effect import or a dynamic `import()` is a real edge that costs the same
+ * transform, and matching one narrow source form would let an expensive module
+ * in without tripping the ceiling. Biome enforces double quotes repo-wide, but
+ * single quotes are matched too so the guard does not depend on lint ordering.
+ */
+const RELATIVE_SPECIFIER_PATTERNS: readonly RegExp[] = [
+	/\bfrom\s*["'](\.[^"']+)["']/g, // import … from "x" / export … from "x"
+	/^\s*import\s+["'](\.[^"']+)["']/gm, // side effect: import "x"
+	/\bimport\s*\(\s*["'](\.[^"']+)["']/g, // dynamic: import("x")
+];
+
 /** Relative specifiers in a TypeScript source, as written (`.js` per ESM convention). */
 function relativeImports(source: string): string[] {
-	return [...source.matchAll(/from\s+"(\.[^"]+)"/g)].map((match) => match[1] as string);
+	const found = new Set<string>();
+	for (const pattern of RELATIVE_SPECIFIER_PATTERNS) {
+		for (const match of source.matchAll(pattern)) {
+			const specifier = match[1];
+			if (specifier !== undefined) found.add(specifier);
+		}
+	}
+	return [...found];
 }
 
 /** Every repository module transitively reachable from `entry` through relative imports. */
