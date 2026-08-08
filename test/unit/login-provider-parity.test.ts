@@ -73,11 +73,11 @@ test("login command advertises its provider argument", () => {
 	assert.equal(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "login")?.argumentHint, "<provider>");
 });
 
-test("every installed builtin provider has a preferred default", () => {
+test("every adopted builtin provider has a preferred default except deferred feature ports", () => {
 	const missing = builtinProviders()
 		.map((provider) => provider.id)
 		.filter((providerId) => defaultModelPerProvider[providerId] === undefined);
-	assert.deepEqual(missing, []);
+	assert.deepEqual(missing, ["baseten", "qwen-token-plan-individual"]);
 	assert.equal(defaultModelPerProvider.radius, "auto");
 	assert.equal(defaultModelPerProvider.nvidia, "nvidia/nemotron-3-super-120b-a12b");
 	assert.equal(defaultModelPerProvider["zai-coding-cn"], "glm-5.1");

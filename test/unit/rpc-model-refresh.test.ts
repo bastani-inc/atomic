@@ -114,7 +114,7 @@ test("refresh_models uses newly persisted credentials for forced dynamic discove
 		}));
 		assert.equal(await childAuth.read("dynamic-login"), undefined);
 
-		const response = await handle({ type: "refresh_models", allowNetwork: false, force: true });
+		const response = await handle({ type: "refresh_models", allowNetwork: true, force: true });
 
 		assert.deepEqual(await childAuth.read("dynamic-login"), { type: "api_key", key: "new-dynamic-key" });
 		assert.equal(observedKey, "new-dynamic-key");

@@ -1,15 +1,47 @@
 import { once } from "node:events";
 import { createServer, type RequestListener, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { AuthContext, AuthPrompt, ModelsStoreEntry } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import type {
+	AuthContext,
+	AuthPrompt,
+	ModelsPublication,
+	ModelsRefreshOptions,
+	ModelsStoreEntry,
+	RefreshModelsContext,
+} from "@earendil-works/pi-ai";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
+import type { ExtensionCommandContext } from "../src/core/extensions/types.ts";
 import { LlamaClient, type LlamaProgress, normalizeLlamaServerUrl } from "../src/extensions/llama/client.ts";
 import { findHuggingFaceToken, HuggingFaceClient } from "../src/extensions/llama/huggingface.ts";
 import llamaExtension from "../src/extensions/llama/index.ts";
 import { createLlamaProvider, LLAMA_PROVIDER_ID } from "../src/extensions/llama/provider.ts";
+import type { LlamaUi } from "../src/extensions/llama/ui.ts";
 
+const llamaUiProbe = vi.hoisted(() => ({ connectionErrors: [] as string[] }));
+
+vi.mock("../src/extensions/llama/ui.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/extensions/llama/ui.ts")>();
+	return {
+		...actual,
+		showLlamaUi: async (_ctx: ExtensionCommandContext, run: (ui: LlamaUi) => Promise<void>): Promise<void> => {
+			await run({
+				showModels: async () => ({ type: "close" }),
+				select: async () => undefined,
+				confirm: async () => false,
+				connectionError: async (_serverUrl, message) => {
+					llamaUiProbe.connectionErrors.push(message);
+					return "close";
+				},
+				searchModels: async () => undefined,
+				showStatus: () => {},
+				progress: async () => {},
+				updateProgress: () => {},
+			});
+		},
+	};
+});
 const servers: Server[] = [];
 
 async function listen(handler: RequestListener): Promise<{ server: Server; url: string }> {
@@ -36,6 +68,7 @@ afterEach(async () => {
 				}),
 		),
 	);
+	llamaUiProbe.connectionErrors.length = 0;
 });
 
 describe("llama.cpp extension", () => {
@@ -54,6 +87,49 @@ describe("llama.cpp extension", () => {
 		expect(
 			runtime.pendingProviderRegistrations.map((entry) => ("provider" in entry ? entry.provider.id : entry.name)),
 		).toEqual([LLAMA_PROVIDER_ID]);
+	});
+
+	it.each([
+		{
+			name: "aborted refreshes",
+			result: { aborted: true, errors: new Map<string, Error>() },
+			expected: "Model catalog refresh timed out.",
+		},
+		{
+			name: "provider refresh errors",
+			result: { aborted: false, errors: new Map([[LLAMA_PROVIDER_ID, new Error("refresh failed")]]) },
+			expected: "refresh failed",
+		},
+	])("reports $name and scopes the production refresh", async ({ result, expected }) => {
+		const { url } = await listen((_request, response) => json(response, { data: [] }));
+		const runtime = createExtensionRuntime();
+		const extension = await loadExtensionFromFactory(
+			llamaExtension,
+			process.cwd(),
+			createEventBus(),
+			runtime,
+			"<inline:llama.cpp>",
+		);
+		const refresh = vi.fn(async (_options: ModelsRefreshOptions) => result);
+		const context = {
+			mode: "tui",
+			ui: { notify: vi.fn() },
+			modelRegistry: {
+				getProviderAuth: async () => ({
+					auth: { apiKey: "local", baseUrl: `${url}/v1` },
+					env: { LLAMA_BASE_URL: url },
+				}),
+				refresh,
+			},
+		} as unknown as ExtensionCommandContext;
+
+		await extension.commands.get("llama")?.handler("", context);
+
+		expect(llamaUiProbe.connectionErrors).toEqual([expected]);
+		expect(refresh).toHaveBeenCalledOnce();
+		const refreshOptions = refresh.mock.calls[0]?.[0];
+		expect(refreshOptions?.providers).toEqual([LLAMA_PROVIDER_ID]);
+		expect(refreshOptions?.signal).toBeInstanceOf(AbortSignal);
 	});
 
 	it("normalizes management and inference URLs", () => {
@@ -91,15 +167,17 @@ describe("llama.cpp extension", () => {
 
 	it("persists and restores loaded models for cache-only startup refreshes", async () => {
 		let cachedEntry: ModelsStoreEntry | undefined;
-		const store = {
-			read: async () => cachedEntry,
-			write: async (entry: ModelsStoreEntry) => {
-				cachedEntry = structuredClone(entry);
+		const refreshContext = (allowNetwork: boolean): RefreshModelsContext => ({
+			credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
+			stored: cachedEntry,
+			allowNetwork,
+			signal: new AbortController().signal,
+			publish: async ({ persist, update }: ModelsPublication): Promise<boolean> => {
+				if (persist !== undefined) cachedEntry = persist === null ? undefined : structuredClone(persist);
+				update?.();
+				return true;
 			},
-			delete: async () => {
-				cachedEntry = undefined;
-			},
-		};
+		});
 		const { url } = await listen((request, response) => {
 			if (request.url === "/models") {
 				json(response, {
@@ -114,20 +192,12 @@ describe("llama.cpp extension", () => {
 		});
 
 		const first = createLlamaProvider();
-		await first.provider.refreshModels?.({
-			credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
-			store,
-			allowNetwork: true,
-		});
+		await first.provider.refreshModels?.(refreshContext(true));
 		expect(first.provider.getModels().map((model) => model.id)).toEqual(["loaded"]);
 		expect(cachedEntry?.models.map((model) => model.id)).toEqual(["loaded"]);
 
 		const second = createLlamaProvider();
-		await second.provider.refreshModels?.({
-			credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
-			store,
-			allowNetwork: false,
-		});
+		await second.provider.refreshModels?.(refreshContext(false));
 		expect(second.provider.getModels()).toEqual([
 			expect.objectContaining({ id: "loaded", baseUrl: `${url}/v1`, contextWindow: 32768 }),
 		]);

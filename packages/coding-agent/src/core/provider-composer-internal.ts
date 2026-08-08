@@ -3,7 +3,6 @@ import type {
 	ApiKeyAuth,
 	AssistantMessageEventStream,
 	AuthContext,
-	AuthInteraction,
 	AuthResult,
 	Context,
 	Model,
@@ -12,6 +11,7 @@ import type {
 	OAuthCredentials,
 	OAuthLoginCallbacks,
 	Provider,
+	ProviderAuthInteraction,
 	ProviderHeaders,
 	RefreshModelsContext,
 	SimpleStreamOptions,
@@ -29,8 +29,15 @@ export interface ExtensionOAuthConfig {
 	name: string;
 	loginLabel?: string;
 	usesCallbackServer?: boolean;
-	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
-	refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+	login(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials>;
+	/**
+	 * Refresh expired credentials. `signal` is the caller's cancellation signal,
+	 * forwarded by pi through `oauth.refresh(credential, signal)`; honor it by
+	 * passing it into whatever performs the network call. It is a required
+	 * parameter rather than an optional one so the contract cannot be satisfied
+	 * by ignoring cancellation.
+	 */
+	refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials>;
 	getApiKey(credentials: OAuthCredentials): string;
 	modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
 }
@@ -238,10 +245,10 @@ function adaptOAuth(config: ExtensionOAuthConfig): OAuthAuth {
 				onSelect: (prompt) => callbacks.prompt({ type: "select", ...prompt }),
 				signal: callbacks.signal,
 			};
-			const credential = await config.login(legacyCallbacks);
+			const credential = await config.login(legacyCallbacks, callbacks.signal);
 			return { ...credential, type: "oauth" };
 		},
-		refresh: async (credential) => ({ ...(await config.refreshToken(credential)), type: "oauth" }),
+		refresh: async (credential, signal) => ({ ...(await config.refreshToken(credential, signal)), type: "oauth" }),
 		toAuth: async (credential) => ({ apiKey: config.getApiKey(credential) }),
 	};
 }
@@ -306,7 +313,7 @@ export function composeApiKeyAuth(
 		name: inherited?.name ?? "API key",
 		login:
 			inherited?.login ??
-			(async (interaction: AuthInteraction) => ({
+			(async (interaction: ProviderAuthInteraction) => ({
 				type: "api_key",
 				key: await interaction.prompt({ type: "secret", message: "Enter API key" }),
 			})),

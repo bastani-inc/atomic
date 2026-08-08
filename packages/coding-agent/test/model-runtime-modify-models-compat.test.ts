@@ -1,11 +1,13 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InMemoryModelsStore, type Model, type Provider } from "@earendil-works/pi-ai";
+import { InMemoryModelsStore, type Model, type ModelsPublication, type Provider } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { ModelConfig } from "../src/core/model-config.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { composeModelProvider } from "../src/core/provider-composer.ts";
 
 function model(id: string): Model<"openai-completions"> {
 	return {
@@ -161,6 +163,51 @@ describe("extension provider model lifecycle", () => {
 		expect(await modelsStore.read("extension-dynamic")).toBeUndefined();
 	});
 
+	it("preserves unselected dynamic catalogs during a provider-scoped refresh", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		for (const providerId of ["provider-a", "provider-b"] as const) {
+			runtime.registerProvider(providerId, {
+				baseUrl: "http://localhost/v1",
+				apiKey: "local",
+				api: "openai-completions",
+				models: [{ ...model(`${providerId}-old`), provider: providerId }],
+				refreshModels: async () => [{ ...model(`${providerId}-fresh`), provider: providerId }],
+			});
+		}
+
+		await runtime.refresh({ allowNetwork: false });
+		expect(runtime.getModels("provider-b").map((entry) => entry.id)).toEqual(["provider-b-fresh"]);
+		await runtime.refresh({ providers: ["provider-a"], allowNetwork: false });
+
+		expect(runtime.getModels("provider-b").map((entry) => entry.id)).toEqual(["provider-b-fresh"]);
+	});
+	it("keeps prior extension models when generation-checked publication is rejected", async () => {
+		const provider = composeModelProvider("extension-dynamic", undefined, await ModelConfig.load(undefined), {
+			baseUrl: "http://localhost:8080/v1",
+			apiKey: "local",
+			api: "openai-completions",
+			models: [{ ...model("old"), provider: "extension-dynamic" }],
+			refreshModels: async () => [{ ...model("new"), provider: "extension-dynamic" }],
+		});
+		let publications = 0;
+
+		await provider.refreshModels?.({
+			allowNetwork: true,
+			signal: new AbortController().signal,
+			publish: async (_publication: ModelsPublication) => {
+				publications += 1;
+				return false;
+			},
+		});
+
+		expect(publications).toBe(1);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["old"]);
+	});
 	it("applies legacy OAuth modifyModels after async credential initialization", async () => {
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory({

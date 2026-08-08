@@ -1,4 +1,9 @@
-import { type AuthType, type CredentialStore, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import {
+	type AuthOperationOptions,
+	type AuthType,
+	type CredentialStore,
+	InMemoryCredentialStore,
+} from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -252,5 +257,45 @@ describe("ModelRuntime auth options", () => {
 			provider: { id: "extension-oauth", name: "Extension OAuth" },
 			method: { name: "Extension subscription" },
 		});
+	});
+
+	it("applies a runtime API key without refreshing the catalog, and honors an abort signal", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+
+		// setRuntimeApiKey is a credential mutation, not a catalog refresh. Catalog
+		// freshness is the caller's separate refresh() call, so this must not trigger one.
+		let refreshes = 0;
+		const trackedRefresh = runtime.refresh.bind(runtime);
+		runtime.refresh = async (options) => {
+			refreshes += 1;
+			return trackedRefresh(options);
+		};
+
+		await runtime.setRuntimeApiKey("anthropic", "runtime-secret", {});
+
+		expect(refreshes).toBe(0);
+		// The credential is applied and published against the current snapshot.
+		expect(runtime.getProviderAuthStatus("anthropic")).toMatchObject({ configured: true, source: "runtime" });
+		expect(runtime.hasConfiguredAuth("anthropic")).toBe(true);
+
+		// Compile-time contract: the third argument is required, not the old optional
+		// compatibility parameter.
+		type HasRequiredAuthOptions =
+			Parameters<ModelRuntime["setRuntimeApiKey"]> extends [string, string, AuthOperationOptions] ? true : false;
+		const hasRequiredAuthOptions: HasRequiredAuthOptions = true;
+		expect(hasRequiredAuthOptions).toBe(true);
+
+		// Cancellation is the point of the options bag it now takes.
+		const controller = new AbortController();
+		controller.abort();
+		await expect(
+			runtime.setRuntimeApiKey("openai", "never-applied", { signal: controller.signal }),
+		).rejects.toThrow();
+		expect(runtime.hasConfiguredAuth("openai")).toBe(false);
+		expect(refreshes).toBe(0);
 	});
 });

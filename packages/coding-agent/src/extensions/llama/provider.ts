@@ -58,8 +58,14 @@ export interface LlamaProviderController {
 export function createLlamaProvider(): LlamaProviderController {
 	let models: readonly Model<"openai-completions">[] = [];
 
+	// Shared by the exported setCatalog and by refreshModels. refreshModels must
+	// compute the list before publishing so the assignment happens inside the
+	// generation-checked `update` callback rather than before it.
+	const toCatalog = (catalog: readonly LlamaModelInfo[], serverUrl: string): readonly Model<"openai-completions">[] =>
+		catalog.filter((model) => model.status.value === "loaded").map((model) => toPiModel(model, serverUrl));
+
 	const setCatalog = (catalog: readonly LlamaModelInfo[], serverUrl: string): void => {
-		models = catalog.filter((model) => model.status.value === "loaded").map((model) => toPiModel(model, serverUrl));
+		models = toCatalog(catalog, serverUrl);
 	};
 
 	const provider: Provider<"openai-completions"> = {
@@ -111,20 +117,34 @@ export function createLlamaProvider(): LlamaProviderController {
 		},
 		getModels: () => models,
 		refreshModels: async (context: RefreshModelsContext): Promise<void> => {
-			const stored = await context.store.read();
-			if (stored) {
-				models = stored.models.filter(
+			if (context.stored) {
+				const restored = context.stored.models.filter(
 					(model): model is Model<"openai-completions"> =>
 						model.provider === LLAMA_PROVIDER_ID && model.api === "openai-completions",
 				);
+				if (
+					!(await context.publish({
+						update: () => {
+							models = restored;
+						},
+					}))
+				) {
+					return;
+				}
 			}
 
-			if (!context.allowNetwork || context.signal?.aborted || context.credential?.type !== "api_key") return;
+			if (!context.allowNetwork || context.signal.aborted || context.credential?.type !== "api_key") return;
 			const serverUrl = credentialServerUrl(context.credential);
 			if (!serverUrl) return;
 			const catalog = await new LlamaClient(serverUrl, context.credential.key).list({ signal: context.signal });
-			setCatalog(catalog, serverUrl);
-			if (!context.signal?.aborted) await context.store.write({ models, checkedAt: Date.now() });
+			if (context.signal.aborted) return;
+			const refreshed = toCatalog(catalog, serverUrl);
+			await context.publish({
+				persist: { models: refreshed, checkedAt: Date.now() },
+				update: () => {
+					models = refreshed;
+				},
+			});
 		},
 		stream: (model, context, options) => stream(model, context, options as ProviderStreamOptions | undefined),
 		streamSimple: (model, context, options) => streamSimple(model, context, options),

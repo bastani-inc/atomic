@@ -34,6 +34,7 @@ import {
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
+import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
@@ -488,7 +489,10 @@ export async function main(argv: string[], options?: MainOptions) {
 					message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
 				});
 			} else {
-				await applyCliRuntimeApiKey(modelRuntime, sessionOptions.model.provider, parsed.apiKey);
+				// Bound the complete CLI key operation—from credential mutation through
+				// provider-scoped catalog refresh—with the established model-refresh budget.
+				const apiKeySignal = AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS);
+				await applyCliRuntimeApiKey(modelRuntime, sessionOptions.model.provider, parsed.apiKey, apiKeySignal);
 			}
 		}
 

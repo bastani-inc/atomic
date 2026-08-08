@@ -114,18 +114,23 @@ export function composeModelProvider(
 			base?.refreshModels || extension?.refreshModels || extension?.oauth?.modifyModels
 				? async (context) => {
 						await base?.refreshModels?.(context);
-						if (extension?.refreshModels) {
-							const refreshed = await extension.refreshModels(context);
-							if (!context.signal?.aborted) {
-								// Validate before publishing the new synchronous list.
-								applyExtension(providerId, applyModelsJson(providerId, base?.getModels() ?? [], config), {
-									...extension,
-									models: refreshed,
-								});
-								refreshedExtensionModels = refreshed;
-							}
-						}
-						extensionOAuthCredential = context.credential?.type === "oauth" ? context.credential : undefined;
+						let refreshed: NonNullable<ProviderConfigInput["models"]> | undefined;
+						if (extension?.refreshModels) refreshed = await extension.refreshModels(context);
+						if (context.signal.aborted) return;
+						const oauthCredential = context.credential?.type === "oauth" ? context.credential : undefined;
+						await context.publish({
+							update: () => {
+								if (refreshed) {
+									// Validate before publishing the new synchronous list.
+									applyExtension(providerId, applyModelsJson(providerId, base?.getModels() ?? [], config), {
+										...extension,
+										models: refreshed,
+									});
+									refreshedExtensionModels = refreshed;
+								}
+								extensionOAuthCredential = oauthCredential;
+							},
+						});
 					}
 				: undefined,
 		filterModels: base?.filterModels

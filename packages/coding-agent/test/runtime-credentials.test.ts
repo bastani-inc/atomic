@@ -1,4 +1,5 @@
-import { describe, expect, test } from "vitest";
+import type { AuthOperationOptions, CredentialStore } from "@earendil-works/pi-ai";
+import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { RuntimeCredentials } from "../src/core/runtime-credentials.ts";
 
@@ -38,5 +39,26 @@ describe("RuntimeCredentials", () => {
 
 		expect(await credentials.read("anthropic")).toBeUndefined();
 		expect(await credentials.list()).toEqual([]);
+	});
+	test("forwards the identical auth operation options to every backing-store operation", async () => {
+		const options: AuthOperationOptions = { signal: new AbortController().signal };
+		const store: CredentialStore = {
+			read: vi.fn(async () => undefined),
+			list: vi.fn(async () => []),
+			modify: vi.fn(async (_providerId, fn) => fn(undefined)),
+			delete: vi.fn(async () => {}),
+		};
+		const credentials = new RuntimeCredentials(store);
+
+		await credentials.read("provider", options);
+		await credentials.list(options);
+		const modify = async () => undefined;
+		await credentials.modify("provider", modify, options);
+		await credentials.delete("provider", options);
+
+		expect(store.read).toHaveBeenCalledWith("provider", options);
+		expect(store.list).toHaveBeenCalledWith(options);
+		expect(store.modify).toHaveBeenCalledWith("provider", modify, options);
+		expect(store.delete).toHaveBeenCalledWith("provider", options);
 	});
 });

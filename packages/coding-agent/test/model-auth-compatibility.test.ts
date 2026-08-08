@@ -261,7 +261,7 @@ describe("ModelRuntime auth options", () => {
 			}),
 			modelsPath: null,
 		});
-		runtime.setRuntimeApiKey("anthropic", "runtime-key");
+		await runtime.setRuntimeApiKey("anthropic", "runtime-key", {});
 
 		expect((await runtime.getAuth("anthropic"))?.auth.apiKey).toBe("runtime-key");
 		expect(await runtime.checkAuth("anthropic")).toMatchObject({ type: "api_key" });
@@ -270,7 +270,7 @@ describe("ModelRuntime auth options", () => {
 	it("runtime API-key overrides stored API-key request auth without persistence", async () => {
 		const credentials = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "stored-key" } });
 		const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
-		runtime.setRuntimeApiKey("anthropic", "runtime-key");
+		await runtime.setRuntimeApiKey("anthropic", "runtime-key", {});
 
 		expect((await runtime.getAuth("anthropic"))?.auth.apiKey).toBe("runtime-key");
 		expect(await credentials.read("anthropic")).toEqual({ type: "api_key", key: "stored-key" });

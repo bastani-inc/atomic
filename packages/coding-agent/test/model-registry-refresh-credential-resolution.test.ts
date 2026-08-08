@@ -91,7 +91,7 @@ describeModelRegistry((context) => {
 				key: "stored-key",
 			}));
 			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
-			await getModelRuntime(registry).setRuntimeApiKey("credential-precedence", "runtime-key");
+			await getModelRuntime(registry).setRuntimeApiKey("credential-precedence", "runtime-key", {});
 			let observedKey: string | undefined;
 			registry.registerProvider("credential-precedence", {
 				apiKey: "configured-key",

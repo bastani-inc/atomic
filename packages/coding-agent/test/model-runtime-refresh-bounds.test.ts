@@ -199,4 +199,49 @@ describe("model refresh timeout boundaries", () => {
 			label: "ANTHROPIC_API_KEY",
 		});
 	});
+	it("reports provider-scoped availability failures in ModelsRefreshResult", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const internals = runtime as unknown as {
+			models: {
+				refresh(options: object): Promise<{ aborted: boolean; errors: ReadonlyMap<string, Error> }>;
+				getAvailable(providerId?: string, options?: object): Promise<readonly never[]>;
+			};
+		};
+		vi.spyOn(internals.models, "refresh").mockResolvedValue({ aborted: false, errors: new Map() });
+		vi.spyOn(internals.models, "getAvailable").mockRejectedValue(new Error("availability failed"));
+		const result = await runtime.refresh({ providers: ["broken-provider"], allowNetwork: false });
+		expect(result.aborted).toBe(false);
+		expect(result.errors.get("broken-provider")?.message).toBe("availability failed");
+	});
+
+	it("settles a provider-scoped availability pass as aborted", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const internals = runtime as unknown as {
+			models: {
+				refresh(options: object): Promise<{ aborted: boolean; errors: ReadonlyMap<string, Error> }>;
+				getAvailable(providerId?: string, options?: { signal?: AbortSignal }): Promise<readonly never[]>;
+			};
+		};
+		vi.spyOn(internals.models, "refresh").mockResolvedValue({ aborted: false, errors: new Map() });
+		vi.spyOn(internals.models, "getAvailable").mockImplementation(async (_providerId, options) => {
+			await new Promise<void>((resolve) =>
+				options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+			);
+			throw options?.signal?.reason ?? new Error("aborted");
+		});
+		const controller = new AbortController();
+		const refresh = runtime.refresh({ providers: ["slow-provider"], signal: controller.signal, allowNetwork: false });
+		controller.abort();
+		const result = await refresh;
+		expect(result.aborted).toBe(true);
+		expect(result.errors.size).toBe(0);
+	});
 });
