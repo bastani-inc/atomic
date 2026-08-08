@@ -50,20 +50,22 @@ describe("chat message renderer utilities", () => {
 	test("live chat controller accumulates assistant deltas and tool results", () => {
 		const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
 		const live = new LiveChatEntriesController(entries);
+		live.applyEvent({
+			type: "message_start",
+			message: { role: "assistant", content: [], stopReason: "pending" },
+		});
 
 		assert.equal(
 			live.applyEvent({
 				type: "message_update",
-				assistantMessageEvent: { type: "text_delta", delta: "hel" },
-				message: { role: "assistant", content: [] },
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "hel" },
 			}),
 			true,
 		);
 		assert.equal(
 			live.applyEvent({
 				type: "message_update",
-				assistantMessageEvent: { type: "text_delta", delta: "lo" },
-				message: { role: "assistant", content: [] },
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "lo" },
 			}),
 			true,
 		);
@@ -91,21 +93,32 @@ describe("chat message renderer utilities", () => {
 		assert.deepEqual(live.pendingToolIds(), []);
 	});
 
+	test("message_end replaces the delta-built view with the authoritative final message", () => {
+		const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+		const live = new LiveChatEntriesController(entries);
+		live.applyEvent({ type: "message_start", message: { role: "assistant", content: [], stopReason: "pending" } });
+		live.applyEvent({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "draft" },
+		});
+		live.applyEvent({
+			type: "message_end",
+			message: { role: "assistant", content: [{ type: "text", text: "final" }], stopReason: "stop" },
+		});
+
+		assert.equal(
+			entries[0]?.kind === "assistant" && entries[0].message.content[0]?.type === "text"
+				? entries[0].message.content[0].text
+				: undefined,
+			"final",
+		);
+	});
+
 	test("renders distinct rows and output for parallel same-name tool calls (live events)", () => {
 		const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
 		const live = new LiveChatEntriesController(entries);
 
-		// A single assistant snapshot announcing TWO parallel `read` tool calls.
-		live.applyEvent({
-			type: "message_update",
-			message: {
-				role: "assistant",
-				content: [
-					{ type: "toolCall", id: "A", name: "read", arguments: { path: "a.ts" } },
-					{ type: "toolCall", id: "B", name: "read", arguments: { path: "b.ts" } },
-				],
-			},
-		});
+		// Parallel tool events create distinct rows without a cumulative message snapshot.
 
 		live.applyEvent({ type: "tool_execution_start", toolCallId: "A", toolName: "read", args: { path: "a.ts" } });
 		live.applyEvent({ type: "tool_execution_start", toolCallId: "B", toolName: "read", args: { path: "b.ts" } });

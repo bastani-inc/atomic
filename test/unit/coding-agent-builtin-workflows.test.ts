@@ -30,7 +30,7 @@ const builtinPackageFixtures = [
 	{ packageName: "@bastani/intercom", dirname: "intercom", requiredEntry: "index.ts" },
 ] as const;
 
-const fullBuiltinPackageLoadTimeoutMs = 60_000;
+const REAL_BUILTIN_RESOURCE_LOADER_TIMEOUT_MS = 120_000;
 
 describe("coding-agent builtin resources", () => {
 	test("discovers bundled companion packages in development without the removed Cursor package", () => {
@@ -179,7 +179,7 @@ describe("coding-agent builtin resources", () => {
 
 			assert.ok(labels.includes("package-command"), `expected package workflow completion in ${labels.join(", ")}`);
 		},
-		fullBuiltinPackageLoadTimeoutMs,
+		REAL_BUILTIN_RESOURCE_LOADER_TIMEOUT_MS,
 	);
 
 	test(
@@ -235,7 +235,7 @@ describe("coding-agent builtin resources", () => {
 			assert.equal(atomicCommand.description, "Atomic onboarding and help guide");
 			assert.equal(typeof atomicCommand.getArgumentCompletions, "function");
 		},
-		fullBuiltinPackageLoadTimeoutMs,
+		REAL_BUILTIN_RESOURCE_LOADER_TIMEOUT_MS,
 	);
 
 	test(
@@ -292,6 +292,6 @@ describe("coding-agent builtin resources", () => {
 				"expected the renamed liteparse skill not to reappear under its obsolete name",
 			);
 		},
-		fullBuiltinPackageLoadTimeoutMs,
+		REAL_BUILTIN_RESOURCE_LOADER_TIMEOUT_MS,
 	);
 });

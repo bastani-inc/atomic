@@ -173,6 +173,26 @@ describe("test harness", () => {
 		const reconstructed = textDeltas.map((e) => (e.assistantMessageEvent as { delta: string }).delta).join("");
 		expect(reconstructed).toBe("hello world");
 	});
+	it("emits delta-only message_update events to extensions", async () => {
+		const updates: object[] = [];
+		harness = await createHarnessWithExtensions({
+			responses: ["hello world"],
+			extensionFactories: [
+				{
+					path: "<delta-probe>",
+					factory: (pi) =>
+						pi.on("message_update", async (event) => {
+							updates.push(event);
+						}),
+				},
+			],
+		});
+
+		await harness.session.prompt("hi");
+
+		expect(updates.length).toBeGreaterThan(0);
+		expect(updates.every((event) => !("message" in event))).toBe(true);
+	});
 
 	it("streams thinking deltas", async () => {
 		harness = await createHarness({

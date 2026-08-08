@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ModelsPublication, ModelsStoreEntry, RefreshModelsContext } from "@earendil-works/pi-ai";
 import { InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { afterEach, describe, test } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
@@ -24,6 +25,30 @@ afterEach(() => {
 
 function jsonResponse(value: object, status = 200): Response {
 	return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+}
+
+/**
+ * Stands in for the host half of the 0.84.1 refresh contract: the provider no
+ * longer writes to a store, it returns a publication and `Models` applies it.
+ * Persisting before running `update` mirrors the documented ordering, and the
+ * generation check always succeeds because these tests refresh serially.
+ */
+async function refreshContext(
+	backing: InMemoryModelsStore,
+	options: { credential?: RefreshModelsContext["credential"]; allowNetwork: boolean },
+): Promise<RefreshModelsContext> {
+	return {
+		credential: options.credential,
+		stored: await backing.read("llama.cpp"),
+		allowNetwork: options.allowNetwork,
+		signal: new AbortController().signal,
+		publish: async ({ persist, update }: ModelsPublication): Promise<boolean> => {
+			if (persist === null) await backing.delete("llama.cpp");
+			else if (persist !== undefined) await backing.write("llama.cpp", persist as ModelsStoreEntry);
+			update?.();
+			return true;
+		},
+	};
 }
 
 function mockFetch(handler: (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>): typeof fetch {
@@ -121,14 +146,9 @@ describe("llama.cpp provider", () => {
 			jsonResponse({ data: [{ id: "cached", status: { value: "loaded" }, meta: { n_ctx: 65536 } }] }),
 		);
 		const backing = new InMemoryModelsStore();
-		const store = {
-			read: () => backing.read("llama.cpp"),
-			write: (entry: Parameters<InMemoryModelsStore["write"]>[1]) => backing.write("llama.cpp", entry),
-			delete: () => backing.delete("llama.cpp"),
-		};
 		const credential = { type: "api_key" as const, key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } };
 		const first = createLlamaProvider();
-		await first.provider.refreshModels?.({ credential, store, allowNetwork: true });
+		await first.provider.refreshModels?.(await refreshContext(backing, { credential, allowNetwork: true }));
 		assert.equal(first.provider.getModels()[0]?.id, "cached");
 		assert.equal((await backing.read("llama.cpp"))?.models[0]?.maxTokens, 65536);
 
@@ -136,7 +156,7 @@ describe("llama.cpp provider", () => {
 			throw new Error("offline");
 		});
 		const restarted = createLlamaProvider();
-		await restarted.provider.refreshModels?.({ credential, store, allowNetwork: false });
+		await restarted.provider.refreshModels?.(await refreshContext(backing, { credential, allowNetwork: false }));
 		assert.equal(restarted.provider.getModels()[0]?.id, "cached");
 		assert.equal(restarted.provider.getModels()[0]?.maxTokens, 65536);
 	});

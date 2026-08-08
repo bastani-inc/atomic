@@ -26,9 +26,13 @@ const { session: customAuthSession } = await createAgentSession({
 console.log("Session with custom credential and model configuration");
 customAuthSession.dispose();
 
-// Runtime API key override (not persisted to disk)
+// Runtime API key override (not persisted to disk). Auth and catalog updates
+// are separate so callers can scope and cancel network refreshes.
 const runtimeKeyRuntime = await ModelRuntime.create();
-await runtimeKeyRuntime.setRuntimeApiKey("anthropic", "sk-my-temp-key");
+const providerId = "anthropic";
+const authController = new AbortController();
+await runtimeKeyRuntime.setRuntimeApiKey(providerId, "sk-my-temp-key", { signal: authController.signal });
+await runtimeKeyRuntime.refresh({ providers: [providerId], signal: authController.signal });
 const { session: runtimeKeySession } = await createAgentSession({
 	sessionManager: SessionManager.inMemory(),
 	modelRuntime: runtimeKeyRuntime,

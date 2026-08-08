@@ -13,14 +13,18 @@ export class RpcOutputBuffer {
 		this.flush();
 	}
 
+	/**
+	 * Coalescing keeps only the last record per key, so a type is coalescible
+	 * only when each record supersedes the previous one. `tool_execution_update`
+	 * qualifies: each carries the full `partialResult` so far, keyed per call.
+	 *
+	 * `message_update` does not. It carries an `assistantMessageEvent` delta,
+	 * and dropping a delta drops that text permanently, so it takes the
+	 * pass-through path below.
+	 */
 	private enqueue(record: RpcOutputRecord): void {
 		const event = record as { type?: string; toolCallId?: string };
-		const key =
-			event.type === "message_update"
-				? "message"
-				: event.type === "tool_execution_update" && event.toolCallId
-					? `tool:${event.toolCallId}`
-					: undefined;
+		const key = event.type === "tool_execution_update" && event.toolCallId ? `tool:${event.toolCallId}` : undefined;
 		if (key) {
 			this.updates.set(key, record);
 			this.timer ??= setTimeout(() => this.flush(), 16);

@@ -15,12 +15,12 @@ async function createSessionRuntime() {
 	let refreshCount = 0;
 	runtime.registerProvider("extension-login", {
 		models: [{ ...template, id: "extension-model" }],
-		refreshModels: async ({ credential }) => {
+		refreshModels: async () => {
 			refreshCount += 1;
-			return credential ? [{ ...template, provider: "extension-login", id: "extension-model" }] : [];
+			return [{ ...template, provider: "extension-login", id: "extension-model" }];
 		},
 	});
-	return { authStorage, runtime, refreshCount: () => refreshCount };
+	return { authStorage, runtime, refreshCount: () => refreshCount, resetRefreshCount: () => (refreshCount = 0) };
 }
 
 function runtimeHost(): AgentSessionRuntime {
@@ -44,6 +44,8 @@ test("login_provider persists and returns the current provider snapshot without 
 		},
 	});
 
+	await sleep(50);
+	state.resetRefreshCount();
 	const response = await handle({ id: "login", type: "login_provider", provider: "extension-login" });
 
 	assert.ok(response?.success && "data" in response);

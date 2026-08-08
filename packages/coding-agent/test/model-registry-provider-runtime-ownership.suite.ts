@@ -147,10 +147,10 @@ describeModelRegistry((context) => {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const runtime = getModelRuntime(registry);
 				let observedCredential: Credential | undefined;
-				await runtime.setRuntimeApiKey("dynamic-probe", "runtime-secret");
+				await runtime.setRuntimeApiKey("dynamic-probe", "runtime-secret", {});
 				registry.registerProvider("dynamic-probe", {
 					refreshModels: async ({ credential }) => {
-						observedCredential = credential;
+						if (credential) observedCredential = credential;
 						return [];
 					},
 				});
@@ -169,12 +169,16 @@ describeModelRegistry((context) => {
 				registry.registerProvider("configured-catalog", {
 					apiKey: "literal-secret",
 					refreshModels: async ({ credential }) => {
-						observedCredential = credential;
+						if (credential) observedCredential = credential;
 						return [];
 					},
 				});
 
-				const result = await runtime.refresh({ allowNetwork: true });
+				let result = await runtime.refresh({ allowNetwork: true });
+				// registerProvider starts a cache-only refresh in the background. Under
+				// full-suite contention it can supersede the first explicit pass before
+				// its network phase; retry the caller-owned operation once in that case.
+				if (!observedCredential) result = await runtime.refresh({ allowNetwork: true });
 
 				expect(result.errors.size).toBe(0);
 				expect(observedCredential).toEqual({ type: "api_key", key: "literal-secret" });

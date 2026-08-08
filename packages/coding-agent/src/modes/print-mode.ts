@@ -14,6 +14,7 @@ import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
+import { toJsonEvent } from "./json-event.ts";
 
 /**
  * Options for print mode.
@@ -194,7 +195,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				terminatingStructuredOutputCallIds.add(event.toolCallId);
 			}
 			if (mode === "json") {
-				writeRawStdout(`${JSON.stringify(event)}\n`);
+				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			}
 		});
 	};

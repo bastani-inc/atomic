@@ -260,7 +260,7 @@ pi.registerProvider("corporate-ai", {
   oauth: {
     name: "Corporate AI (SSO)",
 
-    async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+    async login(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials> {
       // Option 1: Browser-based OAuth
       callbacks.onAuth({ url: "https://sso.corp.com/authorize?..." });
 
@@ -273,8 +273,9 @@ pi.registerProvider("corporate-ai", {
       // Option 3: Prompt for token/code
       const code = await callbacks.onPrompt({ message: "Enter SSO code:" });
 
-      // Exchange for tokens (your implementation)
-      const tokens = await exchangeCodeForTokens(code);
+      // Exchange for tokens (your implementation). Forward `signal` so
+      // cancelling /login aborts the in-flight network request.
+      const tokens = await exchangeCodeForTokens(code, { signal });
 
       return {
         refresh: tokens.refreshToken,
@@ -283,8 +284,11 @@ pi.registerProvider("corporate-ai", {
       };
     },
 
-    async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
-      const tokens = await refreshAccessToken(credentials.refresh);
+    async refreshToken(
+      credentials: OAuthCredentials,
+      signal: AbortSignal | undefined
+    ): Promise<OAuthCredentials> {
+      const tokens = await refreshAccessToken(credentials.refresh, { signal });
       return {
         refresh: tokens.refreshToken ?? credentials.refresh,
         access: tokens.accessToken,
@@ -629,8 +633,8 @@ interface ProviderConfig {
   /** OAuth provider for /login support. */
   oauth?: {
     name: string;
-    login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
-    refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+    login(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials>;
+    refreshToken(credentials: OAuthCredentials, signal: AbortSignal | undefined): Promise<OAuthCredentials>;
     getApiKey(credentials: OAuthCredentials): string;
     modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
   };

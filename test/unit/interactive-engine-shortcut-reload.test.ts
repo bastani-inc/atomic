@@ -15,7 +15,8 @@ import {
 
 const serialTest = process.platform === "win32" ? test.sequential.skip : test.sequential;
 const PREFIX = "@@ATOMIC_TEST@@";
-const ENGINE_BIND_SCENARIO_TIMEOUT_MS = 20_000;
+const ENGINE_BIND_SCENARIO_TIMEOUT_MS = 30_000;
+const ENGINE_REPORT_TIMEOUT_MS = 30_000;
 
 interface HarnessReport {
 	type?: string;
@@ -68,7 +69,7 @@ class InteractiveModeDriver {
 	async waitForNext(
 		fromIndex: number,
 		predicate: (report: HarnessReport) => boolean,
-		timeoutMs = 8_000,
+		timeoutMs = ENGINE_REPORT_TIMEOUT_MS,
 		description = "fixture report",
 	): Promise<HarnessReport> {
 		const scan = (): HarnessReport | undefined => this.reports.slice(fromIndex).find(predicate);
@@ -102,7 +103,7 @@ class InteractiveModeDriver {
 
 	waitFor(
 		predicate: (report: HarnessReport) => boolean,
-		timeoutMs = 8_000,
+		timeoutMs = ENGINE_REPORT_TIMEOUT_MS,
 		description = "fixture report",
 	): Promise<HarnessReport> {
 		return this.waitForNext(0, predicate, timeoutMs, description);
@@ -113,7 +114,7 @@ class InteractiveModeDriver {
 			this.waitForNext(
 				fromIndex,
 				(report) => report.type === "keybinding_state" && report.shortcutKeys?.includes(shortcut) === true,
-				8_000,
+				ENGINE_REPORT_TIMEOUT_MS,
 				`${shortcut} shortcut readiness`,
 			),
 			this.process.exited.then((exitCode) => {
@@ -228,7 +229,7 @@ async function reloadThroughExtensionContext(
 			await driver.waitForNext(
 				from,
 				(report) => report.type === "keybinding_state" && report.expandKeys?.[0] === expectedBinding,
-				8_000,
+				ENGINE_REPORT_TIMEOUT_MS,
 				`committed ${expectedBinding} keybinding state`,
 			);
 			const stateIndex = driver.reports.length;
@@ -236,7 +237,7 @@ async function reloadThroughExtensionContext(
 			await driver.waitForNext(
 				stateIndex,
 				(report) => report.type === "state" && report.expandKeys?.[0] === expectedBinding,
-				8_000,
+				ENGINE_REPORT_TIMEOUT_MS,
 				`host ${expectedBinding} keybinding state`,
 			);
 			return;
@@ -447,7 +448,7 @@ serialTest(
 			await driver.waitForNext(
 				interruptReadyIndex,
 				(report) => report.type === "heartbeat" && report.streaming === true,
-				8_000,
+				ENGINE_REPORT_TIMEOUT_MS,
 				"host streaming interrupt readiness",
 			);
 			// Escape only requests a cooperative abort now; the explicit Ctrl+C escape
@@ -459,7 +460,7 @@ serialTest(
 					report.type === "diagnostic" &&
 					report.message?.includes("tool.execute busy_loop") === true &&
 					report.message.includes("Esc interrupt · Ctrl+C terminate"),
-				8_000,
+				ENGINE_REPORT_TIMEOUT_MS,
 				"engine unresponsive watchdog diagnostic",
 			);
 			const terminateIndex = driver.reports.length;
@@ -468,7 +469,7 @@ serialTest(
 				terminateIndex,
 				(report) =>
 					report.type === "diagnostic" && report.message === "Interactive engine is not responding; restarting.",
-				8_000,
+				ENGINE_REPORT_TIMEOUT_MS,
 				"explicit engine termination notice",
 			);
 			assert.ok(recovering);

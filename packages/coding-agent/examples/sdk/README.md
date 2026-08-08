@@ -75,7 +75,10 @@ const customRuntime = await ModelRuntime.create({
   authPath: "/my/app/auth.json",
   modelsPath: "/my/app/models.json",
 });
-await customRuntime.setRuntimeApiKey("anthropic", process.env.MY_KEY!);
+const providerId = "anthropic";
+const authController = new AbortController();
+await customRuntime.setRuntimeApiKey(providerId, process.env.MY_KEY!, { signal: authController.signal });
+await customRuntime.refresh({ providers: [providerId], signal: authController.signal });
 const resourceLoader = new DefaultResourceLoader({
   systemPromptOverride: () => "You are helpful.",
   extensionFactories: [myExtension],

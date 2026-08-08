@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { type Terminal, TUI } from "@earendil-works/pi-tui";
+import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
@@ -244,7 +244,7 @@ describe("InteractiveMode startup banner", () => {
 	});
 
 	it("settles ordinary input and Ctrl+C through the real TUI listener chain", () => {
-		const tui = new TUI(new StartupTerminal());
+		const tui = new TuiMainScreen(new StartupTerminal());
 		const editorInputs: string[] = [];
 		const editor = {
 			render: () => [],
@@ -265,12 +265,12 @@ describe("InteractiveMode startup banner", () => {
 			handleCtrlC,
 		};
 		registerStartupInputListeners(mode as never);
-		(tui as unknown as { handleInput(data: string): void }).handleInput("x");
+		(tui as unknown as { handleTerminalInput(data: string): void }).handleTerminalInput("x");
 		expect(mode.builtInHeader.settle()).toBe(false);
 		expect(editorInputs).toEqual(["x"]);
 
 		mode.builtInHeader = new StartupIdentityComponent(tui, () => "identity", true);
-		(tui as unknown as { handleInput(data: string): void }).handleInput("\x03");
+		(tui as unknown as { handleTerminalInput(data: string): void }).handleTerminalInput("\x03");
 		expect(mode.builtInHeader.settle()).toBe(false);
 		expect(handleCtrlC).toHaveBeenCalledTimes(1);
 		expect(editorInputs).toEqual(["x"]);

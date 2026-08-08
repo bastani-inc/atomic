@@ -8,13 +8,17 @@ export class RpcEventBuffer {
 		this.emit = emit;
 	}
 
+	/**
+	 * Coalescing keeps only the last event per key, so a type is coalescible
+	 * only when each event supersedes the previous one. `tool_execution_update`
+	 * qualifies: each carries the full `partialResult` so far, keyed per call.
+	 *
+	 * `message_update` does not. It carries an `assistantMessageEvent` delta,
+	 * and dropping a delta drops that text permanently, so it takes the
+	 * pass-through path below.
+	 */
 	enqueue(event: RpcEvent): void {
-		const key =
-			event.type === "message_update"
-				? "message"
-				: event.type === "tool_execution_update"
-					? `tool:${event.toolCallId}`
-					: undefined;
+		const key = event.type === "tool_execution_update" ? `tool:${event.toolCallId}` : undefined;
 		if (!key) {
 			this.flush();
 			this.emit(event);

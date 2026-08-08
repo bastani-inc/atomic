@@ -954,17 +954,21 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
 
 ### message_update (Streaming)
 
-Emitted during streaming of assistant messages. Contains both the partial message and a streaming delta event.
+Emitted during streaming of assistant messages. Carries only the streaming delta.
+
+`message_update` deliberately omits any cumulative snapshot: there is no `message`
+field, and `assistantMessageEvent` has no `partial`. `message_start` provides the
+initial message, the deltas build it, and `message_end` provides the final
+authoritative message. Repeating a snapshot on every frame would make the bytes
+written per assistant turn grow with the square of its length.
 
 ```json
 {
   "type": "message_update",
-  "message": {...},
   "assistantMessageEvent": {
     "type": "text_delta",
     "contentIndex": 0,
-    "delta": "Hello ",
-    "partial": {...}
+    "delta": "Hello "
   }
 }
 ```
@@ -988,10 +992,10 @@ The `assistantMessageEvent` field contains one of these delta types:
 
 Example streaming a text response:
 ```json
-{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_start","contentIndex":0,"partial":{...}}}
-{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello","partial":{...}}}
-{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world","partial":{...}}}
-{"type":"message_update","message":{...},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world","partial":{...}}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world"}}
 ```
 
 ### tool_execution_start / tool_execution_update / tool_execution_end
@@ -1461,7 +1465,7 @@ The `content` field can be a string or an array of `TextContent`/`ImageContent` 
 }
 ```
 
-Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`. A partial message inside a `message_update` event carries `"pending"` until the terminal event replaces it, so a client that switches on the reason needs that case; a completed message never carries it.
+Stop reasons: `"stop"`, `"length"`, `"toolUse"`, `"error"`, `"aborted"`. A streaming message carries `"pending"` until the terminal event replaces it, so a client that switches on the reason needs that case; a completed message never carries it. On the wire the pending reason appears on the `message_start` message — `message_update` frames carry no message at all — and `message_end` carries the terminal reason.
 
 ### ToolResultMessage
 

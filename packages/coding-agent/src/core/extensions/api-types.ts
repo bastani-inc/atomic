@@ -301,8 +301,8 @@ export interface ExtensionAPI {
 	 *   models: [...],
 	 *   oauth: {
 	 *     name: "Corporate AI (SSO)",
-	 *     async login(callbacks) { ... },
-	 *     async refreshToken(credentials) { ... },
+	 *     async login(callbacks, signal) { ... },
+	 *     async refreshToken(credentials, signal) { ... },
 	 *     getApiKey(credentials) { return credentials.access; }
 	 *   }
 	 * });

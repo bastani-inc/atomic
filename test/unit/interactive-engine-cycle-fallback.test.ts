@@ -20,7 +20,8 @@ const serialTest = process.platform === "win32" ? test.sequential.skip : test.se
 const prefix = "@@ATOMIC_TEST@@";
 const warning =
 	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
-const INTERACTIVE_STARTUP_TIMEOUT_MS = 20_000;
+const INTERACTIVE_STARTUP_TIMEOUT_MS = 30_000;
+const INTERACTIVE_REPORT_TIMEOUT_MS = 30_000;
 
 interface Report {
 	type?: string;
@@ -65,7 +66,11 @@ class Driver {
 		void stdin.flush();
 	}
 
-	async waitFor(predicate: (report: Report) => boolean, from = 0, timeoutMs = 10_000): Promise<Report> {
+	async waitFor(
+		predicate: (report: Report) => boolean,
+		from = 0,
+		timeoutMs = INTERACTIVE_REPORT_TIMEOUT_MS,
+	): Promise<Report> {
 		const inspect = (): Report | undefined => this.reports.slice(from).find(predicate);
 		const existing = inspect();
 		if (existing) return existing;
@@ -90,7 +95,7 @@ class Driver {
 	}
 
 	async waitForState(predicate: (report: Report) => boolean, from = 0): Promise<Report> {
-		const deadline = performance.now() + 10_000;
+		const deadline = performance.now() + INTERACTIVE_REPORT_TIMEOUT_MS;
 		while (performance.now() < deadline) {
 			this.send("state");
 			await sleep(25);

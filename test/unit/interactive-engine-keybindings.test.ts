@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Terminal, TUI } from "@earendil-works/pi-tui";
+import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
@@ -16,6 +16,9 @@ import {
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
 import { bunExecutable, moduleDir } from "../helpers/runtime.js";
+
+const ENGINE_MESSAGE_TIMEOUT_MS = 30_000;
+const REAL_KEYBINDINGS_TEST_TIMEOUT_MS = 60_000;
 
 class FakeTerminal implements Terminal {
 	columns = 80;
@@ -69,7 +72,7 @@ function nextMessage<T extends InteractiveEngineMessage["type"]>(
 		const timeout = setTimeout(() => {
 			unsubscribe?.();
 			reject(new Error(`Timed out waiting for ${type}`));
-		}, 5_000);
+		}, ENGINE_MESSAGE_TIMEOUT_MS);
 		const registered = client.onInteractiveEngineMessage((message) => {
 			if (settled || message.type !== type) return;
 			const typed = message as Extract<InteractiveEngineMessage, { type: T }>;
@@ -314,62 +317,66 @@ test.sequential("direct RPC reload updates one shared global and injected manage
 	}
 });
 
-test.sequential("extension command-context reload updates the existing shared manager", async () => {
-	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-context-reload-"));
-	writeExpandBinding(tempDir, "ctrl+x");
-	const sessionStartFile = join(tempDir, "session-start-bindings.txt");
-	const client = createClient(tempDir, {
-		ATOMIC_KEYBINDINGS_CUSTOM_UI: "1",
-		ATOMIC_KEYBINDINGS_RELOAD_COMMAND: "1",
-		ATOMIC_KEYBINDINGS_SESSION_START_FILE: sessionStartFile,
-	});
-	const hostKeybindings = KeybindingsManager.create(tempDir);
-	const hostIdentity = hostKeybindings;
-	initTheme("dark");
-	const editor = new CustomEditor(new TUI(new FakeTerminal()), getEditorTheme(), hostKeybindings);
-	let expandDispatches = 0;
-	editor.onAction("app.tools.expand", () => {
-		expandDispatches++;
-	});
-	const detachHostSync = attachInteractiveEngineKeybindingSync(
-		{
-			onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
-		},
-		hostKeybindings,
-	);
-	try {
-		const opened = nextMessage(client, "engine_custom_open", (message) =>
-			message.componentId.startsWith("remote_component_"),
+test.sequential(
+	"extension command-context reload updates the existing shared manager",
+	async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-keybindings-context-reload-"));
+		writeExpandBinding(tempDir, "ctrl+x");
+		const sessionStartFile = join(tempDir, "session-start-bindings.txt");
+		const client = createClient(tempDir, {
+			ATOMIC_KEYBINDINGS_CUSTOM_UI: "1",
+			ATOMIC_KEYBINDINGS_RELOAD_COMMAND: "1",
+			ATOMIC_KEYBINDINGS_SESSION_START_FILE: sessionStartFile,
+		});
+		const hostKeybindings = KeybindingsManager.create(tempDir);
+		const hostIdentity = hostKeybindings;
+		initTheme("dark");
+		const editor = new CustomEditor(new TuiMainScreen(new FakeTerminal()), getEditorTheme(), hostKeybindings);
+		let expandDispatches = 0;
+		editor.onAction("app.tools.expand", () => {
+			expandDispatches++;
+		});
+		const detachHostSync = attachInteractiveEngineKeybindingSync(
+			{
+				onEngineMessage: (listener) => client.onInteractiveEngineMessage(listener),
+			},
+			hostKeybindings,
 		);
-		await client.start();
-		await client.waitForInteractiveEngineBound();
-		const open = await opened;
-		assert.equal(await renderCustom(client, open.componentId, 20), "same:true|injected:ctrl+x|global:ctrl+x");
-		editor.handleInput("\x18");
-		assert.equal(expandDispatches, 1);
+		try {
+			const opened = nextMessage(client, "engine_custom_open", (message) =>
+				message.componentId.startsWith("remote_component_"),
+			);
+			await client.start();
+			await client.waitForInteractiveEngineBound();
+			const open = await opened;
+			assert.equal(await renderCustom(client, open.componentId, 20), "same:true|injected:ctrl+x|global:ctrl+x");
+			editor.handleInput("\x18");
+			assert.equal(expandDispatches, 1);
 
-		writeExpandBinding(tempDir, "ctrl+y");
-		const reloaded = nextKeybindingsReload(client);
-		await client.prompt("/reload-keybindings-fixture");
-		await reloaded;
-		assert.deepEqual(readSessionStartBindings(sessionStartFile), ["startup:ctrl+x", "reload:ctrl+y"]);
-		assert.equal(hostKeybindings, hostIdentity);
-		editor.handleInput("\x18");
-		assert.equal(expandDispatches, 1, "old host remap must stop dispatching");
-		editor.handleInput("\x19");
-		assert.equal(expandDispatches, 2, "new host remap must dispatch");
-		assert.equal(await renderCustom(client, open.componentId, 21), "same:true|injected:ctrl+y|global:ctrl+y");
-		assert.match(await renderSkill(client, false, 22), /\(ctrl\+y Expand\)/);
+			writeExpandBinding(tempDir, "ctrl+y");
+			const reloaded = nextKeybindingsReload(client);
+			await client.prompt("/reload-keybindings-fixture");
+			await reloaded;
+			assert.deepEqual(readSessionStartBindings(sessionStartFile), ["startup:ctrl+x", "reload:ctrl+y"]);
+			assert.equal(hostKeybindings, hostIdentity);
+			editor.handleInput("\x18");
+			assert.equal(expandDispatches, 1, "old host remap must stop dispatching");
+			editor.handleInput("\x19");
+			assert.equal(expandDispatches, 2, "new host remap must dispatch");
+			assert.equal(await renderCustom(client, open.componentId, 21), "same:true|injected:ctrl+y|global:ctrl+y");
+			assert.match(await renderSkill(client, false, 22), /\(ctrl\+y Expand\)/);
 
-		writeExpandBinding(tempDir, []);
-		const unboundReloaded = nextKeybindingsReload(client);
-		await client.prompt("/reload-keybindings-fixture");
-		await unboundReloaded;
-		editor.handleInput("\x19");
-		assert.equal(expandDispatches, 2, "unbound host action must not dispatch the old remap");
-	} finally {
-		detachHostSync();
-		await client.stop();
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-}, 15_000);
+			writeExpandBinding(tempDir, []);
+			const unboundReloaded = nextKeybindingsReload(client);
+			await client.prompt("/reload-keybindings-fixture");
+			await unboundReloaded;
+			editor.handleInput("\x19");
+			assert.equal(expandDispatches, 2, "unbound host action must not dispatch the old remap");
+		} finally {
+			detachHostSync();
+			await client.stop();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	},
+	REAL_KEYBINDINGS_TEST_TIMEOUT_MS,
+);

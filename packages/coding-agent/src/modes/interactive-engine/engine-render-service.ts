@@ -1,5 +1,5 @@
 import type { Terminal } from "@earendil-works/pi-tui";
-import { TUI } from "@earendil-works/pi-tui";
+import { type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../config.ts";
 import type { AgentSession } from "../../core/agent-session.ts";
 import { runCallback } from "../../core/callback-activity.ts";
@@ -124,7 +124,7 @@ export class EngineRenderService {
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
-			const tui = new TUI(terminal, undefined, getAgentDir());
+			const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
 			const component = new ToolExecutionComponent(
 				command.toolName,
 				command.toolCallId,
@@ -163,7 +163,7 @@ export class EngineRenderService {
 			this.disposeRecord(command.componentId);
 			const terminal = this.createTerminal(command.componentId);
 			terminal.columns = Math.max(1, command.width);
-			const tui = new TUI(terminal, undefined, getAgentDir());
+			const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
 			const message = command.message as unknown as CustomMessage<object>;
 			const component = new CustomMessageComponent(
 				message,

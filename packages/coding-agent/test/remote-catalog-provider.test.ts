@@ -1,13 +1,8 @@
-import {
-	createProvider,
-	InMemoryModelsStore,
-	type Model,
-	type ModelsStoreEntry,
-	type ProviderModelsStore,
-} from "@earendil-works/pi-ai";
+import { createProvider, InMemoryModelsStore, type Model, type ModelsStore } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VERSION } from "../src/config.ts";
 import { withRemoteCatalog } from "../src/core/remote-catalog-provider.ts";
+import { makeRefreshContext } from "./helpers/refresh-context.ts";
 
 function model(id: string): Model<"openai-completions"> {
 	return {
@@ -44,14 +39,6 @@ function testProvider(localGeneratedAt?: number) {
 	);
 }
 
-function scopedStore(store: InMemoryModelsStore): ProviderModelsStore {
-	return {
-		read: () => store.read("test-provider"),
-		write: (entry: ModelsStoreEntry) => store.write("test-provider", entry),
-		delete: () => store.delete("test-provider"),
-	};
-}
-
 afterEach(() => vi.restoreAllMocks());
 
 describe("remote catalog provider", () => {
@@ -65,10 +52,11 @@ describe("remote catalog provider", () => {
 		);
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
-		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
-		await provider.refreshModels?.(refresh);
-		await provider.refreshModels?.(refresh);
-		await provider.refreshModels?.({ ...refresh, force: true });
+		const refresh = (force?: boolean) =>
+			makeRefreshContext(store, provider.id, { credential: { type: "api_key" } as const, force });
+		await provider.refreshModels?.(await refresh());
+		await provider.refreshModels?.(await refresh());
+		await provider.refreshModels?.(await refresh(true));
 
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
 		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
@@ -92,12 +80,13 @@ describe("remote catalog provider", () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
 		const provider = testProvider(localGeneratedAt);
 		const store = new InMemoryModelsStore();
-		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
+		const refresh = (force?: boolean) =>
+			makeRefreshContext(store, provider.id, { credential: { type: "api_key" } as const, force });
 
-		await provider.refreshModels?.(refresh);
+		await provider.refreshModels?.(await refresh());
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static"]);
 
-		await provider.refreshModels?.({ ...refresh, force: true });
+		await provider.refreshModels?.(await refresh(true));
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "newer"]);
 		expect(await store.read(provider.id)).toMatchObject({ lastModified: Date.parse(newerHeader) });
 	});
@@ -112,14 +101,15 @@ describe("remote catalog provider", () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
-		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
+		const refresh = (force?: boolean) =>
+			makeRefreshContext(store, provider.id, { credential: { type: "api_key" } as const, force });
 
-		await provider.refreshModels?.(refresh);
+		await provider.refreshModels?.(await refresh());
 		expect(fetchSpy.mock.calls[0]?.[1]?.headers).not.toHaveProperty("if-none-match");
 		expect(await store.read(provider.id)).toMatchObject({ etag: '"catalog-1"' });
 
 		const checkedAt = (await store.read(provider.id))?.checkedAt;
-		await provider.refreshModels?.({ ...refresh, force: true });
+		await provider.refreshModels?.(await refresh(true));
 
 		expect(fetchSpy.mock.calls[1]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
@@ -139,10 +129,11 @@ describe("remote catalog provider", () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
-		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
+		const refresh = (force?: boolean) =>
+			makeRefreshContext(store, provider.id, { credential: { type: "api_key" } as const, force });
 
-		await provider.refreshModels?.(refresh);
-		await provider.refreshModels?.({ ...refresh, force: true });
+		await provider.refreshModels?.(await refresh());
+		await provider.refreshModels?.(await refresh(true));
 
 		expect((await store.read(provider.id))?.etag).toBeUndefined();
 	});
@@ -158,16 +149,17 @@ describe("remote catalog provider", () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
-		const refresh = { credential: { type: "api_key" } as const, store: scopedStore(store), allowNetwork: true };
+		const refresh = (force?: boolean) =>
+			makeRefreshContext(store, provider.id, { credential: { type: "api_key" } as const, force });
 
-		await provider.refreshModels?.(refresh);
-		await expect(provider.refreshModels?.({ ...refresh, force: true })).rejects.toThrow(/429/);
+		await provider.refreshModels?.(await refresh());
+		await expect(provider.refreshModels?.(await refresh(true))).rejects.toThrow(/429/);
 
 		const stored = await store.read(provider.id);
 		expect(stored?.etag).toBe('"catalog-1"');
 		expect(stored?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
 
-		await provider.refreshModels?.({ ...refresh, force: true });
+		await provider.refreshModels?.(await refresh(true));
 		expect(fetchSpy.mock.calls[2]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
 	});
@@ -178,17 +170,13 @@ describe("remote catalog provider", () => {
 		const store = new InMemoryModelsStore();
 
 		await expect(
-			provider.refreshModels?.({
-				credential: { type: "api_key" },
-				store: scopedStore(store),
-				allowNetwork: true,
-			}),
+			provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } })),
 		).resolves.toBeUndefined();
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static"]);
 		expect(await store.read(provider.id)).toMatchObject({ models: [], checkedAt: expect.any(Number) });
 	});
 
-	it("pi publishes refreshed models before surfacing persistence failures", async () => {
+	it("surfaces persistence failures without publishing an uncommitted catalog", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(JSON.stringify({ new: model("new") }), {
 				status: 200,
@@ -196,7 +184,7 @@ describe("remote catalog provider", () => {
 			}),
 		);
 		const provider = testProvider();
-		const store: ProviderModelsStore = {
+		const store: ModelsStore = {
 			read: async () => ({ models: [model("stale")], checkedAt: 0 }),
 			write: async () => {
 				throw new Error("disk full");
@@ -205,12 +193,11 @@ describe("remote catalog provider", () => {
 		};
 
 		await expect(
-			provider.refreshModels?.({
-				credential: { type: "api_key" },
-				store,
-				allowNetwork: true,
-			}),
+			provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } })),
 		).rejects.toThrow("disk full");
-		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "new"]);
+		// pi 0.84.1 persists before invoking publication.update. A failed write
+		// therefore leaves the restored cached overlay visible and does not expose
+		// the newly fetched catalog as if it had been committed.
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "stale"]);
 	});
 });

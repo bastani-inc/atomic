@@ -14,8 +14,17 @@ import { bunExecutable, installBunGlobal } from "../helpers/runtime.js";
 // re-executed under Bun.
 installBunGlobal();
 
+// Fake CLI tools for the command-path test are plain /bin/sh scripts, not Bun
+// scripts. The first exec of a freshly written bun-shebang script stalls for
+// multiple seconds on a loaded macOS machine (measured p50 3.6s, max 62s under
+// a concurrent `test:unit` run, versus <210ms for a fresh /bin/sh script and
+// <1s re-execing an already-run bun script), which blows through the shipped
+// 10s ffprobe/ffmpeg budget in video-extract.ts and fails the test with
+// "ffprobe timed out". The fixtures only echo fixed bytes, so the shell does
+// the same job without dragging a Bun cold start inside the shipped timeout.
+// The test returns early on win32, so POSIX sh is always available here.
 function executable(path: string, body: string): void {
-	writeFileSync(path, `#!/usr/bin/env bun\n${body}\n`, "utf8");
+	writeFileSync(path, `#!/bin/sh\n${body}\n`, "utf8");
 	chmodSync(path, 0o755);
 }
 
@@ -89,9 +98,9 @@ test.sequential("video and YouTube command paths use asynchronous Bun subprocess
 	const bin = mkdtempSync(join(tmpdir(), "atomic-web-bin-"));
 	const previousPath = process.env.PATH;
 	try {
-		executable(join(bin, "ffprobe"), "console.log('12.5')");
-		executable(join(bin, "ffmpeg"), "process.stdout.write(Buffer.from([255,216,255,217]))");
-		executable(join(bin, "yt-dlp"), "console.log('42'); console.log('https://stream.invalid/video')");
+		executable(join(bin, "ffprobe"), "echo '12.5'");
+		executable(join(bin, "ffmpeg"), "printf '\\377\\330\\377\\331'");
+		executable(join(bin, "yt-dlp"), "echo '42'; echo 'https://stream.invalid/video'");
 		process.env.PATH = `${bin}${delimiter}${previousPath ?? ""}`;
 		assert.equal(await getLocalVideoDuration("video.mp4"), 12.5);
 		const frame = await extractVideoFrame("video.mp4");

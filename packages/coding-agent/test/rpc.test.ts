@@ -318,4 +318,60 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 		expect(sessionInfoEntries.length).toBe(1);
 		expect(sessionInfoEntries[0].name).toBe("my-test-session");
 	}, 60000);
+
+	/**
+	 * Live counterpart to `rpc-message-update-deltas.test.ts` and
+	 * `suite/regressions/2221-json-stream-linear.test.ts`.
+	 *
+	 * The child's `RpcOutputBuffer` (rpc-mode.ts:56) used to coalesce every
+	 * `message_update` under the constant key "message", keeping only the last
+	 * record per 16ms window, which silently discarded intermediate deltas.
+	 *
+	 * Every assertion here is a protocol invariant that holds no matter how the
+	 * provider chunks its output. An earlier version asserted a delta *count*
+	 * (`> 1`), which measured Anthropic's chunking rather than our buffer: a
+	 * thirty-line answer can arrive as as few as two `text_delta` frames, so it
+	 * failed intermittently with the same message the real regression produces.
+	 * Delta loss is caught instead by the reconstruction equality below, which
+	 * is exact and chunk-count independent.
+	 */
+	test("streams message_update deltas that reconstruct the assistant text", async () => {
+		await client.start();
+
+		const events = await client.promptAndWait(
+			"Count from 1 to 30, one number per line, with no other words.",
+			undefined,
+			90000,
+		);
+
+		const updates = events.filter((event) => event.type === "message_update");
+		expect(updates.length).toBeGreaterThan(0);
+
+		const textDeltas: string[] = [];
+		for (const event of updates) {
+			const frame = event as {
+				message?: unknown;
+				assistantMessageEvent?: { type?: string; delta?: string; partial?: unknown };
+			};
+
+			// Wire contract (modes/json-event.ts): deltas only, no cumulative
+			// snapshot. `message_start` seeds the stream and `message_end`
+			// supplies the authoritative message.
+			expect(frame.assistantMessageEvent).toBeDefined();
+			expect(frame).not.toHaveProperty("message");
+			expect(frame.assistantMessageEvent).not.toHaveProperty("partial");
+
+			const assistantEvent = frame.assistantMessageEvent;
+			if (assistantEvent?.type === "text_delta" && typeof assistantEvent.delta === "string") {
+				textDeltas.push(assistantEvent.delta);
+			}
+		}
+
+		// Exact equality is the delta-loss guard: dropping any delta changes the
+		// concatenation, however few or many frames the provider sent.
+		expect(textDeltas.length).toBeGreaterThan(0);
+		const finalText = await client.getLastAssistantText();
+		expect(finalText).toBeDefined();
+		expect(textDeltas.join("")).toBe(finalText);
+	}, 120000);
 });

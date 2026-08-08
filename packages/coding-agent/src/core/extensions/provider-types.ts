@@ -42,9 +42,13 @@ export interface ProviderConfig {
 		/** Whether the flow accepts a browser callback/manual redirect. */
 		usesCallbackServer?: boolean;
 		/** Run the login flow, return credentials to persist. */
-		login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
-		/** Refresh expired credentials, return updated credentials to persist. */
-		refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+		login(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials>;
+		/**
+		 * Refresh expired credentials, return updated credentials to persist.
+		 * `signal` is the caller's cancellation signal — forward it into the
+		 * network call so an aborted refresh is actually abandoned.
+		 */
+		refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials>;
 		/** Convert credentials to API key string for the provider. */
 		getApiKey(credentials: OAuthCredentials): string;
 		/** Optional: modify models for this provider (e.g., update baseUrl based on credentials). */

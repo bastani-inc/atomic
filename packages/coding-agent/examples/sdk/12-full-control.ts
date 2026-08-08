@@ -20,9 +20,15 @@ const modelRuntime = await ModelRuntime.create({
 	modelsPath: null,
 });
 
-// Runtime API key override (not persisted)
+// Runtime API key override (not persisted). Update auth state first, then
+// explicitly refresh the affected provider catalog.
 if (process.env.MY_ANTHROPIC_KEY) {
-	await modelRuntime.setRuntimeApiKey("anthropic", process.env.MY_ANTHROPIC_KEY);
+	const providerId = "anthropic";
+	const authController = new AbortController();
+	await modelRuntime.setRuntimeApiKey(providerId, process.env.MY_ANTHROPIC_KEY, {
+		signal: authController.signal,
+	});
+	await modelRuntime.refresh({ providers: [providerId], signal: authController.signal });
 }
 
 const model = getModel("anthropic", "claude-sonnet-4-5");

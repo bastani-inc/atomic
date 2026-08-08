@@ -44,7 +44,7 @@ async function generatePKCE(): Promise<{ verifier: string; challenge: string }> 
 		.replace(/=+$/, "");
 	return { verifier, challenge };
 }
-async function loginAnthropic(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+async function loginAnthropic(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials> {
 	const { verifier, challenge } = await generatePKCE();
 	const authParams = new URLSearchParams({
 		code: "true",
@@ -70,6 +70,7 @@ async function loginAnthropic(callbacks: OAuthLoginCallbacks): Promise<OAuthCred
 			redirect_uri: REDIRECT_URI,
 			code_verifier: verifier,
 		}),
+		signal,
 	});
 	if (!tokenResponse.ok) {
 		throw new Error(`Token exchange failed: ${await tokenResponse.text()}`);
@@ -85,7 +86,10 @@ async function loginAnthropic(callbacks: OAuthLoginCallbacks): Promise<OAuthCred
 		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
 	};
 }
-async function refreshAnthropicToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+async function refreshAnthropicToken(
+	credentials: OAuthCredentials,
+	signal: AbortSignal | undefined,
+): Promise<OAuthCredentials> {
 	const response = await fetch(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -94,6 +98,9 @@ async function refreshAnthropicToken(credentials: OAuthCredentials): Promise<OAu
 			client_id: CLIENT_ID,
 			refresh_token: credentials.refresh,
 		}),
+		// Honor the caller's cancellation: an aborted refresh must abandon the
+		// request rather than run to completion.
+		signal,
 	});
 	if (!response.ok) {
 		throw new Error(`Token refresh failed: ${await response.text()}`);

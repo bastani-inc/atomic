@@ -109,7 +109,11 @@ describeModelRegistry((context) => {
 				}),
 			).toThrow('Provider broken-provider: "api" is required when registering streamSimple.');
 
-			await expect(registry.refresh()).resolves.toBeUndefined();
+			// ModelRegistry.refresh now returns pi's ModelsRefreshResult rather than void.
+			// A rejected registration must leave a clean refresh behind it.
+			const afterFailedRegistration = await registry.refresh();
+			expect(afterFailedRegistration.aborted).toBe(false);
+			expect(afterFailedRegistration.errors.size).toBe(0);
 		});
 
 		test("failed registerProvider does not remove existing provider models", async () => {
@@ -153,7 +157,9 @@ describeModelRegistry((context) => {
 			).toThrow('Provider demo-provider, model broken-model: no "api" specified.');
 
 			expect(registry.find("demo-provider", "demo-model")).toBeDefined();
-			await expect(registry.refresh()).resolves.toBeUndefined();
+			const afterFailedReregistration = await registry.refresh();
+			expect(afterFailedReregistration.aborted).toBe(false);
+			expect(afterFailedReregistration.errors.size).toBe(0);
 			expect(registry.find("demo-provider", "demo-model")).toBeDefined();
 		});
 
@@ -318,11 +324,12 @@ describeModelRegistry((context) => {
 				registry.registerProvider("bad", {
 					...bad,
 					refreshModels: async ({ allowNetwork }) => {
-						throw new Error(allowNetwork ? "catalog failed" : "cache fallback failed");
+						if (!allowNetwork) return;
+						throw new Error("catalog failed");
 					},
 				});
 
-				const result = await getModelRuntime(registry).refresh();
+				const result = await getModelRuntime(registry).refresh({ allowNetwork: true });
 
 				expect(result.errors.get("bad")?.message).toBe("catalog failed");
 				expect(getModelsForProvider(registry, "good").map((model) => model.id)).toEqual(["new-good"]);
@@ -344,7 +351,7 @@ describeModelRegistry((context) => {
 				expect(registry.find("dynamic", "resurrected")).toBeUndefined();
 			});
 
-			test("stale refresh completion cannot overwrite a re-registered provider but can update its shared cache", async () => {
+			test("stale refresh completion cannot overwrite a re-registered provider or shared cache", async () => {
 				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
 				const initial = providerConfig("https://dynamic.test/v1", [{ id: "old" }]);
 				let releaseStale!: () => void;
@@ -364,16 +371,17 @@ describeModelRegistry((context) => {
 				let persistedAfterStale: string[] | undefined;
 				registry.registerProvider("dynamic", {
 					...initial,
-					refreshModels: async ({ store }) => {
+					refreshModels: async ({ publish, signal }) => {
 						staleStartCount += 1;
 						if (staleStartCount === 2) markAllStaleStarted();
 						await staleGate;
 						const staleModels = providerConfig("https://dynamic.test/v1", [{ id: "stale-store" }]).models!;
-						await store.write({ models: staleModels, checkedAt: Date.now() });
-						persistedAfterStale = (await store.read())?.models.map((model) => model.id);
+						if (!signal.aborted) {
+							const published = await publish({ persist: { models: staleModels, checkedAt: Date.now() } });
+							if (published) persistedAfterStale = staleModels.map((model) => model.id);
+						}
 						staleFinishCount += 1;
 						if (staleFinishCount === 2) markAllStaleFinished();
-						return staleModels;
 					},
 				});
 				const staleRefresh = getModelRuntime(registry).refresh();
@@ -382,9 +390,8 @@ describeModelRegistry((context) => {
 				const freshModels = providerConfig("https://manual.test/v1", [{ id: "manual" }]).models!;
 				registry.registerProvider("dynamic", {
 					...providerConfig("https://manual.test/v1", [{ id: "manual" }]),
-					refreshModels: async ({ store }) => {
-						await store.write({ models: freshModels, checkedAt: Date.now() });
-						return freshModels;
+					refreshModels: async ({ publish }) => {
+						await publish({ persist: { models: freshModels, checkedAt: Date.now() } });
 					},
 				});
 				await getModelRuntime(registry).refresh();
@@ -392,7 +399,9 @@ describeModelRegistry((context) => {
 				await Promise.all([staleRefresh, allStaleFinished]);
 
 				expect(getModelsForProvider(registry, "dynamic").map((model) => model.id)).toEqual(["manual"]);
-				expect(persistedAfterStale).toEqual(["stale-store"]);
+				// Re-registration supersedes both stale refresh generations, so their
+				// generation-checked publications cannot update the shared cache.
+				expect(persistedAfterStale).toBeUndefined();
 			});
 
 			test("pre-aborted refresh returns without invoking providers", async () => {

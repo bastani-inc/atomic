@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setKeybindings, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
 import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
@@ -19,7 +19,7 @@ import {
 function createStartupTui(settingsManager: SettingsManager): TUI {
 	initTheme(settingsManager.getTheme());
 	setKeybindings(KeybindingsManager.create());
-	const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
+	const ui = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
 	ui.setClearOnShrink(settingsManager.getClearOnShrink());
 	return ui;
 }

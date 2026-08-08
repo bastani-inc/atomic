@@ -5,12 +5,17 @@ import {
 	type AssistantMessageEventStream,
 	type AuthResult,
 	type Context,
+	type DeferredCancelOptions,
+	type DeferredFetchOptions,
+	type DeferredHandle,
 	lazyStream,
 	type Model,
 	type ModelsApiStreamOptions,
+	type ModelsDeferredCancelOptions,
+	type ModelsDeferredFetchOptions,
 	ModelsError,
+	type ModelsRequestTransforms,
 	type ModelsSimpleStreamOptions,
-	type ModelsStreamTransforms,
 	type MutableModels,
 	type Provider,
 	type ProviderHeaders,
@@ -48,7 +53,7 @@ export class ModelRuntimeStreaming {
 
 	private async prepareRequest(
 		model: Model<Api>,
-		options: (StreamOptions & ModelsStreamTransforms) | undefined,
+		options: (StreamOptions & ModelsRequestTransforms) | undefined,
 	): Promise<{ provider: Provider; model: Model<Api>; options: StreamOptions }> {
 		const provider = this.models.getProvider(model.provider);
 		if (!provider) throw new ModelsError("provider", `Unknown provider: ${model.provider}`);
@@ -82,7 +87,7 @@ export class ModelRuntimeStreaming {
 		return lazyStream(model, async () => {
 			const prepared = await this.prepareRequest(
 				model,
-				options as (StreamOptions & ModelsStreamTransforms) | undefined,
+				options as (StreamOptions & ModelsRequestTransforms) | undefined,
 			);
 			return prepared.provider.stream(
 				prepared.model as Model<TApi>,
@@ -109,5 +114,31 @@ export class ModelRuntimeStreaming {
 
 	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {
 		return this.streamSimple(model, context, options).result();
+	}
+
+	async fetchDeferred(
+		model: Model<Api>,
+		handle: DeferredHandle,
+		options?: ModelsDeferredFetchOptions,
+	): Promise<AssistantMessage> {
+		return lazyStream(model, async () => {
+			const prepared = await this.prepareRequest(model, options);
+			if (!prepared.provider.fetchDeferred) {
+				throw new ModelsError("provider", `Provider ${model.provider} does not support deferred responses`);
+			}
+			return prepared.provider.fetchDeferred(prepared.model, handle, prepared.options as DeferredFetchOptions);
+		}).result();
+	}
+
+	async cancelDeferred(
+		model: Model<Api>,
+		handle: DeferredHandle,
+		options?: ModelsDeferredCancelOptions,
+	): Promise<void> {
+		const prepared = await this.prepareRequest(model, options);
+		if (!prepared.provider.cancelDeferred) {
+			throw new ModelsError("provider", `Provider ${model.provider} does not support deferred responses`);
+		}
+		await prepared.provider.cancelDeferred(prepared.model, handle, prepared.options as DeferredCancelOptions);
 	}
 }

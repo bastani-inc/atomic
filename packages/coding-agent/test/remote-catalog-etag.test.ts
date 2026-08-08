@@ -1,6 +1,7 @@
 import { createProvider, InMemoryModelsStore, type Model } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withRemoteCatalog } from "../src/core/remote-catalog-provider.ts";
+import { makeRefreshContext } from "./helpers/refresh-context.ts";
 
 function model(id: string): Model<"openai-completions"> {
 	return {
@@ -14,14 +15,6 @@ function model(id: string): Model<"openai-completions"> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1000,
 		maxTokens: 100,
-	};
-}
-
-function providerStore(store: InMemoryModelsStore) {
-	return {
-		read: () => store.read("test-provider"),
-		write: (entry: Parameters<InMemoryModelsStore["write"]>[1]) => store.write("test-provider", entry),
-		delete: () => store.delete("test-provider"),
 	};
 }
 
@@ -57,13 +50,13 @@ describe("remote catalog ETag revalidation", () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift()!);
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
-		const refresh = { credential: { type: "api_key" as const }, store: providerStore(store), allowNetwork: true };
+		const credential = { type: "api_key" as const };
 
-		await provider.refreshModels?.(refresh);
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential }));
 		expect(fetchSpy.mock.calls[0]?.[1]?.headers).not.toHaveProperty("if-none-match");
 		const first = await store.read(provider.id);
 		expect(first?.etag).toBe('"catalog-1"');
-		await provider.refreshModels?.({ ...refresh, force: true });
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential, force: true }));
 
 		expect(fetchSpy.mock.calls[1]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
@@ -81,11 +74,7 @@ describe("remote catalog ETag revalidation", () => {
 		const store = new InMemoryModelsStore();
 		await store.write(provider.id, { models: [], checkedAt: 0, etag: '"orphan"' });
 
-		await provider.refreshModels?.({
-			credential: { type: "api_key" },
-			store: providerStore(store),
-			allowNetwork: true,
-		});
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } }));
 
 		expect(fetchSpy.mock.calls[0]?.[1]?.headers).not.toHaveProperty("if-none-match");
 	});
@@ -96,17 +85,13 @@ describe("remote catalog ETag revalidation", () => {
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
 		await store.write(provider.id, { models: [model("cached")], checkedAt: 0, etag: '"one"' });
-		const refresh = {
-			credential: { type: "api_key" as const },
-			store: providerStore(store),
-			allowNetwork: true,
-			force: true,
-		};
+		const refresh = () =>
+			makeRefreshContext(store, provider.id, { credential: { type: "api_key" as const }, force: true });
 
-		await provider.refreshModels?.(refresh);
+		await provider.refreshModels?.(await refresh());
 		expect((await store.read(provider.id))?.etag).toBeUndefined();
 		await store.write(provider.id, { models: [model("cached")], checkedAt: 0, etag: '"two"' });
-		await expect(provider.refreshModels?.(refresh)).rejects.toThrow("503");
+		await expect(provider.refreshModels?.(await refresh())).rejects.toThrow("503");
 		expect((await store.read(provider.id))?.etag).toBe('"two"');
 	});
 });

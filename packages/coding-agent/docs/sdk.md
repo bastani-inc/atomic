@@ -377,6 +377,16 @@ session.subscribe((event) => {
 });
 ```
 
+A subscriber that rebuilds the assistant message from these deltas must
+accumulate them into its own message object. `message_start` reports the
+message the model is about to stream, but an in-process subscriber receives the
+provider's live partial rather than a snapshot of it, and the provider keeps
+appending to that same object as the stream runs. Appending a delta to it adds
+text the provider already added. A subscriber that attaches part-way through a
+turn missed the deltas that came before it and can seed itself from
+`session.agent.state.streamingMessage`, which holds the message currently being
+streamed, if any.
+
 ## Options Reference
 
 ### Directories
@@ -474,8 +484,12 @@ const { session } = await createAgentSession({
   modelRuntime,
 });
 
-// Runtime API key override (not persisted to disk)
-await modelRuntime.setRuntimeApiKey("anthropic", "sk-my-temp-key");
+// Runtime API key override (not persisted to disk). Setting the key updates
+// auth state; refresh the provider explicitly when its catalog must be current.
+const providerId = "anthropic";
+const authController = new AbortController();
+await modelRuntime.setRuntimeApiKey(providerId, "sk-my-temp-key", { signal: authController.signal });
+await modelRuntime.refresh({ providers: [providerId], signal: authController.signal });
 
 // Custom credential and model configuration locations
 const customRuntime = await ModelRuntime.create({
@@ -1009,9 +1023,13 @@ import {
 const authStorage = AuthStorage.create("/custom/agent/auth.json");
 const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 
-// Runtime API key override (not persisted)
+// Runtime API key override (not persisted). setRuntimeApiKey updates auth state;
+// the scoped refresh updates that provider's catalog.
 if (process.env.MY_KEY) {
-  await modelRuntime.setRuntimeApiKey("anthropic", process.env.MY_KEY);
+  const providerId = "anthropic";
+  const authController = new AbortController();
+  await modelRuntime.setRuntimeApiKey(providerId, process.env.MY_KEY, { signal: authController.signal });
+  await modelRuntime.refresh({ providers: [providerId], signal: authController.signal });
 }
 
 // Inline tool

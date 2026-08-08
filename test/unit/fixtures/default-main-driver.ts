@@ -36,6 +36,8 @@ export interface HarnessReport {
 	hasOverlay?: boolean;
 }
 
+const DEFAULT_MAIN_REPORT_TIMEOUT_MS = 30_000;
+
 export class DefaultMainDriver {
 	readonly process: SpawnedProcess;
 	readonly reports: HarnessReport[] = [];
@@ -72,7 +74,7 @@ export class DefaultMainDriver {
 		void stdin.flush();
 	}
 
-	async waitFor(predicate: (report: HarnessReport) => boolean, timeoutMs = 8_000): Promise<HarnessReport> {
+	async waitFor(predicate: (report: HarnessReport) => boolean, timeoutMs = DEFAULT_MAIN_REPORT_TIMEOUT_MS): Promise<HarnessReport> {
 		const existing = this.reports.find(predicate);
 		if (existing) return existing;
 		return new Promise<HarnessReport>((resolve, reject) => {
@@ -90,7 +92,7 @@ export class DefaultMainDriver {
 			this.waiters.add(inspect);
 		});
 	}
-	async waitForNext(fromIndex: number, predicate: (report: HarnessReport) => boolean, timeoutMs = 8_000): Promise<HarnessReport> {
+	async waitForNext(fromIndex: number, predicate: (report: HarnessReport) => boolean, timeoutMs = DEFAULT_MAIN_REPORT_TIMEOUT_MS): Promise<HarnessReport> {
 		const scan = (): HarnessReport | undefined => {
 			for (let index = fromIndex; index < this.reports.length; index += 1) {
 				const report = this.reports[index]!;

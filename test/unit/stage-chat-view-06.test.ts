@@ -177,10 +177,7 @@ describe("StageChatView", () => {
 		} as unknown as AgentSessionEvent);
 		emit({
 			type: "message_update",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "partial answer" }],
-			},
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "partial answer" },
 		} as unknown as AgentSessionEvent);
 
 		for (const ch of "redirect") view.handleInput(ch);
@@ -206,10 +203,7 @@ describe("StageChatView", () => {
 
 		emit({
 			type: "message_update",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "partial answer continued" }],
-			},
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " continued" },
 		} as unknown as AgentSessionEvent);
 		assert.equal(view._transcript.at(-1)?.role, "assistant");
 		assert.equal(view._transcript.at(-1)?.text, "partial answer continued");
