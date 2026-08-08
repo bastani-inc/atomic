@@ -119,6 +119,15 @@ export interface WorkflowLifecycleNotificationOptions {
 	readonly bridgeTerminalLineages?: readonly string[];
 	/** Physical-to-logical lineage retained by a replacement bridge. */
 	readonly bridgeLineages?: readonly WorkflowLifecycleBridgeLineage[];
+	/**
+	 * Active neutral contributions retained by the bridge this one replaces.
+	 *
+	 * Seeding them lets the first reconciliation compare a successor's derived
+	 * state against what the session last published: a run still live keeps its
+	 * contribution, and a run the successor cannot observe has its contribution
+	 * dropped explicitly rather than left behind as a phantom.
+	 */
+	readonly bridgeContributions?: readonly WorkflowLifecycleBridgeEvent[];
 }
 
 type RawRenderer = PiMessageRenderer;
@@ -267,16 +276,42 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 	if (bridgeTerminalLineages !== undefined) {
 		for (const runKey of options.bridgeTerminalLineages ?? []) bridgeTerminalLineages.add(runKey);
 	}
-	const publishBridge = (runKey: string, details: WorkflowLifecycleNoticeDetails): void => {
+	if (bridgeContributions !== undefined) {
+		for (const event of options.bridgeContributions ?? []) {
+			bridgeContributions.set(event.runKey, bridgeContributionFromEvent(event));
+		}
+	}
+	const publishBridge = (runKey: string, contribution: BridgeContribution): void => {
 		if (!bridgeEnabled || publishLifecycleEvent === undefined) return;
 		try {
-			publishLifecycleEvent({
-				runKey,
-				kind: details.kind,
-				label: lifecycleBridgeLabel(details),
-			});
+			publishLifecycleEvent({ runKey, kind: contribution.kind, label: contribution.label });
 		} catch {
 			// A neutral observer must never break the store subscriber or workflow.
+		}
+	};
+
+	/**
+	 * Publishing is deferred until every contribution has been committed.
+	 *
+	 * Event-bus listeners run synchronously, so one that invalidates the store
+	 * re-enters `inspect` from inside `publishBridge`. Reconciliation there sees
+	 * the already-committed contributions and appends only what genuinely
+	 * changed; the outermost drain then publishes it, in order, exactly once.
+	 */
+	const bridgePublishQueue: Array<{ runKey: string; contribution: BridgeContribution }> = [];
+	let bridgePublishing = false;
+	const enqueueBridgePublish = (runKey: string, contribution: BridgeContribution): void => {
+		bridgePublishQueue.push({ runKey, contribution });
+	};
+	const drainBridgePublishQueue = (): void => {
+		if (bridgePublishing) return;
+		bridgePublishing = true;
+		try {
+			for (let next = bridgePublishQueue.shift(); next !== undefined; next = bridgePublishQueue.shift()) {
+				publishBridge(next.runKey, next.contribution);
+			}
+		} finally {
+			bridgePublishing = false;
 		}
 	};
 
@@ -400,8 +435,9 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 				bridgeLineage,
 				bridgeTerminalLineages,
 				options.rememberBridgeLineage,
-				publishBridge,
+				enqueueBridgePublish,
 			);
+			drainBridgePublishQueue();
 		}
 	};
 
@@ -553,22 +589,71 @@ function makeControlNotice(run: RunSnapshot, occurrence: ControlOccurrence): Wor
 		createdAt: occurrence.at,
 	};
 }
+/**
+ * One run's neutral contribution to the bridge.
+ *
+ * It stores exactly the three fields that leave the bridge. There is no path
+ * from a stored contribution back to a notice, so a dropped contribution can
+ * only ever repeat a label it already published — never claim an outcome the
+ * run did not reach.
+ */
 interface BridgeContribution {
+	readonly kind: WorkflowLifecycleNoticeKind;
+	readonly label: string;
 	readonly signature: string;
-	readonly details: WorkflowLifecycleNoticeDetails;
 }
 
-type BridgeContributionMode = "working" | "blocked" | "completed" | "quit" | "none";
+/** How a run in a derived lifecycle state contributes to the pane (W2). */
+type BridgeActivity = "working" | "blocked" | "ended";
 
-interface BridgeCurrentState {
-	readonly mode: BridgeContributionMode;
-	readonly details: WorkflowLifecycleNoticeDetails | undefined;
+const BRIDGE_ACTIVITY_BY_KIND = {
+	started: "working",
+	resumed: "working",
+	awaiting_input: "blocked",
+	blocked: "blocked",
+	failed: "blocked",
+	paused: "blocked",
+	completed: "ended",
+	quit: "ended",
+} as const satisfies Record<WorkflowLifecycleNoticeKind, BridgeActivity>;
+
+interface BridgeRunState {
 	readonly run: RunSnapshot;
+	readonly details: WorkflowLifecycleNoticeDetails;
+	readonly activity: BridgeActivity;
 }
 
 interface CurrentAwaitingInput {
 	readonly key: string;
 	readonly stage: StageSnapshot | undefined;
+}
+
+function bridgeActivity(kind: WorkflowLifecycleNoticeKind): BridgeActivity {
+	return BRIDGE_ACTIVITY_BY_KIND[kind];
+}
+
+function bridgeContributionOf(details: WorkflowLifecycleNoticeDetails): BridgeContribution {
+	const label = lifecycleBridgeLabel(details);
+	return { kind: details.kind, label, signature: bridgeSignatureOf(details.kind, label) };
+}
+
+function bridgeContributionFromEvent(event: WorkflowLifecycleBridgeEvent): BridgeContribution {
+	return { kind: event.kind, label: event.label, signature: bridgeSignatureOf(event.kind, event.label) };
+}
+
+/**
+ * End a contribution the bridge can no longer observe.
+ *
+ * A run that left the snapshot did not report an outcome, so the drop repeats
+ * the label already on the wire under `quit` — the neutral "stopped without
+ * completing" kind. Calling it `completed` would invent a result.
+ */
+function bridgeDropContribution(previous: BridgeContribution): BridgeContribution {
+	return { kind: "quit", label: previous.label, signature: bridgeSignatureOf("quit", previous.label) };
+}
+
+function bridgeSignatureOf(kind: WorkflowLifecycleNoticeKind, label: string): string {
+	return `${kind}:${bridgeBlockedKind(kind) ? label : ""}`;
 }
 
 function reconcileBridgeContributions(
@@ -577,7 +662,7 @@ function reconcileBridgeContributions(
 	lineage: Map<string, string>,
 	terminalLineages: Set<string>,
 	rememberLineage: ((runId: string, runKey: string) => void) | undefined,
-	publish: (runKey: string, details: WorkflowLifecycleNoticeDetails) => void,
+	enqueue: (runKey: string, contribution: BridgeContribution) => void,
 ): void {
 	const groups = bridgeRunGroups(runs, lineage);
 	const currentKeys = new Set<string>();
@@ -585,40 +670,39 @@ function reconcileBridgeContributions(
 		for (const run of group) rememberLineage?.(run.id, runKey);
 		currentKeys.add(runKey);
 		const previous = contributions.get(runKey);
-		const hasLiveContinuation = group.some((run) => {
-			if (!isBridgeContinuation(run)) return false;
-			return isBridgeLiveMode(bridgeCurrentStateForRun(run, previous).mode);
-		});
+		const hasLiveContinuation = group.some(
+			(run) => isBridgeContinuation(run) && bridgeRunState(run, previous?.kind).activity !== "ended",
+		);
 		if (terminalLineages.has(runKey) && !hasLiveContinuation) {
 			contributions.delete(runKey);
 			continue;
 		}
 		if (hasLiveContinuation) terminalLineages.delete(runKey);
 
-		const current = bridgeCurrentStateForGroup(group, previous);
-		if (current === undefined || current.mode === "completed" || current.mode === "quit" || current.mode === "none") {
-			if (previous !== undefined) {
-				publish(runKey, current?.details ?? makeBridgeCompletionNotice(previous.details));
-			}
+		const current = bridgeCurrentStateForGroup(group, previous?.kind);
+		if (current === undefined || current.activity === "ended") {
+			// Committed before anything is published, on the terminal path too.
 			contributions.delete(runKey);
 			terminalLineages.add(runKey);
+			if (previous !== undefined) {
+				enqueue(
+					runKey,
+					current === undefined ? bridgeDropContribution(previous) : bridgeContributionOf(current.details),
+				);
+			}
 			continue;
 		}
 
-		if (current.details === undefined) {
-			contributions.delete(runKey);
-			continue;
-		}
-		const signature = bridgeSignature(current.details);
-		if (previous?.signature !== signature) publish(runKey, current.details);
-		contributions.set(runKey, { signature, details: current.details });
+		const contribution = bridgeContributionOf(current.details);
+		contributions.set(runKey, contribution);
+		if (previous?.signature !== contribution.signature) enqueue(runKey, contribution);
 	}
 
-	for (const [runKey, previous] of contributions) {
+	for (const [runKey, previous] of [...contributions]) {
 		if (currentKeys.has(runKey)) continue;
-		publish(runKey, makeBridgeCompletionNotice(previous.details));
 		contributions.delete(runKey);
 		terminalLineages.add(runKey);
+		enqueue(runKey, bridgeDropContribution(previous));
 	}
 }
 
@@ -675,126 +759,101 @@ function isBridgeContinuation(run: RunSnapshot): boolean {
 	return run.resumedFromRunId !== undefined || run.resumeSource !== undefined || run.resumedAt !== undefined;
 }
 
-function isBridgeLiveMode(mode: BridgeContributionMode): boolean {
-	return mode === "working" || mode === "blocked";
-}
-
 function bridgeCurrentStateForGroup(
 	group: readonly RunSnapshot[],
-	previous: BridgeContribution | undefined,
-): BridgeCurrentState | undefined {
+	previousKind: WorkflowLifecycleNoticeKind | undefined,
+): BridgeRunState | undefined {
 	const predecessorIds = new Set(
 		group.flatMap((run) => (run.resumedFromRunId === undefined ? [] : [run.resumedFromRunId])),
 	);
 	const leaves = group.filter((run) => !predecessorIds.has(run.id));
 	const leafRuns = leaves.length === 0 ? group : leaves;
-	const states = leafRuns.map((run) => bridgeCurrentStateForRun(run, previous));
+	const states = leafRuns.map((run) => bridgeRunState(run, previousKind));
 
-	const blocked = latestBridgeState(states, "blocked");
-	if (blocked !== undefined) return blocked;
-	const working = latestBridgeState(states, "working");
-	if (working !== undefined) return working;
-	const terminal = states
-		.filter((state) => state.mode === "completed" || state.mode === "quit")
-		.reduce<BridgeCurrentState | undefined>(latestBridgeStateByStart, undefined);
-	if (terminal !== undefined) return terminal;
-	return undefined;
+	return (
+		latestBridgeState(states, "blocked") ?? latestBridgeState(states, "working") ?? latestBridgeState(states, "ended")
+	);
 }
 
-function latestBridgeState(
-	states: readonly BridgeCurrentState[],
-	mode: BridgeContributionMode,
-): BridgeCurrentState | undefined {
+function latestBridgeState(states: readonly BridgeRunState[], activity: BridgeActivity): BridgeRunState | undefined {
 	return states
-		.filter((state) => state.mode === mode)
-		.reduce<BridgeCurrentState | undefined>(latestBridgeStateByStart, undefined);
+		.filter((state) => state.activity === activity)
+		.reduce<BridgeRunState | undefined>(latestBridgeStateByStart, undefined);
 }
 
-function latestBridgeStateByStart(
-	latest: BridgeCurrentState | undefined,
-	candidate: BridgeCurrentState,
-): BridgeCurrentState {
+function latestBridgeStateByStart(latest: BridgeRunState | undefined, candidate: BridgeRunState): BridgeRunState {
 	return latest === undefined || candidate.run.startedAt >= latest.run.startedAt ? candidate : latest;
 }
 
-function bridgeCurrentStateForRun(run: RunSnapshot, previous: BridgeContribution | undefined): BridgeCurrentState {
-	if (isQuitRun(run)) return { mode: "quit", details: makeQuitLifecycleNotice(run), run };
+function bridgeRunState(run: RunSnapshot, previousKind: WorkflowLifecycleNoticeKind | undefined): BridgeRunState {
+	const details = deriveCurrentRunLifecycleNotice(run, previousKind);
+	return { run, details, activity: bridgeActivity(details.kind) };
+}
+
+/**
+ * The one lifecycle state a run is in right now.
+ *
+ * This is the module's single derivation of a run's current state, built from
+ * the same terminal, control, and awaiting-input helpers the chat notice path
+ * uses. The bridge consumes it instead of deciding again, so every kind a
+ * consumer sees is one this derivation actually produced.
+ *
+ * Total over `RunStatus`. `killed`, `cancelled`, and `skipped` reach the last
+ * line: the run stopped without an outcome the notice vocabulary names, which
+ * ends its contribution under `quit` and never under `completed`.
+ *
+ * `previousKind` is the kind last reported for this run. It only separates a
+ * first start from a continuation; nothing else reads it.
+ */
+function deriveCurrentRunLifecycleNotice(
+	run: RunSnapshot,
+	previousKind: WorkflowLifecycleNoticeKind | undefined,
+): WorkflowLifecycleNoticeDetails {
+	if (isQuitRun(run)) return makeQuitLifecycleNotice(run);
 
 	const terminalKind = terminalNoticeKind(run);
-	if (terminalKind === "completed") {
-		return { mode: "completed", details: makeTerminalNotice(run, terminalKind), run };
-	}
-	if (terminalKind === "failed" || terminalKind === "blocked") {
-		return { mode: "blocked", details: makeTerminalNotice(run, terminalKind), run };
-	}
+	if (terminalKind !== undefined) return makeTerminalNotice(run, terminalKind);
 
 	const awaiting = currentAwaitingInput(run);
-	if (awaiting !== undefined) {
-		return { mode: "blocked", details: bridgeStateNotice(run, "awaiting_input", awaiting.stage), run };
-	}
+	if (awaiting !== undefined) return bridgeStateNotice(run, "awaiting_input", awaiting.stage);
 
 	const blockedStage = run.stages.find((stage) => stage.status === "blocked");
-	if (blockedStage !== undefined) {
-		return { mode: "blocked", details: bridgeStateNotice(run, "blocked", blockedStage), run };
-	}
+	if (blockedStage !== undefined) return bridgeStateNotice(run, "blocked", blockedStage);
 
 	const pausedStage = run.stages.find((stage) => stage.status === "paused");
 	if (pausedStage !== undefined) {
 		const occurrence = controlOccurrences(run).find(
 			(candidate) => candidate.kind === "paused" && candidate.stage?.id === pausedStage.id,
 		);
-		return {
-			mode: "blocked",
-			details:
-				occurrence === undefined
-					? bridgeStateNotice(run, "paused", pausedStage)
-					: makeControlNotice(run, occurrence),
-			run,
-		};
+		return occurrence === undefined
+			? bridgeStateNotice(run, "paused", pausedStage)
+			: makeControlNotice(run, occurrence);
 	}
 
 	if (run.status === "paused") {
 		const occurrence = controlOccurrences(run).find((candidate) => candidate.kind === "paused");
-		return {
-			mode: "blocked",
-			details: occurrence === undefined ? bridgeStateNotice(run, "paused") : makeControlNotice(run, occurrence),
-			run,
-		};
+		return occurrence === undefined ? bridgeStateNotice(run, "paused") : makeControlNotice(run, occurrence);
 	}
 
 	if (run.status === "pending" || run.status === "running") {
-		const previousKind = previous?.details.kind;
 		const previousWasWorking = previousKind === "started" || previousKind === "resumed";
-		const resumed = isBridgeContinuation(run) || (previous !== undefined && !previousWasWorking);
+		const resumed = isBridgeContinuation(run) || (previousKind !== undefined && !previousWasWorking);
 		const kind: "started" | "resumed" = resumed || previousKind === "resumed" ? "resumed" : "started";
 		const occurrence =
 			kind === "resumed" ? controlOccurrences(run).findLast((candidate) => candidate.kind === "resumed") : undefined;
-		return {
-			mode: "working",
-			details: occurrence === undefined ? bridgeStateNotice(run, kind) : makeControlNotice(run, occurrence),
-			run,
-		};
+		return occurrence === undefined ? bridgeStateNotice(run, kind) : makeControlNotice(run, occurrence);
 	}
 
-	return { mode: "none", details: undefined, run };
+	return bridgeStateNotice(run, "quit");
 }
 
 function bridgeBlockedKind(kind: WorkflowLifecycleNoticeKind): boolean {
 	return kind === "awaiting_input" || kind === "blocked" || kind === "failed" || kind === "paused";
 }
 
-function makeBridgeCompletionNotice(previous: WorkflowLifecycleNoticeDetails): WorkflowLifecycleNoticeDetails {
-	return { ...previous, kind: "completed" };
-}
-
 function makeQuitLifecycleNotice(run: RunSnapshot): WorkflowLifecycleNoticeDetails {
 	const occurrence = controlOccurrences(run).find((candidate) => candidate.kind === "quit");
 	return occurrence === undefined ? bridgeStateNotice(run, "quit") : makeControlNotice(run, occurrence);
-}
-
-function bridgeSignature(details: WorkflowLifecycleNoticeDetails): string {
-	const label = bridgeBlockedKind(details.kind) ? lifecycleBridgeLabel(details) : "";
-	return `${details.kind}:${label}`;
 }
 
 function lifecycleBridgeLabel(details: WorkflowLifecycleNoticeDetails): string {

@@ -971,7 +971,37 @@ describe("neutral workflow lifecycle bridge", () => {
 		replacementUnsubscribe();
 	});
 
-	test("drops nonstandard terminal statuses from the pane contribution", () => {
+	test("drops killed, cancelled, and skipped runs without claiming they completed", () => {
+		for (const status of ["killed", "cancelled", "skipped"] as const) {
+			const store = createStore();
+			const events: Array<{ runKey: string; kind: string; label: string }> = [];
+			installWorkflowLifecycleNotifications({
+				store,
+				config: { enabled: false, notifyOn: [] },
+				publishLifecycleEvent(event) {
+					events.push(event);
+				},
+			});
+
+			startRun(store, status, "cleanup");
+			store.recordRunEnd(status, status, {});
+			assert.deepEqual(
+				events,
+				[
+					{ runKey: status, kind: "started", label: "cleanup" },
+					{ runKey: status, kind: "quit", label: "cleanup" },
+				],
+				`run ended ${status}`,
+			);
+			assert.equal(
+				events.some((event) => event.kind === "completed"),
+				false,
+				`run ended ${status} must never publish completed`,
+			);
+		}
+	});
+
+	test("drops a run that leaves the snapshot without claiming it completed", () => {
 		const store = createStore();
 		const events: Array<{ runKey: string; kind: string; label: string }> = [];
 		installWorkflowLifecycleNotifications({
@@ -982,12 +1012,78 @@ describe("neutral workflow lifecycle bridge", () => {
 			},
 		});
 
-		startRun(store, "cancelled", "cleanup");
-		store.recordRunEnd("cancelled", "cancelled", {});
+		startRun(store, "vanishes", "deploy");
+		store.removeRun("vanishes");
 		assert.deepEqual(events, [
-			{ runKey: "cancelled", kind: "started", label: "cleanup" },
-			{ runKey: "cancelled", kind: "completed", label: "cleanup" },
+			{ runKey: "vanishes", kind: "started", label: "deploy" },
+			{ runKey: "vanishes", kind: "quit", label: "deploy" },
 		]);
+	});
+
+	test("publishes one event when a listener synchronously invalidates the store", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		let reentered = false;
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+				if (reentered || event.kind !== "started") return;
+				reentered = true;
+				// A synchronous listener re-enters `inspect` from inside publish.
+				store.recordNotice({ id: "listener-side-effect", level: "info", message: "tick", createdAt: 2 });
+			},
+		});
+
+		startRun(store, "run-1", "deploy");
+		assert.equal(reentered, true);
+		assert.deepEqual(events, [{ runKey: "run-1", kind: "started", label: "deploy" }]);
+	});
+
+	test("keeps reentrant publishes in order when the store really changed", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		let reentered = false;
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+				if (reentered || event.kind !== "started") return;
+				reentered = true;
+				store.recordStageStart("run-1", runningStage({ id: "approval", name: "approval" }));
+				store.recordStageAwaitingInput("run-1", "approval", true, 3);
+			},
+		});
+
+		startRun(store, "run-1", "deploy");
+		assert.deepEqual(events, [
+			{ runKey: "run-1", kind: "started", label: "deploy" },
+			{ runKey: "run-1", kind: "awaiting_input", label: "deploy: approval" },
+		]);
+	});
+
+	test("reconciles a retained contribution against the successor's own store", () => {
+		const store = createStore();
+		startRun(store, "live", "deploy");
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		const unsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			bridgeContributions: [
+				{ runKey: "live", kind: "started", label: "deploy" },
+				{ runKey: "gone", kind: "started", label: "stale" },
+			],
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		// The live run keeps the contribution it already published; the run this
+		// bridge cannot observe is dropped rather than left behind.
+		assert.deepEqual(events, [{ runKey: "gone", kind: "quit", label: "stale" }]);
+		unsubscribe();
 	});
 
 	test("does not resurrect completed or quit runs while seeding a replacement", () => {
