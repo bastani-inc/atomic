@@ -384,9 +384,11 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					this.showWarning("Usage: /compact");
 					return;
 				}
-				// Evaluated before the general compaction queue gate below, so reject
-				// here: queueing would merely defer a duplicate compaction.
-				if (this.session.isCompacting) {
+				// A manual request can take over automatic compaction, but a second manual
+				// compaction or branch summary still has no safe independent owner.
+				const automaticCompaction =
+					this.session.compactionReason === "threshold" || this.session.compactionReason === "overflow";
+				if (this.manualCompactionTakeoverPending || (this.compactionActive && !automaticCompaction)) {
 					this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
 					return;
 				}
@@ -453,7 +455,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			}
 
 			// Queue input during compaction (extension commands execute immediately)
-			if (this.session.isCompacting) {
+			if (this.compactionActive) {
 				if (this.isExtensionCommand(text)) {
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");

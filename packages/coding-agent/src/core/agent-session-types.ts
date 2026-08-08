@@ -49,6 +49,8 @@ export type AgentSessionEvent =
 			unresolvedOverflow?: boolean;
 			errorMessage?: string;
 			midTurn?: boolean;
+			/** A manual request has claimed ownership and will emit its own completion. */
+			manualTakeoverPending?: boolean;
 	  }
 	| { type: "agent_continue_error"; source: "post_compaction"; errorMessage: string }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }

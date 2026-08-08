@@ -6,8 +6,10 @@ type CompactGuardContext = {
 	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
 	editor: { addToHistory?: (text: string) => void; setText: (text: string) => void; getText: () => string };
 	ui: { requestRender: () => void };
+	readonly compactionActive: boolean;
 	session: {
 		isCompacting: boolean;
+		compactionReason?: "manual" | "threshold" | "overflow" | "branchSummary";
 		isStreaming: boolean;
 		isBashRunning: boolean;
 		compact: () => Promise<unknown>;
@@ -16,11 +18,13 @@ type CompactGuardContext = {
 	sessionManager: { getEntries: () => Array<{ type: string }> };
 	statusContainer: { clear: () => void };
 	loadingAnimation: undefined;
+	manualCompactionTakeoverPending: boolean;
 	deferredStartupPending: boolean;
 	compactionQueuedMessages: string[];
 	queueCompactionMessage: (text: string, mode: string) => void;
 	isExtensionCommand: (text: string) => boolean;
 	handleCompactCommand: () => Promise<void>;
+	flushCompactionQueue: (options: { willRetry: boolean }) => Promise<void>;
 	showWarning: (message: string) => void;
 	showStatus: (message: string) => void;
 	flushPendingBashComponents: () => void;
@@ -45,7 +49,10 @@ type InteractiveModePrivate = {
 const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
 
 function createContext(overrides: Partial<CompactGuardContext> = {}): CompactGuardContext {
-	return {
+	const context: CompactGuardContext = {
+		get compactionActive() {
+			return this.session.isCompacting || this.manualCompactionTakeoverPending;
+		},
 		defaultEditor: {},
 		editor: { addToHistory: vi.fn(), setText: vi.fn(), getText: vi.fn(() => "") },
 		ui: { requestRender: vi.fn() },
@@ -59,9 +66,11 @@ function createContext(overrides: Partial<CompactGuardContext> = {}): CompactGua
 		sessionManager: { getEntries: () => [{ type: "message" }, { type: "message" }, { type: "message" }] },
 		statusContainer: { clear: vi.fn() },
 		loadingAnimation: undefined,
+		manualCompactionTakeoverPending: false,
 		deferredStartupPending: false,
 		compactionQueuedMessages: [],
 		queueCompactionMessage: vi.fn(),
+		flushCompactionQueue: vi.fn(async () => {}),
 		isExtensionCommand: vi.fn(() => false),
 		handleCompactCommand: vi.fn(async () => {}),
 		showWarning: vi.fn(),
@@ -78,6 +87,7 @@ function createContext(overrides: Partial<CompactGuardContext> = {}): CompactGua
 		options: {},
 		...overrides,
 	};
+	return context;
 }
 
 describe("/compact while a compaction is already running", () => {
@@ -96,6 +106,51 @@ describe("/compact while a compaction is already running", () => {
 		expect(context.session.prompt).not.toHaveBeenCalled();
 	});
 
+	it("allows /compact to take over automatic compaction", async () => {
+		const context = createContext();
+		context.session.isCompacting = true;
+		context.session.compactionReason = "threshold";
+		prototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("/compact");
+
+		expect(context.handleCompactCommand).toHaveBeenCalledTimes(1);
+		expect(context.showWarning).not.toHaveBeenCalledWith(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
+		expect(context.queueCompactionMessage).not.toHaveBeenCalled();
+	});
+
+	it("queues input while a manual compaction request is pending", async () => {
+		const context = createContext();
+		let finishCompaction!: () => void;
+		context.session.compact = vi.fn(
+			() =>
+				new Promise<unknown>((resolve) => {
+					finishCompaction = () => resolve({});
+				}),
+		);
+		prototype.setupEditorSubmitHandler.call(context);
+
+		const compact = prototype.handleCompactCommand.call(context);
+		expect(context.compactionActive).toBe(true);
+		await context.defaultEditor.onSubmit?.("keep working on the refactor");
+
+		expect(context.queueCompactionMessage).toHaveBeenCalledWith("keep working on the refactor", "steer");
+		finishCompaction();
+		await compact;
+		expect(context.compactionActive).toBe(false);
+	});
+
+	it("releases the handoff guard when compact rejects before emitting lifecycle events", async () => {
+		const context = createContext();
+		context.session.compact = vi.fn(async () => {
+			throw new Error("event queue failed");
+		});
+
+		await prototype.handleCompactCommand.call(context);
+
+		expect(context.compactionActive).toBe(false);
+		expect(context.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+	});
 	it("still queues ordinary text submitted during a compaction", async () => {
 		const context = createContext();
 		context.session.isCompacting = true;

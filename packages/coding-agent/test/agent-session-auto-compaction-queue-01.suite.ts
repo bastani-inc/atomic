@@ -5,6 +5,7 @@ import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import type { AutoCompactionRunOutcome } from "../src/core/agent-session-methods.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -295,11 +296,15 @@ describe("AgentSession auto-compaction queue resume", () => {
 		const isStreamingSpy = vi.spyOn(session, "isStreaming", "get").mockReturnValue(true);
 		const clearQueueSpy = vi.spyOn(session, "clearQueue");
 		const internals = session as unknown as {
-			_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			_runAutoCompaction: (
+				reason: "overflow" | "threshold",
+				willRetry: boolean,
+				urgency: "load_bearing" | "recoverable",
+			) => Promise<void>;
 			_awaitPendingPostCompactionContinuation: () => Promise<void>;
 		};
 
-		await internals._runAutoCompaction("threshold", false);
+		await internals._runAutoCompaction("threshold", false, "recoverable");
 		await vi.advanceTimersByTimeAsync(100);
 		expect(session.pendingMessageCount).toBe(1);
 		expect(session.agent.hasQueuedMessages()).toBe(true);
@@ -412,11 +417,15 @@ describe("AgentSession auto-compaction queue resume", () => {
 		const runAutoCompactionSpy = vi
 			.spyOn(
 				session as unknown as {
-					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+					_runAutoCompaction: (
+						reason: "overflow" | "threshold",
+						willRetry: boolean,
+						urgency?: "load_bearing" | "recoverable",
+					) => Promise<AutoCompactionRunOutcome>;
 				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue("compacted");
 
 		const events: Array<{ type: string; reason: string; errorMessage?: string }> = [];
 		session.subscribe((event) => {

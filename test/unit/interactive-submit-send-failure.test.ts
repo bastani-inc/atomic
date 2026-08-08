@@ -90,6 +90,10 @@ function makeSubmitStub(options?: {
 		set startupCookedInputRecovered(value: boolean) {
 			state.startupCookedInputRecovered = value;
 		},
+		manualCompactionTakeoverPending: false,
+		get compactionActive(): boolean {
+			return this.session.isCompacting || this.manualCompactionTakeoverPending;
+		},
 		session: {
 			isCompacting: options?.isCompacting === true,
 			isStreaming: options?.isStreaming === true,
@@ -423,6 +427,9 @@ test("/compact rethrows a send the engine never accepted and ignores other failu
 			loadingAnimation: undefined,
 			statusContainer: { clear: () => {} },
 			showWarning: () => {},
+			manualCompactionTakeoverPending: false,
+			compactionActive: false,
+			flushCompactionQueue: async () => {},
 		}) as unknown as InteractiveModeBase;
 
 	await assert.rejects(

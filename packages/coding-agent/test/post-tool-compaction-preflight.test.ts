@@ -40,6 +40,7 @@ function createPostToolCompactionGate() {
 	});
 	const factory: ExtensionFactory = (pi) => {
 		pi.on("session_before_compact", async (event) => {
+			if (event.reason === "manual") return { compactedText: "[User]: retained" };
 			assert.equal(event.reason, "threshold");
 			signalStarted();
 			await released;
@@ -134,6 +135,41 @@ describe("post-tool compaction preflight", () => {
 		gate.release();
 		await prompt;
 		assert.equal(harness.session.compactionReason, undefined);
+	});
+
+	it("lets manual compaction take over a gated post-tool preflight", async () => {
+		const gate = createPostToolCompactionGate();
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-post-tool-takeover", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+				"completed after compaction",
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [gate.factory],
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		const prompt = harness.session.prompt(longPrompt);
+		await gate.started;
+		const manual = harness.session.compact();
+		gate.release();
+		const [, manualResult] = await Promise.all([prompt, manual]);
+
+		expect(manualResult.compactedText).toBe("[User]: retained");
+		expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["threshold", "manual"]);
+		expect(harness.eventsOfType("compaction_end")).toEqual([
+			expect.objectContaining({ reason: "threshold", aborted: true, midTurn: true, manualTakeoverPending: true }),
+			expect.objectContaining({ reason: "manual", aborted: false }),
+		]);
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
 	});
 
 	// Regression (greptile P1 on PR #2136): ownership was published and

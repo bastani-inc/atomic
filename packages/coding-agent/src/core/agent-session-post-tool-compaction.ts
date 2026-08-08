@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { createAutoCompactionCompletion, hasPendingManualCompactionTakeover } from "./agent-session-auto-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
@@ -33,6 +34,11 @@ export async function _preflightPostToolContext(
 	// Tool-result persistence is ordered on AgentSession's event queue, while Pi
 	// may reach its next-turn hook as soon as its own listener barrier settles.
 	await this._agentEventQueue;
+	// Manual compaction owns the next boundary and aborts the active run before
+	// planning. Do not append a competing mid-turn boundary in that brief gap.
+	if (this._compactionAbortController !== undefined || this._manualCompactionPromise !== undefined) {
+		return messages;
+	}
 	if (this._autoCompactionAbortController) {
 		const message = postToolFailureMessage("another automatic compaction is already active");
 		this._postToolCompactionPreflightError = message;
@@ -40,17 +46,17 @@ export async function _preflightPostToolContext(
 	}
 
 	const abortController = new AbortController();
+	const completion = createAutoCompactionCompletion();
 	const relayAbort = () => abortController.abort();
 	signal?.addEventListener("abort", relayAbort, { once: true });
 	if (signal?.aborted) abortController.abort();
 	// Ownership publication and the synchronous `compaction_start` emission live
 	// inside the cleanup scope: `_emit` runs subscribers synchronously, so a
-	// throwing listener would otherwise leave `_autoCompactionAbortController`
-	// and `_compactionReason` set with no `finally` to clear them. The next
-	// threshold compaction would then be rejected as already active, and
-	// attached clients would keep painting a compaction that never runs.
+	// throwing listener would otherwise leave ownership set with no `finally` to
+	// clear it. A manual takeover also awaits this settlement before it writes.
 	try {
 		this._autoCompactionAbortController = abortController;
+		this._autoCompactionCompletion = completion.promise;
 		this._compactionReason = "threshold";
 		this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
 
@@ -62,7 +68,9 @@ export async function _preflightPostToolContext(
 			abortController,
 			backupLabel: "auto-compact",
 			reason: "threshold",
-			// Mid-turn: a compaction failure here kills the active turn.
+			// A mid-turn planner failure must reach the fresh rung so the active
+			// turn can continue. `_applyVerbatimCompaction` still treats a fitting
+			// no-preparation threshold crossing as a safe no-op.
 			urgency: "load_bearing",
 			...(overHardLimit ? { allowSmallRegion: true } : {}),
 		});
@@ -77,6 +85,7 @@ export async function _preflightPostToolContext(
 				aborted: false,
 				willRetry: false,
 				midTurn: true,
+				...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 			});
 			return messages;
 		}
@@ -106,12 +115,15 @@ export async function _preflightPostToolContext(
 			aborted,
 			willRetry: false,
 			midTurn: true,
+			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 			...(aborted ? {} : { errorMessage }),
 		});
 		throw new Error(errorMessage, { cause: error });
 	} finally {
 		signal?.removeEventListener("abort", relayAbort);
-		this._autoCompactionAbortController = undefined;
+		if (this._autoCompactionAbortController === abortController) this._autoCompactionAbortController = undefined;
+		completion.resolve();
+		if (this._autoCompactionCompletion === completion.promise) this._autoCompactionCompletion = undefined;
 		if (this._compactionReason === "threshold") this._compactionReason = undefined;
 	}
 }
@@ -135,6 +147,7 @@ export function _finishPostToolCompactionPreflight(this: AgentSession, messages:
 			willRetry: false,
 			midTurn: true,
 			errorMessage,
+			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 		});
 		throw new Error(errorMessage);
 	}
@@ -146,6 +159,7 @@ export function _finishPostToolCompactionPreflight(this: AgentSession, messages:
 		aborted: false,
 		willRetry: false,
 		midTurn: true,
+		...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 	});
 	return providerBoundMessages;
 }

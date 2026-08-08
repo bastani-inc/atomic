@@ -1,16 +1,19 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { isContextOverflow } from "@earendil-works/pi-ai/compat";
-import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./compaction/index.ts";
+import { isContextOverflow, isRecoverableLength } from "@earendil-works/pi-ai/compat";
+import type { AgentSessionInternalSurface as AgentSession, AutoCompactionRunOutcome } from "./agent-session-methods.ts";
+import {
+	type CompactionUrgency,
+	calculateContextTokens,
+	estimateContextTokens,
+	shouldCompact,
+} from "./compaction/index.ts";
 import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
 import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
 
 /**
- * Upper bound on consecutive automatic continuations of a response that was
- * truncated at the output-token cap ("length") while the context is still
- * below the compaction budget. Each continuation regenerates the cut-off turn,
- * so a model that insists on emitting more than its per-turn output cap can
- * still terminate instead of looping forever.
+ * Upper bound on direct continuations after a response reaches its requested
+ * output cap. Context-limited truncations use one compact-and-retry attempt
+ * instead; this bound preserves Atomic's separate output-cap continuation.
  */
 export const MAX_LENGTH_CONTINUATION_ATTEMPTS = 3;
 
@@ -22,6 +25,18 @@ type ProviderErrorDetails = {
 	code?: string;
 	param?: string;
 };
+
+/** Create the settlement boundary for a regular automatic compaction run. */
+export function createAutoCompactionCompletion(): {
+	promise: Promise<void>;
+	resolve: () => void;
+} {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
 
 const OUTPUT_BUDGET_PARAMETER_PATTERN = /\bmax_output_tokens\b/;
 const OUTPUT_BUDGET_UNDERFLOW_PATTERN = new RegExp(
@@ -43,6 +58,7 @@ export async function _checkCompaction(
 			aborted: true,
 			willRetry: false,
 			midTurn: true,
+			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 		});
 	}
 	if (
@@ -63,11 +79,14 @@ export async function _checkCompaction(
 	// to a larger-context model (e.g. codex) - the overflow error from the old model
 	// shouldn't trigger compaction for the new model.
 	const sameModel =
-		this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
+		this.model !== undefined &&
+		assistantMessage.provider === this.model.provider &&
+		assistantMessage.model === this.model.id;
+	const contextOverflow = sameModel && isContextOverflow(assistantMessage, contextWindow);
 	if (!settings.enabled) {
 		// Compaction cannot recover this turn, so a configured fallback chain may
 		// advance to a larger-context candidate instead of dead-ending.
-		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) this._contextOverflowUnresolved = true;
+		if (contextOverflow) this._contextOverflowUnresolved = true;
 		return;
 	}
 
@@ -85,8 +104,15 @@ export async function _checkCompaction(
 		return;
 	}
 
-	// Case 1: Overflow - LLM returned context overflow error
-	if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
+	// Case 1: Recoverable failure. Explicit/silent context overflow still uses
+	// context metadata. A length stop below the model's original requested output
+	// cap instead receives one compact-and-retry independent of context metadata.
+	// This recovers a chat response; `truncated-range-recovery` separately parses
+	// deletion records from a compaction planner response and is not involved here.
+	const desiredMaxOutput = this.model?.maxTokens ?? 0;
+	const recoverableLength =
+		isLiveTurnCompletion && sameModel && isRecoverableLength(assistantMessage, desiredMaxOutput);
+	if (contextOverflow || recoverableLength) {
 		const willRetry = assistantMessage.stopReason !== "stop";
 		if (!willRetry) {
 			await this._runAutoCompaction("overflow", false);
@@ -94,30 +120,46 @@ export async function _checkCompaction(
 		}
 
 		if (this._overflowRecoveryAttempted) {
-			// One compact-and-retry has already been spent on this turn; a configured
-			// fallback chain may now advance to a larger-context candidate.
-			this._contextOverflowUnresolved = true;
+			// One compact-and-retry has already been spent on this turn. A real
+			// context overflow may now advance to a larger-context fallback; a
+			// recoverable output truncation must stop without claiming overflow.
+			if (contextOverflow) this._contextOverflowUnresolved = true;
 			this._emit({
 				type: "compaction_end",
 				reason: "overflow",
 				result: undefined,
 				aborted: false,
 				willRetry: false,
-				unresolvedOverflow: true,
-				errorMessage:
-					"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+				...(contextOverflow ? { unresolvedOverflow: true } : {}),
+				errorMessage: contextOverflow
+					? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+					: "Response truncation recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
 			});
 			return;
 		}
 
 		this._overflowRecoveryAttempted = true;
-		// Remove the error message from agent state (it IS saved to session for history,
-		// but we don't want it in context for the retry)
-		const messages = this.agent.state.messages;
-		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-			this.agent.state.messages = messages.slice(0, -1);
+		let outcome: AutoCompactionRunOutcome;
+		try {
+			outcome = contextOverflow
+				? await this._runAutoCompaction("overflow", willRetry)
+				: await this._runAutoCompaction("overflow", willRetry, "recoverable");
+		} catch (error) {
+			this._overflowRecoveryAttempted = false;
+			throw error;
 		}
-		await this._runAutoCompaction("overflow", willRetry);
+		if (outcome === "compacted" || outcome === "failed") return;
+		this._overflowRecoveryAttempted = false;
+		// No boundary means there is no context to free. Preserve Atomic's bounded
+		// continuation in that case, but never resume a turn manual compaction owns.
+		if (
+			recoverableLength &&
+			outcome === "not_compactable" &&
+			this._compactionAbortController === undefined &&
+			this._manualCompactionPromise === undefined
+		) {
+			this._resumeAfterLengthTruncation();
+		}
 		return;
 	}
 
@@ -145,7 +187,7 @@ export async function _checkCompaction(
 		contextTokens = calculateContextTokens(assistantMessage.usage, assistantMessage.api);
 	}
 	if (shouldCompact(contextTokens, contextWindow, settings)) {
-		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage);
+		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage, desiredMaxOutput, isLiveTurnCompletion);
 		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
 			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
 				this._emit({
@@ -165,18 +207,25 @@ export async function _checkCompaction(
 		return;
 	}
 
-	// A response truncated at the output-token cap ("length") with the context
-	// still below the compaction budget is genuine work cut off mid-flight, not a
-	// context overflow. Compaction would not free any room, so continue the
-	// generation directly instead of dead-ending on the truncation and leaving
-	// the task half-finished.
-	if (isLiveTurnCompletion && isRetryWorthyLengthStop(assistantMessage)) {
+	// A length stop that reached its requested output cap is not the
+	// context-limited truncation recovered above. Preserve Atomic's bounded
+	// direct-continuation policy for that distinct case.
+	if (
+		isLiveTurnCompletion &&
+		isOutputCappedLengthStop(assistantMessage, desiredMaxOutput) &&
+		this._compactionAbortController === undefined &&
+		this._manualCompactionPromise === undefined
+	) {
 		this._resumeAfterLengthTruncation();
 	}
 }
 
 export function isRetryWorthyLengthStop(assistantMessage: AssistantMessage): boolean {
 	return assistantMessage.stopReason === "length" && assistantMessage.usage.output > 0;
+}
+
+export function isOutputCappedLengthStop(assistantMessage: AssistantMessage, desiredMaxOutput: number): boolean {
+	return isRetryWorthyLengthStop(assistantMessage) && !isRecoverableLength(assistantMessage, desiredMaxOutput);
 }
 
 function isJsonRecord(value: JsonValue): value is { [key: string]: JsonValue } {
@@ -240,8 +289,15 @@ export function isRetryWorthyOutputBudgetError(assistantMessage: AssistantMessag
 	return isOutputBudgetUnderflowText(assistantMessage.errorMessage);
 }
 
-export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {
-	return isRetryWorthyLengthStop(assistantMessage) || isRetryWorthyOutputBudgetError(assistantMessage);
+export function shouldRetryAfterThresholdCompaction(
+	assistantMessage: AssistantMessage,
+	desiredMaxOutput: number,
+	isLiveTurnCompletion: boolean,
+): boolean {
+	return (
+		isRetryWorthyOutputBudgetError(assistantMessage) ||
+		(isLiveTurnCompletion && isOutputCappedLengthStop(assistantMessage, desiredMaxOutput))
+	);
 }
 
 /**
@@ -353,11 +409,9 @@ export async function _resumeAfterAutoCompaction(this: AgentSession): Promise<vo
 }
 
 /**
- * Internal: resume a response that was truncated at the output-token cap
- * ("length") when the context does not warrant compaction. The generation is
- * continued directly so the model finishes the work it was cut off from, rather
- * than dead-ending on the truncation. Bounded by MAX_LENGTH_CONTINUATION_ATTEMPTS
- * so a turn that keeps exceeding the per-turn output cap can still terminate.
+ * Internal: resume a response that reached its requested output cap when the
+ * context does not warrant compaction. Bounded so a model that repeatedly
+ * stops at that cap can still terminate.
  */
 
 export function _resumeAfterLengthTruncation(this: AgentSession): void {
@@ -374,48 +428,59 @@ export function _resumeAfterLengthTruncation(this: AgentSession): void {
  * Whether an overflow turn is now unrecoverable by compaction, recording it on
  * the session so a configured fallback chain may advance to another candidate.
  */
-function overflowUnresolved(
-	this: AgentSession,
-	reason: "overflow" | "threshold",
-	aborted = false,
-): boolean | undefined {
-	if (reason !== "overflow" || aborted) return undefined;
+function overflowUnresolved(this: AgentSession, loadBearing: boolean, aborted = false): boolean | undefined {
+	if (!loadBearing || aborted) return undefined;
 	this._contextOverflowUnresolved = true;
 	return true;
+}
+
+export function hasPendingManualCompactionTakeover(this: AgentSession): boolean {
+	return this._compactionReason === "manual" && this._compactionAbortController !== undefined;
 }
 
 export async function _runAutoCompaction(
 	this: AgentSession,
 	reason: "overflow" | "threshold",
 	willRetry: boolean,
-): Promise<void> {
-	// Publish automatic ownership before notifying listeners. `_emit()` invokes
-	// public listeners synchronously, so a `compaction_start` listener that calls
-	// `compact()` must already observe this controller and be rejected rather than
-	// racing the run that was just announced.
-	this._autoCompactionAbortController = new AbortController();
+	urgency: CompactionUrgency = reason === "overflow" ? "load_bearing" : "recoverable",
+): Promise<AutoCompactionRunOutcome> {
+	if (
+		this._compactionAbortController !== undefined ||
+		this._manualCompactionPromise !== undefined ||
+		this._autoCompactionAbortController !== undefined
+	)
+		return "deferred";
+
+	const controller = new AbortController();
+	const completion = createAutoCompactionCompletion();
+	this._autoCompactionAbortController = controller;
+	this._autoCompactionCompletion = completion.promise;
 	this._compactionReason = reason;
 	try {
 		this._emit({ type: "compaction_start", reason });
 	} catch (error) {
 		// A throwing start listener still propagates, matching current behavior,
 		// but must not leave ownership published with no owner running.
-		this._autoCompactionAbortController = undefined;
+		if (this._autoCompactionAbortController === controller) this._autoCompactionAbortController = undefined;
 		if (this._compactionReason === reason) this._compactionReason = undefined;
+		completion.resolve();
+		if (this._autoCompactionCompletion === completion.promise) this._autoCompactionCompletion = undefined;
 		throw error;
 	}
 
 	try {
 		if (!this.model) {
+			const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
 			this._emit({
 				type: "compaction_end",
 				reason,
 				result: undefined,
 				aborted: false,
 				willRetry: false,
-				unresolvedOverflow: overflowUnresolved.call(this, reason),
+				unresolvedOverflow: overflowUnresolved.call(this, urgency === "load_bearing"),
+				...(manualTakeoverPending ? { manualTakeoverPending: true } : {}),
 			});
-			return;
+			return manualTakeoverPending ? "deferred" : "failed";
 		}
 
 		// Resolve auth only after extension hooks have had an opportunity to cancel
@@ -427,54 +492,69 @@ export async function _runAutoCompaction(
 				const authResult = await this._getRequiredRequestAuth(candidate);
 				return authResult.apiKey || authResult.headers ? authResult : undefined;
 			},
-			abortController: this._autoCompactionAbortController,
-			backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
+			abortController: controller,
+			backupLabel: urgency === "load_bearing" ? "overflow-auto-compact" : "auto-compact",
 			reason,
-			// Overflow recovery is load-bearing: the turn cannot continue without it.
-			// A threshold crossing has already passed its turn boundary, so failing is safe.
-			urgency: reason === "overflow" ? "load_bearing" : "recoverable",
-			// A real provider overflow already proved the context does not fit, so a
-			// sub-minimum region may reach the fresh rung.
-			...(reason === "overflow" ? { allowSmallRegion: true } : {}),
+			urgency,
+			// Only an actual context overflow proved the context cannot fit. A
+			// recoverable length stop must never reach the fresh-context fallback.
+			...(urgency === "load_bearing" ? { allowSmallRegion: true } : {}),
 		});
 		if (!result) {
+			const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
 			this._emit({
 				type: "compaction_end",
 				reason,
 				result: undefined,
 				aborted: false,
 				willRetry: false,
-				unresolvedOverflow: overflowUnresolved.call(this, reason),
+				unresolvedOverflow: overflowUnresolved.call(this, urgency === "load_bearing"),
+				...(manualTakeoverPending ? { manualTakeoverPending: true } : {}),
 			});
-			return;
+			return manualTakeoverPending ? "deferred" : "not_compactable";
 		}
 
 		if (willRetry) {
 			this._dropTrailingAutoCompactionRetryAssistantIfPresent();
 		}
 
-		this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
+		this._emit({
+			type: "compaction_end",
+			reason,
+			result,
+			aborted: false,
+			willRetry,
+			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
+		});
 		this._schedulePostAutoCompactionContinuationProbe(reason, willRetry);
+		return "compacted";
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : "compaction failed";
 		const aborted =
 			errorMessage === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
+		const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
 		this._emit({
 			type: "compaction_end",
 			reason,
 			result: undefined,
 			aborted,
 			willRetry: false,
-			unresolvedOverflow: overflowUnresolved.call(this, reason, aborted),
+			unresolvedOverflow: overflowUnresolved.call(this, urgency === "load_bearing", aborted),
+			...(manualTakeoverPending ? { manualTakeoverPending: true } : {}),
 			errorMessage: aborted
 				? undefined
 				: reason === "overflow"
-					? `Context overflow recovery failed: ${errorMessage}`
+					? urgency === "recoverable"
+						? `Response truncation recovery failed: ${errorMessage}`
+						: `Context overflow recovery failed: ${errorMessage}`
 					: `Auto-compaction failed: ${errorMessage}`,
 		});
+		return manualTakeoverPending ? "deferred" : "failed";
 	} finally {
-		this._autoCompactionAbortController = undefined;
+		if (this._autoCompactionAbortController === controller) this._autoCompactionAbortController = undefined;
 		if (this._compactionReason === reason) this._compactionReason = undefined;
+		completion.resolve();
+		if (this._autoCompactionCompletion === completion.promise) this._autoCompactionCompletion = undefined;
 	}
 }
 

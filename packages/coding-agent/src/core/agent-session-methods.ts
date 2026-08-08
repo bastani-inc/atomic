@@ -78,6 +78,9 @@ export interface VerbatimCompactionApplyOptions {
 	allowSmallRegion?: boolean;
 }
 
+/** Outcome of an automatic compaction admission and persistence attempt. */
+export type AutoCompactionRunOutcome = "compacted" | "not_compactable" | "deferred" | "failed";
+
 export interface ExtensionResourcePathEntry {
 	path: string;
 	extensionPath: string;
@@ -149,7 +152,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_emitExtensionEvent(event: AgentEvent): Promise<void>;
 	subscribe(listener: AgentSessionEventListener): () => void;
 	_disconnectFromAgent(): void;
-	_reconnectToAgent(): void;
 	dispose(): void;
 
 	getActiveToolNames(): string[];
@@ -235,7 +237,11 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_awaitPendingPostCompactionContinuation(): Promise<void>;
 	_resumeAfterAutoCompaction(): Promise<void>;
 	_resumeAfterLengthTruncation(): void;
-	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
+	_runAutoCompaction(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+		urgency?: CompactionUrgency,
+	): Promise<AutoCompactionRunOutcome>;
 	_preflightPostToolContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]>;
 	_finishPostToolCompactionPreflight(messages: AgentMessage[]): AgentMessage[];
 	setAutoCompactionEnabled(enabled: boolean): void;
@@ -428,6 +434,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_compactionAbortController: AbortController | undefined;
 	_manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined;
 	_autoCompactionAbortController: AbortController | undefined;
+	_autoCompactionCompletion: Promise<void> | undefined;
 	_compactionReason: import("./agent-session-types.ts").CompactionReason | undefined;
 	_overflowRecoveryAttempted: boolean;
 	_contextOverflowUnresolved: boolean;

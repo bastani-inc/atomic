@@ -63,6 +63,7 @@ type CompactionEndEvent = {
 	willRetry: boolean;
 	errorMessage?: string;
 	midTurn?: boolean;
+	manualTakeoverPending?: boolean;
 };
 type AgentEndEvent = { type: "agent_end" };
 type AgentContinueErrorEvent = {
@@ -102,7 +103,11 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 		resourceDisclosureContainer,
 		startupNoticesContainer,
 		pendingTools: new Map(),
-		compactionQueuedMessages: [],
+		compactionQueuedMessages: [] as Array<{ text: string; mode: "steer" | "followUp" }>,
+		manualCompactionTakeoverPending: false,
+		get compactionActive() {
+			return this.session.isCompacting || this.manualCompactionTakeoverPending;
+		},
 		deferredRenderedUserInputs: [],
 		deferredRenderedUserInputComponents: new Map(),
 		toolOutputExpanded: false,
@@ -115,7 +120,12 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 			getEntries: () => entries,
 			getLeafId: () => entries.at(-1)?.id ?? null,
 		},
-		session: { abortCompaction: vi.fn(), extensionRunner: { getMessageRenderer: () => undefined } },
+		session: {
+			isCompacting: false,
+			abortCompaction: vi.fn(),
+			agent: { waitForIdle: vi.fn().mockResolvedValue(undefined) },
+			extensionRunner: { getMessageRenderer: () => undefined },
+		},
 		settingsManager: {
 			getShowTerminalProgress: () => false,
 			getClearOnShrink: () => false,
@@ -267,6 +277,28 @@ describe("InteractiveMode compaction events", () => {
 		});
 
 		expect(mode.flushCompactionQueue).not.toHaveBeenCalled();
+	});
+
+	it("waits for a pending manual takeover before flushing queued input", async () => {
+		const { mode } = makeMode();
+		mode.compactionQueuedMessages.push({ text: "queued after handoff", mode: "steer" });
+
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "threshold",
+			result: undefined,
+			aborted: true,
+			willRetry: false,
+			manualTakeoverPending: true,
+		});
+
+		await emit(mode, { type: "agent_end" });
+		expect(mode.session.agent.waitForIdle).not.toHaveBeenCalled();
+		expect(mode.flushCompactionQueue).not.toHaveBeenCalled();
+
+		await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
+		expect(mode.flushCompactionQueue).toHaveBeenCalledTimes(1);
+		expect(mode.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 	});
 
 	it("restores the working spinner after successful mid-turn compaction without user input", async () => {

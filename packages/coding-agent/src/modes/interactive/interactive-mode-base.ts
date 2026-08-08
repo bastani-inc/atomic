@@ -239,6 +239,9 @@ export class InteractiveModeBase {
 	// Messages queued while compaction is running
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 
+	/** Keeps input queued while automatic compaction hands off to a manual request. */
+	manualCompactionTakeoverPending = false;
+
 	// Deferred extension load state (first paint happens before extensions load)
 	deferredStartupPending = false;
 	initialStartupBinding = false;
@@ -294,6 +297,11 @@ export class InteractiveModeBase {
 	// Convenience accessors
 	get session(): AgentSession & AgentSessionQueuePauseControl {
 		return this.runtimeHost.session as AgentSession & AgentSessionQueuePauseControl;
+	}
+
+	/** Includes the short handoff window that an isolated engine cannot mirror. */
+	get compactionActive(): boolean {
+		return this.session.isCompacting || this.manualCompactionTakeoverPending;
 	}
 
 	get agent() {

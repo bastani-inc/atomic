@@ -79,6 +79,8 @@ export interface FauxResponse {
 	usage?: Partial<Usage>;
 	/** Delay in ms before the response starts. */
 	delayMs?: number;
+	/** Optional test hook that settles before the response stream emits. */
+	beforeEmit?: () => void | Promise<void>;
 	/** Model overrides (provider, model id) for responses that should look like they came from a different model. */
 	model?: { provider?: string; id?: string };
 }
@@ -301,7 +303,9 @@ export function createFauxStreamFn(responses: FauxResponseInput[]): {
 			streamWithDeltas(stream, message);
 		};
 
-		if (resp.delayMs && resp.delayMs > 0) {
+		if (resp.beforeEmit) {
+			void Promise.resolve(resp.beforeEmit()).then(emit);
+		} else if (resp.delayMs && resp.delayMs > 0) {
 			setTimeout(emit, resp.delayMs);
 		} else {
 			queueMicrotask(emit);

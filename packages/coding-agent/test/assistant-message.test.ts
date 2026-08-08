@@ -145,7 +145,7 @@ describe("AssistantMessageComponent", () => {
 		}
 	});
 
-	test("derives the output-token-limit warning from a length stop", () => {
+	test("renders neutral truncation wording for a length stop", () => {
 		initTheme("dark");
 		const component = new AssistantMessageComponent(
 			createAssistantMessage([{ type: "text", text: "partial response" }], {
@@ -154,7 +154,6 @@ describe("AssistantMessageComponent", () => {
 		);
 
 		const rendered = component.render(100).join("\n");
-		expect(rendered).toContain("maximum output token limit");
-		expect(rendered).toContain("The response may be");
+		expect(rendered).toContain("Response was truncated before completion.");
 	});
 });

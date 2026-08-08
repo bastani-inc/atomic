@@ -9,6 +9,7 @@ import {
 	MAX_LENGTH_CONTINUATION_ATTEMPTS,
 	MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS,
 } from "../src/core/agent-session-auto-compaction.ts";
+import type { AutoCompactionRunOutcome } from "../src/core/agent-session-methods.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -148,13 +149,25 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 
 	function belowThresholdLengthStoppedAssistant(): AssistantMessage {
 		const assistant = lengthStoppedAssistant();
-		// Keep the context well below the compaction budget so compaction is a
-		// no-op and only the direct length continuation can fire.
+		// Keep the context below the threshold so recoverable-length handling, not
+		// generic threshold compaction, decides how to recover the response.
 		assistant.usage = {
 			...assistant.usage,
 			input: 40_000,
 			output: 10_000,
 			totalTokens: 50_000,
+		};
+		return assistant;
+	}
+
+	function outputCappedLengthStoppedAssistant(): AssistantMessage {
+		const assistant = belowThresholdLengthStoppedAssistant();
+		const desiredMaxOutput = session.model?.maxTokens ?? 0;
+		if (desiredMaxOutput === 0) throw new Error("test model must declare a maximum output");
+		assistant.usage = {
+			...assistant.usage,
+			output: desiredMaxOutput,
+			totalTokens: assistant.usage.input + desiredMaxOutput,
 		};
 		return assistant;
 	}
@@ -206,7 +219,7 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		};
 	}
 
-	it("compacts and retries threshold-sized length-stopped responses", async () => {
+	it("compacts and retries threshold-sized length stops below the desired output limit", async () => {
 		const assistant = lengthStoppedAssistant();
 		session.agent.state.messages = [
 			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
@@ -215,21 +228,25 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		const runAutoCompactionSpy = vi
 			.spyOn(
 				session as unknown as {
-					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+					_runAutoCompaction: (
+						reason: "overflow" | "threshold",
+						willRetry: boolean,
+						urgency?: "load_bearing" | "recoverable",
+					) => Promise<AutoCompactionRunOutcome>;
 				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue("compacted");
 		const checkCompaction = (
 			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
 		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
-		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", true);
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", true, "recoverable");
 	});
 
-	it("does not retry zero-output length stops through threshold compaction", async () => {
+	it("compacts and retries zero-output length stops below the desired output limit", async () => {
 		const assistant = lengthStoppedAssistant();
 		assistant.usage = {
 			...assistant.usage,
@@ -240,18 +257,22 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		const runAutoCompactionSpy = vi
 			.spyOn(
 				session as unknown as {
-					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+					_runAutoCompaction: (
+						reason: "overflow" | "threshold",
+						willRetry: boolean,
+						urgency?: "load_bearing" | "recoverable",
+					) => Promise<AutoCompactionRunOutcome>;
 				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue("compacted");
 		const checkCompaction = (
 			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
 		)._checkCompaction.bind(session);
 
 		await checkCompaction(assistant);
 
-		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", true, "recoverable");
 	});
 
 	it("compacts and retries the reported OpenAI Responses output-budget underflow shape", async () => {
@@ -502,13 +523,94 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		expect(drainSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("continues a below-threshold length-stopped response without compacting", async () => {
+	it("compacts and retries a below-threshold length stop below the desired output limit", async () => {
+		const assistant = belowThresholdLengthStoppedAssistant();
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "write a long answer" }], timestamp: Date.now() - 1000 },
+			assistant,
+		];
+		const runAutoCompactionSpy = vi
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (
+						reason: "overflow" | "threshold",
+						willRetry: boolean,
+						urgency?: "load_bearing" | "recoverable",
+					) => Promise<AutoCompactionRunOutcome>;
+				},
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue("compacted");
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", true, "recoverable");
+	});
+
+	it("stops after one recoverable-length compact-and-retry attempt", async () => {
+		const assistant = belowThresholdLengthStoppedAssistant();
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "write a long answer" }], timestamp: Date.now() - 1000 },
+			assistant,
+		];
+		(session as unknown as { _overflowRecoveryAttempted: boolean })._overflowRecoveryAttempted = true;
+		const runAutoCompactionSpy = vi
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue();
+		const emitted: Array<{ type: string; reason?: string; willRetry?: boolean; errorMessage?: string }> = [];
+		vi.spyOn(
+			session as unknown as {
+				_emit: (event: { type: string; reason?: string; willRetry?: boolean; errorMessage?: string }) => void;
+			},
+			"_emit",
+		).mockImplementation((event) => {
+			emitted.push(event);
+		});
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "compaction_end",
+				reason: "overflow",
+				willRetry: false,
+				errorMessage: expect.stringContaining("failed after one compact-and-retry"),
+			}),
+		);
+	});
+
+	it("preserves the one-shot recovery budget when a truncated response ends", async () => {
+		const assistant = belowThresholdLengthStoppedAssistant();
+		(session as unknown as { _overflowRecoveryAttempted: boolean })._overflowRecoveryAttempted = true;
+		const processAgentEvent = (
+			session as unknown as {
+				_processAgentEvent: (event: { type: "message_end"; message: AssistantMessage }) => Promise<void>;
+			}
+		)._processAgentEvent.bind(session);
+
+		await processAgentEvent({ type: "message_end", message: assistant });
+
+		expect((session as unknown as { _overflowRecoveryAttempted: boolean })._overflowRecoveryAttempted).toBe(true);
+	});
+	it("continues a below-threshold response that reached its output cap without compacting", async () => {
 		const userMessage: AgentMessage = {
 			role: "user",
 			content: [{ type: "text", text: "write a long answer" }],
 			timestamp: Date.now() - 1000,
 		};
-		const assistant = belowThresholdLengthStoppedAssistant();
+		const assistant = outputCappedLengthStoppedAssistant();
 		sessionManager.appendMessage(userMessage);
 		sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
@@ -540,13 +642,53 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not continue a below-threshold zero-output length stop", async () => {
+	it("continues after threshold compaction when a length stop reached its output cap", async () => {
+		const assistant = outputCappedLengthStoppedAssistant();
+		assistant.usage = {
+			...assistant.usage,
+			input: 180_000,
+			totalTokens: 180_000 + assistant.usage.output,
+		};
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "write a long answer" }], timestamp: Date.now() - 1000 },
+			assistant,
+		];
+		const runAutoCompactionSpy = vi
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue();
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> }
+		)._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", true);
+	});
+
+	it("compacts rather than directly continuing a below-threshold zero-output length stop", async () => {
 		const assistant = belowThresholdLengthStoppedAssistant();
 		assistant.usage = { ...assistant.usage, output: 0, totalTokens: 40_000 };
 		session.agent.state.messages = [
 			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
 			assistant,
 		];
+		const runAutoCompactionSpy = vi
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (
+						reason: "overflow" | "threshold",
+						willRetry: boolean,
+						urgency?: "load_bearing" | "recoverable",
+					) => Promise<AutoCompactionRunOutcome>;
+				},
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue("compacted");
 		const resumeSpy = vi.spyOn(
 			session as unknown as { _resumeAfterLengthTruncation: () => void },
 			"_resumeAfterLengthTruncation",
@@ -557,15 +699,25 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 
 		await checkCompaction(assistant);
 
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", true, "recoverable");
 		expect(resumeSpy).not.toHaveBeenCalled();
 	});
 
-	it("does not resume a length truncation before a fresh user prompt (non-live path)", async () => {
+	it("does not retry a below-cap length stop before a fresh user prompt", async () => {
 		const assistant = belowThresholdLengthStoppedAssistant();
+		assistant.usage = { ...assistant.usage, input: 180_000, totalTokens: 190_000 };
 		session.agent.state.messages = [
 			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
 			assistant,
 		];
+		const runAutoCompactionSpy = vi
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue();
 		const resumeSpy = vi.spyOn(
 			session as unknown as { _resumeAfterLengthTruncation: () => void },
 			"_resumeAfterLengthTruncation",
@@ -579,11 +731,12 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		// skipAbortedCheck=false marks the pre-prompt path; a new user turn must not resume the old one.
 		await checkCompaction(assistant, false);
 
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 		expect(resumeSpy).not.toHaveBeenCalled();
 	});
 
-	it("stops continuing after MAX_LENGTH_CONTINUATION_ATTEMPTS", async () => {
-		const assistant = belowThresholdLengthStoppedAssistant();
+	it("stops direct output-cap continuations after MAX_LENGTH_CONTINUATION_ATTEMPTS", async () => {
+		const assistant = outputCappedLengthStoppedAssistant();
 		session.agent.state.messages = [
 			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
 			assistant,

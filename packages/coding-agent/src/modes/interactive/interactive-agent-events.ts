@@ -303,8 +303,9 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 
-		case "agent_end":
-			if (this.settingsManager.getShowTerminalProgress()) {
+		case "agent_end": {
+			const compactionInProgress = this.compactionActive;
+			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
 			if (this.loadingAnimation) {
@@ -319,7 +320,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.streamingMessage = undefined;
 			}
 			this.pendingTools.clear();
-			if (this.compactionQueuedMessages.length > 0) {
+			if (this.compactionQueuedMessages.length > 0 && !compactionInProgress) {
 				void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
 			}
 
@@ -327,6 +328,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 			this.ui.requestRender();
 			break;
+		}
 
 		case "compaction_start": {
 			if (this.settingsManager.getShowTerminalProgress()) {
@@ -366,15 +368,25 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "compaction_end": {
-			if (this.settingsManager.getShowTerminalProgress()) {
+			const manualTakeoverPending =
+				event.reason !== "manual" &&
+				(event.manualTakeoverPending === true ||
+					this.manualCompactionTakeoverPending ||
+					this.session.compactionReason === "manual");
+			if (manualTakeoverPending) {
+				this.manualCompactionTakeoverPending = true;
+			} else if (event.reason === "manual") {
+				this.manualCompactionTakeoverPending = false;
+			}
+			if (!manualTakeoverPending && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
-			if (this.autoCompactionEscapeHandlerSaved) {
+			if (!manualTakeoverPending && this.autoCompactionEscapeHandlerSaved) {
 				this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
 				this.autoCompactionEscapeHandler = undefined;
 				this.autoCompactionEscapeHandlerSaved = false;
 			}
-			if (this.autoCompactionLoader) {
+			if (!manualTakeoverPending && this.autoCompactionLoader) {
 				this.autoCompactionLoader.stop();
 				this.autoCompactionLoader = undefined;
 				this.statusContainer.clear();
@@ -383,7 +395,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			if (event.aborted) {
 				if (event.reason === "manual") {
 					this.showError("Compaction cancelled");
-				} else {
+				} else if (!manualTakeoverPending) {
 					this.showStatus("Auto-compaction cancelled");
 				}
 			} else if (event.result && !event.errorMessage) {
@@ -391,7 +403,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 				this.addCompactionBoundaryToChat(event.result);
 				this.footer.invalidate();
-			} else if (event.errorMessage) {
+			} else if (event.errorMessage && !manualTakeoverPending) {
 				if (event.reason === "manual") {
 					this.showError(event.errorMessage);
 				} else {
@@ -402,10 +414,10 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			// Post-tool compaction resumes the same active run, so no new
 			// agent_start event will recreate the working loader. A successful
 			// no-op carries no `result` and still continues that stream.
-			if (event.midTurn && !event.aborted && !event.errorMessage) {
+			if (event.midTurn && !event.aborted && !event.errorMessage && !manualTakeoverPending) {
 				this.showWorkingLoaderNow();
 			}
-			if (!event.midTurn) void this.flushCompactionQueue({ willRetry: event.willRetry });
+			if (!event.midTurn && !manualTakeoverPending) void this.flushCompactionQueue({ willRetry: event.willRetry });
 			this.ui.requestRender();
 			break;
 		}

@@ -109,6 +109,8 @@ class AgentSessionBase {
 	protected _compactionReason: import("./agent-session-types.ts").CompactionReason | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
+	/** Resolves when the current automatic compaction has settled. */
+	protected _autoCompactionCompletion: Promise<void> | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
 	/** Set when compaction cannot recover a context overflow on the current model. */
 	protected _contextOverflowUnresolved = false;

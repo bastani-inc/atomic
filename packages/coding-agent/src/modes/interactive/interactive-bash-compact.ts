@@ -106,9 +106,11 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 };
 
 InteractiveModeBase.prototype.handleCompactCommand = async function (this: InteractiveModeBase): Promise<void> {
-	// Guard every caller, not just the `/compact` input branch: starting a second
-	// compaction would race the live one and append a duplicate boundary.
-	if (this.session.isCompacting) {
+	// A manual /compact can take over automatic compaction, but must not start
+	// another manual compaction or overlap branch summarization.
+	const automaticCompaction =
+		this.session.compactionReason === "threshold" || this.session.compactionReason === "overflow";
+	if (this.manualCompactionTakeoverPending || (this.compactionActive && !automaticCompaction)) {
 		this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
 		return;
 	}
@@ -127,6 +129,7 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 	}
 	this.statusContainer.clear();
 
+	this.manualCompactionTakeoverPending = true;
 	try {
 		await this.session.compact();
 	} catch (error) {
@@ -134,6 +137,13 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 		// a send the engine never accepted, which the submit handler turns back
 		// into an editor draft.
 		if (isEngineSendFailure(error)) throw error;
+	} finally {
+		// An engine can reject before it sends a manual compaction-end event. Do
+		// not leave the local handoff guard latched in that case.
+		if (this.manualCompactionTakeoverPending) {
+			this.manualCompactionTakeoverPending = false;
+			if (!this.session.isCompacting) void this.flushCompactionQueue({ willRetry: false });
+		}
 	}
 };
 

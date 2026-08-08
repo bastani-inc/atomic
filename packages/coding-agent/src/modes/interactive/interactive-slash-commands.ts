@@ -32,7 +32,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 		this.showWarning("Wait for the current response to finish before reloading.");
 		return;
 	}
-	if (this.session.isCompacting) {
+	if (this.compactionActive) {
 		this.showWarning("Wait for compaction to finish before reloading.");
 		return;
 	}

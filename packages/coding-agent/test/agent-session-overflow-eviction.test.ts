@@ -12,7 +12,11 @@ import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils
 import { createTestResourceLoader } from "./utilities.ts";
 
 interface AutoCompactionSurface {
-	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
+	_runAutoCompaction(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+		urgency: "load_bearing" | "recoverable",
+	): Promise<void>;
 }
 
 function text(role: AgentMessage["role"], body: string): AgentMessage {
@@ -75,7 +79,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		// so a sub-minimum region now goes straight to the credential-free fresh
 		// rung instead of raising "nothing more was safely deletable".
 		seedUnpreparableBranch();
-		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", false);
+		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", false, "load_bearing");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "overflow");
 		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", aborted: false });
@@ -90,7 +94,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 
 	it("keeps threshold auto-compaction with no preparable transcript as a silent no-op", async () => {
 		seedUnpreparableBranch();
-		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", false);
+		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", false, "recoverable");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
 		expect(end).toMatchObject({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false });
@@ -103,7 +107,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 		// recovery is load-bearing, so it falls through to the credential-free
 		// fresh rung instead of killing the turn.
 		seedCompactableBranch();
-		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", true);
+		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", true, "load_bearing");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "overflow");
 		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", aborted: false, willRetry: true });
@@ -120,7 +124,7 @@ describe("AgentSession auth-missing compaction failure semantics", () => {
 
 	it("fails threshold compaction without persistence when auth is missing", async () => {
 		seedCompactableBranch();
-		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", true);
+		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", true, "recoverable");
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
 		expect(end).toMatchObject({

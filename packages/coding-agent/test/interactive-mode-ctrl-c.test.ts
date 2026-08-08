@@ -22,6 +22,8 @@ type CtrlCHost = {
 	clearEditor: ReturnType<typeof vi.fn>;
 	shutdown: ReturnType<typeof vi.fn>;
 	showError: ReturnType<typeof vi.fn>;
+	manualCompactionTakeoverPending: boolean;
+	readonly compactionActive: boolean;
 	interruptActiveOperation: () => boolean;
 };
 
@@ -33,6 +35,9 @@ const setupKeyHandlers = Reflect.get(InteractiveMode.prototype, "setupKeyHandler
 
 function createHost(sessionOverrides: Partial<CtrlCSession> = {}): CtrlCHost {
 	const host: CtrlCHost = {
+		get compactionActive() {
+			return this.session.isCompacting || this.manualCompactionTakeoverPending;
+		},
 		lastSigintTime: 0,
 		session: {
 			isStreaming: false,
@@ -48,6 +53,7 @@ function createHost(sessionOverrides: Partial<CtrlCSession> = {}): CtrlCHost {
 			abortRetry: vi.fn(),
 			...sessionOverrides,
 		},
+		manualCompactionTakeoverPending: false,
 		restoreQueuedMessagesToEditor: vi.fn(),
 		clearEditor: vi.fn(),
 		shutdown: vi.fn().mockResolvedValue(undefined),
@@ -96,6 +102,16 @@ describe("InteractiveMode Ctrl+C", () => {
 		const host = createHost({ isCompacting: true });
 		handleCtrlC.call(host);
 		expect(host.session.abortCompaction).toHaveBeenCalledTimes(1);
+		expect(host.clearEditor).not.toHaveBeenCalled();
+	});
+
+	test("aborts the active response while a manual-compaction handoff is pending", () => {
+		const host = createHost({ isStreaming: true });
+		host.manualCompactionTakeoverPending = true;
+		handleCtrlC.call(host);
+		expect(host.session.pauseQueuedMessages).toHaveBeenCalledTimes(1);
+		expect(host.session.abort).toHaveBeenCalledTimes(1);
+		expect(host.session.abortCompaction).not.toHaveBeenCalled();
 		expect(host.clearEditor).not.toHaveBeenCalled();
 	});
 
