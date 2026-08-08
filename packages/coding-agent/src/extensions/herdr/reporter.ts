@@ -69,7 +69,22 @@ export class HerdrReporter {
 	private sessionRef: HerdrSessionRef = {};
 
 	private agentActive = false;
+
+	/**
+	 * The failure the pane is currently reporting. Only ever set at settlement.
+	 */
 	private failureMessage: string | undefined;
+
+	/**
+	 * A failure seen at `agent_end`, held back until the turn actually settles.
+	 *
+	 * `agent_end` still precedes retries, queued continuations, and
+	 * post-compaction continuation, so a failure there is not yet the turn's
+	 * outcome. Storing it straight into `failureMessage` let any unrelated
+	 * publish — a dialog closing, for instance — report the pane as failed in the
+	 * middle of a retry that then succeeded.
+	 */
+	private pendingFailureMessage: string | undefined;
 	private openBlockCount = 0;
 	private activeBlockLabel: string | undefined;
 
@@ -88,6 +103,7 @@ export class HerdrReporter {
 	private queue: QueuedRequest[] = [];
 	private draining: Promise<void> | undefined;
 	private quitting = false;
+	private quitPromise: Promise<void> | undefined;
 
 	/**
 	 * Cancels an in-flight socket attempt when this instance is silenced.
@@ -103,9 +119,14 @@ export class HerdrReporter {
 		this.transport = options.transport;
 	}
 
-	/** True once this instance has stood down and will write nothing further. */
+	/**
+	 * True once this instance has stood down and will publish nothing further.
+	 *
+	 * `quitting` counts: once a quit has begun, a later lifecycle event must not
+	 * queue a state report that would land behind the release.
+	 */
 	isSilenced(): boolean {
-		return this.silenced || this.released;
+		return this.silenced || this.released || this.quitting;
 	}
 
 	// =====================================================================
@@ -149,28 +170,32 @@ export class HerdrReporter {
 		this.refreshSessionRef();
 		this.agentActive = true;
 		this.failureMessage = undefined;
+		this.pendingFailureMessage = undefined;
 		this.publish(false);
 	}
 
 	/**
 	 * Record whether the turn's final assistant message ended in a provider error.
 	 *
-	 * Kept, not acted on: `agent_end` still precedes retries and queued
-	 * continuations, so only the settled event decides the final pane state.
+	 * Held pending, not acted on. Nothing reports it until an idle
+	 * `agent_settled` promotes it, so a retry that succeeds never shows the pane
+	 * a failure it recovered from.
 	 */
 	onAgentEnd(sessionManager: ReadonlySessionManager, failure: string | undefined): void {
 		if (this.isSilenced() || !this.isBoundSession(sessionManager)) return;
-		this.failureMessage = failure === undefined ? undefined : shortenReportMessage(failure);
+		this.pendingFailureMessage = failure === undefined ? undefined : shortenReportMessage(failure);
 	}
 
 	/**
 	 * The turn has fully settled. A settled event that is not idle is a
-	 * continuation and is ignored.
+	 * continuation, so the pending failure stays pending.
 	 */
 	onAgentSettled(sessionManager: ReadonlySessionManager, idle: boolean): void {
 		if (this.isSilenced() || !this.isBoundSession(sessionManager)) return;
 		if (!idle) return;
 		this.agentActive = false;
+		this.failureMessage = this.pendingFailureMessage;
+		this.pendingFailureMessage = undefined;
 		this.publish(false);
 	}
 
@@ -201,6 +226,10 @@ export class HerdrReporter {
 	 * drops its queued work and goes quiet so the two never interleave.
 	 */
 	async onSessionShutdown(reason: "quit" | "reload" | "new" | "resume" | "fork"): Promise<void> {
+		// Single-flight, and checked before the silence guard so a second caller
+		// awaits the first quit rather than starting its own. Nothing in the host
+		// serializes disposal, and two concurrent quits used to send two releases.
+		if (this.quitPromise) return this.quitPromise;
 		if (this.isSilenced()) return;
 		if (reason !== "quit") {
 			this.queue = [];
@@ -208,9 +237,16 @@ export class HerdrReporter {
 			this.abortController.abort();
 			return;
 		}
-		// Latch first, so a lifecycle callback arriving during the drain cannot
-		// enqueue a state report behind the release.
+		// Latched before the first await, so a lifecycle callback arriving during
+		// the drain can neither enqueue a state report behind the release nor
+		// begin a second quit.
 		this.quitting = true;
+		this.quitPromise = this.finishQuit();
+		return this.quitPromise;
+	}
+
+	/** Drain what is queued, then make the release the final write. */
+	private async finishQuit(): Promise<void> {
 		await this.drain();
 		this.enqueue({
 			kind: "release",

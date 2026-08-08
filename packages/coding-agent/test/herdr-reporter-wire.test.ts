@@ -193,6 +193,94 @@ describe("herdr reporter wire behavior", () => {
 		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: label });
 	});
 
+	it("holds a turn failure until the turn actually settles", async () => {
+		// `agent_end` still precedes retries and queued continuations, so a failure
+		// seen there is not the turn's outcome yet. Storing it straight into the
+		// reported state let an unrelated publish — a dialog closing — show the
+		// pane as failed in the middle of a retry that then succeeded.
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, false);
+		await reporter.drain();
+		reporter.onAgentEnd(sessionManager, TURN_FAILURE_MESSAGE);
+
+		reporter.onBlockOpened(1, "Approve?");
+		await reporter.drain();
+		reporter.onBlockReleased(0, undefined);
+		await reporter.drain();
+
+		assert.deepEqual(
+			states(fixture.requests).at(-1),
+			{ state: "working", message: undefined },
+			"closing a dialog before settlement must not surface the pending failure",
+		);
+
+		reporter.onAgentSettled(sessionManager, true);
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: "Agent turn failed" });
+	});
+
+	it("drops a pending failure when the retry starts a new turn", async () => {
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, false);
+		await reporter.drain();
+		reporter.onAgentEnd(sessionManager, TURN_FAILURE_MESSAGE);
+
+		// A retry: agent_start clears the pending failure, and the turn that
+		// succeeds settles to idle rather than blocked.
+		reporter.onAgentStart(sessionManager);
+		await reporter.drain();
+		reporter.onAgentEnd(sessionManager, undefined);
+		reporter.onAgentSettled(sessionManager, true);
+		await reporter.drain();
+
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "idle", message: undefined });
+	});
+
+	it("keeps a non-idle settle pending rather than reporting it", async () => {
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, false);
+		await reporter.drain();
+		reporter.onAgentEnd(sessionManager, TURN_FAILURE_MESSAGE);
+		reporter.onAgentSettled(sessionManager, false);
+		await reporter.drain();
+
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "working", message: undefined });
+
+		reporter.onAgentSettled(sessionManager, true);
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: "Agent turn failed" });
+	});
+
+	it("sends exactly one release when two quits race", async () => {
+		// Nothing in the host serializes disposal, and the guard used to sit before
+		// the latch, so both callers got past it and each enqueued a release.
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, false);
+		reporter.onAgentSettled(sessionManager, true);
+
+		await Promise.all([reporter.onSessionShutdown("quit"), reporter.onSessionShutdown("quit")]);
+
+		const releases = fixture.requests.filter((request) => request.method === "pane.release_agent");
+		assert.equal(releases.length, 1, `expected exactly one release, saw ${releases.length}`);
+		assert.equal(fixture.requests.at(-1)?.method, "pane.release_agent", "and it is still the final write");
+	});
+
+	it("refuses a state report enqueued once a quit has begun", async () => {
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, false);
+		await reporter.drain();
+
+		const quit = reporter.onSessionShutdown("quit");
+		reporter.onBlockOpened(1, "Too late");
+		await quit;
+
+		assert.equal(fixture.requests.at(-1)?.method, "pane.release_agent");
+		assert.equal(
+			fixture.requests.some((request) => String(request.params.message ?? "") === "Too late"),
+			false,
+		);
+	});
+
 	it("sends an empty message when the dialog title was empty", async () => {
 		const reporter = createReporter();
 		await reporter.onSessionStart(sessionManager, true);
