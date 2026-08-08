@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach } from "vitest";
 import { createInMemoryTestBackend, setDurableBackend } from "../packages/workflows/src/durable/factory.js";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../packages/workflows/src/shared/workflow-artifacts.js";
+import { ENV_WORKFLOW_ARTIFACT_DIR } from "../packages/workflows/src/shared/workflow-artifact-env.js";
 
 /**
  * Durable workflow artifacts (stage transcripts, ledgers, run notes) default to

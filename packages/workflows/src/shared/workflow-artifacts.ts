@@ -6,14 +6,11 @@ import { getAgentDir, getEnvValue } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { type WorkflowRunResumeCandidate, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
+import { ENV_WORKFLOW_ARTIFACT_DIR, WORKFLOW_ARTIFACT_RETENTION_MS } from "./workflow-artifact-env.js";
 import { store } from "./store.js";
 import type { RunSnapshot } from "./store-types.js";
 
-/** Maximum age of durable workflow run artifacts before the next workflow write prunes them. */
-export const WORKFLOW_ARTIFACT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-
-/** Overrides the durable workflow-artifact root, mirroring the agent-directory override convention. */
-export const ENV_WORKFLOW_ARTIFACT_DIR = "ATOMIC_WORKFLOW_ARTIFACT_DIR";
+export { ENV_WORKFLOW_ARTIFACT_DIR, WORKFLOW_ARTIFACT_RETENTION_MS };
 
 export type WorkflowArtifactRunState = "protected" | "terminal" | "orphan";
 export type WorkflowArtifactRunStateResolver = (runId: string) => WorkflowArtifactRunState | undefined;
