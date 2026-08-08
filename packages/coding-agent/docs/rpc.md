@@ -526,7 +526,7 @@ While the command runs, Atomic emits ordered deltas correlated by the command `i
 
 `channel` is exactly `"stdout"` or `"stderr"`. Deltas preserve the order observed for that request; concurrent bash requests may interleave globally but never share IDs. Request ownership survives `new_session`, `switch_session`, `import_session`, fork, and clone while the command is running: later deltas still stream under the original ID, the replacement session is not contaminated, and exactly one ordinary `response` remains the terminal record for completion, cancellation, or error.
 
-If output was truncated, includes `fullOutputPath`:
+If output was truncated, includes `fullOutputPath`. Persisted bash output lives in the owner- and session-scoped temp tree (`<tmpdir>/atomic-<uid>/<session-id>/`), not at the temp root — see [Tools](tools.md#persisted-tool-output) for the layout, permissions, size cap, and retention:
 ```json
 {
   "type": "response",
@@ -537,10 +537,12 @@ If output was truncated, includes `fullOutputPath`:
     "exitCode": 0,
     "cancelled": false,
     "truncated": true,
-    "fullOutputPath": "/tmp/atomic-bash-abc123.log"
+    "fullOutputPath": "/tmp/atomic-501/019fdf86-cf98-7327-8a73-21365028f6ae/atomic-bash-abc123.log"
   }
 }
 ```
+
+`fullOutputPath` is `null` when the temp directory could not be created or the write was refused; treat it as absent rather than assuming a path exists.
 
 **How bash results reach the LLM:**
 
