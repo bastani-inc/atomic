@@ -1,0 +1,245 @@
+commit 53fa77ccd8a279eb87e92294ef3687b03ff80112 Release v0.84.1
+
+package-lock.json
+packages/agent/CHANGELOG.md
+packages/agent/package.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/client/CHANGELOG.md
+packages/client/package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+packages/coding-agent/examples/extensions/gondolin/package-lock.json
+packages/coding-agent/examples/extensions/gondolin/package.json
+packages/coding-agent/examples/extensions/sandbox/package-lock.json
+packages/coding-agent/examples/extensions/sandbox/package.json
+packages/coding-agent/examples/extensions/with-deps/package-lock.json
+packages/coding-agent/examples/extensions/with-deps/package.json
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/install-lock/package.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/evals/package.json
+packages/protocol/CHANGELOG.md
+packages/protocol/package.json
+packages/server/CHANGELOG.md
+packages/server/package.json
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/session-backends/sqlite-node/package.json
+packages/telemetry/CHANGELOG.md
+packages/telemetry/package.json
+packages/tui/CHANGELOG.md
+packages/tui/package.json
+commit 6ba4d23e7c953f601fca4bd3c8488e1e99d96fc8 docs: audit changelogs since v0.84.0
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+commit ae1e410e37ce335fd14b50c0a590349bd9cfc848 fix: sqlite queries optimizations (#7727)
+
+packages/session-backends/sqlite-node/src/sqlite/migrations/001_initial.sql
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/facts.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/lanes.ts
+packages/session-backends/sqlite-node/test/branch-query.test.ts
+packages/session-backends/sqlite-node/test/facts-query.test.ts
+packages/session-backends/sqlite-node/test/log-query.test.ts
+packages/session-backends/sqlite-node/test/migrations.test.ts
+commit 79f72fccecd1465930516fffbb53bfbd5b430da3 docs(tui): Clarify TUI test runner and remove stale Vitest  config (#7732)
+
+AGENTS.md
+packages/tui/vitest.config.ts
+commit 666d8972ff0b6da5067e05973249760964194769 fix(coding-agent): preserve TUI wrapper routing (closes #7731)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/suite/regressions/7731-tui-method-wrapping.test.ts
+commit 7cb2a51c0512097900bb9bfdd5eec3249eebb843 fix(coding-agent): reduce automatic theme detection delay
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/theme/theme.ts
+packages/coding-agent/test/theme-detection.test.ts
+commit 4688e4f92f38c9b82523454d8ba9eba7c8753700 docs(coding-agent): reconcile keybinding behavior (#7729)
+
+packages/coding-agent/docs/keybindings.md
+commit 4e64de6950a16bebf40f067a5e735576fb8a33dd fix(coding-agent): soften PI environment guideline
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/tools/bash.ts
+packages/coding-agent/test/agent-session-dynamic-tools.test.ts
+packages/coding-agent/test/sdk-session-manager.test.ts
+packages/coding-agent/test/server/create-harness.test.ts
+commit c96bfaccd00d85e946493bc009b9613e5890ca7a fix(coding-agent): support Windows fullscreen right-click paste
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/tui/CHANGELOG.md
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 7d046bcf21cb934bc46cd374e531801454e558fc fix(coding-agent): announce only verified npm releases
+
+.github/workflows/build-binaries.yml
+AGENTS.md
+scripts/publish-release-announcement.mjs
+scripts/publish-release-announcement.test.mjs
+scripts/publish.mjs
+scripts/release-packages.mjs
+scripts/release.mjs
+commit a3e93ec85ea90ce94a305ab6c5ca96fba74baf24 feat(tui): add half-page transcript scrolling
+
+packages/coding-agent/docs/keybindings.md
+packages/tui/CHANGELOG.md
+packages/tui/src/keybindings.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/keybindings.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 171c6b520bee23bed76fd34b730332f43067dddd fix(tui): correct multi-click text selection (#7733)
+
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 6fb2d766aee340bed96fe81d55603c1670b3af2a feat(coding-agent): add configurable Harness factory (#7686)
+
+packages/agent/test/harness/nodejs-env.test.ts
+packages/coding-agent/src/server/create-harness.ts
+packages/coding-agent/test/server/create-harness.test.ts
+commit a261366bde90c24826eb77bfc600f1bb62ad36e2 feat(coding-agent): add auth preflight
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/cli/auth-check.ts
+packages/coding-agent/src/cli/auth-command.ts
+packages/coding-agent/src/cli/credential-print.ts
+packages/coding-agent/src/core/auth-storage.ts
+packages/coding-agent/src/core/model-runtime.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/test/auth-check.test.ts
+packages/coding-agent/test/credential-print.test.ts
+commit 58fc0431a7e3bb573b5943aa8e3af7a4ce6109ad feat(tui): select words and lines with multi-click (closes #7725)
+
+packages/tui/CHANGELOG.md
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit fc3554e16defffcf76553b1bd12f676adf26d0a4 fix(tui): reduce mouse tracking in terminal multiplexers
+
+packages/tui/CHANGELOG.md
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/tui-alt-screen.test.ts
+commit 9b17fd5bb3fe9be26e1e6099cbce3c6b5e1a6f5b fix: verify npm package registration before release
+
+scripts/release.mjs
+commit 9b4f6a9e1f8f1db0d9d324456db108e2adc9253d doc(changelog): Fix link
+
+packages/coding-agent/CHANGELOG.md
+commit 055ecce080ab38a4ecf4e6f61e9773b3f0469b1b feat(agent): add SQLite SQL template queries
+
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/session-backends/sqlite-node/src/index.ts
+packages/session-backends/sqlite-node/src/sqlite/branch-cache.ts
+packages/session-backends/sqlite-node/src/sqlite/index.ts
+packages/session-backends/sqlite-node/src/sqlite/migrations.ts
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/search-backend.ts
+packages/session-backends/sqlite-node/src/sqlite/sql.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/branch-tips.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/facts.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/lanes.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/records.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/session-sequences.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/session-stats.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/sessions.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/writer-leases.ts
+packages/session-backends/sqlite-node/test/sql.test.ts
+commit c03d78bdce7b154672084dcf286f4fbe2de466ac feat(ai): add Qwen Token Plan Individual provider (#7659)
+
+packages/ai/README.md
+packages/ai/scripts/generate-models.ts
+packages/ai/scripts/model-data.ts
+packages/ai/src/env-api-keys.ts
+packages/ai/src/models.generated.ts
+packages/ai/src/providers/all.ts
+packages/ai/src/providers/qwen-token-plan-individual.models.ts
+packages/ai/src/providers/qwen-token-plan-individual.ts
+packages/ai/src/types.ts
+packages/ai/test/abort.test.ts
+packages/ai/test/context-overflow.test.ts
+packages/ai/test/cross-provider-handoff.test.ts
+packages/ai/test/empty.test.ts
+packages/ai/test/generate-models-strict.test.ts
+packages/ai/test/image-tool-result.test.ts
+packages/ai/test/model-data-validation.test.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+packages/ai/test/qwen-token-plan-models.test.ts
+packages/ai/test/stream.test.ts
+packages/ai/test/tokens.test.ts
+packages/ai/test/tool-call-without-result.test.ts
+packages/ai/test/total-tokens.test.ts
+packages/ai/test/unicode-surrogate.test.ts
+packages/coding-agent/docs/providers.md
+packages/coding-agent/src/core/model-resolver.ts
+packages/coding-agent/test/model-resolver.test.ts
+commit 9ab91fb93e6bb755051de8d000a347a903dd32ec feat(coding-agent): expose tool prompt contributions (#7671)
+
+packages/coding-agent/src/core/tools/bash.ts
+packages/coding-agent/src/core/tools/edit.ts
+packages/coding-agent/src/core/tools/find.ts
+packages/coding-agent/src/core/tools/grep.ts
+packages/coding-agent/src/core/tools/ls.ts
+packages/coding-agent/src/core/tools/read.ts
+packages/coding-agent/src/core/tools/write.ts
+packages/coding-agent/test/tool-system-prompt-contributions.test.ts
+commit beeca6ab740b166a6bbcf5627a3844985215f1ef fix(coding-agent): disable bunfig autoload in compiled binaries (#7685)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/package.json
+scripts/build-binaries.sh
+commit 1eb988cfe88fb0ff740ff62583d2f16359f7b6b0 feat(agent): allow blocked tool calls to terminate (#7715)
+
+packages/agent/README.md
+packages/agent/src/agent-loop.ts
+packages/agent/src/types.ts
+packages/agent/test/agent-loop.test.ts
+packages/coding-agent/docs/extensions.md
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/test/suite/regressions/5998-blocked-tool-terminate.test.ts
+commit 1532c99943b894fe1d12e15ac388c7b1887ca403 fix(agent): reject reset during active runs (#7717)
+
+packages/agent/src/agent.ts
+packages/agent/test/agent.test.ts
+commit bde81c84405514c8b0f57c34405c152fb129c0ce chore: approve contributors from issue #7703
+
+.github/APPROVED_CONTRIBUTORS
+commit d406aa3946ce5c6da4e67afc94693dcf3f6ff084 docs: reserve L1
+
+packages/agent/docs/harness-v2.md
+commit aa601d7ba0e64e063d2b16d850d7bf32787b49ab fix(tui): correct LaTeX whitespace and matrix layouts
+
+packages/tui/CHANGELOG.md
+packages/tui/src/latex.ts
+packages/tui/test/latex.test.ts
+packages/tui/test/markdown.test.ts
+commit 8199aca40c9cf27aff3de7ba852e420985a54bf5 fix: publish server package
+
+scripts/local-release.mjs
+scripts/publish.mjs
+commit 95a6aa7bd02f37b19a4b19db7e134b07413b0bf3 fix: isolate cross-platform native dependency install
+
+scripts/build-binaries.sh
+commit 38e8f2811369c78e165a573df65f61d095645d02 Add [Unreleased] section for next cycle
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/client/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/protocol/CHANGELOG.md
+packages/server/CHANGELOG.md
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/telemetry/CHANGELOG.md
+packages/tui/CHANGELOG.md

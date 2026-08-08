@@ -1,0 +1,464 @@
+commit 53fa77ccd8a279eb87e92294ef3687b03ff80112
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Aug 7 07:46:28 2026 +0200
+
+    Release v0.84.1
+
+ package-lock.json                                  | 60 +++++++++++-----------
+ packages/agent/CHANGELOG.md                        |  2 +-
+ packages/agent/package.json                        |  6 +--
+ packages/ai/CHANGELOG.md                           |  2 +-
+ packages/ai/package.json                           |  4 +-
+ packages/client/CHANGELOG.md                       |  2 +-
+ packages/client/package.json                       |  4 +-
+ packages/coding-agent/CHANGELOG.md                 |  2 +-
+ .../custom-provider-anthropic/package-lock.json    |  4 +-
+ .../custom-provider-anthropic/package.json         |  2 +-
+ .../custom-provider-gitlab-duo/package.json        |  2 +-
+ .../examples/extensions/gondolin/package-lock.json |  4 +-
+ .../examples/extensions/gondolin/package.json      |  2 +-
+ .../examples/extensions/sandbox/package-lock.json  |  4 +-
+ .../examples/extensions/sandbox/package.json       |  2 +-
+ .../extensions/with-deps/package-lock.json         |  4 +-
+ .../examples/extensions/with-deps/package.json     |  2 +-
+ .../coding-agent/install-lock/package-lock.json    | 52 +++++++++----------
+ packages/coding-agent/install-lock/package.json    |  4 +-
+ packages/coding-agent/npm-shrinkwrap.json          | 46 ++++++++---------
+ packages/coding-agent/package.json                 | 12 ++---
+ packages/evals/package.json                        |  6 +--
+ packages/protocol/CHANGELOG.md                     |  2 +-
+ packages/protocol/package.json                     |  2 +-
+ packages/server/CHANGELOG.md                       |  2 +-
+ packages/server/package.json                       |  6 +--
+ packages/session-backends/sqlite-node/CHANGELOG.md |  6 ++-
+ packages/session-backends/sqlite-node/package.json |  6 +--
+ packages/telemetry/CHANGELOG.md                    |  2 +-
+ packages/telemetry/package.json                    |  2 +-
+ packages/tui/CHANGELOG.md                          |  2 +-
+ packages/tui/package.json                          |  2 +-
+ 32 files changed, 132 insertions(+), 128 deletions(-)
+
+commit 6ba4d23e7c953f601fca4bd3c8488e1e99d96fc8
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Aug 7 07:42:43 2026 +0200
+
+    docs: audit changelogs since v0.84.0
+
+ packages/agent/CHANGELOG.md        |  8 ++++++++
+ packages/ai/CHANGELOG.md           |  4 ++++
+ packages/coding-agent/CHANGELOG.md | 16 +++++++++++++++-
+ packages/tui/CHANGELOG.md          |  2 +-
+ 4 files changed, 28 insertions(+), 2 deletions(-)
+
+commit ae1e410e37ce335fd14b50c0a590349bd9cfc848
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Fri Aug 7 07:24:00 2026 +0200
+
+    fix: sqlite queries optimizations (#7727)
+    
+    * fix: findEntriesOnBranch filters
+    
+    * fix: branch entry membership index
+    
+    * fix: get log limit, add test
+    
+    * fix: record indexes
+    
+    * fix: use facts index
+    
+    * fix: composite desc index for cwd, created at
+
+ .../src/sqlite/migrations/001_initial.sql          |  7 ++-
+ .../sqlite-node/src/sqlite/repo.ts                 | 69 ++++++++++++++--------
+ .../src/sqlite/storage/branch-entries.ts           | 42 ++++++++-----
+ .../sqlite-node/src/sqlite/storage/entries.ts      |  5 +-
+ .../sqlite-node/src/sqlite/storage/facts.ts        | 25 +++++---
+ .../sqlite-node/src/sqlite/storage/lanes.ts        |  9 ++-
+ .../sqlite-node/test/branch-query.test.ts          | 14 ++---
+ .../sqlite-node/test/facts-query.test.ts           | 31 ++++++++++
+ .../sqlite-node/test/log-query.test.ts             | 35 +++++++++++
+ .../sqlite-node/test/migrations.test.ts            | 12 ++++
+ 10 files changed, 185 insertions(+), 64 deletions(-)
+
+commit 79f72fccecd1465930516fffbb53bfbd5b430da3
+Author: Thomas Mustier <6326440+tmustier@users.noreply.github.com>
+Date:   Fri Aug 7 06:23:06 2026 +0100
+
+    docs(tui): Clarify TUI test runner and remove stale Vitest  config (#7732)
+    
+    * docs[tui]: clarify Node test runner guidance
+    
+    * docs[tui]: preserve test guidance wording
+    
+    * docs[tui]: keep runner guidance focused
+
+ AGENTS.md                     | 4 +++-
+ packages/tui/vitest.config.ts | 7 -------
+ 2 files changed, 3 insertions(+), 8 deletions(-)
+
+commit 666d8972ff0b6da5067e05973249760964194769
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Aug 7 00:40:44 2026 +0200
+
+    fix(coding-agent): preserve TUI wrapper routing (closes #7731)
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../src/modes/interactive/interactive-mode.ts      | 16 ++++++++---
+ .../regressions/7731-tui-method-wrapping.test.ts   | 31 ++++++++++++++++++++++
+ 3 files changed, 44 insertions(+), 4 deletions(-)
+
+commit 7cb2a51c0512097900bb9bfdd5eec3249eebb843
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Fri Aug 7 00:21:32 2026 +0200
+
+    fix(coding-agent): reduce automatic theme detection delay
+
+ packages/coding-agent/CHANGELOG.md                 |  1 +
+ .../src/modes/interactive/theme/theme.ts           | 14 ++++++--
+ packages/coding-agent/test/theme-detection.test.ts | 41 ++++++++++++++++++++++
+ 3 files changed, 53 insertions(+), 3 deletions(-)
+
+commit 4688e4f92f38c9b82523454d8ba9eba7c8753700
+Author: Zhichao Li <57812115+zhichli@users.noreply.github.com>
+Date:   Thu Aug 6 15:11:39 2026 -0700
+
+    docs(coding-agent): reconcile keybinding behavior (#7729)
+
+ packages/coding-agent/docs/keybindings.md | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+commit 4e64de6950a16bebf40f067a5e735576fb8a33dd
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 22:49:47 2026 +0200
+
+    fix(coding-agent): soften PI environment guideline
+    
+    Attempt to address #7128 without closing the issue.
+
+ packages/coding-agent/CHANGELOG.md                             |  4 ++++
+ packages/coding-agent/src/core/tools/bash.ts                   |  2 +-
+ packages/coding-agent/test/agent-session-dynamic-tools.test.ts |  2 +-
+ packages/coding-agent/test/sdk-session-manager.test.ts         |  2 +-
+ packages/coding-agent/test/server/create-harness.test.ts       | 10 +++++-----
+ 5 files changed, 12 insertions(+), 8 deletions(-)
+
+commit c96bfaccd00d85e946493bc009b9613e5890ca7a
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 22:39:09 2026 +0200
+
+    fix(coding-agent): support Windows fullscreen right-click paste
+
+ packages/coding-agent/CHANGELOG.md                 |  4 ++++
+ .../src/modes/interactive/interactive-mode.ts      | 25 ++++++++++++++++++++-
+ packages/coding-agent/test/interactive-tui.test.ts | 21 +++++++++++++++++
+ packages/tui/CHANGELOG.md                          |  1 +
+ packages/tui/src/tui-alt-screen.ts                 | 17 ++++++++++++++
+ packages/tui/test/tui-alt-screen.test.ts           | 26 ++++++++++++++++++++++
+ 6 files changed, 93 insertions(+), 1 deletion(-)
+
+commit 7d046bcf21cb934bc46cd374e531801454e558fc
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 22:36:26 2026 +0200
+
+    fix(coding-agent): announce only verified npm releases
+
+ .github/workflows/build-binaries.yml          |  43 +++-
+ AGENTS.md                                     |   4 +-
+ scripts/publish-release-announcement.mjs      | 290 ++++++++++++++++++++++++++
+ scripts/publish-release-announcement.test.mjs |  62 ++++++
+ scripts/publish.mjs                           |  28 +--
+ scripts/release-packages.mjs                  |  13 ++
+ scripts/release.mjs                           |  15 +-
+ 7 files changed, 418 insertions(+), 37 deletions(-)
+
+commit a3e93ec85ea90ce94a305ab6c5ca96fba74baf24
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 22:30:13 2026 +0200
+
+    feat(tui): add half-page transcript scrolling
+    
+    closes #7735
+
+ packages/coding-agent/docs/keybindings.md |  4 +++-
+ packages/tui/CHANGELOG.md                 |  1 +
+ packages/tui/src/keybindings.ts           | 10 ++++++++++
+ packages/tui/src/tui-alt-screen.ts        |  8 ++++++++
+ packages/tui/test/keybindings.test.ts     |  2 ++
+ packages/tui/test/tui-alt-screen.test.ts  | 30 ++++++++++++++++++++++++++++++
+ 6 files changed, 54 insertions(+), 1 deletion(-)
+
+commit 171c6b520bee23bed76fd34b730332f43067dddd
+Author: Volkan Sagcan <volkanxvs@gmail.com>
+Date:   Thu Aug 6 22:25:00 2026 +0200
+
+    fix(tui): correct multi-click text selection (#7733)
+
+ packages/tui/src/tui-alt-screen.ts       |  4 ++--
+ packages/tui/test/tui-alt-screen.test.ts | 33 ++++++++++++++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 2 deletions(-)
+
+commit 6fb2d766aee340bed96fe81d55603c1670b3af2a
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Thu Aug 6 21:05:46 2026 +0300
+
+    feat(coding-agent): add configurable Harness factory (#7686)
+    
+    * feat(coding-agent): add Harness construction factory
+    
+    * feat(coding-agent): configure Harness construction factory
+    
+    * feat(coding-agent): expose Harness JSONL session file
+    
+    * fix(agent): remove redundant bash environment test
+
+ packages/agent/test/harness/nodejs-env.test.ts     |  31 ++
+ packages/coding-agent/src/server/create-harness.ts | 159 ++++++++++
+ .../test/server/create-harness.test.ts             | 352 +++++++++++++++++++++
+ 3 files changed, 542 insertions(+)
+
+commit a261366bde90c24826eb77bfc600f1bb62ad36e2
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 19:43:52 2026 +0200
+
+    feat(coding-agent): add auth preflight
+    
+    closes #7152
+
+ packages/coding-agent/CHANGELOG.md                 |   4 +
+ packages/coding-agent/src/cli/args.ts              |   6 +-
+ packages/coding-agent/src/cli/auth-check.ts        |  73 +++++++++
+ packages/coding-agent/src/cli/auth-command.ts      | 125 +++++++++++++++
+ packages/coding-agent/src/cli/credential-print.ts  | 142 +++++------------
+ packages/coding-agent/src/core/auth-storage.ts     |  91 ++++++++++-
+ packages/coding-agent/src/core/model-runtime.ts    |   6 +-
+ packages/coding-agent/src/main.ts                  | 115 +++++++++-----
+ packages/coding-agent/test/auth-check.test.ts      | 171 +++++++++++++++++++++
+ .../coding-agent/test/credential-print.test.ts     |  60 ++++++--
+ 10 files changed, 631 insertions(+), 162 deletions(-)
+
+commit 58fc0431a7e3bb573b5943aa8e3af7a4ce6109ad
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 18:49:42 2026 +0200
+
+    feat(tui): select words and lines with multi-click (closes #7725)
+
+ packages/tui/CHANGELOG.md                |   4 +
+ packages/tui/src/tui-alt-screen.ts       | 140 ++++++++++++++++++++++++++++---
+ packages/tui/test/tui-alt-screen.test.ts |  39 +++++++++
+ 3 files changed, 173 insertions(+), 10 deletions(-)
+
+commit fc3554e16defffcf76553b1bd12f676adf26d0a4
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 18:20:48 2026 +0200
+
+    fix(tui): reduce mouse tracking in terminal multiplexers
+
+ packages/tui/CHANGELOG.md                |  1 +
+ packages/tui/src/tui-alt-screen.ts       | 16 +++++++++--
+ packages/tui/test/tui-alt-screen.test.ts | 49 ++++++++++++++++++++++++++++++--
+ 3 files changed, 62 insertions(+), 4 deletions(-)
+
+commit 9b17fd5bb3fe9be26e1e6099cbce3c6b5e1a6f5b
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 18:16:01 2026 +0200
+
+    fix: verify npm package registration before release
+
+ scripts/release.mjs | 73 ++++++++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 56 insertions(+), 17 deletions(-)
+
+commit 9b4f6a9e1f8f1db0d9d324456db108e2adc9253d
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 18:14:26 2026 +0200
+
+    doc(changelog): Fix link
+
+ packages/coding-agent/CHANGELOG.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+commit 055ecce080ab38a4ecf4e6f61e9773b3f0469b1b
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 18:10:42 2026 +0200
+
+    feat(agent): add SQLite SQL template queries
+
+ packages/session-backends/sqlite-node/CHANGELOG.md |   4 +
+ packages/session-backends/sqlite-node/src/index.ts |   7 +-
+ .../sqlite-node/src/sqlite/branch-cache.ts         |  28 ++---
+ .../sqlite-node/src/sqlite/index.ts                |   1 +
+ .../sqlite-node/src/sqlite/migrations.ts           |  12 +-
+ .../sqlite-node/src/sqlite/repo.ts                 |   7 +-
+ .../sqlite-node/src/sqlite/search-backend.ts       |  62 +++++-----
+ .../session-backends/sqlite-node/src/sqlite/sql.ts |  62 ++++++++++
+ .../src/sqlite/storage/branch-entries.ts           | 134 ++++++++++-----------
+ .../sqlite-node/src/sqlite/storage/branch-tips.ts  |  25 ++--
+ .../sqlite-node/src/sqlite/storage/entries.ts      |  48 +++-----
+ .../sqlite-node/src/sqlite/storage/facts.ts        |  60 +++------
+ .../sqlite-node/src/sqlite/storage/lanes.ts        | 116 +++++++-----------
+ .../sqlite-node/src/sqlite/storage/records.ts      |  88 +++++---------
+ .../src/sqlite/storage/session-sequences.ts        |  13 +-
+ .../src/sqlite/storage/session-stats.ts            |  41 +++----
+ .../sqlite-node/src/sqlite/storage/sessions.ts     |  82 ++++++-------
+ .../src/sqlite/storage/writer-leases.ts            |  43 +++----
+ .../session-backends/sqlite-node/test/sql.test.ts  |  39 ++++++
+ 19 files changed, 417 insertions(+), 455 deletions(-)
+
+commit c03d78bdce7b154672084dcf286f4fbe2de466ac
+Author: Mehmet Aras <arasmehmet07@gmail.com>
+Date:   Thu Aug 6 18:18:02 2026 +0300
+
+    feat(ai): add Qwen Token Plan Individual provider (#7659)
+
+ packages/ai/README.md                              |  9 ++-
+ packages/ai/scripts/generate-models.ts             | 51 ++++++++++---
+ packages/ai/scripts/model-data.ts                  |  7 ++
+ packages/ai/src/env-api-keys.ts                    |  1 +
+ packages/ai/src/models.generated.ts                |  3 +
+ packages/ai/src/providers/all.ts                   |  2 +
+ .../providers/qwen-token-plan-individual.models.ts |  8 ++
+ .../ai/src/providers/qwen-token-plan-individual.ts | 15 ++++
+ packages/ai/src/types.ts                           |  1 +
+ packages/ai/test/abort.test.ts                     | 12 +++
+ packages/ai/test/context-overflow.test.ts          | 12 +++
+ packages/ai/test/cross-provider-handoff.test.ts    | 15 ++++
+ packages/ai/test/empty.test.ts                     | 20 +++++
+ packages/ai/test/generate-models-strict.test.ts    | 85 ++++++++++++++++++++++
+ packages/ai/test/image-tool-result.test.ts         | 12 +++
+ packages/ai/test/model-data-validation.test.ts     | 13 ++++
+ .../ai/test/openai-completions-tool-choice.test.ts |  2 +-
+ packages/ai/test/qwen-token-plan-models.test.ts    | 55 +++++++++++---
+ packages/ai/test/stream.test.ts                    | 31 ++++++++
+ packages/ai/test/tokens.test.ts                    |  8 ++
+ packages/ai/test/tool-call-without-result.test.ts  |  8 ++
+ packages/ai/test/total-tokens.test.ts              | 25 +++++++
+ packages/ai/test/unicode-surrogate.test.ts         | 16 ++++
+ packages/coding-agent/docs/providers.md            |  9 ++-
+ packages/coding-agent/src/core/model-resolver.ts   |  1 +
+ packages/coding-agent/test/model-resolver.test.ts  |  4 +
+ 26 files changed, 403 insertions(+), 22 deletions(-)
+
+commit 9ab91fb93e6bb755051de8d000a347a903dd32ec
+Author: Christian Klotz <hello@christianklotz.co.uk>
+Date:   Thu Aug 6 18:17:13 2026 +0300
+
+    feat(coding-agent): expose tool prompt contributions (#7671)
+
+ packages/coding-agent/src/core/tools/bash.ts       | 11 ++++---
+ packages/coding-agent/src/core/tools/edit.ts       | 20 +++++++-----
+ packages/coding-agent/src/core/tools/find.ts       |  7 ++++-
+ packages/coding-agent/src/core/tools/grep.ts       |  7 ++++-
+ packages/coding-agent/src/core/tools/ls.ts         |  7 ++++-
+ packages/coding-agent/src/core/tools/read.ts       |  9 ++++--
+ packages/coding-agent/src/core/tools/write.ts      |  9 ++++--
+ .../test/tool-system-prompt-contributions.test.ts  | 36 ++++++++++++++++++++++
+ 8 files changed, 87 insertions(+), 19 deletions(-)
+
+commit beeca6ab740b166a6bbcf5627a3844985215f1ef
+Author: Ilya <62308020+geril07@users.noreply.github.com>
+Date:   Thu Aug 6 18:16:12 2026 +0300
+
+    fix(coding-agent): disable bunfig autoload in compiled binaries (#7685)
+    
+    Bun standalone binaries load cwd bunfig.toml preload before pi starts,
+    so project preloads can crash even pi --version. Compile with
+    --no-compile-autoload-bunfig.
+    
+    fixes #7684
+
+ packages/coding-agent/CHANGELOG.md | 1 +
+ packages/coding-agent/package.json | 2 +-
+ scripts/build-binaries.sh          | 7 +++++--
+ 3 files changed, 7 insertions(+), 3 deletions(-)
+
+commit 1eb988cfe88fb0ff740ff62583d2f16359f7b6b0
+Author: muyiyr <940955635@qq.com>
+Date:   Thu Aug 6 23:14:48 2026 +0800
+
+    feat(agent): allow blocked tool calls to terminate (#7715)
+    
+    Closes #5998
+
+ packages/agent/README.md                           |   8 +-
+ packages/agent/src/agent-loop.ts                   |   6 +-
+ packages/agent/src/types.ts                        |   6 ++
+ packages/agent/test/agent-loop.test.ts             | 118 +++++++++++++++++++++
+ packages/coding-agent/docs/extensions.md           |   5 +-
+ packages/coding-agent/src/core/extensions/types.ts |   5 +
+ .../5998-blocked-tool-terminate.test.ts            |  53 +++++++++
+ 7 files changed, 194 insertions(+), 7 deletions(-)
+
+commit 1532c99943b894fe1d12e15ac388c7b1887ca403
+Author: wesleyzhangwq <wesley.wq.zhang@gmail.com>
+Date:   Thu Aug 6 23:12:25 2026 +0800
+
+    fix(agent): reject reset during active runs (#7717)
+
+ packages/agent/src/agent.ts       |  4 ++++
+ packages/agent/test/agent.test.ts | 34 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+commit bde81c84405514c8b0f57c34405c152fb129c0ce
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Thu Aug 6 11:50:54 2026 +0000
+
+    chore: approve contributors from issue #7703
+
+ .github/APPROVED_CONTRIBUTORS | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit d406aa3946ce5c6da4e67afc94693dcf3f6ff084
+Author: Cristina Poncela Cubeiro <140309543+cristinaponcela@users.noreply.github.com>
+Date:   Thu Aug 6 13:26:38 2026 +0200
+
+    docs: reserve L1
+
+ packages/agent/docs/harness-v2.md | 2 ++
+ 1 file changed, 2 insertions(+)
+
+commit aa601d7ba0e64e063d2b16d850d7bf32787b49ab
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 13:22:48 2026 +0200
+
+    fix(tui): correct LaTeX whitespace and matrix layouts
+
+ packages/tui/CHANGELOG.md          |   4 +
+ packages/tui/src/latex.ts          | 244 +++++++++++++++++++++++++++++--------
+ packages/tui/test/latex.test.ts    | 111 +++++++++++++----
+ packages/tui/test/markdown.test.ts |  23 +++-
+ 4 files changed, 306 insertions(+), 76 deletions(-)
+
+commit 8199aca40c9cf27aff3de7ba852e420985a54bf5
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 12:59:45 2026 +0200
+
+    fix: publish server package
+
+ scripts/local-release.mjs | 1 +
+ scripts/publish.mjs       | 1 +
+ 2 files changed, 2 insertions(+)
+
+commit 95a6aa7bd02f37b19a4b19db7e134b07413b0bf3
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 12:38:51 2026 +0200
+
+    fix: isolate cross-platform native dependency install
+
+ scripts/build-binaries.sh | 30 +++++++++++++++++++++++++-----
+ 1 file changed, 25 insertions(+), 5 deletions(-)
+
+commit 38e8f2811369c78e165a573df65f61d095645d02
+Author: Armin Ronacher <armin.ronacher@active-4.com>
+Date:   Thu Aug 6 12:33:01 2026 +0200
+
+    Add [Unreleased] section for next cycle
+
+ packages/agent/CHANGELOG.md                        | 2 ++
+ packages/ai/CHANGELOG.md                           | 2 ++
+ packages/client/CHANGELOG.md                       | 2 ++
+ packages/coding-agent/CHANGELOG.md                 | 2 ++
+ packages/protocol/CHANGELOG.md                     | 2 ++
+ packages/server/CHANGELOG.md                       | 2 ++
+ packages/session-backends/sqlite-node/CHANGELOG.md | 2 ++
+ packages/telemetry/CHANGELOG.md                    | 2 ++
+ packages/tui/CHANGELOG.md                          | 2 ++
+ 9 files changed, 18 insertions(+)
