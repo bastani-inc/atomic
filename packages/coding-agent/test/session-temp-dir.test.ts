@@ -34,6 +34,7 @@ import {
 	sanitizeTempPathComponent,
 	setActiveSessionTempId,
 	TempDirRefusedError,
+	windowsPrincipal,
 } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
 
@@ -75,6 +76,12 @@ beforeEach(() => {
 function isInside(parent: string, child: string): boolean {
 	const rel = relative(parent, child);
 	return rel.length > 0 && !rel.startsWith("..") && !rel.startsWith(`${sep}..`);
+}
+
+/** Restore an env var to its exact prior state, including having been unset. */
+function restoreEnv(name: string, saved: string | undefined): void {
+	if (saved === undefined) delete process.env[name];
+	else process.env[name] = saved;
 }
 
 describe("session temp directory scoping", () => {
@@ -135,6 +142,60 @@ describe("session temp directory scoping", () => {
 		// Two processes that both fail to name the account agree on one root
 		// rather than scattering trees the sweeper would have to chase.
 		assert.equal(component, deriveOwnerComponent(""));
+	});
+
+	it("separates domain principals that share a bare account name", () => {
+		// userInfo().username returns only `Alice`, so a digest over the bare name
+		// left CONTOSO\Alice and FABRIKAM\Alice on one tree.
+		const savedDomain = process.env.USERDOMAIN;
+		const savedDnsDomain = process.env.USERDNSDOMAIN;
+		const savedUsername = process.env.USERNAME;
+		const roots: string[] = [];
+		try {
+			delete process.env.USERDNSDOMAIN;
+			process.env.USERNAME = "Alice";
+			for (const domain of ["CONTOSO", "FABRIKAM"]) {
+				process.env.USERDOMAIN = domain;
+				roots.push(deriveOwnerComponent(windowsPrincipal("Alice")));
+			}
+		} finally {
+			restoreEnv("USERDOMAIN", savedDomain);
+			restoreEnv("USERDNSDOMAIN", savedDnsDomain);
+			restoreEnv("USERNAME", savedUsername);
+		}
+		assert.equal(new Set(roots).size, 2, `domain principals shared a root: ${roots.join(", ")}`);
+	});
+
+	it("separates forests that share a NetBIOS domain name", () => {
+		const savedDomain = process.env.USERDOMAIN;
+		const savedDnsDomain = process.env.USERDNSDOMAIN;
+		const roots: string[] = [];
+		try {
+			process.env.USERDOMAIN = "CONTOSO";
+			for (const dns of ["eu.contoso.com", "us.contoso.com"]) {
+				process.env.USERDNSDOMAIN = dns;
+				roots.push(deriveOwnerComponent(windowsPrincipal("Alice")));
+			}
+		} finally {
+			restoreEnv("USERDOMAIN", savedDomain);
+			restoreEnv("USERDNSDOMAIN", savedDnsDomain);
+		}
+		assert.equal(new Set(roots).size, 2, `two forests shared a root: ${roots.join(", ")}`);
+	});
+
+	it("keeps one principal on one root across invocations and case", () => {
+		const savedDomain = process.env.USERDOMAIN;
+		const savedDnsDomain = process.env.USERDNSDOMAIN;
+		try {
+			delete process.env.USERDNSDOMAIN;
+			process.env.USERDOMAIN = "CONTOSO";
+			const first = deriveOwnerComponent(windowsPrincipal("Alice"));
+			process.env.USERDOMAIN = "contoso";
+			assert.equal(deriveOwnerComponent(windowsPrincipal("alice")), first);
+		} finally {
+			restoreEnv("USERDOMAIN", savedDomain);
+			restoreEnv("USERDNSDOMAIN", savedDnsDomain);
+		}
 	});
 
 	it("never produces a dot-only or hidden component", () => {

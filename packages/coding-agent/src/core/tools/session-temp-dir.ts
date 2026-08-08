@@ -91,10 +91,27 @@ export function deriveOwnerComponent(rawIdentity: string): string {
 }
 
 /**
+ * Assemble the account identity used where there is no uid.
+ *
+ * `userInfo().username` returns the bare account name, so `CONTOSO\Alice` and
+ * `FABRIKAM\Alice` would otherwise be one identity and share a tree. Exported
+ * for tests: its caller only reaches this branch on Windows.
+ */
+export function windowsPrincipal(name: string | undefined): string {
+	const account = name || process.env.USERNAME || process.env.USER || "";
+	// USERDOMAIN is the NetBIOS domain and is set for both domain and local
+	// accounts; USERDNSDOMAIN appears only on domain-joined hosts and
+	// distinguishes two forests that share a NetBIOS name. Neither is
+	// authoritative on its own, so both take part in the identity.
+	const domain = process.env.USERDNSDOMAIN || process.env.USERDOMAIN || "";
+	return domain ? `${domain}\\${account}` : account;
+}
+
+/**
  * Identify the account that owns the temp tree.
  *
  * POSIX uses the numeric uid, which is already collision-free. Windows has no
- * `process.getuid`, so the account name stands in via `deriveOwnerComponent`.
+ * `process.getuid`, so the domain-qualified principal stands in.
  */
 function ownerComponent(): string {
 	if (cachedOwnerComponent !== undefined) {
@@ -110,10 +127,10 @@ function ownerComponent(): string {
 		name = userInfo().username;
 	} catch {
 		// A container without a passwd entry cannot name the account; the env
-		// fallback below still separates the common Windows case.
+		// fallback inside windowsPrincipal still separates the common case.
 		name = undefined;
 	}
-	cachedOwnerComponent = deriveOwnerComponent(name || process.env.USERNAME || process.env.USER || "");
+	cachedOwnerComponent = deriveOwnerComponent(windowsPrincipal(name));
 	return cachedOwnerComponent;
 }
 
@@ -187,8 +204,20 @@ export class TempDirRefusedError extends Error {
  *
  * A looser mode is tightened and re-checked; a component owned by another
  * account, or one whose mode cannot be tightened, is refused rather than used.
+ *
  * Windows has no uid or POSIX mode to check, so only the symlink and directory
- * checks apply there.
+ * checks apply there. That is a real gap, not an oversight: an existing root is
+ * adopted without proving its owner SID or that its DACL is restrictive, so on a
+ * host where the system temp directory has been redirected to a shared location,
+ * a local attacker who can pre-create the (predictable) root can have this
+ * account's persisted tool output written into a tree they control. Closing it
+ * needs a real principal identity and an ACL read, neither of which Node exposes
+ * — `lstatSync` reports uid/gid 0 on Windows — so it means a native binding or a
+ * PowerShell `Get-Acl` per directory creation. Tracked in bastani-inc/atomic#2245
+ * rather than bolted on here; the default Windows temp directory is per-user,
+ * which is what keeps this narrow. Domain-qualifying the principal (see
+ * `windowsPrincipal`) stops two accounts *colliding* by accident, which is a
+ * different problem and is not a substitute for verification.
  */
 function verifyOwnedDirectory(path: string, known?: Stats): void {
 	let stat = known ?? lstatSync(path);
