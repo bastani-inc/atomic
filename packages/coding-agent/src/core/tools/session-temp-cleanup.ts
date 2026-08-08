@@ -43,7 +43,6 @@ import {
 	rmSync,
 	statSync,
 	unlinkSync,
-	writeFileSync,
 	writeSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -121,50 +120,61 @@ function getErrnoCode(error: unknown): string | undefined {
 	return undefined;
 }
 
-/** An existing real directory — not a symlink, not a file, not missing. */
-function isRealDirectory(path: string): boolean {
-	try {
-		const stat = lstatSync(path);
-		return stat.isDirectory() && !stat.isSymbolicLink();
-	} catch {
-		return false;
-	}
-}
-
-function markerIsFresh(markerPath: string, now: number, throttleMs: number): boolean {
-	try {
-		return now - statSync(markerPath).mtimeMs < throttleMs;
-	} catch {
-		return false;
-	}
-}
-
-interface CleanupLock {
-	token: string;
+interface FileIdentity {
 	dev: bigint;
 	ino: bigint;
 }
 
-function sameLockIdentity(left: { dev: bigint; ino: bigint }, right: { dev: bigint; ino: bigint }): boolean {
+function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
 	return left.dev === right.dev && left.ino === right.ino;
 }
 
-function pathIdentifiesLock(lockPath: string, lock: CleanupLock): boolean {
+function realDirectoryIdentity(path: string): FileIdentity | undefined {
 	try {
-		const stat = lstatSync(lockPath, { bigint: true });
-		return stat.isFile() && !stat.isSymbolicLink() && sameLockIdentity(stat, lock);
+		const stat = lstatSync(path, { bigint: true });
+		if (stat.isDirectory() && !stat.isSymbolicLink()) {
+			return { dev: stat.dev, ino: stat.ino };
+		}
+	} catch {
+		// Missing, unreadable, and changing paths are not cleanup candidates.
+	}
+	return undefined;
+}
+
+/** An existing real directory — not a symlink, not a file, not missing. */
+function isRealDirectory(path: string): boolean {
+	return realDirectoryIdentity(path) !== undefined;
+}
+
+function markerIsFresh(markerPath: string, now: number, throttleMs: number): boolean {
+	try {
+		const stat = lstatSync(markerPath);
+		return stat.isFile() && !stat.isSymbolicLink() && now - stat.mtimeMs < throttleMs;
 	} catch {
 		return false;
 	}
 }
 
-function removeCreatedLock(lockPath: string, lock: CleanupLock): void {
+interface CleanupLock extends FileIdentity {
+	token: string;
+}
+
+function pathIdentifiesFile(path: string, identity: FileIdentity): boolean {
 	try {
-		if (pathIdentifiesLock(lockPath, lock)) {
-			unlinkSync(lockPath);
+		const stat = lstatSync(path, { bigint: true });
+		return stat.isFile() && !stat.isSymbolicLink() && sameFileIdentity(stat, identity);
+	} catch {
+		return false;
+	}
+}
+
+function removeCreatedFile(path: string, identity: FileIdentity): void {
+	try {
+		if (pathIdentifiesFile(path, identity)) {
+			unlinkSync(path);
 		}
 	} catch {
-		// Best effort. An uncertain path is left for stale-lock handling.
+		// Best effort. An uncertain path is left untouched.
 	}
 }
 /**
@@ -227,9 +237,9 @@ function acquireCleanupLock(lockPath: string, now: number, staleMs: number): Cle
 		} catch {
 			failed = true;
 		}
-		if (failed || lock === undefined || !pathIdentifiesLock(lockPath, lock) || !ownsCleanupLock(lockPath, lock)) {
+		if (failed || lock === undefined || !pathIdentifiesFile(lockPath, lock) || !ownsCleanupLock(lockPath, lock)) {
 			if (lock !== undefined) {
-				removeCreatedLock(lockPath, lock);
+				removeCreatedFile(lockPath, lock);
 			}
 			return null;
 		}
@@ -277,9 +287,9 @@ function breakStaleLock(lockPath: string, observedMtimeMs: number): boolean {
 function ownsCleanupLock(lockPath: string, lock: CleanupLock): boolean {
 	try {
 		return (
-			pathIdentifiesLock(lockPath, lock) &&
+			pathIdentifiesFile(lockPath, lock) &&
 			readFileSync(lockPath, "utf-8") === lock.token &&
-			pathIdentifiesLock(lockPath, lock)
+			pathIdentifiesFile(lockPath, lock)
 		);
 	} catch {
 		return false;
@@ -288,13 +298,67 @@ function ownsCleanupLock(lockPath: string, lock: CleanupLock): boolean {
 
 function releaseCleanupLock(lockPath: string, lock: CleanupLock): void {
 	try {
-		if (ownsCleanupLock(lockPath, lock) && pathIdentifiesLock(lockPath, lock)) {
+		if (ownsCleanupLock(lockPath, lock) && pathIdentifiesFile(lockPath, lock)) {
 			unlinkSync(lockPath);
 		}
 	} catch {
 		// Release is best-effort: an unreleased lock only goes stale and is
 		// broken by a later sweep.
 	}
+}
+
+/** Publish the throttle marker without ever opening or unlinking its destination. */
+function publishCleanupMarker(markerPath: string, now: number): boolean {
+	const tempPath = `${markerPath}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`;
+	const timestamp = String(now);
+	let fd: number;
+	try {
+		fd = openSync(tempPath, "wx+", SESSION_TEMP_FILE_MODE);
+	} catch {
+		return false;
+	}
+
+	let identity: FileIdentity | undefined;
+	let failed = false;
+	try {
+		const createdStat = fstatSync(fd, { bigint: true });
+		identity = { dev: createdStat.dev, ino: createdStat.ino };
+		if (!createdStat.isFile()) {
+			failed = true;
+		} else {
+			if (process.platform !== "win32") {
+				fchmodSync(fd, SESSION_TEMP_FILE_MODE);
+				const modeStat = fstatSync(fd, { bigint: true });
+				if (!modeStat.isFile() || Number(modeStat.mode & 0o777n) !== SESSION_TEMP_FILE_MODE) {
+					failed = true;
+				}
+			}
+			if (!failed && writeSync(fd, timestamp) !== timestamp.length) {
+				failed = true;
+			}
+		}
+	} catch {
+		failed = true;
+	}
+	try {
+		closeSync(fd);
+	} catch {
+		failed = true;
+	}
+	if (failed || identity === undefined || !pathIdentifiesFile(tempPath, identity)) {
+		if (identity !== undefined) {
+			removeCreatedFile(tempPath, identity);
+		}
+		return false;
+	}
+
+	try {
+		renameSync(tempPath, markerPath);
+	} catch {
+		removeCreatedFile(tempPath, identity);
+		return false;
+	}
+	return pathIdentifiesFile(markerPath, identity);
 }
 
 type ScanFreshness = "fresh" | "stale" | "unknown";
@@ -396,12 +460,9 @@ function withCleanupGate(controlDir: string, options: SweepOptions, scan: (gate:
 			cutoff: now - (options.retentionMs ?? SESSION_TEMP_RETENTION_MS),
 			protectedPaths: new Set(options.protectedPaths ?? []),
 		});
-		try {
-			if (!aborted && ownsCleanupLock(lockPath, token)) {
-				writeFileSync(markerPath, String(now));
-			}
-		} catch {
-			// Failing to record the marker only means the sweep repeats sooner.
+		if (!aborted && ownsCleanupLock(lockPath, token)) {
+			// Failing to publish the marker only means the sweep repeats sooner.
+			publishCleanupMarker(markerPath, now);
 		}
 	} finally {
 		releaseCleanupLock(lockPath, token);
@@ -412,6 +473,7 @@ function withCleanupGate(controlDir: string, options: SweepOptions, scan: (gate:
 function isCleanupArtifact(name: string): boolean {
 	return (
 		name === CLEANUP_MARKER_FILE ||
+		name.startsWith(`${CLEANUP_MARKER_FILE}.tmp.`) ||
 		name === CLEANUP_LOCK_FILE ||
 		name.startsWith(`${CLEANUP_LOCK_FILE}.`) ||
 		name === CLEANUP_CONTROL_SUBDIR
@@ -455,7 +517,15 @@ export function sweepSessionTempRoot(root: string = getTempRootDir(), options: S
 				return;
 			}
 			try {
-				if (scanFreshness(entryPath, gate.cutoff) !== "stale") {
+				const initialIdentity = realDirectoryIdentity(entryPath);
+				if (initialIdentity === undefined || scanFreshness(entryPath, gate.cutoff) !== "stale") {
+					continue;
+				}
+				if (!gate.ownsLock()) {
+					return;
+				}
+				const finalIdentity = realDirectoryIdentity(entryPath);
+				if (finalIdentity === undefined || !sameFileIdentity(initialIdentity, finalIdentity)) {
 					continue;
 				}
 				rmSync(entryPath, { recursive: true, force: true });

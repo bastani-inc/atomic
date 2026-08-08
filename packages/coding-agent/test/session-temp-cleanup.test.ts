@@ -109,6 +109,41 @@ describe("sweepSessionTempRoot", () => {
 		assert.equal(existsSync(justInside), true);
 	});
 
+	it("reaps only stale session directories and preserves every loose root file", () => {
+		const transcript = join(sandbox, "session.jsonl");
+		const loose = join(sandbox, "loose-output.log");
+		const transcriptContent = '{"type":"session"}\n';
+		const looseContent = "not a session tree";
+		writeFileSync(transcript, transcriptContent);
+		writeFileSync(loose, looseContent);
+		stampAge(transcript, 60);
+		stampAge(loose, 60);
+		const staleSession = makeAgedDir(sandbox, "stale-real-session", 60);
+
+		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(readFileSync(transcript, "utf8"), transcriptContent);
+		assert.equal(readFileSync(loose, "utf8"), looseContent);
+		assert.equal(existsSync(staleSession), false);
+	});
+
+	it.skipIf(skipSymlinks)("keeps a linked directory entry and its outside contents", () => {
+		const outside = mkdtempSync(join(tmpdir(), "atomic-session-temp-outside-"));
+		try {
+			const outsideFile = join(outside, "keep.txt");
+			writeFileSync(outsideFile, "outside");
+			stampAge(outsideFile, 60);
+			stampAge(outside, 60);
+			const link = join(sandbox, "linked-session-entry");
+			symlinkSync(outside, link, "dir");
+
+			assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+			assert.equal(lstatSync(link).isSymbolicLink(), true);
+			assert.equal(readFileSync(outsideFile, "utf8"), "outside");
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps an old tree that still holds one fresh file", () => {
 		const dir = makeAgedDir(sandbox, "mixed-session", 60);
 		const fresh = join(dir, "recent.log");
@@ -154,6 +189,41 @@ describe("sweepSessionTempRoot", () => {
 		assert.equal(existsSync(laterStale), true);
 	});
 
+	it.skipIf(skipSymlinks)("replaces a marker symlink without touching its transcript target", () => {
+		const transcript = join(sandbox, "2026-01-01-session.jsonl");
+		const transcriptContent = '{"type":"session"}\n';
+		writeFileSync(transcript, transcriptContent);
+		chmodSync(transcript, 0o644);
+		stampAge(transcript, 60);
+		const transcriptMode = statSync(transcript).mode & 0o777;
+		const marker = join(sandbox, CLEANUP_MARKER_FILE);
+		symlinkSync(transcript, marker);
+		const staleSession = makeAgedDir(sandbox, "stale-with-hostile-marker", 60);
+
+		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(readFileSync(transcript, "utf8"), transcriptContent);
+		assert.equal(statSync(transcript).mode & 0o777, transcriptMode);
+		assert.equal(existsSync(staleSession), false);
+		const markerStat = lstatSync(marker);
+		assert.equal(markerStat.isSymbolicLink(), false);
+		assert.equal(markerStat.isFile(), true);
+		assert.equal(markerStat.mode & 0o777, SESSION_TEMP_FILE_MODE);
+	});
+
+	it.skipIf(skipSymlinks)("does not let a fresh marker symlink target throttle cleanup", () => {
+		const transcript = join(sandbox, "fresh-session-target.jsonl");
+		const transcriptContent = '{"type":"session"}\n';
+		writeFileSync(transcript, transcriptContent);
+		const marker = join(sandbox, CLEANUP_MARKER_FILE);
+		symlinkSync(transcript, marker);
+		const staleSession = makeAgedDir(sandbox, "stale-beside-fresh-marker-target", 60);
+
+		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(readFileSync(transcript, "utf8"), transcriptContent);
+		assert.equal(existsSync(staleSession), false);
+		assert.equal(lstatSync(marker).isFile(), true);
+		assert.equal(lstatSync(marker).isSymbolicLink(), false);
+	});
 	it("sweeps again once the marker is older than the throttle window", () => {
 		makeAgedDir(sandbox, "stale-a", 45);
 		sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] });
@@ -212,7 +282,7 @@ describe("sweepSessionTempRoot", () => {
 	});
 });
 
-it.skipIf(process.platform === "win32")("repairs and releases a cleanup lock under umask 0o777", () => {
+it.skipIf(process.platform === "win32")("repairs cleanup lock and marker modes under umask 0o777", () => {
 	const packageRoot = dirname(moduleDir(import.meta.url));
 	const scriptPath = join(sandbox, "cleanup-lock-umask.ts");
 	writeFileSync(
@@ -254,13 +324,15 @@ try {
 		released = !fs.existsSync(lockPath);
 	}
 	const outcome = cleanup.sweepSessionTempRoot(sweepRoot, { now, protectedPaths: [] });
+	const markerPath = path.join(sweepRoot, cleanup.CLEANUP_MARKER_FILE);
 	result = {
 		lockMode,
 		tokenReadable,
 		released,
 		outcome,
 		staleExists: fs.existsSync(stale),
-		markerExists: fs.existsSync(path.join(sweepRoot, cleanup.CLEANUP_MARKER_FILE)),
+		markerExists: fs.existsSync(markerPath),
+		markerMode: fs.existsSync(markerPath) ? fs.statSync(markerPath).mode & 0o777 : null,
 		lockExists: fs.existsSync(path.join(sweepRoot, cleanup.CLEANUP_LOCK_FILE)),
 	};
 } finally {
@@ -280,6 +352,7 @@ process.stdout.write(JSON.stringify(result));
 		outcome: "swept",
 		staleExists: false,
 		markerExists: true,
+		markerMode: SESSION_TEMP_FILE_MODE,
 		lockExists: false,
 	});
 });
