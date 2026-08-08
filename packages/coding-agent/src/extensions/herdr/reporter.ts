@@ -9,18 +9,25 @@
  */
 
 import type { ReadonlySessionManager } from "../../core/session-manager-types.ts";
+import type { WorkflowLifecycleBridgeEvent } from "../../core/workflow-lifecycle-events.js";
 import { desiredPaneState } from "./reducer.js";
 import { nextReportSeq } from "./sequence.js";
 import type { HerdrTransport } from "./transport.js";
-import { type DesiredPaneState, HERDR_AGENT, HERDR_SOURCE, type HerdrRequest, type HerdrSessionRef } from "./types.js";
+import {
+	type DesiredPaneState,
+	HERDR_AGENT,
+	HERDR_SOURCE,
+	type HerdrRequest,
+	type HerdrSessionRef,
+	type WorkflowRunContribution,
+} from "./types.js";
 
 /**
  * Upper bound on any free text that crosses the socket.
  *
- * The only free text is a dialog title, which is short by nature; the cap keeps
- * a pathological one from becoming a payload. Provider failures do not reach
- * here as text at all — the extension substitutes a fixed label before the
- * reporter ever sees them.
+ * Dialog titles and workflow labels are bounded here. Provider failures do not
+ * reach this class as text at all — the extension substitutes a fixed label
+ * before the reporter ever sees them.
  */
 export const MAX_REPORT_MESSAGE_LENGTH = 120;
 
@@ -89,6 +96,9 @@ export class HerdrReporter {
 	private pendingFailureMessage: string | undefined;
 	private openBlockCount = 0;
 	private activeBlockLabel: string | undefined;
+
+	/** Current nonterminal contributions from top-level workflow runs. */
+	private readonly workflowContributions = new Map<string, WorkflowRunContribution>();
 
 	private lastState: DesiredPaneState | undefined;
 	private silenced = false;
@@ -202,6 +212,64 @@ export class HerdrReporter {
 		this.failureMessage = this.pendingFailureMessage;
 		this.pendingFailureMessage = undefined;
 		this.publish(false);
+	}
+
+	/**
+	 * Replace the current workflow snapshot before the first session report.
+	 * A replacement runner can receive this seed from the lifecycle bridge even
+	 * when it did not observe the original run-start events.
+	 */
+	seedWorkflowContributions(contributions: readonly WorkflowRunContribution[]): void {
+		if (this.isSilenced()) return;
+		this.workflowContributions.clear();
+		for (const contribution of contributions) {
+			this.workflowContributions.set(contribution.runKey, {
+				...contribution,
+				...(contribution.label === undefined ? {} : { label: shortenReportMessage(contribution.label) }),
+			});
+		}
+		if (this.boundSessionManager) this.publish(false);
+	}
+
+	/** Seed from the neutral lifecycle snapshot before binding the replacement session. */
+	seedWorkflowLifecycleEvents(events: readonly WorkflowLifecycleBridgeEvent[]): void {
+		if (this.isSilenced()) return;
+		this.workflowContributions.clear();
+		for (const event of events) this.applyWorkflowLifecycle(event);
+		if (this.boundSessionManager) this.publish(false);
+	}
+
+	/**
+	 * Apply one neutral top-level workflow lifecycle event.
+	 *
+	 * The run key stays in this in-memory map and never enters a Herdr request.
+	 * Events may arrive before session_start while a replacement runner is being
+	 * built; in that case the contribution is retained and the session seed
+	 * publishes the resulting state once the reporter binds.
+	 */
+	onWorkflowLifecycle(event: WorkflowLifecycleBridgeEvent): void {
+		if (this.isSilenced()) return;
+		this.applyWorkflowLifecycle(event);
+		if (this.boundSessionManager) this.publish(false);
+	}
+
+	private applyWorkflowLifecycle(event: WorkflowLifecycleBridgeEvent): void {
+		if (event.kind === "started" || event.kind === "resumed") {
+			this.workflowContributions.set(event.runKey, { runKey: event.runKey, state: "working" });
+		} else if (
+			event.kind === "awaiting_input" ||
+			event.kind === "blocked" ||
+			event.kind === "failed" ||
+			event.kind === "paused"
+		) {
+			this.workflowContributions.set(event.runKey, {
+				runKey: event.runKey,
+				state: "blocked",
+				label: shortenReportMessage(event.label),
+			});
+		} else {
+			this.workflowContributions.delete(event.runKey);
+		}
 	}
 
 	/** A user-decision block opened. */
@@ -326,6 +394,7 @@ export class HerdrReporter {
 			openBlockCount: this.openBlockCount,
 			failureMessage: this.failureMessage,
 			agentActive: this.agentActive,
+			workflowContributions: [...this.workflowContributions.values()],
 		});
 		if (!force && this.lastState?.state === next.state && this.lastState.message === next.message) return;
 		this.lastState = next;

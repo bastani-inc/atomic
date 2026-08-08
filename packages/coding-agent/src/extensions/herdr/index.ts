@@ -14,6 +14,7 @@
  */
 
 import { basename } from "node:path";
+import type { EventBus } from "../../core/event-bus.ts";
 import {
 	captureLoadedFileExtensionPathCycle,
 	loadedFileExtensionPathsOf,
@@ -30,6 +31,11 @@ import type {
 	SessionStartEvent,
 } from "../../core/extensions/types.ts";
 import { getActiveUserBlockLabel, getOpenUserBlocks } from "../../core/extensions/user-blocks.js";
+import {
+	getWorkflowLifecycleBridgeSnapshot,
+	isWorkflowLifecycleBridgeEvent,
+	WORKFLOW_LIFECYCLE_EVENT,
+} from "../../core/workflow-lifecycle-events.js";
 import { HerdrReporter } from "./reporter.js";
 import { createSocketTransport, resolveSocketEndpoint } from "./transport.js";
 import type { HerdrEnv } from "./types.js";
@@ -46,6 +52,7 @@ export interface HerdrExtensionApi {
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
+	events?: Pick<EventBus, "on">;
 	on(event: "agent_blocked", handler: ExtensionHandler<AgentBlockedEvent>): void;
 	on(event: "agent_unblocked", handler: ExtensionHandler<AgentUnblockedEvent>): void;
 }
@@ -157,6 +164,7 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 	 * registry. With no await anywhere on this path every concurrent handler runs
 	 * to completion in arrival order.
 	 */
+	let unsubscribeWorkflowLifecycle: (() => void) | undefined;
 	function ensureActivated(ctx: ExtensionContext): boolean {
 		if (closed || activation === "stand-down") return false;
 		if (ctx.mode !== "tui") return false;
@@ -166,6 +174,12 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 			return false;
 		}
 		activation = "active";
+		const workflowSnapshot = pi.events === undefined ? [] : getWorkflowLifecycleBridgeSnapshot(pi.events);
+		unsubscribeWorkflowLifecycle = pi.events?.on(WORKFLOW_LIFECYCLE_EVENT, (payload) => {
+			if (typeof payload !== "object" || payload === null || !isWorkflowLifecycleBridgeEvent(payload)) return;
+			reporter.onWorkflowLifecycle(payload);
+		});
+		reporter.seedWorkflowLifecycleEvents(workflowSnapshot);
 		reporter.onSessionStart(ctx.sessionManager, ctx.isIdle(), {
 			openBlocks: getOpenUserBlocks().length,
 			activeLabel: getActiveUserBlockLabel(),
@@ -232,6 +246,7 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 		// with. `_buildRuntime()` detaches the outgoing runner but cannot cancel
 		// an emit already in flight.
 		closed = true;
+		unsubscribeWorkflowLifecycle?.();
 		if (activation !== "active") return;
 		await reporter.onSessionShutdown(event.reason);
 	});

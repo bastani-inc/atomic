@@ -14,6 +14,12 @@ import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
 import type { ExtensionUIContext } from "../src/core/extensions/types.ts";
 import { getActiveUserBlockLabel, getOpenUserBlocks, openUserBlock } from "../src/core/extensions/user-blocks.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import {
+	getWorkflowLifecycleBridgeSnapshot,
+	rememberWorkflowLifecycleBridgeEvent,
+	resetWorkflowLifecycleBridgeSnapshot,
+	WORKFLOW_LIFECYCLE_EVENT,
+} from "../src/core/workflow-lifecycle-events.ts";
 import herdrExtension from "../src/extensions/herdr/index.ts";
 import { builtInExtensions, builtInExtensionsForHost } from "../src/extensions/index.ts";
 import { hostPresentsTerminalPane } from "../src/main-app-mode.ts";
@@ -111,9 +117,11 @@ describe("herdr extension end to end", () => {
 	let fixture: HerdrSocketFixture;
 	let tempDir: string;
 	let runner: ExtensionRunner | undefined;
+	let eventBus: ReturnType<typeof createEventBus> | undefined;
 	let saved: { env?: string; pane?: string; socket?: string };
 
 	beforeEach(async () => {
+		resetWorkflowLifecycleBridgeSnapshot();
 		fixture = await startHerdrSocketFixture();
 		tempDir = mkdtempSync(join(tmpdir(), "atomic-herdr-e2e-"));
 		saved = {
@@ -126,10 +134,11 @@ describe("herdr extension end to end", () => {
 		process.env.HERDR_SOCKET_PATH = fixture.socketPath;
 		setLoadedFileExtensionPaths([]);
 	});
-
 	afterEach(async () => {
 		runner?.detachUserBlocks();
 		runner = undefined;
+		eventBus = undefined;
+		resetWorkflowLifecycleBridgeSnapshot();
 		if (saved.env === undefined) delete process.env.HERDR_ENV;
 		else process.env.HERDR_ENV = saved.env;
 		if (saved.pane === undefined) delete process.env.HERDR_PANE_ID;
@@ -143,13 +152,9 @@ describe("herdr extension end to end", () => {
 
 	async function buildRunner(mode: "tui" | "rpc", ui: ExtensionUIContext): Promise<ExtensionRunner> {
 		const runtime = createExtensionRuntime();
-		const extension = await loadExtensionFromFactory(
-			herdrExtension,
-			tempDir,
-			createEventBus(),
-			runtime,
-			"<inline:herdr>",
-		);
+		const bus = createEventBus();
+		eventBus = bus;
+		const extension = await loadExtensionFromFactory(herdrExtension, tempDir, bus, runtime, "<inline:herdr>");
 		const modelRegistry = await createModelRegistry(AuthStorage.create(join(tempDir, "auth.json")));
 		const built = new ExtensionRunner([extension], runtime, tempDir, SessionManager.inMemory(), modelRegistry);
 		built.setUIContext(ui, mode);
@@ -218,6 +223,19 @@ describe("herdr extension end to end", () => {
 		}
 	}
 
+	it("seeds a deferred successor from the neutral workflow snapshot", async () => {
+		const built = await buildRunner("tui", noOpUIContext);
+		assert.ok(eventBus);
+		rememberWorkflowLifecycleBridgeEvent({ runKey: "late-run", kind: "blocked", label: "Review workflow" }, eventBus);
+
+		await built.emit({ type: "session_start", reason: "reload" });
+		await fixture.waitForRequests(2);
+		assert.deepEqual(paneStates(fixture.requests), ["blocked"]);
+		assert.equal(fixture.requests[1]?.params.message, "Review workflow");
+		assert.deepEqual(getWorkflowLifecycleBridgeSnapshot(eventBus), [
+			{ runKey: "late-run", kind: "blocked", label: "Review workflow" },
+		]);
+	});
 	it("reports the pane through the real runner, socket, and block door", async () => {
 		let openDuringDialog = 0;
 		const ui: ExtensionUIContext = {
@@ -261,6 +279,12 @@ describe("herdr extension end to end", () => {
 
 	it("never touches the socket outside a TUI session", async () => {
 		const built = await buildRunner("rpc", noOpUIContext);
+		assert.ok(eventBus);
+		eventBus.emit(WORKFLOW_LIFECYCLE_EVENT, {
+			runKey: "private-run",
+			kind: "started",
+			label: "private workflow",
+		});
 		await built.emit({ type: "session_start", reason: "startup" });
 		await built.emit({ type: "agent_start" });
 		await built.emit({ type: "agent_settled" });
@@ -269,6 +293,36 @@ describe("herdr extension end to end", () => {
 
 		assert.equal(fixture.connectionCount(), 0);
 		assert.equal(fixture.requests.length, 0);
+	});
+
+	it("maps neutral workflow lifecycle events onto the pane without exposing run keys", async () => {
+		const built = await buildRunner("tui", noOpUIContext);
+		assert.ok(eventBus);
+		await built.emit({ type: "session_start", reason: "startup" });
+		await fixture.waitForRequests(2);
+
+		eventBus.emit(WORKFLOW_LIFECYCLE_EVENT, {
+			runKey: "private-run",
+			kind: "started",
+			label: "build workflow",
+		});
+		await waitForPaneState("working");
+
+		eventBus.emit(WORKFLOW_LIFECYCLE_EVENT, {
+			runKey: "private-run",
+			kind: "awaiting_input",
+			label: "build workflow: approval",
+		});
+		await waitForPaneState("blocked");
+		assert.equal(fixture.requests.at(-1)?.params.message, "build workflow: approval");
+
+		eventBus.emit(WORKFLOW_LIFECYCLE_EVENT, {
+			runKey: "private-run",
+			kind: "completed",
+			label: "build workflow",
+		});
+		await waitForPaneState("idle");
+		assert.equal(JSON.stringify(fixture.requests).includes("private-run"), false);
 	});
 
 	it("activates on a later lifecycle event when it loaded after session_start", async () => {

@@ -331,6 +331,20 @@ export {
 	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 } from "./core/trust-manager.ts";
 export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
+export {
+	clearWorkflowLifecycleBridgeEvents,
+	getWorkflowLifecycleBridgeLineages,
+	getWorkflowLifecycleBridgeSnapshot,
+	getWorkflowLifecycleBridgeTerminalLineages,
+	isWorkflowLifecycleBridgeEvent,
+	rememberWorkflowLifecycleBridgeEvent,
+	rememberWorkflowLifecycleBridgeLineage,
+	resetWorkflowLifecycleBridgeSnapshot,
+	WORKFLOW_LIFECYCLE_EVENT,
+	type WorkflowLifecycleBridgeEvent,
+	type WorkflowLifecycleBridgeLineage,
+	type WorkflowLifecycleBridgeNoticeKind,
+} from "./core/workflow-lifecycle-events.js";
 export * from "./index-extensions.js";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";

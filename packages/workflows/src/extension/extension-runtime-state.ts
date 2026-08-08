@@ -1,3 +1,12 @@
+import {
+	clearWorkflowLifecycleBridgeEvents,
+	getWorkflowLifecycleBridgeLineages,
+	getWorkflowLifecycleBridgeTerminalLineages,
+	rememberWorkflowLifecycleBridgeEvent,
+	rememberWorkflowLifecycleBridgeLineage,
+	WORKFLOW_LIFECYCLE_EVENT,
+	type WorkflowLifecycleBridgeEvent,
+} from "@bastani/atomic";
 import { getDurableBackend } from "../durable/factory.js";
 import { readWorkflowHeartbeatAnchor, recordWorkflowHeartbeatAnchor } from "../durable/workflow-heartbeat-anchor.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
@@ -157,6 +166,21 @@ export function createWorkflowExtensionRuntimeState(
 	registerWorkflowHeartbeatRenderer({ rendererHost: pi, registerMessageRenderer });
 	const sendWorkflowNotificationMessage: ExtensionAPI["sendMessage"] | undefined =
 		typeof pi.sendMessage === "function" ? (message, options) => pi.sendMessage!(message, options) : undefined;
+	const publishWorkflowLifecycleEvent: ((event: WorkflowLifecycleBridgeEvent) => void) | undefined =
+		typeof pi.events?.emit === "function"
+			? (event) => {
+					if (pi.events !== undefined) rememberWorkflowLifecycleBridgeEvent(event, pi.events);
+					pi.events?.emit?.(WORKFLOW_LIFECYCLE_EVENT, {
+						runKey: event.runKey,
+						kind: event.kind,
+						label: event.label,
+					});
+				}
+			: undefined;
+	const rememberWorkflowLifecycleLineage: ((runId: string, runKey: string) => void) | undefined =
+		pi.events === undefined
+			? undefined
+			: (runId, runKey) => rememberWorkflowLifecycleBridgeLineage(runId, runKey, pi.events);
 	const reinstallLifecycleNotifications = (): void => {
 		lifecycleNotificationsUnsubscribe?.();
 		lifecycleNotificationsUnsubscribe = null;
@@ -167,6 +191,10 @@ export function createWorkflowExtensionRuntimeState(
 			state: lifecycleNotificationState,
 			seedExisting: true,
 			sendMessage: sendWorkflowNotificationMessage,
+			publishLifecycleEvent: publishWorkflowLifecycleEvent,
+			rememberBridgeLineage: rememberWorkflowLifecycleLineage,
+			bridgeLineages: getWorkflowLifecycleBridgeLineages(pi.events),
+			bridgeTerminalLineages: getWorkflowLifecycleBridgeTerminalLineages(pi.events),
 		});
 	};
 	const reinstallHilAnswerNotifications = (): void => {
@@ -575,6 +603,7 @@ export function createWorkflowExtensionRuntimeState(
 			notificationGeneration += 1;
 			notificationsActive = active;
 			reinstallLifecycleNotifications();
+			if (!active && pi.events !== undefined) clearWorkflowLifecycleBridgeEvents(pi.events);
 			reinstallHilAnswerNotifications();
 			// A fresh host session restarts the cadence from each run's persisted
 			// start time; prior-session schedule and pending state cannot apply.

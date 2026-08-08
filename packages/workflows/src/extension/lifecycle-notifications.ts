@@ -1,3 +1,4 @@
+import type { WorkflowLifecycleBridgeEvent, WorkflowLifecycleBridgeLineage } from "@bastani/atomic";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
@@ -110,10 +111,45 @@ export interface WorkflowLifecycleNotificationOptions {
 	readonly config: WorkflowLifecycleNotificationConfig;
 	readonly state?: WorkflowLifecycleNotificationState;
 	readonly seedExisting?: boolean;
+	/** Publish the neutral cross-extension event, independent of chat delivery. */
+	readonly publishLifecycleEvent?: (event: WorkflowLifecycleBridgeEvent) => void;
+	/** Remember physical-to-logical lineage for successor reconstruction. */
+	readonly rememberBridgeLineage?: (runId: string, runKey: string) => void;
+	/** Terminal logical keys retained by a replacement bridge. */
+	readonly bridgeTerminalLineages?: readonly string[];
+	/** Physical-to-logical lineage retained by a replacement bridge. */
+	readonly bridgeLineages?: readonly WorkflowLifecycleBridgeLineage[];
 }
 
 type RawRenderer = PiMessageRenderer;
 const rendererRegisteredHosts = new WeakSet<object>();
+const bridgeContributionsByState = new WeakMap<WorkflowLifecycleNotificationState, Map<string, BridgeContribution>>();
+const bridgeLineageByState = new WeakMap<WorkflowLifecycleNotificationState, Map<string, string>>();
+const bridgeTerminalLineagesByState = new WeakMap<WorkflowLifecycleNotificationState, Set<string>>();
+
+function bridgeTerminalLineagesFor(state: WorkflowLifecycleNotificationState): Set<string> {
+	const existing = bridgeTerminalLineagesByState.get(state);
+	if (existing !== undefined) return existing;
+	const lineages = new Set<string>();
+	bridgeTerminalLineagesByState.set(state, lineages);
+	return lineages;
+}
+
+function bridgeLineageFor(state: WorkflowLifecycleNotificationState): Map<string, string> {
+	const existing = bridgeLineageByState.get(state);
+	if (existing !== undefined) return existing;
+	const lineage = new Map<string, string>();
+	bridgeLineageByState.set(state, lineage);
+	return lineage;
+}
+
+function bridgeContributionsFor(state: WorkflowLifecycleNotificationState): Map<string, BridgeContribution> {
+	const existing = bridgeContributionsByState.get(state);
+	if (existing !== undefined) return existing;
+	const contributions = new Map<string, BridgeContribution>();
+	bridgeContributionsByState.set(state, contributions);
+	return contributions;
+}
 export function createWorkflowLifecycleNotificationState(): WorkflowLifecycleNotificationState {
 	return {
 		deliveredTerminalRuns: new Set<string>(),
@@ -135,6 +171,9 @@ export function resetWorkflowLifecycleNotificationState(state: WorkflowLifecycle
 	state.retryObservers.clear();
 	state.deliveredInputPrompts.clear();
 	state.suppressionDepth = 0;
+	bridgeContributionsByState.get(state)?.clear();
+	bridgeLineageByState.get(state)?.clear();
+	bridgeTerminalLineagesByState.get(state)?.clear();
 }
 
 export function seedWorkflowLifecycleNotificationState(
@@ -207,18 +246,42 @@ export async function withWorkflowLifecycleNotificationsSuppressedAsync<T>(
 export function installWorkflowLifecycleNotifications(options: WorkflowLifecycleNotificationOptions): () => void {
 	registerLifecycleNoticeRenderer(options);
 
-	if (!options.config.enabled) return () => undefined;
-	const send = options.sendMessage;
-	if (typeof send !== "function") return () => undefined;
-
 	const notifyOn = new Set<WorkflowLifecycleNoticeKind>(options.config.notifyOn);
 	const state = options.state ?? createWorkflowLifecycleNotificationState();
-	let delivery!: ReturnType<typeof createLifecycleNoticeDelivery>;
-	if (options.seedExisting !== false) {
-		seedWorkflowLifecycleNotificationState(state, readGraphStoreSnapshot(options.store));
+	const send = options.sendMessage;
+	const chatEnabled = options.config.enabled && typeof send === "function";
+	const publishLifecycleEvent = options.publishLifecycleEvent;
+	const bridgeEnabled = typeof publishLifecycleEvent === "function";
+	if (!chatEnabled && !bridgeEnabled) return () => undefined;
+
+	const initialSnapshot = readGraphStoreSnapshot(options.store);
+	if (chatEnabled && options.seedExisting !== false) {
+		seedWorkflowLifecycleNotificationState(state, initialSnapshot);
 	}
+	const bridgeContributions = bridgeEnabled ? bridgeContributionsFor(state) : undefined;
+	const bridgeLineage = bridgeEnabled ? bridgeLineageFor(state) : undefined;
+	const bridgeTerminalLineages = bridgeEnabled ? bridgeTerminalLineagesFor(state) : undefined;
+	if (bridgeLineage !== undefined) {
+		for (const entry of options.bridgeLineages ?? []) bridgeLineage.set(entry.runId, entry.runKey);
+	}
+	if (bridgeTerminalLineages !== undefined) {
+		for (const runKey of options.bridgeTerminalLineages ?? []) bridgeTerminalLineages.add(runKey);
+	}
+	const publishBridge = (runKey: string, details: WorkflowLifecycleNoticeDetails): void => {
+		if (!bridgeEnabled || publishLifecycleEvent === undefined) return;
+		try {
+			publishLifecycleEvent({
+				runKey,
+				kind: details.kind,
+				label: lifecycleBridgeLabel(details),
+			});
+		} catch {
+			// A neutral observer must never break the store subscriber or workflow.
+		}
+	};
 
 	const emit = (details: WorkflowLifecycleNoticeDetails): boolean | Promise<boolean> => {
+		if (typeof send !== "function") return true;
 		try {
 			const result = send(
 				{
@@ -243,9 +306,11 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		}
 	};
 
+	let delivery: ReturnType<typeof createLifecycleNoticeDelivery> | undefined;
+
 	const emitTerminalNoticeOnce = (run: RunSnapshot, kind: "completed" | "failed" | "blocked"): void => {
 		const noticeKind = terminalNoticeKind(run);
-		if (noticeKind !== kind || lifecycleOccurrenceAt(run, kind) === undefined || !notifyOn.has(kind)) {
+		if (noticeKind !== kind || lifecycleOccurrenceAt(run, kind) === undefined || !delivery || !notifyOn.has(kind)) {
 			return;
 		}
 
@@ -267,7 +332,7 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 
 	const emitControlNoticesOnce = (run: RunSnapshot): void => {
 		for (const occurrence of controlOccurrences(run)) {
-			if (!notifyOn.has(occurrence.kind)) continue;
+			if (!delivery || !notifyOn.has(occurrence.kind)) continue;
 			const key = controlOccurrenceKey(run, occurrence);
 			if (
 				state.deliveredTerminalRuns.has(key) ||
@@ -308,31 +373,43 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		// through workflow status/connect surfaces instead of the main chat context.
 	};
 
+	if (chatEnabled) {
+		delivery = createLifecycleNoticeDelivery({ state, emit, eligible: (details) => notifyOn.has(details.kind) });
+		for (const [key, details] of state.retryableTerminalNotices) {
+			if (notifyOn.has(details.kind)) delivery.deliver(key, details);
+		}
+	}
+
 	const inspect = (snapshot: StoreSnapshot): void => {
-		for (const run of snapshot.runs) {
-			if (!isTopLevelWorkflowRun(run)) continue;
+		const topLevelRuns = snapshot.runs.filter(isTopLevelWorkflowRun);
+		for (const run of topLevelRuns) {
 			emitTerminalNoticeOnce(run, "completed");
 			emitTerminalNoticeOnce(run, "failed");
 			emitTerminalNoticeOnce(run, "blocked");
 			emitControlNoticesOnce(run);
 
-			if (!notifyOn.has("awaiting_input")) continue;
-			emitRunAwaitingInputNoticeOnce(run);
-			for (const stage of run.stages) {
-				emitStageAwaitingInputNoticeOnce(run, stage);
+			if (delivery !== undefined && notifyOn.has("awaiting_input")) {
+				emitRunAwaitingInputNoticeOnce(run);
+				for (const stage of run.stages) emitStageAwaitingInputNoticeOnce(run, stage);
 			}
 		}
+		if (bridgeContributions !== undefined && bridgeLineage !== undefined && bridgeTerminalLineages !== undefined) {
+			reconcileBridgeContributions(
+				topLevelRuns,
+				bridgeContributions,
+				bridgeLineage,
+				bridgeTerminalLineages,
+				options.rememberBridgeLineage,
+				publishBridge,
+			);
+		}
 	};
-	delivery = createLifecycleNoticeDelivery({ state, emit, eligible: (details) => notifyOn.has(details.kind) });
-	for (const [key, details] of state.retryableTerminalNotices) {
-		if (notifyOn.has(details.kind)) delivery.deliver(key, details);
-	}
 
 	const unsubscribe = subscribeStoreInvalidation(options.store, () => inspect(readGraphStoreSnapshot(options.store)));
-	inspect(readGraphStoreSnapshot(options.store));
+	inspect(initialSnapshot);
 	return () => {
 		unsubscribe();
-		delivery.dispose();
+		delivery?.dispose();
 	};
 }
 
@@ -475,6 +552,303 @@ function makeControlNotice(run: RunSnapshot, occurrence: ControlOccurrence): Wor
 			: {}),
 		createdAt: occurrence.at,
 	};
+}
+interface BridgeContribution {
+	readonly signature: string;
+	readonly details: WorkflowLifecycleNoticeDetails;
+}
+
+type BridgeContributionMode = "working" | "blocked" | "completed" | "quit" | "none";
+
+interface BridgeCurrentState {
+	readonly mode: BridgeContributionMode;
+	readonly details: WorkflowLifecycleNoticeDetails | undefined;
+	readonly run: RunSnapshot;
+}
+
+interface CurrentAwaitingInput {
+	readonly key: string;
+	readonly stage: StageSnapshot | undefined;
+}
+
+function reconcileBridgeContributions(
+	runs: readonly RunSnapshot[],
+	contributions: Map<string, BridgeContribution>,
+	lineage: Map<string, string>,
+	terminalLineages: Set<string>,
+	rememberLineage: ((runId: string, runKey: string) => void) | undefined,
+	publish: (runKey: string, details: WorkflowLifecycleNoticeDetails) => void,
+): void {
+	const groups = bridgeRunGroups(runs, lineage);
+	const currentKeys = new Set<string>();
+	for (const [runKey, group] of groups) {
+		for (const run of group) rememberLineage?.(run.id, runKey);
+		currentKeys.add(runKey);
+		const previous = contributions.get(runKey);
+		const hasLiveContinuation = group.some((run) => {
+			if (!isBridgeContinuation(run)) return false;
+			return isBridgeLiveMode(bridgeCurrentStateForRun(run, previous).mode);
+		});
+		if (terminalLineages.has(runKey) && !hasLiveContinuation) {
+			contributions.delete(runKey);
+			continue;
+		}
+		if (hasLiveContinuation) terminalLineages.delete(runKey);
+
+		const current = bridgeCurrentStateForGroup(group, previous);
+		if (current === undefined || current.mode === "completed" || current.mode === "quit" || current.mode === "none") {
+			if (previous !== undefined) {
+				publish(runKey, current?.details ?? makeBridgeCompletionNotice(previous.details));
+			}
+			contributions.delete(runKey);
+			terminalLineages.add(runKey);
+			continue;
+		}
+
+		if (current.details === undefined) {
+			contributions.delete(runKey);
+			continue;
+		}
+		const signature = bridgeSignature(current.details);
+		if (previous?.signature !== signature) publish(runKey, current.details);
+		contributions.set(runKey, { signature, details: current.details });
+	}
+
+	for (const [runKey, previous] of contributions) {
+		if (currentKeys.has(runKey)) continue;
+		publish(runKey, makeBridgeCompletionNotice(previous.details));
+		contributions.delete(runKey);
+		terminalLineages.add(runKey);
+	}
+}
+
+function bridgeRunGroups(runs: readonly RunSnapshot[], lineage: Map<string, string>): Map<string, RunSnapshot[]> {
+	const groups = new Map<string, RunSnapshot[]>();
+	for (const run of runs) {
+		const runKey = bridgeLogicalRunKey(run, runs, lineage);
+		const group = groups.get(runKey);
+		if (group === undefined) groups.set(runKey, [run]);
+		else group.push(run);
+	}
+	return groups;
+}
+
+function bridgeLogicalRunKey(run: RunSnapshot, runs: readonly RunSnapshot[], lineage: Map<string, string>): string {
+	const known = lineage.get(run.id);
+	if (known !== undefined) return known;
+
+	const path: RunSnapshot[] = [];
+	const visited = new Set<string>();
+	let current: RunSnapshot | undefined = run;
+	let key = run.id;
+	while (current !== undefined && !visited.has(current.id)) {
+		visited.add(current.id);
+		path.push(current);
+		const knownCurrent = lineage.get(current.id);
+		if (knownCurrent !== undefined) {
+			key = knownCurrent;
+			break;
+		}
+		const predecessorId: string | undefined = current.resumedFromRunId;
+		if (predecessorId === undefined) {
+			key = current.id;
+			break;
+		}
+		const knownPredecessor = lineage.get(predecessorId);
+		if (knownPredecessor !== undefined) {
+			key = knownPredecessor;
+			break;
+		}
+		const predecessor: RunSnapshot | undefined = runs.find((candidate) => candidate.id === predecessorId);
+		if (predecessor === undefined) {
+			key = predecessorId;
+			break;
+		}
+		current = predecessor;
+	}
+
+	for (const item of path) lineage.set(item.id, key);
+	return key;
+}
+
+function isBridgeContinuation(run: RunSnapshot): boolean {
+	return run.resumedFromRunId !== undefined || run.resumeSource !== undefined || run.resumedAt !== undefined;
+}
+
+function isBridgeLiveMode(mode: BridgeContributionMode): boolean {
+	return mode === "working" || mode === "blocked";
+}
+
+function bridgeCurrentStateForGroup(
+	group: readonly RunSnapshot[],
+	previous: BridgeContribution | undefined,
+): BridgeCurrentState | undefined {
+	const predecessorIds = new Set(
+		group.flatMap((run) => (run.resumedFromRunId === undefined ? [] : [run.resumedFromRunId])),
+	);
+	const leaves = group.filter((run) => !predecessorIds.has(run.id));
+	const leafRuns = leaves.length === 0 ? group : leaves;
+	const states = leafRuns.map((run) => bridgeCurrentStateForRun(run, previous));
+
+	const blocked = latestBridgeState(states, "blocked");
+	if (blocked !== undefined) return blocked;
+	const working = latestBridgeState(states, "working");
+	if (working !== undefined) return working;
+	const terminal = states
+		.filter((state) => state.mode === "completed" || state.mode === "quit")
+		.reduce<BridgeCurrentState | undefined>(latestBridgeStateByStart, undefined);
+	if (terminal !== undefined) return terminal;
+	return undefined;
+}
+
+function latestBridgeState(
+	states: readonly BridgeCurrentState[],
+	mode: BridgeContributionMode,
+): BridgeCurrentState | undefined {
+	return states
+		.filter((state) => state.mode === mode)
+		.reduce<BridgeCurrentState | undefined>(latestBridgeStateByStart, undefined);
+}
+
+function latestBridgeStateByStart(
+	latest: BridgeCurrentState | undefined,
+	candidate: BridgeCurrentState,
+): BridgeCurrentState {
+	return latest === undefined || candidate.run.startedAt >= latest.run.startedAt ? candidate : latest;
+}
+
+function bridgeCurrentStateForRun(run: RunSnapshot, previous: BridgeContribution | undefined): BridgeCurrentState {
+	if (isQuitRun(run)) return { mode: "quit", details: makeQuitLifecycleNotice(run), run };
+
+	const terminalKind = terminalNoticeKind(run);
+	if (terminalKind === "completed") {
+		return { mode: "completed", details: makeTerminalNotice(run, terminalKind), run };
+	}
+	if (terminalKind === "failed" || terminalKind === "blocked") {
+		return { mode: "blocked", details: makeTerminalNotice(run, terminalKind), run };
+	}
+
+	const awaiting = currentAwaitingInput(run);
+	if (awaiting !== undefined) {
+		return { mode: "blocked", details: bridgeStateNotice(run, "awaiting_input", awaiting.stage), run };
+	}
+
+	const blockedStage = run.stages.find((stage) => stage.status === "blocked");
+	if (blockedStage !== undefined) {
+		return { mode: "blocked", details: bridgeStateNotice(run, "blocked", blockedStage), run };
+	}
+
+	const pausedStage = run.stages.find((stage) => stage.status === "paused");
+	if (pausedStage !== undefined) {
+		const occurrence = controlOccurrences(run).find(
+			(candidate) => candidate.kind === "paused" && candidate.stage?.id === pausedStage.id,
+		);
+		return {
+			mode: "blocked",
+			details:
+				occurrence === undefined
+					? bridgeStateNotice(run, "paused", pausedStage)
+					: makeControlNotice(run, occurrence),
+			run,
+		};
+	}
+
+	if (run.status === "paused") {
+		const occurrence = controlOccurrences(run).find((candidate) => candidate.kind === "paused");
+		return {
+			mode: "blocked",
+			details: occurrence === undefined ? bridgeStateNotice(run, "paused") : makeControlNotice(run, occurrence),
+			run,
+		};
+	}
+
+	if (run.status === "pending" || run.status === "running") {
+		const previousKind = previous?.details.kind;
+		const previousWasWorking = previousKind === "started" || previousKind === "resumed";
+		const resumed = isBridgeContinuation(run) || (previous !== undefined && !previousWasWorking);
+		const kind: "started" | "resumed" = resumed || previousKind === "resumed" ? "resumed" : "started";
+		const occurrence =
+			kind === "resumed" ? controlOccurrences(run).findLast((candidate) => candidate.kind === "resumed") : undefined;
+		return {
+			mode: "working",
+			details: occurrence === undefined ? bridgeStateNotice(run, kind) : makeControlNotice(run, occurrence),
+			run,
+		};
+	}
+
+	return { mode: "none", details: undefined, run };
+}
+
+function bridgeBlockedKind(kind: WorkflowLifecycleNoticeKind): boolean {
+	return kind === "awaiting_input" || kind === "blocked" || kind === "failed" || kind === "paused";
+}
+
+function makeBridgeCompletionNotice(previous: WorkflowLifecycleNoticeDetails): WorkflowLifecycleNoticeDetails {
+	return { ...previous, kind: "completed" };
+}
+
+function makeQuitLifecycleNotice(run: RunSnapshot): WorkflowLifecycleNoticeDetails {
+	const occurrence = controlOccurrences(run).find((candidate) => candidate.kind === "quit");
+	return occurrence === undefined ? bridgeStateNotice(run, "quit") : makeControlNotice(run, occurrence);
+}
+
+function bridgeSignature(details: WorkflowLifecycleNoticeDetails): string {
+	const label = bridgeBlockedKind(details.kind) ? lifecycleBridgeLabel(details) : "";
+	return `${details.kind}:${label}`;
+}
+
+function lifecycleBridgeLabel(details: WorkflowLifecycleNoticeDetails): string {
+	const stage = details.stageName ?? details.stageId;
+	const label = stage === undefined ? details.workflowName : `${details.workflowName}: ${stage}`;
+	return label.length <= LIFECYCLE_NOTICE_SNIPPET_LIMIT
+		? label
+		: `${label.slice(0, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
+}
+
+function bridgeStateNotice(
+	run: RunSnapshot,
+	kind: WorkflowLifecycleNoticeKind,
+	stage?: StageSnapshot,
+): WorkflowLifecycleNoticeDetails {
+	const createdAt =
+		stage === undefined
+			? kind === "paused"
+				? (run.pausedAt ?? run.startedAt)
+				: kind === "resumed"
+					? (run.resumedAt ?? run.startedAt)
+					: (run.pendingPrompt?.createdAt ?? run.startedAt)
+			: kind === "paused"
+				? (stage.pausedAt ?? stage.startedAt ?? run.startedAt)
+				: kind === "resumed"
+					? (stage.resumedAt ?? stage.startedAt ?? run.startedAt)
+					: (stage.awaitingInputSince ?? stage.startedAt ?? run.startedAt);
+	return {
+		kind,
+		scope: stage === undefined ? "run" : "stage",
+		runId: run.id,
+		workflowName: run.name,
+		status: stage === undefined ? run.status : stage.status,
+		...(stage === undefined ? {} : { stageId: stage.id, stageName: stage.name }),
+		createdAt,
+	};
+}
+
+function currentAwaitingInput(run: RunSnapshot): CurrentAwaitingInput | undefined {
+	if (run.pendingPrompt !== undefined) {
+		return { key: runAwaitingInputKey(run.id, run.pendingPrompt), stage: undefined };
+	}
+	const stage = run.stages.find(
+		(candidate) =>
+			candidate.status === "awaiting_input" ||
+			candidate.pendingPrompt !== undefined ||
+			candidate.inputRequest !== undefined,
+	);
+	if (stage === undefined) return undefined;
+	return { key: awaitingInputKey(run.id, stage), stage };
+}
+
+function isQuitRun(run: RunSnapshot): boolean {
+	return run.status === "paused" && (run.exitReason === "quit" || run.quitAt !== undefined);
 }
 
 /** The stage a run currently rests on, preferring an explicitly paused one. */

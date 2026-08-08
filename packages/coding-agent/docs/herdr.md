@@ -19,13 +19,19 @@ Three states, and nothing else:
 
 | State | When |
 | --- | --- |
-| `working` | An agent turn is running. |
-| `idle` | The turn has fully settled and Atomic is waiting for you to type. |
-| `blocked` | A dialog is open and waiting on you, or the turn ended in a provider error. |
+| `working` | An agent turn is running, or any top-level workflow run is still nonterminal. |
+| `idle` | The turn and all tracked top-level workflow runs have settled. |
+| `blocked` | A dialog is open and waiting on you, a workflow awaits input/pauses/blocks/fails, or the turn ended in a provider error. |
 
-Precedence runs top down: an open dialog wins over a recorded failure, a failure
-wins over an active turn, and idle is the fallback. A dialog opened during a
-turn therefore shows `blocked`, not `working`.
+Workflow runs are tracked independently, so concurrent runs keep the pane at
+`working` until the last one completes or quits. A workflow wait uses only a
+short workflow/stage label; run ids, prompt bodies, stage prompts, tool data,
+and model output never reach the Herdr socket.
+
+Precedence runs top down: an open user dialog wins over a workflow block, a
+workflow block wins over a recorded failure, a failure wins over an active turn
+or workflow run, and idle is the fallback. A dialog opened during a turn
+therefore shows `blocked`, not `working`.
 
 `idle` is decided at `agent_settled`, which Atomic emits only after retries,
 compaction retries, and queued continuations are finished. A pane does not
@@ -35,13 +41,14 @@ flicker to idle between a failed request and its retry.
 
 Each report carries the pane id, the fixed identity `herdr:atomic` / `atomic`,
 the state, a short label, a sequence number, and a reference to the Atomic
-session file.
+session file. A workflow report uses its workflow or stage name as the label;
+it never uses a run id or prompt body. Dialog and workflow labels are capped at
+120 characters.
 
-**Prompt text, tool arguments, model output, and provider error text never cross
-the socket.** There is exactly one source of free text — the title of the dialog
-waiting on you — and it is capped at 120 characters. A title within the cap is
-sent exactly as it was given, whitespace and all; a longer one is sent as its
-first 119 characters followed by an ellipsis. Nothing else is rewritten.
+**Prompt text, stage prompts, tool arguments, model output, and provider error text
+never cross the socket.** A dialog title or workflow label within the cap is sent
+exactly as given, whitespace and all; a longer value is sent as its first 119
+characters followed by an ellipsis. Nothing else is rewritten into the report.
 
 A turn that ended in a provider error reports the fixed string
 `Agent turn failed`, never the provider's own message. That message is whatever

@@ -21,6 +21,17 @@ export interface DesiredPaneState {
 	message: string | undefined;
 }
 
+/** The two nonterminal pane contributions a top-level workflow can make. */
+export type WorkflowRunContributionState = "working" | "blocked";
+
+/** One top-level workflow run's current contribution to the pane. */
+export interface WorkflowRunContribution {
+	readonly runKey: string;
+	readonly state: WorkflowRunContributionState;
+	/** Short label used when the contribution blocks the pane. */
+	readonly label?: string;
+}
+
 /** Everything the reducer needs. Pure data; no host objects. */
 export interface PaneStateInputs {
 	/** Label of the oldest open user block, or undefined when nothing is blocked. */
@@ -31,6 +42,8 @@ export interface PaneStateInputs {
 	readonly failureMessage: string | undefined;
 	/** Whether an agent turn is currently running. */
 	readonly agentActive: boolean;
+	/** Current top-level workflow contributions, if the workflow bridge is installed. */
+	readonly workflowContributions?: readonly WorkflowRunContribution[];
 }
 
 /** How this reporter refers to its Atomic session on the wire. */

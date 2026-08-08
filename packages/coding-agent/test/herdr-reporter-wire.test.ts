@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { createEventBus } from "../src/core/event-bus.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import {
+	clearWorkflowLifecycleBridgeEvents,
+	getWorkflowLifecycleBridgeLineages,
+	getWorkflowLifecycleBridgeSnapshot,
+	getWorkflowLifecycleBridgeTerminalLineages,
+	rememberWorkflowLifecycleBridgeEvent,
+	rememberWorkflowLifecycleBridgeLineage,
+	resetWorkflowLifecycleBridgeSnapshot,
+} from "../src/core/workflow-lifecycle-events.ts";
 import { TURN_FAILURE_MESSAGE } from "../src/extensions/herdr/index.ts";
 import { HerdrReporter, MAX_REPORT_MESSAGE_LENGTH } from "../src/extensions/herdr/reporter.ts";
 import {
@@ -32,11 +42,13 @@ describe("herdr reporter wire behavior", () => {
 	let sessionManager: SessionManager;
 
 	beforeEach(async () => {
+		resetWorkflowLifecycleBridgeSnapshot();
 		fixture = await startHerdrSocketFixture();
 		sessionManager = SessionManager.inMemory();
 	});
 
 	afterEach(async () => {
+		resetWorkflowLifecycleBridgeSnapshot();
 		await fixture.close();
 	});
 
@@ -264,6 +276,155 @@ describe("herdr reporter wire behavior", () => {
 
 		assert.deepEqual(states(fixture.requests).at(-1), afterFailure);
 		assert.deepEqual(afterFailure, { state: "blocked", message: "Agent turn failed" });
+	});
+
+	it("tracks concurrent workflow contributions and maps every lifecycle kind", async () => {
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, true);
+		await reporter.drain();
+
+		reporter.onWorkflowLifecycle({ runKey: "run-a", kind: "started", label: "build" });
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "working", message: undefined });
+
+		reporter.onWorkflowLifecycle({ runKey: "run-b", kind: "resumed", label: "test" });
+		await reporter.drain();
+		reporter.onAgentStart(sessionManager);
+		await reporter.drain();
+		reporter.onAgentEnd(sessionManager, undefined);
+		reporter.onAgentSettled(sessionManager, true);
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "working", message: undefined });
+
+		reporter.onWorkflowLifecycle({ runKey: "run-a", kind: "awaiting_input", label: "build" });
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: "build" });
+
+		reporter.onWorkflowLifecycle({ runKey: "run-b", kind: "failed", label: "test" });
+		await reporter.drain();
+		reporter.onWorkflowLifecycle({ runKey: "run-a", kind: "completed", label: "build" });
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: "test" });
+
+		reporter.onWorkflowLifecycle({ runKey: "run-b", kind: "paused", label: "test" });
+		await reporter.drain();
+		reporter.onWorkflowLifecycle({ runKey: "run-b", kind: "quit", label: "test" });
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "idle", message: undefined });
+	});
+
+	it("keeps working while one of two live workflow runs completes", async () => {
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, true);
+		await reporter.drain();
+
+		reporter.onWorkflowLifecycle({ runKey: "run-a", kind: "started", label: "build" });
+		reporter.onWorkflowLifecycle({ runKey: "run-b", kind: "started", label: "test" });
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests), [
+			{ state: "idle", message: undefined },
+			{ state: "working", message: undefined },
+		]);
+
+		reporter.onWorkflowLifecycle({ runKey: "run-a", kind: "completed", label: "build" });
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "working", message: undefined });
+
+		reporter.onWorkflowLifecycle({ runKey: "run-b", kind: "completed", label: "test" });
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "idle", message: undefined });
+	});
+
+	it("scopes neutral lifecycle snapshots to their event bus", () => {
+		const firstBus = createEventBus();
+		const secondBus = createEventBus();
+		rememberWorkflowLifecycleBridgeEvent({ runKey: "first-run", kind: "blocked", label: "First workflow" }, firstBus);
+		rememberWorkflowLifecycleBridgeLineage("physical-first", "first-run", firstBus);
+
+		assert.deepEqual(getWorkflowLifecycleBridgeSnapshot(firstBus), [
+			{ runKey: "first-run", kind: "blocked", label: "First workflow" },
+		]);
+		assert.deepEqual(getWorkflowLifecycleBridgeSnapshot(secondBus), []);
+		assert.deepEqual(getWorkflowLifecycleBridgeLineages(firstBus), [
+			{ runId: "physical-first", runKey: "first-run" },
+		]);
+		assert.deepEqual(getWorkflowLifecycleBridgeLineages(secondBus), []);
+
+		resetWorkflowLifecycleBridgeSnapshot(firstBus);
+		assert.deepEqual(getWorkflowLifecycleBridgeSnapshot(firstBus), []);
+		assert.deepEqual(getWorkflowLifecycleBridgeSnapshot(secondBus), []);
+		assert.deepEqual(getWorkflowLifecycleBridgeLineages(firstBus), []);
+		assert.deepEqual(getWorkflowLifecycleBridgeLineages(secondBus), []);
+	});
+
+	it("retains terminal continuation tombstones without seeding active work", () => {
+		const firstBus = createEventBus();
+		const secondBus = createEventBus();
+		rememberWorkflowLifecycleBridgeEvent({ runKey: "completed-run", kind: "started", label: "Deploy" }, firstBus);
+		rememberWorkflowLifecycleBridgeEvent({ runKey: "completed-run", kind: "completed", label: "Deploy" }, firstBus);
+
+		assert.deepEqual(getWorkflowLifecycleBridgeSnapshot(firstBus), []);
+		assert.deepEqual(getWorkflowLifecycleBridgeTerminalLineages(firstBus), ["completed-run"]);
+		assert.deepEqual(getWorkflowLifecycleBridgeTerminalLineages(secondBus), []);
+
+		resetWorkflowLifecycleBridgeSnapshot(firstBus);
+		assert.deepEqual(getWorkflowLifecycleBridgeTerminalLineages(firstBus), []);
+	});
+
+	it("clears active contributions without losing same-session terminal lineage", () => {
+		const bus = createEventBus();
+		rememberWorkflowLifecycleBridgeEvent({ runKey: "completed-run", kind: "completed", label: "Deploy" }, bus);
+		rememberWorkflowLifecycleBridgeLineage("source", "completed-run", bus);
+
+		clearWorkflowLifecycleBridgeEvents(bus);
+		assert.deepEqual(getWorkflowLifecycleBridgeSnapshot(bus), []);
+		assert.deepEqual(getWorkflowLifecycleBridgeTerminalLineages(bus), ["completed-run"]);
+		assert.deepEqual(getWorkflowLifecycleBridgeLineages(bus), [{ runId: "source", runKey: "completed-run" }]);
+
+		resetWorkflowLifecycleBridgeSnapshot(bus);
+		assert.deepEqual(getWorkflowLifecycleBridgeTerminalLineages(bus), []);
+		assert.deepEqual(getWorkflowLifecycleBridgeLineages(bus), []);
+	});
+
+	it("seeds a successor from the current workflow contribution snapshot", async () => {
+		const reporter = createReporter();
+		reporter.seedWorkflowContributions([
+			{ runKey: "active-run", state: "working" },
+			{ runKey: "waiting-run", state: "blocked", label: "Review workflow" },
+		]);
+
+		await reporter.onSessionStart(sessionManager, true);
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests), [{ state: "blocked", message: "Review workflow" }]);
+	});
+
+	it("seeds a replacement from the neutral lifecycle snapshot", async () => {
+		rememberWorkflowLifecycleBridgeEvent({ runKey: "waiting-run", kind: "awaiting_input", label: "Review workflow" });
+		const reporter = createReporter();
+		reporter.seedWorkflowLifecycleEvents(getWorkflowLifecycleBridgeSnapshot());
+
+		await reporter.onSessionStart(sessionManager, true);
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests), [{ state: "blocked", message: "Review workflow" }]);
+	});
+
+	it("keeps a user dialog above workflow blocks and never sends workflow keys", async () => {
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, true);
+		await reporter.drain();
+		reporter.onWorkflowLifecycle({ runKey: "secret-run-id", kind: "blocked", label: "deploy" });
+		await reporter.drain();
+
+		reporter.onBlockOpened(1, "Approve local edit?");
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: "Approve local edit?" });
+		const wire = JSON.stringify(fixture.requests);
+		assert.equal(wire.includes("secret-run-id"), false);
+		assert.equal(wire.includes("prompt body"), false);
+
+		reporter.onBlockReleased(0, undefined);
+		await reporter.drain();
+		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: "deploy" });
 	});
 
 	it("sends exactly one release when two quits race", async () => {

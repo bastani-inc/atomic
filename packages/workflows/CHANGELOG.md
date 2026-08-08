@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Neutral workflow lifecycle bridge events.** The extension now publishes short, top-level-only lifecycle events for `started`, `completed`, `failed`, `blocked`, `awaiting_input`, `paused`, `quit`, and `resumed` through the host's in-session event channel. The payload carries only an internal run key, the lifecycle kind, and a workflow/stage label, so consumers can track background runs without receiving prompt bodies or failure text; events remain available even when chat lifecycle notices are disabled ([#2210](https://github.com/bastani-inc/atomic/issues/2210)).
+
 ### Changed
 
 - `open-claude-design` review rounds now use a schema-backed two-outcome record: `decision` is `approve` or `revise`, with one entry per user note, one entry per accepted live change, and an optional annotated screenshot path. Every round is written to `<artifact_dir>/feedback/iteration-N.json` with the schema fields plus `meta.iteration`, `meta.stage_name`, and `meta.captured_at`; the readable `iteration-N.md` copy and annotated-snapshot copies remain available ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).

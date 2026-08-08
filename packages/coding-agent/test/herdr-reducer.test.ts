@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { desiredPaneState } from "../src/extensions/herdr/reducer.ts";
-import type { DesiredPaneState, PaneStateInputs } from "../src/extensions/herdr/types.ts";
+import type { DesiredPaneState, PaneStateInputs, WorkflowRunContribution } from "../src/extensions/herdr/types.ts";
 
 /**
  * The reducer is the whole of the reporter's decision making, so it is checked
@@ -42,6 +42,56 @@ describe("herdr desiredPaneState", () => {
 		}
 	});
 
+	it("applies workflow blocked > failure > active and keeps any run working", () => {
+		const workflowRows: WorkflowRunContribution[][] = [
+			[],
+			[{ runKey: "run-working", state: "working" }],
+			[{ runKey: "run-blocked", state: "blocked", label: "Approve workflow" }],
+			[
+				{ runKey: "run-working", state: "working" },
+				{ runKey: "run-blocked", state: "blocked", label: "Approve workflow" },
+			],
+		];
+		for (const blocks of blockLabels) {
+			for (const workflowContributions of workflowRows) {
+				for (const failureMessage of failures) {
+					for (const agentActive of actives) {
+						const result = desiredPaneState({
+							...blocks,
+							workflowContributions,
+							failureMessage,
+							agentActive,
+						});
+						const expected: DesiredPaneState =
+							blocks.openBlockCount > 0
+								? { state: "blocked", message: blocks.activeBlockLabel }
+								: workflowContributions.some((contribution) => contribution.state === "blocked")
+									? { state: "blocked", message: "Approve workflow" }
+									: failureMessage !== undefined
+										? { state: "blocked", message: failureMessage }
+										: workflowContributions.some((contribution) => contribution.state === "working") ||
+												agentActive
+											? { state: "working", message: undefined }
+											: { state: "idle", message: undefined };
+						assert.deepEqual(result, expected);
+					}
+				}
+			}
+		}
+	});
+
+	it("keeps an unlabeled blocked workflow contribution above failure and active state", () => {
+		assert.deepEqual(
+			desiredPaneState({
+				openBlockCount: 0,
+				activeBlockLabel: undefined,
+				failureMessage: "turn failed",
+				agentActive: true,
+				workflowContributions: [{ runKey: "blocked", state: "blocked" }],
+			}),
+			{ state: "blocked", message: undefined },
+		);
+	});
 	it("reports only working, idle, or blocked", () => {
 		for (const blocks of blockLabels) {
 			for (const failureMessage of failures) {

@@ -1,3 +1,4 @@
+import { resetWorkflowLifecycleBridgeSnapshot } from "@bastani/atomic";
 import { flushDbos, shutdownDbos } from "../durable/dbos-lifecycle.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { quitAllRuns } from "../runs/background/quit.js";
@@ -85,6 +86,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		if (pi.events !== undefined) resetWorkflowLifecycleBridgeSnapshot(pi.events);
 		runtimeState.resetWorkflowDiscoveryForSession();
 		deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
 		await runtimeState.ensureWorkflowConfigLoaded();
