@@ -6,9 +6,9 @@ import { getAgentDir, getEnvValue } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { type WorkflowRunResumeCandidate, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
-import { ENV_WORKFLOW_ARTIFACT_DIR, WORKFLOW_ARTIFACT_RETENTION_MS } from "./workflow-artifact-env.js";
 import { store } from "./store.js";
 import type { RunSnapshot } from "./store-types.js";
+import { ENV_WORKFLOW_ARTIFACT_DIR, WORKFLOW_ARTIFACT_RETENTION_MS } from "./workflow-artifact-env.js";
 
 export { ENV_WORKFLOW_ARTIFACT_DIR, WORKFLOW_ARTIFACT_RETENTION_MS };
 

@@ -1,6 +1,6 @@
+import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
-import assert from "node:assert/strict";
 import { test } from "vitest";
 import { repositoryRoot } from "../../vitest.base.js";
 
