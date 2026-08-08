@@ -53,6 +53,23 @@ export interface WorkflowLifecycleRegistrationDeps {
 	intercomControlRef: { current: (() => void) | null };
 }
 
+/**
+ * Whether a session boundary stops this session's workflows.
+ *
+ * `new` and `resume` ask first: `session_before_switch` tells the user in so
+ * many words that switching stops the in-flight workflows and clears workflow
+ * history, and only proceeds when they agree. Stopping them there is the
+ * answer they gave. `startup` has no predecessor to stop.
+ *
+ * `reload` and `fork` never ask, and the process keeps running those workflows
+ * either way. Killing them there destroyed work nobody asked to stop, and left
+ * the replacement session reporting an idle pane in the middle of a live run
+ * (W8). A reason this code does not recognise keeps the old behavior.
+ */
+function replacementStopsWorkflows(reason: string | undefined): boolean {
+	return reason !== "reload" && reason !== "fork";
+}
+
 export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: WorkflowLifecycleRegistrationDeps): void {
 	if (typeof pi.on !== "function") return;
 	installDbosProcessShutdown();
@@ -84,7 +101,11 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		return { cancel: true };
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		const reason =
+			typeof event === "object" && event !== null && "reason" in event
+				? (event as { readonly reason?: string }).reason
+				: undefined;
 		// The neutral bridge snapshot is deliberately not reset here. The bridge
 		// installed at the end of this handler reconciles what the replaced
 		// session published against the store it can actually observe, which both
@@ -92,8 +113,10 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		runtimeState.resetWorkflowDiscoveryForSession();
 		deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
 		await runtimeState.ensureWorkflowConfigLoaded();
-		killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
-		store.clear();
+		if (replacementStopsWorkflows(reason)) {
+			killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
+			store.clear();
+		}
 		clearForms();
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
 		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
