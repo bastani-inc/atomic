@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import { createEventBus, type EventBusController } from "../../packages/coding-agent/src/core/event-bus.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
@@ -20,10 +20,15 @@ import {
 } from "../../packages/coding-agent/src/core/workflow-lifecycle-events.js";
 import { HerdrReporter } from "../../packages/coding-agent/src/extensions/herdr/reporter.js";
 import type { HerdrRequest } from "../../packages/coding-agent/src/extensions/herdr/types.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { registerWorkflowLifecycleHandlers } from "../../packages/workflows/src/extension/extension-lifecycle.js";
 import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
+import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
+import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 const PANE_ID = "pane-w8";
 
@@ -133,10 +138,103 @@ function snapshotOf(bus: EventBusController): readonly WorkflowLifecycleBridgeEv
 	return getWorkflowLifecycleBridgeSnapshot(bus);
 }
 
+const REAL_EXECUTOR_REPLACEMENT_TIMEOUT_MS = 60_000;
+
+async function waitForAwaitingInputStage(runId: string): Promise<StageSnapshot> {
+	const deadline = Date.now() + 5_000;
+	while (Date.now() < deadline) {
+		const run = store.runs().find((candidate) => candidate.id === runId);
+		const stage = run?.stages.find((candidate) => candidate.status === "awaiting_input");
+		if (stage !== undefined) return stage;
+		await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error(`run ${runId} did not reach an awaiting-input stage`);
+}
+
+function realAwaitingInputWorkflow() {
+	return workflow({
+		name: "replacement-awaiting-input",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.ui.confirm("Approve this workflow?");
+			return {};
+		},
+	});
+}
+
 describe("workflow lifecycle bridge across session replacement", () => {
 	beforeEach(() => {
 		store.clear();
+		stageControlRegistry.clear();
+		setDurableBackend(createInMemoryTestBackend());
 	});
+
+	afterEach(() => {
+		stageControlRegistry.clear();
+		store.clear();
+		setDurableBackend(undefined);
+	});
+
+	for (const reason of ALL_REASONS) {
+		test(
+			`a real executor stage survives ${reason} predecessor shutdown and successor start`,
+			async () => {
+				const bus = freshBus();
+				const predecessor = createWorkflowSession(bus);
+				await predecessor.sessionStart("startup");
+				const runId = `real-${reason}-run`;
+				const controller = new AbortController();
+				const execution = run(
+					realAwaitingInputWorkflow(),
+					{},
+					{
+						runId,
+						store,
+						signal: controller.signal,
+						stageControlRegistry,
+						usePromptNodesForUi: true,
+					},
+				);
+				try {
+					const stageBeforeShutdown = await waitForAwaitingInputStage(runId);
+					const handle = stageControlRegistry.get(runId, stageBeforeShutdown.id);
+					assert.ok(handle, "the real executor must register its live stage handle");
+					assert.equal(handle.status, "awaiting_input");
+					assert.equal(stageControlRegistry.run(runId).stages().length, 1);
+
+					await predecessor.sessionShutdown(reason);
+					const stageAfterShutdown = store
+						.runs()
+						.find((candidate) => candidate.id === runId)
+						?.stages.find((candidate) => candidate.id === stageBeforeShutdown.id);
+					assert.equal(stageAfterShutdown?.status, "awaiting_input");
+					assert.equal(stageControlRegistry.get(runId, stageBeforeShutdown.id), handle);
+
+					const successor = createWorkflowSession(bus);
+					await successor.sessionStart(reason);
+					const stageAfterStart = store
+						.runs()
+						.find((candidate) => candidate.id === runId)
+						?.stages.find((candidate) => candidate.id === stageBeforeShutdown.id);
+					assert.equal(stageAfterStart?.status, "awaiting_input");
+					assert.equal(handle.status, "awaiting_input");
+
+					const replacement = activateReporter(bus);
+					await replacement.reporter.drain();
+					assert.deepEqual(replacement.states().at(-1), {
+						state: "blocked",
+						message: "replacement-awaiting-input: confirm",
+					});
+				} finally {
+					controller.abort(new Error("replacement test cleanup"));
+					await execution;
+				}
+			},
+			REAL_EXECUTOR_REPLACEMENT_TIMEOUT_MS,
+		);
+	}
 
 	for (const reason of ALL_REASONS) {
 		test(`a live run keeps its contribution through a ${reason} shutdown`, async () => {

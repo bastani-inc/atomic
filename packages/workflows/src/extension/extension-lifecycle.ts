@@ -120,7 +120,8 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		clearForms();
 		resetWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState);
 		resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
-		stageControlRegistry.clear();
+		if (!replacementStopsWorkflows(reason)) stageControlRegistry.clearDetached();
+		else stageControlRegistry.clear();
 		// Named workflows publish lifecycle notices through the normal notification path.
 		runtimeState.setNotificationsActive(true);
 		runtimeState.startWorkflowDiscoveryWarmup(() => {
@@ -168,9 +169,11 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			} finally {
 				stageControlRegistry.clear();
 			}
+		} else if (!replacementStopsWorkflows(reason)) {
+			// Preserve live executor stages for the successor while invalidating
+			// detached post-mortem handles that cannot cross the host boundary.
+			stageControlRegistry.clearDetached();
 		} else {
-			// Every non-quit host-session boundary invalidates detached lazy handles
-			// synchronously, before they can attach to the replacement session.
 			stageControlRegistry.clear();
 		}
 		deps.storeWidgetRef.current?.();
