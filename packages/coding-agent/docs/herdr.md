@@ -24,9 +24,16 @@ Three states, and nothing else:
 | `blocked` | A dialog is open and waiting on you, a workflow awaits input/pauses/blocks/fails, or the turn ended in a provider error. |
 
 Workflow runs are tracked independently, so concurrent runs keep the pane at
-`working` until the last one completes or quits. A workflow wait uses only a
-short workflow/stage label; run ids, prompt bodies, stage prompts, tool data,
-and model output never reach the Herdr socket.
+`working` until the last one ends. A run that is killed, cancelled, or skipped
+ends the same way a completed one does — its contribution is dropped, and the
+pane is never told it completed. A workflow wait uses only a short
+workflow/stage label; run ids, prompt bodies, stage prompts, tool data, and
+model output never reach the Herdr socket.
+
+Across `/reload`, `/new`, `/resume`, and `/fork` the replacement session
+reconstructs what it reports from the workflow store it can observe. A run that
+is still live keeps the pane's state, and one the new session cannot see has its
+contribution dropped rather than left behind.
 
 Precedence runs top down: an open user dialog wins over a workflow block, a
 workflow block wins over a recorded failure, a failure wins over an active turn

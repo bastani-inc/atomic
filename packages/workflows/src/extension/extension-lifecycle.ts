@@ -1,4 +1,3 @@
-import { resetWorkflowLifecycleBridgeSnapshot } from "@bastani/atomic";
 import { flushDbos, shutdownDbos } from "../durable/dbos-lifecycle.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { quitAllRuns } from "../runs/background/quit.js";
@@ -86,7 +85,10 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (pi.events !== undefined) resetWorkflowLifecycleBridgeSnapshot(pi.events);
+		// The neutral bridge snapshot is deliberately not reset here. The bridge
+		// installed at the end of this handler reconciles what the replaced
+		// session published against the store it can actually observe, which both
+		// preserves a live run's contribution and drops a dead one.
 		runtimeState.resetWorkflowDiscoveryForSession();
 		deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
 		await runtimeState.ensureWorkflowConfigLoaded();

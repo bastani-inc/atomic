@@ -1,6 +1,6 @@
 import {
-	clearWorkflowLifecycleBridgeEvents,
 	getWorkflowLifecycleBridgeLineages,
+	getWorkflowLifecycleBridgeSnapshot,
 	getWorkflowLifecycleBridgeTerminalLineages,
 	rememberWorkflowLifecycleBridgeEvent,
 	rememberWorkflowLifecycleBridgeLineage,
@@ -195,6 +195,10 @@ export function createWorkflowExtensionRuntimeState(
 			rememberBridgeLineage: rememberWorkflowLifecycleLineage,
 			bridgeLineages: getWorkflowLifecycleBridgeLineages(pi.events),
 			bridgeTerminalLineages: getWorkflowLifecycleBridgeTerminalLineages(pi.events),
+			// Reconciled against the store on the first pass: a live run keeps the
+			// contribution the replaced bridge published, and one this session can
+			// no longer observe is dropped rather than left as a phantom.
+			bridgeContributions: getWorkflowLifecycleBridgeSnapshot(pi.events),
 		});
 	};
 	const reinstallHilAnswerNotifications = (): void => {
@@ -603,7 +607,10 @@ export function createWorkflowExtensionRuntimeState(
 			notificationGeneration += 1;
 			notificationsActive = active;
 			reinstallLifecycleNotifications();
-			if (!active && pi.events !== undefined) clearWorkflowLifecycleBridgeEvents(pi.events);
+			// Active contributions are deliberately retained here. A non-quit
+			// shutdown is followed by a successor that reconciles them against the
+			// store; clearing them would strand a live run's pane state in the
+			// window before that successor installs.
 			reinstallHilAnswerNotifications();
 			// A fresh host session restarts the cadence from each run's persisted
 			// start time; prior-session schedule and pending state cannot apply.
