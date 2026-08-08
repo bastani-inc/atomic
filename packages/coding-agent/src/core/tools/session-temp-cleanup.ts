@@ -526,16 +526,44 @@ export function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): 
 }
 
 let cleanupScheduled = false;
+let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
 const scheduledSessionsRoots = new Set<string>();
 const scheduledSessionDirs = new Set<string>();
 
+/** Arm one deferred sweep for the roots currently pending. */
+function armSessionTempCleanup(options: SessionTempCleanupOptions): void {
+	cleanupScheduled = true;
+	cleanupTimer = setTimeout(() => {
+		// Drain before the sweep. A session discovered while cleanup is running adds
+		// to the now-empty sets and is rearmed in `finally`, rather than being lost
+		// or starting a second callback alongside this one.
+		const sessionsRoots = [...scheduledSessionsRoots];
+		const sessionDirs = [...scheduledSessionDirs];
+		scheduledSessionsRoots.clear();
+		scheduledSessionDirs.clear();
+		try {
+			runSessionTempCleanup({
+				...options,
+				sessionsRoots: sessionsRoots.length > 0 ? sessionsRoots : options.sessionsRoots,
+				sessionDirs,
+			});
+		} finally {
+			cleanupTimer = undefined;
+			cleanupScheduled = false;
+			if (scheduledSessionsRoots.size > 0 || scheduledSessionDirs.size > 0) {
+				armSessionTempCleanup(options);
+			}
+		}
+	}, SESSION_TEMP_CLEANUP_DELAY_MS);
+	cleanupTimer.unref?.();
+}
+
 /**
- * Schedule the sweep once per process, deferred off startup on an unref'd timer
- * so a short-lived run exits without waiting for it.
+ * Schedule one deferred sweep for the current pending batch.
  *
- * Later calls cannot re-arm the timer, so their targets are merged into the
- * pending run instead of being dropped: in-process child sessions may use
- * different session directories than the session that scheduled first.
+ * Calls made before or during a sweep merge their targets into sets. The active
+ * callback drains one snapshot, remains marked active while it runs, then rearms
+ * one new unref'd timer only when later roots arrived.
  */
 export function scheduleSessionTempCleanup(options: SessionTempCleanupOptions = {}): void {
 	for (const root of options.sessionsRoots ?? []) {
@@ -547,19 +575,15 @@ export function scheduleSessionTempCleanup(options: SessionTempCleanupOptions = 
 	if (cleanupScheduled) {
 		return;
 	}
-	cleanupScheduled = true;
-	const handle = setTimeout(() => {
-		runSessionTempCleanup({
-			...options,
-			sessionsRoots: scheduledSessionsRoots.size > 0 ? [...scheduledSessionsRoots] : options.sessionsRoots,
-			sessionDirs: [...scheduledSessionDirs],
-		});
-	}, SESSION_TEMP_CLEANUP_DELAY_MS);
-	handle.unref?.();
+	armSessionTempCleanup(options);
 }
 
-/** Test seam: allow a second schedule in the same process. */
+/** Test seam: cancel pending work and forget scheduler state. */
 export function resetSessionTempCleanupScheduleForTesting(): void {
+	if (cleanupTimer !== undefined) {
+		clearTimeout(cleanupTimer);
+	}
+	cleanupTimer = undefined;
 	cleanupScheduled = false;
 	scheduledSessionsRoots.clear();
 	scheduledSessionDirs.clear();

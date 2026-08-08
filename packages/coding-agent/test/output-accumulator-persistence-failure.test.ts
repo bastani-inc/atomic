@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { beforeEach, describe, it, vi } from "vitest";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import type { BashOperations } from "../src/core/tools/bash.ts";
 import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { OutputAccumulator } from "../src/core/tools/output-accumulator.ts";
+import { resetSessionTempDirStateForTesting } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES } from "../src/core/tools/truncate.ts";
 
+let sandbox: string;
 const persistedFileMock = vi.hoisted(() => ({
 	mode: "construct" as "construct" | "write",
 	constructorCalls: 0,
@@ -36,10 +40,17 @@ vi.mock("../src/core/tools/persisted-output-file.ts", () => ({
 }));
 
 beforeEach(() => {
+	sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-accumulator-failure-")));
+	resetSessionTempDirStateForTesting();
 	persistedFileMock.mode = "construct";
 	persistedFileMock.constructorCalls = 0;
 	persistedFileMock.writeCalls = 0;
 	persistedFileMock.endCalls = 0;
+});
+
+afterEach(() => {
+	resetSessionTempDirStateForTesting();
+	rmSync(sandbox, { recursive: true, force: true });
 });
 
 function outputAfterRefusal(): BashOperations {
@@ -58,7 +69,10 @@ function outputAfterRefusal(): BashOperations {
 
 describe("OutputAccumulator spill-file open failure", () => {
 	it("returns truncated bash output without advertising or retrying the failed path", async () => {
-		const definition = createBashToolDefinition(process.cwd(), { operations: outputAfterRefusal() });
+		const definition = createBashToolDefinition(process.cwd(), {
+			operations: outputAfterRefusal(),
+			sessionTempDir: () => sandbox,
+		});
 
 		const result = await definition.execute("call-emfile", { command: "produce output" });
 		const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("");
@@ -73,7 +87,7 @@ describe("OutputAccumulator spill-file open failure", () => {
 
 	it("does not publish a writer that fails while replaying buffered output", () => {
 		persistedFileMock.mode = "write";
-		const accumulator = new OutputAccumulator({ maxBytes: 1024, maxLines: 1000, tempDir: tmpdir() });
+		const accumulator = new OutputAccumulator({ maxBytes: 1024, maxLines: 1000, tempDir: sandbox });
 
 		accumulator.append(Buffer.alloc(512, 0x61));
 		accumulator.append(Buffer.alloc(1024, 0x62));

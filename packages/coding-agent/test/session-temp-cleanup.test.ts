@@ -7,19 +7,21 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it } from "vitest";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
 import {
 	CLEANUP_CONTROL_SUBDIR,
 	CLEANUP_LOCK_FILE,
 	CLEANUP_MARKER_FILE,
 	getCleanupControlDir,
+	resetSessionTempCleanupScheduleForTesting,
 	runSessionTempCleanup,
 	SESSION_TEMP_CLEANUP_DELAY_MS,
 	SESSION_TEMP_CLEANUP_INTERVAL_MS,
 	SESSION_TEMP_CLEANUP_LOCK_STALE_MS,
 	SESSION_TEMP_RETENTION_DAYS,
 	SESSION_TEMP_RETENTION_MS,
+	scheduleSessionTempCleanup,
 	sweepSessionDirToolResults,
 	sweepSessionTempRoot,
 	sweepToolResultsRoot,
@@ -456,5 +458,78 @@ describe("runSessionTempCleanup", () => {
 		});
 
 		assert.equal(existsSync(toolResults), false, "released storage becomes reapable");
+	});
+});
+
+describe("scheduleSessionTempCleanup", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		resetSessionTempCleanupScheduleForTesting();
+	});
+
+	afterEach(() => {
+		resetSessionTempCleanupScheduleForTesting();
+		vi.useRealTimers();
+	});
+
+	function makeStaleCustomSession(name: string): { dir: string; toolResults: string } {
+		const dir = join(sandbox, name);
+		const toolResults = join(dir, TOOL_RESULTS_SUBDIR);
+		mkdirSync(toolResults, { recursive: true });
+		const result = join(toolResults, "call-1.txt");
+		writeFileSync(result, "persisted");
+		stampAge(result, 60);
+		stampAge(toolResults, 60);
+		return { dir, toolResults };
+	}
+
+	function scheduleCustomDirs(...dirs: string[]): void {
+		scheduleSessionTempCleanup({
+			now: NOW,
+			tempRoot: join(sandbox, "temp-root"),
+			sessionsRoots: [],
+			sessionDirs: dirs,
+			controlRoot,
+		});
+	}
+
+	it("rearms cleanup for a custom root discovered after the first sweep", async () => {
+		const first = makeStaleCustomSession("first-late-root");
+		scheduleCustomDirs(first.dir);
+		assert.equal(vi.getTimerCount(), 1);
+
+		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		assert.equal(existsSync(first.toolResults), false);
+
+		const second = makeStaleCustomSession("second-late-root");
+		scheduleCustomDirs(second.dir);
+		assert.equal(vi.getTimerCount(), 1, "a later root gets a new deferred sweep");
+
+		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		assert.equal(existsSync(second.toolResults), false);
+	});
+
+	it("batches every root discovered before the callback onto one timer", async () => {
+		const first = makeStaleCustomSession("first-batched-root");
+		const second = makeStaleCustomSession("second-batched-root");
+
+		scheduleCustomDirs(first.dir);
+		scheduleCustomDirs(second.dir);
+		assert.equal(vi.getTimerCount(), 1);
+
+		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		assert.equal(existsSync(first.toolResults), false);
+		assert.equal(existsSync(second.toolResults), false);
+	});
+
+	it("cancels its outstanding timer when test state is reset", async () => {
+		const pending = makeStaleCustomSession("cancelled-root");
+		scheduleCustomDirs(pending.dir);
+		assert.equal(vi.getTimerCount(), 1);
+
+		resetSessionTempCleanupScheduleForTesting();
+		assert.equal(vi.getTimerCount(), 0);
+		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		assert.equal(existsSync(pending.toolResults), true);
 	});
 });

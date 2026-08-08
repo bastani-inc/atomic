@@ -42,57 +42,79 @@ function openFileWithEnforcedMode(path: string): number {
 	return fd;
 }
 
-/** Trim a buffer to at most `maxBytes` without splitting a UTF-8 sequence. */
-export function truncateBufferAtUtf8Boundary(buffer: Buffer, maxBytes: number): Buffer {
-	if (buffer.length <= maxBytes) {
-		return buffer;
-	}
-	let end = maxBytes;
-	// Walk back over continuation bytes (10xxxxxx) to the start of the character
-	// that would otherwise be cut in half.
-	while (end > 0 && (buffer[end]! & 0xc0) === 0x80) {
-		end--;
-	}
-	return buffer.subarray(0, end);
+/** Whether `byte` is a UTF-8 continuation byte (`10xxxxxx`). */
+function isUtf8Continuation(byte: number): boolean {
+	return byte >= 0x80 && byte <= 0xbf;
 }
 
-/** Expected total byte length of a UTF-8 sequence starting with `byte`; 0 for ASCII or an invalid lead. */
+/** Expected sequence length for a valid UTF-8 lead; zero for ASCII or an invalid lead. */
 function utf8SequenceLength(byte: number): number {
-	if ((byte & 0x80) === 0) return 0;
-	if ((byte & 0xe0) === 0xc0) return 2;
-	if ((byte & 0xf0) === 0xe0) return 3;
-	if ((byte & 0xf8) === 0xf0) return 4;
+	if (byte >= 0xc2 && byte <= 0xdf) return 2;
+	if (byte >= 0xe0 && byte <= 0xef) return 3;
+	if (byte >= 0xf0 && byte <= 0xf4) return 4;
 	return 0;
 }
 
 /**
- * Length of the longest prefix of `buffer` that does not end mid-character.
+ * Validate a continuation byte, including UTF-8's strict second-byte ranges.
  *
- * Only a trailing *incomplete but still valid* UTF-8 sequence is held back — a
- * lead byte plus up to two continuation bytes, so at most three bytes. Bytes
- * that cannot begin a sequence are treated as raw binary and reported as
- * complete, because this writer also carries non-text command output and must
- * not rewrite it. Nothing is decoded, so invalid bytes are never replaced.
+ * Those ranges reject overlong encodings (`E0`, `F0`), UTF-16 surrogates
+ * (`ED`), and code points above U+10FFFF (`F4`).
+ */
+function isValidUtf8SequenceByte(buffer: Buffer, leadIndex: number, index: number): boolean {
+	const byte = buffer[index]!;
+	if (!isUtf8Continuation(byte)) return false;
+	if (index !== leadIndex + 1) return true;
+
+	const lead = buffer[leadIndex]!;
+	if (lead === 0xe0) return byte >= 0xa0;
+	if (lead === 0xed) return byte <= 0x9f;
+	if (lead === 0xf0) return byte >= 0x90;
+	if (lead === 0xf4) return byte <= 0x8f;
+	return true;
+}
+
+/**
+ * Return `end` unless its prefix ends inside a valid UTF-8 sequence.
+ *
+ * At most three bytes before the cut can belong to an incomplete sequence. A
+ * run of raw continuation bytes, an invalid lead (`C0`, `C1`, `F5`-`F7`), or a
+ * sequence with an invalid continuation is binary data and stays untouched.
+ */
+function utf8SafePrefixLength(buffer: Buffer, end: number): number {
+	const cut = Math.max(0, Math.min(end, buffer.length));
+	if (cut === 0) return 0;
+
+	let leadIndex = cut - 1;
+	let continuationCount = 0;
+	while (leadIndex >= 0 && continuationCount < 3 && isUtf8Continuation(buffer[leadIndex]!)) {
+		leadIndex--;
+		continuationCount++;
+	}
+	if (leadIndex < 0) return cut;
+
+	const sequenceLength = utf8SequenceLength(buffer[leadIndex]!);
+	if (sequenceLength === 0 || cut - leadIndex >= sequenceLength) return cut;
+
+	const availableEnd = Math.min(buffer.length, leadIndex + sequenceLength);
+	for (let index = leadIndex + 1; index < availableEnd; index++) {
+		if (!isValidUtf8SequenceByte(buffer, leadIndex, index)) return cut;
+	}
+	return leadIndex;
+}
+
+/** Trim a buffer to at most `maxBytes` without splitting a valid UTF-8 sequence. */
+export function truncateBufferAtUtf8Boundary(buffer: Buffer, maxBytes: number): Buffer {
+	if (buffer.length <= maxBytes) return buffer;
+	return buffer.subarray(0, utf8SafePrefixLength(buffer, maxBytes));
+}
+
+/**
+ * Length of the longest prefix of `buffer` that does not end mid-character.
+ * Invalid UTF-8 remains complete raw binary; only a valid partial tail waits.
  */
 export function completeUtf8PrefixLength(buffer: Buffer): number {
-	const length = buffer.length;
-	for (let back = 1; back <= 3 && back <= length; back++) {
-		const index = length - back;
-		const byte = buffer[index]!;
-		if ((byte & 0xc0) === 0x80) {
-			// A continuation byte: its lead byte is further back.
-			continue;
-		}
-		const needed = utf8SequenceLength(byte);
-		if (needed === 0) {
-			// ASCII, or a byte that cannot start a sequence: nothing is pending.
-			return length;
-		}
-		return back >= needed ? length : index;
-	}
-	// Three continuation bytes with no lead in range: not a valid sequence tail,
-	// so there is nothing to wait for.
-	return length;
+	return utf8SafePrefixLength(buffer, buffer.length);
 }
 
 /**

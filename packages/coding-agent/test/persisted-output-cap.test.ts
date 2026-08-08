@@ -146,6 +146,46 @@ describe("persisted-output cap", () => {
 		);
 	});
 
+	it("preserves raw continuation bytes before the truncation marker", async () => {
+		const cap = markerBytes + 4;
+		const file = new PersistedOutputFile(join(sandbox, "binary-continuations-at-cap.log"), { maxBytes: cap });
+
+		file.write(Buffer.alloc(cap + 1, 0x80));
+		await file.close();
+
+		const contents = readFileSync(file.path);
+		assert.equal(contents.length, cap);
+		assert.deepEqual(contents.subarray(0, 4), Buffer.alloc(4, 0x80));
+		assert.equal(contents.subarray(4).toString("utf8"), PERSISTED_OUTPUT_TRUNCATION_MARKER);
+	});
+
+	it("does not treat an invalid UTF-8 lead as a character boundary", async () => {
+		const cap = markerBytes + 4;
+		const prefix = Buffer.from([0x61, 0x62, 0xc0, 0x80]);
+		const file = new PersistedOutputFile(join(sandbox, "invalid-lead-at-cap.log"), { maxBytes: cap });
+
+		file.write(Buffer.concat([prefix, Buffer.alloc(markerBytes + 1, 0x80)]));
+		await file.close();
+
+		const contents = readFileSync(file.path);
+		assert.equal(contents.length, cap);
+		assert.deepEqual(contents.subarray(0, 4), prefix);
+		assert.equal(contents.subarray(4).toString("utf8"), PERSISTED_OUTPUT_TRUNCATION_MARKER);
+	});
+
+	it("preserves strict UTF-8 range violations as raw binary", () => {
+		const malformedPrefixes = [
+			Buffer.from([0xe0, 0x80, 0x80]), // overlong three-byte sequence
+			Buffer.from([0xed, 0xa0, 0x80]), // UTF-16 surrogate
+			Buffer.from([0xf0, 0x80, 0x80, 0x80]), // overlong four-byte sequence
+			Buffer.from([0xf4, 0x90, 0x80, 0x80]), // above U+10FFFF
+		];
+
+		for (const bytes of malformedPrefixes) {
+			assert.deepEqual(truncateBufferAtUtf8Boundary(bytes, 1), bytes.subarray(0, 1));
+		}
+	});
+
 	it("reassembles an exact-cap payload split mid-character across chunks", async () => {
 		const emoji = Buffer.from("🙂", "utf8");
 		const cap = markerBytes + 64;
