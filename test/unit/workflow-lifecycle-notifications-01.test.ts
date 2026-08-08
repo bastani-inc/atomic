@@ -18,9 +18,11 @@ import {
 	LIFECYCLE_NOTICE_SNIPPET_LIMIT,
 	resetWorkflowLifecycleNotificationState,
 	seedWorkflowLifecycleNotificationState,
+	WORKFLOW_LIFECYCLE_NOTICE_KINDS,
 	type WorkflowLifecycleNoticeDetails,
 	withWorkflowLifecycleNotificationsSuppressed,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+import { killRun } from "../../packages/workflows/src/runs/background/status.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -1001,6 +1003,66 @@ describe("neutral workflow lifecycle bridge", () => {
 		}
 	});
 
+	test("a stale stage never outranks the terminal status of a stopped run", () => {
+		for (const runStatus of ["killed", "cancelled", "skipped"] as const) {
+			for (const staleStage of ["awaiting_input", "blocked", "paused"] as const) {
+				const scenario = `${runStatus} run with a stale ${staleStage} stage`;
+				const store = createStore();
+				const events: Array<{ runKey: string; kind: string; label: string }> = [];
+				installWorkflowLifecycleNotifications({
+					store,
+					config: { enabled: false, notifyOn: [] },
+					publishLifecycleEvent(event) {
+						events.push(event);
+					},
+				});
+
+				startRun(store, "stale", "deploy");
+				store.recordStageStart("stale", runningStage({ id: "approval", name: "approval" }));
+				if (staleStage === "awaiting_input") store.recordStageAwaitingInput("stale", "approval", true, 2);
+				else if (staleStage === "blocked") store.recordStageBlocked("stale", "approval", "gate");
+				else store.recordStagePaused("stale", "approval", 2);
+				assert.equal(events.at(0)?.kind, "started", scenario);
+
+				// `recordRunEnd` moves the run to its terminal status and leaves every
+				// stage status exactly where it was.
+				const before = events.length;
+				store.recordRunEnd("stale", runStatus, {});
+				assert.deepEqual(events.slice(before), [{ runKey: "stale", kind: "quit", label: "deploy" }], scenario);
+				assert.equal(
+					store.runs()[0]?.stages.at(0)?.status,
+					staleStage,
+					`${scenario}: the stale stage state must still be present`,
+				);
+			}
+		}
+	});
+
+	test("a real killRun drops the contribution of a run waiting on input", () => {
+		const store = createStore();
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: false, notifyOn: [] },
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+
+		startRun(store, "waiting", "deploy");
+		store.recordStageStart("waiting", runningStage({ id: "approval", name: "approval" }));
+		store.recordStageAwaitingInput("waiting", "approval", true, 2);
+		assert.deepEqual(events.at(-1), { runKey: "waiting", kind: "awaiting_input", label: "deploy: approval" });
+
+		const result = killRun("waiting", { store });
+		assert.equal(result.ok, true);
+		assert.deepEqual(events.at(-1), { runKey: "waiting", kind: "quit", label: "deploy" });
+		assert.equal(
+			events.some((event) => event.kind === "completed"),
+			false,
+		);
+	});
+
 	test("drops a run that leaves the snapshot without claiming it completed", () => {
 		const store = createStore();
 		const events: Array<{ runKey: string; kind: string; label: string }> = [];
@@ -1130,5 +1192,120 @@ describe("neutral workflow lifecycle bridge", () => {
 		});
 		assert.deepEqual(second, []);
 		unsubscribeSecond();
+	});
+});
+
+/**
+ * Both consumers read one derivation, so a run's classification is the same on
+ * either side while delivery stays distinct: chat is edge-triggered, filtered
+ * by `notifyOn` and deduped; the bridge is level-triggered and reconciled.
+ */
+describe("chat and bridge share one lifecycle derivation", () => {
+	function installBoth() {
+		const store = createStore();
+		const sent: SentMessage[] = [];
+		const events: Array<{ runKey: string; kind: string; label: string }> = [];
+		const unsubscribe = installWorkflowLifecycleNotifications({
+			store,
+			config: { enabled: true, notifyOn: WORKFLOW_LIFECYCLE_NOTICE_KINDS },
+			sendMessage(message) {
+				sent.push(message as SentMessage);
+			},
+			publishLifecycleEvent(event) {
+				events.push(event);
+			},
+		});
+		return { store, sent, events, unsubscribe };
+	}
+
+	const chatKinds = (sent: readonly SentMessage[]): Array<string | undefined> =>
+		sent.map((message) => message.details?.kind);
+
+	test("a killed run with a stale awaiting stage ends on both sides", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		startRun(store, "killed-run", "deploy");
+		store.recordStageStart("killed-run", runningStage({ id: "approval", name: "approval" }));
+		store.recordStageAwaitingInput("killed-run", "approval", true, 2);
+		store.recordRunEnd("killed-run", "killed", {});
+
+		// Chat never invents a terminal notice for a status its vocabulary does
+		// not name, and the bridge does not stay pinned on the stale stage.
+		assert.equal(chatKinds(sent).includes("completed"), false);
+		assert.equal(chatKinds(sent).includes("failed"), false);
+		assert.equal(events.at(-1)?.kind, "quit");
+		unsubscribe();
+	});
+
+	test("a user pause is the same kind on both sides", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		store.recordRunStart({
+			id: "paused-run",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+			origin: "user",
+		});
+		store.recordRunPaused("paused-run", 2, { actor: "user" });
+
+		assert.equal(chatKinds(sent).at(-1), "paused");
+		assert.equal(events.at(-1)?.kind, "paused");
+		unsubscribe();
+	});
+
+	test("a recoverable blocked run is blocked on both sides", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		startRun(store, "blocked-run", "deploy");
+		store.recordRunEnd("blocked-run", "blocked", undefined, "needs a human");
+
+		assert.equal(chatKinds(sent).at(-1), "blocked");
+		assert.equal(events.at(-1)?.kind, "blocked");
+		// The bridge label carries no error detail even though chat's notice does.
+		assert.equal(events.at(-1)?.label, "deploy");
+		assert.equal(sent.at(-1)?.details?.error, "needs a human");
+		unsubscribe();
+	});
+
+	test("a fresh-id continuation stays one contribution while chat reports both runs", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		startRun(store, "source", "deploy");
+		store.recordRunEnd("source", "failed", undefined, "boom");
+		store.recordRunStart({
+			id: "continuation",
+			name: "deploy",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 3,
+			resumedFromRunId: "source",
+			resumeSource: "run_control",
+			resumeActor: "user",
+			resumedAt: 3,
+		});
+		store.recordRunEnd("continuation", "completed", {});
+
+		// Chat reports each physical run; the bridge holds one logical key.
+		assert.deepEqual(chatKinds(sent), ["failed", "resumed", "completed"]);
+		assert.equal(
+			events.every((event) => event.runKey === "source"),
+			true,
+		);
+		assert.equal(events.at(-1)?.kind, "completed");
+		unsubscribe();
+	});
+
+	test("a stage change while working republishes nothing and notifies nobody", () => {
+		const { store, sent, events, unsubscribe } = installBoth();
+		startRun(store, "working-run", "deploy");
+		const afterStart = { chat: sent.length, bridge: events.length };
+
+		store.recordStageStart("working-run", runningStage({ id: "build", name: "build" }));
+		store.recordStageEnd("working-run", runningStage({ id: "build", name: "build", status: "completed" }));
+		store.recordStageStart("working-run", runningStage({ id: "test", name: "test" }));
+
+		assert.equal(sent.length, afterStart.chat);
+		assert.equal(events.length, afterStart.bridge);
+		unsubscribe();
 	});
 });
