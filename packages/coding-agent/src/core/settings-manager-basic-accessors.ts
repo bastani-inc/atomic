@@ -50,6 +50,7 @@ interface SettingsManagerBasicAccessors {
 	};
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean };
 	getBranchSummarySkipPrompt(): boolean;
+	getSessionSummarySettings(): { enabled: boolean };
 	getRetryEnabled(): boolean;
 	setRetryEnabled(enabled: boolean): void;
 	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number };
@@ -287,6 +288,12 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getBranchSummarySkipPrompt() {
 		return settingsInternals(this).settings.branchSummary?.skipPrompt ?? false;
+	},
+
+	getSessionSummarySettings() {
+		return {
+			enabled: settingsInternals(this).settings.sessionSummary?.enabled ?? true,
+		};
 	},
 
 	getRetryEnabled() {

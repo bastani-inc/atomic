@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
+import type { ImageContent, Message, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import { existsSync, statSync } from "fs";
 import { resolve } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
@@ -17,6 +17,7 @@ import {
 	createSessionFilePath,
 	createSessionHeader,
 	createSessionInfoEntry,
+	createSessionSummaryEntry,
 	createThinkingLevelChangeEntry,
 	getEntriesWithoutHeader,
 	getLatestSessionName,
@@ -280,6 +281,14 @@ export class SessionManager {
 	/** Append a session info entry (e.g., display name). Returns entry id. */
 	appendSessionInfo(name: string): string {
 		const entry = createSessionInfoEntry(name, this.byId, this.leafId);
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a generated resume summary anchored to the message it describes. Returns entry id. */
+	appendSessionSummary(summary: string, summarizedThroughId: string, usage?: Usage): string {
+		if (!this.byId.has(summarizedThroughId)) throw new Error(`Entry ${summarizedThroughId} not found`);
+		const entry = createSessionSummaryEntry(summary, summarizedThroughId, usage, this.byId, this.leafId);
 		this._appendEntry(entry);
 		return entry.id;
 	}

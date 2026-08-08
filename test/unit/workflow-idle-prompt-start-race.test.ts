@@ -46,6 +46,7 @@ test("production prompt wiring holds idle admission until the first agent turn s
 		get isStreaming() {
 			return streaming;
 		},
+		abortSessionSummary() {},
 		prompt(text: string, options?: Parameters<typeof prompt>[1]) {
 			return prompt.call(surface as never, text, options);
 		},

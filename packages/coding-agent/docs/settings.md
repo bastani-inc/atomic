@@ -189,6 +189,12 @@ The model emits numbered line ranges only; Atomic reconstructs retained text mec
 | `branchSummary.reserveTokens` | number | `16384` | Tokens reserved for branch summarization |
 | `branchSummary.skipPrompt` | boolean | `false` | Skip "Summarize branch?" prompt on `/tree` navigation (defaults to no summary) |
 
+### Session Summary
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `sessionSummary.enabled` | boolean | `true` | Generate a one-line summary of each session for the `/resume` picker once the agent goes idle |
+
 ### Retry
 
 | Setting | Type | Default | Description |

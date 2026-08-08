@@ -7,6 +7,7 @@ import { getSessionsDir } from "../config.ts";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
+import { getLastConversationMessageId, getLatestSessionSummary } from "./session-manager-entries.ts";
 import { parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { isInternalHeader, readSessionHeader, sessionCwdMatches } from "./session-manager-storage.ts";
@@ -186,6 +187,16 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 
 		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
 
+		// A summary describes the conversation up to one specific message. Anything newer makes it
+		// stale, and the picker falls back to the session name or the first message. Retirement by
+		// a later branch summary is handled inside getLatestSessionSummary, so the generation guard
+		// applies exactly the same rule.
+		const summaryEntry = getLatestSessionSummary(entries);
+		const summary =
+			summaryEntry?.summarizedThroughId === getLastConversationMessageId(entries)
+				? summaryEntry?.summary
+				: undefined;
+
 		return {
 			path: filePath,
 			id: (header as SessionHeader).id,
@@ -198,6 +209,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			modified,
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
+			summary,
 			allMessagesText: allMessages.join(" "),
 		};
 	} catch {

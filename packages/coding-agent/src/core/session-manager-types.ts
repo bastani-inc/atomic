@@ -135,6 +135,14 @@ export interface SessionInfoEntry extends SessionEntryBase {
 	name?: string;
 }
 
+/** Session summary metadata entry. */
+export interface SessionSummaryEntry extends SessionEntryBase {
+	type: "session_summary";
+	summary: string;
+	summarizedThroughId: string;
+	usage?: Usage;
+}
+
 /**
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
@@ -176,7 +184,8 @@ export type SessionEntry =
 	| CustomEntry
 	| CustomMessageEntry
 	| LabelEntry
-	| SessionInfoEntry;
+	| SessionInfoEntry
+	| SessionSummaryEntry;
 
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
@@ -214,6 +223,8 @@ export interface SessionInfo {
 	modified: Date;
 	messageCount: number;
 	firstMessage: string;
+	/** Generated resume summary. Absent when never generated, or stale against the latest message. */
+	summary?: string;
 	allMessagesText: string;
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";

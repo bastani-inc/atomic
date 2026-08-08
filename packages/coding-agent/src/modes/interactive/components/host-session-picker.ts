@@ -20,6 +20,7 @@ export function sessionInfoFromPickerRow(row: HostSessionPickerRow): SessionInfo
 		modified: new Date(row.modifiedAt),
 		messageCount: row.messageCount,
 		firstMessage: row.firstMessage,
+		...(row.summary !== undefined ? { summary: row.summary } : {}),
 		allMessagesText: row.allMessagesText ?? "",
 		...(row.name !== undefined ? { name: row.name } : {}),
 		...(row.messageColor !== undefined ? { messageColor: row.messageColor } : {}),

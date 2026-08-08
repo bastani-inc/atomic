@@ -56,6 +56,7 @@ describe("AgentSession prompt-start handshake", () => {
 				},
 			},
 			isStreaming: false,
+			abortSessionSummary: () => {},
 			async waitForRetry() {},
 			async _continueQueuedAgentMessages() {},
 			async _awaitPendingPostCompactionContinuation() {},
@@ -77,6 +78,7 @@ describe("AgentSession prompt-start handshake", () => {
 		const session = {
 			agent: { prompt: () => Promise.reject(new Error("startup rejected")) },
 			isStreaming: false,
+			abortSessionSummary: () => {},
 			async waitForRetry() {},
 			async _continueQueuedAgentMessages() {},
 			async _awaitPendingPostCompactionContinuation() {},
@@ -103,6 +105,7 @@ describe("AgentSession workflow delivery authorization", () => {
 		const delivered: string[] = [];
 		const session = {
 			isStreaming: false,
+			abortSessionSummary: () => {},
 			promptTemplates: [],
 			_extensionRunner: {
 				hasHandlers: (event: string) => event === "input",

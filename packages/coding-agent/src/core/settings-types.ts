@@ -13,6 +13,10 @@ export interface BranchSummarySettings {
 	skipPrompt?: boolean; // default: false - when true, skips "Summarize branch?" prompt and defaults to no summary
 }
 
+export interface SessionSummarySettings {
+	enabled?: boolean; // default: true - generate a one-line resume-picker summary once the agent goes idle
+}
+
 export interface ProviderRetrySettings {
 	timeoutMs?: number; // SDK/provider request timeout in milliseconds
 	maxRetries?: number; // SDK/provider retry attempts
@@ -105,6 +109,7 @@ export interface Settings {
 	showCacheMissNotices?: boolean; // default: false
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
+	sessionSummary?: SessionSummarySettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR

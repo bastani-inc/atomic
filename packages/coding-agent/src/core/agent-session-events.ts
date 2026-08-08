@@ -289,6 +289,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		this._resolveRetry();
 		this._contextOverflowUnresolved = false;
 		await this._checkCompaction(msg);
+
 		// Compaction owns context overflow first. Only once it is disabled, fails,
 		// or reports the overflow unresolved may the chain spend a candidate on a
 		// larger-context model, so a compactable first overflow costs nothing.
@@ -304,6 +305,12 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		if (restoreAfterTurn && this._pendingPostCompactionContinuation === undefined) {
 			if (typeof this._restoreFallbackModel === "function") await this._restoreFallbackModel();
 		}
+		// Launched last so the fallback lifecycle wins: a switch above returns before this line, and
+		// the restore has already put `this.model` back to the user's selection, which the launch
+		// reads synchronously before it parks on waitForIdle(). Guarded like the fallback methods
+		// above because the fallback suites drive this function on a synthetic session.
+		if (event.type === "agent_end" && typeof this._maybeGenerateSessionSummary === "function")
+			void this._maybeGenerateSessionSummary();
 	}
 }
 
@@ -516,6 +523,14 @@ export function _reconnectToAgent(this: AgentSession): void {
  */
 
 export function dispose(this: AgentSession): void {
+	// Terminal and idempotent: callers legitimately dispose more than once (an explicit dispose
+	// followed by a harness teardown), and the steps below are not all safe to repeat.
+	if (this._disposed) return;
+	// Summary work queued before its AbortController exists cannot be reached by
+	// abortSessionSummary(), so disposal is recorded as state that every checkpoint consults.
+	this._disposed = true;
+	// A background summary must never keep the process alive past shutdown.
+	this.abortSessionSummary();
 	// Fail closed while protected input remains queued, or flush a consumed
 	// reconciliation before invalidation can discard its recovery state.
 	prepareProtectedStreamingCustomMessagesForDisposal(this);

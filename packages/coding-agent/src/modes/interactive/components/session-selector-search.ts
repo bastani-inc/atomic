@@ -24,7 +24,7 @@ function normalizeWhitespaceLower(text: string): string {
 }
 
 function getSessionSearchText(session: SessionInfo): string {
-	return `${session.id} ${session.name ?? ""} ${session.allMessagesText} ${session.cwd}`;
+	return `${session.id} ${session.name ?? ""} ${session.summary ?? ""} ${session.allMessagesText} ${session.cwd}`;
 }
 
 export function hasSessionName(session: SessionInfo): boolean {

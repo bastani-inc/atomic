@@ -222,6 +222,8 @@ export interface PiHostSessionPickerRow {
 	modifiedAt: number;
 	messageCount: number;
 	firstMessage: string;
+	/** Generated resume summary. Absent when never generated, or stale against the latest message. */
+	summary?: string;
 	allMessagesText?: string;
 	name?: string;
 	/** Optional semantic color for synthetic selector rows. */

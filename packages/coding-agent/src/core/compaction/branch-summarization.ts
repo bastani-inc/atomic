@@ -189,6 +189,7 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 		case "custom":
 		case "label":
 		case "session_info":
+		case "session_summary":
 		case "context_compaction":
 			return undefined;
 	}

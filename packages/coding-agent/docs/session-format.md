@@ -307,6 +307,20 @@ Session metadata (e.g., user-defined display name). Set via `/name`, `--name` / 
 
 The session name is displayed in the session selector (`/resume`) instead of the first message when set.
 
+### SessionSummaryEntry
+
+A generated one-line description of the session, written automatically once the agent goes idle and shown in the session selector. Never sent to the LLM.
+
+```json
+{"type":"session_summary","id":"l2m3n4o5","parentId":"k1l2m3n4","timestamp":"2024-12-03T14:36:00.000Z","summary":"Refactored auth module token refresh and added retry tests","summarizedThroughId":"j0k1l2m3","usage":{"input":812,"output":21}}
+```
+
+- `summary`: The stored line. Whitespace is collapsed and length is clamped before writing.
+- `summarizedThroughId`: Entry ID of the last user/assistant message the summary covers. The selector shows the summary only while this is still the newest conversation message; anything newer makes it stale and the selector falls back to the session name or first message. Tool results do not count.
+- `usage`: Optional token usage from the model call, counted toward session usage totals.
+
+A `branch_summary` written after a `session_summary` also retires it, because the branch it described was abandoned.
+
 ## Tree Structure
 
 Entries form a tree:
@@ -420,6 +434,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `appendCompaction(compactedText, firstKeptEntryId, tokensBefore, details)` - Add a durable verbatim-line compaction boundary; pass `null` when no pre-boundary message is retained
 - `appendCustomEntry(customType, data?)` - Extension state (not in context)
 - `appendSessionInfo(name)` - Set session display name
+- `appendSessionSummary(summary, summarizedThroughId, usage?)` - Store a generated resume-picker summary, anchored to the message it describes
 - `appendCustomMessageEntry(customType, content, display, details?)` - Extension message (in context)
 - `appendLabelChange(targetId, label)` - Set/clear label
 

@@ -193,9 +193,10 @@ export class SessionList implements Component, Focusable {
 			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
 
-			// Session display text (name or first message)
+			// Session display text: a fresh generated summary, else the name, else the first
+			// message. A stale or missing summary is simply absent, so the fallback is automatic.
 			const hasName = !!session.name;
-			const displayText = session.name ?? session.firstMessage;
+			const displayText = session.summary ?? session.name ?? session.firstMessage;
 			const normalizedMessage = displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim();
 
 			// Right side: message count and age

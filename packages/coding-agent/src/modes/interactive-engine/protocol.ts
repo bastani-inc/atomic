@@ -184,8 +184,19 @@ const SESSION_PICKER_MESSAGE_COLORS = ["success", "warning", "accent", "error"] 
 
 function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefined {
 	if (!isJsonObject(value)) return undefined;
-	const { path, id, cwd, createdAt, modifiedAt, messageCount, firstMessage, allMessagesText, name, messageColor } =
-		value;
+	const {
+		path,
+		id,
+		cwd,
+		createdAt,
+		modifiedAt,
+		messageCount,
+		firstMessage,
+		summary,
+		allMessagesText,
+		name,
+		messageColor,
+	} = value;
 	if (
 		typeof path !== "string" ||
 		typeof id !== "string" ||
@@ -196,6 +207,7 @@ function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefin
 		typeof firstMessage !== "string"
 	)
 		return undefined;
+	if (summary !== undefined && typeof summary !== "string") return undefined;
 	if (allMessagesText !== undefined && typeof allMessagesText !== "string") return undefined;
 	if (name !== undefined && typeof name !== "string") return undefined;
 	if (
@@ -211,6 +223,7 @@ function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefin
 		modifiedAt,
 		messageCount,
 		firstMessage,
+		...(summary !== undefined ? { summary } : {}),
 		...(allMessagesText !== undefined ? { allMessagesText } : {}),
 		...(name !== undefined ? { name } : {}),
 		...(messageColor !== undefined

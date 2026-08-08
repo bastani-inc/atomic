@@ -14,5 +14,6 @@ export * from "./planner-outcome.js";
 export * from "./range-planner.js";
 export * from "./range-planner-diagnostics.js";
 export * from "./region-trimming.js";
+export * from "./session-summarization.ts";
 export * from "./transcript-serialization.js";
 export * from "./utils.ts";
