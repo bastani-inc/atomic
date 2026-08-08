@@ -33,6 +33,8 @@
 import { createHash } from "node:crypto";
 import {
 	closeSync,
+	fchmodSync,
+	fstatSync,
 	lstatSync,
 	openSync,
 	readdirSync,
@@ -137,6 +139,34 @@ function markerIsFresh(markerPath: string, now: number, throttleMs: number): boo
 	}
 }
 
+interface CleanupLock {
+	token: string;
+	dev: bigint;
+	ino: bigint;
+}
+
+function sameLockIdentity(left: { dev: bigint; ino: bigint }, right: { dev: bigint; ino: bigint }): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
+function pathIdentifiesLock(lockPath: string, lock: CleanupLock): boolean {
+	try {
+		const stat = lstatSync(lockPath, { bigint: true });
+		return stat.isFile() && !stat.isSymbolicLink() && sameLockIdentity(stat, lock);
+	} catch {
+		return false;
+	}
+}
+
+function removeCreatedLock(lockPath: string, lock: CleanupLock): void {
+	try {
+		if (pathIdentifiesLock(lockPath, lock)) {
+			unlinkSync(lockPath);
+		}
+	} catch {
+		// Best effort. An uncertain path is left for stale-lock handling.
+	}
+}
 /**
  * Take an exclusive lock so two sessions never scan the same target at once.
  *
@@ -144,35 +174,66 @@ function markerIsFresh(markerPath: string, now: number, throttleMs: number): boo
  * left behind by a crashed process is broken once stale, and release only
  * removes a lock that still carries the caller's token.
  */
-function acquireCleanupLock(lockPath: string, now: number, staleMs: number): string | null {
+function acquireCleanupLock(lockPath: string, now: number, staleMs: number): CleanupLock | null {
 	const token = `${process.pid}.${now}.${Math.random().toString(36).slice(2)}`;
 	for (let attempt = 0; attempt < 2; attempt++) {
+		let fd: number;
 		try {
-			const fd = openSync(lockPath, "wx", SESSION_TEMP_FILE_MODE);
-			try {
-				writeSync(fd, token);
-			} finally {
-				closeSync(fd);
-			}
-			return token;
+			fd = openSync(lockPath, "wx+", SESSION_TEMP_FILE_MODE);
 		} catch (error) {
 			if (getErrnoCode(error) !== "EEXIST") {
 				return null;
 			}
-		}
-		let lockMtimeMs: number;
-		try {
-			lockMtimeMs = statSync(lockPath).mtimeMs;
-		} catch {
-			// The holder released between the failed create and the stat; retry.
+			let lockMtimeMs: number;
+			try {
+				lockMtimeMs = statSync(lockPath).mtimeMs;
+			} catch {
+				// The holder released between the failed create and the stat; retry.
+				continue;
+			}
+			if (now - lockMtimeMs < staleMs) {
+				return null;
+			}
+			if (!breakStaleLock(lockPath, lockMtimeMs)) {
+				return null;
+			}
 			continue;
 		}
-		if (now - lockMtimeMs < staleMs) {
+
+		let lock: CleanupLock | undefined;
+		let failed = false;
+		try {
+			const createdStat = fstatSync(fd, { bigint: true });
+			lock = { token, dev: createdStat.dev, ino: createdStat.ino };
+			if (!createdStat.isFile()) {
+				failed = true;
+			} else {
+				if (process.platform !== "win32") {
+					fchmodSync(fd, SESSION_TEMP_FILE_MODE);
+					const modeStat = fstatSync(fd, { bigint: true });
+					if (!modeStat.isFile() || Number(modeStat.mode & 0o777n) !== SESSION_TEMP_FILE_MODE) {
+						failed = true;
+					}
+				}
+				if (!failed && writeSync(fd, token) !== token.length) {
+					failed = true;
+				}
+			}
+		} catch {
+			failed = true;
+		}
+		try {
+			closeSync(fd);
+		} catch {
+			failed = true;
+		}
+		if (failed || lock === undefined || !pathIdentifiesLock(lockPath, lock) || !ownsCleanupLock(lockPath, lock)) {
+			if (lock !== undefined) {
+				removeCreatedLock(lockPath, lock);
+			}
 			return null;
 		}
-		if (!breakStaleLock(lockPath, lockMtimeMs)) {
-			return null;
-		}
+		return lock;
 	}
 	return null;
 }
@@ -213,17 +274,21 @@ function breakStaleLock(lockPath: string, observedMtimeMs: number): boolean {
 	return true;
 }
 
-function ownsCleanupLock(lockPath: string, token: string): boolean {
+function ownsCleanupLock(lockPath: string, lock: CleanupLock): boolean {
 	try {
-		return readFileSync(lockPath, "utf-8") === token;
+		return (
+			pathIdentifiesLock(lockPath, lock) &&
+			readFileSync(lockPath, "utf-8") === lock.token &&
+			pathIdentifiesLock(lockPath, lock)
+		);
 	} catch {
 		return false;
 	}
 }
 
-function releaseCleanupLock(lockPath: string, token: string): void {
+function releaseCleanupLock(lockPath: string, lock: CleanupLock): void {
 	try {
-		if (readFileSync(lockPath, "utf-8") === token) {
+		if (ownsCleanupLock(lockPath, lock) && pathIdentifiesLock(lockPath, lock)) {
 			unlinkSync(lockPath);
 		}
 	} catch {
@@ -600,3 +665,9 @@ export function resetSessionTempCleanupScheduleForTesting(): void {
 	scheduledSessionsRoots.clear();
 	scheduledSessionDirs.clear();
 }
+
+/** Narrow lock seam for descriptor-mode and release tests. */
+export const sessionTempCleanupTestHooks = {
+	acquireCleanupLock,
+	releaseCleanupLock,
+};

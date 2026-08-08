@@ -89,36 +89,37 @@ function ownerComponent(): string {
 	return cachedOwnerComponent;
 }
 
-let cachedBaseTempDir: { raw: string; resolved: string } | undefined;
+interface BaseTempDirs {
+	raw: string;
+	canonical: string;
+}
+
+let cachedBaseTempDirs: BaseTempDirs | undefined;
 
 /**
- * The system temp directory, canonicalized.
- *
- * Only the OS-provided base is resolved through symlinks (macOS `/var` →
- * `/private/var`, for example). Nothing below it is ever resolved: following a
- * link planted at the owner root is exactly the attack this guards against.
+ * Preserve the OS-provided temp spelling for returned paths while caching a
+ * canonical form for internal component checks (macOS `/var` → `/private/var`,
+ * for example). Nothing below the base is resolved through `realpath`.
  */
-function baseTempDir(): string {
+function baseTempDirs(): BaseTempDirs {
 	const raw = tmpdir();
-	if (cachedBaseTempDir?.raw === raw) {
-		return cachedBaseTempDir.resolved;
+	if (cachedBaseTempDirs?.raw === raw) {
+		return cachedBaseTempDirs;
 	}
-	let resolved = raw;
+	let canonical = raw;
 	try {
-		resolved = realpathSync(raw);
+		canonical = realpathSync(raw);
 	} catch {
-		// An unresolvable temp directory is used as given; the per-component
-		// checks below still apply.
-		resolved = raw;
+		// An unresolvable temp directory is checked as given.
 	}
-	cachedBaseTempDir = { raw, resolved };
-	return resolved;
+	cachedBaseTempDirs = { raw, canonical };
+	return cachedBaseTempDirs;
 }
 
 /** `<tmpdir>/<APP_NAME>-<owner>` — the root every session temp tree lives under. */
 export function getTempRootDir(): string {
 	const app = sanitizeTempPathComponent(APP_NAME, "atomic");
-	return join(baseTempDir(), `${app}-${ownerComponent()}`);
+	return join(baseTempDirs().raw, `${app}-${ownerComponent()}`);
 }
 
 /**
@@ -246,15 +247,25 @@ function ensureLeafDirectory(dir: string): void {
 	ensureOwnedDirectory(dir);
 }
 
+/** Map a lexical temp child to the same path below the canonical temp base. */
+function canonicalTempChild(dir: string, base: BaseTempDirs): string | undefined {
+	for (const candidate of [base.raw, base.canonical]) {
+		const prefix = `${candidate}${sep}`;
+		if (dir.startsWith(prefix)) {
+			return join(base.canonical, dir.slice(prefix.length));
+		}
+	}
+	return undefined;
+}
 /**
  * Create `dir` with owner-only permissions, validating every component below the
  * system temp directory.
  *
- * The memo only skips work once the cached path is confirmed to still be a real
- * directory: a system temp reaper (or the sweeper in another process) can delete
- * a session tree underneath a live session, and a blind cache hit would then hand
- * back a path whose writes fail with `ENOENT` — an uncaught stream error that
- * takes the interactive process down.
+ * Temp children always revalidate the canonical owner root and every later
+ * component, even after a cache hit. A system temp reaper can delete a session
+ * tree, and an attacker must not turn a memoized path into a symlink bypass.
+ * Caller-owned paths outside the temp base may use the memo after confirming
+ * the leaf is still a real directory.
  *
  * Throws {@link TempDirRefusedError} when a component cannot be trusted. Every
  * caller treats that as "no spill file", never as a fatal error: failing closed
@@ -262,28 +273,28 @@ function ensureLeafDirectory(dir: string): void {
  * directory someone else controls.
  */
 export function ensureTempDir(dir: string): string {
-	if (ensuredDirs.has(dir) && isRealDirectory(dir)) {
-		return dir;
-	}
-	ensuredDirs.delete(dir);
-	const base = baseTempDir();
-	const prefix = `${base}${sep}`;
-	if (dir.startsWith(prefix)) {
-		const parts = dir
+	const base = baseTempDirs();
+	const checkedDir = canonicalTempChild(dir, base);
+	if (checkedDir !== undefined) {
+		const prefix = `${base.canonical}${sep}`;
+		const parts = checkedDir
 			.slice(prefix.length)
 			.split(sep)
 			.filter((part) => part.length > 0);
-		let current = base;
+		let current = base.canonical;
 		for (const part of parts.slice(0, -1)) {
 			current = join(current, part);
 			ensureOwnedDirectory(current);
 		}
+		ensureLeafDirectory(checkedDir);
 	} else {
 		// A caller-supplied directory outside the system temp base (a session
 		// directory, for instance) is the caller's to own; only the leaf is ours.
-		mkdirSync(dirname(dir), { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		if (!(ensuredDirs.has(dir) && isRealDirectory(dir))) {
+			mkdirSync(dirname(dir), { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+			ensureLeafDirectory(dir);
+		}
 	}
-	ensureLeafDirectory(dir);
 	ensuredDirs.add(dir);
 	return dir;
 }
@@ -370,5 +381,5 @@ export function resetSessionTempDirStateForTesting(): void {
 	protectedPathCounts.clear();
 	ensuredDirs.clear();
 	cachedOwnerComponent = undefined;
-	cachedBaseTempDir = undefined;
+	cachedBaseTempDirs = undefined;
 }

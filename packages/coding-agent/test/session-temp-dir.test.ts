@@ -17,8 +17,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
 import { PersistedOutputFile } from "../src/core/tools/persisted-output-file.ts";
 import {
@@ -50,8 +51,8 @@ function useSandboxTmpdir(dir: string): void {
 }
 
 beforeAll(() => {
-	// Canonicalized on purpose: the module resolves the system temp base with
-	// realpath, so an unresolved sandbox path would not compare equal.
+	// Use a stable real sandbox for the main suite. The isolated symlink-base
+	// regression below preserves a lexical TMPDIR spelling on purpose.
 	sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-session-temp-dir-")));
 	useSandboxTmpdir(sandbox);
 });
@@ -210,6 +211,85 @@ describe("session temp directory scoping", () => {
 
 		assert.equal(lstatSync(nestedParent).isSymbolicLink(), true);
 		assert.equal(existsSync(join(outside, "leaf")), false);
+	});
+
+	it.skipIf(!isPosix)("never lets a memoized session path bypass owner-root validation", () => {
+		const sessionId = "memoized-root-link";
+		const sessionDir = getSessionTempDir(sessionId);
+		const root = getTempRootDir();
+		const outside = join(sandbox, "memoized-attacker-target");
+		rmSync(root, { recursive: true, force: true });
+		mkdirSync(join(outside, sessionId), { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		symlinkSync(outside, root, "dir");
+
+		try {
+			assert.equal(lstatSync(sessionDir).isDirectory(), true, "the cached leaf exists through the planted link");
+			assert.throws(() => getSessionTempDir(sessionId), TempDirRefusedError);
+			assert.equal(lstatSync(root).isSymbolicLink(), true);
+			assert.deepEqual(readdirSync(join(outside, sessionId)), []);
+		} finally {
+			rmSync(root, { force: true });
+		}
+	});
+
+	it.skipIf(!isPosix)("preserves the literal tmpdir spelling while refusing an owner-root symlink", () => {
+		const packageRoot = dirname(moduleDir(import.meta.url));
+		const scriptPath = join(sandbox, "lexical-tmpdir.ts");
+		writeFileSync(
+			scriptPath,
+			`
+const fs = await import("node:fs");
+const os = await import("node:os");
+const path = await import("node:path");
+
+const sandbox = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-lexical-tmp-"));
+const actual = path.join(sandbox, "actual");
+const alias = path.join(sandbox, "alias");
+const outside = path.join(sandbox, "outside");
+fs.mkdirSync(actual, { mode: 0o700 });
+fs.mkdirSync(outside, { mode: 0o700 });
+fs.symlinkSync(actual, alias, "dir");
+for (const key of ["TMPDIR", "TEMP", "TMP"]) process.env[key] = alias;
+
+const temp = await import(${JSON.stringify(join(dirname(moduleDir(import.meta.url)), "src/core/tools/session-temp-dir.ts"))});
+temp.resetSessionTempDirStateForTesting();
+const session = temp.resolveSessionTempDirPath("sample");
+const expected = path.join(os.tmpdir(), "atomic-" + process.getuid(), "sample");
+const root = temp.getTempRootDir();
+fs.symlinkSync(outside, root, "dir");
+let errorName;
+try {
+	temp.getSessionTempDir("through-root-link");
+} catch (error) {
+	errorName = error?.name;
+}
+const result = {
+	session,
+	expected,
+	equal: session === expected,
+	errorName,
+	rootIsLink: fs.lstatSync(root).isSymbolicLink(),
+	outsideEntries: fs.readdirSync(outside),
+};
+fs.rmSync(sandbox, { recursive: true, force: true });
+process.stdout.write(JSON.stringify(result));
+`,
+		);
+
+		const child = spawnSyncCollect([bunExecutable(), scriptPath], { cwd: packageRoot });
+		assert.equal(child.exitCode, 0, child.stderr.toString());
+		const result = JSON.parse(child.stdout.toString()) as {
+			session: string;
+			expected: string;
+			equal: boolean;
+			errorName?: string;
+			rootIsLink: boolean;
+			outsideEntries: string[];
+		};
+		assert.equal(result.equal, true, `${result.session} !== ${result.expected}`);
+		assert.equal(result.errorName, "TempDirRefusedError");
+		assert.equal(result.rootIsLink, true);
+		assert.deepEqual(result.outsideEntries, []);
 	});
 });
 

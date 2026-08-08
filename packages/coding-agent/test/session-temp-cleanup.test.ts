@@ -19,8 +19,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
 import {
 	CLEANUP_CONTROL_SUBDIR,
@@ -39,7 +40,7 @@ import {
 	sweepSessionTempRoot,
 	sweepToolResultsRoot,
 } from "../src/core/tools/session-temp-cleanup.ts";
-import { acquireProtectedPaths } from "../src/core/tools/session-temp-dir.ts";
+import { acquireProtectedPaths, SESSION_TEMP_FILE_MODE } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -208,6 +209,78 @@ describe("sweepSessionTempRoot", () => {
 		assert.equal(existsSync(outsideStale), true, "an outside tree must survive a symlinked root");
 		assert.equal(existsSync(link), true, "the link itself is left in place");
 		assert.equal(existsSync(join(outside, CLEANUP_MARKER_FILE)), false);
+	});
+});
+
+it.skipIf(process.platform === "win32")("repairs and releases a cleanup lock under umask 0o777", () => {
+	const packageRoot = dirname(moduleDir(import.meta.url));
+	const scriptPath = join(sandbox, "cleanup-lock-umask.ts");
+	writeFileSync(
+		scriptPath,
+		`
+const fs = await import("node:fs");
+const os = await import("node:os");
+const path = await import("node:path");
+const cleanup = await import(${JSON.stringify(join(dirname(moduleDir(import.meta.url)), "src/core/tools/session-temp-cleanup.ts"))});
+
+const sandbox = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-cleanup-lock-"));
+const heldRoot = path.join(sandbox, "held");
+const sweepRoot = path.join(sandbox, "sweep");
+fs.mkdirSync(heldRoot, { mode: 0o700 });
+const stale = path.join(sweepRoot, "stale-session");
+fs.mkdirSync(stale, { recursive: true, mode: 0o700 });
+const staleFile = path.join(stale, "output.log");
+fs.writeFileSync(staleFile, "stale", { mode: 0o600 });
+const now = Date.now();
+const oldSeconds = (now - 45 * 24 * 60 * 60 * 1000) / 1000;
+fs.utimesSync(staleFile, oldSeconds, oldSeconds);
+fs.utimesSync(stale, oldSeconds, oldSeconds);
+fs.chmodSync(sweepRoot, 0o700);
+
+const previousUmask = process.umask(0o777);
+let lockMode = null;
+let tokenReadable = false;
+let released = false;
+let result;
+try {
+	const hooks = cleanup.sessionTempCleanupTestHooks;
+	if (hooks) {
+		const lockPath = path.join(heldRoot, cleanup.CLEANUP_LOCK_FILE);
+		const lock = hooks.acquireCleanupLock(lockPath, now, cleanup.SESSION_TEMP_CLEANUP_LOCK_STALE_MS);
+		if (!lock) throw new Error("lock acquisition failed");
+		lockMode = fs.statSync(lockPath).mode & 0o777;
+		tokenReadable = fs.readFileSync(lockPath, "utf8") === lock.token;
+		hooks.releaseCleanupLock(lockPath, lock);
+		released = !fs.existsSync(lockPath);
+	}
+	const outcome = cleanup.sweepSessionTempRoot(sweepRoot, { now, protectedPaths: [] });
+	result = {
+		lockMode,
+		tokenReadable,
+		released,
+		outcome,
+		staleExists: fs.existsSync(stale),
+		markerExists: fs.existsSync(path.join(sweepRoot, cleanup.CLEANUP_MARKER_FILE)),
+		lockExists: fs.existsSync(path.join(sweepRoot, cleanup.CLEANUP_LOCK_FILE)),
+	};
+} finally {
+	process.umask(previousUmask);
+	fs.rmSync(sandbox, { recursive: true, force: true });
+}
+process.stdout.write(JSON.stringify(result));
+`,
+	);
+
+	const child = spawnSyncCollect([bunExecutable(), scriptPath], { cwd: packageRoot });
+	assert.equal(child.exitCode, 0, child.stderr.toString());
+	assert.deepEqual(JSON.parse(child.stdout.toString()), {
+		lockMode: SESSION_TEMP_FILE_MODE,
+		tokenReadable: true,
+		released: true,
+		outcome: "swept",
+		staleExists: false,
+		markerExists: true,
+		lockExists: false,
 	});
 });
 
