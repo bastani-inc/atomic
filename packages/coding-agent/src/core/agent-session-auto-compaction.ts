@@ -526,7 +526,9 @@ export async function _runAutoCompaction(
 			willRetry,
 			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 		});
-		this._schedulePostAutoCompactionContinuationProbe(reason, willRetry);
+		if (!hasPendingManualCompactionTakeover.call(this)) {
+			this._schedulePostAutoCompactionContinuationProbe(reason, willRetry);
+		}
 		return "compacted";
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : "compaction failed";

@@ -173,26 +173,28 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.statusMessage = "";
 			changed = true;
 			break;
-		case "agent_end":
-			state.sdkBusy = false;
-			state.compacting = false;
+		case "agent_end": {
+			const manualTakeoverPending = state.manualCompactionTakeoverPending;
+			state.sdkBusy = manualTakeoverPending;
+			state.compacting = manualTakeoverPending;
 			state.workingMessage = undefined;
 			state.liveChat.clearPendingTools();
-			state.statusMessage = "";
+			if (!manualTakeoverPending) state.statusMessage = "";
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
-			if (state.compactionQueuedMessages.length > 0) {
+			if (!manualTakeoverPending && state.compactionQueuedMessages.length > 0) {
 				const idle = state.getAgentSession?.()?.agent.waitForIdle() ?? Promise.resolve();
 				void idle.then(() => flushChatSessionCompactionQueue(state));
 			}
 			break;
+		}
 		case "turn_start":
 			startChatSessionWorkingLifecycle(state);
 			state.workingMessage = pickWhimsicalWorkingMessage();
 			changed = true;
 			break;
 		case "turn_end":
-			state.compacting = false;
+			state.compacting = state.manualCompactionTakeoverPending;
 			state.workingMessage = undefined;
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
@@ -232,9 +234,17 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 		case "compaction_end": {
 			const compaction = event as Extract<AgentSessionEvent, { type: "compaction_end" }>;
-			state.compacting = false;
-			state.sdkBusy = compaction.midTurn === true;
-			state.statusMessage = compaction.errorMessage ?? "";
+			const manualTakeoverPending =
+				compaction.reason !== "manual" &&
+				(compaction.manualTakeoverPending === true || state.manualCompactionTakeoverPending);
+			if (manualTakeoverPending) {
+				state.manualCompactionTakeoverPending = true;
+			} else if (compaction.reason === "manual") {
+				state.manualCompactionTakeoverPending = false;
+			}
+			state.compacting = manualTakeoverPending;
+			state.sdkBusy = manualTakeoverPending || compaction.midTurn === true;
+			if (!manualTakeoverPending) state.statusMessage = compaction.errorMessage ?? "";
 			if (compaction.midTurn !== true || compaction.aborted || compaction.errorMessage) {
 				state.workingMessage = undefined;
 				stopChatSessionWorkingLifecycle(state);
@@ -252,6 +262,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 				refreshCompactedTranscript(state, compaction.result);
 			}
 			if (
+				!manualTakeoverPending &&
 				!compaction.midTurn &&
 				!compaction.aborted &&
 				!compaction.errorMessage &&

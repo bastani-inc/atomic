@@ -332,29 +332,43 @@ describe("manual compaction re-entrancy", () => {
 		expect(boundaryCount(harness)).toBe(1);
 	});
 
-	it("runs the requested manual compaction after an automatic boundary already committed", async () => {
+	it("does not resume an automatic retry after manual takeover of a committed boundary", async () => {
 		const gate = createCommittedAutomaticGate();
 		const harness = await createHarness(gate.factory);
-		const automatic = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false, "recoverable");
-		await gate.committed;
+		const continueSpy = vi.spyOn(harness.agent, "continue").mockResolvedValue();
+		vi.useFakeTimers();
+		try {
+			const automatic = (harness.session as AutoCompactionRunner)._runAutoCompaction(
+				"threshold",
+				true,
+				"recoverable",
+			);
+			await gate.committed;
 
-		const manual = harness.session.compact({ preserve_recent: 0, query: "manual-only-query" });
-		gate.release();
-		const manualResult = await manual;
-		await automatic;
+			const manual = harness.session.compact({ preserve_recent: 0, query: "manual-only-query" });
+			gate.release();
+			const manualResult = await manual;
+			await automatic;
+			await vi.advanceTimersByTimeAsync(100);
 
-		expect(manualResult.compactedText).toBe("manual summary");
-		expect(gate.calls.at(-1)).toEqual({
-			reason: "manual",
-			preserveRecent: 0,
-			query: "manual-only-query",
-		});
-		expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["threshold", "manual"]);
-		expect(harness.eventsOfType("compaction_end")).toEqual([
-			expect.objectContaining({ reason: "threshold", aborted: false, manualTakeoverPending: true }),
-			expect.objectContaining({ reason: "manual", aborted: false }),
-		]);
-		expect(boundaryCount(harness)).toBe(2);
+			expect(continueSpy).not.toHaveBeenCalled();
+			expect(manualResult.compactedText).toBe("manual summary");
+			expect(gate.calls.at(-1)).toEqual({
+				reason: "manual",
+				preserveRecent: 0,
+				query: "manual-only-query",
+			});
+			expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["threshold", "manual"]);
+			expect(harness.eventsOfType("compaction_end")).toEqual([
+				expect.objectContaining({ reason: "threshold", aborted: false, manualTakeoverPending: true }),
+				expect.objectContaining({ reason: "manual", aborted: false }),
+			]);
+			expect(boundaryCount(harness)).toBe(2);
+		} finally {
+			gate.release();
+			continueSpy.mockRestore();
+			vi.useRealTimers();
+		}
 	});
 
 	it("keeps the agent event subscription connected during manual compaction", async () => {

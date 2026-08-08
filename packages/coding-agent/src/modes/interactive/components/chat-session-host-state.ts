@@ -64,6 +64,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	pendingFollowUpMessages: readonly string[] = [];
 	compactionQueuedMessages: readonly string[] = [];
 	compacting = false;
+	/** Keeps input queued while automatic compaction hands off to a manual request. */
+	manualCompactionTakeoverPending = false;
 	animationTimer: ReturnType<typeof setInterval> | undefined;
 	renderThrottleTimer: ReturnType<typeof setTimeout> | undefined;
 	bodyViewport = new ScrollableComponentViewport();

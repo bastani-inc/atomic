@@ -495,3 +495,63 @@ test("ChatSessionHost queues prompts during compaction and flushes after success
 	assert.deepEqual(followUps, ["second"]);
 	host.dispose();
 });
+
+test("ChatSessionHost holds a post-tool queue through manual compaction takeover", async () => {
+	const prompts: string[] = [];
+	let idleWaits = 0;
+	const host = makeHost({
+		getAgentSession: () =>
+			({
+				agent: {
+					waitForIdle: async () => {
+						idleWaits += 1;
+					},
+				},
+			}) as AgentSession,
+		commands: {
+			prompt: async (text) => {
+				prompts.push(text);
+			},
+		},
+	});
+
+	try {
+		host.applyAgentEvent({ type: "compaction_start", reason: "threshold", midTurn: true } as never);
+		await host.submit("auto", "queued after takeover");
+
+		host.applyAgentEvent({
+			type: "compaction_end",
+			reason: "threshold",
+			result: undefined,
+			aborted: true,
+			willRetry: false,
+			midTurn: true,
+			manualTakeoverPending: true,
+		} as never);
+		host.applyAgentEvent({ type: "agent_end", messages: [] } as never);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.equal(idleWaits, 0);
+		assert.deepEqual(prompts, []);
+
+		host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+		host.applyAgentEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: {},
+			aborted: false,
+			willRetry: false,
+		} as never);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.deepEqual(prompts, ["queued after takeover"]);
+		host.applyAgentEvent({ type: "agent_end", messages: [] } as never);
+		await Promise.resolve();
+		await Promise.resolve();
+		assert.deepEqual(prompts, ["queued after takeover"]);
+	} finally {
+		host.dispose();
+	}
+});
