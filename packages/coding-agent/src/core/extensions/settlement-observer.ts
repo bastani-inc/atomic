@@ -58,11 +58,11 @@ function observe(promise: object, cleanup: SettlementCleanup): void {
 /**
  * Run `cleanup` when `result` settles, and return what the caller should get.
  *
- * A real promise is returned **unchanged**, with settlement watched on a
- * separate branch. A plain thenable is adopted exactly once and the adopted
- * promise is returned: observing the raw thenable while also returning it would
- * call a non-idempotent `then` twice, and returning it unobserved would strand
- * the cleanup. A synchronous value releases immediately.
+ * A real promise is returned unchanged, with settlement watched on a separate
+ * branch. A plain thenable is also returned unchanged: callers may use a
+ * structural `cancel()` method or compare the object they received, so
+ * adopting it with `Promise.resolve()` would change the host's contract.
+ * Synchronous values release immediately.
  */
 export function observeSettlement<T>(result: T, cleanup: SettlementCleanup): T {
 	if (result === null || (typeof result !== "object" && typeof result !== "function")) {
@@ -76,12 +76,25 @@ export function observeSettlement<T>(result: T, cleanup: SettlementCleanup): T {
 		return result;
 	}
 
-	if (typeof Reflect.get(candidate, "then") !== "function") {
+	const then = Reflect.get(candidate, "then");
+	if (typeof then !== "function") {
 		cleanup();
 		return result;
 	}
 
-	const adopted = Promise.resolve(candidate);
-	observe(adopted, cleanup);
-	return adopted as T;
+	let cleaned = false;
+	const release = (): void => {
+		if (cleaned) return;
+		cleaned = true;
+		cleanup();
+	};
+	const observed = Reflect.apply(then, candidate, [release, release]) as object | undefined;
+	// A conventional thenable often returns a native promise from its `then`
+	// method. Consume that observer branch so a rejection does not become an
+	// unhandled rejection, without probing or adopting the caller's thenable.
+	if (observed !== undefined && observed !== null && isRealPromise(observed)) {
+		const handled = callThen(observed, undefined, () => {});
+		void handled.catch(() => {});
+	}
+	return result;
 }

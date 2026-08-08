@@ -530,43 +530,52 @@ describe("ctx.ui block wrapping", () => {
 		assert.deepEqual(getOpenUserBlocks(), []);
 	});
 
-	it("holds the block until a plain thenable settles, and releases on rejection", async () => {
-		let settle: ((value: string) => void) | undefined;
-		let fail: ((reason: Error) => void) | undefined;
+	it("holds a cancellable thenable unchanged until it settles", async () => {
+		let status: { value: string } | { error: Error } | undefined;
+		const fulfillers: Array<(value: string) => void> = [];
+		const rejecters: Array<(reason: Error) => void> = [];
 		const thenable = {
 			// biome-ignore lint/suspicious/noThenProperty: a plain thenable is the subject of this test.
-			then(onFulfilled: (value: string) => void, onRejected: (reason: Error) => void) {
-				settle = onFulfilled;
-				fail = onRejected;
+			then(onFulfilled: (value: string) => void, onRejected: (reason: Error) => void): void {
+				if (status === undefined) {
+					fulfillers.push(onFulfilled);
+					rejecters.push(onRejected);
+				} else if ("value" in status) onFulfilled(status.value);
+				else onRejected(status.error);
+			},
+			cancel(): void {
+				const error = new Error("dialog cancelled");
+				status = { error };
+				for (const reject of rejecters.splice(0)) reject(error);
+				fulfillers.length = 0;
 			},
 		};
-		// `Promise.resolve(thenable)` calls `then` in a later microtask, so the
-		// callbacks are not available on the turn the dialog was opened.
-		const untilThenCalled = async (): Promise<void> => {
-			for (let index = 0; index < 10 && settle === undefined; index++) await Promise.resolve();
+		const settle = (value: string): void => {
+			status = { value };
+			for (const fulfill of fulfillers.splice(0)) fulfill(value);
+			rejecters.length = 0;
 		};
 
 		const { ui } = recordingUi({});
 		const ctx = contextOver({ ...ui, select: () => thenable } as ExtensionUIContext);
 
 		const pending = ctx.ui.select("Approve edit?", ["yes"]);
+		assert.equal(pending, thenable, "the original thenable object must be returned");
+		assert.equal((pending as typeof thenable).cancel, thenable.cancel, "cancel must survive wrapping");
 		assert.equal(getOpenUserBlocks().length, 1, "held while the thenable is pending");
-		await untilThenCalled();
-		settle?.("yes");
+		settle("yes");
 		assert.equal(await pending, "yes");
 		assert.deepEqual(getOpenUserBlocks(), []);
 
-		settle = undefined;
-		const failure = new Error("dialog failed");
+		status = undefined;
 		const rejecting = ctx.ui.select("Approve edit?", ["yes"]);
-		assert.equal(getOpenUserBlocks().length, 1);
-		await untilThenCalled();
-		fail?.(failure);
+		assert.equal(rejecting, thenable);
+		thenable.cancel();
 		assert.equal(
 			await captureRejection(async () => {
 				await rejecting;
 			}),
-			failure,
+			(status as { error: Error }).error,
 		);
 		assert.deepEqual(getOpenUserBlocks(), []);
 	});

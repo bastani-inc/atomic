@@ -69,6 +69,8 @@ export class HerdrReporter {
 	private sessionRef: HerdrSessionRef = {};
 
 	private agentActive = false;
+	/** Whether the current chat turn has already consumed its idle settlement. */
+	private turnSettled = true;
 
 	/**
 	 * The failure the pane is currently reporting. Only ever set at settlement.
@@ -161,6 +163,7 @@ export class HerdrReporter {
 				blocks.activeLabel === undefined ? undefined : shortenReportMessage(blocks.activeLabel);
 		}
 		this.agentActive = !idle;
+		this.turnSettled = idle;
 		this.publish(true);
 	}
 
@@ -169,6 +172,7 @@ export class HerdrReporter {
 		if (this.isSilenced() || !this.isBoundSession(sessionManager)) return;
 		this.refreshSessionRef();
 		this.agentActive = true;
+		this.turnSettled = false;
 		this.failureMessage = undefined;
 		this.pendingFailureMessage = undefined;
 		this.publish(false);
@@ -192,7 +196,8 @@ export class HerdrReporter {
 	 */
 	onAgentSettled(sessionManager: ReadonlySessionManager, idle: boolean): void {
 		if (this.isSilenced() || !this.isBoundSession(sessionManager)) return;
-		if (!idle) return;
+		if (!idle || this.turnSettled) return;
+		this.turnSettled = true;
 		this.agentActive = false;
 		this.failureMessage = this.pendingFailureMessage;
 		this.pendingFailureMessage = undefined;

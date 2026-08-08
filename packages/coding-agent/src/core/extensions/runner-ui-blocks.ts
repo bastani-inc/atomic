@@ -84,9 +84,8 @@ function wrapBlockingMethod<M extends BlockingUiMethod>(
 		// `instanceof Promise` is the wrong question: a dialog from another realm —
 		// a `vm` context, an isolated host bridge — fails it, and so does an
 		// ordinary thenable, and either one released the block before the user had
-		// answered. `observeSettlement` asks structurally, and hands back the host's
-		// own promise rather than a `.finally()` derivative, so promise identity
-		// survives wrapping.
+		// answered. `observeSettlement` asks structurally and returns the host's
+		// original value, so promise and cancellable-thenable identity survive.
 		//
 		// Reading `then` can itself throw, because it may be a getter. That is
 		// inside the guard too: an error there used to reach the caller with the

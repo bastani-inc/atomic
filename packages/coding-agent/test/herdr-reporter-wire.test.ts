@@ -251,6 +251,21 @@ describe("herdr reporter wire behavior", () => {
 		assert.deepEqual(states(fixture.requests).at(-1), { state: "blocked", message: "Agent turn failed" });
 	});
 
+	it("latches a failed settlement across a duplicate idle settle", async () => {
+		const reporter = createReporter();
+		await reporter.onSessionStart(sessionManager, false);
+		reporter.onAgentEnd(sessionManager, TURN_FAILURE_MESSAGE);
+		reporter.onAgentSettled(sessionManager, true);
+		await reporter.drain();
+		const afterFailure = states(fixture.requests).at(-1);
+
+		reporter.onAgentSettled(sessionManager, true);
+		await reporter.drain();
+
+		assert.deepEqual(states(fixture.requests).at(-1), afterFailure);
+		assert.deepEqual(afterFailure, { state: "blocked", message: "Agent turn failed" });
+	});
+
 	it("sends exactly one release when two quits race", async () => {
 		// Nothing in the host serializes disposal, and the guard used to sit before
 		// the latch, so both callers got past it and each enqueued a release.
