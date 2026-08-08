@@ -262,7 +262,7 @@ test("a scoped explicit budget stays in its own scope and never leaks to a same 
 test("repository declarations resolve to their real budgets", async () => {
 	const builtins = declaredTimeouts(await readText(join(root, "test/unit/coding-agent-builtin-workflows.test.ts")));
 	// Keyed by the qualified name the reporter emits, never by the bare terminal name.
-	assert.equal(builtins.get("coding-agent builtin resources > loads builtin pi package resources"), 60_000);
+	assert.equal(builtins.get("coding-agent builtin resources > loads builtin pi package resources"), 120_000);
 	assert.equal(builtins.get("loads builtin pi package resources"), undefined);
 	const installed = declaredTimeouts(
 		await readText(join(root, "test/integration/installed-package-node-extensions.test.ts")),

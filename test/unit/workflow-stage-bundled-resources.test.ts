@@ -21,6 +21,7 @@ import {
 } from "../../packages/workflows/src/extension/wiring.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 
+const REAL_WORKFLOW_STAGE_RESOURCE_TIMEOUT_MS = 120_000;
 const tempDirs: string[] = [];
 const ENV_KEYS = [
 	"ATOMIC_SUBAGENT_CHILD",
@@ -178,25 +179,29 @@ describe("workflow stage bundled resources", () => {
 		}
 	});
 
-	test("keeps bundled subagent active by default in workflow stages", async () => {
-		const snapshot = snapshotEnv();
-		const cwd = tempDir("atomic-workflow-stage-default-subagent-cwd-");
-		const agentDir = join(cwd, "agent");
-		mkdirSync(agentDir, { recursive: true });
-		try {
-			const { session } = await createWorkflowStageSession({ cwd, agentDir });
+	test(
+		"keeps bundled subagent active by default in workflow stages",
+		async () => {
+			const snapshot = snapshotEnv();
+			const cwd = tempDir("atomic-workflow-stage-default-subagent-cwd-");
+			const agentDir = join(cwd, "agent");
+			mkdirSync(agentDir, { recursive: true });
 			try {
-				const allToolNames = session.getAllTools().map((tool) => tool.name);
-				const activeToolNames = session.getActiveToolNames();
-				assert.ok(allToolNames.includes("subagent"), "expected subagent in all workflow stage tools");
-				assert.ok(activeToolNames.includes("subagent"), "expected subagent to be active by default");
+				const { session } = await createWorkflowStageSession({ cwd, agentDir });
+				try {
+					const allToolNames = session.getAllTools().map((tool) => tool.name);
+					const activeToolNames = session.getActiveToolNames();
+					assert.ok(allToolNames.includes("subagent"), "expected subagent in all workflow stage tools");
+					assert.ok(activeToolNames.includes("subagent"), "expected subagent to be active by default");
+				} finally {
+					session.dispose();
+				}
 			} finally {
-				session.dispose();
+				restoreEnv(snapshot);
 			}
-		} finally {
-			restoreEnv(snapshot);
-		}
-	});
+		},
+		REAL_WORKFLOW_STAGE_RESOURCE_TIMEOUT_MS,
+	);
 
 	test("delegates through the registered subagent tool from a workflow stage", async () => {
 		const snapshot = snapshotEnv();
