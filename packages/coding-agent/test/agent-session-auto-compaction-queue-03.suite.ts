@@ -556,7 +556,8 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 			{ role: "user", content: [{ type: "text", text: "write a long answer" }], timestamp: Date.now() - 1000 },
 			assistant,
 		];
-		(session as unknown as { _overflowRecoveryAttempted: boolean })._overflowRecoveryAttempted = true;
+		(session as unknown as { _recoverableLengthRecoveryAttempted: boolean })._recoverableLengthRecoveryAttempted =
+			true;
 		const runAutoCompactionSpy = vi
 			.spyOn(
 				session as unknown as {
@@ -586,14 +587,15 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 				type: "compaction_end",
 				reason: "overflow",
 				willRetry: false,
-				errorMessage: expect.stringContaining("failed after one compact-and-retry"),
+				errorMessage: expect.stringContaining("stopped after one retry"),
 			}),
 		);
 	});
 
 	it("preserves the one-shot recovery budget when a truncated response ends", async () => {
 		const assistant = belowThresholdLengthStoppedAssistant();
-		(session as unknown as { _overflowRecoveryAttempted: boolean })._overflowRecoveryAttempted = true;
+		(session as unknown as { _recoverableLengthRecoveryAttempted: boolean })._recoverableLengthRecoveryAttempted =
+			true;
 		const processAgentEvent = (
 			session as unknown as {
 				_processAgentEvent: (event: { type: "message_end"; message: AssistantMessage }) => Promise<void>;
@@ -602,7 +604,9 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 
 		await processAgentEvent({ type: "message_end", message: assistant });
 
-		expect((session as unknown as { _overflowRecoveryAttempted: boolean })._overflowRecoveryAttempted).toBe(true);
+		expect(
+			(session as unknown as { _recoverableLengthRecoveryAttempted: boolean })._recoverableLengthRecoveryAttempted,
+		).toBe(true);
 	});
 	it("continues a below-threshold response that reached its output cap without compacting", async () => {
 		const userMessage: AgentMessage = {

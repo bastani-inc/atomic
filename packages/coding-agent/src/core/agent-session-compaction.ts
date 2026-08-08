@@ -303,6 +303,11 @@ export function compact(
 	const inFlight = this._manualCompactionPromise;
 	if (inFlight) return inFlight;
 
+	// A manual boundary replaces the automatic turn that scheduled any pending
+	// retry. Invalidate its timer before this run claims compaction ownership.
+	this._postCompactionContinuationToken += 1;
+	this._pendingPostCompactionContinuation = undefined;
+
 	const controller = new AbortController();
 	this._compactionAbortController = controller;
 	this._compactionReason = "manual";

@@ -496,6 +496,172 @@ test("ChatSessionHost queues prompts during compaction and flushes after success
 	host.dispose();
 });
 
+test("ChatSessionHost flushes queued prompts after a cancelled manual compaction", async () => {
+	const prompts: string[] = [];
+	const host = makeHost({
+		commands: {
+			prompt: async (text) => {
+				prompts.push(text);
+			},
+		},
+	});
+
+	try {
+		host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+		for (const ch of "queued") host.handleInput(ch);
+		host.handleInput("\r");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		host.applyAgentEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: undefined,
+			aborted: true,
+			willRetry: false,
+		} as never);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.deepEqual(prompts, ["queued"]);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("ChatSessionHost preserves queued prompt order through manual compaction cancellation", async () => {
+	const prompts: string[] = [];
+	const followUps: string[] = [];
+	let aborts = 0;
+	const host = makeHost({
+		commands: {
+			prompt: async (text) => {
+				prompts.push(text);
+			},
+			followUp: async (text) => {
+				followUps.push(text);
+			},
+			abortCompaction: () => {
+				aborts += 1;
+			},
+		},
+	});
+
+	try {
+		host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+		for (const ch of "first") host.handleInput(ch);
+		host.handleInput("\r");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		host.handleInput("\x1b");
+		await Promise.resolve();
+		for (const ch of "second") host.handleInput(ch);
+		host.handleInput("\r");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.equal(aborts, 1);
+		assert.deepEqual(prompts, []);
+		assert.deepEqual(followUps, []);
+
+		host.applyAgentEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: undefined,
+			aborted: true,
+			willRetry: false,
+		} as never);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.deepEqual(prompts, ["first"]);
+		assert.deepEqual(followUps, ["second"]);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("ChatSessionHost preserves queued prompt order through automatic compaction cancellation", async () => {
+	const prompts: string[] = [];
+	const followUps: string[] = [];
+	const host = makeHost({
+		commands: {
+			prompt: async (text) => {
+				prompts.push(text);
+			},
+			followUp: async (text) => {
+				followUps.push(text);
+			},
+			abortCompaction: () => {},
+		},
+	});
+
+	try {
+		host.applyAgentEvent({ type: "compaction_start", reason: "threshold" } as never);
+		for (const ch of "first") host.handleInput(ch);
+		host.handleInput("\r");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		host.handleInput("\x1b");
+		await Promise.resolve();
+		for (const ch of "second") host.handleInput(ch);
+		host.handleInput("\r");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		host.applyAgentEvent({
+			type: "compaction_end",
+			reason: "threshold",
+			result: undefined,
+			aborted: true,
+			willRetry: false,
+		} as never);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.deepEqual(prompts, ["first"]);
+		assert.deepEqual(followUps, ["second"]);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("ChatSessionHost flushes queued prompts after a failed manual compaction", async () => {
+	const prompts: string[] = [];
+	const host = makeHost({
+		commands: {
+			prompt: async (text) => {
+				prompts.push(text);
+			},
+		},
+	});
+
+	try {
+		host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
+		for (const ch of "queued") host.handleInput(ch);
+		host.handleInput("\r");
+		await Promise.resolve();
+		await Promise.resolve();
+
+		host.applyAgentEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: undefined,
+			aborted: false,
+			willRetry: false,
+			errorMessage: "Compaction failed: planner unavailable",
+		} as never);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		assert.deepEqual(prompts, ["queued"]);
+	} finally {
+		host.dispose();
+	}
+});
+
 test("ChatSessionHost holds a post-tool queue through manual compaction takeover", async () => {
 	const prompts: string[] = [];
 	let idleWaits = 0;

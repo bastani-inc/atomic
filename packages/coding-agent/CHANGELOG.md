@@ -34,6 +34,9 @@
 - Manual `/compact` now keeps agent events live, cancels unfinished automatic compaction safely, and then executes the requested manual compaction instead of rejecting it or returning an automatic boundary with different parameters.
 - Input queued during manual compaction now sends after completion because the session exposes its idle state before `compaction_end` listeners run.
 - A response truncated before its requested output limit now gets one compact-and-retry attempt; output-cap stops retain bounded direct continuation, and the TUI reports neutral truncation text.
+- Fixed a stale automatic post-compaction retry resuming after a manual `/compact` finished during the continuation grace period.
+- Fixed a short transcript with repeated below-cap truncations retrying compaction more than once when no compaction boundary could be made, while preserving load-bearing recovery for a later actual context overflow.
+- Fixed `ChatSessionHost` leaving queued prompts stuck when compaction was cancelled or failed; queues now drain after every non-mid-turn compaction completion.
 
 ### Removed
 

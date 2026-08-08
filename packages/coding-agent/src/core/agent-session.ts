@@ -112,6 +112,7 @@ class AgentSessionBase {
 	/** Resolves when the current automatic compaction has settled. */
 	protected _autoCompactionCompletion: Promise<void> | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
+	protected _recoverableLengthRecoveryAttempted = false;
 	/** Set when compaction cannot recover a context overflow on the current model. */
 	protected _contextOverflowUnresolved = false;
 	protected _pendingPostCompactionContinuation: Promise<void> | undefined = undefined;

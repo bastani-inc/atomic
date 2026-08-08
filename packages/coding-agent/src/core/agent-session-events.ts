@@ -132,6 +132,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	// This ensures the UI sees the updated queue state
 	if (event.type === "message_start" && event.message.role === "user") {
 		this._overflowRecoveryAttempted = false;
+		this._recoverableLengthRecoveryAttempted = false;
 		this._fallbackAttemptedKeys.clear();
 		this._fallbackBlockedModels.length = 0;
 		const messageText = this._getUserMessageText(event.message);
@@ -203,14 +204,15 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			this._lastAssistantMessage = event.message;
 
 			const assistantMsg = event.message as AssistantMessage;
-			// A length stop must preserve the one-shot overflow recovery budget.
-			// Resetting it here would allow every truncated retry to compact again.
+			// A length stop preserves its one-shot recovery budget. Reset both
+			// recovery kinds only once a non-truncated response completes.
 			const assistantFailed =
 				assistantMsg.stopReason === "error" ||
 				this._isEmptyCompletion(assistantMsg) ||
 				this._isSafetyRefusal(assistantMsg);
 			if (!assistantFailed && assistantMsg.stopReason !== "length") {
 				this._overflowRecoveryAttempted = false;
+				this._recoverableLengthRecoveryAttempted = false;
 			}
 			if (!assistantFailed) {
 				this._contextOverflowUnresolved = false;

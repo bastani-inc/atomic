@@ -371,6 +371,36 @@ describe("manual compaction re-entrancy", () => {
 		}
 	});
 
+	it("does not resume an armed automatic retry after manual compaction completes", async () => {
+		const factory: ExtensionFactory = (pi) => {
+			pi.on("session_before_compact", (event) => ({
+				compactedText:
+					event.reason === "threshold"
+						? Array.from({ length: 24 }, (_, index) => `[User]: automatic line ${index + 1}`).join("\n")
+						: "manual summary",
+			}));
+		};
+		const harness = await createHarness(factory);
+		const continueSpy = vi.spyOn(harness.agent, "continue").mockResolvedValue();
+		vi.useFakeTimers();
+		try {
+			const automatic = (harness.session as AutoCompactionRunner)._runAutoCompaction(
+				"threshold",
+				true,
+				"recoverable",
+			);
+			await automatic;
+
+			await harness.session.compact({ preserve_recent: 0 });
+			await vi.advanceTimersByTimeAsync(100);
+
+			expect(continueSpy).not.toHaveBeenCalled();
+		} finally {
+			continueSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	it("keeps the agent event subscription connected during manual compaction", async () => {
 		const gate = createGate();
 		const harness = await createHarness(gate.factory);
@@ -502,9 +532,90 @@ describe("manual compaction re-entrancy", () => {
 		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({
 			reason: "overflow",
 			willRetry: false,
-			errorMessage:
-				"Response truncation recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+			errorMessage: "Response truncation recovery stopped after one retry.",
 		});
+	});
+
+	it("limits an uncompactable below-cap response to one recovery retry", async () => {
+		const harness = await createHarnessWithExtensions({
+			model: { ...fauxModel, contextWindow: 1_000_000, maxTokens: 100 },
+			settings: { compaction: { enabled: true, reserveTokens: 0, preserve_recent: 2 } },
+			responses: [
+				{
+					text: "first partial response",
+					stopReason: "length",
+					usage: { input: 100, output: 50, totalTokens: 150 },
+				},
+				{
+					text: "second partial response",
+					stopReason: "length",
+					usage: { input: 100, output: 50, totalTokens: 150 },
+				},
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.bindExtensions({});
+
+		vi.useFakeTimers();
+		try {
+			const prompt = harness.session.prompt("finish the task");
+			for (let retry = 0; retry < 4; retry++) {
+				await vi.advanceTimersByTimeAsync(100);
+			}
+			await prompt;
+
+			expect(harness.faux.callCount).toBe(2);
+			expect(harness.eventsOfType("compaction_start").filter((event) => event.reason === "overflow")).toHaveLength(
+				1,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("still runs load-bearing overflow recovery after an uncompactable below-cap retry", async () => {
+		const harness = await createHarnessWithExtensions({
+			model: { ...fauxModel, contextWindow: 1_000_000, maxTokens: 100 },
+			settings: { compaction: { enabled: true, reserveTokens: 0, preserve_recent: 2 } },
+			responses: [
+				{
+					text: "partial response",
+					stopReason: "length",
+					usage: { input: 100, output: 50, totalTokens: 150 },
+				},
+				{
+					stopReason: "error",
+					error: "prompt is too long",
+					usage: { input: 100, output: 0, totalTokens: 100 },
+				},
+				{ text: "recovered response", stopReason: "stop", usage: { input: 100, output: 50, totalTokens: 150 } },
+			],
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", () => ({
+						compactedText: "[User]: retained exactly\n(filtered 3 lines)",
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.bindExtensions({});
+
+		vi.useFakeTimers();
+		try {
+			const prompt = harness.session.prompt("finish the task");
+			for (let retry = 0; retry < 4; retry++) {
+				await vi.advanceTimersByTimeAsync(100);
+			}
+			await prompt;
+
+			expect(harness.faux.callCount).toBe(3);
+			expect(harness.eventsOfType("compaction_start").filter((event) => event.reason === "overflow")).toHaveLength(
+				2,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("allows a fresh manual compaction once the previous run settles", async () => {

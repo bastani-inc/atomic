@@ -212,9 +212,16 @@ export async function abortChatSessionCompaction<TExtraEntry extends ChatTranscr
 	state: ChatSessionHostState<TExtraEntry>,
 ): Promise<void> {
 	try {
-		await state.commands.abortCompaction?.();
-		state.compacting = false;
-		state.sdkBusy = false;
+		if (state.commands.abortCompaction === undefined) {
+			// A host without an abort command also has no engine completion to clear
+			// this local indicator.
+			state.compacting = false;
+			state.sdkBusy = false;
+		} else {
+			await state.commands.abortCompaction();
+			// Keep new input behind prompts already queued for this compaction. The
+			// matching compaction_end event owns the release and the state reset.
+		}
 		notifyChatSessionStatus(state, "Compaction cancelled");
 	} catch (err) {
 		notifyChatSessionWarning(state, errorMessage(err));

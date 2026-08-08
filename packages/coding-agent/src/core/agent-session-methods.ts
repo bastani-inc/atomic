@@ -437,6 +437,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_autoCompactionCompletion: Promise<void> | undefined;
 	_compactionReason: import("./agent-session-types.ts").CompactionReason | undefined;
 	_overflowRecoveryAttempted: boolean;
+	_recoverableLengthRecoveryAttempted: boolean;
 	_contextOverflowUnresolved: boolean;
 	_branchSummaryAbortController: AbortController | undefined;
 	_retryAbortController: AbortController | undefined;

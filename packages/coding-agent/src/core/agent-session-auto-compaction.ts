@@ -119,10 +119,13 @@ export async function _checkCompaction(
 			return;
 		}
 
-		if (this._overflowRecoveryAttempted) {
-			// One compact-and-retry has already been spent on this turn. A real
+		const recoveryAttempted = contextOverflow
+			? this._overflowRecoveryAttempted
+			: this._recoverableLengthRecoveryAttempted;
+		if (recoveryAttempted) {
+			// One recovery of this kind has already been spent on this turn. A real
 			// context overflow may now advance to a larger-context fallback; a
-			// recoverable output truncation must stop without claiming overflow.
+			// recoverable output truncation stops without claiming overflow.
 			if (contextOverflow) this._contextOverflowUnresolved = true;
 			this._emit({
 				type: "compaction_end",
@@ -133,25 +136,27 @@ export async function _checkCompaction(
 				...(contextOverflow ? { unresolvedOverflow: true } : {}),
 				errorMessage: contextOverflow
 					? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
-					: "Response truncation recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+					: "Response truncation recovery stopped after one retry.",
 			});
 			return;
 		}
 
-		this._overflowRecoveryAttempted = true;
+		if (contextOverflow) this._overflowRecoveryAttempted = true;
+		else this._recoverableLengthRecoveryAttempted = true;
 		let outcome: AutoCompactionRunOutcome;
 		try {
 			outcome = contextOverflow
 				? await this._runAutoCompaction("overflow", willRetry)
 				: await this._runAutoCompaction("overflow", willRetry, "recoverable");
 		} catch (error) {
-			this._overflowRecoveryAttempted = false;
+			if (contextOverflow) this._overflowRecoveryAttempted = false;
+			else this._recoverableLengthRecoveryAttempted = false;
 			throw error;
 		}
 		if (outcome === "compacted" || outcome === "failed") return;
-		this._overflowRecoveryAttempted = false;
-		// No boundary means there is no context to free. Preserve Atomic's bounded
-		// continuation in that case, but never resume a turn manual compaction owns.
+		// No boundary means there is no context to free. Keep this recovery
+		// attempt spent while its one direct continuation is pending, so another
+		// below-cap stop cannot start a new compaction cycle.
 		if (
 			recoverableLength &&
 			outcome === "not_compactable" &&
@@ -159,7 +164,10 @@ export async function _checkCompaction(
 			this._manualCompactionPromise === undefined
 		) {
 			this._resumeAfterLengthTruncation();
+			return;
 		}
+		if (contextOverflow) this._overflowRecoveryAttempted = false;
+		else this._recoverableLengthRecoveryAttempted = false;
 		return;
 	}
 

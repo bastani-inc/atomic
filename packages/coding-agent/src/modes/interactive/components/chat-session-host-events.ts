@@ -261,13 +261,9 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			if (!compaction.aborted && compaction.result) {
 				refreshCompactedTranscript(state, compaction.result);
 			}
-			if (
-				!manualTakeoverPending &&
-				!compaction.midTurn &&
-				!compaction.aborted &&
-				!compaction.errorMessage &&
-				state.compactionQueuedMessages.length > 0
-			) {
+			// A non-mid-turn completion has no later event guaranteed to drain this
+			// queue, so release it whether compaction succeeded, failed, or was cancelled.
+			if (!manualTakeoverPending && !compaction.midTurn && state.compactionQueuedMessages.length > 0) {
 				void flushChatSessionCompactionQueue(state);
 			}
 			changed = true;
