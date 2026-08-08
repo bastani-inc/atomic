@@ -78,6 +78,19 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.liveChat.appendMessages(messages);
 	}
 
+	/**
+	 * Adopt the assistant message a live session is part-way through streaming.
+	 *
+	 * A host mounted mid-turn missed the `message_start` and every delta that
+	 * came before it, and delta-only updates never restate them, so the session's
+	 * in-flight message is the only place that text still exists. Ignored once
+	 * this host is already following a stream of its own.
+	 */
+	hydrateStreamingAssistantMessage(message: AgentSnapshotMessage | undefined): void {
+		if (message === undefined) return;
+		if (this.state.liveChat.hydrateStreamingAssistantMessage(message)) this.state.requestRender?.();
+	}
+
 	loadSessionFile(sessionFile: string | undefined): void {
 		if (this.state.transcript.length > 0 || sessionFile === undefined) return;
 		let messages: readonly AgentSnapshotMessage[];

@@ -377,6 +377,16 @@ session.subscribe((event) => {
 });
 ```
 
+A subscriber that rebuilds the assistant message from these deltas must
+accumulate them into its own message object. `message_start` reports the
+message the model is about to stream, but an in-process subscriber receives the
+provider's live partial rather than a snapshot of it, and the provider keeps
+appending to that same object as the stream runs. Appending a delta to it adds
+text the provider already added. A subscriber that attaches part-way through a
+turn missed the deltas that came before it and can seed itself from
+`session.agent.state.streamingMessage`, which holds the message currently being
+streamed, if any.
+
 ## Options Reference
 
 ### Directories

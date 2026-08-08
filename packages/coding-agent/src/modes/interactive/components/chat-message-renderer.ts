@@ -10,7 +10,11 @@ import {
 	type CustomMessage,
 	isVerbatimCompactionMessage,
 } from "../../../core/messages.ts";
-import { applyAssistantMessageDelta, type StreamingAssistantDelta } from "../streaming-assistant-message.ts";
+import {
+	applyAssistantMessageDelta,
+	beginStreamingAssistantMessage,
+	type StreamingAssistantDelta,
+} from "../streaming-assistant-message.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
@@ -166,6 +170,20 @@ export class LiveChatEntriesController {
 	appendUserText(text: string): void {
 		this.entries.push({ role: "user", kind: "user", text });
 	}
+	/**
+	 * Seed the assistant message a chat mounted mid-stream never saw start.
+	 *
+	 * Delta-only updates carry just the next fragment, so a consumer attached
+	 * part-way through a turn cannot recover the text that already streamed. The
+	 * live session keeps that in-flight message, and seeding it here makes the
+	 * deltas that arrive afterwards continue it instead of opening a second
+	 * assistant message. A stream this consumer is already following wins.
+	 */
+	hydrateStreamingAssistantMessage(message: unknown): boolean {
+		if (!isAgentMessageLike(message) || message.role !== "assistant") return false;
+		if (this.currentStreamingAssistantMessage() !== undefined) return false;
+		return this.updateAssistantMessage(beginStreamingAssistantMessage(message as AssistantMessage));
+	}
 	applyEvent(event: LiveChatEventLike): boolean {
 		const type = String(event.type ?? "");
 		switch (type) {
@@ -206,7 +224,7 @@ export class LiveChatEntriesController {
 		if (!isAgentMessageLike(message)) return false;
 		if (message.role === "assistant") {
 			this.streamingAssistantIndex = undefined;
-			return this.updateAssistantMessage(message as AssistantMessage);
+			return this.updateAssistantMessage(beginStreamingAssistantMessage(message as AssistantMessage));
 		}
 		if (message.role === "toolResult") {
 			const toolResult = message as ToolResultMessage;

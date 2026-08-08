@@ -32,6 +32,20 @@ function thinkingAt(content: AssistantContent[], index: number): ThinkingContent
 }
 
 /**
+ * Take private ownership of the assistant message a consumer will assemble.
+ *
+ * Deltas are applied in place, and an in-process subscriber is handed the
+ * provider's own live partial: pi-agent-core emits `{ ...partial }`, whose
+ * `content` array is the array pi-ai keeps appending to as the stream runs.
+ * Assembling into that array would add every delta on top of the accumulation
+ * the provider already did, so each seeding point copies the message and its
+ * content blocks first.
+ */
+export function beginStreamingAssistantMessage(message: AssistantMessage): AssistantMessage {
+	return { ...message, content: message.content.map((item) => ({ ...item })) };
+}
+
+/**
  * Apply one streaming delta to the assistant message being rendered.
  *
  * Public consumers receive delta-only `message_update` events: `message_start`

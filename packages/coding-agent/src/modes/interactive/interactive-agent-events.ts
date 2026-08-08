@@ -20,7 +20,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
-import { applyAssistantMessageDelta } from "./streaming-assistant-message.ts";
+import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
 
 function createToolComponent(
 	mode: InteractiveModeBase,
@@ -169,7 +169,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					this.hiddenThinkingLabel,
 					this.outputPad,
 				);
-				this.streamingMessage = event.message;
+				this.streamingMessage = beginStreamingAssistantMessage(event.message);
 				this.chatContainer.addChild(this.streamingComponent);
 				this.streamingComponent.updateContent(this.streamingMessage);
 				this.ui.requestRender();
