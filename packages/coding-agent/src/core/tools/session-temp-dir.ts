@@ -16,10 +16,12 @@
  * `session-temp-cleanup.ts` once the session is long gone.
  */
 
+import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, realpathSync, rmSync, type Stats } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { APP_NAME } from "../../config.ts";
+import { getErrnoCode } from "./errno.ts";
 
 /** Directory mode for every directory this module creates (owner-only). */
 export const SESSION_TEMP_DIR_MODE = 0o700;
@@ -59,11 +61,40 @@ export function sanitizeTempPathComponent(value: string, fallback: string): stri
 let cachedOwnerComponent: string | undefined;
 
 /**
+ * Derive the owner component for a named (non-uid) account.
+ *
+ * Sanitizing a name to a safe path component is lossy, and two distinct
+ * accounts can reduce to the same component (`aliceé` and `aliceø` both yield
+ * `alice_`). Where the system temp directory is machine-wide and
+ * shared-accessible, that would put two accounts in one tree. Appending a short
+ * digest of the raw identity keeps distinct accounts on distinct roots, with
+ * the readable component in front so the directory stays recognizable.
+ *
+ * This prevents collision; it is not owner verification. POSIX separately
+ * proves ownership through `verifyOwnedDirectory`, which has no portable
+ * Windows equivalent here.
+ *
+ * Exported as a pure function so the collision property can be tested directly:
+ * its only caller reaches this branch on Windows, which a POSIX test host
+ * cannot enter.
+ */
+export function deriveOwnerComponent(rawIdentity: string): string {
+	// Windows account names are case-insensitive, so `Alice` and `alice` are one
+	// account and must resolve to one root. Normalize before both the readable
+	// component and the digest: normalizing only the digest would still emit two
+	// spellings of one directory, which NTFS then treats as the same path while
+	// the sweeper's bookkeeping sees two.
+	const normalized = rawIdentity.toLowerCase();
+	const readable = sanitizeTempPathComponent(normalized, FALLBACK_OWNER_COMPONENT);
+	const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 8);
+	return `${readable}-${digest}`;
+}
+
+/**
  * Identify the account that owns the temp tree.
  *
- * POSIX uses the numeric uid. Windows has no `process.getuid`, so fall back to
- * the account name — the value only has to separate accounts that share one
- * machine-wide temp directory, not to be numeric.
+ * POSIX uses the numeric uid, which is already collision-free. Windows has no
+ * `process.getuid`, so the account name stands in via `deriveOwnerComponent`.
  */
 function ownerComponent(): string {
 	if (cachedOwnerComponent !== undefined) {
@@ -82,10 +113,7 @@ function ownerComponent(): string {
 		// fallback below still separates the common Windows case.
 		name = undefined;
 	}
-	cachedOwnerComponent = sanitizeTempPathComponent(
-		name || process.env.USERNAME || process.env.USER || "",
-		FALLBACK_OWNER_COMPONENT,
-	);
+	cachedOwnerComponent = deriveOwnerComponent(name || process.env.USERNAME || process.env.USER || "");
 	return cachedOwnerComponent;
 }
 
@@ -152,14 +180,6 @@ export class TempDirRefusedError extends Error {
 		super(`Refusing to use temp directory ${path}: ${reason}`);
 		this.name = "TempDirRefusedError";
 	}
-}
-
-function getErrnoCode(error: unknown): string | undefined {
-	if (error && typeof error === "object" && "code" in error) {
-		const code = (error as { code?: unknown }).code;
-		return typeof code === "string" ? code : undefined;
-	}
-	return undefined;
 }
 
 /**

@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
+import { getErrnoCode } from "./errno.ts";
 import { capPersistedText } from "./persisted-output-file.ts";
 import {
 	ensureTempDir,
@@ -184,14 +185,6 @@ async function ensureToolResultsDir(input: { sessionDir?: string; sessionId: str
 		return dir;
 	}
 	return ensureTempDir(join(resolveSessionTempDirPath(input.sessionId), TOOL_RESULTS_SUBDIR));
-}
-
-function getErrnoCode(error: unknown): string | undefined {
-	if (error && typeof error === "object" && "code" in error) {
-		const code = (error as { code?: unknown }).code;
-		return typeof code === "string" ? code : undefined;
-	}
-	return undefined;
 }
 
 function isOwnedByCurrentUser(uid: number | bigint): boolean {

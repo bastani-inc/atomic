@@ -47,6 +47,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { getAgentConfigPaths } from "../../config.ts";
+import { getErrnoCode } from "./errno.ts";
 import {
 	ensureTempDir,
 	getProtectedSessionTempDirs,
@@ -110,14 +111,6 @@ export function getCleanupControlRoot(): string {
 export function getCleanupControlDir(target: string, controlRoot?: string): string {
 	const key = createHash("sha256").update(target).digest("hex").slice(0, 16);
 	return join(controlRoot ?? getCleanupControlRoot(), key);
-}
-
-function getErrnoCode(error: unknown): string | undefined {
-	if (error && typeof error === "object" && "code" in error) {
-		const code = (error as { code?: unknown }).code;
-		return typeof code === "string" ? code : undefined;
-	}
-	return undefined;
 }
 
 interface FileIdentity {

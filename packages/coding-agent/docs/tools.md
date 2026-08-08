@@ -60,7 +60,7 @@ Output that does not fit in a tool result is written to a file, and the result p
 <tmpdir>/atomic-<uid>/<session-id>/
 ```
 
-On Windows, where there is no uid, the account name is used instead. Directories are created with `0700` and files with `0600` on platforms that support them, so a shared machine-wide temp directory never exposes one account's tool output to another. The session id is reduced to a single safe path component, so a session id containing separators or `..` cannot place files outside that tree.
+On Windows, where there is no uid, the account name is used instead, followed by a short digest of that name — two accounts whose names reduce to the same safe path component would otherwise share one tree. Directories are created with `0700` and files with `0600` on platforms that support them, so a shared machine-wide temp directory never exposes one account's tool output to another. The session id is reduced to a single safe path component, so a session id containing separators or `..` cannot place files outside that tree.
 
 Because that path is predictable, Atomic validates it rather than trusting it. Every component below the system temp directory is created one level at a time and checked: a symlink is refused outright, a directory owned by another account is refused, and a directory of this account's left too permissive is tightened to `0700` and re-checked. Refusal fails closed — the tool runs with no spill file and reports no path, instead of writing your command output into a directory someone else planted. Only the final session directory is treated as replaceable: a stale file or link sitting exactly where a session directory belongs is removed (a link by itself, never its target) and recreated.
 

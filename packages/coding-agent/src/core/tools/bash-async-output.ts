@@ -109,10 +109,14 @@ export function createAsyncOutputAppender(
 			fullOutputFile = undefined;
 			try {
 				await file.close();
-			} catch (error) {
-				// A spill file that failed to flush must not be advertised.
+			} catch {
+				// A spill file that failed to flush must not be advertised — but it
+				// must not fail the command either. The process already exited, and
+				// reporting a storage fault as command failure invites the caller to
+				// retry a side-effecting command that in fact succeeded. Dropping the
+				// path matches the synchronous executor, which also declines to
+				// advertise a spill it could not write.
 				job.fullOutputPath = undefined;
-				throw error;
 			} finally {
 				writerLease?.release();
 				writerLease = undefined;

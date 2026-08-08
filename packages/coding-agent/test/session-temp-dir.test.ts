@@ -23,6 +23,7 @@ import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helper
 import { redirectOversizedToolResult } from "../src/core/tools/oversized-tool-result.ts";
 import { PersistedOutputFile } from "../src/core/tools/persisted-output-file.ts";
 import {
+	deriveOwnerComponent,
 	ensureTempDir,
 	getSessionTempDir,
 	getTempRootDir,
@@ -99,6 +100,41 @@ describe("session temp directory scoping", () => {
 			assert.ok(isInside(getTempRootDir(), dir), `${hostile} escaped to ${dir}`);
 			assert.equal(relative(getTempRootDir(), dir).includes(sep), false, `${hostile} added a path level`);
 		}
+	});
+
+	it("gives accounts whose names sanitize alike their own owner roots", () => {
+		// `aliceé` and `aliceø` both reduce to the same safe component, so before
+		// the digest was added they selected one shared root. On a machine-wide,
+		// shared-accessible temp directory that put one account's persisted tool
+		// output inside another account's tree.
+		const colliding = ["aliceé", "aliceø", "alice*", "alice"];
+		const components = colliding.map(deriveOwnerComponent);
+		assert.equal(
+			new Set(components).size,
+			colliding.length,
+			`distinct accounts shared an owner root: ${components.join(", ")}`,
+		);
+
+		for (const component of components) {
+			assert.equal(component.includes(sep), false, `${component} added a path level`);
+			assert.equal(component.includes("/"), false, `${component} added a path level`);
+		}
+	});
+
+	it("keeps one Windows account on one root across case spellings", () => {
+		// Windows account names are case-insensitive, so these are one account and
+		// must not be handed two trees.
+		assert.equal(deriveOwnerComponent("Alice"), deriveOwnerComponent("alice"));
+		assert.equal(deriveOwnerComponent("ALICE"), deriveOwnerComponent("alice"));
+	});
+
+	it("still yields a usable component for an unnameable account", () => {
+		const component = deriveOwnerComponent("");
+		assert.ok(component.length > 0, "an empty identity still needs a root");
+		assert.equal(component.includes(sep), false);
+		// Two processes that both fail to name the account agree on one root
+		// rather than scattering trees the sweeper would have to chase.
+		assert.equal(component, deriveOwnerComponent(""));
 	});
 
 	it("never produces a dot-only or hidden component", () => {

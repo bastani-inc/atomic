@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import { createAsyncOutputAppender } from "../src/core/tools/bash-async-output.ts";
+import { PersistedOutputFile } from "../src/core/tools/persisted-output-file.ts";
 import { getProtectedSessionTempDirs, resetSessionTempDirStateForTesting } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES } from "../src/core/tools/truncate.ts";
 
@@ -53,6 +54,37 @@ describe("async output after spill persistence is refused", () => {
 		assert.ok(job.output.includes("🙂"), "a character split after refusal is still decoded");
 		assert.ok(job.output.endsWith("�"), "close still flushes an incomplete decoder tail");
 		assert.deepEqual([...getProtectedSessionTempDirs()], protectedBefore, "close leaves no writer lease behind");
+	});
+
+	it("does not fail a finished command when the spill file cannot be closed", async () => {
+		// A storage fault at close time used to reject out of `close()`, and
+		// `bash-async-execution` turned that rejection into `job.status = "failed"`
+		// for a command that had already exited 0 — inviting a caller to retry a
+		// side-effecting command that in fact succeeded.
+		const protectedBefore = [...getProtectedSessionTempDirs()];
+		const closeFailure = new Error("simulated ENOSPC while flushing the spill file");
+		const realClose = PersistedOutputFile.prototype.close;
+		PersistedOutputFile.prototype.close = function failingClose(): Promise<void> {
+			return Promise.reject(closeFailure);
+		};
+
+		const job: { output: string; fullOutputPath?: string } = { output: "" };
+		try {
+			const appender = createAsyncOutputAppender(job, {
+				persistAfterBytes: PERSIST_AFTER_BYTES,
+				sessionTempDir: join(sandbox, "close-failure-session"),
+			});
+			appender.append(Buffer.from("output long enough to open a real spill file", "utf8"));
+			assert.ok(job.fullOutputPath, "the spill file opened before the close fault");
+
+			await assert.doesNotReject(appender.close(), "a spill close fault must not reject");
+		} finally {
+			PersistedOutputFile.prototype.close = realClose;
+		}
+
+		assert.equal(job.fullOutputPath, undefined, "an unflushed spill path is never advertised");
+		assert.ok(job.output.includes("output long enough"), "polling output survives the close fault");
+		assert.deepEqual([...getProtectedSessionTempDirs()], protectedBefore, "the writer lease is still released");
 	});
 
 	it("keeps polling output bounded and does not retain the refused raw stream", () => {
