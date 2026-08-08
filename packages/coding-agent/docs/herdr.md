@@ -26,14 +26,24 @@ Three states, and nothing else:
 Workflow runs are tracked independently, so concurrent runs keep the pane at
 `working` until the last one ends. A run that is killed, cancelled, or skipped
 ends the same way a completed one does — its contribution is dropped, and the
-pane is never told it completed. A workflow wait uses only a short
-workflow/stage label; run ids, prompt bodies, stage prompts, tool data, and
-model output never reach the Herdr socket.
+pane is never told it completed. Ending a run leaves its stage statuses as they
+were, so a run stopped while a stage awaited input is reported by the run's own
+terminal status rather than by the stage it stopped in. A workflow wait uses
+only a short workflow/stage label; run ids, prompt bodies, stage prompts, tool
+data, and model output never reach the Herdr socket.
 
 Across `/reload`, `/new`, `/resume`, and `/fork` the replacement session
-reconstructs what it reports from the workflow store it can observe. A run that
-is still live keeps the pane's state, and one the new session cannot see has its
-contribution dropped rather than left behind.
+reconstructs what it reports from the workflow store it can observe, rather
+than assuming it saw every past event. A run still live keeps the pane's state,
+and one the new session cannot see has its contribution dropped rather than
+left behind.
+
+Which runs stay live differs by boundary, and the pane follows. `/reload` and
+`/fork` replace the session inside the same process without asking you
+anything, so the workflows keep running and the pane keeps reporting them.
+`/new` and `/resume` ask first — they say that switching stops in-flight
+workflows and clears workflow history — so when you agree, those runs stop and
+the pane returns to `idle`.
 
 Precedence runs top down: an open user dialog wins over a workflow block, a
 workflow block wins over a recorded failure, a failure wins over an active turn

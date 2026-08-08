@@ -119,6 +119,35 @@ export function getWorkflowLifecycleBridgeLineages(scope?: object): readonly Wor
 	return [...workflowLifecycleLineagesFor(scope)].map(([runId, runKey]) => ({ runId, runKey }));
 }
 
+/** Everything a replacement bridge needs from the bridge it replaces. */
+export interface WorkflowLifecycleBridgeHandoff {
+	readonly contributions: readonly WorkflowLifecycleBridgeEvent[];
+	readonly lineages: readonly WorkflowLifecycleBridgeLineage[];
+	readonly terminalLineages: readonly string[];
+}
+
+/**
+ * Take the handoff for a replacement bridge, clearing what it consumes.
+ *
+ * Active contributions stay behind, because a reporter that activates before
+ * the successor reconciles still has to seed from them. Lineage and terminal
+ * tombstones are handoff metadata with no reader once the successor holds a
+ * copy, and they had no eviction path at all while the bus stayed alive:
+ * leaving them is what let a later run reusing a retired id be mistaken for
+ * the continuation of a lineage that ended long ago. The successor re-records
+ * both for every run it can still observe.
+ */
+export function takeWorkflowLifecycleBridgeHandoff(scope?: object): WorkflowLifecycleBridgeHandoff {
+	const handoff: WorkflowLifecycleBridgeHandoff = {
+		contributions: getWorkflowLifecycleBridgeSnapshot(scope),
+		lineages: getWorkflowLifecycleBridgeLineages(scope),
+		terminalLineages: getWorkflowLifecycleBridgeTerminalLineages(scope),
+	};
+	workflowLifecycleLineagesFor(scope).clear();
+	workflowLifecycleTerminalLineagesFor(scope).clear();
+	return handoff;
+}
+
 /**
  * Drop active contributions while retaining lineage and terminal history for a
  * replacement bridge in the same session.

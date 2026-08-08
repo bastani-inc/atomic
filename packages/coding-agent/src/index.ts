@@ -340,8 +340,10 @@ export {
 	rememberWorkflowLifecycleBridgeEvent,
 	rememberWorkflowLifecycleBridgeLineage,
 	resetWorkflowLifecycleBridgeSnapshot,
+	takeWorkflowLifecycleBridgeHandoff,
 	WORKFLOW_LIFECYCLE_EVENT,
 	type WorkflowLifecycleBridgeEvent,
+	type WorkflowLifecycleBridgeHandoff,
 	type WorkflowLifecycleBridgeLineage,
 	type WorkflowLifecycleBridgeNoticeKind,
 } from "./core/workflow-lifecycle-events.js";

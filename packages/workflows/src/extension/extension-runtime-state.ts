@@ -1,9 +1,7 @@
 import {
-	getWorkflowLifecycleBridgeLineages,
-	getWorkflowLifecycleBridgeSnapshot,
-	getWorkflowLifecycleBridgeTerminalLineages,
 	rememberWorkflowLifecycleBridgeEvent,
 	rememberWorkflowLifecycleBridgeLineage,
+	takeWorkflowLifecycleBridgeHandoff,
 	WORKFLOW_LIFECYCLE_EVENT,
 	type WorkflowLifecycleBridgeEvent,
 } from "@bastani/atomic";
@@ -185,6 +183,13 @@ export function createWorkflowExtensionRuntimeState(
 		lifecycleNotificationsUnsubscribe?.();
 		lifecycleNotificationsUnsubscribe = null;
 		if (!notificationsActive) return;
+		// Taken, not read: lineage and terminal tombstones move into this bridge,
+		// which re-records them for every run it can still observe. Active
+		// contributions stay on the bus for a reporter that has not seeded yet,
+		// and are reconciled against the store on the first pass — a live run
+		// keeps what the replaced bridge published, and one this session can no
+		// longer observe is dropped rather than left as a phantom.
+		const handoff = takeWorkflowLifecycleBridgeHandoff(pi.events);
 		lifecycleNotificationsUnsubscribe = installWorkflowLifecycleNotifications({
 			store,
 			config: lifecycleNotificationConfigRef.current,
@@ -193,12 +198,9 @@ export function createWorkflowExtensionRuntimeState(
 			sendMessage: sendWorkflowNotificationMessage,
 			publishLifecycleEvent: publishWorkflowLifecycleEvent,
 			rememberBridgeLineage: rememberWorkflowLifecycleLineage,
-			bridgeLineages: getWorkflowLifecycleBridgeLineages(pi.events),
-			bridgeTerminalLineages: getWorkflowLifecycleBridgeTerminalLineages(pi.events),
-			// Reconciled against the store on the first pass: a live run keeps the
-			// contribution the replaced bridge published, and one this session can
-			// no longer observe is dropped rather than left as a phantom.
-			bridgeContributions: getWorkflowLifecycleBridgeSnapshot(pi.events),
+			bridgeLineages: handoff.lineages,
+			bridgeTerminalLineages: handoff.terminalLineages,
+			bridgeContributions: handoff.contributions,
 		});
 	};
 	const reinstallHilAnswerNotifications = (): void => {
