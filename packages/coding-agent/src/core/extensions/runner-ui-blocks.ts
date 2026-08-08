@@ -130,10 +130,28 @@ function wrapHostMethod(host: ExtensionUIContext, original: UiCallable): UiCalla
 }
 
 /**
- * Whatever a member read resolves to: a wrapped callable, or any non-callable
- * value the host holds. Named so the resolver needs no `unknown` annotation.
+ * Whatever a member read resolves to.
+ *
+ * The union of the context's own member types, not `ReturnType<typeof
+ * Reflect.get>` — that resolves to `any`, so the whole union silently collapsed
+ * to `any` and let anything through while looking narrow. The lexical
+ * `any`/`unknown` scan cannot see an inferred `any`, which is why the assertion
+ * below is a compile-time one.
  */
-type UiMemberValue = UiCallable | ReturnType<typeof Reflect.get>;
+type UiMemberValue = ExtensionUIContext[keyof ExtensionUIContext];
+
+/** `true` only when `T` is `any`. */
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
+type AssertNotAny<T extends false> = T;
+
+/** Fails the typecheck if `UiMemberValue` ever degrades to `any` again. */
+export type UiMemberValueIsNotAny = AssertNotAny<IsAny<UiMemberValue>>;
+
+/** Read a member with the host as receiver, preserving getters and inherited members. */
+function readUiMember(host: ExtensionUIContext, property: string | symbol): UiMemberValue {
+	return host[property as keyof ExtensionUIContext];
+}
 
 /** One member's forwarder, kept only while the host still returns the same function. */
 interface CachedUiMember {
@@ -188,7 +206,7 @@ export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 	 * callable, memoized so repeated lookup is stable.
 	 */
 	const resolveMember = (property: string | symbol): UiMemberValue => {
-		const value = Reflect.get(ui, property, ui);
+		const value = readUiMember(ui, property);
 		if (typeof value !== "function") return value;
 		const callable = value as UiCallable;
 		const cached = memberCache.get(property);
@@ -240,7 +258,7 @@ export function withUserBlocks(ui: ExtensionUIContext): ExtensionUIContext {
 			// Once the target owns the property and is sealed, the proxy must return
 			// exactly what it holds — which is the same forwarder `resolveMember`
 			// produced when it was mirrored.
-			if (targetIsSealed() && Object.hasOwn(surrogate, property)) return Reflect.get(surrogate, property);
+			if (targetIsSealed() && Object.hasOwn(surrogate, property)) return readUiMember(surrogate, property);
 			return resolveMember(property);
 		},
 		has(_surrogate, property) {
