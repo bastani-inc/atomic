@@ -41,7 +41,7 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("renders toolcall_end call contents when workflow event snapshots are stale", () => {
+	test("renders toolcall_end call contents from delta-only workflow events", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const { handle, emit } = makeHandle();
@@ -58,17 +58,6 @@ describe("StageChatView", () => {
 
 		emit({
 			type: "message_update",
-			message: {
-				role: "assistant",
-				content: [
-					{
-						type: "toolCall",
-						id: "t-stale",
-						name: "bash",
-						arguments: {},
-					},
-				],
-			},
 			assistantMessageEvent: {
 				type: "toolcall_end",
 				contentIndex: 0,

@@ -444,13 +444,11 @@ function legacyToolResultEvent(event: AgentSessionEvent): {
 
 function legacyThinkingEvent(event: AgentSessionEvent): {
 	type: "message_update";
-	assistantMessageEvent: { type: "thinking_delta"; delta: string };
-	message: { role: "assistant"; content: [] };
+	assistantMessageEvent: { type: "thinking_delta"; contentIndex: number; delta: string };
 } {
 	const delta = String((event as { delta?: unknown }).delta ?? (event as { text?: unknown }).text ?? "");
 	return {
 		type: "message_update",
-		assistantMessageEvent: { type: "thinking_delta", delta },
-		message: { role: "assistant", content: [] },
+		assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta },
 	};
 }

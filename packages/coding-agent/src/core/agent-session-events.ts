@@ -427,7 +427,6 @@ export async function _emitExtensionEvent(this: AgentSession, event: AgentEvent)
 	} else if (event.type === "message_update") {
 		const extensionEvent: MessageUpdateEvent = {
 			type: "message_update",
-			message: event.message,
 			assistantMessageEvent: event.assistantMessageEvent,
 		};
 		await this._extensionRunner.emit(extensionEvent);

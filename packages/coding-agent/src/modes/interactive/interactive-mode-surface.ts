@@ -1,6 +1,7 @@
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 
 import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
+import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import type {
 	AgentMessage,
@@ -233,7 +234,7 @@ declare module "./interactive-mode-base.ts" {
 		drainStartupReplayCommands(): Promise<void>;
 		advanceStartupInputReplay(submittedText: string): void;
 		subscribeToAgent(): void;
-		handleEvent(event: AgentSessionEvent): Promise<void>;
+		handleEvent(event: AgentSessionEvent | JsonAgentSessionEvent): Promise<void>;
 		getUserMessageText(message: Message): string;
 		showStatus(message: string): void;
 		chatMessageRenderOptions(): ChatMessageRenderOptions;

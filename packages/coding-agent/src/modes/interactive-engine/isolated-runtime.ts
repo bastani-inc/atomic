@@ -1,9 +1,10 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
-import type { AgentSession, AgentSessionEvent, CompactionReason } from "../../core/agent-session.ts";
+import type { AgentSession, CompactionReason } from "../../core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type { PromptOptions } from "../../core/agent-session-types.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type {
 	RpcAutocompleteItem,
@@ -312,7 +313,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			queuedMessagesPaused: { configurable: true, get: () => this.queuePause.isPaused },
 			subscribe: {
 				configurable: true,
-				value: (listener: (event: AgentSessionEvent) => void) => this.client.onEvent(listener),
+				value: (listener: (event: JsonAgentSessionEvent) => void) => this.client.onEvent(listener),
 			},
 			prompt: {
 				configurable: true,

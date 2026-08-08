@@ -34,15 +34,15 @@ describe("StageChatView", () => {
 			},
 		});
 
+		emit({ type: "message_start", message: { role: "assistant", content: [] } } as unknown as AgentSessionEvent);
+		renders = 0;
 		emit({
 			type: "message_update",
-			assistantMessageEvent: { type: "thinking_delta", delta: "reason" },
-			message: { role: "assistant", content: [] },
+			assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "reason" },
 		} as unknown as AgentSessionEvent);
 		emit({
 			type: "message_update",
-			assistantMessageEvent: { type: "thinking_delta", delta: "ing" },
-			message: { role: "assistant", content: [] },
+			assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "ing" },
 		} as unknown as AgentSessionEvent);
 
 		assert.equal(renders, 2);
@@ -51,7 +51,7 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("maps full SDK assistant message snapshots and tool calls", () => {
+	test("maps delta-built SDK assistant content and tool calls", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const { handle, emit } = makeHandle();
@@ -73,18 +73,18 @@ describe("StageChatView", () => {
 		} as unknown as AgentSessionEvent);
 		emit({
 			type: "message_update",
-			message: {
-				role: "assistant",
-				content: [
-					{ type: "thinking", thinking: "checking" },
-					{ type: "text", text: "I will inspect it." },
-					{
-						type: "toolCall",
-						id: "t-snapshot",
-						name: "read",
-						arguments: { path: "src/index.ts" },
-					},
-				],
+			assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "checking" },
+		} as unknown as AgentSessionEvent);
+		emit({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "I will inspect it." },
+		} as unknown as AgentSessionEvent);
+		emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "toolcall_end",
+				contentIndex: 2,
+				toolCall: { type: "toolCall", id: "t-snapshot", name: "read", arguments: { path: "src/index.ts" } },
 			},
 		} as unknown as AgentSessionEvent);
 
@@ -401,7 +401,11 @@ describe("StageChatView", () => {
 			} as AgentSessionEvent);
 			emit({
 				type: "message_update",
-				message: { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }] },
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: { type: "toolCall", id: "read-1", name: "read", arguments: {} },
+				},
 			} as AgentSessionEvent);
 			assert.match(stripAnsi(view.render(96).join("\n")), /Schlepping\.\.\./);
 			emit({ type: "turn_end" } as AgentSessionEvent);

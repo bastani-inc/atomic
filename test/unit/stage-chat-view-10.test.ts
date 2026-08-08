@@ -289,20 +289,17 @@ describe("StageChatView", () => {
 		});
 
 		emit({
+			type: "message_start",
+			message: { role: "assistant", content: [] },
+		} as unknown as AgentSessionEvent);
+		renders = 0;
+		emit({
 			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "hel" },
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "hel" }],
-			},
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "hel" },
 		} as unknown as AgentSessionEvent);
 		emit({
 			type: "message_update",
-			assistantMessageEvent: { type: "text_delta", delta: "lo" },
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "hello" }],
-			},
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "lo" },
 		} as unknown as AgentSessionEvent);
 
 		assert.equal(renders, 2);
@@ -327,15 +324,15 @@ describe("StageChatView", () => {
 		});
 
 		emit({
+			type: "message_start",
+			message: { role: "assistant", content: [] },
+		} as unknown as AgentSessionEvent);
+		emit({
 			type: "message_update",
-			message: {
-				role: "assistant",
-				content: [
-					{
-						type: "text",
-						text: "# Plan\n\n- **Read** files\n- Use `rg`",
-					},
-				],
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "# Plan\n\n- **Read** files\n- Use `rg`",
 			},
 		} as unknown as AgentSessionEvent);
 

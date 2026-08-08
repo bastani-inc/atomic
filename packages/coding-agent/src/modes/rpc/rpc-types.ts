@@ -15,7 +15,7 @@ import type {
 	OAuthSelectPrompt,
 } from "@earendil-works/pi-ai";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
-import type { AgentSessionEvent, CompactionReason, SessionStats } from "../../core/agent-session.ts";
+import type { CompactionReason, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
@@ -24,6 +24,7 @@ import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type { JsonAgentSessionEvent } from "../json-event.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -384,7 +385,7 @@ export type RpcResponse =
 // ============================================================================
 
 /** Events streamed by RPC mode as session activity occurs. */
-export type RpcEvent = AgentSessionEvent;
+export type RpcEvent = JsonAgentSessionEvent;
 
 // ============================================================================
 // Extension UI Events (stdout)

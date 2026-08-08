@@ -10,6 +10,7 @@ import {
 	type CustomMessage,
 	isVerbatimCompactionMessage,
 } from "../../../core/messages.ts";
+import { applyAssistantMessageDelta, type StreamingAssistantDelta } from "../streaming-assistant-message.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
@@ -137,7 +138,7 @@ export function chatEntriesFromAgentMessages(messages: readonly AgentMessage[]):
 export interface LiveChatEventLike {
 	readonly type?: unknown;
 	readonly message?: unknown;
-	readonly assistantMessageEvent?: { readonly type?: unknown; readonly delta?: unknown };
+	readonly assistantMessageEvent?: StreamingAssistantDelta;
 	readonly toolCallId?: unknown;
 	readonly toolName?: unknown;
 	readonly args?: unknown;
@@ -218,24 +219,10 @@ export class LiveChatEntriesController {
 		return true;
 	}
 	private handleMessageUpdate(event: LiveChatEventLike): boolean {
-		const message = event.message;
-		let changed = false;
-		const snapshotHasPayload =
-			isAgentMessageLike(message) &&
-			message.role === "assistant" &&
-			assistantContentHasRenderablePayload((message as { content?: unknown }).content);
-		if (isAgentMessageLike(message) && message.role === "assistant" && snapshotHasPayload) {
-			changed = this.updateAssistantMessage(message as AssistantMessage) || changed;
-		}
-		const assistantEvent = event.assistantMessageEvent;
-		const streamType = String(assistantEvent?.type ?? "");
-		const delta = typeof assistantEvent?.delta === "string" ? assistantEvent.delta : "";
-		if (!changed && streamType === "text_delta" && delta) {
-			changed = this.appendAssistantTextDelta(delta);
-		} else if (!changed && streamType === "thinking_delta" && delta) {
-			changed = this.appendAssistantThinkingDelta(delta);
-		}
-		return changed;
+		if (!event.assistantMessageEvent) return false;
+		const message = this.currentStreamingAssistantMessage() ?? minimalAssistantMessage();
+		if (!applyAssistantMessageDelta(message, event.assistantMessageEvent)) return false;
+		return this.updateAssistantMessage(message);
 	}
 	private handleMessageEnd(message: unknown): boolean {
 		if (!isAgentMessageLike(message) || message.role !== "assistant") return false;
@@ -279,28 +266,6 @@ export class LiveChatEntriesController {
 			});
 		}
 		return true;
-	}
-	private appendAssistantTextDelta(delta: string): boolean {
-		const current = this.currentStreamingAssistantMessage();
-		const content = current ? [...current.content] : [];
-		const lastText = [...content].reverse().find((item) => item.type === "text");
-		if (lastText && lastText.type === "text") lastText.text += delta;
-		else content.push({ type: "text", text: delta });
-		return this.updateAssistantMessage({
-			...(current ?? minimalAssistantMessage()),
-			content,
-		});
-	}
-	private appendAssistantThinkingDelta(delta: string): boolean {
-		const current = this.currentStreamingAssistantMessage();
-		const content = current ? [...current.content] : [];
-		const lastThinking = [...content].reverse().find((item) => item.type === "thinking");
-		if (lastThinking && lastThinking.type === "thinking") lastThinking.thinking += delta;
-		else content.push({ type: "thinking", thinking: delta });
-		return this.updateAssistantMessage({
-			...(current ?? minimalAssistantMessage()),
-			content,
-		});
 	}
 	private currentStreamingAssistantMessage(): AssistantMessage | undefined {
 		const entry = this.streamingAssistantIndex !== undefined ? this.entries[this.streamingAssistantIndex] : undefined;
@@ -385,20 +350,6 @@ function isAgentMessageLike(
 	message: unknown,
 ): message is AgentMessage & { stopReason?: unknown; errorMessage?: unknown } {
 	return message !== null && typeof message === "object" && "role" in message;
-}
-function assistantContentHasRenderablePayload(content: unknown): boolean {
-	if (typeof content === "string") return content.length > 0;
-	if (!Array.isArray(content)) return false;
-	return content.some((item) => {
-		if (typeof item === "string") return item.length > 0;
-		if (item == null || typeof item !== "object") return false;
-		const obj = item as { type?: unknown; text?: unknown; thinking?: unknown };
-		return (
-			(obj.type === "text" && typeof obj.text === "string" && obj.text.length > 0) ||
-			(obj.type === "thinking" && typeof obj.thinking === "string" && obj.thinking.length > 0) ||
-			obj.type === "toolCall"
-		);
-	});
 }
 function minimalAssistantMessage(): AssistantMessage {
 	return {

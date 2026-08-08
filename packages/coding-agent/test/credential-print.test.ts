@@ -1516,7 +1516,7 @@ describe("credential egress chokepoint", () => {
 		`modes/interactive-engine/engine-child-liveness.ts: writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity }))`,
 		`modes/interactive/external-editor.ts: process.stdout.write( \`Launching external editor: \${request.command}\\n\${APP_NAME} will resume when the editor exits.\\n\`, )`,
 		`modes/interactive/interactive-process-lifecycle.ts: process.stdout.write(\`\${chalk.dim("To resume this session:")} \${resumeCommand}\\n\`)`,
-		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(event)}\\n\`)`,
+		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(toJsonEvent(event))}\\n\`)`,
 		`modes/print-mode.ts: writeRawStdout(\`\${JSON.stringify(header)}\\n\`)`,
 		`modes/print-mode.ts: writeRawStdout(\`\${content.text}\\n\`)`,
 		`modes/print-mode.ts: writeRawStdout(\`\${text}\\n\`)`,

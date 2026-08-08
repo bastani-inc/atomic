@@ -87,7 +87,6 @@ export interface MessageStartEvent {
 /** Fired during assistant message streaming with token-by-token updates */
 export interface MessageUpdateEvent {
 	type: "message_update";
-	message: AgentMessage;
 	assistantMessageEvent: AssistantMessageEvent;
 }
 
