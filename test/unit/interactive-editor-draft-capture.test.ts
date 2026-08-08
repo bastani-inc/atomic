@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { Terminal } from "@earendil-works/pi-tui";
-import { TUI } from "@earendil-works/pi-tui";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
@@ -44,7 +44,7 @@ interface EditorHarness {
 }
 
 function makeEditor(): EditorHarness {
-	const editor = new CustomEditor(new TUI(new FakeTerminal()), getEditorTheme(), new KeybindingsManager());
+	const editor = new CustomEditor(new TuiMainScreen(new FakeTerminal()), getEditorTheme(), new KeybindingsManager());
 	const submitted: string[] = [];
 	const drafts: Array<string | undefined> = [];
 	editor.onSubmit = (text: string) => {

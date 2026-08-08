@@ -41,7 +41,8 @@ import {
 	setRegisteredThemes,
 	type Text,
 	type ToolExecutionComponent,
-	TUI,
+	type TUI,
+	TuiMainScreen,
 	UsageMeterComponent,
 	VERSION,
 } from "./interactive-mode-deps.ts";
@@ -321,7 +322,7 @@ export class InteractiveModeBase {
 			await this.rebindCurrentSession();
 		});
 		this.version = VERSION;
-		this.ui = new TUI(
+		this.ui = new TuiMainScreen(
 			options.terminal ?? new ProcessTerminal(),
 			this.settingsManager.getShowHardwareCursor(),
 			runtimeHost.services.agentDir,

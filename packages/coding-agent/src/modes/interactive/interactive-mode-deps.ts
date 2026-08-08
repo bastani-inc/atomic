@@ -43,7 +43,8 @@ export {
 	setKeybindings,
 	Text,
 	TruncatedText,
-	TUI,
+	type TUI,
+	TuiMainScreen,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 export { spawn, spawnSync } from "child_process";

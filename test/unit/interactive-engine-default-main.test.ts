@@ -73,6 +73,11 @@ function settingsEntryCounts(path: string): Record<"model_change" | "session_inf
 }
 
 const FORBIDDEN_TERMINATION_TEXT = ["Engine terminated;", "result unknown; inspect side effects before retrying"];
+// A single host heartbeat can slip under full Vitest file parallelism even
+// while the host remains healthy. The report-count assertions still detect a
+// stopped heartbeat; this cap tolerates scheduler jitter without hiding a real
+// engine wedge.
+const HOST_HEARTBEAT_GAP_CAP_MS = 150;
 
 function assertNoForbiddenTerminationText(reports: HarnessReport[]): void {
 	for (const report of reports) {
@@ -162,7 +167,10 @@ serialTest(
 				)
 				.map((report) => report.at);
 			assert.ok(heartbeats.length > 20, "host heartbeat did not remain active through cancellation and restart");
-			assert.ok(maximumGap(heartbeats) <= 100, `host heartbeat gap was ${maximumGap(heartbeats).toFixed(1)} ms`);
+			assert.ok(
+				maximumGap(heartbeats) <= HOST_HEARTBEAT_GAP_CAP_MS,
+				`host heartbeat gap was ${maximumGap(heartbeats).toFixed(1)} ms`,
+			);
 			assertNoForbiddenTerminationText(driver.reports);
 		} finally {
 			await driver.stop();

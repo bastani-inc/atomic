@@ -1,4 +1,4 @@
-import { type Terminal, TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type Terminal, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
@@ -28,7 +28,7 @@ function stripAnsi(value: string): string {
 }
 
 function createEditor(): CustomEditor {
-	return new CustomEditor(new TUI(new FakeTerminal()), getEditorTheme(), new KeybindingsManager());
+	return new CustomEditor(new TuiMainScreen(new FakeTerminal()), getEditorTheme(), new KeybindingsManager());
 }
 
 describe("CustomEditor prompt prefix", () => {

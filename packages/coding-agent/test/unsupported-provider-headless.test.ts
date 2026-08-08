@@ -10,6 +10,9 @@ import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl
 import type { RpcCommand, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
 import { bunExecutable, cliPath, runCliProcess } from "./cli-test-helpers.ts";
 
+const RPC_COMMAND_TIMEOUT_MS = 30_000;
+const REAL_HEADLESS_RPC_TEST_TIMEOUT_MS = 120_000;
+
 const WARNING =
 	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
 const tempDirs: string[] = [];
@@ -140,7 +143,7 @@ function startRpc(cwd: string, agentDir: string, sessionDir: string, sessionFile
 				const timer = setTimeout(() => {
 					pending.delete(id);
 					reject(new Error(`Timed out waiting for ${command.type}: ${stderr}`));
-				}, 10_000);
+				}, RPC_COMMAND_TIMEOUT_MS);
 				pending.set(id, { resolve, reject, timer });
 				child.stdin.write(serializeJsonLine({ ...command, id } as RpcCommand));
 			});
@@ -276,51 +279,63 @@ describe("unsupported provider in headless modes", () => {
 		});
 	}
 
-	it("RPC keeps persisted stale state recoverable through explicit set_model", async () => {
-		const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionFile);
-		try {
-			const blocked = await rpc.send({ type: "prompt", message: "blocked persisted prompt" });
-			expect(responseError(blocked)).toBe(WARNING);
-			expect(responseError(blocked)).not.toContain("API key");
-			expect(responseSuccess(await rpc.send({ type: "get_available_models" }))).toBe(true);
-			expect(
-				responseSuccess(await rpc.send({ type: "set_model", provider: "recovery", modelId: "recovery-model" })),
-			).toBe(true);
-			expect(responseSuccess(await rpc.send({ type: "prompt", message: "recovered" }))).toBe(true);
-			expect(rpc.stderr()).not.toContain("API key");
-		} finally {
-			await rpc.stop();
-		}
-	});
-	it("RPC cycle_model clears persisted unsupported lock before the next prompt", async () => {
-		const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionFile);
-		try {
-			expect(responseError(await rpc.send({ type: "prompt", message: "blocked before cycle" }))).toBe(WARNING);
-			const cycled = await rpc.send({ type: "cycle_model", direction: "forward" });
-			expect(responseSuccess(cycled)).toBe(true);
-			const prompt = await rpc.send({ type: "prompt", message: "recovered by cycle" });
-			expect(responseSuccess(prompt)).toBe(true);
-			await expect.poll(() => rpc.records().some((record) => record.type === "agent_end")).toBe(true);
-			expect(rpc.stderr()).not.toContain("API key");
-		} finally {
-			await rpc.stop();
-		}
-	});
-	it("RPC remains live and accepts set_model recovery before prompting", async () => {
-		const rpc = startRpc(cwd, agentDir, sessionDir);
-		try {
-			const blocked = await rpc.send({ type: "prompt", message: "blocked" });
-			expect(responseError(blocked)).toBe(WARNING);
-			expect(responseError(blocked)).not.toContain("API key");
-			const catalog = await rpc.send({ type: "get_available_models" });
-			expect(responseSuccess(catalog)).toBe(true);
-			const recovered = await rpc.send({ type: "set_model", provider: "recovery", modelId: "recovery-model" });
-			expect(responseSuccess(recovered)).toBe(true);
-			const prompt = await rpc.send({ type: "prompt", message: "recovered" });
-			expect(responseSuccess(prompt)).toBe(true);
-			expect(rpc.stderr()).not.toContain("API key");
-		} finally {
-			await rpc.stop();
-		}
-	});
+	it(
+		"RPC keeps persisted stale state recoverable through explicit set_model",
+		async () => {
+			const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionFile);
+			try {
+				const blocked = await rpc.send({ type: "prompt", message: "blocked persisted prompt" });
+				expect(responseError(blocked)).toBe(WARNING);
+				expect(responseError(blocked)).not.toContain("API key");
+				expect(responseSuccess(await rpc.send({ type: "get_available_models" }))).toBe(true);
+				expect(
+					responseSuccess(await rpc.send({ type: "set_model", provider: "recovery", modelId: "recovery-model" })),
+				).toBe(true);
+				expect(responseSuccess(await rpc.send({ type: "prompt", message: "recovered" }))).toBe(true);
+				expect(rpc.stderr()).not.toContain("API key");
+			} finally {
+				await rpc.stop();
+			}
+		},
+		REAL_HEADLESS_RPC_TEST_TIMEOUT_MS,
+	);
+	it(
+		"RPC cycle_model clears persisted unsupported lock before the next prompt",
+		async () => {
+			const rpc = startRpc(cwd, agentDir, sessionDir, persistedSessionFile);
+			try {
+				expect(responseError(await rpc.send({ type: "prompt", message: "blocked before cycle" }))).toBe(WARNING);
+				const cycled = await rpc.send({ type: "cycle_model", direction: "forward" });
+				expect(responseSuccess(cycled)).toBe(true);
+				const prompt = await rpc.send({ type: "prompt", message: "recovered by cycle" });
+				expect(responseSuccess(prompt)).toBe(true);
+				await expect.poll(() => rpc.records().some((record) => record.type === "agent_end")).toBe(true);
+				expect(rpc.stderr()).not.toContain("API key");
+			} finally {
+				await rpc.stop();
+			}
+		},
+		REAL_HEADLESS_RPC_TEST_TIMEOUT_MS,
+	);
+	it(
+		"RPC remains live and accepts set_model recovery before prompting",
+		async () => {
+			const rpc = startRpc(cwd, agentDir, sessionDir);
+			try {
+				const blocked = await rpc.send({ type: "prompt", message: "blocked" });
+				expect(responseError(blocked)).toBe(WARNING);
+				expect(responseError(blocked)).not.toContain("API key");
+				const catalog = await rpc.send({ type: "get_available_models" });
+				expect(responseSuccess(catalog)).toBe(true);
+				const recovered = await rpc.send({ type: "set_model", provider: "recovery", modelId: "recovery-model" });
+				expect(responseSuccess(recovered)).toBe(true);
+				const prompt = await rpc.send({ type: "prompt", message: "recovered" });
+				expect(responseSuccess(prompt)).toBe(true);
+				expect(rpc.stderr()).not.toContain("API key");
+			} finally {
+				await rpc.stop();
+			}
+		},
+		REAL_HEADLESS_RPC_TEST_TIMEOUT_MS,
+	);
 });

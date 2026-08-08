@@ -4,7 +4,8 @@ import {
 	type OverlayHandle,
 	type OverlayOptions,
 	type Terminal,
-	TUI,
+	type TUI,
+	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { getAgentDir } from "../../config.ts";
 import { runCallback } from "../../core/callback-activity.ts";
@@ -120,7 +121,7 @@ export class EngineCustomUiService {
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
-		const tui = new TUI(terminal, undefined, getAgentDir());
+		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
 		void runCallback({ kind: "renderer", name: `widget:${key}` }, () => factory(tui, theme))
 			.then((component) => {
 				if (this.widgetIds.get(key) !== componentId) {
@@ -187,7 +188,7 @@ export class EngineCustomUiService {
 			() => this.send({ type: "engine_custom_invalidate", componentId }),
 			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
 		);
-		const tui = new TUI(terminal, undefined, getAgentDir());
+		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
 		const component = await factory(tui, theme, this.keybindings, done);
 		tui.addChild(component);
 		tui.setFocus(component);

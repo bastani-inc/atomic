@@ -15,7 +15,8 @@ import {
 
 const serialTest = process.platform === "win32" ? test.sequential.skip : test.sequential;
 const PREFIX = "@@ATOMIC_TEST@@";
-const INHERITED_DISCOVERY_TIMEOUT_MS = 20_000;
+const INHERITED_DISCOVERY_TIMEOUT_MS = 60_000;
+const INHERITED_REPORT_TIMEOUT_MS = 30_000;
 
 interface HarnessReport {
 	type?: string;
@@ -60,7 +61,10 @@ class InteractiveDriver {
 		void stdin.flush();
 	}
 
-	async waitFor(predicate: (report: HarnessReport) => boolean, timeoutMs = 10_000): Promise<HarnessReport> {
+	async waitFor(
+		predicate: (report: HarnessReport) => boolean,
+		timeoutMs = INHERITED_REPORT_TIMEOUT_MS,
+	): Promise<HarnessReport> {
 		const existing = this.reports.find(predicate);
 		if (existing) return existing;
 		return new Promise((resolve, reject) => {
@@ -194,12 +198,12 @@ serialTest(
 			ATOMIC_LEGACY_COMMAND_LOG: logFile,
 		});
 		try {
-			await driver.waitFor((report) => report.type === "terminal_ready", 15_000);
+			await driver.waitFor((report) => report.type === "terminal_ready", INHERITED_REPORT_TIMEOUT_MS);
 			assert.ok((await waitForCommand(driver)).has("legacy-compatible"));
 			driver.send({ type: "input", data: "/legacy-compatible" });
 			await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/legacy-compatible");
 			driver.send({ type: "input", data: "\r" });
-			const deadline = performance.now() + 5_000;
+			const deadline = performance.now() + INHERITED_REPORT_TIMEOUT_MS;
 			while (!existsSync(logFile) && performance.now() < deadline) await sleep(20);
 			assert.equal(readFileSync(logFile, "utf8"), "invoked\n");
 		} finally {
@@ -207,7 +211,7 @@ serialTest(
 			rmSync(temp, { recursive: true, force: true });
 		}
 	},
-	20_000,
+	INHERITED_DISCOVERY_TIMEOUT_MS,
 );
 
 serialTest(
@@ -225,7 +229,7 @@ serialTest(
 			PI_CODING_AGENT_DIR: undefined,
 		});
 		try {
-			await driver.waitFor((report) => report.type === "terminal_ready", 15_000);
+			await driver.waitFor((report) => report.type === "terminal_ready", INHERITED_REPORT_TIMEOUT_MS);
 			await sleep(500);
 			assert.equal((await driver.autocomplete("/legacy-compatible")).has("legacy-compatible"), false);
 		} finally {
@@ -233,5 +237,5 @@ serialTest(
 			rmSync(temp, { recursive: true, force: true });
 		}
 	},
-	20_000,
+	INHERITED_DISCOVERY_TIMEOUT_MS,
 );

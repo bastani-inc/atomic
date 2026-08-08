@@ -142,7 +142,7 @@ test("ModelRuntime delegates enumeration, runtime auth, snapshots, and refresh",
 	const runtime = await ModelRuntime.create({ credentials: auth, modelsPath: null });
 	const model = runtime.getModels("anthropic")[0];
 	assert.ok(model);
-	await runtime.setRuntimeApiKey("anthropic", "runtime-secret", { allowNetwork: false });
+	await runtime.setRuntimeApiKey("anthropic", "runtime-secret", {});
 	assert.ok((await runtime.getAvailable("anthropic")).some((candidate) => candidate.id === model.id));
 	const resolved = await runtime.getAuth(model);
 	assert.equal(resolved?.auth.apiKey, "runtime-secret");

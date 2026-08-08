@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings, type Terminal, TUI } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import type { ExtensionUIContext, HostInputFormField } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
@@ -197,7 +197,7 @@ describe("host-native input form", () => {
 	});
 	test("real TUI listener ordering reserves Ctrl+C only for a focused inline form", () => {
 		const keybindings = new KeybindingsManager();
-		const formTui = new TUI(new InputFormTerminal());
+		const formTui = new TuiMainScreen(new InputFormTerminal());
 		let globalClears = 0;
 		let cancellations = 0;
 		const component = new HostInputFormComponent(
@@ -228,11 +228,11 @@ describe("host-native input form", () => {
 				requestRender: () => {},
 			}),
 		);
-		(formTui as unknown as { handleInput(data: string): void }).handleInput("\x03");
+		(formTui as unknown as { handleTerminalInput(data: string): void }).handleTerminalInput("\x03");
 		assert.equal(globalClears, 0);
 		assert.equal(cancellations, 1);
 
-		const editorTui = new TUI(new InputFormTerminal());
+		const editorTui = new TuiMainScreen(new InputFormTerminal());
 		let editorInputs = 0;
 		editorTui.setFocus({
 			render: () => [],
@@ -256,7 +256,7 @@ describe("host-native input form", () => {
 				requestRender: () => {},
 			}),
 		);
-		(editorTui as unknown as { handleInput(data: string): void }).handleInput("\x03");
+		(editorTui as unknown as { handleTerminalInput(data: string): void }).handleTerminalInput("\x03");
 		assert.equal(globalClears, 1);
 		assert.equal(editorInputs, 0);
 	});

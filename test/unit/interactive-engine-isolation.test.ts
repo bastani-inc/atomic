@@ -23,68 +23,87 @@ function maximumGap(timestamps: readonly number[]): number {
 	return maximum;
 }
 
-test.sequential("the real agent path isolates a blocking extension tool and reports its child PID", async () => {
-	const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-isolation-"));
-	const pidFile = join(tempDir, "tool.pid");
-	const heartbeatTimes: number[] = [performance.now()];
-	let inputTicks = 0;
-	let renderTicks = 0;
-	const heartbeat = setInterval(() => heartbeatTimes.push(performance.now()), 10);
-	const input = setInterval(() => {
-		inputTicks += 1;
-	}, 20);
-	const render = setInterval(() => {
-		renderTicks += 1;
-	}, 16);
-	let resolveDiagnostic!: (diagnostic: ActivityWatchdogDiagnostic) => void;
-	const diagnosticPromise = new Promise<ActivityWatchdogDiagnostic>((resolve) => {
-		resolveDiagnostic = resolve;
-	});
-	const client = new RpcClient({
-		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(moduleDir(import.meta.url), "../.."),
-		runtimeExecutable: bunExecutable(),
-		provider: "isolation-fixture",
-		model: "blocking-model",
-		env: { ATOMIC_BLOCKING_TOOL_PID_FILE: pidFile },
-		args: [
-			"--no-session",
-			"--no-extensions",
-			"--extension",
-			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills",
-			"--no-prompt-templates",
-			"--no-themes",
-			"--offline",
-		],
-		interactiveEngine: { onDiagnostic: resolveDiagnostic },
-	});
-	try {
-		await client.start();
-		await client.waitForInteractiveEngineBound();
-		await client.prompt("run the blocking tool");
-		const diagnostic = await diagnosticPromise;
-		assert.equal(diagnostic.level, "blocking");
-		assert.equal(diagnostic.activity?.kind, "tool.execute");
-		assert.equal(diagnostic.activity?.name, "busy_loop");
-		assert.match(diagnostic.message, /Engine callback tool\.execute busy_loop has not yielded/);
-		assert.notEqual(Number(readFileSync(pidFile, "utf8")), process.pid, "tool callback ran in the TUI host process");
-		const inputAtDiagnostic = inputTicks;
-		const rendersAtDiagnostic = renderTicks;
-		await sleep(150);
-		assert.ok(inputTicks > inputAtDiagnostic, "input proxy stopped during the real blocking tool");
-		assert.ok(renderTicks > rendersAtDiagnostic, "render proxy stopped during the real blocking tool");
-	} finally {
-		await client.stop();
-		clearInterval(heartbeat);
-		clearInterval(input);
-		clearInterval(render);
-		heartbeatTimes.push(performance.now());
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-	const observedMaximumGap = maximumGap(heartbeatTimes);
-	assert.ok(observedMaximumGap <= 100, `host heartbeat gap ${observedMaximumGap.toFixed(1)} ms exceeded 100 ms`);
-});
+const REAL_ENGINE_ISOLATION_TEST_TIMEOUT_MS = 120_000;
+
+test.sequential(
+	"the real agent path isolates a blocking extension tool and reports its child PID",
+	async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "atomic-engine-isolation-"));
+		const pidFile = join(tempDir, "tool.pid");
+		const heartbeatTimes: number[] = [performance.now()];
+		let inputTicks = 0;
+		let renderTicks = 0;
+		const heartbeat = setInterval(() => heartbeatTimes.push(performance.now()), 10);
+		const input = setInterval(() => {
+			inputTicks += 1;
+		}, 20);
+		const render = setInterval(() => {
+			renderTicks += 1;
+		}, 16);
+		let resolveDiagnostic!: (diagnostic: ActivityWatchdogDiagnostic) => void;
+		const diagnosticPromise = new Promise<ActivityWatchdogDiagnostic>((resolve) => {
+			resolveDiagnostic = resolve;
+		});
+		const onDiagnostic = (diagnostic: ActivityWatchdogDiagnostic): void => {
+			// Under parallel load a child can report an earlier blocking lifecycle
+			// diagnostic without an activity. This test is specifically about the
+			// watchdog's tool.execute activity, so ignore unrelated diagnostics rather
+			// than resolving the promise on whichever one wins the race.
+			if (diagnostic.level === "blocking" && diagnostic.activity?.kind === "tool.execute") {
+				resolveDiagnostic(diagnostic);
+			}
+		};
+		const client = new RpcClient({
+			cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+			cwd: join(moduleDir(import.meta.url), "../.."),
+			runtimeExecutable: bunExecutable(),
+			provider: "isolation-fixture",
+			model: "blocking-model",
+			env: { ATOMIC_BLOCKING_TOOL_PID_FILE: pidFile },
+			args: [
+				"--no-session",
+				"--no-extensions",
+				"--extension",
+				join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--offline",
+			],
+			interactiveEngine: { onDiagnostic },
+		});
+		try {
+			await client.start();
+			await client.waitForInteractiveEngineBound();
+			await client.prompt("run the blocking tool");
+			const diagnostic = await diagnosticPromise;
+			assert.equal(diagnostic.level, "blocking");
+			assert.equal(diagnostic.activity?.kind, "tool.execute");
+			assert.equal(diagnostic.activity?.name, "busy_loop");
+			assert.match(diagnostic.message, /Engine callback tool\.execute busy_loop has not yielded/);
+			assert.notEqual(
+				Number(readFileSync(pidFile, "utf8")),
+				process.pid,
+				"tool callback ran in the TUI host process",
+			);
+			const inputAtDiagnostic = inputTicks;
+			const rendersAtDiagnostic = renderTicks;
+			await sleep(150);
+			assert.ok(inputTicks > inputAtDiagnostic, "input proxy stopped during the real blocking tool");
+			assert.ok(renderTicks > rendersAtDiagnostic, "render proxy stopped during the real blocking tool");
+		} finally {
+			await client.stop();
+			clearInterval(heartbeat);
+			clearInterval(input);
+			clearInterval(render);
+			heartbeatTimes.push(performance.now());
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+		const observedMaximumGap = maximumGap(heartbeatTimes);
+		assert.ok(observedMaximumGap <= 100, `host heartbeat gap ${observedMaximumGap.toFixed(1)} ms exceeded 100 ms`);
+	},
+	REAL_ENGINE_ISOLATION_TEST_TIMEOUT_MS,
+);
 
 test("remote custom components render and receive input through the engine protocol", async () => {
 	const output: string[] = [];
@@ -162,55 +181,59 @@ test.sequential("startup custom UI can unblock engine binding after transport re
 	}
 });
 
-test.sequential("blocking extension initialization cannot delay creation of the interactive host", async () => {
-	const ticks: number[] = [performance.now()];
-	const heartbeat = setInterval(() => ticks.push(performance.now()), 10);
-	let resolveDiagnostic!: (diagnostic: ActivityWatchdogDiagnostic) => void;
-	const diagnosticPromise = new Promise<ActivityWatchdogDiagnostic>((resolve) => {
-		resolveDiagnostic = resolve;
-	});
-	const client = new RpcClient({
-		cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
-		cwd: join(moduleDir(import.meta.url), "../.."),
-		runtimeExecutable: bunExecutable(),
-		provider: "isolation-fixture",
-		model: "blocking-model",
-		env: { ATOMIC_BLOCKING_EXTENSION_INIT: "1" },
-		args: [
-			"--no-session",
-			"--no-extensions",
-			"--extension",
-			join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
-			"--no-skills",
-			"--no-prompt-templates",
-			"--no-themes",
-			"--offline",
-		],
-		interactiveEngine: { onDiagnostic: resolveDiagnostic },
-	});
-	try {
-		let bound = false;
-		// `start()` initializes the monitor synchronously before awaiting
-		// engine_ready, so capture engine_bound concurrently. The invariant we
-		// care about is ordering, not an OS-specific absolute spawn budget:
-		// host readiness MUST resolve while the deliberately blocking extension
-		// initialization is still pending.
-		const startPromise = client.start();
-		const boundPromise = client.waitForInteractiveEngineBound().then(() => {
-			bound = true;
+test.sequential(
+	"blocking extension initialization cannot delay creation of the interactive host",
+	async () => {
+		const ticks: number[] = [performance.now()];
+		const heartbeat = setInterval(() => ticks.push(performance.now()), 10);
+		let resolveDiagnostic!: (diagnostic: ActivityWatchdogDiagnostic) => void;
+		const diagnosticPromise = new Promise<ActivityWatchdogDiagnostic>((resolve) => {
+			resolveDiagnostic = resolve;
 		});
-		await startPromise;
-		assert.equal(bound, false, "host creation waited for blocking extension initialization");
-		const diagnostic = await diagnosticPromise;
-		assert.equal(diagnostic.level, "blocking");
-		await boundPromise;
-	} finally {
-		await client.stop();
-		clearInterval(heartbeat);
-		ticks.push(performance.now());
-	}
-	assert.ok(maximumGap(ticks) <= 100, "host heartbeat stalled during extension initialization");
-});
+		const client = new RpcClient({
+			cliPath: join(moduleDir(import.meta.url), "../../packages/coding-agent/src/cli.ts"),
+			cwd: join(moduleDir(import.meta.url), "../.."),
+			runtimeExecutable: bunExecutable(),
+			provider: "isolation-fixture",
+			model: "blocking-model",
+			env: { ATOMIC_BLOCKING_EXTENSION_INIT: "1" },
+			args: [
+				"--no-session",
+				"--no-extensions",
+				"--extension",
+				join(moduleDir(import.meta.url), "fixtures", "blocking-tool-extension.ts"),
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--offline",
+			],
+			interactiveEngine: { onDiagnostic: resolveDiagnostic },
+		});
+		try {
+			let bound = false;
+			// `start()` initializes the monitor synchronously before awaiting
+			// engine_ready, so capture engine_bound concurrently. The invariant we
+			// care about is ordering, not an OS-specific absolute spawn budget:
+			// host readiness MUST resolve while the deliberately blocking extension
+			// initialization is still pending.
+			const startPromise = client.start();
+			const boundPromise = client.waitForInteractiveEngineBound().then(() => {
+				bound = true;
+			});
+			await startPromise;
+			assert.equal(bound, false, "host creation waited for blocking extension initialization");
+			const diagnostic = await diagnosticPromise;
+			assert.equal(diagnostic.level, "blocking");
+			await boundPromise;
+		} finally {
+			await client.stop();
+			clearInterval(heartbeat);
+			ticks.push(performance.now());
+		}
+		assert.ok(maximumGap(ticks) <= 100, "host heartbeat stalled during extension initialization");
+	},
+	REAL_ENGINE_ISOLATION_TEST_TIMEOUT_MS,
+);
 
 test("interactive JSONL drainage preserves frames larger than 1 MiB", async () => {
 	const large = "x".repeat(1_100_000);
