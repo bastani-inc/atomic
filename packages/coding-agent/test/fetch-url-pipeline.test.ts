@@ -1,3 +1,4 @@
+import { PassThrough } from "node:stream";
 import { expect, test, vi } from "vitest";
 
 // Hoisted DNS resolution used by the mocked node:dns/promises.lookup. `null`
@@ -24,6 +25,7 @@ vi.mock("node:dns/promises", async (importActual) => {
 });
 
 import {
+	createPinnedResponseBodyStream,
 	getReadUrlCacheKey,
 	isReadableUrlPath,
 	loadPage,
@@ -149,4 +151,43 @@ test("pins the DNS-resolved address for hostname fetches (no rebinding at connec
 		if (previousAllowance === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 		else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = previousAllowance;
 	}
+});
+
+test("bridge ignores late data after consumer cancellation", async () => {
+	const body = new PassThrough();
+	const reader = createPinnedResponseBodyStream(body).getReader();
+
+	await reader.cancel();
+	await new Promise((resolve) => setImmediate(resolve));
+
+	expect(body.destroyed).toBe(true);
+	expect(() => body.emit("data", Buffer.from("late"))).not.toThrow();
+	expect(body.listenerCount("data")).toBe(0);
+	expect(body.listenerCount("end")).toBe(0);
+	expect(body.listenerCount("error")).toBe(0);
+	expect(body.listenerCount("close")).toBe(0);
+});
+
+test("bridge ignores late data after stream end", async () => {
+	const body = new PassThrough();
+	const reader = createPinnedResponseBodyStream(body).getReader();
+
+	body.end("done");
+	const first = await reader.read();
+	const second = await reader.read();
+
+	expect(Buffer.from(first.value ?? new Uint8Array()).toString("utf8")).toBe("done");
+	expect(first.done).toBe(false);
+	expect(second.done).toBe(true);
+	expect(() => body.emit("data", Buffer.from("late"))).not.toThrow();
+});
+
+test("bridge ignores late data after body error", async () => {
+	const body = new PassThrough();
+	const reader = createPinnedResponseBodyStream(body).getReader();
+
+	body.emit("error", new Error("boom"));
+
+	await expect(reader.read()).rejects.toThrow("boom");
+	expect(() => body.emit("data", Buffer.from("late"))).not.toThrow();
 });
