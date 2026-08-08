@@ -52,9 +52,9 @@ export interface HerdrExtensionApi {
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
-	events?: Pick<EventBus, "on">;
 	on(event: "agent_blocked", handler: ExtensionHandler<AgentBlockedEvent>): void;
 	on(event: "agent_unblocked", handler: ExtensionHandler<AgentUnblockedEvent>): void;
+	events?: Pick<EventBus, "on">;
 }
 
 /** File-based Herdr integrations this builtin defers to. */

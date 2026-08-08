@@ -214,23 +214,6 @@ export class HerdrReporter {
 		this.publish(false);
 	}
 
-	/**
-	 * Replace the current workflow snapshot before the first session report.
-	 * A replacement runner can receive this seed from the lifecycle bridge even
-	 * when it did not observe the original run-start events.
-	 */
-	seedWorkflowContributions(contributions: readonly WorkflowRunContribution[]): void {
-		if (this.isSilenced()) return;
-		this.workflowContributions.clear();
-		for (const contribution of contributions) {
-			this.workflowContributions.set(contribution.runKey, {
-				...contribution,
-				...(contribution.label === undefined ? {} : { label: shortenReportMessage(contribution.label) }),
-			});
-		}
-		if (this.boundSessionManager) this.publish(false);
-	}
-
 	/** Seed from the neutral lifecycle snapshot before binding the replacement session. */
 	seedWorkflowLifecycleEvents(events: readonly WorkflowLifecycleBridgeEvent[]): void {
 		if (this.isSilenced()) return;

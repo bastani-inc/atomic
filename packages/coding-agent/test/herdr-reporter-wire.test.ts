@@ -386,11 +386,11 @@ describe("herdr reporter wire behavior", () => {
 		assert.deepEqual(getWorkflowLifecycleBridgeLineages(bus), []);
 	});
 
-	it("seeds a successor from the current workflow contribution snapshot", async () => {
+	it("seeds a successor from a multi-run neutral lifecycle snapshot", async () => {
 		const reporter = createReporter();
-		reporter.seedWorkflowContributions([
-			{ runKey: "active-run", state: "working" },
-			{ runKey: "waiting-run", state: "blocked", label: "Review workflow" },
+		reporter.seedWorkflowLifecycleEvents([
+			{ runKey: "active-run", kind: "started", label: "Deploy workflow" },
+			{ runKey: "waiting-run", kind: "awaiting_input", label: "Review workflow" },
 		]);
 
 		await reporter.onSessionStart(sessionManager, true);
