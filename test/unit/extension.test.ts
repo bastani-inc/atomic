@@ -121,10 +121,12 @@ test("session_before_switch prompts for /new and /resume when workflows are in f
 			assert.equal(prompts.length, 1);
 			const promptText = `${prompts[0]?.title}\n${prompts[0]?.message}`;
 			assert.match(promptText, reason === "new" ? /new session/i : /resume another session/i);
-			assert.match(promptText, /stop|kill/i);
+			// Switching no longer stops the runs, so the prompt must not say it does.
+			assert.match(promptText, /keeps running|leaves .* running/i);
+			assert.doesNotMatch(promptText, /stop|kill/i);
+			assert.doesNotMatch(promptText, /clear workflow history/i);
 			assert.match(promptText, /1 in-flight workflow/i);
 			assert.doesNotMatch(promptText, /1 in-flight workflows/i);
-			assert.match(promptText, /clear workflow history tied to (the )?current session/i);
 			assert.equal(store.runs().length, 1);
 			assert.equal(store.runs()[0]?.endedAt, undefined);
 		} finally {

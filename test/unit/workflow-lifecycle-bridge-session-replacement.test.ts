@@ -28,14 +28,10 @@ import { store } from "../../packages/workflows/src/shared/store.js";
 const PANE_ID = "pane-w8";
 
 /**
- * Replacement reasons that keep this session's workflows running.
- *
- * `new` and `resume` ask the user first and stop the workflows they agreed to
- * stop, so their correct successor state is idle rather than a live run.
+ * Every process-preserving replacement reason. All four keep this session's
+ * workflows running, so all four must report a still-live run.
  */
-const KEEPS_WORKFLOWS = ["reload", "fork"] as const;
-const STOPS_WORKFLOWS = ["new", "resume"] as const;
-const ALL_REASONS = [...KEEPS_WORKFLOWS, ...STOPS_WORKFLOWS] as const;
+const ALL_REASONS = ["reload", "new", "resume", "fork"] as const;
 
 type SessionHandler = (event: object, ctx?: object) => Promise<void> | void;
 
@@ -164,7 +160,7 @@ describe("workflow lifecycle bridge across session replacement", () => {
 		});
 	}
 
-	for (const reason of KEEPS_WORKFLOWS) {
+	for (const reason of ALL_REASONS) {
 		test(`a real ${reason} successor start reports a still-live run as working`, async () => {
 			const bus = freshBus();
 			const predecessor = createWorkflowSession(bus);
@@ -176,6 +172,7 @@ describe("workflow lifecycle bridge across session replacement", () => {
 			await successor.sessionStart(reason);
 
 			assert.equal(store.runs().length, 1, "a process-preserving replacement keeps the run");
+			assert.equal(store.runs()[0]?.endedAt, undefined, "the run is still live, not killed");
 			const replacement = activateReporter(bus);
 			await replacement.reporter.drain();
 			assert.deepEqual(replacement.states().at(-1), { state: "working", message: undefined });
@@ -197,35 +194,42 @@ describe("workflow lifecycle bridge across session replacement", () => {
 			await replacement.reporter.drain();
 			assert.deepEqual(replacement.states().at(-1), { state: "blocked", message: "deploy: approval" });
 		});
-	}
 
-	for (const reason of STOPS_WORKFLOWS) {
-		test(`a real ${reason} successor start drops the runs the user agreed to stop`, async () => {
+		test(`a run preserved through ${reason} is still answerable in the successor`, async () => {
 			const bus = freshBus();
 			const predecessor = createWorkflowSession(bus);
 			await predecessor.sessionStart("startup");
-			startLiveRun("run-stopped-at-boundary", "deploy");
-			awaitInputOnStage("run-stopped-at-boundary", "approval");
+			startLiveRun("run-answerable", "deploy");
+			store.recordStageStart("run-answerable", {
+				id: "approval",
+				name: "approval",
+				status: "running",
+				parentIds: [],
+				toolEvents: [],
+			});
+			const pendingPrompt = { id: "prompt-1", kind: "confirm", message: "Ship it?", createdAt: 3 } as const;
+			store.recordStagePendingPrompt("run-answerable", "approval", pendingPrompt);
 			await predecessor.sessionShutdown(reason);
 
-			// The pane is showing the run when the successor takes over.
+			const successor = createWorkflowSession(bus);
+			await successor.sessionStart(reason);
+
+			// The prompt survives as state, not just as a pane label: the successor
+			// can still answer it, and the pane follows the run back to working.
 			const replacement = activateReporter(bus);
 			await replacement.reporter.drain();
 			assert.deepEqual(replacement.states().at(-1), { state: "blocked", message: "deploy: approval" });
 
-			const published = recordPublished(bus);
-			const successor = createWorkflowSession(bus);
-			await successor.sessionStart(reason);
-			await replacement.reporter.drain();
-
-			// The drop repeats the label already on the wire; it never claims completion.
-			assert.deepEqual(published, [{ runKey: "run-stopped-at-boundary", kind: "quit", label: "deploy: approval" }]);
+			// Answering it through the store is what proves the run survived as
+			// state rather than only as a pane label.
 			assert.equal(
-				published.some((event) => event.kind === "completed"),
-				false,
+				store.resolveStagePendingPrompt("run-answerable", "approval", "prompt-1", true),
+				true,
+				"a preserved prompt must still be answerable after the successor starts",
 			);
-			assert.deepEqual(snapshotOf(bus), []);
-			assert.deepEqual(replacement.states().at(-1), { state: "idle", message: undefined });
+			store.recordStageAwaitingInput("run-answerable", "approval", false, 5);
+			await replacement.reporter.drain();
+			assert.deepEqual(replacement.states().at(-1), { state: "working", message: undefined });
 		});
 	}
 
@@ -236,14 +240,26 @@ describe("workflow lifecycle bridge across session replacement", () => {
 			await predecessor.sessionStart("startup");
 			startLiveRun("run-dead", "deploy");
 			await predecessor.sessionShutdown(reason);
-			// Dies in the window, after the predecessor stopped observing it.
+
+			// The pane is showing the run when the successor takes over.
+			const replacement = activateReporter(bus);
+			await replacement.reporter.drain();
+			assert.deepEqual(replacement.states().at(-1), { state: "working", message: undefined });
+
+			// It dies in the handoff window, after the predecessor stopped observing it.
 			store.recordRunEnd("run-dead", "killed", undefined, "workflow killed");
+			const published = recordPublished(bus);
 
 			const successor = createWorkflowSession(bus);
 			await successor.sessionStart(reason);
-
-			const replacement = activateReporter(bus);
 			await replacement.reporter.drain();
+
+			// The retained contribution is dropped, never completed.
+			assert.deepEqual(published, [{ runKey: "run-dead", kind: "quit", label: "deploy" }]);
+			assert.equal(
+				published.some((event) => event.kind === "completed"),
+				false,
+			);
 			assert.deepEqual(snapshotOf(bus), []);
 			assert.deepEqual(replacement.states().at(-1), { state: "idle", message: undefined });
 		});
@@ -256,6 +272,9 @@ describe("workflow lifecycle bridge across session replacement", () => {
 		startLiveRun("recycled-id", "deploy");
 		store.recordRunEnd("recycled-id", "completed", {});
 		assert.deepEqual(snapshotOf(bus), []);
+		// The finished run is compacted out of the store; only the tombstone the
+		// bridge handed over still mentions its id.
+		store.removeRun("recycled-id");
 		await predecessor.sessionShutdown("new");
 
 		const successor = createWorkflowSession(bus);

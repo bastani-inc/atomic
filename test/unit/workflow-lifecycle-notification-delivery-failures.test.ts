@@ -334,7 +334,14 @@ describe("workflow lifecycle admission failure recovery", () => {
 			await flushMicrotasks();
 
 			assert.equal(replacementWakeCount, 0, "retained old-chat delivery must clear before replacement activation");
-			assert.equal(extensionStore.snapshot().runs.length, 0);
+			// A session switch no longer clears the process-scoped store, so the old
+			// run stays visible as history. Being terminal, it contributes nothing
+			// and must not wake the replacement chat.
+			assert.deepEqual(
+				extensionStore.snapshot().runs.map((run) => run.id),
+				["run-old-session"],
+			);
+			assert.equal(extensionStore.snapshot().runs[0]?.status, "completed");
 			startRun(extensionStore, "run-unrelated", "unrelated new chat workflow");
 			await flushMicrotasks();
 			assert.equal(replacementWakeCount, 0, "a non-terminal unrelated run must not wake the replacement chat");

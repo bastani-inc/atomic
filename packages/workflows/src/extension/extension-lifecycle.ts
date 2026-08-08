@@ -56,18 +56,18 @@ export interface WorkflowLifecycleRegistrationDeps {
 /**
  * Whether a session boundary stops this session's workflows.
  *
- * `new` and `resume` ask first: `session_before_switch` tells the user in so
- * many words that switching stops the in-flight workflows and clears workflow
- * history, and only proceeds when they agree. Stopping them there is the
- * answer they gave. `startup` has no predecessor to stop.
+ * None of the four replacement boundaries does. `reload`, `new`, `resume`, and
+ * `fork` all replace the session inside one process that keeps running the
+ * workflows either way, so stopping them destroyed work the replacement was
+ * about to report, and left a pane reading idle in the middle of a live run
+ * (W8). The successor reconstructs what it reports from the runs it can still
+ * observe.
  *
- * `reload` and `fork` never ask, and the process keeps running those workflows
- * either way. Killing them there destroyed work nobody asked to stop, and left
- * the replacement session reporting an idle pane in the middle of a live run
- * (W8). A reason this code does not recognise keeps the old behavior.
+ * `startup` and a reason this code does not recognise still clear: neither
+ * names a predecessor that handed anything over.
  */
 function replacementStopsWorkflows(reason: string | undefined): boolean {
-	return reason !== "reload" && reason !== "fork";
+	return reason !== "reload" && reason !== "fork" && reason !== "new" && reason !== "resume";
 }
 
 export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: WorkflowLifecycleRegistrationDeps): void {
@@ -89,15 +89,15 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		const messageLabel = reason === "new" ? "Starting a new session" : "Resuming another session";
 		try {
 			const shouldSwitchSession = await confirmSessionSwitch(
-				`${actionLabel} and stop ${inFlightWorkflowCount} in-flight ${workflowNoun}?`,
-				`${messageLabel} will stop/kill ${inFlightWorkflowCount} in-flight ${workflowNoun} and clear workflow history tied to the current session.`,
+				`${actionLabel} while ${inFlightWorkflowCount} in-flight ${workflowNoun} keeps running?`,
+				`${messageLabel} leaves ${inFlightWorkflowCount} in-flight ${workflowNoun} running, and the new session keeps reporting their state. Inspect them there with /workflow status.`,
 			);
 			if (shouldSwitchSession) return undefined;
 		} catch {
 			return undefined;
 		}
 		const cancelledLabel = reason === "new" ? "New session" : "Resume";
-		ctx?.ui?.notify?.(`${cancelledLabel} cancelled; in-flight workflows were left unchanged.`, "info");
+		ctx?.ui?.notify?.(`${cancelledLabel} cancelled; this session stays active.`, "info");
 		return { cancel: true };
 	});
 

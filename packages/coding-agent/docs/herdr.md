@@ -34,16 +34,16 @@ data, and model output never reach the Herdr socket.
 
 Across `/reload`, `/new`, `/resume`, and `/fork` the replacement session
 reconstructs what it reports from the workflow store it can observe, rather
-than assuming it saw every past event. A run still live keeps the pane's state,
-and one the new session cannot see has its contribution dropped rather than
-left behind.
+than assuming it saw every past event. All four replace the session inside one
+process that keeps running the workflows, so a run still live is re-adopted and
+the pane keeps reporting it; a run that is terminal, or that the new session
+cannot see at all, has its contribution dropped rather than left behind.
 
-Which runs stay live differs by boundary, and the pane follows. `/reload` and
-`/fork` replace the session inside the same process without asking you
-anything, so the workflows keep running and the pane keeps reporting them.
-`/new` and `/resume` ask first — they say that switching stops in-flight
-workflows and clears workflow history — so when you agree, those runs stop and
-the pane returns to `idle`.
+Switching to another session no longer stops your workflows. `/new` and
+`/resume` still ask before switching while runs are in flight, but they now
+tell you those runs keep going, and you inspect them in the new session with
+`/workflow status`. Because the run store belongs to the process rather than to
+one session, finished runs from before the switch stay visible there too.
 
 Precedence runs top down: an open user dialog wins over a workflow block, a
 workflow block wins over a recorded failure, a failure wins over an active turn
