@@ -4,7 +4,20 @@
  * symlink is never followed out of the target.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	lutimesSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
@@ -342,6 +355,43 @@ describe("sweepSessionDirToolResults", () => {
 		assert.equal(existsSync(join(dir, TOOL_RESULTS_SUBDIR, "call-1.txt")), true);
 	});
 
+	it("keeps a tree when the depth bound leaves a fresh descendant unscanned", () => {
+		const { dir } = makeCustomSessionDir("custom-deep-fresh", 60);
+		const toolResults = join(dir, TOOL_RESULTS_SUBDIR);
+		const ancestors = [toolResults];
+		let deepest = toolResults;
+		for (let depth = 0; depth < 40; depth++) {
+			deepest = join(deepest, `level-${depth}`);
+			mkdirSync(deepest);
+			ancestors.push(deepest);
+		}
+		const fresh = join(deepest, "fresh.txt");
+		writeFileSync(fresh, "recent");
+		for (const ancestor of ancestors) stampAge(ancestor, 60);
+
+		assert.equal(sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
+		assert.equal(existsSync(toolResults), true, "an incomplete scan cannot authorize deletion");
+		assert.equal(existsSync(fresh), true);
+	});
+
+	it.skipIf(process.platform === "win32")("keeps a stale tree whose scan encounters a nested symlink", () => {
+		const { dir } = makeCustomSessionDir("custom-nested-symlink", 60);
+		const toolResults = join(dir, TOOL_RESULTS_SUBDIR);
+		const outside = join(sandbox, "nested-symlink-target.txt");
+		writeFileSync(outside, "outside");
+		stampAge(outside, 60);
+		const link = join(toolResults, "outside-link.txt");
+		symlinkSync(outside, link);
+		const oldSeconds = (NOW - 60 * MS_PER_DAY) / 1000;
+		lutimesSync(link, oldSeconds, oldSeconds);
+		stampAge(toolResults, 60);
+
+		assert.equal(sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
+		assert.equal(existsSync(toolResults), true);
+		assert.equal(lstatSync(link).isSymbolicLink(), true);
+		assert.equal(readFileSync(outside, "utf8"), "outside");
+	});
+
 	it("throttles on its own control marker", () => {
 		const { dir } = makeCustomSessionDir("custom-throttled", 60);
 
@@ -458,6 +508,38 @@ describe("runSessionTempCleanup", () => {
 		});
 
 		assert.equal(existsSync(toolResults), false, "released storage becomes reapable");
+	});
+});
+
+describe("oversized result replay safety", () => {
+	it.skipIf(process.platform === "win32")("rejects a replay symlink without mutating its outside target", async () => {
+		const sessionDir = join(sandbox, "replay-symlink-session");
+		const toolResults = join(sessionDir, TOOL_RESULTS_SUBDIR);
+		mkdirSync(toolResults, { recursive: true });
+		const outside = join(sandbox, "outside-result.txt");
+		const outsideContent = "outside content must remain untouched";
+		writeFileSync(outside, outsideContent);
+		chmodSync(outside, 0o644);
+		const replayPath = join(toolResults, "call-symlink.txt");
+		symlinkSync(outside, replayPath);
+		const outsideMode = statSync(outside).mode & 0o777;
+
+		const replacement = await redirectOversizedToolResult({
+			toolName: "bash",
+			toolCallId: "call-symlink",
+			result: {
+				content: [{ type: "text", text: "r".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1) }],
+				details: {},
+			},
+			isError: false,
+			sessionId: "replay-symlink",
+			sessionDir,
+		});
+
+		assert.equal(replacement, undefined);
+		assert.equal(lstatSync(replayPath).isSymbolicLink(), true);
+		assert.equal(readFileSync(outside, "utf8"), outsideContent);
+		assert.equal(statSync(outside).mode & 0o777, outsideMode);
 	});
 });
 

@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
+import { constants } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
-import { chmod, mkdir, open } from "node:fs/promises";
+import { chmod, lstat, mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
@@ -192,6 +193,19 @@ function getErrnoCode(error: unknown): string | undefined {
 	}
 	return undefined;
 }
+
+function isOwnedByCurrentUser(uid: number | bigint): boolean {
+	const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+	if (typeof currentUid !== "number") {
+		return true;
+	}
+	return typeof uid === "bigint" ? uid === BigInt(currentUid) : uid === currentUid;
+}
+
+function sameFileIdentity(left: { dev: bigint; ino: bigint }, right: { dev: bigint; ino: bigint }): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
 /**
  * Force an open persisted file to owner-only and prove it.
  *
@@ -203,13 +217,16 @@ async function enforceOwnerOnlyMode(handle: FileHandle, filepath: string): Promi
 	if (process.platform === "win32") {
 		return;
 	}
+	const before = await handle.stat();
+	if (!isOwnedByCurrentUser(before.uid)) {
+		throw new Error(`persisted tool result ${filepath} is owned by another account`);
+	}
 	await handle.chmod(SESSION_TEMP_FILE_MODE);
-	const stat = await handle.stat();
-	if ((stat.mode & 0o777) !== SESSION_TEMP_FILE_MODE) {
+	const after = await handle.stat();
+	if ((after.mode & 0o777) !== SESSION_TEMP_FILE_MODE) {
 		throw new Error(`persisted tool result ${filepath} could not be restricted to 0600`);
 	}
-	const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-	if (typeof uid === "number" && stat.uid !== uid) {
+	if (!isOwnedByCurrentUser(after.uid)) {
 		throw new Error(`persisted tool result ${filepath} is owned by another account`);
 	}
 }
@@ -224,13 +241,46 @@ async function enforceOwnerOnlyMode(handle: FileHandle, filepath: string): Promi
  */
 async function adoptExistingResultFile(filepath: string): Promise<boolean> {
 	try {
-		const handle = await open(filepath, "r");
+		const initialPathStat = await lstat(filepath, { bigint: true });
+		if (initialPathStat.isSymbolicLink() || !initialPathStat.isFile() || !isOwnedByCurrentUser(initialPathStat.uid)) {
+			return false;
+		}
+		const noFollow =
+			process.platform !== "win32" && typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+		const handle = await open(filepath, constants.O_RDONLY | noFollow);
 		try {
+			const handleStat = await handle.stat({ bigint: true });
+			if (!handleStat.isFile() || !sameFileIdentity(initialPathStat, handleStat)) {
+				return false;
+			}
+			const pathBeforeChmod = await lstat(filepath, { bigint: true });
+			if (
+				pathBeforeChmod.isSymbolicLink() ||
+				!pathBeforeChmod.isFile() ||
+				!sameFileIdentity(initialPathStat, pathBeforeChmod) ||
+				!sameFileIdentity(handleStat, pathBeforeChmod) ||
+				!isOwnedByCurrentUser(pathBeforeChmod.uid)
+			) {
+				return false;
+			}
 			await enforceOwnerOnlyMode(handle, filepath);
+
+			// Do not advertise a path replaced while the descriptor was open.
+			const [finalPathStat, finalHandleStat] = await Promise.all([
+				lstat(filepath, { bigint: true }),
+				handle.stat({ bigint: true }),
+			]);
+			return (
+				!finalPathStat.isSymbolicLink() &&
+				finalPathStat.isFile() &&
+				finalHandleStat.isFile() &&
+				sameFileIdentity(finalPathStat, finalHandleStat) &&
+				isOwnedByCurrentUser(finalPathStat.uid) &&
+				isOwnedByCurrentUser(finalHandleStat.uid)
+			);
 		} finally {
 			await handle.close();
 		}
-		return true;
 	} catch {
 		return false;
 	}

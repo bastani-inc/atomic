@@ -232,40 +232,52 @@ function releaseCleanupLock(lockPath: string, token: string): void {
 	}
 }
 
+type ScanFreshness = "fresh" | "stale" | "unknown";
+
 /**
- * Whether any entry at or under `entryPath` was modified at/after `cutoff`.
+ * Classify whether `entryPath` has a fresh descendant, is fully stale, or could
+ * not be scanned completely.
  *
- * Short-circuits on the first fresh descendant, so a live tree costs one stat.
- * Symlinks are never followed: `lstat` reports them as non-directories, so the
- * walk cannot be steered outside the root.
+ * Only `stale` authorizes deletion. Symlinks, unreadable entries, and the depth
+ * bound fail closed as `unknown`; `ENOENT` is stale because the entry vanished.
+ * The walk still exits on its first fresh descendant.
  */
-function hasEntryNewerThan(entryPath: string, cutoff: number, depth = 0): boolean {
+function scanFreshness(entryPath: string, cutoff: number, depth = 0): ScanFreshness {
 	let stat: ReturnType<typeof lstatSync>;
 	try {
 		stat = lstatSync(entryPath);
-	} catch {
-		// Vanished mid-scan: nothing to protect and nothing to delete.
-		return false;
+	} catch (error) {
+		return getErrnoCode(error) === "ENOENT" ? "stale" : "unknown";
+	}
+	if (stat.isSymbolicLink()) {
+		return "unknown";
 	}
 	if (stat.mtimeMs >= cutoff) {
-		return true;
+		return "fresh";
 	}
-	if (!stat.isDirectory() || stat.isSymbolicLink() || depth >= MAX_SCAN_DEPTH) {
-		return false;
+	if (!stat.isDirectory()) {
+		return "stale";
+	}
+	if (depth >= MAX_SCAN_DEPTH) {
+		return "unknown";
 	}
 	let children: string[];
 	try {
 		children = readdirSync(entryPath);
-	} catch {
-		// An unreadable directory is kept rather than deleted.
-		return true;
+	} catch (error) {
+		return getErrnoCode(error) === "ENOENT" ? "stale" : "unknown";
 	}
+	let foundUnknown = false;
 	for (const child of children) {
-		if (hasEntryNewerThan(join(entryPath, child), cutoff, depth + 1)) {
-			return true;
+		const freshness = scanFreshness(join(entryPath, child), cutoff, depth + 1);
+		if (freshness === "fresh") {
+			return "fresh";
+		}
+		if (freshness === "unknown") {
+			foundUnknown = true;
 		}
 	}
-	return false;
+	return foundUnknown ? "unknown" : "stale";
 }
 
 interface CleanupGate {
@@ -378,7 +390,7 @@ export function sweepSessionTempRoot(root: string = getTempRootDir(), options: S
 				return;
 			}
 			try {
-				if (hasEntryNewerThan(entryPath, gate.cutoff)) {
+				if (scanFreshness(entryPath, gate.cutoff) !== "stale") {
 					continue;
 				}
 				rmSync(entryPath, { recursive: true, force: true });
@@ -410,7 +422,7 @@ function reapToolResultsDir(parent: string, cutoff: number, protectedPaths: Read
 	if (protectedPaths.has(toolResultsDir) || !isRealDirectory(toolResultsDir)) {
 		return;
 	}
-	if (hasEntryNewerThan(toolResultsDir, cutoff)) {
+	if (scanFreshness(toolResultsDir, cutoff) !== "stale") {
 		return;
 	}
 	rmSync(toolResultsDir, { recursive: true, force: true });
