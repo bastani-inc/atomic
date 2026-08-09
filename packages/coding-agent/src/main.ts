@@ -126,7 +126,7 @@ function authCheckErrorMessage(error: unknown): string {
  * code path that can open it and write it to stdout.
  */
 async function runAuthCheckCommand(command: AuthCommand, parsed: Args): Promise<void> {
-	const requestedAuth = validateAuthCheckArgs(parsed);
+	validateAuthCheckArgs(parsed);
 	let result: AuthCheckResult;
 	let credentials: AuthStorage | ReadOnlyAuthStorage | undefined;
 	let modelRuntime: ModelRuntime | undefined;
@@ -136,21 +136,18 @@ async function runAuthCheckCommand(command: AuthCommand, parsed: Args): Promise<
 		result = await checkProviderAuth(parsed, modelRuntime, { refresh: !command.noRefresh, credentials });
 	} catch (error) {
 		console.error(chalk.red(`Error: ${authCheckErrorMessage(error)}`));
-		result = {
-			status: "invalid",
-			provider: requestedAuth.provider ?? requestedAuth.model!,
-			reason: "invalid_state",
-		};
+		result = { status: "invalid", reason: "invalid_state" };
 	}
 
 	let credentialEmitted = false;
 	if (command.credentials && result.status === "ready" && credentials && modelRuntime) {
-		if (!hasExplicitCredentialExportTarget(parsed, modelRuntime, result.provider)) {
+		const readyResult = result;
+		if (!hasExplicitCredentialExportTarget(parsed, modelRuntime, readyResult.provider)) {
 			console.error(chalk.red("Error: Credential export requires --provider or an exact --model target"));
-			result = { status: "invalid", provider: result.provider, reason: "invalid_state" };
+			result = { status: "invalid", provider: readyResult.provider, reason: "invalid_state" };
 		} else {
 			try {
-				const credential = await getProviderCredential(result.provider, modelRuntime, credentials, {
+				const credential = await getProviderCredential(readyResult.provider, modelRuntime, credentials, {
 					refresh: !command.noRefresh,
 				});
 				if (credential) {
@@ -158,23 +155,22 @@ async function runAuthCheckCommand(command: AuthCommand, parsed: Args): Promise<
 						credential,
 						command.json
 							? {
-									status: result.status,
-									provider: result.provider,
-									...(result.reason === undefined ? {} : { reason: result.reason }),
-									...(result.authType === undefined ? {} : { authType: result.authType }),
+									status: readyResult.status,
+									provider: readyResult.provider,
+									authType: readyResult.authType,
 								}
 							: undefined,
 					);
 					credentialEmitted = true;
 				} else {
-					result = { status: "not_ready", provider: result.provider, reason: "credential_not_available" };
+					result = { status: "not_ready", provider: readyResult.provider, reason: "credential_not_available" };
 				}
 			} catch (error) {
 				if (error instanceof CredentialPrintError) throw error;
 				// Provider text can quote a credential. Explain the export failure with a
 				// constant diagnostic rather than carrying that text into stderr.
 				console.error(chalk.red("Error: Failed to resolve credential for export"));
-				result = { status: "invalid", provider: result.provider, reason: "invalid_state" };
+				result = { status: "invalid", provider: readyResult.provider, reason: "invalid_state" };
 			}
 		}
 	}
@@ -202,9 +198,9 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 	try {
 		command = parseAuthCommand(args);
 	} catch (error) {
-		const message = error instanceof AuthCommandError ? error.message : "Failed to parse auth command";
-		console.error(chalk.red(`Error: ${message}`));
-		process.exitCode = args[1] === "check" ? 2 : 1;
+		const failure = error instanceof AuthCommandError ? error : new AuthCommandError("Failed to parse auth command");
+		console.error(chalk.red(`Error: ${failure.message}`));
+		process.exitCode = failure.exitCode;
 		return true;
 	}
 	if (!command) return false;

@@ -28,6 +28,8 @@
 
 ### Fixed
 
+- Fixed `atomic auth check --json` labelling an unresolved model as its provider. Invalid results now omit `provider` until a provider has actually resolved, and `print-api-key` consistently rejects `--min-expiry` before or after a `--` terminator.
+
 - Fixed bare exact `--model` IDs shared by providers choosing catalog order. Atomic now uses the sole authenticated matching provider or reports an ambiguity with fully qualified choices ([#7327](https://github.com/earendil-works/pi/issues/7327)).
 - Fixed `/model <name>` and `/scoped-models` waiting for remote catalog refreshes before using cached models. Exact cached matches now resolve immediately, and the scoped selector renders its cache first, refreshes in the background, and cancels that work when it closes ([#7153](https://github.com/earendil-works/pi/issues/7153), [#7443](https://github.com/earendil-works/pi/issues/7443)).
 - Fixed project `retry.provider` overrides discarding unmodified global provider retry fields by recursively merging nested settings ([#7572](https://github.com/earendil-works/pi/issues/7572)).

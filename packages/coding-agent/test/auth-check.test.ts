@@ -58,6 +58,16 @@ describe("auth check command", () => {
 		});
 	});
 
+	test("ignores defaulted parser fields that are not auth-check options", async () => {
+		await expect(
+			checkProviderAuth(args({ provider: "openai", verbose: false }), runtimeStub({ auth: "api_key" })),
+		).resolves.toEqual({
+			status: "ready",
+			provider: "openai",
+			authType: "api_key",
+		});
+	});
+
 	test("resolves the provider from --model", async () => {
 		const runtime = await createRuntime(AuthStorage.inMemory({ openai: { type: "api_key", key: "test-key" } }));
 

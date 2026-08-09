@@ -14,12 +14,10 @@ export type AuthCheckReason =
 	| "credential_not_available"
 	| "invalid_state";
 
-export interface AuthCheckResult {
-	status: AuthCheckStatus;
-	provider: string;
-	reason?: AuthCheckReason;
-	authType?: "api_key" | "oauth";
-}
+export type AuthCheckResult =
+	| { status: "ready"; provider: string; authType: "api_key" | "oauth" }
+	| { status: "not_ready"; provider: string; reason: AuthCheckReason }
+	| { status: "invalid"; provider?: string; reason: "invalid_state" };
 
 async function storedOAuthIsExpired(providerId: string, credentials: CredentialStore | undefined): Promise<boolean> {
 	const credential = await credentials?.read(providerId);

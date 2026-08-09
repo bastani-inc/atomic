@@ -684,6 +684,7 @@ describe("auth command parsing", () => {
 		} catch (error) {
 			expect(error).toBeInstanceOf(AuthCommandError);
 			const failure = error as AuthCommandError;
+			expect(failure.exitCode).toBe(1);
 			expect(failure.message).toContain("atomic auth print-api-key");
 			expect(failure.message).toContain("atomic auth print-bearer-token");
 			expect(failure.message).toContain("atomic auth check");
@@ -692,10 +693,27 @@ describe("auth command parsing", () => {
 		}
 	});
 
-	it("rejects --min-expiry for print-api-key rather than ignoring it", () => {
-		expect(() => parseAuthCommand(["auth", "print-api-key", "--model", "gpt-5.5", "--min-expiry", "30m"])).toThrow(
-			"only supported by print-bearer-token",
-		);
+	it("keeps parse-time exit codes with their auth subcommand", () => {
+		try {
+			parseAuthCommand(["auth", "check", "--min-expiry", "30m"]);
+			expect.unreachable("expected a usage error");
+		} catch (error) {
+			expect(error).toBeInstanceOf(AuthCommandError);
+			expect((error as AuthCommandError).exitCode).toBe(2);
+		}
+	});
+
+	it("rejects --min-expiry for print-api-key in every position", () => {
+		for (const spelling of [
+			["--min-expiry", "30m"],
+			["--min-expiry=30m"],
+			["--", "--min-expiry", "30m"],
+			["--", "--min-expiry=30m"],
+		]) {
+			expect(() => parseAuthCommand(["auth", "print-api-key", "--model", "gpt-5.5", ...spelling])).toThrow(
+				"only supported by print-bearer-token",
+			);
+		}
 	});
 
 	it("accepts ms, s, m, and h durations and rejects anything else", () => {
@@ -1412,10 +1430,45 @@ describe("atomic auth on the wire", () => {
 			expect(unknownModel.code).toBe(2);
 			expect(unknownModel.stdout).toBe("invalid\n");
 
+			const unknownModelJson = await run(["auth", "check", "--model", "does-not-exist-auth-check", "--json"]);
+			expect(unknownModelJson.code).toBe(2);
+			expect(JSON.parse(unknownModelJson.stdout)).toEqual({ status: "invalid", reason: "invalid_state" });
+
 			const unknownOption = await run(["auth", "check", "--provider", "anthropic", "--bogus"]);
 			expect(unknownOption.code).toBe(2);
 			expect(unknownOption.stdout).toBe("");
 			expect(unknownOption.stderr).toContain('Unknown option --bogus for "auth check".');
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"a reader that closes the pipe never yields a non-zero exit with a credential on stdout",
+		async () => {
+			const key = "sk-ant-print-me";
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
+
+			// A genuine race, so run it more than once: the child can lose the
+			// pipe before its write, during it, or after the bytes are already
+			// buffered, and the invariant has to hold on every outcome.
+			for (let attempt = 0; attempt < 3; attempt++) {
+				const result = await runCliWithClosedStdout(
+					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic"],
+					{ cwd: agentDir, env: cliEnv(agentDir) },
+				);
+
+				// Bytes on stdout mean the command succeeded.
+				if (result.stdout.length > 0) expect(result.code).toBe(0);
+
+				// And the other direction: a non-zero exit carries no part of the
+				// configured key, not even its first character.
+				if (result.code !== 0) {
+					expect(result.stdout).toBe("");
+					for (let length = 1; length <= key.length; length++) {
+						expect(result.stdout).not.toContain(key.slice(0, length));
+					}
+				}
+			}
 		},
 		REAL_CLI_SUITE_TIMEOUT_MS,
 	);
@@ -1562,11 +1615,16 @@ describe("atomic auth on the wire", () => {
 	);
 
 	it(
-		"--min-expiry is a usage error for print-api-key in every spelling",
+		"--min-expiry is a usage error for print-api-key in every spelling, including after --",
 		async () => {
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-ant-print-me" } });
 
-			for (const spelling of [["--min-expiry", "30m"], ["--min-expiry=30m"]]) {
+			for (const spelling of [
+				["--min-expiry", "30m"],
+				["--min-expiry=30m"],
+				// It remains an auth option after -- rather than becoming a prompt.
+				["--", "--min-expiry=30m"],
+			]) {
 				const result = await runCliProcess(
 					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic", ...spelling],
 					{ cwd: agentDir, env: cliEnv(agentDir) },
@@ -1574,6 +1632,7 @@ describe("atomic auth on the wire", () => {
 
 				expect(result.code).toBe(1);
 				expect(result.stdout).toBe("");
+				expect(result.stderr).toContain("--min-expiry is only supported by print-bearer-token");
 			}
 
 			// The same two spellings must actually reach the provider on the

@@ -38,7 +38,7 @@ A stored OAuth token is refreshed once fewer than **five minutes** of validity r
 
 ### Verify Readiness Before a Session
 
-Run `atomic auth check --provider <provider>` to verify the effective credential a provider would use without starting a session. You can pass `--model <model>` instead, including a `provider/model` ID, when that is the value your automation already has. The command prints `ready`, `not_ready`, or `invalid`; `--json` adds the resolved provider, credential type, and reason for a non-ready result.
+Run `atomic auth check --provider <provider>` to verify the effective credential a provider would use without starting a session. You can pass `--model <model>` instead, including a `provider/model` ID, when that is the value your automation already has. The command prints `ready`, `not_ready`, or `invalid`; `--json` adds the resolved provider when one is found, credential type, and reason for a non-ready result.
 
 Checks refresh expired OAuth credentials by default through the ordinary locked `auth.json` path. Use `--no-refresh` for a read-only probe: it neither creates nor mutates an auth file and reads Atomic's primary `~/.atomic/agent/auth.json` plus legacy `~/.pi/agent/auth.json` paths with the normal precedence. Readiness output contains no credential material unless you explicitly ask for `--credentials` with `--provider` or an exact `--model` target. That opt-in treats stdout or the JSON `credentials` field as a credential export; it refuses an OAuth token with less than 30 minutes of life when `--no-refresh` prevents a refresh.
 
