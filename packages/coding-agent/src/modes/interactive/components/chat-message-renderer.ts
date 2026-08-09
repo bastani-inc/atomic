@@ -226,6 +226,7 @@ export class LiveChatEntriesController {
 	isStreamingAssistantEntry(entry: ChatMessageEntry): boolean {
 		return this.streamingAssistantIndex !== undefined && this.entries[this.streamingAssistantIndex] === entry;
 	}
+
 	private handleMessageStart(message: unknown): boolean {
 		if (!isAgentMessageLike(message)) return false;
 		if (message.role === "assistant") {

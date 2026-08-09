@@ -89,6 +89,7 @@ export class ModelRuntime implements Models {
 	private availabilityErrorSeq = 0;
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
+	private refreshSequence = 0;
 	private constructor(
 		credentials: RuntimeCredentials,
 		config: ModelConfig,
@@ -524,7 +525,28 @@ export class ModelRuntime implements Models {
 	}
 
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
-		this.config = await ModelConfig.load(this.modelsPath);
+		return this.runRefresh(options, ++this.refreshSequence);
+	}
+
+	/**
+	 * A registration's offline catalog pass must not publish after a newer refresh
+	 * that resolves configured credentials.
+	 */
+	private scheduleRegistrationRefresh(): void {
+		const sequence = ++this.refreshSequence;
+		void this.runRefresh({ allowNetwork: false }, sequence, true);
+	}
+
+	private async runRefresh(
+		options: ModelsRefreshOptions,
+		sequence: number,
+		discardIfSuperseded = false,
+	): Promise<ModelsRefreshResult> {
+		const config = await ModelConfig.load(this.modelsPath);
+		if (discardIfSuperseded && sequence !== this.refreshSequence) {
+			return { aborted: true, errors: new Map<string, Error>() };
+		}
+		this.config = config;
 		this.configureRadiusProviders();
 		if (options.providers) {
 			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
@@ -561,7 +583,7 @@ export class ModelRuntime implements Models {
 		this.nativeExtensionProviders.set(provider.id, provider);
 		this.recomposeProvider(provider.id);
 		this.updateModelSnapshot();
-		void this.refresh({ allowNetwork: false });
+		this.scheduleRegistrationRefresh();
 	}
 
 	registerProvider(providerId: string, config: ProviderConfigInput): void {
@@ -606,7 +628,7 @@ export class ModelRuntime implements Models {
 			}
 			this.snapshot = { ...this.snapshot, auth, configuredProviders, available };
 		}
-		void this.refresh({ allowNetwork: false });
+		this.scheduleRegistrationRefresh();
 	}
 
 	unregisterProvider(providerId: string): void {
@@ -614,6 +636,6 @@ export class ModelRuntime implements Models {
 		this.nativeExtensionProviders.delete(providerId);
 		this.recomposeProvider(providerId);
 		this.updateModelSnapshot();
-		void this.refresh({ allowNetwork: false });
+		this.scheduleRegistrationRefresh();
 	}
 }

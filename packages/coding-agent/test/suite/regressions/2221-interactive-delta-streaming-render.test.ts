@@ -35,7 +35,7 @@ function seedMessage(): AssistantMessage {
 
 function makeMode() {
 	const rendered: string[] = [];
-	const updateContent = vi.fn((message: AssistantMessage) => {
+	const updateContent = vi.fn((message: AssistantMessage, _isStreaming: boolean) => {
 		const text = message.content
 			.filter(
 				(entry): entry is Extract<AssistantMessage["content"][number], { type: "text" }> => entry.type === "text",
@@ -49,6 +49,7 @@ function makeMode() {
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() },
 		chatContainer: { addChild: vi.fn() },
+		runtimeHost: { session: { settingsManager: { getShowCacheMissNotices: () => false } } },
 		pendingTools: new Map(),
 		toolOutputExpanded: false,
 		streamingComponent: { updateContent },
@@ -75,6 +76,19 @@ describe("interactive delta streaming render (2221)", () => {
 		// Before the fix this was 0: the render block was skipped entirely.
 		assert.equal(updateContent.mock.calls.length, 4);
 		assert.deepEqual(rendered, ["", "LINE-1\n", "LINE-1\nLINE-2\n", "LINE-1\nLINE-2\nLINE-3\n"]);
+		assert.ok(updateContent.mock.calls.every(([, isStreaming]) => isStreaming === true));
+	});
+
+	it("marks a settled assistant message as non-streaming", async () => {
+		const { mode, updateContent } = makeMode();
+		const message = seedMessage();
+		message.stopReason = "stop";
+		message.content = [{ type: "text", text: "final answer" }];
+
+		await (mode as HandleEventAccess).handleEvent({ type: "message_end", message });
+
+		assert.deepEqual(updateContent.mock.calls.at(-1), [message, false]);
+		assert.equal(mode.streamingComponent, undefined);
 	});
 
 	it("preserves duplicate deltas in arrival order", async () => {

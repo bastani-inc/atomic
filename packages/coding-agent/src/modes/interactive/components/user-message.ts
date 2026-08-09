@@ -29,6 +29,7 @@ export class UserMessageComponent extends Container {
 		this.markdownTransformers = markdownTransformers;
 		this.rebuild();
 	}
+
 	setOutputPad(padding: number): void {
 		this.outputPad = padding;
 		this.rebuild();

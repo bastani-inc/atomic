@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { test } from "vitest";
+import type { MarkdownTransformer } from "../src/core/extensions/types.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
 import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import {
 	releaseStartupChatOutput,
 	StartupChatContainer,
 } from "../src/modes/interactive/interactive-startup-chat-container.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 initTheme("dark");
 function createGateMode(): InteractiveMode {
@@ -187,24 +190,78 @@ test("prompt error paints below the disclosure rather than releasing an empty sl
 	assertResourcesBefore(normalizeGateOutput(mode.chatContainer), "prompt rejected");
 });
 
-test("rebuilds restored transcript after deferred extensions load", async () => {
+test("rebuilds restored transcript through deferred Markdown transformers", async () => {
 	const mode = createGateMode();
 	mode.attachStartupNoticesContainer();
 	configureDeferredGateMode(mode);
-	mode.chatContainer.addChild(new Text("user: earlier question", 0, 0));
-	mode.chatContainer.addChild(new Text("assistant: earlier answer", 0, 0));
-	mode.rebuildChatFromMessages = () => {
-		mode.chatContainer.clear();
-		mode.attachStartupNoticesContainer();
-		mode.chatContainer.addChild(new Text("user: transformed earlier question", 0, 0));
-		mode.chatContainer.addChild(new Text("assistant: transformed earlier answer", 0, 0));
-	};
+	const messages = [
+		{ role: "user", content: "earlier question", timestamp: 0 },
+		{
+			role: "assistant",
+			content: [{ type: "text", text: "earlier answer" }],
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-4o-mini",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		},
+	] satisfies AgentMessage[];
+	const entries: SessionEntry[] = messages.map((message, index) => ({
+		type: "message",
+		id: `message-${index}`,
+		parentId: index === 0 ? null : `message-${index - 1}`,
+		timestamp: new Date(index).toISOString(),
+		message,
+	}));
+	const transformers: MarkdownTransformer[] = [];
+	Object.assign(mode, {
+		bindCurrentSessionExtensions: async () => {
+			transformers.push((markdown, { messageType }) => `${messageType}: transformed ${markdown}`);
+		},
+		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+		getRegisteredToolDefinition: () => undefined,
+		pendingTools: new Map(),
+		deferredRenderedUserInputs: [],
+		deferredRenderedUserInputComponents: new Map(),
+		toolOutputExpanded: false,
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
+		outputPad: 0,
+		rebuildChatFromMessages: Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages"),
+	});
+	Object.assign(mode.session, {
+		sessionManager: {
+			getCwd: () => process.cwd(),
+			getEntries: () => entries,
+			getLeafId: () => entries.at(-1)?.id ?? null,
+		},
+		settingsManager: {
+			getShowCacheMissNotices: () => false,
+			getShowImages: () => false,
+			getImageWidthCells: () => 80,
+		},
+		extensionRunner: {
+			getMarkdownTransformers: () => transformers,
+			getMessageRenderer: () => undefined,
+		},
+	});
 	assert.deepEqual(mode.chatContainer.render(220), []);
 
 	await InteractiveMode.prototype.completeDeferredStartup.call(mode);
 
-	assert.equal(
-		normalizeGateOutput(mode.chatContainer),
-		"RESOURCES\nuser: transformed earlier question\nassistant: transformed earlier answer",
+	const output = normalizeGateOutput(mode.chatContainer);
+	assertResourcesBefore(output, "user: transformed earlier question");
+	assert.ok(output.includes("assistant: transformed earlier answer"), output);
+	assert.ok(
+		output.indexOf("user: transformed earlier question") < output.indexOf("assistant: transformed earlier answer"),
+		output,
 	);
 });
