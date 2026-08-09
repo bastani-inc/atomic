@@ -43,7 +43,10 @@ type RenderSessionContextThis = {
 		getImageWidthCells(): number;
 	};
 	sessionManager: { getCwd(): string };
-	session: { retryAttempt: number; extensionRunner: { getMessageRenderer(customType: string): undefined } };
+	session: {
+		retryAttempt: number;
+		extensionRunner: { getMarkdownTransformers(): []; getMessageRenderer(customType: string): undefined };
+	};
 	hideThinkingBlock: boolean;
 	hiddenThinkingLabel: string;
 	toolOutputExpanded: boolean;
@@ -83,7 +86,10 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 			getImageWidthCells: () => 60,
 		},
 		sessionManager: { getCwd: () => process.cwd() },
-		session: { retryAttempt: 0, extensionRunner: { getMessageRenderer: () => undefined } },
+		session: {
+			retryAttempt: 0,
+			extensionRunner: { getMarkdownTransformers: () => [], getMessageRenderer: () => undefined },
+		},
 		hideThinkingBlock: false,
 		hiddenThinkingLabel: "Thinking...",
 		toolOutputExpanded: false,

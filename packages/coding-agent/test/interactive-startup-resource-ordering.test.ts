@@ -81,6 +81,7 @@ async function renderStartupWithEarlyNotify(
 			retryDeferredModelRestore: async () => {},
 			updateAvailableProviderCount: async () => {},
 			updateEditorBorderColor() {},
+			rebuildChatFromMessages() {},
 		});
 		await InteractiveMode.prototype.completeDeferredStartup.call(mode);
 	}
@@ -138,6 +139,7 @@ function configureDeferredMode(mode: InteractiveMode): void {
 		retryDeferredModelRestore: async () => {},
 		updateAvailableProviderCount: async () => {},
 		updateEditorBorderColor() {},
+		rebuildChatFromMessages() {},
 	});
 }
 
@@ -291,6 +293,35 @@ test("isolated interactive-engine notify lands below RESOURCES", async () => {
 	});
 	dispose();
 	assertResourcesBefore(normalizeStartupOutput(mode.chatContainer), "isolated engine warning");
+});
+
+test("isolated chat settings exclude host Markdown transformers", () => {
+	const mode = createOrderingMode();
+	const transformer = (markdown: string): string => `host:${markdown}`;
+	const runtime = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;
+	Object.defineProperty(mode, "session", {
+		configurable: true,
+		value: {
+			extensionRunner: {
+				getMarkdownTransformers: () => [transformer],
+				getMessageRenderer: () => undefined,
+			},
+			settingsManager: {
+				getShowImages: () => true,
+				getImageWidthCells: () => 60,
+			},
+		},
+	});
+	Object.assign(mode, {
+		runtimeHost: runtime,
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
+		toolOutputExpanded: false,
+		outputPad: 1,
+	});
+
+	const ui = InteractiveMode.prototype.createExtensionUIContext.call(mode) as ExtensionUIContext;
+	assert.deepEqual(ui.getChatRenderSettings().markdownTransformers, []);
 });
 
 for (const startupPath of ["eager", "deferred"] as const) {

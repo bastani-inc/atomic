@@ -59,6 +59,8 @@ export type {
 	KeybindingsManager,
 	LoadExtensionsResult,
 	LsToolCallEvent,
+	MarkdownTransformContext,
+	MarkdownTransformer,
 	MessageRenderer,
 	MessageRenderOptions,
 	ModelSelectEvent,

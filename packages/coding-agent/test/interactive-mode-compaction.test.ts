@@ -124,7 +124,7 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 			isCompacting: false,
 			abortCompaction: vi.fn(),
 			agent: { waitForIdle: vi.fn().mockResolvedValue(undefined) },
-			extensionRunner: { getMessageRenderer: () => undefined },
+			extensionRunner: { getMarkdownTransformers: () => [], getMessageRenderer: () => undefined },
 		},
 		settingsManager: {
 			getShowTerminalProgress: () => false,

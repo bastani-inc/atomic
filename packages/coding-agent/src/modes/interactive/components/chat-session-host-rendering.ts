@@ -151,7 +151,11 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 		return state.renderExtraEntry?.(entry as TExtraEntry) ?? new Text("", 0, 0);
 	}
 	if (isChatMessageEntry(entry)) {
-		return renderChatMessageEntry(streamingWindowedEntry(state, entry), chatMessageRenderOptions(state));
+		const isStreaming = isChatSessionStreaming(state) && state.liveChat.isStreamingAssistantEntry(entry);
+		return renderChatMessageEntry(
+			streamingWindowedEntry(state, entry, isStreaming),
+			chatMessageRenderOptions(state, isStreaming),
+		);
 	}
 	if (!state.renderExtraEntry) {
 		return new Text("", 0, 0);
@@ -176,8 +180,9 @@ export function transcriptCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 function streamingWindowedEntry<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	entry: ChatMessageEntry,
+	isStreaming: boolean,
 ): ChatMessageEntry {
-	if (!isChatSessionStreaming(state) || state.bodyViewport.getScrollFromBottom() !== 0) {
+	if (!isStreaming || state.bodyViewport.getScrollFromBottom() !== 0) {
 		return entry;
 	}
 	if (entry.kind !== "assistant") return entry;
@@ -191,6 +196,7 @@ function streamingWindowedEntry<TExtraEntry extends ChatTranscriptEntryLike>(
 
 function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
+	isStreaming: boolean,
 ): ChatMessageRenderOptions {
 	const inherited = state.getChatRenderSettings?.();
 	return {
@@ -198,6 +204,7 @@ function chatMessageRenderOptions<TExtraEntry extends ChatTranscriptEntryLike>(
 		ui: toolTui(state),
 		cwd: state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
 		markdownTheme: inherited?.markdownTheme ?? state.getMarkdownTheme?.(),
+		isStreaming,
 		showImages: inherited?.showImages ?? true,
 	};
 }
@@ -212,6 +219,8 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 	state: ChatSessionHostState<TExtraEntry>,
 ): string {
 	const inherited = state.getChatRenderSettings?.();
+	const markdownTransformersKey =
+		inherited?.markdownTransformers?.map((transformer) => renderIdentityKey(state, transformer)).join(",") ?? "";
 	return cacheKey([
 		"settings",
 		inherited?.hideThinkingBlock === true,
@@ -220,6 +229,7 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 		inherited?.showImages !== false,
 		inherited?.imageWidthCells ?? null,
 		inherited?.outputPad ?? null,
+		markdownTransformersKey,
 		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
 		state.bodyViewport.getScrollFromBottom() === 0,
 		isChatSessionStreaming(state),

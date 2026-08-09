@@ -269,10 +269,12 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 
 export async function reload(this: AgentSession, options?: AgentSessionReloadOptions): Promise<void> {
 	const reason = options?.reason ?? "reload";
-	const previousFlagValues = this._extensionRunner.getExplicitFlagValues();
+	const oldRunner = this._extensionRunner;
+	const previousFlagValues = oldRunner.getExplicitFlagValues();
 	if (reason === "reload") {
-		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
+		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 	}
+	oldRunner.invalidate();
 	await this.settingsManager.reload();
 	resetApiProviders();
 	await this._resourceLoader.reload();

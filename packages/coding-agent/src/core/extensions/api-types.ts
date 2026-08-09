@@ -48,7 +48,13 @@ import type {
 	ToolResultEventResult,
 	UserBashEventResult,
 } from "./event-results.ts";
-import type { EntryRenderer, MessageRenderer, SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
+import type {
+	EntryRenderer,
+	MarkdownTransformer,
+	MessageRenderer,
+	SendMessageOptions,
+	SendMessagesOptions,
+} from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type {
 	ResourcesDiscoverEvent,
@@ -179,6 +185,9 @@ export interface ExtensionAPI {
 
 	/** Register a custom renderer for CustomMessageEntry. */
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
+
+	/** Register a transformer for user and assistant Markdown before Atomic renders it in the interactive transcript. */
+	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
 	/** Register a custom renderer for a persistent CustomEntry. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
 

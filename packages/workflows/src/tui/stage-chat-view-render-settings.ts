@@ -11,6 +11,7 @@ type MessageRendererHost = {
 		getMessageRenderer?: (
 			customType: string,
 		) => ReturnType<NonNullable<StageChatRenderSettings["getCustomMessageRenderer"]>>;
+		getMarkdownTransformers?: () => NonNullable<StageChatRenderSettings["markdownTransformers"]>;
 	};
 };
 
@@ -29,6 +30,8 @@ export function stageChatRenderSettings(
 		getCustomMessageRenderer: (customType) =>
 			rendererHost.extensionRunner?.getMessageRenderer?.(customType) ??
 			inherited?.getCustomMessageRenderer?.(customType),
+		markdownTransformers:
+			rendererHost.extensionRunner?.getMarkdownTransformers?.() ?? inherited?.markdownTransformers,
 	};
 }
 

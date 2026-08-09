@@ -45,6 +45,7 @@ import type {
 } from "./runner-handlers.ts";
 import {
 	collectFlags,
+	collectMarkdownTransformers,
 	collectRegisteredTools,
 	findEntryRenderer,
 	findMessageRenderer,
@@ -72,6 +73,7 @@ import type {
 	ExtensionUIContext,
 	InputEventResult,
 	InputSource,
+	MarkdownTransformer,
 	MessageEndEvent,
 	MessageRenderer,
 	OrchestrationContext,
@@ -357,6 +359,10 @@ export class ExtensionRunner {
 
 	getMessageRenderer(customType: string): MessageRenderer | undefined {
 		return findMessageRenderer(this.extensions, customType);
+	}
+
+	getMarkdownTransformers(): MarkdownTransformer[] {
+		return collectMarkdownTransformers(this.extensions);
 	}
 
 	getEntryRenderer(customType: string): EntryRenderer | undefined {

@@ -1686,6 +1686,27 @@ mode and would not execute if sent via `prompt`.
 
 Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. See [Custom UI](#custom-ui).
 
+### pi.registerMarkdownTransformer(transformer)
+
+Register a synchronous, display-only transformer for Markdown in normal user text, assistant text, and thinking blocks. Atomic runs transformers in extension load order. Each extension retains one transformer, so a later call from that extension replaces its prior transformer. Each transformer receives the Markdown returned by the prior transformer, then Atomic renders the final value with its built-in Markdown renderer.
+
+The transformer receives the Markdown string and a context with:
+
+- `messageType` — `"user"`, `"assistant"`, or `"assistant-thinking"`
+- `isStreaming` — `true` for partial assistant updates; `false` for user, finalized assistant, and restored messages
+- `availableWidth` — exact terminal columns available for the transformed Markdown content
+
+Return the transformed Markdown:
+
+```typescript
+pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
+  if (isStreaming || messageType === "assistant-thinking") return markdown;
+  return markdown.replaceAll("-->", "→");
+});
+```
+
+If a transformer throws, Atomic keeps the Markdown produced so far and continues with the next transformer. The hook never changes the original message, session transcript, or model context. It runs for new user messages, assistant streaming updates, restored session messages, and terminal-width changes, so keep transformers synchronous and inexpensive. Isolated-engine rendering does not run host-side display transformers.
+
 ### pi.registerShortcut(shortcut, options)
 
 Register a keyboard shortcut. See [Keybindings](/keybindings) for the shortcut format and built-in keybindings.
