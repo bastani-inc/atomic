@@ -148,6 +148,7 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 };
 
 InteractiveModeBase.prototype.stop = function (this: InteractiveModeBase): void {
+	this.disposeActiveSelector();
 	this.disposeInteractiveEngineHost();
 	this.disposeInteractiveEngineHost = () => {};
 	if (this.settingsManager.getShowTerminalProgress()) {

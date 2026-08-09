@@ -1,32 +1,29 @@
 import type { Settings } from "./settings-types.ts";
 
-/** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
-export function deepMergeSettings(base: Settings, overrides: Settings): Settings {
-	const result: Settings = { ...base };
+function isMergeableObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-	for (const key of Object.keys(overrides) as (keyof Settings)[]) {
+function deepMergeObjects(base: Record<string, unknown>, overrides: Record<string, unknown>): Record<string, unknown> {
+	const result = { ...base };
+
+	for (const key of Object.keys(overrides)) {
 		const overrideValue = overrides[key];
-		const baseValue = base[key];
-
 		if (overrideValue === undefined) {
 			continue;
 		}
 
-		// For nested objects, merge recursively
-		if (
-			typeof overrideValue === "object" &&
-			overrideValue !== null &&
-			!Array.isArray(overrideValue) &&
-			typeof baseValue === "object" &&
-			baseValue !== null &&
-			!Array.isArray(baseValue)
-		) {
-			(result as Record<string, unknown>)[key] = { ...baseValue, ...overrideValue };
-		} else {
-			// For primitives and arrays, override value wins
-			(result as Record<string, unknown>)[key] = overrideValue;
-		}
+		const baseValue = base[key];
+		result[key] =
+			isMergeableObject(baseValue) && isMergeableObject(overrideValue)
+				? deepMergeObjects(baseValue, overrideValue)
+				: overrideValue;
 	}
 
 	return result;
+}
+
+/** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
+export function deepMergeSettings(base: Settings, overrides: Settings): Settings {
+	return deepMergeObjects(base as Record<string, unknown>, overrides as Record<string, unknown>) as Settings;
 }

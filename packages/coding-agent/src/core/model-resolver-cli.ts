@@ -12,9 +12,48 @@ function buildProviderMap(availableModels: Model<Api>[]): Map<string, string> {
 	return providerMap;
 }
 
-function findRawExactModel(cliModel: string, availableModels: Model<Api>[]): Model<Api> | undefined {
+function resolveRawExactModel(
+	cliModel: string,
+	availableModels: Model<Api>[],
+	modelRuntime: ModelRuntime,
+): ResolveCliModelResult | undefined {
 	const lower = cliModel.toLowerCase();
-	return availableModels.find((m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower);
+	const exactModels = new Map<string, Model<Api>>();
+	for (const model of availableModels) {
+		if (model.id.toLowerCase() !== lower && `${model.provider}/${model.id}`.toLowerCase() !== lower) continue;
+		const fullId = `${model.provider.toLowerCase()}/${model.id.toLowerCase()}`;
+		if (!exactModels.has(fullId)) exactModels.set(fullId, model);
+	}
+	const exactMatches = [...exactModels.values()];
+	if (exactMatches.length === 0) return undefined;
+	if (exactMatches.length === 1) {
+		return { model: exactMatches[0], warning: undefined, thinkingLevel: undefined, error: undefined };
+	}
+
+	const authenticatedExactMatches = exactMatches.filter((model) => modelRuntime.hasConfiguredAuth(model.provider));
+	if (authenticatedExactMatches.length === 1) {
+		return {
+			model: authenticatedExactMatches[0],
+			warning: undefined,
+			thinkingLevel: undefined,
+			error: undefined,
+		};
+	}
+
+	const matches = exactMatches
+		.map((model) => `${model.provider}/${model.id}`)
+		.sort((a, b) => a.localeCompare(b))
+		.join(", ");
+	const authHint =
+		authenticatedExactMatches.length === 0
+			? "No matching provider is authenticated."
+			: "More than one matching provider is authenticated.";
+	return {
+		model: undefined,
+		warning: undefined,
+		thinkingLevel: undefined,
+		error: `Model "${cliModel}" is ambiguous across providers: ${matches}. ${authHint} Use --provider or provider/model.`,
+	};
 }
 
 function splitCustomModelThinkingSuffix(pattern: string): {
@@ -70,10 +109,8 @@ export function resolveCliModel(options: {
 	// a gateway-owned ID). Preserve that exact ID before provider inference consumes the suffix.
 	const rawPattern = splitCustomModelThinkingSuffix(cliModel);
 	if (!cliProvider && rawPattern.thinkingLevel !== undefined) {
-		const exact = findRawExactModel(cliModel, availableModels);
-		if (exact) {
-			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
-		}
+		const exact = resolveRawExactModel(cliModel, availableModels, modelRuntime);
+		if (exact) return exact;
 	}
 
 	let provider = cliProvider ? providerMap.get(cliProvider.toLowerCase()) : undefined;
@@ -102,10 +139,8 @@ export function resolveCliModel(options: {
 	}
 
 	if (!provider) {
-		const exact = findRawExactModel(cliModel, availableModels);
-		if (exact) {
-			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
-		}
+		const exact = resolveRawExactModel(cliModel, availableModels, modelRuntime);
+		if (exact) return exact;
 	}
 
 	if (cliProvider && provider) {
@@ -125,10 +160,8 @@ export function resolveCliModel(options: {
 	}
 
 	if (inferredProvider) {
-		const exact = findRawExactModel(cliModel, availableModels);
-		if (exact) {
-			return { model: exact, warning: undefined, thinkingLevel: undefined, error: undefined };
-		}
+		const exact = resolveRawExactModel(cliModel, availableModels, modelRuntime);
+		if (exact) return exact;
 
 		const fallback = parseModelPattern(cliModel, availableModels, {
 			allowInvalidThinkingLevelFallback: false,

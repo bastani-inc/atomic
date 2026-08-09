@@ -187,7 +187,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.tui.requestRender();
 	}
 
-	private close(): void {
+	dispose(): void {
+		if (this.closed) return;
 		this.closed = true;
 		this.refreshAbortController.abort();
 	}
@@ -336,7 +337,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 		// Escape or Ctrl+C
 		else if (kb.matches(keyData, "tui.select.cancel")) {
-			this.close();
+			this.dispose();
 			this.onCancelCallback();
 		}
 		// Pass everything else to search input
@@ -347,7 +348,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private handleSelect(model: Model<Api>): void {
-		this.close();
+		this.dispose();
 		// Save as new default
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 		this.onSelectCallback(model);

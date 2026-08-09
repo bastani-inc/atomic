@@ -64,6 +64,30 @@ describe("interactive model routing refresh bounds", () => {
 		expect(observedSignal?.aborted).toBe(true);
 	});
 
+	it("uses an exact cached model match without starting a catalog refresh", async () => {
+		const refresh = vi.fn(() => new Promise<never>(() => {}));
+		const mode = createMode(refresh, () => [cachedModel]);
+
+		await expect(
+			InteractiveModeBase.prototype.findExactModelMatch.call(mode as never, "cached-provider/cached-model"),
+		).resolves.toBe(cachedModel);
+		expect(refresh).not.toHaveBeenCalled();
+	});
+
+	it("falls back to a refresh when the cached snapshot cannot be read", async () => {
+		let snapshotReads = 0;
+		const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
+		const mode = createMode(refresh, () => {
+			if (snapshotReads++ === 0) throw new Error("snapshot unavailable");
+			return [refreshedModel];
+		});
+
+		await expect(
+			InteractiveModeBase.prototype.findExactModelMatch.call(mode as never, "cached-provider/refreshed-model"),
+		).resolves.toBe(refreshedModel);
+		expect(refresh).toHaveBeenCalledOnce();
+	});
+
 	it("keeps an exact cached model match usable after the refresh deadline", async () => {
 		vi.useFakeTimers();
 		const refresh = vi.fn(() => new Promise<never>(() => {}));

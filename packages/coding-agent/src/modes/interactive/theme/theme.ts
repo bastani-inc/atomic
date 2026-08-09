@@ -10,10 +10,13 @@ export {
 export {
 	detectTerminalBackgroundFromEnv,
 	detectTerminalBackgroundTheme,
+	detectTerminalThemeForAuto,
 	getDefaultTheme,
 	getThemeForRgbColor,
 	parseAutoThemeSetting,
 	resolveThemeSetting,
+	type TerminalAutoThemeDetectionOptions,
+	type TerminalAutoThemeDetector,
 	type TerminalBackgroundThemeDetectionOptions,
 	type TerminalBackgroundThemeDetector,
 	type TerminalTheme,

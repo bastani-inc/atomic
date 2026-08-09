@@ -23,6 +23,7 @@ interface CustomUiStub {
 	focused: unknown[];
 	inline: unknown[];
 	overlayVisible: boolean;
+	selectorDisposals: number;
 }
 
 function makeStub(options?: { overlayStaysUp?: boolean }): CustomUiStub {
@@ -36,8 +37,16 @@ function makeStub(options?: { overlayStaysUp?: boolean }): CustomUiStub {
 		focused: [] as unknown[],
 		inline: [editor] as unknown[],
 		overlayVisible: false,
+		selectorDisposals: 0,
 	};
-	const host = {
+	// Linked to the real prototype: the inline path tears the active selector
+	// down through `this.disposeActiveSelector()`, so the receiver has to resolve
+	// inherited behavior instead of stubbing it away.
+	const host = Object.assign(Object.create(InteractiveModeBase.prototype), {
+		activeSelectorToken: {},
+		activeSelectorDispose: () => {
+			state.selectorDisposals += 1;
+		},
 		editor,
 		keybindings: {},
 		editorContainer: {
@@ -81,7 +90,7 @@ function makeStub(options?: { overlayStaysUp?: boolean }): CustomUiStub {
 		notifyHostCustomUiStateListeners: () => {},
 		beginHostInlineCustomUi: () => () => {},
 		beginInlineCustomUiFocusDeferral: () => () => {},
-	};
+	});
 	return Object.assign(state, { mode: host as unknown as InteractiveModeBase }) as CustomUiStub;
 }
 
@@ -141,5 +150,6 @@ test("an inline custom UI focuses the editor when nothing else owns input", asyn
 	done(undefined);
 	await settled;
 	assert.equal(stub.focused.length, 2, "the component is focused on mount and the editor on close");
+	assert.equal(stub.selectorDisposals, 1, "mounting inline must tear down the selector that owned the container");
 	assert.equal(stub.focused.at(-1), stub.mode.editor);
 });

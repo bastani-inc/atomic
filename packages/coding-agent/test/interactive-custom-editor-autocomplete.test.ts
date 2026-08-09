@@ -26,13 +26,19 @@ const setCustomEditorComponent = InteractiveModeBase.prototype.setCustomEditorCo
 ) => void;
 
 test("custom editors inherit the default autocomplete dropdown limit", () => {
+	const cancelRefresh = vi.fn();
 	const setAutocompleteMaxVisible = vi.fn();
 	const customEditor = {
 		setText: vi.fn(),
 		setAutocompleteMaxVisible,
 	};
-	const harness: CustomEditorHarness = {
+	// Linked to the real prototype: `setCustomEditorComponent` tears the active
+	// selector down through `this.disposeActiveSelector()`, so the receiver has to
+	// resolve inherited behavior instead of stubbing it away.
+	const harness: CustomEditorHarness = Object.assign(Object.create(InteractiveModeBase.prototype), {
 		editorComponentFactory: undefined,
+		activeSelectorToken: {},
+		activeSelectorDispose: cancelRefresh,
 		editor: { getText: () => "draft" },
 		defaultEditor: {
 			onSubmit: undefined,
@@ -46,10 +52,11 @@ test("custom editors inherit the default autocomplete dropdown limit", () => {
 		ui: { setFocus: vi.fn(), requestRender: vi.fn() },
 		autocompleteProvider: undefined,
 		keybindings: {},
-	};
+	});
 	const factory: EditorFactory = () => customEditor as never;
 
 	setCustomEditorComponent.call(harness, factory);
 
 	expect(setAutocompleteMaxVisible).toHaveBeenCalledWith(11);
+	expect(cancelRefresh).toHaveBeenCalledTimes(1);
 });

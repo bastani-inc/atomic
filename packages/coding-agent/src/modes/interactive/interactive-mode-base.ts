@@ -112,6 +112,10 @@ export class InteractiveModeBase {
 
 	editorContainer: Container;
 
+	activeSelectorToken: object | undefined;
+
+	activeSelectorDispose: (() => void) | undefined;
+
 	footer: FooterComponent;
 
 	usageMeter: UsageMeterComponent;
@@ -314,6 +318,20 @@ export class InteractiveModeBase {
 
 	get settingsManager() {
 		return this.session.settingsManager;
+	}
+
+	/**
+	 * Tears down the selector that owns `editorContainer`, including in-flight
+	 * work such as a model catalog refresh.
+	 *
+	 * This lives on the base class so behavior modules can dispose a selector
+	 * without relying on `interactive-selectors.ts` load order.
+	 */
+	disposeActiveSelector(): void {
+		const dispose = this.activeSelectorDispose;
+		this.activeSelectorToken = undefined;
+		this.activeSelectorDispose = undefined;
+		dispose?.();
 	}
 
 	declare options: InteractiveModeOptions;

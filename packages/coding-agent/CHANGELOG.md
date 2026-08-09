@@ -22,6 +22,12 @@
 
 ### Fixed
 
+- Fixed bare exact `--model` IDs shared by providers choosing catalog order. Atomic now uses the sole authenticated matching provider or reports an ambiguity with fully qualified choices ([#7327](https://github.com/earendil-works/pi/issues/7327)).
+- Fixed `/model <name>` and `/scoped-models` waiting for remote catalog refreshes before using cached models. Exact cached matches now resolve immediately, and the scoped selector renders its cache first, refreshes in the background, and cancels that work when it closes ([#7153](https://github.com/earendil-works/pi/issues/7153), [#7443](https://github.com/earendil-works/pi/issues/7443)).
+- Fixed project `retry.provider` overrides discarding unmodified global provider retry fields by recursively merging nested settings ([#7572](https://github.com/earendil-works/pi/issues/7572)).
+- Reduced automatic terminal-theme detection latency by starting color-scheme and background probes together.
+- Softened the bash session-environment prompt while retaining Atomic and legacy `PI_*` environment support.
+
 - Fixed same-state `ctx.ui.setToolsExpanded()` calls still traversing the transcript or requesting a custom-UI render. Repeated bundled-extension requests to keep tool output collapsed now leave an already-collapsed interactive or RPC UI untouched.
 - Fixed extension-facing `ModelRegistry.complete()` requests to dispatch through the active model runtime, so registered providers and resolved request authentication remain available to extension code.
 - Fixed image blocks returned by builtin and extension tools entering history at their original size. They now honor `images.autoResize` after `tool_result` handlers run, including images injected by an extension; a failed conversion leaves the original image intact.

@@ -92,6 +92,7 @@ export {
 	findExactModelReferenceMatch,
 	findInitialModel,
 	resolveModelScope,
+	resolveModelScopeFromModels,
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,
 } from "../../core/model-resolver.ts";

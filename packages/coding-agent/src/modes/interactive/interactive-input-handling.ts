@@ -288,7 +288,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			if (text === "/scoped-models") {
 				this.editor.setText("");
 				await this.ensureDeferredStartupComplete();
-				await this.showModelsSelector();
+				this.showModelsSelector();
 				return;
 			}
 			if (text === "/model" || text.startsWith("/model ")) {

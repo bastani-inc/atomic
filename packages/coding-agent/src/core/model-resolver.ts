@@ -7,7 +7,11 @@ export { defaultModelPerProvider } from "./model-resolver-defaults.ts";
 export { findInitialModel, resolveRestoredModelReference, restoreModelFromSession } from "./model-resolver-initial.ts";
 export { findExactModelReferenceMatch, parseModelPattern } from "./model-resolver-patterns.ts";
 export type { ModelScopeDiagnostic, ResolveModelScopeResult } from "./model-resolver-scope.ts";
-export { resolveModelScope, resolveModelScopeWithDiagnostics } from "./model-resolver-scope.ts";
+export {
+	resolveModelScope,
+	resolveModelScopeFromModels,
+	resolveModelScopeWithDiagnostics,
+} from "./model-resolver-scope.ts";
 export type {
 	InitialModelResult,
 	ParsedModelResult,

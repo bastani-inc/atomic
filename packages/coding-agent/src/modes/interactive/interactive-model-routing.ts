@@ -6,8 +6,7 @@ import {
 	findExactModelReferenceMatch,
 	type Model,
 	ModelSelectorComponent,
-	resolveModelScope,
-	resolveModelScopeWithDiagnostics,
+	resolveModelScopeFromModels,
 	ScopedModelsSelectorComponent,
 	UserMessageSelectorComponent,
 } from "./interactive-mode-deps.ts";
@@ -44,6 +43,22 @@ InteractiveModeBase.prototype.findExactModelMatch = async function (
 	this: InteractiveModeBase,
 	searchTerm: string,
 ): Promise<Model<Api> | undefined> {
+	if (this.session.scopedModels.length > 0) {
+		return findExactModelReferenceMatch(
+			searchTerm,
+			this.session.scopedModels.map((scoped) => scoped.model),
+		);
+	}
+
+	try {
+		const cachedMatch = findExactModelReferenceMatch(searchTerm, [
+			...this.session.modelRuntime.getAvailableSnapshot(),
+		]);
+		if (cachedMatch) return cachedMatch;
+	} catch {
+		// A refresh below retries the snapshot read and safely falls back to no match.
+	}
+
 	const models = await this.getModelCandidates();
 	return findExactModelReferenceMatch(searchTerm, models);
 };
@@ -137,70 +152,75 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			},
 			initialSearchInput,
 		);
-		return { component: selector, focus: selector };
+		return { component: selector, focus: selector, dispose: () => selector.dispose() };
 	});
 };
 
-InteractiveModeBase.prototype.showModelsSelector = async function (this: InteractiveModeBase): Promise<void> {
-	await this.session.modelRuntime.refresh({ allowNetwork: !isOfflineModeEnabled() });
-	const allModels = [...this.session.modelRuntime.getAvailableSnapshot()];
-	const allModelIds = new Set(allModels.map((model) => `${model.provider}/${model.id}`));
-	const configuredPatterns = this.settingsManager.getEnabledModels();
+InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveModeBase): void {
+	let availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
+	let availableModelIds = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
 	const sessionScopedModels = this.session.scopedModels;
+	const sessionScopedIds = sessionScopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
+	const getConfiguredScope = (
+		models: readonly Model<Api>[],
+	): { enabledIds: string[]; unavailableIds: string[] } | undefined => {
+		const configuredPatterns = this.settingsManager.getEnabledModels();
+		if (!configuredPatterns?.length) return undefined;
+		const { scopedModels, diagnostics } = resolveModelScopeFromModels(configuredPatterns, models);
+		const enabledIds = scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
+		const unavailableIds: string[] = [];
+		for (const diagnostic of diagnostics) {
+			if (diagnostic.code === "no-match" && !unavailableIds.includes(diagnostic.pattern)) {
+				unavailableIds.push(diagnostic.pattern);
+			}
+		}
+		return { enabledIds: [...enabledIds, ...unavailableIds], unavailableIds };
+	};
 
-	if (allModels.length === 0 && !configuredPatterns?.length && sessionScopedModels.length === 0) {
-		this.showStatus("No models available");
-		return;
-	}
+	const configuredScope = getConfiguredScope(availableModels);
+	let currentEnabledIds =
+		sessionScopedIds.length > 0
+			? [...sessionScopedIds, ...(configuredScope?.unavailableIds ?? [])]
+			: (configuredScope?.enabledIds ?? null);
+	let selectionChanged = false;
 
-	const configuredScope = configuredPatterns?.length
-		? await resolveModelScopeWithDiagnostics(configuredPatterns, this.session.modelRuntime)
-		: undefined;
-	const hasSessionScope = sessionScopedModels.length > 0;
-	let currentEnabledIds: string[] | null = null;
-	if (hasSessionScope) {
-		currentEnabledIds = sessionScopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
-	} else if (configuredScope) {
-		currentEnabledIds = configuredScope.scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`);
-	}
-	for (const diagnostic of configuredScope?.diagnostics ?? []) {
-		if (diagnostic.code !== "no-match") continue;
-		currentEnabledIds ??= [];
-		if (!currentEnabledIds.includes(diagnostic.pattern)) currentEnabledIds.push(diagnostic.pattern);
-	}
-
-	const updateSessionModels = async (enabledIds: string[] | null) => {
+	const updateSessionModels = (enabledIds: string[] | null): void => {
 		currentEnabledIds = enabledIds === null ? null : [...enabledIds];
-		const hasEnabledAvailableModel = enabledIds?.some((id) => allModelIds.has(id)) ?? false;
-		const allAvailableModelsEnabled = enabledIds !== null && [...allModelIds].every((id) => enabledIds.includes(id));
+		const hasEnabledAvailableModel = enabledIds?.some((id) => availableModelIds.has(id)) ?? false;
+		const allAvailableModelsEnabled =
+			enabledIds !== null && [...availableModelIds].every((id) => enabledIds.includes(id));
 		if (enabledIds && hasEnabledAvailableModel && !allAvailableModelsEnabled) {
-			const newScopedModels = await resolveModelScope(enabledIds, this.session.modelRuntime);
+			const newScopedModels = resolveModelScopeFromModels(enabledIds, availableModels).scopedModels;
 			this.session.setScopedModels(
-				newScopedModels.map((sm) => ({ model: sm.model, thinkingLevel: sm.thinkingLevel })),
+				newScopedModels.map((scoped) => ({ model: scoped.model, thinkingLevel: scoped.thinkingLevel })),
 			);
 		} else {
 			this.session.setScopedModels([]);
 		}
-		await this.updateAvailableProviderCount();
+		void this.updateAvailableProviderCount();
 		this.setupAutocompleteProvider();
 		this.ui.requestRender();
 	};
 
 	this.showSelector((done) => {
+		let disposed = false;
+		const refreshAbortController = new AbortController();
 		const selector = new ScopedModelsSelectorComponent(
 			{
-				allModels,
+				allModels: availableModels,
 				enabledModelIds: currentEnabledIds,
+				refreshStatus: "Refreshing model catalogs…",
 			},
 			{
-				onChange: async (enabledIds) => {
-					await updateSessionModels(enabledIds);
+				onChange: (enabledIds) => {
+					selectionChanged = true;
+					updateSessionModels(enabledIds);
 				},
 				onPersist: (enabledIds) => {
 					const allEnabled =
 						enabledIds !== null &&
-						enabledIds.length === allModels.length &&
-						enabledIds.every((id) => allModelIds.has(id));
+						enabledIds.length === availableModels.length &&
+						enabledIds.every((id) => availableModelIds.has(id));
 					const newPatterns = enabledIds === null || allEnabled ? undefined : enabledIds;
 					this.settingsManager.setEnabledModels(newPatterns ? [...newPatterns] : undefined);
 					this.showStatus("Model selection saved to settings");
@@ -211,7 +231,61 @@ InteractiveModeBase.prototype.showModelsSelector = async function (this: Interac
 				},
 			},
 		);
-		return { component: selector, focus: selector };
+		void boundedInteractiveModelRefresh(
+			(options) => this.session.modelRuntime.refresh(options),
+			{ allowNetwork: !isOfflineModeEnabled() },
+			refreshAbortController.signal,
+		)
+			.then((outcome) => {
+				if (disposed) return;
+				availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
+				availableModelIds = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
+				if (!selectionChanged) {
+					const refreshedConfiguredScope = getConfiguredScope(availableModels);
+					currentEnabledIds =
+						sessionScopedIds.length > 0
+							? [...sessionScopedIds, ...(refreshedConfiguredScope?.unavailableIds ?? [])]
+							: (refreshedConfiguredScope?.enabledIds ?? null);
+					selector.updateModels(availableModels, currentEnabledIds);
+				} else {
+					selector.updateModels(availableModels);
+				}
+				if (outcome.status === "timed-out") {
+					selector.setRefreshStatus("Model refresh timed out; showing cached models.", "warning");
+				} else if (outcome.status === "aborted") {
+					selector.setRefreshStatus("Model refresh was cancelled; showing cached models.", "warning");
+				} else if (outcome.status === "rejected") {
+					selector.setRefreshStatus("Could not refresh model catalogs; showing cached models.", "warning");
+				} else if (outcome.value.aborted) {
+					selector.setRefreshStatus("Model refresh was cancelled; showing cached models.", "warning");
+				} else if (outcome.value.errors.size === 1) {
+					selector.setRefreshStatus(
+						`Could not refresh ${outcome.value.errors.keys().next().value}; showing cached models.`,
+						"warning",
+					);
+				} else if (outcome.value.errors.size > 1) {
+					selector.setRefreshStatus(
+						`Could not refresh ${outcome.value.errors.size} model catalogs; showing cached models.`,
+						"warning",
+					);
+				} else {
+					selector.setRefreshStatus("Model catalogs refreshed.", "success");
+				}
+				this.ui.requestRender();
+			})
+			.catch(() => {
+				if (disposed) return;
+				selector.setRefreshStatus("Could not update cached models; showing cached models.", "warning");
+				this.ui.requestRender();
+			});
+		return {
+			component: selector,
+			focus: selector,
+			dispose: () => {
+				disposed = true;
+				refreshAbortController.abort();
+			},
+		};
 	});
 };
 

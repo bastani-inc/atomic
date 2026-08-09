@@ -12,17 +12,37 @@ import {
 
 InteractiveModeBase.prototype.showSelector = function (
 	this: InteractiveModeBase,
-	create: (done: () => void) => { component: Component; focus: Component },
+	create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
 ): void {
+	const token = {};
+	let dispose: (() => void) | undefined;
+	let disposed = false;
+	const disposeSelector = () => {
+		if (disposed) return;
+		disposed = true;
+		dispose?.();
+	};
 	const done = () => {
+		disposeSelector();
+		if (this.activeSelectorToken !== token) return;
+		this.activeSelectorToken = undefined;
+		this.activeSelectorDispose = undefined;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
 	};
-	const { component, focus } = create(done);
+	const created = create(done);
+	dispose = created.dispose;
+	if (disposed) {
+		dispose?.();
+		return;
+	}
+	this.disposeActiveSelector();
+	this.activeSelectorToken = token;
+	this.activeSelectorDispose = disposeSelector;
 	this.editorContainer.clear();
-	this.editorContainer.addChild(component);
-	this.ui.setFocus(focus);
+	this.editorContainer.addChild(created.component);
+	this.ui.setFocus(created.focus);
 	this.ui.requestRender();
 };
 

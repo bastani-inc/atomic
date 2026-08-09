@@ -395,7 +395,7 @@ See [Atomic packages](/packages) for package management details.
 
 ## Project Overrides
 
-Project settings (`.atomic/settings.json`) override global settings. Nested objects are merged:
+Project settings (`.atomic/settings.json`) override global settings. Nested objects merge recursively; arrays and scalar values replace global values:
 
 ```json
 // ~/.atomic/agent/settings.json (global)

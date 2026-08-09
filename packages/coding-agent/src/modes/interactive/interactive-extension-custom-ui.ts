@@ -205,6 +205,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 						options?.onHandle?.(handle);
 					}
 				} else {
+					this.disposeActiveSelector();
 					this.editorContainer.clear();
 					this.editorContainer.addChild(component);
 					if (this.shouldDeferInlineCustomUiFocus()) {

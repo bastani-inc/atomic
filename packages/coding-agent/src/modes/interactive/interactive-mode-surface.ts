@@ -306,7 +306,9 @@ declare module "./interactive-mode-base.ts" {
 		isExtensionCommand(text: string): boolean;
 		flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 		flushPendingBashComponents(): void;
-		showSelector(create: (done: () => void) => { component: Component; focus: Component }): void;
+		showSelector(
+			create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
+		): void;
 		showFastModeSelector(): void;
 		showSettingsSelector(): void;
 		handleModelCommand(searchTerm?: string): Promise<void>;
@@ -318,7 +320,7 @@ declare module "./interactive-mode-base.ts" {
 			targetContainer?: Container,
 		): Promise<void>;
 		showModelSelector(initialSearchInput?: string): void;
-		showModelsSelector(): Promise<void>;
+		showModelsSelector(): void;
 		showUserMessageSelector(): Promise<void>;
 		handleCloneCommand(): Promise<void>;
 		maybeSaveImplicitProjectTrustAfterReload(): boolean;

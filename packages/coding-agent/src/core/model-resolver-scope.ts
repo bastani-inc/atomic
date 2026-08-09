@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
+import { type Api, type Model, modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
@@ -48,17 +48,17 @@ function parseGlobThinkingLevel(pattern: string): { globPattern: string; thinkin
  * The algorithm tries to match the full pattern first, then progressively
  * strips colon-suffixes to find a match.
  */
-export async function resolveModelScopeWithDiagnostics(
+export function resolveModelScopeFromModels(
 	patterns: string[],
-	modelRuntime: ModelRuntime,
-): Promise<ResolveModelScopeResult> {
-	const availableModels = await [...modelRuntime.getAvailableSnapshot()];
+	models: readonly Model<Api>[],
+): ResolveModelScopeResult {
+	const availableModels = [...models];
 	const scopedModels: ScopedModel[] = [];
 	const diagnostics: ModelScopeDiagnostic[] = [];
 	for (const pattern of patterns) {
 		const completeExactMatch = findExactModelReferenceMatch(pattern, availableModels);
 		if (completeExactMatch) {
-			if (!scopedModels.find((sm) => modelsAreEqual(sm.model, completeExactMatch))) {
+			if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, completeExactMatch))) {
 				scopedModels.push({ model: completeExactMatch, thinkingLevel: undefined });
 			}
 			continue;
@@ -68,14 +68,16 @@ export async function resolveModelScopeWithDiagnostics(
 			const { globPattern, thinkingLevel } = parseGlobThinkingLevel(pattern);
 			const exactMatch = findExactModelReferenceMatch(globPattern, availableModels);
 			if (exactMatch) {
-				if (!scopedModels.find((sm) => modelsAreEqual(sm.model, exactMatch))) {
+				if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, exactMatch))) {
 					scopedModels.push({ model: exactMatch, thinkingLevel });
 				}
 				continue;
 			}
-			const matchingModels = availableModels.filter((m) => {
-				const fullId = `${m.provider}/${m.id}`;
-				return minimatch(fullId, globPattern, { nocase: true }) || minimatch(m.id, globPattern, { nocase: true });
+			const matchingModels = availableModels.filter((model) => {
+				const fullId = `${model.provider}/${model.id}`;
+				return (
+					minimatch(fullId, globPattern, { nocase: true }) || minimatch(model.id, globPattern, { nocase: true })
+				);
 			});
 
 			if (matchingModels.length === 0) {
@@ -89,7 +91,7 @@ export async function resolveModelScopeWithDiagnostics(
 			}
 
 			for (const model of matchingModels) {
-				if (!scopedModels.find((sm) => modelsAreEqual(sm.model, model))) {
+				if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, model))) {
 					scopedModels.push({ model, thinkingLevel });
 				}
 			}
@@ -112,12 +114,19 @@ export async function resolveModelScopeWithDiagnostics(
 			continue;
 		}
 
-		if (!scopedModels.find((sm) => modelsAreEqual(sm.model, model))) {
+		if (!scopedModels.find((scoped) => modelsAreEqual(scoped.model, model))) {
 			scopedModels.push({ model, thinkingLevel });
 		}
 	}
 
 	return { scopedModels, diagnostics };
+}
+
+export async function resolveModelScopeWithDiagnostics(
+	patterns: string[],
+	modelRuntime: ModelRuntime,
+): Promise<ResolveModelScopeResult> {
+	return resolveModelScopeFromModels(patterns, modelRuntime.getAvailableSnapshot());
 }
 
 export async function resolveModelScope(patterns: string[], modelRuntime: ModelRuntime): Promise<ScopedModel[]> {

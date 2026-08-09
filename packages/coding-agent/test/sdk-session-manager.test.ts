@@ -161,7 +161,7 @@ describe("createAgentSession session manager defaults", () => {
 		});
 		expect(session.sessionFile).toBeTruthy();
 		expect(session.systemPrompt).toContain(
-			"Inspect ATOMIC_* or PI_* environment variables for current model and session details.",
+			"You can inspect ATOMIC_* or PI_* environment variables for current model and session details.",
 		);
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");

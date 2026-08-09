@@ -1,10 +1,15 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { ENV_OFFLINE, getEnvValue, setEnvValue } from "../src/config.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-model-routing.ts";
 import { shouldRefreshCatalogsOnStartup } from "../src/modes/interactive/interactive-startup.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const originalOffline = getEnvValue(ENV_OFFLINE);
+
+// The cache-first selector builds the real ScopedModelsSelectorComponent synchronously, and that
+// component reads the global theme while rendering its header, so the suite needs a theme loaded.
+beforeAll(() => initTheme("dark"));
 
 afterEach(() => {
 	if (originalOffline === undefined) delete process.env[ENV_OFFLINE];
@@ -55,18 +60,29 @@ test("footer provider count uses the current snapshot without refreshing catalog
 	expect(refresh).not.toHaveBeenCalled();
 	expect(setAvailableProviderCount).toHaveBeenCalledWith(2);
 });
-test("offline scoped-model selector refresh stays cache-only", async () => {
+test("offline scoped-model selector starts a cache-only background refresh", async () => {
 	setEnvValue(ENV_OFFLINE, "1");
 	const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
-	const showStatus = vi.fn();
+	const showSelector = vi.fn(
+		(factory: (done: () => void) => { component: object; focus: object; dispose?: () => void }) => {
+			let dispose: (() => void) | undefined;
+			const created = factory(() => dispose?.());
+			dispose = created.dispose;
+			return created;
+		},
+	);
 	const mode = {
 		session: { scopedModels: [], modelRuntime: { refresh, getAvailableSnapshot: () => [] } },
 		settingsManager: { getEnabledModels: () => undefined },
-		showStatus,
+		showSelector,
+		ui: { requestRender: vi.fn() },
 	};
 
-	await InteractiveModeBase.prototype.showModelsSelector.call(mode as never);
+	InteractiveModeBase.prototype.showModelsSelector.call(mode as never);
 
-	expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
-	expect(showStatus).toHaveBeenCalledWith("No models available");
+	await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+	expect(refresh).toHaveBeenCalledWith(
+		expect.objectContaining({ allowNetwork: false, signal: expect.any(AbortSignal) }),
+	);
+	expect(showSelector).toHaveBeenCalledOnce();
 });

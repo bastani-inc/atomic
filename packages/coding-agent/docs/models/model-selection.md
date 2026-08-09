@@ -17,6 +17,13 @@ It is a **static reference**. It does not change runtime model routing — routi
 The table below is a snapshot of the [DeepSWE](https://deepswe.datacurve.ai/) leaderboard (v1.1, best effort per model), a long-horizon coding-agent benchmark reporting `pass@1` and average dollars per task. Benchmarks and pricing drift and new models ship constantly, so **treat the live leaderboards as authoritative** and refresh this page from them rather than hand-maintaining scores. See [Benchmark sources & when to reference each](/models/artificial-analysis-index). **Last compiled: 2026-07-17.**
 </Note>
 
+## Pin model identity
+
+When a workflow needs an exact model, call `workflow({ action: "models" })` and pin a returned `fullId`. Do not pin a
+bare model ID: the same exact model ID can belong to more than one provider. For a bare exact `--model` ID, Atomic
+uses the sole matching provider with configured authentication; if none or more than one match is authenticated, it
+reports the ambiguity. Use `--provider <provider> --model <id>` or `--model <provider>/<id>` to choose explicitly.
+
 ## Recommendation chart
 
 The Pareto frontier — models where nothing else is both cheaper and more accurate — is currently **gpt-5.6-sol** (accuracy ceiling), **gpt-5.6-terra**, **kimi-k3**, **gpt-5.6-luna**, **grok-4.5**, and **muse-spark-1.1**. Everything else is dominated and earns a place only through role fit or provider diversity. For the frontier reasoning, see [Pareto Efficiency](/models/pareto-efficiency).

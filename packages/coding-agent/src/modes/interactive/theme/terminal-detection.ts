@@ -53,6 +53,15 @@ export interface TerminalBackgroundThemeDetectionOptions extends TerminalThemeDe
 	timeoutMs: number;
 }
 
+export interface TerminalAutoThemeDetector extends TerminalBackgroundThemeDetector {
+	queryTerminalColorScheme({ timeoutMs }: { timeoutMs: number }): Promise<TerminalTheme | undefined>;
+}
+
+export interface TerminalAutoThemeDetectionOptions extends TerminalThemeDetectionOptions {
+	ui: TerminalAutoThemeDetector;
+	timeoutMs: number;
+}
+
 function getColorFgBgBackgroundIndex(colorfgbg: string): number | undefined {
 	const parts = colorfgbg.split(";");
 	for (let i = parts.length - 1; i >= 0; i--) {
@@ -121,6 +130,28 @@ export async function detectTerminalBackgroundTheme({
 	}
 
 	return detectTerminalBackgroundFromEnv({ env });
+}
+
+export async function detectTerminalThemeForAuto({
+	ui,
+	timeoutMs,
+	env,
+}: TerminalAutoThemeDetectionOptions): Promise<TerminalTheme> {
+	let colorSchemePromise: Promise<TerminalTheme | undefined> | undefined;
+	try {
+		colorSchemePromise = ui.queryTerminalColorScheme({ timeoutMs });
+	} catch {
+		// Fall back to OSC 11 / COLORFGBG detection when starting the color-scheme query fails.
+	}
+	const backgroundThemePromise = detectTerminalBackgroundTheme({ ui, timeoutMs, env });
+
+	try {
+		const colorScheme = await colorSchemePromise;
+		if (colorScheme) return colorScheme;
+	} catch {
+		// Fall back to the concurrently queried OSC 11 / COLORFGBG detection.
+	}
+	return (await backgroundThemePromise).theme;
 }
 
 export function getDefaultTheme(): string {

@@ -50,6 +50,7 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 		);
 		this.extensionSelector = selector;
 
+		this.disposeActiveSelector();
 		this.editorContainer.clear();
 		this.editorContainer.addChild(selector);
 		this.ui.setFocus(selector);
@@ -131,6 +132,7 @@ InteractiveModeBase.prototype.showExtensionInput = function (
 		);
 		this.extensionInput = input;
 
+		this.disposeActiveSelector();
 		this.editorContainer.clear();
 		this.editorContainer.addChild(input);
 		this.ui.setFocus(input);
@@ -190,6 +192,7 @@ InteractiveModeBase.prototype.showExtensionEditor = function (
 		);
 		this.extensionEditor = editor;
 
+		this.disposeActiveSelector();
 		this.editorContainer.clear();
 		this.editorContainer.addChild(editor);
 		this.ui.setFocus(editor);
@@ -219,6 +222,7 @@ InteractiveModeBase.prototype.setCustomEditorComponent = function (
 	// Save text from current editor before switching
 	const currentText = this.editor.getText();
 
+	this.disposeActiveSelector();
 	this.editorContainer.clear();
 
 	if (factory) {

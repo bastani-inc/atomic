@@ -377,7 +377,7 @@ export function createBashToolDefinition(
 		description: "Execute a shell command in the session workspace, with optional PTY or background-job handling.",
 		promptSnippet: "Execute a shell command.",
 		promptGuidelines: exposeSessionEnvironment
-			? ["Inspect ATOMIC_* or PI_* environment variables for current model and session details."]
+			? ["You can inspect ATOMIC_* or PI_* environment variables for current model and session details."]
 			: undefined,
 		parameters: asyncEnabled ? bashSchema : (bashBaseSchema as typeof bashSchema),
 		maxResultSizeChars: Infinity,
