@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Routed query rewriting and summary-review model calls through Atomic's model runtime so registered custom providers and resolved request authentication apply.
+- Fixed frames and thumbnails returned by `fetch_content` bypassing the host's `images.autoResize` processing before they enter session history.
+
 ## [0.9.12] - 2026-08-04
 
 ### Fixed

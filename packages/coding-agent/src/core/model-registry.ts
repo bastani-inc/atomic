@@ -1,7 +1,10 @@
 import type {
 	Api,
+	AssistantMessage,
 	AuthResult,
+	Context,
 	Model,
+	ModelsApiStreamOptions,
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
 	Provider,
@@ -23,7 +26,7 @@ export type ResolvedRequestAuth =
 export { clearApiKeyCache } from "./provider-composer.ts";
 
 /**
- * Synchronous compatibility facade exposed to extensions.
+ * Compatibility facade exposed to extensions.
  * Coding-agent internals use ModelRuntime directly.
  */
 export class ModelRegistry {
@@ -99,6 +102,15 @@ export class ModelRegistry {
 
 	getProvider(provider: string): Provider | undefined {
 		return this.runtime.getProvider(provider);
+	}
+
+	/** Complete through the active runtime so provider composition and request auth apply. */
+	complete<TApi extends Api>(
+		model: Model<TApi>,
+		context: Context,
+		options?: ModelsApiStreamOptions<TApi>,
+	): Promise<AssistantMessage> {
+		return this.runtime.complete(model, context, options);
 	}
 
 	getProviderDisplayName(provider: string): string {

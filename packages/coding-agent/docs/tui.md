@@ -954,6 +954,7 @@ export default function (pi: ExtensionAPI) {
 - **Extend `CustomEditor`** (not base `Editor`) to get app keybindings (escape to abort, ctrl+d to exit, model switching, etc.)
 - **Call `super.handleInput(data)`** for keys you don't handle
 - **Factory pattern**: `setEditorComponent` receives a factory function that gets `tui`, `theme`, and `keybindings`
+- **Autocomplete limit**: custom editors installed through `setEditorComponent()` that expose `setAutocompleteMaxVisible()` inherit the active `autocompleteMaxVisible` setting
 - **Pass `undefined`** to restore the default editor: `ctx.ui.setEditorComponent(undefined)`
 
 **Examples:** [modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts)

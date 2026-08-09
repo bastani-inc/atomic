@@ -67,6 +67,7 @@ InteractiveModeBase.prototype.toggleToolOutputExpansion = function (this: Intera
 };
 
 InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveModeBase, expanded: boolean): void {
+	if (expanded === this.toolOutputExpanded) return;
 	this.toolOutputExpanded = expanded;
 	const activeHeader = this.customHeader ?? this.builtInHeader;
 	if (isExpandable(activeHeader)) {

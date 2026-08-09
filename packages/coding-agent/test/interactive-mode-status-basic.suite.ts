@@ -80,6 +80,25 @@ describe("InteractiveMode.setToolsExpanded", () => {
 		expect(fakeThis.showStatus).not.toHaveBeenCalled();
 		expect(fakeThis.ui.requestRender).toHaveBeenCalled();
 	});
+
+	test("does nothing when tool output is already collapsed", () => {
+		const header = { setExpanded: vi.fn() };
+		const chatChild = { setExpanded: vi.fn() };
+		const fakeThis: any = {
+			toolOutputExpanded: false,
+			customHeader: undefined,
+			builtInHeader: header,
+			chatContainer: { children: [chatChild] },
+			ui: { requestRender: vi.fn() },
+		};
+
+		(InteractiveMode as any).prototype.setToolsExpanded.call(fakeThis, false);
+
+		expect(fakeThis.toolOutputExpanded).toBe(false);
+		expect(header.setExpanded).not.toHaveBeenCalled();
+		expect(chatChild.setExpanded).not.toHaveBeenCalled();
+		expect(fakeThis.ui.requestRender).not.toHaveBeenCalled();
+	});
 });
 
 describe("InteractiveMode.handleEvent model changes", () => {

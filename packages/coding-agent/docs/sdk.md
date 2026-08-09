@@ -469,7 +469,7 @@ If no model is provided:
 
 ### API Keys and OAuth
 
-`ModelRuntime` is the asynchronous SDK engine for provider composition, credentials, model catalogs, and requests. `ModelRegistry` remains a thin synchronous compatibility facade for extensions; new SDK integrations should pass `modelRuntime` to `createAgentSession`.
+`ModelRuntime` is the asynchronous SDK engine for provider composition, credentials, model catalogs, and requests. `ModelRegistry` remains a thin compatibility facade for extensions; `await modelRegistry.complete(model, context, options)` routes a request through its runtime with the resolved provider and auth. New SDK integrations should pass `modelRuntime` to `createAgentSession` and use `modelRuntime.complete()` directly when they issue standalone requests.
 
 Credential resolution combines runtime API-key overrides, stored `auth.json` credentials, environment variables, and the active `models.json` provider configuration. OAuth acquisition is provider-owned and runs through `ModelRuntime.login()`.
 

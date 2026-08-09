@@ -1,5 +1,5 @@
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
-import { complete, getModel, type Message, type Model } from "@earendil-works/pi-ai/compat";
+import { getModel, type Message, type Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@bastani/atomic";
 import type { QueryResultData } from "./storage.js";
 
@@ -256,7 +256,7 @@ export async function generateSummaryDraft(
 		timestamp: Date.now(),
 	};
 
-	const response = await complete(model, { messages: [userMessage] }, { apiKey, headers, signal });
+	const response = await ctx.modelRegistry.complete(model, { messages: [userMessage] }, { apiKey, headers, signal });
 	if (response.stopReason === "aborted") {
 		throw new Error("Aborted");
 	}

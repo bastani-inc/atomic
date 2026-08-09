@@ -241,6 +241,9 @@ InteractiveModeBase.prototype.setCustomEditorComponent = function (
 		}
 
 		// Set autocomplete if supported
+		if (newEditor.setAutocompleteMaxVisible !== undefined) {
+			newEditor.setAutocompleteMaxVisible(this.defaultEditor.getAutocompleteMaxVisible());
+		}
 		if (newEditor.setAutocompleteProvider && this.autocompleteProvider) {
 			newEditor.setAutocompleteProvider(this.autocompleteProvider);
 		}

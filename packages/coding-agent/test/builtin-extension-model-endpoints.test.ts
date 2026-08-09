@@ -6,7 +6,7 @@ import {
 	type Model,
 	type ProviderHeaders,
 } from "@earendil-works/pi-ai";
-import { getModel, registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+import { complete, getModel, registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import type { CreateMessageRequest } from "@modelcontextprotocol/sdk/types.js";
 import { test } from "vitest";
 import { handleSamplingRequest } from "../../mcp/sampling-handler.js";
@@ -16,8 +16,8 @@ import { ModelRegistry } from "../src/core/model-registry.ts";
 import { fakeModelRuntime } from "./model-runtime-test-utils.ts";
 
 /**
- * MCP and web-access dispatch direct pi-ai calls and must overlay resolved auth.
- * Intercom has no model-request path.
+ * MCP dispatches direct pi-ai calls; web-access dispatches through ModelRuntime.
+ * Both retain resolved auth, while Intercom has no model-request path.
  */
 
 const INDIVIDUAL_ENDPOINT = "https://api.individual.githubcopilot.com";
@@ -80,6 +80,7 @@ function registryFor(requestModel: Model<Api>): ModelRegistry {
 					headers: SUPPRESSION_HEADERS,
 				},
 			}),
+			complete: async (model, context, options) => await complete(model, context, options),
 		}),
 	);
 }

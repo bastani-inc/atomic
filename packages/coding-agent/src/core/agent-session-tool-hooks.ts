@@ -1,4 +1,5 @@
 import type { PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
+import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
@@ -41,21 +42,25 @@ export function _installAgentToolHooks(this: AgentSession): void {
 				})
 			: undefined;
 
-		const extensionReplacement = hookResult
-			? {
-					content: hookResult.content,
-					details: hookResult.details,
-					isError: hookResult.isError ?? isError,
-				}
-			: undefined;
-		const finalResult = hookResult
-			? {
-					content: hookResult.content ?? result.content,
-					// Preserve original details when an extension hook rewrites only content;
-					// the redirect check only replaces model-visible content blocks.
-					details: hookResult.details ?? result.details,
-				}
-			: result;
+		const hookContent = hookResult?.content ?? result.content;
+		// Run after extension hooks so extension-injected images enter history at provider-safe sizes.
+		const normalizedContent = await normalizeToolResultImages(hookContent, {
+			autoResizeImages: this.settingsManager.getImageAutoResize(),
+		});
+		const resultReplacement =
+			hookResult || normalizedContent !== hookContent
+				? {
+						content: normalizedContent,
+						details: hookResult?.details,
+						isError: hookResult?.isError ?? isError,
+					}
+				: undefined;
+		const finalResult = {
+			content: normalizedContent,
+			// Preserve original details when an extension hook rewrites only content;
+			// the redirect check only replaces model-visible content blocks.
+			details: hookResult?.details ?? result.details,
+		};
 		const finalIsError = hookResult?.isError ?? isError;
 		const redirectReplacement = await redirectOversizedToolResult({
 			toolName: toolCall.name,
@@ -69,7 +74,7 @@ export function _installAgentToolHooks(this: AgentSession): void {
 
 		if (result.terminate === true) this._terminatingToolCallIds.add(toolCall.id);
 		else this._terminatingToolCallIds.delete(toolCall.id);
-		return redirectReplacement ?? extensionReplacement;
+		return redirectReplacement ?? resultReplacement;
 	};
 }
 

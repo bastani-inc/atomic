@@ -332,6 +332,7 @@ export function createRpcExtensionUIContext({
 		},
 
 		setToolsExpanded(expanded: boolean) {
+			if (expanded === toolsExpanded) return;
 			toolsExpanded = expanded;
 			customUi?.requestRender();
 		},

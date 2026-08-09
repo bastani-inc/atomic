@@ -1195,7 +1195,7 @@ Some `ExtensionUIContext` methods are not supported or degraded in RPC mode beca
 - `custom()` returns `undefined`
 - `setWorkingMessage()`, `setWorkingIndicator()`, `setFooter()`, `setHeader()`, `setEditorComponent()` are no-ops
 - `getEditorText()` returns `""`
-- `setToolsExpanded()` and `getToolsExpanded()` maintain context-local expansion state; `getChatRenderSettings().toolOutputExpanded` reports the same value. This state is not sent through the client extension-UI protocol.
+- `setToolsExpanded()` and `getToolsExpanded()` maintain context-local expansion state; `getChatRenderSettings().toolOutputExpanded` reports the same value. A same-value `setToolsExpanded()` call is a no-op and does not request a custom-UI render. This state is not sent through the client extension-UI protocol.
 - `pasteToEditor()` delegates to `setEditorText()` (no paste/collapse handling)
 - `getAllThemes()` returns `[]`
 - `getTheme()` returns `undefined`

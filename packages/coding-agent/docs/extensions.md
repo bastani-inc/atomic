@@ -875,6 +875,8 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 - Each handler sees the latest result after previous handler changes
 - Handlers can return partial patches (`content`, `details`, or `isError`); omitted fields keep their current values
 
+After all handlers finish, Atomic normalizes image blocks returned by the tool or inserted by a handler according to `images.autoResize` before saving the result to history. If image processing fails, the original image remains in the result.
+
 Use `ctx.signal` for nested async work inside the handler. This lets Escape cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
 ```typescript
@@ -1034,23 +1036,22 @@ ctx.sessionManager.getLeafId()        // Current leaf entry ID
 
 ### ctx.modelRegistry / ctx.model / ctx.scopedModels
 
-Access to models and API keys.
+Access models, auth state, and provider-aware requests.
 
-When an extension sends a direct `pi-ai` request, resolve auth immediately before dispatch. A successful result can carry a credential-specific `baseUrl` — GitHub Copilot uses this for Business and Enterprise accounts — so overlay it on the request model. Pass `headers` through unchanged: a `null` value suppresses a provider-default header with the same name.
+Use `ctx.modelRegistry.complete()` for an extension model request that must use Atomic's provider composition. It dispatches through the active `ModelRuntime`, retaining registered custom providers and resolved request auth: the credential-specific `baseUrl`, headers (including `null` suppression markers), and environment values.
 
 ```typescript
-import { complete } from "@earendil-works/pi-ai/compat";
-
 const model = ctx.modelRegistry.find("github-copilot", "gpt-5.5");
 if (!model) throw new Error("Model not found");
-const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-if (!auth.ok) throw new Error(auth.error);
 
-const requestModel = auth.baseUrl === undefined || auth.baseUrl === model.baseUrl ? model : { ...model, baseUrl: auth.baseUrl };
-const response = await complete(requestModel, { messages }, { apiKey: auth.apiKey, headers: auth.headers });
+const response = await ctx.modelRegistry.complete(
+  model,
+  { messages },
+  { signal: ctx.signal },
+);
 ```
 
-Sessions created through `createAgentSession()` apply this credential resolution themselves. Use the overlay only when an extension calls `pi-ai` directly.
+Use `getApiKeyAndHeaders()` only when an extension must inspect auth before dispatch; normal requests do not need to resolve or overlay auth themselves.
 
 `ctx.scopedModels` is the read-only list of models scoped to the current session — the same set the `/scoped-models` command shows. It is resolved from the `--models` CLI flag and the `enabledModels` setting, matched against the available catalogue. It is empty when no scoping is configured, meaning every available model is usable. Each entry is `{ model, thinkingLevel? }`, where `thinkingLevel` is set only when a pattern pinned it (for example `anthropic/*:high`). Use it to populate a model picker that mirrors the built-in one instead of enumerating the whole catalogue.
 
@@ -2560,6 +2561,8 @@ ctx.ui.setTheme(lightTheme!);  // Or switch by Theme object
 ctx.ui.theme.fg("accent", "styled text");  // Access current theme
 ```
 
+Calling `setToolsExpanded()` with the current value is a no-op.
+
 Atomic's default working indicator keeps the literal one-cell `∀` fixed while following the active theme's optional `workingIndicator` tone overrides through a dark → accent → bright/bold → accent → dark ramp every 88ms. Any omitted tones are derived from selected-surface, `accent`, and `text` roles. `NO_COLOR` keeps regular/bold activity without foreground-color escapes, and `ATOMIC_REDUCED_MOTION=1` uses a static regular accent `∀` without a timer. Custom working-indicator frames and intervals are rendered verbatim. If you want colors, add them to the frame strings yourself, for example with `ctx.ui.theme.fg(...)`.
 
 These APIs customize presentation only; they do not start work or emit an extension stream event before prompt startup. See [Working Indicator Customization](/tui#pattern-4b-working-indicator-customization) for accepted-prompt, pre-stream, and agent-turn handoff timing.
@@ -2716,6 +2719,7 @@ export default function (pi: ExtensionAPI) {
 - Factory receives `tui`, `theme`, and `keybindings` from the app
 - Use `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
 - Pass `undefined` to restore default: `ctx.ui.setEditorComponent(undefined)`
+- When a custom editor installed through `ctx.ui.setEditorComponent()` exposes `setAutocompleteMaxVisible()`, Atomic initializes it from the active `autocompleteMaxVisible` setting.
 
 To compose with another extension that already replaced the editor, capture the previous factory before setting yours:
 

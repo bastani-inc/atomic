@@ -120,7 +120,7 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `editorPaddingX` | number | `0` | Horizontal padding for input editor (0-3) |
 | `outputPad` | number | `1` | Horizontal padding for chat message output (user messages, assistant messages, thinking blocks). `0` or `1` |
 | `externalEditor` | string | - | Command for the Ctrl+G external editor; takes precedence over `$VISUAL`/`$EDITOR`. Defaults to Notepad on Windows and `nano` elsewhere |
-| `autocompleteMaxVisible` | number | `5` | Max visible items in autocomplete dropdown (3-20) |
+| `autocompleteMaxVisible` | number | `5` | Max visible items in the default editor and custom editors installed through `ctx.ui.setEditorComponent()` (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 
 Ctrl+G in main chat, embedded chat, and extension editor dialogs uses one shared asynchronous launcher. Atomic chooses `externalEditor`, then `$VISUAL`, then `$EDITOR`, then Notepad on Windows or `nano` elsewhere. Each edit uses a private `atomic-editor-*` directory containing only `prompt.md`, removes the directory recursively afterward, and never scans the system temporary directory. A successful empty edit is preserved; a failed editor leaves the original text unchanged, and the TUI always restarts and renders after the editor exits.
@@ -261,7 +261,7 @@ The `/settings` picker offers these presets:
 | `terminal.showImages` | boolean | `true` | Show images in terminal (if supported) |
 | `terminal.imageWidthCells` | number | `60` | Preferred inline image width in terminal cells |
 | `terminal.clearOnShrink` | boolean | `false` | Clear empty rows when content shrinks (can cause flicker) |
-| `images.autoResize` | boolean | `true` | Resize images to 2000x2000 max |
+| `images.autoResize` | boolean | `true` | Resize images to 2000x2000 max. Applies to `@file` attachments, `read`, and images returned by tools |
 | `images.blockImages` | boolean | `false` | Block all images from being sent to LLM |
 
 ### Shell

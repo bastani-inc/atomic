@@ -1,4 +1,4 @@
-import { complete, getModel, type Model } from "@earendil-works/pi-ai/compat";
+import { getModel, type Model } from "@earendil-works/pi-ai/compat";
 import type { ProviderHeaders } from "@earendil-works/pi-ai";
 import type { QueryResultData } from "./storage.js";
 import {
@@ -39,7 +39,7 @@ export async function rewriteSearchQuery(
 		{ provider: "google", id: "gemini-2.5-flash" },
 		{ provider: "openai", id: "gpt-4.1-mini" },
 	]);
-	const response = await complete(
+	const response = await ctx.modelRegistry.complete(
 		model,
 		{
 			messages: [{

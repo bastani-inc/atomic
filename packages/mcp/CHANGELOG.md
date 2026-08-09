@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed image blocks returned by MCP tools bypassing the host's `images.autoResize` processing before they enter session history.
+
 - Restored credential-resolved endpoints for MCP sampling requests, so GitHub Copilot Business and Enterprise accounts keep their own endpoint alongside dynamic API keys and request headers ([#7579](https://github.com/earendil-works/pi/issues/7579)).
 
 ## [0.9.13-alpha.1] - 2026-08-05
