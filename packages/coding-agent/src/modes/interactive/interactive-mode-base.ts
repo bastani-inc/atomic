@@ -2,6 +2,12 @@
  * Shared state and constructor wiring for interactive mode.
  * Responsibility-specific behavior is installed by sibling modules.
  */
+import {
+	type TuiInputListener,
+	TuiMainScreen,
+	type TuiMainScreenRenderState,
+	type TuiMode,
+} from "@earendil-works/pi-tui";
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
@@ -35,14 +41,12 @@ import {
 	KeybindingsManager,
 	type Loader,
 	type LoaderIndicatorOptions,
-	ProcessTerminal,
 	type Spacer,
 	setKeybindings,
 	setRegisteredThemes,
 	type Text,
 	type ToolExecutionComponent,
 	type TUI,
-	TuiMainScreen,
 	UsageMeterComponent,
 	VERSION,
 } from "./interactive-mode-deps.ts";
@@ -50,6 +54,7 @@ import type {} from "./interactive-mode-surface.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
+import { createInteractiveTui, createInteractiveTuiReference, type InteractiveTui } from "./interactive-tui.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
 	const trimmed = text.trimStart();
@@ -86,10 +91,18 @@ export function seedStartupInput(
 	}
 }
 
+export interface InteractiveTuiInputSubscription {
+	handler: TuiInputListener;
+	unsubscribe: () => void;
+}
+
 export class InteractiveModeBase {
 	runtimeHost: AgentSessionRuntime;
 
 	ui: TUI;
+	renderer: InteractiveTui;
+
+	mainScreenRenderState: TuiMainScreenRenderState | undefined;
 
 	chatContainer: Container;
 	resourceDisclosureContainer: Container;
@@ -265,7 +278,11 @@ export class InteractiveModeBase {
 
 	extensionEditor: ExtensionEditorComponent | undefined = undefined;
 
-	extensionTerminalInputUnsubscribers = new Set<() => void>();
+	tuiInputSubscriptions = new Set<InteractiveTuiInputSubscription>();
+
+	extensionTerminalInputSubscriptions = new Set<InteractiveTuiInputSubscription>();
+
+	tuiRendererChangeListeners = new Set<() => void>();
 
 	blockingInlineCustomUiDepth = 0;
 
@@ -334,13 +351,102 @@ export class InteractiveModeBase {
 		dispose?.();
 	}
 
+	addTuiInputListener(handler: TuiInputListener): () => void {
+		const subscription: InteractiveTuiInputSubscription = {
+			handler,
+			unsubscribe: this.ui.addInputListener(handler),
+		};
+		this.tuiInputSubscriptions.add(subscription);
+		return () => {
+			subscription.unsubscribe();
+			this.tuiInputSubscriptions.delete(subscription);
+		};
+	}
+
+	rebindTuiInputListeners(): void {
+		for (const subscription of this.tuiInputSubscriptions) {
+			subscription.unsubscribe();
+			subscription.unsubscribe = this.ui.addInputListener(subscription.handler);
+		}
+	}
+
+	onTuiRendererChange(listener: () => void): () => void {
+		this.tuiRendererChangeListeners.add(listener);
+		return () => this.tuiRendererChangeListeners.delete(listener);
+	}
+
+	private notifyTuiRendererChange(): void {
+		for (const listener of this.tuiRendererChangeListeners) listener();
+	}
+
+	stopInteractiveTui(): void {
+		if (this.renderer.mode === "fullscreen") {
+			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
+			this.switchTuiMode("regular", false, false);
+			this.renderer.renderNow();
+		}
+		this.ui.stop();
+	}
+
+	switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): boolean {
+		const previousUi = this.renderer;
+		if (mode === previousUi.mode) return true;
+		if (previousUi.hasOverlayEntries) return false;
+
+		const components = [...previousUi.children];
+		const focus = previousUi.getFocusedComponent();
+		const terminal = previousUi.terminal;
+		const showHardwareCursor = previousUi.getShowHardwareCursor();
+		const clearOnShrink = previousUi.getClearOnShrink();
+		const onDebug = previousUi.onDebug;
+		if (previousUi instanceof TuiMainScreen) {
+			this.mainScreenRenderState = previousUi.captureRenderState();
+		}
+
+		previousUi.stop({ preserveScreen: true });
+		previousUi.setFocus(null);
+		previousUi.clear();
+
+		const nextUi = createInteractiveTui({
+			tuiMode: mode,
+			showHardwareCursor,
+			logDirectory: this.runtimeHost.services.agentDir,
+			terminal,
+		});
+		nextUi.setClearOnShrink(clearOnShrink);
+		nextUi.onDebug = onDebug;
+		if (nextUi instanceof TuiMainScreen && this.mainScreenRenderState) {
+			nextUi.restoreRenderState(this.mainScreenRenderState);
+		}
+		this.renderer = nextUi;
+		this.options.tuiMode = mode;
+		for (const component of components) nextUi.addChild(component);
+		nextUi.invalidate();
+		nextUi.setFocus(focus);
+		if (!startRenderer) return true;
+		// A terminal-start failure must not leave the replacement without safety input handlers.
+		this.rebindTuiInputListeners();
+		nextUi.start();
+		this.notifyTuiRendererChange();
+		this.themeController.rebindTui();
+		if (
+			restoreProgress &&
+			this.settingsManager.getShowTerminalProgress() &&
+			(this.session.isStreaming || this.session.isCompacting)
+		) {
+			terminal.setProgress(true);
+		}
+		return true;
+	}
+
 	declare options: InteractiveModeOptions;
 
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
-		this.options = options;
+		this.runtimeHost = runtimeHost;
+		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
+		this.options = { ...options, tuiMode };
 		this.deferredStartupPending = Boolean(options.deferredExtensionLoad);
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
-		this.runtimeHost = runtimeHost;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
 		});
@@ -348,11 +454,13 @@ export class InteractiveModeBase {
 			await this.rebindCurrentSession();
 		});
 		this.version = VERSION;
-		this.ui = new TuiMainScreen(
-			options.terminal ?? new ProcessTerminal(),
-			this.settingsManager.getShowHardwareCursor(),
-			runtimeHost.services.agentDir,
-		);
+		this.renderer = createInteractiveTui({
+			tuiMode,
+			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
+			logDirectory: runtimeHost.services.agentDir,
+			terminal: options.terminal,
+		});
+		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
 		this.chatContainer = new StartupChatContainer();
@@ -416,6 +524,10 @@ export class InteractiveModeBase {
 				};
 			},
 			this.keybindings,
+			{
+				isFullscreen: () => this.renderer.mode === "fullscreen",
+				onRendererReplaced: (listener) => this.onTuiRendererChange(listener),
+			},
 		);
 	}
 

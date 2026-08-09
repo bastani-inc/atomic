@@ -2,6 +2,8 @@ import "./settings-manager-basic-accessors.ts";
 import "./settings-manager-resource-accessors.ts";
 import "./settings-manager-ui-accessors.ts";
 
+export type { TuiMode } from "@earendil-works/pi-tui";
+
 export { SettingsManager } from "./settings-manager-core.ts";
 export { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 export type {

@@ -263,6 +263,8 @@ describe("InteractiveMode startup banner", () => {
 			editor,
 			editorContainer: { children: [editor] },
 			handleCtrlC,
+			tuiInputSubscriptions: new Set(),
+			addTuiInputListener: InteractiveMode.prototype.addTuiInputListener,
 		};
 		registerStartupInputListeners(mode as never);
 		(tui as unknown as { handleTerminalInput(data: string): void }).handleTerminalInput("x");

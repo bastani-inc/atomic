@@ -9,7 +9,7 @@ import { EngineDialogHostController } from "./engine-dialog-host.ts";
 import { InputFormHostController } from "./input-form-host.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
-import { RemoteComponentController } from "./remote-component.ts";
+import { RemoteComponentController, type TuiRendererLifecycle } from "./remote-component.ts";
 import { registerRemoteProxyOwnership } from "./remote-input-ownership.ts";
 import { SessionPickerHostController } from "./session-picker-host.ts";
 
@@ -39,6 +39,7 @@ export function attachInteractiveEngineHost(
 	onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void,
 	setShortcutHandler?: (handler: (data: string) => boolean) => undefined | (() => void),
 	keybindings?: KeybindingsManager,
+	tuiRendererLifecycle?: TuiRendererLifecycle,
 ): () => void {
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
 	const disposeDiagnostic = runtime.onDiagnostic(onDiagnostic);
@@ -72,7 +73,7 @@ export function attachInteractiveEngineHost(
 		: runtime.onEngineMessage((message) => {
 				if (message.type === "engine_keybindings_reloaded") applyState(message.state);
 			});
-	const remoteComponents = new RemoteComponentController(runtime, ui);
+	const remoteComponents = new RemoteComponentController(runtime, ui, tuiRendererLifecycle);
 	// Ctrl+C must reach the host while a remote proxy owns input, so publish the
 	// only component that can answer that question exactly.
 	const disposeOwnership = registerRemoteProxyOwnership(runtime, remoteComponents);

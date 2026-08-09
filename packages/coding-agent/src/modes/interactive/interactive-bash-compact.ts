@@ -166,7 +166,7 @@ InteractiveModeBase.prototype.stop = function (this: InteractiveModeBase): void 
 		this.unsubscribe();
 	}
 	if (this.isInitialized) {
-		this.ui.stop();
+		this.stopInteractiveTui();
 		this.isInitialized = false;
 	}
 	this.unregisterSignalHandlers();

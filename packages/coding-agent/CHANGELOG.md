@@ -12,6 +12,7 @@
 ### Added
 
 - Added an **experimental** `@bastani/atomic/client` entrypoint with `RemoteSession` lifecycle management and transcript projection helpers for remote protocol sessions.
+- Added an **experimental** fullscreen TUI layout. Start with `--tui-mode fullscreen` or select TUI mode in `/settings`; `/settings` switches the active interactive session without a restart.
 
 - Added `atomic auth check` to verify a provider or model's effective authentication before a session starts. It reports `ready`, `not_ready`, or `invalid`, supports JSON output and a no-refresh read-only mode, and does not emit credential material unless `--credentials` explicitly requests it.
 

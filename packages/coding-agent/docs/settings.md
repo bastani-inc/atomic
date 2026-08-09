@@ -107,6 +107,7 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, a Catppuccin built-in, or custom) |
+| `tuiMode` | string | `"regular"` | Experimental terminal layout: `"regular"` or `"fullscreen"`. `--tui-mode` overrides one launch without saving; `/settings` switches the live session and saves a successful choice globally. |
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
