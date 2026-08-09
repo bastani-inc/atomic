@@ -2,32 +2,27 @@ import { describe, expect, test } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 /**
- * Regression for #1109: swapping the footer (built-in <-> extension custom
- * footer) must keep `widgetContainerBelow` as the LAST UI child so a live
- * below-editor widget's per-tick line stays within the bottom viewport. The
- * old removeChild + addChild swap appended the footer after the widget
- * container, which both un-pinned the footer from under the editor and let the
- * live widget tick above the fold again (re-triggering the flicker).
- *
- * We exercise the real `setExtensionFooter` via a minimal `this` context (the
- * same prototype-call pattern used by the other interactive-mode unit tests),
- * so no full TUI/session bootstrap is required.
+ * Regression for the fullscreen dock: footer swaps must update the stable
+ * footer container used by both the flat renderer and the layout root.
  */
 
 type Comp = { render: (width: number) => string[]; dispose?: () => void };
 
 interface FakeUi {
-	children: Comp[];
-	addChild(c: Comp): void;
-	removeChild(c: Comp): void;
 	requestRender(): void;
+}
+
+interface FooterContainer {
+	children: Comp[];
+	clear(): void;
+	addChild(component: Comp): void;
 }
 
 interface FooterCtx {
 	customFooter: Comp | undefined;
 	footer: Comp;
+	footerContainer: FooterContainer;
 	footerDataProvider: Record<string, never>;
-	widgetContainerBelow: Comp;
 	ui: FakeUi;
 }
 
@@ -41,17 +36,15 @@ function makeComp(): Comp {
 	return { render: () => [] };
 }
 
-function makeUi(children: Comp[]): FakeUi {
+function makeFooterContainer(footer: Comp): FooterContainer {
 	return {
-		children,
-		addChild(c) {
-			this.children.push(c);
+		children: [footer],
+		clear() {
+			this.children = [];
 		},
-		removeChild(c) {
-			const i = this.children.indexOf(c);
-			if (i !== -1) this.children.splice(i, 1);
+		addChild(component) {
+			this.children.push(component);
 		},
-		requestRender() {},
 	};
 }
 
@@ -60,51 +53,43 @@ function callSetFooter(ctx: FooterCtx, factory: FooterFactory): void {
 }
 
 function makeCtx(): FooterCtx {
-	const editorPlaceholder = makeComp();
 	const footer = makeComp();
-	const widgetContainerBelow = makeComp();
-	// Mirror the init order tail: editor, footer, then below-editor widgets last.
-	const ui = makeUi([editorPlaceholder, footer, widgetContainerBelow]);
-	return { customFooter: undefined, footer, footerDataProvider: {}, widgetContainerBelow, ui };
+	return {
+		customFooter: undefined,
+		footer,
+		footerContainer: makeFooterContainer(footer),
+		footerDataProvider: {},
+		ui: { requestRender() {} },
+	};
 }
 
-describe("InteractiveMode.setExtensionFooter ordering (#1109)", () => {
-	test("installing a custom footer keeps the below-editor widget container as the last UI child", () => {
+describe("InteractiveMode.setExtensionFooter dock slot", () => {
+	test("installing a custom footer replaces the stable footer container child", () => {
 		const ctx = makeCtx();
 		const customFooter = makeComp();
 
 		callSetFooter(ctx, () => customFooter);
 
-		const { children } = ctx.ui;
-		expect(children[children.length - 1]).toBe(ctx.widgetContainerBelow);
-		// The custom footer is pinned directly above the below-editor widgets.
-		expect(children[children.length - 2]).toBe(customFooter);
+		expect(ctx.footerContainer.children).toEqual([customFooter]);
 		expect(ctx.customFooter).toBe(customFooter);
-		// The built-in footer is swapped out in place (not duplicated).
-		expect(children).not.toContain(ctx.footer);
 	});
 
-	test("restoring the built-in footer keeps the below-editor widget container last", () => {
+	test("restoring the built-in footer restores the stable footer container child", () => {
 		const ctx = makeCtx();
-		callSetFooter(ctx, () => makeComp()); // install custom footer
-		callSetFooter(ctx, undefined); // restore built-in footer
+		callSetFooter(ctx, () => makeComp());
+		callSetFooter(ctx, undefined);
 
-		const { children } = ctx.ui;
-		expect(children[children.length - 1]).toBe(ctx.widgetContainerBelow);
-		expect(children[children.length - 2]).toBe(ctx.footer);
+		expect(ctx.footerContainer.children).toEqual([ctx.footer]);
 		expect(ctx.customFooter).toBeUndefined();
 	});
 
-	test("re-attaches the below-editor container last when the footer slot is missing", () => {
+	test("clearing the slot removes stale footer components before mounting the next one", () => {
 		const ctx = makeCtx();
-		// Edge case: footer not currently attached (e.g. swapped before init added it).
-		ctx.ui.children = [ctx.widgetContainerBelow];
+		ctx.footerContainer.children.push(makeComp());
 		const customFooter = makeComp();
 
 		callSetFooter(ctx, () => customFooter);
 
-		const { children } = ctx.ui;
-		expect(children[children.length - 1]).toBe(ctx.widgetContainerBelow);
-		expect(children).toContain(customFooter);
+		expect(ctx.footerContainer.children).toEqual([customFooter]);
 	});
 });

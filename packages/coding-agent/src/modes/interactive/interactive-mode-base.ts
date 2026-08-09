@@ -3,6 +3,8 @@
  * Responsibility-specific behavior is installed by sibling modules.
  */
 import {
+	isViewportTUI,
+	type ScrollView,
 	type TuiInputListener,
 	TuiMainScreen,
 	type TuiMainScreenRenderState,
@@ -105,6 +107,12 @@ export class InteractiveModeBase {
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 
 	chatContainer: Container;
+	documentContainer: Container;
+
+	transcriptScrollView: ScrollView | undefined;
+
+	fullscreenLayoutRoot: Component | undefined;
+
 	resourceDisclosureContainer: Container;
 	startupNoticesContainer: Container;
 	pendingMessagesContainer: Container;
@@ -130,6 +138,7 @@ export class InteractiveModeBase {
 	activeSelectorDispose: (() => void) | undefined;
 
 	footer: FooterComponent;
+	footerContainer: Container;
 
 	usageMeter: UsageMeterComponent;
 
@@ -378,6 +387,13 @@ export class InteractiveModeBase {
 	private notifyTuiRendererChange(): void {
 		for (const listener of this.tuiRendererChangeListeners) listener();
 	}
+	mountInteractiveTui(tui: TUI, components: readonly Component[]): void {
+		for (const component of components) tui.addChild(component);
+		if (isViewportTUI(tui)) {
+			if (!this.fullscreenLayoutRoot) throw new Error("Fullscreen layout is not initialized");
+			tui.setLayoutRoot(this.fullscreenLayoutRoot);
+		}
+	}
 
 	stopInteractiveTui(): void {
 		if (this.renderer.mode === "fullscreen") {
@@ -406,6 +422,7 @@ export class InteractiveModeBase {
 		previousUi.stop({ preserveScreen: true });
 		previousUi.setFocus(null);
 		previousUi.clear();
+		if (isViewportTUI(previousUi)) previousUi.setLayoutRoot(undefined);
 
 		const nextUi = createInteractiveTui({
 			tuiMode: mode,
@@ -420,7 +437,7 @@ export class InteractiveModeBase {
 		}
 		this.renderer = nextUi;
 		this.options.tuiMode = mode;
-		for (const component of components) nextUi.addChild(component);
+		this.mountInteractiveTui(nextUi, components);
 		nextUi.invalidate();
 		nextUi.setFocus(focus);
 		if (!startRenderer) return true;
@@ -463,7 +480,10 @@ export class InteractiveModeBase {
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
+		this.documentContainer = new Container();
+		this.documentContainer.addChild(this.headerContainer);
 		this.chatContainer = new StartupChatContainer();
+		this.documentContainer.addChild(this.chatContainer);
 		this.resourceDisclosureContainer = new Container();
 		this.startupNoticesContainer = new Container();
 		// The isolated engine can emit session_start UI requests as soon as its
@@ -490,6 +510,8 @@ export class InteractiveModeBase {
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
+		this.footerContainer = new Container();
+		this.footerContainer.addChild(this.footer);
 		this.usageMeter = new UsageMeterComponent(this.session);
 		this.usageMeter.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 

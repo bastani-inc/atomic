@@ -1,3 +1,4 @@
+import { ScrollView, VStack } from "@earendil-works/pi-tui";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import {
 	onInteractiveEngineRemoteCommandsChanged,
@@ -128,26 +129,38 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 
 	this.registerSignalHandlers();
 
-	// Add header container as first child. Populate it after theme initialization.
-	this.ui.addChild(this.headerContainer);
-
-	this.ui.addChild(this.chatContainer);
-	this.ui.addChild(this.pendingMessagesContainer);
-	this.ui.addChild(this.statusContainer);
+	// Keep the transcript in its own viewport and reserve the bottom chrome in a
+	// fixed dock. The same component instances stay mounted so regular mode and
+	// fullscreen mode can switch without rebuilding extension widgets or editors.
 	this.renderWidgets(); // Initialize with default spacer
-	this.ui.addChild(this.widgetContainerAbove);
-	this.ui.addChild(this.usageMeter);
-	this.ui.addChild(this.editorContainer);
-	// Footer (persistent model + cwd identity) stays pinned directly under the
-	// editor; below-editor widgets render after it, at the very bottom. This
-	// keeps the session identity line attached to the input and places
-	// transient run status (e.g. the workflow companion counter) beneath it.
-	// Rendering below-editor widgets last also keeps a live widget at the
-	// absolute bottom of the buffer (always within the viewport), so its
-	// per-tick updates never sit above the fold — preserving the #1109
-	// resize-flicker fix.
-	this.ui.addChild(this.footer);
-	this.ui.addChild(this.widgetContainerBelow);
+	this.transcriptScrollView = new ScrollView(this.documentContainer, {
+		follow: "end",
+		primary: true,
+		overscroll: "chain",
+	});
+	const dock = new VStack([
+		{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
+		{ component: this.statusContainer, shrink: 1, minSize: 0 },
+		{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
+		{ component: this.usageMeter, shrink: 1, minSize: 1 },
+		{ component: this.editorContainer, shrink: 1, minSize: 3 },
+		{ component: this.footerContainer, shrink: 1, minSize: 1 },
+		{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
+	]);
+	this.fullscreenLayoutRoot = new VStack([
+		{ component: this.transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+		{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+	]);
+	this.mountInteractiveTui(this.ui, [
+		this.documentContainer,
+		this.pendingMessagesContainer,
+		this.statusContainer,
+		this.widgetContainerAbove,
+		this.usageMeter,
+		this.editorContainer,
+		this.footerContainer,
+		this.widgetContainerBelow,
+	]);
 	this.ui.setFocus(this.editor);
 
 	this.setupKeyHandlers();
