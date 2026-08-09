@@ -28,7 +28,6 @@
 ### Fixed
 
 - Fixed extension event-bus subscriptions surviving session reload or disposal ([#7656](https://github.com/earendil-works/pi/pull/7656) by [@tudoroancea](https://github.com/tudoroancea)).
-- Fixed an extension provider registration's offline catalog refresh overwriting a newer credential-resolved refresh under load, which could lose configured `$ENV` or `!command` API keys.
 - Fixed `ChatSessionHost` tail-windowing settled assistant rows while a later answer streamed; only the live assistant row is now trimmed.
 - Fixed bare exact `--model` IDs shared by providers choosing catalog order. Atomic now uses the sole authenticated matching provider or reports an ambiguity with fully qualified choices ([#7327](https://github.com/earendil-works/pi/issues/7327)).
 - Fixed `/model <name>` and `/scoped-models` waiting for remote catalog refreshes before using cached models. Exact cached matches now resolve immediately, and the scoped selector renders its cache first, refreshes in the background, and cancels that work when it closes ([#7153](https://github.com/earendil-works/pi/issues/7153), [#7443](https://github.com/earendil-works/pi/issues/7443)).

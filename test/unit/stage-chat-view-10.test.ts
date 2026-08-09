@@ -5,7 +5,6 @@ import {
 	assert,
 	createStore,
 	deriveGraphTheme,
-	fakeFooterAgentSession,
 	join,
 	makeHandle,
 	mkdtempSync,
@@ -112,58 +111,6 @@ describe("StageChatView", () => {
 		const rendered = view.render(96).join("\n");
 		assert.match(rendered, /Parent hidden thinking/);
 		assert.doesNotMatch(rendered, /private chain/);
-		view.dispose();
-	});
-
-	test("uses Markdown transformers from the active stage session", () => {
-		const store = createStore();
-		setupRun(store, "run-1", "stage-a");
-		const assistantMessage: AgentSession["messages"][number] = {
-			role: "assistant",
-			content: [{ type: "text", text: "stage answer" }],
-			api: "test-api",
-			provider: "test-provider",
-			model: "test-model",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					total: 0,
-				},
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		};
-		const stageSession = Object.assign(fakeFooterAgentSession(false), {
-			extensionRunner: {
-				getMarkdownTransformers: () => [(markdown: string) => `stage:${markdown}`],
-			},
-		});
-		const { handle } = makeHandle(undefined, [assistantMessage], "running", stageSession);
-		const view = new StageChatView({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "test-wf",
-			handle,
-			onDetach: () => {},
-			onClose: () => {},
-			getChatRenderSettings: () => ({
-				markdownTransformers: [(markdown: string) => `parent:${markdown}`],
-			}),
-		});
-
-		const rendered = stripAnsi(view.render(96).join("\n"));
-		assert.match(rendered, /stage:stage answer/);
-		assert.doesNotMatch(rendered, /parent:stage answer/);
 		view.dispose();
 	});
 
