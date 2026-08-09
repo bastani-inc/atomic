@@ -11,7 +11,7 @@ import {
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
 } from "./auth-storage-backends.ts";
-import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
+import { resolveConfigValue } from "./resolve-config-value.ts";
 
 export {
 	type AuthStorageBackend,
@@ -126,6 +126,9 @@ export class AuthStorage implements CredentialStore {
 /**
  * Read credentials without acquiring a lock, creating auth.json, or allowing a
  * refresh to persist a mutation. `auth check --no-refresh` uses this store.
+ * It resolves configured key values, including `!command`, like `AuthStorage`.
+ * Unlike `AuthStorage.reload()`, malformed data fails closed so the probe can
+ * report invalid auth state instead of silently treating it as no credentials.
  */
 export class ReadOnlyAuthStorage implements CredentialStore {
 	private data: AuthStorageData | undefined;
@@ -145,6 +148,8 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 			const content = this.storage.read();
 			parsed = content === undefined ? {} : JSON.parse(content);
 		} catch (error) {
+			// The no-refresh path must not turn a corrupt auth file into an empty
+			// credential set. Surface invalid state without touching the file.
 			throw new Error(`Failed to read auth.json: ${error instanceof Error ? error.message : String(error)}`);
 		}
 
@@ -187,7 +192,7 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 		const credential = this.load()[providerId];
 		options?.signal?.throwIfAborted();
 		if (!credential) return undefined;
-		if (credential.type !== "api_key" || !credential.key || isCommandConfigValue(credential.key)) {
+		if (credential.type !== "api_key" || credential.key === undefined) {
 			return structuredClone(credential);
 		}
 		return { ...credential, key: resolveConfigValue(credential.key, credential.env) };

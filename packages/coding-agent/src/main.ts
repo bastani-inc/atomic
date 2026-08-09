@@ -208,17 +208,25 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 	takeOverStdout();
 	try {
 		const parsed = parseArgs(command.args);
-		if (parsed.unknownFlags.size > 0) {
-			const option = parsed.unknownFlags.keys().next().value;
-			console.error(chalk.red(`Unknown option --${option} for "${getAuthCommandName(command.kind)}".`));
-			console.error(chalk.dim(`Use "${getAuthCommandUsage(command.kind)}".`));
-			process.exitCode = command.kind === "check" ? 2 : 1;
-			return true;
-		}
-		const diagnostics = parsed.diagnostics.filter((diagnostic) => diagnostic.type === "error");
-		if (diagnostics.length > 0) {
-			for (const diagnostic of diagnostics) console.error(chalk.red(`Error: ${diagnostic.message}`));
-			process.exitCode = command.kind === "check" ? 2 : 1;
+		if (command.kind === "check") {
+			if (parsed.unknownFlags.size > 0) {
+				const option = parsed.unknownFlags.keys().next().value;
+				console.error(chalk.red(`Unknown option --${option} for "${getAuthCommandName(command.kind)}".`));
+				console.error(chalk.dim(`Use "${getAuthCommandUsage(command.kind)}".`));
+				process.exitCode = 2;
+				return true;
+			}
+			const errors = parsed.diagnostics.filter((diagnostic) => diagnostic.type === "error");
+			if (errors.length > 0) {
+				for (const error of errors) console.error(chalk.red(`Error: ${error.message}`));
+				process.exitCode = 2;
+				return true;
+			}
+		} else if (parsed.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+			// Preserve the print commands' established parser behavior: any error
+			// prints every diagnostic, warnings included, as a guarded stderr error.
+			for (const diagnostic of parsed.diagnostics) console.error(chalk.red(`Error: ${diagnostic.message}`));
+			process.exitCode = 1;
 			return true;
 		}
 
@@ -241,8 +249,9 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 			validateCredentialPrintArgs(parsed);
 			const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
 			const secret = await resolveCredentialForPrint(parsed, modelRuntime, command.kind, command.minExpiryMs);
-			// The Secret arrives unreadable here; emitCredential owns the only take().
-			await emitCredential(secret);
+			// The Secret arrives unreadable here; emitCredential routes it through
+			// credentialPayload, the only source function that can open it.
+			await emitCredential(secret, undefined);
 		} catch (error) {
 			// Every code toCredentialPrintError can produce belongs to a failure
 			// that emitted nothing, so the exit code set here never contradicts

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelsError } from "@earendil-works/pi-ai";
@@ -226,6 +226,27 @@ describe("auth check command", () => {
 		await expect(credentials.list()).resolves.toEqual([]);
 		expect(existsSync(authPath)).toBe(false);
 		expect(existsSync(join(root, "agent"))).toBe(false);
+	});
+
+	test("resolves command-backed API keys in a no-refresh read", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-auth-check-"));
+		tempDirs.push(root);
+		const authPath = join(root, "auth.json");
+		writeFileSync(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "!echo command-backed-key" } }));
+
+		const expected = { type: "api_key", key: "command-backed-key" };
+		await expect(new ReadOnlyAuthStorage(authPath).read("anthropic")).resolves.toEqual(expected);
+		await expect(AuthStorage.create(authPath).read("anthropic")).resolves.toEqual(expected);
+	});
+
+	test("fails closed on malformed auth.json while normal storage retains an empty snapshot", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-auth-check-"));
+		tempDirs.push(root);
+		const authPath = join(root, "auth.json");
+		writeFileSync(authPath, "{");
+
+		await expect(new ReadOnlyAuthStorage(authPath).list()).rejects.toThrow("Failed to read auth.json");
+		await expect(AuthStorage.create(authPath).list()).resolves.toEqual([]);
 	});
 
 	test("creates a static auth-check runtime without a catalog refresh", async () => {

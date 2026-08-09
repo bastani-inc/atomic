@@ -13,7 +13,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { inspect } from "node:util";
 import { ModelsError } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Args } from "../src/cli/args.ts";
+import { type Args, parseArgs } from "../src/cli/args.ts";
 import {
 	AuthCommandError,
 	isAuthCommandHelp,
@@ -355,7 +355,7 @@ describe("emitCredential", () => {
 					emitCredential(secret, { status: undefined, provider: "anthropic" } as unknown as CredentialJsonFields),
 				).rejects.toThrow("Invalid credential JSON fields");
 
-				await emitCredential(secret);
+				await emitCredential(secret, undefined);
 				expect(written.join("")).toBe("credential-value\n");
 			},
 		);
@@ -377,7 +377,7 @@ describe("emitCredential", () => {
 				// exposes.
 				(text) => (text.length === 0 ? new Error("EPIPE on the trailing flush") : undefined),
 				async (written) => {
-					await expect(emitCredential(new Secret("sk-x"))).resolves.toBeUndefined();
+					await expect(emitCredential(new Secret("sk-x"), undefined)).resolves.toBeUndefined();
 
 					expect(written).toEqual(["sk-x\n"]);
 					// Once those bytes are on stdout the command has succeeded. A
@@ -420,9 +420,7 @@ describe("emitCredential", () => {
 		}> = [
 			{
 				code: "Usage",
-				run: async () => {
-					throw new CredentialPrintError("Usage", "Invalid auth command");
-				},
+				run: async () => validateCredentialPrintArgs(args()),
 			},
 			{
 				code: "NoCredentialConfigured",
@@ -492,7 +490,7 @@ describe("emitCredential", () => {
 				// happens before a byte can leave. A callback error after the stream
 				// took the chunk is not this, and is covered separately below.
 				onSubmit: (text) => (text.length > 0 ? new Error("stdout destroyed before the write") : undefined),
-				run: () => emitCredential(new Secret("sk-not-emitted")),
+				run: () => emitCredential(new Secret("sk-not-emitted"), undefined),
 			},
 			{
 				code: "CredentialTruncated",
@@ -500,7 +498,7 @@ describe("emitCredential", () => {
 				// recalled, so this is the one code whose stdout is not empty.
 				onWrite: (text) => (text.length > 0 ? new Error("EPIPE after a partial flush") : undefined),
 				flushedOnCallbackError: 3,
-				run: () => emitCredential(new Secret("sk-truncated-value")),
+				run: () => emitCredential(new Secret("sk-truncated-value"), undefined),
 			},
 		];
 
@@ -593,7 +591,7 @@ describe("emitCredential", () => {
 		await withStubbedStdout(
 			() => undefined,
 			async (written) => {
-				const failure = await emitCredential(new Secret("sk-y")).then(
+				const failure = await emitCredential(new Secret("sk-y"), undefined).then(
 					() => undefined,
 					(error: unknown) => error as CredentialPrintError,
 				);
@@ -622,7 +620,7 @@ describe("emitCredential", () => {
 			await withStubbedStdout(
 				(text) => (text.length > 0 ? new Error("EPIPE after the payload was flushed") : undefined),
 				async (written) => {
-					await expect(emitCredential(new Secret("sk-flushed"))).resolves.toBeUndefined();
+					await expect(emitCredential(new Secret("sk-flushed"), undefined)).resolves.toBeUndefined();
 
 					expect(written).toEqual(["sk-flushed\n"]);
 					expect(process.exitCode ?? 0).toBe(0);
@@ -647,7 +645,7 @@ describe("emitCredential", () => {
 		await withStubbedStdout(
 			(text) => (text.length > 0 ? new Error("EPIPE before any byte was flushed") : undefined),
 			async (written) => {
-				const failure = await emitCredential(new Secret("sk-buffered")).then(
+				const failure = await emitCredential(new Secret("sk-buffered"), undefined).then(
 					() => undefined,
 					(error: unknown) => error as CredentialPrintError,
 				);
@@ -710,9 +708,15 @@ describe("auth command parsing", () => {
 			["--", "--min-expiry", "30m"],
 			["--", "--min-expiry=30m"],
 		]) {
-			expect(() => parseAuthCommand(["auth", "print-api-key", "--model", "gpt-5.5", ...spelling])).toThrow(
-				"only supported by print-bearer-token",
-			);
+			try {
+				parseAuthCommand(["auth", "print-api-key", "--model", "gpt-5.5", ...spelling]);
+				expect.unreachable("expected a usage error");
+			} catch (error) {
+				expect(error).toBeInstanceOf(AuthCommandError);
+				const failure = error as AuthCommandError;
+				expect(failure.exitCode).toBe(1);
+				expect(failure.message).toContain("only supported by print-bearer-token");
+			}
 		}
 	});
 
@@ -770,9 +774,18 @@ describe("credential print argument validation", () => {
 		expect(() => validateCredentialPrintArgs(args({ model: "m", fileArgs: ["@a.md"] }))).toThrow(
 			"only accepts --provider and --model",
 		);
-		expect(() =>
-			validateCredentialPrintArgs(args({ model: "m", unknownFlags: new Map([["--output", "keys.txt"]]) })),
-		).toThrow("only accepts --provider and --model");
+		const parsed = parseArgs(["--model", "m", "--bogus"]);
+		try {
+			validateCredentialPrintArgs(parsed);
+			expect.unreachable("expected a usage error");
+		} catch (error) {
+			expect(error).toBeInstanceOf(CredentialPrintError);
+			const failure = error as CredentialPrintError;
+			expect(failure.exitCode).toBe(1);
+			expect(failure.message).toBe(
+				"Credential printing only accepts --provider and --model (refused: unknownFlags)",
+			);
+		}
 	});
 
 	it("refuses every flag other than --provider and --model", () => {
@@ -1229,8 +1242,9 @@ describe("atomic auth on the wire", () => {
 	it(
 		"reports readiness without exposing a configured credential",
 		async () => {
-			const key = "sk-auth-check-must-not-print";
-			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
+			const key = "command-backed-auth-key";
+			const configuredKey = `!echo ${key}`;
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: configuredKey } });
 
 			const result = await runCliProcess(["auth", "check", "--provider", "anthropic"], {
 				cwd: agentDir,
@@ -1259,6 +1273,18 @@ describe("atomic auth on the wire", () => {
 			expect(JSON.parse(model.stdout)).toEqual({ status: "ready", provider: "anthropic", authType: "api_key" });
 			expect(model.stdout).not.toContain(key);
 			expect(model.stderr).not.toContain(key);
+
+			const exported = await runCliProcess(
+				["auth", "check", "--provider", "anthropic", "--no-refresh", "--credentials"],
+				{
+					cwd: agentDir,
+					env: cliEnv(agentDir),
+				},
+			);
+			expect(exported.code).toBe(0);
+			expect(exported.stdout).toBe(`${key}\n`);
+			expect(exported.stdout).not.toContain(configuredKey);
+			expect(exported.stderr).not.toContain(key);
 		},
 		REAL_CLI_SUITE_TIMEOUT_MS,
 	);
@@ -1579,7 +1605,7 @@ describe("atomic auth on the wire", () => {
 		async () => {
 			const agentDir = agentDirWith({});
 
-			for (const argv of [["auth"], ["auth", "--help"]]) {
+			for (const argv of [["auth"], ["auth", "--help"], ["auth", "check", "--help"]]) {
 				const result = await runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
 
 				expect(result.code).toBe(0);
@@ -1796,6 +1822,18 @@ describe("credential egress chokepoint", () => {
 	/** Names a credential in code, not a word that appears in help text. */
 	const CREDENTIAL_MATERIAL = /secret|credential|api[-_]?key|bearer|access[-_]?token|refresh[-_]?token|\.take\(\)/iu;
 
+	/** Direct and optional property calls that can open a Secret. */
+	const DIRECT_SECRET_TAKE = /(?:\?\.|\.)\s*take\s*\(\s*\)/gu;
+
+	/** Literal computed property calls that can open a Secret. */
+	const COMPUTED_SECRET_TAKE = /\[\s*(?:"take"|'take')\s*\]\s*\(\s*\)/gu;
+
+	/** The only source locations allowed to open a Secret. */
+	const SECRET_TAKE_SITES = [
+		`${EGRESS_MODULE}: credentialPayload: .take()`,
+		`${EGRESS_MODULE}: credentialPayload: .take()`,
+	];
+
 	function callsTo(writer: RegExp, source: string): string[] {
 		const calls: string[] = [];
 		writer.lastIndex = 0;
@@ -1867,6 +1905,34 @@ describe("credential egress chokepoint", () => {
 			.sort();
 	}
 
+	function sourceFunctionName(source: string, index: number): string {
+		const declarations = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/gu;
+		let name = "<module>";
+		for (
+			let match = declarations.exec(source.slice(0, index));
+			match;
+			match = declarations.exec(source.slice(0, index))
+		) {
+			name = match[1] ?? name;
+		}
+		return name;
+	}
+	function secretTakeCalls(candidates: ReadonlyArray<{ path: string; source: string }>): string[] {
+		const calls: string[] = [];
+		for (const { path, source } of candidates) {
+			const code = codeOnly(source);
+			DIRECT_SECRET_TAKE.lastIndex = 0;
+			for (let match = DIRECT_SECRET_TAKE.exec(code); match; match = DIRECT_SECRET_TAKE.exec(code)) {
+				calls.push(`${path}: ${sourceFunctionName(code, match.index)}: ${match[0].replace(/\s+/gu, "")}`);
+			}
+			COMPUTED_SECRET_TAKE.lastIndex = 0;
+			for (let match = COMPUTED_SECRET_TAKE.exec(source); match; match = COMPUTED_SECRET_TAKE.exec(source)) {
+				calls.push(`${path}: ${sourceFunctionName(source, match.index)}: ${match[0].replace(/\s+/gu, "")}`);
+			}
+		}
+		return calls.sort();
+	}
+
 	it("finds the door it is guarding", () => {
 		expect(modules.length).toBeGreaterThan(100);
 		expect(modules.map(({ path }) => path)).toContain(EGRESS_MODULE);
@@ -1875,6 +1941,32 @@ describe("credential egress chokepoint", () => {
 
 	it("writes nothing to the real stdout beyond the enumerated set", () => {
 		expect(scan(modules)).toEqual([...RAW_STDOUT_EGRESS].sort());
+	});
+
+	it("opens a Secret only at the enumerated source sites", () => {
+		expect(secretTakeCalls(modules)).toEqual([...SECRET_TAKE_SITES].sort());
+	});
+
+	it("the Secret-opening scan reports direct, optional, and computed third calls", () => {
+		const planted = secretTakeCalls([
+			{
+				path: EGRESS_MODULE,
+				source: `
+					function credentialPayload(secret: Secret) {
+						secret.take();
+						secret?.take();
+						secret["take"]();
+					}
+				`,
+			},
+		]);
+
+		expect(planted).toEqual([
+			`${EGRESS_MODULE}: credentialPayload: .take()`,
+			`${EGRESS_MODULE}: credentialPayload: ?.take()`,
+			`${EGRESS_MODULE}: credentialPayload: ["take"]()`,
+		]);
+		expect(planted).not.toEqual([...SECRET_TAKE_SITES].sort());
 	});
 
 	it("the scan reports a planted second egress", () => {

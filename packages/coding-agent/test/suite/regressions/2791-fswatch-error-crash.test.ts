@@ -46,10 +46,7 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 		// Script that sets up the watcher and emits a synthetic error on it.
 		// If no .on('error') handler is attached, EventEmitter.emit('error')
 		// throws, which either crashes the process or gets caught by our try/catch.
-		const scriptPath = join(tempRoot, "test-watcher-error.mts");
-		writeFileSync(
-			scriptPath,
-			`
+		const script = String.raw`
 
 import { mock } from "bun:test";
 import * as realFs from "node:fs";
@@ -71,13 +68,13 @@ const { setTheme, stopThemeWatcher } = await import(${JSON.stringify(themeModule
 setTheme("custom-test", true);
 
 if (!fsWatcher) {
-	process.stderr.write("theme fs.watch was not called\\n");
+	process.stderr.write("theme fs.watch was not called\n");
 	process.exit(2);
 }
 
 const errorListenerCount = fsWatcher.listenerCount("error");
 if (errorListenerCount === 0) {
-	process.stderr.write("BUG: FSWatcher has no error handler (issue #2791)\\n");
+	process.stderr.write("BUG: FSWatcher has no error handler (issue #2791)\n");
 }
 
 // Emitting 'error' on an EventEmitter with no error listener throws.
@@ -85,20 +82,19 @@ if (errorListenerCount === 0) {
 try {
 	fsWatcher.emit("error", new Error("simulated OS watcher failure"));
 } catch {
-	process.stderr.write("error event was unhandled and threw\\n");
+	process.stderr.write("error event was unhandled and threw\n");
 	process.exit(1);
 }
 
 stopThemeWatcher();
 process.exit(0);
-`,
-		);
+`;
 
-		let _stdout = "";
 		let stderr = "";
 		let exitCode: number;
+		let failureDetails = "";
 		try {
-			_stdout = execFileSync("bun", [scriptPath], {
+			execFileSync("bun", ["-e", script], {
 				timeout: 10000,
 				encoding: "utf-8",
 				env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir },
@@ -106,12 +102,23 @@ process.exit(0);
 			});
 			exitCode = 0;
 		} catch (err: unknown) {
-			const e = err as { status: number; stdout: string; stderr: string };
-			_stdout = e.stdout ?? "";
+			const e = err as {
+				status?: number | null;
+				stderr?: string;
+				signal?: string | null;
+				code?: string | number;
+			};
 			stderr = e.stderr ?? "";
 			exitCode = e.status ?? 1;
+			const details: string[] = [];
+			if (e.signal) details.push(`signal ${e.signal}`);
+			if (e.code) details.push(`code ${e.code}`);
+			failureDetails = details.join(", ");
 		}
 
-		expect(exitCode, `Child crashed (exit ${exitCode}). stderr: ${stderr.trim()}`).toBe(0);
+		expect(
+			exitCode,
+			`Child crashed (exit ${exitCode}${failureDetails ? `, ${failureDetails}` : ""}). stderr: ${stderr.trim()}`,
+		).toBe(0);
 	});
 });

@@ -43,6 +43,8 @@ export function isAuthCommandHelp(args: string[]): boolean {
 	if (args[1] === undefined || args[1] === "help" || args[1] === "--help" || args[1] === "-h") return true;
 	const terminator = args.indexOf("--", 2);
 	const flags = args.slice(2, terminator === -1 ? undefined : terminator);
+	// Checks accept direct help flags. The print commands reserve every extra
+	// parser flag, including --help, as a usage error to keep their export stream narrow.
 	return args[1] === "check" && (flags.includes("--help") || flags.includes("-h"));
 }
 

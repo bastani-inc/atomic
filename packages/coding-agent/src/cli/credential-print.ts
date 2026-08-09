@@ -138,18 +138,51 @@ export class Secret {
 export interface CredentialJsonFields {
 	status: string;
 	provider: string;
-	reason?: string;
 	authType?: string;
+}
+
+/**
+ * The only function in `src` that opens a `Secret`.
+ *
+ * Its two `Secret.take()` calls are the only call sites in `src`, and the
+ * source-wide credential-egress test pins that list. This function builds one
+ * payload and returns it only to `emitCredential`; no caller receives a plain
+ * credential string.
+ */
+function credentialPayload(secret: Secret, jsonFields: CredentialJsonFields | undefined): string {
+	if (jsonFields === undefined) return `${secret.take()}\n`;
+
+	const { status, provider, authType } = jsonFields;
+	if (
+		typeof status !== "string" ||
+		typeof provider !== "string" ||
+		(authType !== undefined && typeof authType !== "string")
+	) {
+		throw new Error("Invalid credential JSON fields");
+	}
+
+	// Allowlist the non-secret envelope before opening the Secret. That leaves no
+	// formatter, logger, or error path between take() and the guarded stdout write.
+	const fields = JSON.stringify({
+		status,
+		provider,
+		...(authType === undefined ? {} : { authType }),
+	});
+	if (fields === undefined || !fields.startsWith("{") || !fields.endsWith("}")) {
+		throw new Error("Invalid credential JSON envelope");
+	}
+	return `${fields.slice(0, -1)},"credentials":${JSON.stringify(secret.take())}}\n`;
 }
 
 /**
  * The single credential egress in `src`.
  *
- * `Secret.take()` is called here and nowhere else in the source tree, so this
- * is the one statement that can turn a configured credential back into a string
- * and the one that hands it to the real stdout. A caller — `main.ts` included —
- * receives a `Secret` it cannot read, print, or serialize, so a second export
- * path cannot be grafted on without moving this function.
+ * `credentialPayload` opens the secret only while building this one payload,
+ * and this guarded write is the only path that hands it to real stdout. A
+ * caller — `main.ts` included — receives a `Secret` it cannot read, print, or
+ * serialize, so it cannot add a second export path without crossing this door.
+ * `test/credential-print.test.ts` pins both the `take()` sites and every
+ * data-bearing real-stdout write in `packages/coding-agent/src`.
  *
  * A failed payload write is answered from the stream rather than from the shape
  * of the error, because `bytesWritten` says how much of the credential actually
@@ -172,39 +205,8 @@ export interface CredentialJsonFields {
  * the one code in this taxonomy whose contract is *not* an empty stdout —
  * stated as such in `EXIT_CODES` and asserted through `STDOUT_EMPTY_ON_EXIT`,
  * rather than left for a caller to discover.
- *
- * `test/credential-print.test.ts` asserts that chokepoint against the whole of
- * `packages/coding-agent/src`.
  */
-function credentialPayload(secret: Secret, jsonFields: CredentialJsonFields | undefined): string {
-	if (jsonFields === undefined) return `${secret.take()}\n`;
-
-	const { status, provider, reason, authType } = jsonFields;
-	if (
-		typeof status !== "string" ||
-		typeof provider !== "string" ||
-		(reason !== undefined && typeof reason !== "string") ||
-		(authType !== undefined && typeof authType !== "string")
-	) {
-		throw new Error("Invalid credential JSON fields");
-	}
-
-	// Allowlist the non-secret envelope before opening the Secret. That leaves no
-	// formatter, logger, or error path between take() and the guarded stdout write.
-	const fields = JSON.stringify({
-		status,
-		provider,
-		...(reason === undefined ? {} : { reason }),
-		...(authType === undefined ? {} : { authType }),
-	});
-	if (fields === undefined || !fields.startsWith("{") || !fields.endsWith("}")) {
-		throw new Error("Invalid credential JSON envelope");
-	}
-	return `${fields.slice(0, -1)},"credentials":${JSON.stringify(secret.take())}}\n`;
-}
-
-export async function emitCredential(secret: Secret, jsonFields?: CredentialJsonFields): Promise<void> {
-	// take() returns a plain string only while assembling the one stdout payload.
+export async function emitCredential(secret: Secret, jsonFields: CredentialJsonFields | undefined): Promise<void> {
 	const payload = credentialPayload(secret, jsonFields);
 	try {
 		await writeRawStdoutOnce(payload);
