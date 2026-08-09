@@ -124,6 +124,8 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `autocompleteMaxVisible` | number | `5` | Max visible items in the default editor and custom editors installed through `ctx.ui.setEditorComponent()` (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 
+In `fullscreen` mode, wheel and trackpad gestures scroll the alternate-screen viewport rather than engine-hosted overlays such as workflow graphs. Switch to `regular` to scroll those overlays with a mouse or trackpad.
+
 Ctrl+G in main chat, embedded chat, and extension editor dialogs uses one shared asynchronous launcher. Atomic chooses `externalEditor`, then `$VISUAL`, then `$EDITOR`, then Notepad on Windows or `nano` elsewhere. Each edit uses a private `atomic-editor-*` directory containing only `prompt.md`, removes the directory recursively afterward, and never scans the system temporary directory. A successful empty edit is preserved; a failed editor leaves the original text unchanged, and the TUI always restarts and renders after the editor exits.
 
 ### Telemetry and update checks

@@ -100,9 +100,9 @@ export class InteractiveModeBase {
 	runtimeHost: AgentSessionRuntime;
 
 	ui: TUI;
-	renderer: InteractiveTui;
+	private renderer: InteractiveTui;
 
-	mainScreenRenderState: TuiMainScreenRenderState | undefined;
+	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 
 	chatContainer: Container;
 	resourceDisclosureContainer: Container;

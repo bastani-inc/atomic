@@ -1,4 +1,4 @@
-import type { Component, Terminal, TuiMode } from "@earendil-works/pi-tui";
+import type { Component, Terminal, TUI, TuiMode } from "@earendil-works/pi-tui";
 import {
 	getKeybindings,
 	KeybindingsManager,
@@ -9,7 +9,11 @@ import {
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.ts";
-import { createInteractiveTui, InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import {
+	createInteractiveTui,
+	createInteractiveTuiReference,
+	InteractiveMode,
+} from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const previousKeybindings = getKeybindings();
@@ -58,7 +62,7 @@ function openSettingsSelector(hasActiveOverlay: boolean) {
 			},
 		},
 		renderer,
-		ui: renderer,
+		ui: undefined as unknown as TUI,
 		mainScreenRenderState: undefined,
 		options: { tuiMode: "regular" as TuiMode },
 		themeController: { getTerminalTheme: () => "dark", rebindTui: () => {} },
@@ -68,7 +72,8 @@ function openSettingsSelector(hasActiveOverlay: boolean) {
 			selector = create(() => {}).component as SettingsSelectorComponent;
 		},
 		showStatus,
-	}) as InteractiveMode;
+	}) as unknown as InteractiveMode;
+	mode.ui = createInteractiveTuiReference(() => Reflect.get(mode, "renderer") as TUI);
 	if (hasActiveOverlay) renderer.showOverlay({ render: () => [], invalidate: () => {} });
 
 	mode.showSettingsSelector();
@@ -96,10 +101,10 @@ test("settings selector switches, persists, and reports a successful TUI mode ch
 
 	selectFullscreen(selector);
 
-	expect(mode.renderer.mode).toBe("fullscreen");
+	expect(mode.ui.mode).toBe("fullscreen");
 	expect(settingsManager.getTuiMode()).toBe("fullscreen");
 	expect(showStatus).toHaveBeenCalledExactlyOnceWith("TUI mode: fullscreen");
-	mode.renderer.stop();
+	mode.ui.stop();
 });
 
 test("settings selector restores its current TUI mode when an active overlay blocks the change", () => {
@@ -107,7 +112,7 @@ test("settings selector restores its current TUI mode when an active overlay blo
 
 	selectFullscreen(selector);
 
-	expect(mode.renderer.mode).toBe("regular");
+	expect(mode.ui.mode).toBe("regular");
 	expect(settingsManager.getTuiMode()).toBe("regular");
 	expect(showStatus).toHaveBeenCalledExactlyOnceWith("Close active overlays before changing TUI mode");
 	expect(stripTerminalSequences(selector.getSettingsList().render(120).join("\n"))).toMatch(/TUI mode\s+regular/);

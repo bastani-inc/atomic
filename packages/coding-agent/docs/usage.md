@@ -236,6 +236,8 @@ For raw credential exports, stdout is empty on every non-zero exit but one. Once
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |
 | `--export <in> [out]` | Export a session to HTML |
 
+In `fullscreen` mode, wheel and trackpad gestures scroll the alternate-screen viewport rather than engine-hosted overlays such as workflow graphs. Use `regular` to scroll those overlays with a mouse or trackpad.
+
 In print mode, Atomic also reads piped stdin and merges it into the initial prompt:
 
 ```bash
