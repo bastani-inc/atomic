@@ -162,7 +162,7 @@ describe("InteractiveMode Ctrl+C", () => {
 				abort: vi.fn().mockRejectedValue(abortError),
 			},
 			runtimeHost: {},
-			ui: { addInputListener() {}, requestRender() {}, hasOverlay: () => false },
+			ui: { addInputListener: () => () => {}, requestRender() {}, hasOverlay: () => false },
 			keybindings: { matches: () => false },
 			defaultEditor: editor,
 			editor,
@@ -173,6 +173,8 @@ describe("InteractiveMode Ctrl+C", () => {
 			lastEscapeTime: 0,
 			restoreQueuedMessagesToEditor: vi.fn(),
 			showError,
+			tuiInputSubscriptions: new Set(),
+			addTuiInputListener: InteractiveMode.prototype.addTuiInputListener,
 		};
 		setupKeyHandlers.call(host);
 

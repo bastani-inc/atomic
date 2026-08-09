@@ -118,18 +118,31 @@ function hostTerminal(tui: TUI): { write(data: string): void } {
 	return typeof terminal?.write === "function" ? (terminal as { write(data: string): void }) : { write: () => {} };
 }
 
+export interface TuiRendererLifecycle {
+	isFullscreen(): boolean;
+	onRendererReplaced(listener: () => void): () => void;
+}
+
 export class RemoteComponentController {
 	private readonly mounted = new Map<string, MountedRemoteComponent>();
 	private readonly unsubscribe: () => void;
 	private readonly unsubscribeGenerationEnded: () => void;
-	private readonly terminalModes = new TerminalModeController();
+	private readonly terminalModes: TerminalModeController;
+	private readonly unsubscribeTuiRendererReplaced: () => void;
 
 	private readonly runtime: IsolatedInteractiveRuntime;
 	private readonly ui: ExtensionUIContext;
 
-	constructor(runtime: IsolatedInteractiveRuntime, ui: ExtensionUIContext) {
+	constructor(
+		runtime: IsolatedInteractiveRuntime,
+		ui: ExtensionUIContext,
+		tuiRendererLifecycle?: TuiRendererLifecycle,
+	) {
 		this.runtime = runtime;
 		this.ui = ui;
+		this.terminalModes = new TerminalModeController(() => tuiRendererLifecycle?.isFullscreen() ?? false);
+		this.unsubscribeTuiRendererReplaced =
+			tuiRendererLifecycle?.onRendererReplaced(() => this.terminalModes.rebindTui()) ?? (() => {});
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
 		// Teardown is driven by engine death rather than the NEXT generation's
 		// `engine_ready`, so a crash with no restart, or a hung/failed restart,
@@ -138,6 +151,7 @@ export class RemoteComponentController {
 	}
 
 	dispose(): void {
+		this.unsubscribeTuiRendererReplaced();
 		this.unsubscribe();
 		this.unsubscribeGenerationEnded();
 		this.disposeAll("host-shutdown");

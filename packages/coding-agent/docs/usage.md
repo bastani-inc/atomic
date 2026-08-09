@@ -211,6 +211,7 @@ Stdout is empty on every non-zero exit but one. Once the credential reaches stdo
 | Flag | Description |
 |------|-------------|
 | default | Interactive mode |
+| `--tui-mode <mode>` | Experimental interactive layout: `regular` (default) or `fullscreen`; `/settings` can switch it while Atomic runs |
 | `-p`, `--print` | Print response and exit |
 | `--mode json` | Output all events as JSON lines; see [JSON mode](/json) |
 | `--mode rpc` | RPC mode over stdin/stdout; see [RPC mode](/rpc) |

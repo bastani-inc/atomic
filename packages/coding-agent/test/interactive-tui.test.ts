@@ -1,0 +1,170 @@
+import type { Component, Terminal, TUI, TuiMode } from "@earendil-works/pi-tui";
+import { isViewportTUI, TuiAltScreen } from "@earendil-works/pi-tui";
+import { describe, expect, test, vi } from "vitest";
+import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
+import {
+	createInteractiveTui,
+	createInteractiveTuiReference,
+	InteractiveMode,
+} from "../src/modes/interactive/interactive-mode.ts";
+
+class RecordingTerminal implements Terminal {
+	columns = 40;
+	rows = 8;
+	kittyProtocolActive = true;
+	startCount = 0;
+	stopCount = 0;
+	cursorVisible = true;
+	private onInput: ((data: string) => void) | undefined;
+
+	start(onInput: (data: string) => void, _onResize: () => void): void {
+		this.startCount += 1;
+		this.onInput = onInput;
+	}
+
+	stop(): void {
+		this.stopCount += 1;
+		this.onInput = undefined;
+	}
+
+	async drainInput(): Promise<void> {}
+	write(_data: string): void {}
+	moveBy(_lines: number): void {}
+	hideCursor(): void {
+		this.cursorVisible = false;
+	}
+	showCursor(): void {
+		this.cursorVisible = true;
+	}
+	clearLine(): void {}
+	clearFromCursor(): void {}
+	clearScreen(): void {}
+	setTitle(_title: string): void {}
+	setProgress(_active: boolean): void {}
+
+	input(data: string): void {
+		this.onInput?.(data);
+	}
+}
+
+describe("interactive TUI renderer", () => {
+	test("selects the alternate-screen renderer only for fullscreen mode", () => {
+		const regular = createInteractiveTui({
+			tuiMode: "regular",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+		});
+		const fullscreen = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+		});
+
+		expect(regular.mode).toBe("regular");
+		expect(isViewportTUI(regular)).toBe(false);
+		expect(fullscreen.mode).toBe("fullscreen");
+		expect(Reflect.get(fullscreen, "openUrl")).toBeUndefined();
+		expect(isViewportTUI(fullscreen)).toBe(true);
+	});
+
+	test("routes captured methods to a replacement renderer", () => {
+		const regularRequestRender = vi.fn();
+		const fullscreenRequestRender = vi.fn();
+		let renderer = { requestRender: regularRequestRender } as unknown as TUI;
+		const tui = createInteractiveTuiReference(() => renderer);
+		const requestRender = tui.requestRender;
+
+		requestRender();
+		renderer = { requestRender: fullscreenRequestRender } as unknown as TUI;
+		requestRender();
+
+		expect(regularRequestRender).toHaveBeenCalledOnce();
+		expect(fullscreenRequestRender).toHaveBeenCalledOnce();
+	});
+
+	test("does not recurse when a stable method wraps itself", () => {
+		const renderer = { render: (width: number) => [`width: ${width}`] } as unknown as TUI;
+		const tui = createInteractiveTuiReference(() => renderer);
+		const originalRender = tui.render;
+		tui.render = (width: number) => originalRender(width);
+
+		expect(tui.render(80)).toEqual(["width: 80"]);
+	});
+
+	test("switches renderers without losing host components, focus, or input listeners", async () => {
+		const terminal = new RecordingTerminal();
+		const renderer = createInteractiveTui({
+			tuiMode: "regular",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+		});
+		const themeController = { rebindTui: vi.fn() };
+		const matchesClear = vi.fn<(candidate: string, action: string) => boolean>(() => false);
+		const session = {
+			isStreaming: false,
+			isCompacting: false,
+			settingsManager: { getShowTerminalProgress: () => false },
+		};
+		const context = Object.assign(Object.create(InteractiveMode.prototype), {
+			renderer,
+			ui: undefined as unknown as TUI,
+			mainScreenRenderState: undefined,
+			options: { tuiMode: "regular" as TuiMode },
+			runtimeHost: { services: { agentDir: "/tmp" }, session },
+			themeController,
+			tuiInputSubscriptions: new Set(),
+			extensionTerminalInputSubscriptions: new Set(),
+			tuiRendererChangeListeners: new Set(),
+			keybindings: { matches: matchesClear },
+		}) as InteractiveMode;
+		const stableUi = createInteractiveTuiReference(() => context.renderer);
+		context.ui = stableUi;
+		const render = vi.fn(() => ["content"]);
+		const component = {
+			focused: false,
+			render,
+			invalidate: vi.fn(),
+		} as Component & { focused: boolean };
+		const onRendererChange = vi.fn();
+		context.onTuiRendererChange(onRendererChange);
+		const inputListener = vi.fn();
+
+		registerStartupInputListeners(context);
+		const inputSubscription = { handler: inputListener, unsubscribe: stableUi.addInputListener(inputListener) };
+		context.tuiInputSubscriptions.add(inputSubscription);
+		expect(context.tuiInputSubscriptions.size).toBe(3);
+		renderer.addChild(component);
+		renderer.setFocus(component);
+		renderer.start();
+
+		expect(context.switchTuiMode("fullscreen", false)).toBe(true);
+
+		expect(stableUi.mode).toBe("fullscreen");
+		expect(stableUi instanceof TuiAltScreen).toBe(true);
+		expect(context.renderer.children).toEqual([component]);
+		expect(context.renderer.getFocusedComponent()).toBe(component);
+		expect(component.focused).toBe(true);
+		expect(themeController.rebindTui).toHaveBeenCalledOnce();
+		expect(onRendererChange).toHaveBeenCalledOnce();
+		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 1]);
+
+		terminal.input("x");
+		expect(inputListener).toHaveBeenCalledWith("x");
+		expect(matchesClear).toHaveBeenCalledWith("x", "app.clear");
+
+		context.stopInteractiveTui();
+
+		expect(stableUi.mode).toBe("regular");
+		// Shutdown stops the replacement renderer without starting the terminal again.
+		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 3]);
+		expect(terminal.cursorVisible).toBe(true);
+
+		const rendersAtShutdown = render.mock.calls.length;
+		stableUi.requestRender(true);
+		await new Promise<void>((resolve) => process.nextTick(resolve));
+		expect(render).toHaveBeenCalledTimes(rendersAtShutdown);
+	});
+});

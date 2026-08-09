@@ -16,19 +16,22 @@ InteractiveModeBase.prototype.addExtensionTerminalInputListener = function (
 	this: InteractiveModeBase,
 	handler: (data: string) => { consume?: boolean; data?: string } | undefined,
 ): () => void {
-	const unsubscribe = this.ui.addInputListener(handler);
-	this.extensionTerminalInputUnsubscribers.add(unsubscribe);
+	const subscription = { handler, unsubscribe: this.ui.addInputListener(handler) };
+	this.tuiInputSubscriptions.add(subscription);
+	this.extensionTerminalInputSubscriptions.add(subscription);
 	return () => {
-		unsubscribe();
-		this.extensionTerminalInputUnsubscribers.delete(unsubscribe);
+		subscription.unsubscribe();
+		this.extensionTerminalInputSubscriptions.delete(subscription);
+		this.tuiInputSubscriptions.delete(subscription);
 	};
 };
 
 InteractiveModeBase.prototype.clearExtensionTerminalInputListeners = function (this: InteractiveModeBase): void {
-	for (const unsubscribe of this.extensionTerminalInputUnsubscribers) {
-		unsubscribe();
+	for (const subscription of this.extensionTerminalInputSubscriptions) {
+		subscription.unsubscribe();
+		this.tuiInputSubscriptions.delete(subscription);
 	}
-	this.extensionTerminalInputUnsubscribers.clear();
+	this.extensionTerminalInputSubscriptions.clear();
 };
 
 InteractiveModeBase.prototype.getHostCustomUiState = function (this: InteractiveModeBase): HostCustomUiState {

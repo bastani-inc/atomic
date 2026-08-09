@@ -14,9 +14,12 @@ import type { EngineTerminalControl } from "./protocol.ts";
  *  - Controls that arrive before the component mounts are buffered and flushed
  *    on mount (the child enables mouse reporting inside the overlay factory,
  *    which runs before the mount `engine_custom_open` on the wire).
- *  - Every mode a component turns on is reset to its safe default when that
- *    component unmounts, or when the whole controller is reset (engine
- *    crash / restart / generation replacement / host shutdown).
+ *  - In fullscreen, `TuiAltScreen` owns mouse and autowrap itself. Remote
+ *    intents remain tracked but never write over that baseline; switching back
+ *    to regular mode reapplies active intents.
+ *  - In regular mode, every mode a component turns on is restored when that
+ *    component unmounts, or when the whole controller resets (engine crash /
+ *    restart / generation replacement / host shutdown).
  *  - State is component-scoped: a stale child cannot reset or alter a mode
  *    owned by the currently mounted component.
  */
@@ -41,7 +44,12 @@ interface ComponentTerminalState {
 }
 
 export class TerminalModeController {
+	private readonly isFullscreen: () => boolean;
 	private readonly components = new Map<string, ComponentTerminalState>();
+
+	constructor(isFullscreen: () => boolean = () => false) {
+		this.isFullscreen = isFullscreen;
+	}
 
 	/** Apply (or buffer) a typed control for a component. */
 	applyControl(componentId: string, control: EngineTerminalControl): void {
@@ -81,6 +89,15 @@ export class TerminalModeController {
 		this.components.clear();
 	}
 
+	/** Reapply active controls after the host renderer changes mode. */
+	rebindTui(): void {
+		if (this.isFullscreen()) return;
+		const terminal = this.firstTerminal();
+		if (!terminal) return;
+		if (this.hasMouseControl()) this.writeMouse(terminal);
+		if (this.hasAutowrapDisabledControl()) this.writeAutowrap(terminal);
+	}
+
 	private ensure(componentId: string): ComponentTerminalState {
 		let state = this.components.get(componentId);
 		if (!state) {
@@ -91,28 +108,58 @@ export class TerminalModeController {
 	}
 
 	private write(state: ComponentTerminalState, control: EngineTerminalControl): void {
-		const terminal = state.terminal;
-		if (!terminal) return;
 		if (control.kind === "mouse-scroll-tracking") {
 			if (control.enabled === state.mouse) return;
 			state.mouse = control.enabled;
-			terminal.write(control.enabled ? HOST_MOUSE_SCROLL_TRACKING_ON : HOST_MOUSE_SCROLL_TRACKING_OFF);
+			this.writeMouse(state.terminal);
 			return;
 		}
 		const disabled = !control.enabled;
 		if (disabled === state.autowrapDisabled) return;
 		state.autowrapDisabled = disabled;
-		terminal.write(control.enabled ? HOST_TERMINAL_AUTOWRAP_ON : HOST_TERMINAL_AUTOWRAP_OFF);
+		this.writeAutowrap(state.terminal);
+	}
+
+	private writeMouse(terminal: HostTerminalWriter | undefined): void {
+		if (!terminal || this.isFullscreen()) return;
+		terminal.write(this.hasMouseControl() ? HOST_MOUSE_SCROLL_TRACKING_ON : HOST_MOUSE_SCROLL_TRACKING_OFF);
+	}
+
+	private writeAutowrap(terminal: HostTerminalWriter | undefined): void {
+		if (!terminal || this.isFullscreen()) return;
+		terminal.write(this.hasAutowrapDisabledControl() ? HOST_TERMINAL_AUTOWRAP_OFF : HOST_TERMINAL_AUTOWRAP_ON);
+	}
+
+	private hasMouseControl(): boolean {
+		for (const state of this.components.values()) {
+			if (state.mouse) return true;
+		}
+		return false;
+	}
+
+	private hasAutowrapDisabledControl(): boolean {
+		for (const state of this.components.values()) {
+			if (state.autowrapDisabled) return true;
+		}
+		return false;
+	}
+
+	private firstTerminal(): HostTerminalWriter | undefined {
+		for (const state of this.components.values()) {
+			if (state.terminal) return state.terminal;
+		}
+		return undefined;
 	}
 
 	private reset(state: ComponentTerminalState): void {
-		const terminal = state.terminal;
-		if (terminal) {
-			if (state.mouse) terminal.write(HOST_MOUSE_SCROLL_TRACKING_OFF);
-			if (state.autowrapDisabled) terminal.write(HOST_TERMINAL_AUTOWRAP_ON);
+		if (state.mouse) {
+			state.mouse = false;
+			this.writeMouse(state.terminal);
 		}
-		state.mouse = false;
-		state.autowrapDisabled = false;
+		if (state.autowrapDisabled) {
+			state.autowrapDisabled = false;
+			this.writeAutowrap(state.terminal);
+		}
 		state.buffered = [];
 	}
 }

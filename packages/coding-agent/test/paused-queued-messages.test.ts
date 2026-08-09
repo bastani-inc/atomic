@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
+import type { TuiInputListener } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -27,12 +28,17 @@ type EscapeEditor = {
 	addToHistory: (text: string) => void;
 };
 
+type TuiInputSubscription = {
+	handler: TuiInputListener;
+	unsubscribe: () => void;
+};
+
 type EscapeHost = {
 	session: AgentSession;
 	runtimeHost: object;
 	ui: {
 		onDebug?: () => void;
-		addInputListener: (listener: (data: string) => void) => void;
+		addInputListener: (listener: TuiInputListener) => () => void;
 		requestRender: () => void;
 	};
 	keybindings: { matches: () => boolean };
@@ -58,6 +64,8 @@ type EscapeHost = {
 	discardDeferredRenderedUserInput: () => void;
 	showError: (message: string) => void;
 	isExtensionCommand(text: string): boolean;
+	tuiInputSubscriptions: Set<TuiInputSubscription>;
+	addTuiInputListener: (handler: TuiInputListener) => () => void;
 };
 
 type SubmitHost = EscapeHost & {
@@ -108,7 +116,7 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 	const host: EscapeHost = {
 		session,
 		runtimeHost: {},
-		ui: { addInputListener() {}, requestRender() {} },
+		ui: { addInputListener: () => () => {}, requestRender() {} },
 		keybindings: { matches: () => false },
 		settingsManager: { getDoubleEscapeAction: () => "none" },
 		defaultEditor: editor,
@@ -132,6 +140,8 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 		showError(message) {
 			throw new Error(message);
 		},
+		tuiInputSubscriptions: new Set(),
+		addTuiInputListener: InteractiveMode.prototype.addTuiInputListener,
 	};
 	setupKeyHandlers.call(host);
 	return host;

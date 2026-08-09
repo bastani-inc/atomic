@@ -23,6 +23,7 @@ export class InteractiveThemeController {
 	private terminalTheme: TerminalTheme = detectTerminalBackgroundFromEnv().theme;
 	private activeThemeName: string | undefined;
 	private autoSyncEnabled = false;
+	private terminalColorSchemeUnsubscribe: (() => void) | undefined;
 
 	constructor(ui: TUI, settingsManager: SettingsManager, showError: (message: string) => void, onChanged: () => void) {
 		this.ui = ui;
@@ -31,7 +32,7 @@ export class InteractiveThemeController {
 		this.onChanged = onChanged;
 		this.activeThemeName = resolveThemeSetting(this.settingsManager.getThemeSetting(), this.terminalTheme);
 		initTheme(this.activeThemeName, true);
-		this.ui.onTerminalColorSchemeChange((terminalTheme) => this.applyTerminalTheme(terminalTheme));
+		this.bindTerminalColorSchemeListener();
 	}
 
 	async applyFromSettings(): Promise<void> {
@@ -85,6 +86,12 @@ export class InteractiveThemeController {
 		this.setAutoSync(false);
 	}
 
+	rebindTui(): void {
+		this.terminalColorSchemeUnsubscribe?.();
+		this.bindTerminalColorSchemeListener();
+		this.ui.setTerminalColorSchemeNotifications(this.autoSyncEnabled);
+	}
+
 	getTerminalTheme(): TerminalTheme {
 		return this.terminalTheme;
 	}
@@ -108,6 +115,12 @@ export class InteractiveThemeController {
 		if (this.autoSyncEnabled === enabled) return;
 		this.autoSyncEnabled = enabled;
 		this.ui.setTerminalColorSchemeNotifications(enabled);
+	}
+
+	private bindTerminalColorSchemeListener(): void {
+		this.terminalColorSchemeUnsubscribe = this.ui.onTerminalColorSchemeChange((terminalTheme) =>
+			this.applyTerminalTheme(terminalTheme),
+		);
 	}
 
 	private applyTerminalTheme(terminalTheme: TerminalTheme): void {

@@ -1,3 +1,4 @@
+import type { TuiMode } from "@earendil-works/pi-tui";
 import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
@@ -35,6 +36,8 @@ interface SettingsManagerUiAccessors {
 	setWarnings(warnings: WarningSettings): void;
 	getCodexFastModeSettings(): { chat: boolean; workflow: boolean };
 	setCodexFastModeSettings(settings: Partial<{ chat: boolean; workflow: boolean }>): void;
+	getTuiMode(): TuiMode;
+	setTuiMode(mode: TuiMode): void;
 }
 
 declare module "./settings-manager-core.ts" {
@@ -178,6 +181,17 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.showHardwareCursor = enabled;
 		state.markModified("showHardwareCursor");
+		state.save();
+	},
+
+	getTuiMode() {
+		return settingsInternals(this).settings.tuiMode === "fullscreen" ? "fullscreen" : "regular";
+	},
+
+	setTuiMode(mode) {
+		const state = settingsInternals(this);
+		state.globalSettings.tuiMode = mode;
+		state.markModified("tuiMode");
 		state.save();
 	},
 

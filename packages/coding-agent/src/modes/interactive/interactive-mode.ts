@@ -36,5 +36,6 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 
 export { formatResumeCommand, isApiKeyLoginProvider } from "./interactive-mode-helpers.ts";
 export type { InteractiveModeOptions } from "./interactive-mode-types.ts";
+export { createInteractiveTui, createInteractiveTuiReference, type InteractiveTui } from "./interactive-tui.ts";
 
 export class InteractiveMode extends InteractiveModeBase {}

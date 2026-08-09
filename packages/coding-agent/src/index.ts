@@ -230,7 +230,7 @@ export {
 	WORKFLOW_SESSION_METADATA_ENV,
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
-export type { DefaultProjectTrust } from "./core/settings-manager.ts";
+export type { DefaultProjectTrust, TuiMode } from "./core/settings-manager.ts";
 export {
 	type CompactionSettings,
 	type ImageSettings,
