@@ -316,5 +316,31 @@ Content`,
 			expect(result.workflows.some((r) => isEnabled(r, join("workflow", "singular.ts")))).toBe(true);
 			expect(result.workflows.every((r) => r.metadata.origin === "package")).toBe(true);
 		});
+
+		it("ignores malformed manifest resource fields without dropping valid fields", async () => {
+			const packageDir = join(tempDir, "malformed-manifest-pkg");
+			const skillPath = join(packageDir, "skills", "ignored", "SKILL.md");
+			const promptPath = join(packageDir, "prompts", "valid.md");
+			mkdirSync(join(packageDir, "skills", "ignored"), { recursive: true });
+			mkdirSync(join(packageDir, "prompts"), { recursive: true });
+			writeFileSync(skillPath, "---\nname: ignored\ndescription: Invalid manifest entry\n---\n");
+			writeFileSync(promptPath, "Valid prompt");
+			writeFileSync(
+				join(packageDir, "package.json"),
+				JSON.stringify({
+					name: "malformed-manifest-pkg",
+					atomic: {
+						skills: "./skills",
+						prompts: ["./prompts"],
+					},
+				}),
+			);
+			settingsManager.setPackages([packageDir]);
+
+			const result = await packageManager.resolve();
+
+			expect(result.skills.some((resource) => resource.path === skillPath)).toBe(false);
+			expect(result.prompts.some((resource) => resource.path === promptPath)).toBe(true);
+		});
 	});
 });

@@ -3,16 +3,27 @@ import { join } from "node:path";
 import { APP_NAME } from "../config.ts";
 import type { PiManifest, ResourceType } from "./package-manager-types.ts";
 
-export function getManifestFromPackageJson(pkg: Record<string, unknown>): PiManifest | null {
-	const appManifest = pkg[APP_NAME];
-	if (appManifest && typeof appManifest === "object" && !Array.isArray(appManifest)) {
-		return appManifest as PiManifest;
+const MANIFEST_ENTRY_FIELDS = ["extensions", "skills", "prompts", "themes", "workflows", "workflow"] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizeManifest(value: unknown): PiManifest | null {
+	if (!isRecord(value)) return null;
+	const manifest: PiManifest = {};
+	for (const field of MANIFEST_ENTRY_FIELDS) {
+		const entries = value[field];
+		if (Array.isArray(entries) && entries.every((entry): entry is string => typeof entry === "string")) {
+			manifest[field] = entries;
+		}
 	}
-	const legacyManifest = pkg.pi;
-	if (legacyManifest && typeof legacyManifest === "object" && !Array.isArray(legacyManifest)) {
-		return legacyManifest as PiManifest;
-	}
-	return null;
+	return manifest;
+}
+
+export function getManifestFromPackageJson(pkg: unknown): PiManifest | null {
+	if (!isRecord(pkg)) return null;
+	return sanitizeManifest(pkg[APP_NAME]) ?? sanitizeManifest(pkg.pi);
 }
 
 export function readPiManifestFile(packageJsonPath: string): PiManifest | null {

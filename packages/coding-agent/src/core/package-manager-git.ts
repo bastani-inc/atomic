@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { getProjectConfigDirs } from "../config.ts";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { APP_NAME, getProjectConfigDirs } from "../config.ts";
 import type { GitSource } from "../utils/git.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";
 import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
@@ -73,6 +73,51 @@ export function getExistingGitInstallPath(
 	return undefined;
 }
 
+function getGitUpdateMarkerPath(targetDir: string): string {
+	return join(dirname(targetDir), `.${basename(targetDir)}.${APP_NAME}-update-incomplete`);
+}
+
+function hasMissingGitDependencies(targetDir: string): boolean {
+	const packageJsonPath = join(targetDir, "package.json");
+	if (!existsSync(packageJsonPath)) return false;
+	try {
+		const manifest = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { dependencies?: unknown };
+		if (!manifest.dependencies || typeof manifest.dependencies !== "object" || Array.isArray(manifest.dependencies)) {
+			return false;
+		}
+		const nodeModulesDir = resolve(targetDir, "node_modules");
+		return Object.keys(manifest.dependencies).some((name) => {
+			const dependencyPath = resolve(nodeModulesDir, name);
+			if (!dependencyPath.startsWith(`${nodeModulesDir}${sep}`)) return false;
+			return !existsSync(dependencyPath);
+		});
+	} catch {
+		return false;
+	}
+}
+
+async function repairMissingGitDependencies(context: PackageManagerContext, targetDir: string): Promise<void> {
+	if (!hasMissingGitDependencies(targetDir)) return;
+	await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
+}
+
+async function cleanAndInstallGitDependencies(
+	context: PackageManagerContext,
+	targetDir: string,
+	markerPath: string,
+): Promise<void> {
+	try {
+		await runGitProcess(context, "git", ["clean", "-fdx"], { cwd: targetDir });
+	} catch (error) {
+		await repairMissingGitDependencies(context, targetDir).catch(() => {});
+		throw error;
+	}
+	if (existsSync(join(targetDir, "package.json"))) {
+		await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
+	}
+	rmSync(markerPath, { force: true });
+}
+
 export async function installGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
 	const targetDir = getGitInstallPath(context, source, scope);
@@ -92,6 +137,7 @@ export async function installGit(context: PackageManagerContext, source: GitSour
 		ensureGitIgnore(gitRoot);
 	}
 	mkdirSync(dirname(targetDir), { recursive: true });
+	rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
 
 	// Defense-in-depth: the clone URL is already parsed/validated upstream, but
 	// assert it contains only shell-safe characters immediately before it reaches
@@ -155,17 +201,19 @@ async function ensureGitRef(
 		cwd: targetDir,
 		timeoutMs: NETWORK_TIMEOUT_MS,
 	});
+	const markerPath = getGitUpdateMarkerPath(targetDir);
 	if (localHead.trim() === targetHead.trim()) {
+		if (existsSync(markerPath)) {
+			await cleanAndInstallGitDependencies(context, targetDir, markerPath);
+		} else {
+			await repairMissingGitDependencies(context, targetDir);
+		}
 		return;
 	}
 
+	writeFileSync(markerPath, "", "utf-8");
 	await runGitProcess(context, "git", ["reset", "--hard", commitRef], { cwd: targetDir });
-	await runGitProcess(context, "git", ["clean", "-fdx"], { cwd: targetDir });
-
-	const packageJsonPath = join(targetDir, "package.json");
-	if (existsSync(packageJsonPath)) {
-		await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
-	}
+	await cleanAndInstallGitDependencies(context, targetDir, markerPath);
 }
 
 export async function refreshTemporaryGitSource(
@@ -185,8 +233,8 @@ export async function refreshTemporaryGitSource(
 
 export async function removeGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const targetDir = getGitInstallPath(context, source, scope);
-	if (!existsSync(targetDir)) return;
 	rmSync(targetDir, { recursive: true, force: true });
+	rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
 	pruneEmptyGitParents(targetDir, getGitInstallRoot(context, scope));
 }
 

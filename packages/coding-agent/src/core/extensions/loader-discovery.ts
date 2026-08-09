@@ -1,39 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { APP_NAME, CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import type { EventBus } from "../event-bus.ts";
+import { readPiManifestFile } from "../package-manager-manifest.ts";
 import { loadExtensions } from "./loader-core.ts";
 import type { LoadExtensionsResult } from "./types.ts";
-
-interface PiManifest {
-	extensions?: string[];
-	themes?: string[];
-	skills?: string[];
-	prompts?: string[];
-}
-
-function manifestFromPackageJson(pkg: Record<string, unknown>): PiManifest | null {
-	const appManifest = pkg[APP_NAME];
-	if (appManifest && typeof appManifest === "object" && !Array.isArray(appManifest)) {
-		return appManifest as PiManifest;
-	}
-	const legacyManifest = pkg.pi;
-	if (legacyManifest && typeof legacyManifest === "object" && !Array.isArray(legacyManifest)) {
-		return legacyManifest as PiManifest;
-	}
-	return null;
-}
-
-function readPiManifest(packageJsonPath: string): PiManifest | null {
-	try {
-		const content = fs.readFileSync(packageJsonPath, "utf-8");
-		const pkg = JSON.parse(content) as Record<string, unknown>;
-		return manifestFromPackageJson(pkg);
-	} catch {
-		return null;
-	}
-}
 
 function isExtensionFile(name: string): boolean {
 	return name.endsWith(".ts") || name.endsWith(".js");
@@ -51,7 +23,7 @@ function isExtensionFile(name: string): boolean {
 function resolveExtensionEntries(dir: string): string[] | null {
 	const packageJsonPath = path.join(dir, "package.json");
 	if (fs.existsSync(packageJsonPath)) {
-		const manifest = readPiManifest(packageJsonPath);
+		const manifest = readPiManifestFile(packageJsonPath);
 		if (manifest?.extensions?.length) {
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {

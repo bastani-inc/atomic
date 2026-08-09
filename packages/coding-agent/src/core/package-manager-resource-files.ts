@@ -210,8 +210,7 @@ export async function resolveExtensionEntries(dir: string): Promise<string[] | n
 	const packageJsonPath = join(dir, "package.json");
 	if (await exists(packageJsonPath)) {
 		try {
-			const pkg = JSON.parse(await readFile(packageJsonPath, "utf-8")) as Record<string, unknown>;
-			const manifest = getManifestFromPackageJson(pkg);
+			const manifest = getManifestFromPackageJson(JSON.parse(await readFile(packageJsonPath, "utf-8")));
 			if (manifest?.extensions?.length) {
 				const entries: string[] = [];
 				for (const extPath of manifest.extensions) {
