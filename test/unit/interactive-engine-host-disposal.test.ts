@@ -49,6 +49,10 @@ test("interactive engine host attachment disposes every listener and its editor 
 			if (shortcutHandler === handler) shortcutHandler = undefined;
 		};
 	};
+	const tuiRendererLifecycle = {
+		isFullscreen: () => false,
+		onRendererReplaced: () => () => {},
+	};
 
 	for (let index = 0; index < 3; index++) {
 		const manager = new KeybindingsManager({ "app.tools.expand": "ctrl+x" });
@@ -56,6 +60,7 @@ test("interactive engine host attachment disposes every listener and its editor 
 			runtime as unknown as AgentSessionRuntime,
 			ui,
 			() => {},
+			tuiRendererLifecycle,
 			setShortcutHandler,
 			manager,
 		);

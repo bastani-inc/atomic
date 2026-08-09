@@ -27,7 +27,10 @@ import {
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
-import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
+import {
+	RemoteComponentController,
+	type TuiRendererLifecycle,
+} from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { sleep } from "../helpers/runtime.js";
 import { createStore, deriveGraphTheme, makeHandle, StageChatView, setupRun } from "./stage-chat-view-helpers.ts";
 
@@ -38,6 +41,10 @@ interface Bridge {
 	readonly childCommands: InteractiveEngineCommand[];
 	hostComponent: HostComponent | undefined;
 }
+const regularTuiRendererLifecycle: TuiRendererLifecycle = {
+	isFullscreen: () => false,
+	onRendererReplaced: () => () => {},
+};
 
 function makeBridge(): Bridge {
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
@@ -75,7 +82,7 @@ function makeBridge(): Bridge {
 			}),
 	} as unknown as ExtensionUIContext;
 
-	new RemoteComponentController(runtime, ui);
+	new RemoteComponentController(runtime, ui, regularTuiRendererLifecycle);
 	return Object.assign(bridge, { child });
 }
 

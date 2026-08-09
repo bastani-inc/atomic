@@ -24,7 +24,10 @@ import type {
 	InteractiveEngineCommand,
 	InteractiveEngineMessage,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
-import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
+import {
+	RemoteComponentController,
+	type TuiRendererLifecycle,
+} from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { RemoteFrameWidthClamp } from "../../packages/coding-agent/src/modes/interactive-engine/remote-frame-clamp.ts";
 import {
 	RemoteCustomMessageComponent,
@@ -33,6 +36,10 @@ import {
 
 const WIDE = 112;
 const NARROW = 83;
+const regularTuiRendererLifecycle: TuiRendererLifecycle = {
+	isFullscreen: () => false,
+	onRendererReplaced: () => () => {},
+};
 
 interface FakeRuntime {
 	runtime: IsolatedInteractiveRuntime;
@@ -184,7 +191,7 @@ test("remote custom-UI widget frames are clamped after a shrink", () => {
 		},
 		custom: () => new Promise(() => {}),
 	} as unknown as ExtensionUIContext;
-	new RemoteComponentController(fake.runtime, ui);
+	new RemoteComponentController(fake.runtime, ui, regularTuiRendererLifecycle);
 
 	fake.emit({
 		type: "engine_custom_open",

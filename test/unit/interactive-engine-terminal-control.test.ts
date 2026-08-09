@@ -43,6 +43,7 @@ import {
 import { sleep } from "../helpers/runtime.js";
 
 const WHEEL_UP = "\x1b[<64;10;10M";
+const isRegularTui = (): boolean => false;
 
 /** The child's RemoteTerminal augments pi-tui's Terminal with these setters. */
 interface RemoteTerm {
@@ -260,7 +261,7 @@ describe("engine_custom_terminal protocol", () => {
 
 describe("TerminalModeController", () => {
 	test("buffers controls received before mount and flushes on mount", () => {
-		const controller = new TerminalModeController();
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		controller.applyControl("c1", { kind: "mouse-scroll-tracking", enabled: true });
 		assert.equal(writes.length, 0);
@@ -273,7 +274,7 @@ describe("TerminalModeController", () => {
 	});
 
 	test("resets only the modes a component turned on when it unmounts", () => {
-		const controller = new TerminalModeController();
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		controller.onMount("c1", {
 			write: (d: string) => {
@@ -316,8 +317,8 @@ describe("TerminalModeController", () => {
 		]);
 	});
 
-	test("keeps a mode enabled until its final regular owner unmounts", () => {
-		const controller = new TerminalModeController();
+	test("writes a shared mode only when its regular-owner aggregate changes", () => {
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		const terminal = { write: (data: string) => writes.push(data) };
 		controller.onMount("first", terminal);
@@ -327,16 +328,11 @@ describe("TerminalModeController", () => {
 		controller.onUnmount("first");
 		controller.onUnmount("second");
 
-		assert.deepEqual(writes, [
-			HOST_MOUSE_SCROLL_TRACKING_ON,
-			HOST_MOUSE_SCROLL_TRACKING_ON,
-			HOST_MOUSE_SCROLL_TRACKING_ON,
-			HOST_MOUSE_SCROLL_TRACKING_OFF,
-		]);
+		assert.deepEqual(writes, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
 	});
 
 	test("ignores default-restoring controls from unmounted/stale components", () => {
-		const controller = new TerminalModeController();
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		// No state yet; a stray "disable" must not create or apply anything.
 		controller.applyControl("stale", { kind: "mouse-scroll-tracking", enabled: false });
@@ -350,7 +346,7 @@ describe("TerminalModeController", () => {
 	});
 
 	test("resetAll restores every active mode and clears state", () => {
-		const controller = new TerminalModeController();
+		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		controller.onMount("c1", {
 			write: (d: string) => {
