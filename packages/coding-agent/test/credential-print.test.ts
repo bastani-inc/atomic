@@ -15,17 +15,20 @@ import { ModelsError } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Args } from "../src/cli/args.ts";
 import {
+	AuthCommandError,
+	isAuthCommandHelp,
+	parseAuthCommand,
+	printAuthCommandHelp,
+} from "../src/cli/auth-command.ts";
+import {
 	CredentialPrintError,
 	type CredentialPrintErrorCode,
 	classifyOAuthFailure,
 	DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS,
 	EXIT_CODES,
 	emitCredential,
-	isCredentialPrintHelp,
 	OAUTH_EXPIRES_TOO_SOON_PHRASE,
 	OAUTH_REFRESH_FAILED_PHRASE,
-	parseCredentialPrintCommand,
-	printCredentialPrintHelp,
 	resolveCredentialForPrint,
 	Secret,
 	STDOUT_EMPTY_ON_EXIT,
@@ -379,7 +382,9 @@ describe("emitCredential", () => {
 		}> = [
 			{
 				code: "Usage",
-				run: async () => parseCredentialPrintCommand(["auth", "print-everything"]),
+				run: async () => {
+					throw new CredentialPrintError("Usage", "Invalid auth command");
+				},
 			},
 			{
 				code: "NoCredentialConfigured",
@@ -529,7 +534,7 @@ describe("emitCredential", () => {
 			lines.push(text);
 		};
 		try {
-			printCredentialPrintHelp();
+			printAuthCommandHelp();
 		} finally {
 			console.error = originalError;
 		}
@@ -620,45 +625,43 @@ describe("emitCredential", () => {
 describe("auth command parsing", () => {
 	it("treats bare auth and its help flags as help", () => {
 		for (const argv of [["auth"], ["auth", "help"], ["auth", "--help"], ["auth", "-h"]]) {
-			expect(isCredentialPrintHelp(argv)).toBe(true);
+			expect(isAuthCommandHelp(argv)).toBe(true);
 		}
-		expect(isCredentialPrintHelp(["auth", "print-api-key"])).toBe(false);
-		expect(isCredentialPrintHelp(["config"])).toBe(false);
+		expect(isAuthCommandHelp(["auth", "check", "--help"])).toBe(true);
+		expect(isAuthCommandHelp(["auth", "print-api-key"])).toBe(false);
+		expect(isAuthCommandHelp(["auth", "print-api-key", "--help"])).toBe(false);
+		expect(isAuthCommandHelp(["config"])).toBe(false);
 	});
 
 	it("ignores argv it does not own", () => {
-		expect(parseCredentialPrintCommand(["--model", "gpt-5.5"])).toBeUndefined();
-		expect(parseCredentialPrintCommand([])).toBeUndefined();
+		expect(parseAuthCommand(["--model", "gpt-5.5"])).toBeUndefined();
+		expect(parseAuthCommand([])).toBeUndefined();
 	});
 
-	it("names both subcommands when the auth subcommand is unknown", () => {
+	it("names every auth subcommand when the command is unknown", () => {
 		try {
-			parseCredentialPrintCommand(["auth", "print-everything"]);
+			parseAuthCommand(["auth", "print-everything"]);
 			expect.unreachable("expected a usage error");
 		} catch (error) {
-			expect(error).toBeInstanceOf(CredentialPrintError);
-			const failure = error as CredentialPrintError;
-			expect(failure.exitCode).toBe(1);
+			expect(error).toBeInstanceOf(AuthCommandError);
+			const failure = error as AuthCommandError;
 			expect(failure.message).toContain("atomic auth print-api-key");
 			expect(failure.message).toContain("atomic auth print-bearer-token");
+			expect(failure.message).toContain("atomic auth check");
 			// Branding seam: upstream's help says `pi`.
 			expect(failure.message).not.toContain("pi auth");
 		}
 	});
 
 	it("rejects --min-expiry for print-api-key rather than ignoring it", () => {
-		try {
-			parseCredentialPrintCommand(["auth", "print-api-key", "--model", "gpt-5.5", "--min-expiry", "30m"]);
-			expect.unreachable("expected a usage error");
-		} catch (error) {
-			expect((error as CredentialPrintError).exitCode).toBe(1);
-			expect((error as Error).message).toContain("only supported by print-bearer-token");
-		}
+		expect(() => parseAuthCommand(["auth", "print-api-key", "--model", "gpt-5.5", "--min-expiry", "30m"])).toThrow(
+			"only supported by print-bearer-token",
+		);
 	});
 
 	it("accepts ms, s, m, and h durations and rejects anything else", () => {
 		const parse = (value: string) =>
-			parseCredentialPrintCommand(["auth", "print-bearer-token", "--min-expiry", value])?.minExpiryMs;
+			parseAuthCommand(["auth", "print-bearer-token", "--min-expiry", value])?.minExpiryMs;
 
 		expect(parse("500ms")).toBe(500);
 		expect(parse("45s")).toBe(45_000);
@@ -668,11 +671,11 @@ describe("auth command parsing", () => {
 		for (const bad of ["30", "m", "-5m", "30 minutes", "1d"]) {
 			expect(() => parse(bad)).toThrow("duration such as 30m or 1h");
 		}
-		expect(() => parseCredentialPrintCommand(["auth", "print-bearer-token", "--min-expiry"])).toThrow();
+		expect(() => parseAuthCommand(["auth", "print-bearer-token", "--min-expiry"])).toThrow();
 	});
 
 	it("keeps the remaining flags for the ordinary parser", () => {
-		const command = parseCredentialPrintCommand([
+		const command = parseAuthCommand([
 			"auth",
 			"print-bearer-token",
 			"--model",
@@ -686,6 +689,8 @@ describe("auth command parsing", () => {
 		expect(command).toEqual({
 			kind: "bearer_token",
 			args: ["--model", "gpt-5.5", "--provider", "openai-codex"],
+			json: false,
+			noRefresh: false,
 			minExpiryMs: 3_600_000,
 		});
 	});
@@ -1156,8 +1161,107 @@ describe("atomic auth on the wire", () => {
 			);
 
 			expect(result.code).toBe(0);
+
 			expect(result.stdout).toBe("sk-ant-print-me\n");
 			expect(result.stderr).toBe("");
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"reports readiness without exposing a configured credential",
+		async () => {
+			const key = "sk-auth-check-must-not-print";
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
+
+			const result = await runCliProcess(["auth", "check", "--provider", "anthropic"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toBe("ready\n");
+			expect(result.stdout).not.toContain(key);
+			expect(result.stderr).not.toContain(key);
+
+			const json = await runCliProcess(["auth", "check", "--provider", "anthropic", "--json"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+			expect(json.code).toBe(0);
+			expect(JSON.parse(json.stdout)).toEqual({ status: "ready", provider: "anthropic", authType: "api_key" });
+			expect(json.stdout).not.toContain(key);
+			expect(json.stderr).not.toContain(key);
+
+			const model = await runCliProcess(["auth", "check", "--model", "claude-opus-4-5", "--no-refresh", "--json"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+			expect(model.code).toBe(0);
+			expect(JSON.parse(model.stdout)).toEqual({ status: "ready", provider: "anthropic", authType: "api_key" });
+			expect(model.stdout).not.toContain(key);
+			expect(model.stderr).not.toContain(key);
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"reports expired OAuth credentials as not ready without emitting or rewriting them",
+		async () => {
+			const access = "expired-auth-check-access";
+			const refresh = "expired-auth-check-refresh";
+			const agentDir = agentDirWith({
+				anthropic: { type: "oauth", access, refresh, expires: 1 },
+			});
+			const authPath = join(agentDir, "auth.json");
+			const before = readFileSync(authPath, "utf8");
+			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+
+			const noRefresh = await run(["auth", "check", "--provider", "anthropic", "--no-refresh", "--json"]);
+			expect(noRefresh.code).toBe(1);
+			expect(JSON.parse(noRefresh.stdout)).toEqual({
+				status: "not_ready",
+				provider: "anthropic",
+				reason: "credential_expired",
+			});
+
+			const refreshed = await run(["auth", "check", "--provider", "anthropic", "--json"]);
+			expect(refreshed.code).toBe(1);
+			expect(JSON.parse(refreshed.stdout)).toEqual({
+				status: "not_ready",
+				provider: "anthropic",
+				reason: "credential_not_available",
+			});
+			for (const result of [noRefresh, refreshed]) {
+				expect(result.stdout).not.toContain(access);
+				expect(result.stdout).not.toContain(refresh);
+				expect(result.stderr).not.toContain(access);
+				expect(result.stderr).not.toContain(refresh);
+			}
+			expect(readFileSync(authPath, "utf8")).toBe(before);
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"distinguishes unavailable providers from invalid readiness commands",
+		async () => {
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-auth-check-status" } });
+			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+
+			const unavailable = await run(["auth", "check", "--provider", "not-installed"]);
+			expect(unavailable.code).toBe(1);
+			expect(unavailable.stdout).toBe("not_ready\n");
+
+			const unknownModel = await run(["auth", "check", "--model", "does-not-exist-auth-check"]);
+			expect(unknownModel.stderr).toContain('Model "does-not-exist-auth-check" not found.');
+			expect(unknownModel.code).toBe(2);
+			expect(unknownModel.stdout).toBe("invalid\n");
+
+			const unknownOption = await run(["auth", "check", "--provider", "anthropic", "--bogus"]);
+			expect(unknownOption.code).toBe(2);
+			expect(unknownOption.stdout).toBe("");
+			expect(unknownOption.stderr).toContain('Unknown option --bogus for "auth check".');
 		},
 		REAL_CLI_SUITE_TIMEOUT_MS,
 	);
@@ -1215,6 +1319,9 @@ describe("atomic auth on the wire", () => {
 			]);
 			expect(minExpiryOnApiKey.code).toBe(1);
 
+			const helpFlag = await run(["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--help"]);
+			expect(helpFlag.code).toBe(1);
+
 			const noCredential = await run(["auth", "print-api-key", "--model", "not-a-real-model"]);
 			expect(noCredential.code).toBe(2);
 
@@ -1228,7 +1335,7 @@ describe("atomic auth on the wire", () => {
 			]);
 			expect(wrongKind.code).toBe(4);
 
-			for (const result of [unknownSubcommand, missingModel, minExpiryOnApiKey, noCredential, wrongKind]) {
+			for (const result of [unknownSubcommand, missingModel, minExpiryOnApiKey, helpFlag, noCredential, wrongKind]) {
 				expect(result.stdout).toBe("");
 				expect(result.stderr).not.toContain("sk-ant-print-me");
 			}
@@ -1325,7 +1432,7 @@ describe("atomic auth on the wire", () => {
 				},
 			});
 			for (const spelling of [["--min-expiry", "30m"], ["--min-expiry=30m"]]) {
-				const command = parseCredentialPrintCommand(["auth", "print-bearer-token", ...spelling]);
+				const command = parseAuthCommand(["auth", "print-bearer-token", ...spelling]);
 				await resolveCredentialForPrint(
 					args({ model: "claude-sonnet-4-5", provider: "anthropic" }),
 					runtime,
@@ -1513,6 +1620,7 @@ describe("credential egress chokepoint", () => {
 	 */
 	const RAW_STDOUT_EGRESS = [
 		`cli/credential-print.ts: writeRawStdoutOnce(payload)`,
+		`main.ts: writeRawStdout(\`\${output}\\n\`)`,
 		`modes/interactive-engine/engine-child-liveness.ts: writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity }))`,
 		`modes/interactive/external-editor.ts: process.stdout.write( \`Launching external editor: \${request.command}\\n\${APP_NAME} will resume when the editor exits.\\n\`, )`,
 		`modes/interactive/interactive-process-lifecycle.ts: process.stdout.write(\`\${chalk.dim("To resume this session:")} \${resumeCommand}\\n\`)`,

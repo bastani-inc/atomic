@@ -177,15 +177,20 @@ See [Atomic Packages](/packages) for package sources and security notes.
 ### Credential Commands
 
 ```bash
+atomic auth check [--provider <p>] [--model <model>] [--json] [--no-refresh]
 atomic auth print-api-key --model <model> [--provider <p>]
 atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
 ```
 
-Print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+`atomic auth check` verifies the effective credential a provider or model would use before a session starts. It requires at least one of `--provider` or `--model`, prints `ready`, `not_ready`, or `invalid` to stdout, and exits `0`, `1`, or `2` for those states. `--json` adds the resolved provider, credential kind, and any reason. A check never emits a credential.
 
-`--model` is required. There is no ambient "current model", so the command cannot emit a credential you did not name. When several configured providers offer the model, pass `--provider` to choose one. `--provider` and `--model` are the only options either subcommand accepts: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
+Checks refresh expired OAuth credentials by default, using Atomic's normal locked `auth.json` update path. Pass `--no-refresh` to read credentials without creating, locking, or mutating `auth.json`; this is useful for a pure readiness probe. It still honors Atomic's primary and legacy credential paths and the provider/runtime configuration that normally resolves authentication.
 
-`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. Any other subcommand exits `1` and names the two valid ones. Help never uses stdout, so stdout from this command family is a credential or empty.
+The credential commands print one configured credential for an external client — a proxy, a script, or another tool that needs the same key Atomic already holds. The credential goes to **stdout and nothing else**; warnings, provider selection, refresh notices, and help all go to stderr, so `KEY=$(atomic auth print-api-key --model gpt-5.5)` can never capture a diagnostic.
+
+`--model` is required for credential export. There is no ambient "current model", so the command cannot emit a credential you did not name. When several configured providers offer the model, pass `--provider` to choose one. `--provider` and `--model` are the only options either export subcommand accepts: any other flag — including `--export`, `--session-dir`, `--print`, and `--help` — is a usage error rather than a flag this path happens to ignore.
+
+`atomic auth` on its own — and `atomic auth help`, `--help`, or `-h` — prints this usage on stderr and exits `0`. Any other subcommand exits `1` and names all three valid commands. Help never uses stdout, so stdout from a credential export is a credential or empty.
 
 `print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error — an API key has no expiry. A failed refresh leaves your stored credential untouched.
 

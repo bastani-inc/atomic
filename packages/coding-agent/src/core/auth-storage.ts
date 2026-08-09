@@ -3,7 +3,7 @@
  * Provider auth orchestration belongs to ModelRuntime and pi-ai Models.
  */
 
-import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
+import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir } from "../config.ts";
 import {
@@ -11,7 +11,7 @@ import {
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
 } from "./auth-storage-backends.ts";
-import { resolveConfigValue } from "./resolve-config-value.ts";
+import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
 
 export {
 	type AuthStorageBackend,
@@ -120,6 +120,99 @@ export class AuthStorage implements CredentialStore {
 	/** List credential metadata without resolving configured key values. */
 	async list(): Promise<readonly CredentialInfo[]> {
 		return Object.entries(this.data).map(([providerId, credential]) => ({ providerId, type: credential.type }));
+	}
+}
+
+/**
+ * Read credentials without acquiring a lock, creating auth.json, or allowing a
+ * refresh to persist a mutation. `auth check --no-refresh` uses this store.
+ */
+export class ReadOnlyAuthStorage implements CredentialStore {
+	private data: AuthStorageData | undefined;
+	private readonly storage: FileAuthStorageBackend;
+
+	constructor(authPath?: string | string[]) {
+		const paths =
+			authPath === undefined ? getAgentConfigPaths("auth.json") : Array.isArray(authPath) ? authPath : [authPath];
+		this.storage = new FileAuthStorageBackend(paths[0] ?? join(getAgentDir(), "auth.json"), paths);
+	}
+
+	private load(): AuthStorageData {
+		if (this.data !== undefined) return this.data;
+
+		let parsed: unknown;
+		try {
+			const content = this.storage.read();
+			parsed = content === undefined ? {} : JSON.parse(content);
+		} catch (error) {
+			throw new Error(`Failed to read auth.json: ${error instanceof Error ? error.message : String(error)}`);
+		}
+
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			throw new Error("Invalid auth.json: expected an object");
+		}
+		for (const [providerId, credential] of Object.entries(parsed)) {
+			if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
+				throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+			}
+			const value = credential as Record<string, unknown>;
+			if (value.type === "api_key") {
+				const env = value.env;
+				const validKey = value.key === undefined || typeof value.key === "string";
+				const validEnv =
+					env === undefined ||
+					(typeof env === "object" &&
+						env !== null &&
+						!Array.isArray(env) &&
+						Object.values(env).every((entry) => typeof entry === "string"));
+				if (validKey && validEnv) continue;
+			} else if (
+				value.type === "oauth" &&
+				typeof value.access === "string" &&
+				typeof value.refresh === "string" &&
+				typeof value.expires === "number" &&
+				Number.isFinite(value.expires)
+			) {
+				continue;
+			}
+			throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+		}
+
+		this.data = parsed as AuthStorageData;
+		return this.data;
+	}
+
+	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
+		options?.signal?.throwIfAborted();
+		const credential = this.load()[providerId];
+		options?.signal?.throwIfAborted();
+		if (!credential) return undefined;
+		if (credential.type !== "api_key" || !credential.key || isCommandConfigValue(credential.key)) {
+			return structuredClone(credential);
+		}
+		return { ...credential, key: resolveConfigValue(credential.key, credential.env) };
+	}
+
+	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+		options?.signal?.throwIfAborted();
+		const credentials = Object.entries(this.load()).map(([providerId, credential]) => ({
+			providerId,
+			type: credential.type,
+		}));
+		options?.signal?.throwIfAborted();
+		return credentials;
+	}
+
+	async modify(
+		_providerId: string,
+		_fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+		_options?: AuthOperationOptions,
+	): Promise<Credential | undefined> {
+		throw new Error("Read-only credential storage cannot modify auth.json");
+	}
+
+	async delete(_providerId: string, _options?: AuthOperationOptions): Promise<void> {
+		throw new Error("Read-only credential storage cannot modify auth.json");
 	}
 }
 

@@ -259,7 +259,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} update [source|self|${APP_NAME}] [--all]   Update ${APP_NAME} (use --all for ${APP_NAME} and extensions)
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config [-l]               Open resource TUI (Tab switches global/project scope)
-  ${APP_NAME} auth <command>            Print a configured credential for an external client
+  ${APP_NAME} auth <command>            Print credentials or check provider readiness
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth
 
 ${chalk.bold("Options:")}
@@ -310,6 +310,9 @@ Extensions can register additional flags (e.g., --plan from plan-mode extension)
 ${chalk.bold("Examples:")}
   # Print a provider API key for an external client
   ${APP_NAME} auth print-api-key --model gpt-5.5 --provider openai
+
+  # Check configured provider readiness before starting a session
+  ${APP_NAME} auth check --provider openai
 
   # Print an OAuth bearer token, refreshing it when under the minimum expiry
   ${APP_NAME} auth print-bearer-token --model gpt-5.5 --provider openai-codex --min-expiry 30m

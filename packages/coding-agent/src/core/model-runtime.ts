@@ -141,7 +141,9 @@ export class ModelRuntime implements Models {
 			? setTimeout(() => controller.abort(), options.modelRefreshTimeoutMs ?? 15_000)
 			: undefined;
 		try {
-			await runtime.refresh({ allowNetwork: refreshFromNetwork, signal: controller?.signal });
+			if (options.refreshOnCreate !== false) {
+				await runtime.refresh({ allowNetwork: refreshFromNetwork, signal: controller?.signal });
+			}
 		} finally {
 			if (timeout) clearTimeout(timeout);
 		}

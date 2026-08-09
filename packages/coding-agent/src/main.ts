@@ -1,12 +1,18 @@
 import chalk from "chalk";
-import { parseArgs, printHelp } from "./cli/args.ts";
+import { type Args, parseArgs, printHelp } from "./cli/args.ts";
+import { type AuthCheckResult, checkProviderAuth, createAuthCheckModelRuntime } from "./cli/auth-check.ts";
 import {
-	type CredentialPrintCommand,
-	CredentialPrintError,
+	type AuthCommand,
+	AuthCommandError,
+	getAuthCommandName,
+	getAuthCommandUsage,
+	isAuthCommandHelp,
+	parseAuthCommand,
+	printAuthCommandHelp,
+	validateAuthCheckArgs,
+} from "./cli/auth-command.ts";
+import {
 	emitCredential,
-	isCredentialPrintHelp,
-	parseCredentialPrintCommand,
-	printCredentialPrintHelp,
 	resolveCredentialForPrint,
 	toCredentialPrintError,
 	validateCredentialPrintArgs,
@@ -32,12 +38,13 @@ import {
 	createAgentSessionServices,
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
+import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
-import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
+import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { SessionManager } from "./core/session-manager.ts";
@@ -97,34 +104,53 @@ export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
 
+function authCheckErrorMessage(error: unknown): string {
+	// Provider and credential-store errors can quote a live credential. Model
+	// resolution errors are made only from the named CLI values, so they remain
+	// actionable without letting provider-generated text reach stderr.
+	return error instanceof AuthCommandError ? error.message : "Failed to check provider readiness";
+}
+
 /**
- * `atomic auth …` — the credential-export door. Returns true when it owned the
- * argv, having already set `process.exitCode`.
- *
- * Stdout discipline is enforced here rather than trusted: `takeOverStdout()`
- * routes every ordinary write — including native `console.log` under Bun, which
- * bypasses a patched `process.stdout.write` — to stderr for the whole
- * resolution. This function never touches the real stdout itself: the credential
- * reaches it only through `emitCredential`, the single egress in `src`, so a
- * failing run cannot leave a partial line or a warning on the stream a caller is
- * capturing.
+ * `atomic auth …` owns provider-readiness checks and the credential-export
+ * door. Its stdout guard routes all ordinary writes to stderr while a command
+ * resolves. A readiness result reaches real stdout only as a status record;
+ * credential export remains limited to emitCredential's Secret egress.
  */
-async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
-	if (isCredentialPrintHelp(args)) {
-		printCredentialPrintHelp();
+async function runAuthCheckCommand(command: AuthCommand, parsed: Args): Promise<void> {
+	const requestedAuth = validateAuthCheckArgs(parsed);
+	let result: AuthCheckResult;
+	try {
+		const credentials = command.noRefresh ? new ReadOnlyAuthStorage() : AuthStorage.create();
+		const modelRuntime = await createAuthCheckModelRuntime(credentials);
+		result = await checkProviderAuth(parsed, modelRuntime, { refresh: !command.noRefresh, credentials });
+	} catch (error) {
+		console.error(chalk.red(`Error: ${authCheckErrorMessage(error)}`));
+		result = {
+			status: "invalid",
+			provider: requestedAuth.provider ?? requestedAuth.model!,
+			reason: "invalid_state",
+		};
+	}
+
+	const output = command.json ? JSON.stringify(result) : result.status;
+	writeRawStdout(`${output}\n`);
+	await flushRawStdout();
+	process.exitCode = result.status === "ready" ? 0 : result.status === "not_ready" ? 1 : 2;
+}
+async function runAuthCommand(args: string[]): Promise<boolean> {
+	if (isAuthCommandHelp(args)) {
+		printAuthCommandHelp();
 		return true;
 	}
 
-	let command: CredentialPrintCommand | undefined;
+	let command: AuthCommand | undefined;
 	try {
-		command = parseCredentialPrintCommand(args);
+		command = parseAuthCommand(args);
 	} catch (error) {
-		const failure =
-			error instanceof CredentialPrintError
-				? error
-				: new CredentialPrintError("Usage", "Failed to parse auth command");
-		console.error(chalk.red(`Error: ${failure.message}`));
-		process.exitCode = failure.exitCode;
+		const message = error instanceof AuthCommandError ? error.message : "Failed to parse auth command";
+		console.error(chalk.red(`Error: ${message}`));
+		process.exitCode = args[1] === "check" ? 2 : 1;
 		return true;
 	}
 	if (!command) return false;
@@ -132,11 +158,27 @@ async function runCredentialPrintCommand(args: string[]): Promise<boolean> {
 	takeOverStdout();
 	try {
 		const parsed = parseArgs(command.args);
-		if (parsed.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
-			for (const diagnostic of parsed.diagnostics) {
-				console.error(chalk.red(`Error: ${diagnostic.message}`));
+		if (parsed.unknownFlags.size > 0) {
+			const option = parsed.unknownFlags.keys().next().value;
+			console.error(chalk.red(`Unknown option --${option} for "${getAuthCommandName(command.kind)}".`));
+			console.error(chalk.dim(`Use "${getAuthCommandUsage(command.kind)}".`));
+			process.exitCode = command.kind === "check" ? 2 : 1;
+			return true;
+		}
+		const diagnostics = parsed.diagnostics.filter((diagnostic) => diagnostic.type === "error");
+		if (diagnostics.length > 0) {
+			for (const diagnostic of diagnostics) console.error(chalk.red(`Error: ${diagnostic.message}`));
+			process.exitCode = command.kind === "check" ? 2 : 1;
+			return true;
+		}
+
+		if (command.kind === "check") {
+			try {
+				await runAuthCheckCommand(command, parsed);
+			} catch (error) {
+				console.error(chalk.red(`Error: ${authCheckErrorMessage(error)}`));
+				process.exitCode = 2;
 			}
-			process.exitCode = 1;
 			return true;
 		}
 
@@ -193,7 +235,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	if (await handleConfigCommand(args, { extensionFactories })) {
 		return;
 	}
-	if (await runCredentialPrintCommand(args)) {
+	if (await runAuthCommand(args)) {
 		const exitCode = process.exitCode ?? 0;
 		await drainProcessStdio();
 		process.exit(exitCode);

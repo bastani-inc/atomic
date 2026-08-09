@@ -5,6 +5,7 @@ Atomic supports subscription-based providers via OAuth and API-key providers via
 ## Table of Contents
 
 - [Subscriptions](#subscriptions)
+- [Verify readiness before a session](#verify-readiness-before-a-session)
 - [API Keys](#api-keys)
 - [Auth File](#auth-file)
 - [Cloud Providers](#cloud-providers)
@@ -34,6 +35,12 @@ Use `/logout` to clear credentials. Logout immediately invalidates authenticatio
 ### Token Refresh
 
 A stored OAuth token is refreshed once fewer than **five minutes** of validity remain, rather than at expiry, so a long turn is not started on a credential that dies mid-request. The refresh runs inside the `auth.json` lock and re-checks the stored expiry after taking it, so concurrent sessions sharing one credential file — subagents, workflow stages, RPC children — refresh it once between them rather than once each, and a session that arrives after the rotation finds nothing to do. A token still outside the window is not touched.
+
+### Verify Readiness Before a Session
+
+Run `atomic auth check --provider <provider>` to verify the effective credential a provider would use without starting a session. You can pass `--model <model>` instead, including a `provider/model` ID, when that is the value your automation already has. The command prints `ready`, `not_ready`, or `invalid`; `--json` adds the resolved provider, credential type, and reason for a non-ready result.
+
+Checks refresh expired OAuth credentials by default through the ordinary locked `auth.json` path. Use `--no-refresh` for a read-only probe: it neither creates nor mutates an auth file and reads Atomic's primary `~/.atomic/agent/auth.json` plus legacy `~/.pi/agent/auth.json` paths with the normal precedence. Readiness output contains no credential material.
 
 ### OpenAI Codex
 

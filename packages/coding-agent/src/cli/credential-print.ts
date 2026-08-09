@@ -24,7 +24,6 @@
 import { inspect } from "node:util";
 import type { Api, AuthType, Model } from "@earendil-works/pi-ai";
 import { ModelsError } from "@earendil-works/pi-ai";
-import { APP_NAME } from "../config.ts";
 import { resolveCliModel } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import { flushRawStdout, RawStdoutWriteError, writeRawStdoutOnce } from "../core/output-guard.ts";
@@ -219,97 +218,6 @@ export function toCredentialPrintError(error: unknown): CredentialPrintError {
 		error instanceof Error ? error.message : "Failed to resolve credential",
 		{ cause: error },
 	);
-}
-
-export interface CredentialPrintCommand {
-	kind: CredentialPrintKind;
-	/** Remaining argv for the normal parser (`--model`, `--provider`). */
-	args: string[];
-	minExpiryMs?: number;
-}
-
-export function isCredentialPrintHelp(args: string[]): boolean {
-	return (
-		args[0] === "auth" && (args[1] === undefined || args[1] === "help" || args[1] === "--help" || args[1] === "-h")
-	);
-}
-
-export function printCredentialPrintHelp(): void {
-	// Branded through APP_NAME: Atomic's binary is `atomic`, and help output must
-	// never render upstream's `pi`.
-	console.error(`Usage:
-  ${APP_NAME} auth print-api-key --model <model> [--provider <provider>]
-  ${APP_NAME} auth print-bearer-token --model <model> [--provider <provider>] [--min-expiry <duration>]
-
-Prints one configured credential alone on stdout. Everything else — warnings,
-provider selection, refresh notices — goes to stderr, and stdout stays empty on
-every failure but exit 9, which reports that it could not be.
-
---model is required: there is no ambient "current model". Provider inference
-uses configured credentials; pass --provider to select one explicitly.
-
---min-expiry accepts ms, s, m, or h (for example 30m) and applies only to
-print-bearer-token, where it defaults to 30m. A token with less than that
-remaining is refreshed first.
-
-Exit codes:
-  0  credential written to stdout
-  1  usage error
-  2  no credential configured
-  3  provider ambiguous
-  4  credential kind unsupported for that provider
-  5  refresh failed (the stored credential is left untouched)
-  6  provider cannot mint a token that lives long enough
-  7  the provider's OAuth credential could not be used
-  8  the credential could not be written (nothing was emitted)
-  9  the credential was written only in part; stdout holds an unusable
-     fragment, which the caller must discard rather than use`);
-}
-
-function parseDuration(value: string | undefined): number {
-	const match = value ? /^(\d+)(ms|s|m|h)$/iu.exec(value) : undefined;
-	if (!match) {
-		throw new CredentialPrintError("Usage", "--min-expiry must use a duration such as 30m or 1h");
-	}
-	const unit = match[2].toLowerCase();
-	const scale = unit === "ms" ? 1 : unit === "s" ? 1_000 : unit === "m" ? 60_000 : 3_600_000;
-	return Number(match[1]) * scale;
-}
-
-/** Parse the `auth` command surface before normal startup. */
-export function parseCredentialPrintCommand(args: string[]): CredentialPrintCommand | undefined {
-	if (args[0] !== "auth") return undefined;
-
-	const kind: CredentialPrintKind | undefined =
-		args[1] === "print-api-key" ? "api_key" : args[1] === "print-bearer-token" ? "bearer_token" : undefined;
-	if (!kind) {
-		throw new CredentialPrintError(
-			"Usage",
-			`Unknown auth command "${args[1] ?? ""}". Use "${APP_NAME} auth print-api-key" or "${APP_NAME} auth print-bearer-token".`,
-		);
-	}
-
-	const INLINE_MIN_EXPIRY = "--min-expiry=";
-	const commandArgs: string[] = [];
-	let minExpiryMs: number | undefined;
-	for (let index = 2; index < args.length; index++) {
-		const arg = args[index];
-		const inline = arg.startsWith(INLINE_MIN_EXPIRY) ? arg.slice(INLINE_MIN_EXPIRY.length) : undefined;
-		if (arg !== "--min-expiry" && inline === undefined) {
-			commandArgs.push(arg);
-			continue;
-		}
-		// An API key has no expiry, so the option is an error rather than a
-		// silently ignored no-op that would imply a guarantee it cannot give.
-		// Both spellings are refused: `--min-expiry=30m` reaching the ordinary
-		// parser as an unknown flag would report the wrong cause.
-		if (kind !== "bearer_token") {
-			throw new CredentialPrintError("Usage", "--min-expiry is only supported by print-bearer-token");
-		}
-		minExpiryMs = parseDuration(inline ?? args[++index]);
-	}
-
-	return minExpiryMs === undefined ? { kind, args: commandArgs } : { kind, args: commandArgs, minExpiryMs };
 }
 
 /**

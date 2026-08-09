@@ -11,6 +11,8 @@ export interface CreateModelRuntimeOptions {
 	allowModelNetwork?: boolean;
 	/** Timeout for the create-time network model refresh. */
 	modelRefreshTimeoutMs?: number;
+	/** Skip the initial catalog and availability refresh. Static models remain available. */
+	refreshOnCreate?: boolean;
 	catalogBaseUrl?: string;
 }
 

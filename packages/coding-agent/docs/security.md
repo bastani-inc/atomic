@@ -53,7 +53,7 @@ If you bind-mount a host workspace read/write, writes from inside the container 
 
 ## Credential Export
 
-`atomic auth print-api-key` and `atomic auth print-bearer-token` are the only commands that emit a stored credential. They exist so an external client can reuse the credential you already configured, rather than making you copy it out of `auth.json` by hand.
+`atomic auth print-api-key` and `atomic auth print-bearer-token` are the only commands that emit a stored credential. They exist so an external client can reuse the credential you already configured, rather than making you copy it out of `auth.json` by hand. `atomic auth check` uses the same provider/runtime resolution to report readiness, but it reports only a status and never opens or emits a credential.
 
 What the commands guarantee:
 
