@@ -1036,6 +1036,22 @@ ctx.sessionManager.getLeafId()        // Current leaf entry ID
 
 Access to models and API keys.
 
+When an extension sends a direct `pi-ai` request, resolve auth immediately before dispatch. A successful result can carry a credential-specific `baseUrl` — GitHub Copilot uses this for Business and Enterprise accounts — so overlay it on the request model. Pass `headers` through unchanged: a `null` value suppresses a provider-default header with the same name.
+
+```typescript
+import { complete } from "@earendil-works/pi-ai/compat";
+
+const model = ctx.modelRegistry.find("github-copilot", "gpt-5.5");
+if (!model) throw new Error("Model not found");
+const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+if (!auth.ok) throw new Error(auth.error);
+
+const requestModel = auth.baseUrl === undefined || auth.baseUrl === model.baseUrl ? model : { ...model, baseUrl: auth.baseUrl };
+const response = await complete(requestModel, { messages }, { apiKey: auth.apiKey, headers: auth.headers });
+```
+
+Sessions created through `createAgentSession()` apply this credential resolution themselves. Use the overlay only when an extension calls `pi-ai` directly.
+
 `ctx.scopedModels` is the read-only list of models scoped to the current session — the same set the `/scoped-models` command shows. It is resolved from the `--models` CLI flag and the `enabledModels` setting, matched against the available catalogue. It is empty when no scoping is configured, meaning every available model is usable. Each entry is `{ model, thinkingLevel? }`, where `thinkingLevel` is set only when a pattern pinned it (for example `anthropic/*:high`). Use it to populate a model picker that mirrors the built-in one instead of enumerating the whole catalogue.
 
 The value is resolved at access time, so it tracks session replacement. Under the isolated interactive engine it reflects the engine's catalogue rather than a stale host snapshot.

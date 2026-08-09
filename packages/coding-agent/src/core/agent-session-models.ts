@@ -13,6 +13,7 @@ export async function _getRequiredRequestAuth(
 ): Promise<{
 	apiKey?: string;
 	headers?: ProviderHeaders;
+	baseUrl?: string;
 	env?: Record<string, string>;
 }> {
 	let result: Awaited<ReturnType<AgentSession["_modelRuntime"]["getAuth"]>>;
@@ -29,9 +30,14 @@ export async function _getRequiredRequestAuth(
 		// `ProviderHeaders` is `Record<string, string | null>` and a null value
 		// suppresses the provider/API default header of the same name. Callers of
 		// this function issue real outbound requests (branch summarization and the
-		// compaction planner), so a marker must reach the request layer intact —
-		// filtering nulls here silently sent the provider default anyway.
-		return { apiKey: result.auth.apiKey, headers: result.auth.headers, env: result.env };
+		// compaction planner), so both markers and the credential-specific endpoint
+		// must reach the request layer intact.
+		return {
+			apiKey: result.auth.apiKey,
+			headers: result.auth.headers,
+			...(result.auth.baseUrl === undefined ? {} : { baseUrl: result.auth.baseUrl }),
+			env: result.env,
+		};
 	}
 	if (this._modelRuntime.isUsingOAuth(model.provider)) {
 		throw new Error(

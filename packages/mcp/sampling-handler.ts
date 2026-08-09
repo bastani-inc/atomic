@@ -152,7 +152,11 @@ async function resolveSamplingModel(
       errors.push(`${model.provider}/${model.id}: ${auth.error}`);
       continue;
     }
-		return { model, apiKey: auth.apiKey, headers: auth.headers };
+    return {
+      model: auth.baseUrl === undefined || auth.baseUrl === model.baseUrl ? model : { ...model, baseUrl: auth.baseUrl },
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+    };
   }
 
   if (errors.length > 0) {

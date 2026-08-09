@@ -263,6 +263,11 @@ describe("default model selection", () => {
 		expect(result.model?.id).toBe("future-copilot-model");
 		expect(result.model?.contextWindow).toBe(400000);
 	});
+	test("keeps missing Copilot account-policy model IDs eligible for session restoration", async () => {
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+
+		expect(getModelRuntime(registry).canRestoreUnknownModel("github-copilot")).toBe(true);
+	});
 	test("findInitialModel selects ai-gateway default when available", async () => {
 		const aiGatewayModel: Model<"anthropic-messages"> = {
 			id: "anthropic/claude-opus-4-6",

@@ -50,11 +50,15 @@ describe("_getRequiredRequestAuth header suppression markers", () => {
 		expect(auth.headers).toEqual({ "x-suppress": null });
 	});
 
-	it("still returns the api key and env alongside the preserved markers", async () => {
+	it("returns the api key, endpoint, and env alongside preserved markers", async () => {
 		const session = {
 			_modelRuntime: {
 				getAuth: async () => ({
-					auth: { apiKey: "secret", headers: { "x-suppress": null } },
+					auth: {
+						apiKey: "secret",
+						baseUrl: "https://api.enterprise.githubcopilot.com",
+						headers: { "x-suppress": null },
+					},
 					env: { SOME_VAR: "value" },
 				}),
 				isUsingOAuth: () => false,
@@ -64,6 +68,7 @@ describe("_getRequiredRequestAuth header suppression markers", () => {
 		const auth = await _getRequiredRequestAuth.call(session, model);
 
 		expect(auth.apiKey).toBe("secret");
+		expect(auth.baseUrl).toBe("https://api.enterprise.githubcopilot.com");
 		expect(auth.env).toEqual({ SOME_VAR: "value" });
 		expect(auth.headers).toEqual({ "x-suppress": null });
 	});

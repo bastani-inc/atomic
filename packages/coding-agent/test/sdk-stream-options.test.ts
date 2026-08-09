@@ -85,6 +85,7 @@ describe("createAgentSession stream options", () => {
 		requestOptions: SimpleStreamOptions = {},
 		extensionSource?: string,
 		authResult?: AuthResult,
+		capturedRequest?: { model?: Model<Api> },
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
@@ -102,7 +103,8 @@ describe("createAgentSession stream options", () => {
 		modelRegistry.registerProvider(model.provider, {
 			api,
 			headers: { "x-provider": "provider" },
-			streamSimple: (_requestModel, _context, providerOptions) => {
+			streamSimple: (requestModel, _context, providerOptions) => {
+				if (capturedRequest) capturedRequest.model = requestModel;
 				capturedOptions = providerOptions;
 				return createDoneStream(api);
 			},
@@ -216,6 +218,27 @@ describe("createAgentSession stream options", () => {
 			"x-api-key": null,
 			"x-credential": "present",
 		});
+	});
+
+	it("uses a credential-derived endpoint and null headers for workflow and subagent SDK sessions", async () => {
+		const captured: { model?: Model<Api> } = {};
+		const options = await captureStreamOptions(
+			"openai-completions",
+			{},
+			{},
+			undefined,
+			{
+				auth: {
+					apiKey: "credential-key",
+					baseUrl: "https://credential.example/v1",
+					headers: { Authorization: null, "x-credential": "present" },
+				},
+			},
+			captured,
+		);
+
+		expect(captured.model?.baseUrl).toBe("https://credential.example/v1");
+		expect(options?.headers).toMatchObject({ Authorization: null, "x-credential": "present" });
 	});
 
 	it("uses a credential-derived baseUrl for native Codex fast-mode dispatch", async () => {

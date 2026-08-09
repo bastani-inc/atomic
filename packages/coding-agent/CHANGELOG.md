@@ -45,6 +45,7 @@
 - Fixed Git Bash, MSYS, Cygwin, and WSL drive paths resolving against the current Windows drive instead of their native drive ([#7064](https://github.com/earendil-works/pi/issues/7064), [#7547](https://github.com/earendil-works/pi/issues/7547)).
 - Fixed linked project session directories being omitted from the session picker ([#7552](https://github.com/earendil-works/pi/issues/7552)).
 - Fixed standalone x64 binaries failing to start on pre-Haswell CPUs that lack AVX2/BMI2 by using Bun's baseline target, including musl archives ([#7390](https://github.com/earendil-works/pi/issues/7390)).
+- Fixed credential-resolved model endpoints — including GitHub Copilot Business and Enterprise hosts — falling back to the catalog endpoint for Verbatim Compaction, branch summaries, MCP sampling, and direct web summaries. Atomic now retains the resolved `baseUrl` alongside request auth, so request-header `null` suppression markers still pass through unchanged ([#6768](https://github.com/earendil-works/pi/issues/6768), [#7579](https://github.com/earendil-works/pi/issues/7579)).
 
 ### Removed
 

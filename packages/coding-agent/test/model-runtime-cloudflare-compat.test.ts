@@ -32,7 +32,7 @@ describe("Cloudflare compatibility auth", () => {
 		});
 	});
 
-	it("keeps the extension facade request-auth projection intentionally base-URL-free", async () => {
+	it("keeps Cloudflare headers and environment when its credential has no endpoint", async () => {
 		const { modelRegistry } = await createCloudflareRuntime();
 		const model = modelRegistry.find("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
 		expect(model).toBeDefined();
@@ -47,6 +47,7 @@ describe("Cloudflare compatibility auth", () => {
 			CLOUDFLARE_ACCOUNT_ID: "test-account",
 			CLOUDFLARE_GATEWAY_ID: "test-gateway",
 		});
-		expect(auth).not.toHaveProperty("baseUrl");
+		// A provider without a credential endpoint leaves its catalog endpoint intact.
+		expect(auth.baseUrl).toBeUndefined();
 	});
 });

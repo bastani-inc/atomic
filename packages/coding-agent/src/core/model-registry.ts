@@ -16,6 +16,7 @@ export type ResolvedRequestAuth =
 			ok: true;
 			apiKey?: string;
 			headers?: ProviderHeaders;
+			baseUrl?: string;
 			env?: Record<string, string>;
 	  }
 	| { ok: false; error: string };
@@ -75,6 +76,7 @@ export class ModelRegistry {
 				ok: true,
 				apiKey: resolution.auth.apiKey,
 				headers: resolution.auth.headers,
+				...(resolution.auth.baseUrl === undefined ? {} : { baseUrl: resolution.auth.baseUrl }),
 				env: resolution.env,
 			};
 		} catch (error) {

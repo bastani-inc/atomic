@@ -67,4 +67,25 @@ describe("getApiKeyAndHeaders header suppression markers", () => {
 		// "no headers configured" and silently sends the provider default.
 		expect(auth.headers).toEqual({ "x-suppress": null });
 	});
+
+	it("forwards a credential-specific endpoint beside null header markers", async () => {
+		const registry = new ModelRegistry(
+			fakeModelRuntime({
+				getAuth: async () => ({
+					auth: {
+						apiKey: "k",
+						baseUrl: "https://api.enterprise.githubcopilot.com",
+						headers: { "x-suppress": null },
+					},
+				}),
+			}),
+		);
+
+		const auth = await registry.getApiKeyAndHeaders(model);
+
+		expect(auth.ok).toBe(true);
+		if (!auth.ok) return;
+		expect(auth.baseUrl).toBe("https://api.enterprise.githubcopilot.com");
+		expect(auth.headers).toEqual({ "x-suppress": null });
+	});
 });
