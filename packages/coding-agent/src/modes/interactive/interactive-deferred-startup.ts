@@ -47,6 +47,9 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 	try {
 		await this.bindCurrentSessionExtensions();
 		await this.session.reload({ reason: "startup" });
+		// Initial transcript rows precede deferred extension loading, so rebuild them
+		// against the new extension registry before releasing startup output.
+		this.rebuildChatFromMessages();
 
 		// A prompt turn keeps its own working loader mounted from submit until
 		// `agent_start` or `compaction_start` takes over; tearing it down here

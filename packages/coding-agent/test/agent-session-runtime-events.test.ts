@@ -10,9 +10,11 @@ import {
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { createEventBus, type EventBus } from "../src/core/event-bus.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type {
+	ExtensionAPI,
 	ExtensionFactory,
 	SessionBeforeForkEvent,
 	SessionBeforeSwitchEvent,
@@ -35,7 +37,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		}
 	});
 
-	async function createRuntimeHost(extensionFactory: ExtensionFactory) {
+	async function createRuntimeHost(extensionFactory: ExtensionFactory, options: { eventBus?: EventBus } = {}) {
 		const tempDir = join(tmpdir(), `pi-runtime-events-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -72,6 +74,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			modelRuntime,
 			model: faux.getModel(),
 			resourceLoaderOptions: {
+				...(options.eventBus === undefined ? {} : { eventBus: options.eventBus }),
 				extensionFactories: [extensionFactory],
 				noSkills: true,
 				noPromptTemplates: true,
@@ -253,5 +256,57 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const cancelAtResult = await runtimeHost.fork("missing-entry", { position: "at" });
 		expect(cancelAtResult).toEqual({ cancelled: true });
 		expect(events).toEqual([{ type: "session_before_fork", entryId: "missing-entry", position: "at" }]);
+	});
+
+	it("replaces Markdown transformers and event-bus listeners on reload and dispose", async () => {
+		const eventBus = createEventBus();
+		let loads = 0;
+		let firstApi: ExtensionAPI | undefined;
+		let extensionCalls = 0;
+		let hostCalls = 0;
+		eventBus.on("markdown-transformer-reload", () => {
+			hostCalls += 1;
+		});
+		const { runtimeHost } = await createRuntimeHost(
+			(pi) => {
+				const load = ++loads;
+				firstApi ??= pi;
+				pi.events.on("markdown-transformer-reload", () => {
+					extensionCalls += 1;
+				});
+				pi.registerMarkdownTransformer((markdown) => `${load}:${markdown}`);
+			},
+			{ eventBus },
+		);
+
+		const staleApi = firstApi;
+		if (!staleApi) throw new Error("Expected the first extension API");
+		const emit = async (): Promise<{ extension: number; host: number }> => {
+			const extensionBefore = extensionCalls;
+			const hostBefore = hostCalls;
+			eventBus.emit("markdown-transformer-reload", undefined);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			return { extension: extensionCalls - extensionBefore, host: hostCalls - hostBefore };
+		};
+
+		expect(await emit()).toEqual({ extension: 1, host: 1 });
+
+		await runtimeHost.session.reload();
+		expect(() => staleApi.registerMarkdownTransformer((markdown) => markdown)).toThrow(
+			"This extension ctx is stale after session replacement or reload.",
+		);
+		expect(await emit()).toEqual({ extension: 1, host: 1 });
+
+		await runtimeHost.session.reload();
+		expect(await emit()).toEqual({ extension: 1, host: 1 });
+		expect(runtimeHost.session.extensionRunner.getMarkdownTransformers()).toHaveLength(1);
+		const [transformer] = runtimeHost.session.extensionRunner.getMarkdownTransformers();
+		if (!transformer) throw new Error("Expected the reloaded Markdown transformer");
+		expect(transformer("message", { messageType: "assistant", isStreaming: false, availableWidth: 80 })).toBe(
+			"3:message",
+		);
+
+		runtimeHost.session.dispose();
+		expect(await emit()).toEqual({ extension: 0, host: 1 });
 	});
 });

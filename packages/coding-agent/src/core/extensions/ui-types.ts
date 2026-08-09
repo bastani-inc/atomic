@@ -10,7 +10,7 @@ import type {
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
-import type { MessageRenderer } from "./message-types.ts";
+import type { MarkdownTransformer, MessageRenderer } from "./message-types.ts";
 import type { ToolDefinition } from "./tool-types.ts";
 
 /** Options for extension UI dialogs. */
@@ -51,6 +51,7 @@ export interface ChatRenderSettings {
 	toolOutputExpanded: boolean;
 	showImages: boolean;
 	imageWidthCells: number;
+	markdownTransformers: readonly MarkdownTransformer[];
 	getToolDefinition(toolName: string): ToolDefinition | undefined;
 	getCustomMessageRenderer(customType: string): MessageRenderer | undefined;
 }

@@ -344,6 +344,7 @@ export function createRpcExtensionUIContext({
 				toolOutputExpanded: toolsExpanded,
 				showImages: false,
 				imageWidthCells: 60,
+				markdownTransformers: [],
 				getToolDefinition: () => undefined,
 				getCustomMessageRenderer: () => undefined,
 			};

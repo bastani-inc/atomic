@@ -45,6 +45,7 @@ export const noOpUIContext: ExtensionUIContext = {
 		toolOutputExpanded: false,
 		showImages: false,
 		imageWidthCells: 60,
+		markdownTransformers: [],
 		getToolDefinition: () => undefined,
 		getCustomMessageRenderer: () => undefined,
 	}),

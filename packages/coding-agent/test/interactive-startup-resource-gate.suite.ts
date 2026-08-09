@@ -61,6 +61,7 @@ function configureDeferredGateMode(mode: InteractiveMode): void {
 		retryDeferredModelRestore: async () => {},
 		updateAvailableProviderCount: async () => {},
 		updateEditorBorderColor() {},
+		rebuildChatFromMessages() {},
 		showLoadedResources: (options: { targetContainer?: Container }) => {
 			options.targetContainer?.addChild(new Text("RESOURCES", 0, 0));
 		},
@@ -186,18 +187,24 @@ test("prompt error paints below the disclosure rather than releasing an empty sl
 	assertResourcesBefore(normalizeGateOutput(mode.chatContainer), "prompt rejected");
 });
 
-test("restored transcript paints as soon as deferred disclosure ordering resolves", async () => {
+test("rebuilds restored transcript after deferred extensions load", async () => {
 	const mode = createGateMode();
 	mode.attachStartupNoticesContainer();
 	configureDeferredGateMode(mode);
 	mode.chatContainer.addChild(new Text("user: earlier question", 0, 0));
 	mode.chatContainer.addChild(new Text("assistant: earlier answer", 0, 0));
+	mode.rebuildChatFromMessages = () => {
+		mode.chatContainer.clear();
+		mode.attachStartupNoticesContainer();
+		mode.chatContainer.addChild(new Text("user: transformed earlier question", 0, 0));
+		mode.chatContainer.addChild(new Text("assistant: transformed earlier answer", 0, 0));
+	};
 	assert.deepEqual(mode.chatContainer.render(220), []);
 
 	await InteractiveMode.prototype.completeDeferredStartup.call(mode);
 
 	assert.equal(
 		normalizeGateOutput(mode.chatContainer),
-		"RESOURCES\nuser: earlier question\nassistant: earlier answer",
+		"RESOURCES\nuser: transformed earlier question\nassistant: transformed earlier answer",
 	);
 });

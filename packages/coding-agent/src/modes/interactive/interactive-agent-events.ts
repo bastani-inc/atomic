@@ -168,10 +168,13 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					this.getMarkdownThemeWithSettings(),
 					this.hiddenThinkingLabel,
 					this.outputPad,
+					this.runtimeHost instanceof IsolatedInteractiveRuntime
+						? []
+						: this.session.extensionRunner.getMarkdownTransformers(),
 				);
 				this.streamingMessage = beginStreamingAssistantMessage(event.message);
 				this.chatContainer.addChild(this.streamingComponent);
-				this.streamingComponent.updateContent(this.streamingMessage);
+				this.streamingComponent.updateContent(this.streamingMessage, true);
 				this.ui.requestRender();
 			}
 			break;
@@ -183,7 +186,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				applyAssistantMessageDelta(this.streamingMessage, event.assistantMessageEvent);
 			}
 			if (this.streamingComponent && this.streamingMessage?.role === "assistant") {
-				this.streamingComponent.updateContent(this.streamingMessage);
+				this.streamingComponent.updateContent(this.streamingMessage, true);
 
 				for (const content of this.streamingMessage.content) {
 					if (content.type === "toolCall") {
@@ -223,7 +226,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 							: "Operation aborted");
 					this.streamingMessage.errorMessage = errorMessage;
 				}
-				this.streamingComponent.updateContent(this.streamingMessage);
+				this.streamingComponent.updateContent(this.streamingMessage, false);
 
 				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 					if (!errorMessage) {

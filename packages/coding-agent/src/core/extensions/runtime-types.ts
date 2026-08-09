@@ -11,7 +11,13 @@ import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { RegisteredCommand } from "./command-types.ts";
 import type { CompactOptions, ContextUsage, ExtensionContext, ReplacedSessionContext } from "./context-types.ts";
-import type { EntryRenderer, MessageRenderer, SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
+import type {
+	EntryRenderer,
+	MarkdownTransformer,
+	MessageRenderer,
+	SendMessageOptions,
+	SendMessagesOptions,
+} from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
 
@@ -130,6 +136,8 @@ export interface ExtensionRuntimeState {
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
 	invalidate: (message?: string) => void;
+	/** Retain an event-bus subscription until this runtime is invalidated. */
+	trackEventBusSubscription: (unsubscribe: () => void) => () => void;
 	/**
 	 * Register or unregister a provider.
 	 *
@@ -224,6 +232,7 @@ export interface Extension {
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
+	markdownTransformer?: MarkdownTransformer;
 	entryRenderers: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

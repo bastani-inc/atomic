@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -21,5 +22,24 @@ describe("UserMessageComponent", () => {
 		expect(lines[1]).toContain("hello");
 		expect(lines[2].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
 		expect(lines[2].endsWith(BG_RESET)).toBe(true);
+	});
+
+	test("chains Markdown transformers with user-message context", () => {
+		initTheme("dark");
+		const calls: string[] = [];
+		const component = new UserMessageComponent("The input is $x^2$.", undefined, 1, [
+			(markdown, context) => {
+				calls.push("formula");
+				expect(context).toEqual({ messageType: "user", isStreaming: false, availableWidth: 78 });
+				return markdown.replace("$x^2$", "x²");
+			},
+			(markdown) => {
+				calls.push("suffix");
+				return `${markdown} Done.`;
+			},
+		]);
+
+		expect(stripAnsi(component.render(80).join("\n"))).toContain("The input is x². Done.");
+		expect(calls).toEqual(["formula", "suffix"]);
 	});
 });

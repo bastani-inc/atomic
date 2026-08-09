@@ -130,6 +130,35 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
+	describe("Markdown transformers", () => {
+		it("gets transformers in extension load order", async () => {
+			const first = `
+				export default function(pi) {
+					pi.registerMarkdownTransformer((markdown) => "first:" + markdown);
+				}
+			`;
+			const second = `
+				export default function(pi) {
+					pi.registerMarkdownTransformer((markdown) => "second:" + markdown);
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "a-first.ts"), first);
+			fs.writeFileSync(path.join(extensionsDir, "b-second.ts"), second);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const transformed = runner
+				.getMarkdownTransformers()
+				.reduce(
+					(markdown, transformer) =>
+						transformer(markdown, { messageType: "assistant", isStreaming: false, availableWidth: 80 }),
+					"input",
+				);
+
+			expect(transformed).toBe("second:first:input");
+		});
+	});
+
 	describe("flags", () => {
 		it("collects flags from extensions", async () => {
 			const extCode = `

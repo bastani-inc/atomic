@@ -114,6 +114,7 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 		showImages: this.settingsManager.getShowImages(),
 		imageWidthCells: this.settingsManager.getImageWidthCells(),
 		outputPad: this.outputPad,
+		markdownTransformers: isolated ? [] : this.session.extensionRunner.getMarkdownTransformers(),
 		getToolDefinition: isolated ? undefined : (toolName) => this.getRegisteredToolDefinition(toolName),
 		getCustomMessageRenderer: isolated
 			? undefined
@@ -186,6 +187,10 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 	message: AgentMessage,
 	options?: { populateHistory?: boolean },
 ): void {
+	const markdownTransformers =
+		this.runtimeHost instanceof IsolatedInteractiveRuntime
+			? []
+			: this.session.extensionRunner.getMarkdownTransformers();
 	switch (message.role) {
 		case "bashExecution": {
 			const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
@@ -247,6 +252,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 							skillBlock.userMessage,
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
+							markdownTransformers,
 						);
 						this.chatContainer.addChild(userComponent);
 					}
@@ -255,6 +261,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						textContent,
 						this.getMarkdownThemeWithSettings(),
 						this.outputPad,
+						markdownTransformers,
 					);
 					this.chatContainer.addChild(userComponent);
 				}
@@ -271,6 +278,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				this.getMarkdownThemeWithSettings(),
 				this.hiddenThinkingLabel,
 				this.outputPad,
+				markdownTransformers,
 			);
 			this.chatContainer.addChild(assistantComponent);
 			break;

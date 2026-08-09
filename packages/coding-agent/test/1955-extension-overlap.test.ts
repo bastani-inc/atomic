@@ -628,16 +628,17 @@ export default function(pi) {
 		expect(previousConsumerState.resourceOverlaps ?? []).toEqual([]);
 	});
 
-	it("keeps the exported extension runtime source compatible with prior custom runtimes", () => {
-		const createLegacyRuntime = (actions: ExtensionActions): ExtensionRuntime => ({
+	it("requires lifecycle cleanup for exported extension runtimes", () => {
+		const createRuntime = (actions: ExtensionActions): ExtensionRuntime => ({
 			...actions,
 			flagValues: new Map<string, boolean | string>(),
 			pendingProviderRegistrations: [],
 			assertActive: () => {},
 			invalidate: () => {},
+			trackEventBusSubscription: (unsubscribe) => unsubscribe,
 			registerProvider: (() => {}) as ExtensionRuntime["registerProvider"],
 			unregisterProvider: () => {},
 		});
-		expect(typeof createLegacyRuntime).toBe("function");
+		expect(typeof createRuntime).toBe("function");
 	});
 });

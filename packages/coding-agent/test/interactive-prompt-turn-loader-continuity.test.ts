@@ -37,6 +37,7 @@ type PromptTurnContext = {
 	showStartupNoticesIfNeeded: () => void;
 	updateAvailableProviderCount: () => Promise<void>;
 	updateEditorBorderColor: () => void;
+	rebuildChatFromMessages: () => void;
 	discardDeferredRenderedUserInput: (text: string) => void;
 	showError: (message: string) => void;
 	ui: { requestRender: () => void };
@@ -106,6 +107,7 @@ function createContext(overrides: {
 		showStartupNoticesIfNeeded: vi.fn(),
 		updateAvailableProviderCount: vi.fn(async () => {}),
 		updateEditorBorderColor: vi.fn(),
+		rebuildChatFromMessages: vi.fn(),
 		discardDeferredRenderedUserInput: vi.fn(),
 		showError: vi.fn(),
 		ui: { requestRender: vi.fn() },

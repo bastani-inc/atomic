@@ -2,6 +2,7 @@ import type {
 	EntryRenderer,
 	Extension,
 	ExtensionFlag,
+	MarkdownTransformer,
 	MessageRenderer,
 	RegisteredCommand,
 	RegisteredTool,
@@ -63,6 +64,10 @@ export function findMessageRenderer(extensions: Extension[], customType: string)
 		}
 	}
 	return undefined;
+}
+
+export function collectMarkdownTransformers(extensions: Extension[]): MarkdownTransformer[] {
+	return extensions.flatMap((extension) => (extension.markdownTransformer ? [extension.markdownTransformer] : []));
 }
 
 export function findEntryRenderer(extensions: Extension[], customType: string): EntryRenderer | undefined {
