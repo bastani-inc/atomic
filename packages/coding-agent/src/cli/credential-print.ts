@@ -1,13 +1,14 @@
 /**
- * `atomic auth print-api-key` / `atomic auth print-bearer-token`.
+ * `atomic auth print-api-key` / `atomic auth print-bearer-token` and the
+ * explicit `atomic auth check --credentials` export path.
  *
  * The only door in Atomic whose purpose is emitting a secret. Everything here
  * exists to keep that egress narrow:
- *
  * - the secret leaves as a `Secret`, which cannot be interpolated, serialized,
  *   or inspected, and is consumed exactly once by the stdout writer;
- * - `--model` is required, so no ambient "current model" can emit a credential
- *   the caller did not name;
+ * - every export has an explicit target: the print commands require `--model`,
+ *   and auth checks require `--provider` or an exact `--model` plus
+ *   `--credentials`;
  * - there is no `--output <file>` and no clipboard path — stdout only;
  * - every failure is a distinct exit code, and stdout stays empty on all of
  *   them but one — `CredentialTruncated` (exit 9) exists to report the case
@@ -133,6 +134,14 @@ export class Secret {
 	}
 }
 
+/** Public readiness fields emitted with a credential under `auth check --json --credentials`. */
+export interface CredentialJsonFields {
+	status: string;
+	provider: string;
+	reason?: string;
+	authType?: string;
+}
+
 /**
  * The single credential egress in `src`.
  *
@@ -167,9 +176,36 @@ export class Secret {
  * `test/credential-print.test.ts` asserts that chokepoint against the whole of
  * `packages/coding-agent/src`.
  */
-export async function emitCredential(secret: Secret): Promise<void> {
-	// take() returns a plain string; the Secret itself is never interpolated.
-	const payload = `${secret.take()}\n`;
+function credentialPayload(secret: Secret, jsonFields: CredentialJsonFields | undefined): string {
+	if (jsonFields === undefined) return `${secret.take()}\n`;
+
+	const { status, provider, reason, authType } = jsonFields;
+	if (
+		typeof status !== "string" ||
+		typeof provider !== "string" ||
+		(reason !== undefined && typeof reason !== "string") ||
+		(authType !== undefined && typeof authType !== "string")
+	) {
+		throw new Error("Invalid credential JSON fields");
+	}
+
+	// Allowlist the non-secret envelope before opening the Secret. That leaves no
+	// formatter, logger, or error path between take() and the guarded stdout write.
+	const fields = JSON.stringify({
+		status,
+		provider,
+		...(reason === undefined ? {} : { reason }),
+		...(authType === undefined ? {} : { authType }),
+	});
+	if (fields === undefined || !fields.startsWith("{") || !fields.endsWith("}")) {
+		throw new Error("Invalid credential JSON envelope");
+	}
+	return `${fields.slice(0, -1)},"credentials":${JSON.stringify(secret.take())}}\n`;
+}
+
+export async function emitCredential(secret: Secret, jsonFields?: CredentialJsonFields): Promise<void> {
+	// take() returns a plain string only while assembling the one stdout payload.
+	const payload = credentialPayload(secret, jsonFields);
 	try {
 		await writeRawStdoutOnce(payload);
 	} catch (error) {

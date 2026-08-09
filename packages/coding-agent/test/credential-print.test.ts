@@ -21,6 +21,7 @@ import {
 	printAuthCommandHelp,
 } from "../src/cli/auth-command.ts";
 import {
+	type CredentialJsonFields,
 	CredentialPrintError,
 	type CredentialPrintErrorCode,
 	classifyOAuthFailure,
@@ -322,6 +323,43 @@ describe("emitCredential", () => {
 			else delete (process.stdout as { bytesWritten?: unknown }).bytesWritten;
 		});
 	}
+
+	it("allows only readiness fields in a credential JSON envelope", async () => {
+		await withStubbedStdout(
+			() => undefined,
+			async (written) => {
+				const fields = {
+					status: "ready",
+					provider: "anthropic",
+					authType: "api_key",
+					diagnostic: "must-not-reach-stdout",
+				};
+				await emitCredential(new Secret("credential-value"), fields);
+
+				expect(JSON.parse(written.join(""))).toEqual({
+					status: "ready",
+					provider: "anthropic",
+					authType: "api_key",
+					credentials: "credential-value",
+				});
+			},
+		);
+	});
+
+	it("validates a JSON envelope before consuming its credential", async () => {
+		await withStubbedStdout(
+			() => undefined,
+			async (written) => {
+				const secret = new Secret("credential-value");
+				await expect(
+					emitCredential(secret, { status: undefined, provider: "anthropic" } as unknown as CredentialJsonFields),
+				).rejects.toThrow("Invalid credential JSON fields");
+
+				await emitCredential(secret);
+				expect(written.join("")).toBe("credential-value\n");
+			},
+		);
+	});
 
 	it("a post-write drain failure still exits zero with the credential on stdout", async () => {
 		const reported: string[] = [];
@@ -628,6 +666,7 @@ describe("auth command parsing", () => {
 			expect(isAuthCommandHelp(argv)).toBe(true);
 		}
 		expect(isAuthCommandHelp(["auth", "check", "--help"])).toBe(true);
+		expect(isAuthCommandHelp(["auth", "check", "--", "--help"])).toBe(false);
 		expect(isAuthCommandHelp(["auth", "print-api-key"])).toBe(false);
 		expect(isAuthCommandHelp(["auth", "print-api-key", "--help"])).toBe(false);
 		expect(isAuthCommandHelp(["config"])).toBe(false);
@@ -690,6 +729,7 @@ describe("auth command parsing", () => {
 			kind: "bearer_token",
 			args: ["--model", "gpt-5.5", "--provider", "openai-codex"],
 			json: false,
+			credentials: false,
 			noRefresh: false,
 			minExpiryMs: 3_600_000,
 		});
@@ -1206,6 +1246,82 @@ describe("atomic auth on the wire", () => {
 	);
 
 	it(
+		"emits a resolved auth-check credential only when explicitly requested",
+		async () => {
+			const key = "opaque-auth-check-credential-value";
+			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
+			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+
+			const defaultCheck = await run(["auth", "check", "--provider", "anthropic", "--json"]);
+			expect(defaultCheck.code).toBe(0);
+			expect(JSON.parse(defaultCheck.stdout)).toEqual({
+				status: "ready",
+				provider: "anthropic",
+				authType: "api_key",
+			});
+			expect(defaultCheck.stdout).not.toContain(key);
+			expect(defaultCheck.stderr).not.toContain(key);
+
+			const exported = await run(["auth", "check", "--provider", "anthropic", "--credentials"]);
+			expect(exported.code).toBe(0);
+			expect(exported.stdout).toBe(`${key}\n`);
+			expect(exported.stderr).not.toContain(key);
+
+			const json = await run(["auth", "check", "--provider", "anthropic", "--credentials", "--json"]);
+			expect(json.code).toBe(0);
+			expect(JSON.parse(json.stdout)).toEqual({
+				status: "ready",
+				provider: "anthropic",
+				authType: "api_key",
+				credentials: key,
+			});
+			expect(json.stderr).not.toContain(key);
+
+			const exactModel = await run(["auth", "check", "--model", "anthropic/claude-opus-4-5", "--credentials"]);
+			expect(exactModel.code).toBe(0);
+			expect(exactModel.stdout).toBe(`${key}\n`);
+			expect(exactModel.stderr).not.toContain(key);
+
+			const notReady = await run(["auth", "check", "--provider", "not-installed", "--credentials"]);
+			expect(notReady.code).toBe(1);
+			expect(notReady.stdout).toBe("");
+			expect(notReady.stderr).toContain("not_ready");
+			expect(notReady.stderr).not.toContain(key);
+
+			const afterTerminator = await run(["auth", "check", "--provider", "anthropic", "--", "--credentials"]);
+			expect(afterTerminator.code).toBe(2);
+			expect(afterTerminator.stdout).toBe("");
+			expect(afterTerminator.stderr).not.toContain(key);
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
+		"refuses fuzzy model credential export without exposing any configured key",
+		async () => {
+			const googleKey = "google-fuzzy-export-key";
+			const openRouterKey = "openrouter-fuzzy-export-key";
+			const agentDir = agentDirWith({
+				google: { type: "api_key", key: googleKey },
+				openrouter: { type: "api_key", key: openRouterKey },
+			});
+
+			const result = await runCliProcess(["auth", "check", "--model", "gemini", "--credentials", "--json"], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+			});
+
+			expect(result.code).toBe(2);
+			expect(JSON.parse(result.stdout)).toMatchObject({ status: "invalid" });
+			for (const stream of [result.stdout, result.stderr]) {
+				expect(stream).not.toContain(googleKey);
+				expect(stream).not.toContain(openRouterKey);
+			}
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
 		"reports expired OAuth credentials as not ready without emitting or rewriting them",
 		async () => {
 			const access = "expired-auth-check-access";
@@ -1244,6 +1360,44 @@ describe("atomic auth on the wire", () => {
 	);
 
 	it(
+		"does not export an OAuth credential that cannot meet the no-refresh safety window",
+		async () => {
+			const access = "short-lived-auth-check-access";
+			const refresh = "short-lived-auth-check-refresh";
+			const agentDir = agentDirWith({
+				anthropic: { type: "oauth", access, refresh, expires: Date.now() + 10 * 60_000 },
+			});
+			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+
+			const raw = await run(["auth", "check", "--provider", "anthropic", "--credentials", "--no-refresh"]);
+			expect(raw.code).toBe(1);
+			expect(raw.stdout).toBe("");
+			expect(raw.stderr).toContain("not_ready");
+
+			const json = await run([
+				"auth",
+				"check",
+				"--provider",
+				"anthropic",
+				"--credentials",
+				"--no-refresh",
+				"--json",
+			]);
+			expect(json.code).toBe(1);
+			expect(JSON.parse(json.stdout)).toEqual({
+				status: "not_ready",
+				provider: "anthropic",
+				reason: "credential_not_available",
+			});
+			for (const stream of [raw.stdout, raw.stderr, json.stdout, json.stderr]) {
+				expect(stream).not.toContain(access);
+				expect(stream).not.toContain(refresh);
+			}
+		},
+		REAL_CLI_SUITE_TIMEOUT_MS,
+	);
+
+	it(
 		"distinguishes unavailable providers from invalid readiness commands",
 		async () => {
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-auth-check-status" } });
@@ -1267,7 +1421,7 @@ describe("atomic auth on the wire", () => {
 	);
 
 	it(
-		"a reader that closes the pipe never yields a non-zero exit with a credential on stdout",
+		"a failed auth-check credential write never falls back to readiness output",
 		async () => {
 			const key = "sk-ant-print-me";
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
@@ -1276,10 +1430,10 @@ describe("atomic auth on the wire", () => {
 			// pipe before its write, during it, or after the bytes are already
 			// buffered, and the invariant has to hold on every outcome.
 			for (let attempt = 0; attempt < 3; attempt++) {
-				const result = await runCliWithClosedStdout(
-					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic"],
-					{ cwd: agentDir, env: cliEnv(agentDir) },
-				);
+				const result = await runCliWithClosedStdout(["auth", "check", "--provider", "anthropic", "--credentials"], {
+					cwd: agentDir,
+					env: cliEnv(agentDir),
+				});
 
 				// Bytes on stdout mean the command succeeded.
 				if (result.stdout.length > 0) expect(result.code).toBe(0);
@@ -1378,6 +1532,8 @@ describe("atomic auth on the wire", () => {
 				expect(result.code).toBe(0);
 				expect(result.stderr).toContain("atomic auth print-api-key");
 				expect(result.stderr).toContain("atomic auth print-bearer-token");
+				expect(result.stderr).toContain("atomic auth check");
+				expect(result.stderr).toContain("--credentials");
 				expect(result.stderr).not.toContain("pi auth");
 				// stdout for this command family is a credential or nothing.
 				expect(result.stdout).toBe("");

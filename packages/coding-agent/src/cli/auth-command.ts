@@ -8,6 +8,8 @@ export interface AuthCommand {
 	/** Remaining argv for the normal parser. */
 	args: string[];
 	json: boolean;
+	/** `auth check` emits a resolved credential only with this explicit opt-in. */
+	credentials: boolean;
 	noRefresh: boolean;
 	minExpiryMs?: number;
 }
@@ -20,7 +22,7 @@ export class AuthCommandError extends Error {
 }
 
 const AUTH_COMMAND_USAGE: Record<AuthCommandKind, string> = {
-	check: `${APP_NAME} auth check [--provider <provider>] [--model <model>] [--json] [--no-refresh]`,
+	check: `${APP_NAME} auth check [--provider <provider>] [--model <model>] [--json] [--credentials] [--no-refresh]`,
 	api_key: `${APP_NAME} auth print-api-key --model <model> [--provider <provider>]`,
 	bearer_token: `${APP_NAME} auth print-bearer-token --model <model> [--provider <provider>] [--min-expiry <duration>]`,
 };
@@ -45,23 +47,27 @@ export function getAuthCommandUsage(kind: AuthCommandKind): string {
 export function isAuthCommandHelp(args: string[]): boolean {
 	if (args[0] !== "auth") return false;
 	if (args[1] === undefined || args[1] === "help" || args[1] === "--help" || args[1] === "-h") return true;
-	return args[1] === "check" && (args.includes("--help") || args.includes("-h"));
+	const terminator = args.indexOf("--", 2);
+	const flags = args.slice(2, terminator === -1 ? undefined : terminator);
+	return args[1] === "check" && (flags.includes("--help") || flags.includes("-h"));
 }
 
 export function printAuthCommandHelp(): void {
 	console.error(`Usage:
   ${APP_NAME} auth print-api-key --model <model> [--provider <provider>]
   ${APP_NAME} auth print-bearer-token --model <model> [--provider <provider>] [--min-expiry <duration>]
-  ${APP_NAME} auth check [--provider <provider>] [--model <model>] [--json] [--no-refresh]
+  ${APP_NAME} auth check [--provider <provider>] [--model <model>] [--json] [--credentials] [--no-refresh]
 
-Credential commands print one configured credential alone on stdout. Everything else —
+Credential print commands write one configured credential alone on stdout. Everything else —
 warnings, provider selection, refresh notices, and help — goes to stderr. --model is
-required for credential export, so no ambient model can emit a credential you did not name.
+required for these exports, so no ambient model can emit a credential you did not name.
 
 Auth checks require at least one of --provider or --model. They print ready, not_ready,
 or invalid on stdout and refresh expired OAuth credentials by default; --no-refresh
 prevents a refresh and any auth.json mutation. --json includes the resolved provider,
-auth type, and reason when it is not ready.
+auth type, and reason when it is not ready. --credentials is an explicit export that
+needs --provider or an exact --model target; on a ready check it writes the credential,
+or includes it in JSON. A non-ready raw export leaves stdout empty and reports status on stderr.
 
 --min-expiry accepts ms, s, m, or h (for example 30m) and applies only to
 print-bearer-token, where it defaults to 30m. A token with less than that
@@ -83,7 +89,9 @@ Credential-export exit codes:
 Auth-check exit codes:
   0  provider is ready
   1  provider is not ready
-  2  auth state or command is invalid`);
+  2  auth state or command is invalid
+  8  with --credentials, the credential could not be written
+  9  with --credentials, only part of the credential was written`);
 }
 
 function parseDuration(value: string | undefined): number {
@@ -114,10 +122,15 @@ export function parseAuthCommand(args: string[]): AuthCommand | undefined {
 
 	const commandArgs: string[] = [];
 	let json = false;
+	let credentials = false;
 	let noRefresh = false;
 	let minExpiryMs: number | undefined;
 	for (let index = 2; index < args.length; index++) {
 		const arg = args[index];
+		if (arg === "--") {
+			commandArgs.push(...args.slice(index));
+			break;
+		}
 		const inlineMinExpiry = arg.startsWith("--min-expiry=") ? arg.slice("--min-expiry=".length) : undefined;
 		if (arg === "--min-expiry" || inlineMinExpiry !== undefined) {
 			if (kind !== "bearer_token") {
@@ -126,9 +139,10 @@ export function parseAuthCommand(args: string[]): AuthCommand | undefined {
 			minExpiryMs = parseDuration(inlineMinExpiry ?? args[++index]);
 			continue;
 		}
-		if (arg === "--json" || arg === "--no-refresh") {
+		if (arg === "--json" || arg === "--credentials" || arg === "--no-refresh") {
 			if (kind !== "check") throw new AuthCommandError(`${arg} is only supported by auth check`);
 			if (arg === "--json") json = true;
+			else if (arg === "--credentials") credentials = true;
 			else noRefresh = true;
 			continue;
 		}
@@ -136,8 +150,8 @@ export function parseAuthCommand(args: string[]): AuthCommand | undefined {
 	}
 
 	return minExpiryMs === undefined
-		? { kind, args: commandArgs, json, noRefresh }
-		: { kind, args: commandArgs, json, noRefresh, minExpiryMs };
+		? { kind, args: commandArgs, json, credentials, noRefresh }
+		: { kind, args: commandArgs, json, credentials, noRefresh, minExpiryMs };
 }
 
 function hasUnsupportedAuthCheckFields(args: Args): boolean {

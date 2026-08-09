@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { ModelsError } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, test } from "vitest";
 import { type Args, parseArgs } from "../src/cli/args.ts";
-import { checkProviderAuth, createAuthCheckModelRuntime } from "../src/cli/auth-check.ts";
+import { checkProviderAuth, createAuthCheckModelRuntime, getProviderCredential } from "../src/cli/auth-check.ts";
 import { AuthCommandError, parseAuthCommand } from "../src/cli/auth-command.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -116,6 +116,21 @@ describe("auth check command", () => {
 		});
 	});
 
+	test("does not export an OAuth token inside its safety window without refresh", async () => {
+		const credentials = AuthStorage.inMemory({
+			openai: {
+				type: "oauth",
+				access: "short-lived-access",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			},
+		});
+
+		await expect(
+			getProviderCredential("openai", runtimeStub({}), credentials, { refresh: false }),
+		).resolves.toBeUndefined();
+	});
+
 	test("reports an OAuth refresh failure as not ready", async () => {
 		const runtime = {
 			getError: () => undefined,
@@ -158,19 +173,38 @@ describe("auth check command", () => {
 		).rejects.toBeInstanceOf(AuthCommandError);
 	});
 
-	test("parses JSON and no-refresh check options before normal argument parsing", () => {
+	test("parses check-only options before normal argument parsing", () => {
 		expect(parseAuthCommand(["auth", "check", "--provider", "openai"])).toEqual({
 			kind: "check",
 			args: ["--provider", "openai"],
 			json: false,
+			credentials: false,
 			noRefresh: false,
 		});
 		expect(parseAuthCommand(["auth", "check", "--json", "--no-refresh", "--provider", "openai"])).toEqual({
 			kind: "check",
 			args: ["--provider", "openai"],
 			json: true,
+			credentials: false,
 			noRefresh: true,
 		});
+		expect(parseAuthCommand(["auth", "check", "--credentials", "--provider", "openai"])).toEqual({
+			kind: "check",
+			args: ["--provider", "openai"],
+			json: false,
+			credentials: true,
+			noRefresh: false,
+		});
+		expect(parseAuthCommand(["auth", "check", "--provider", "openai", "--", "--credentials"])).toEqual({
+			kind: "check",
+			args: ["--provider", "openai", "--", "--credentials"],
+			json: false,
+			credentials: false,
+			noRefresh: false,
+		});
+		expect(() => parseAuthCommand(["auth", "print-api-key", "--credentials"])).toThrow(
+			"--credentials is only supported by auth check",
+		);
 	});
 
 	test("does not create an auth file or its parent directory for a no-refresh read", async () => {

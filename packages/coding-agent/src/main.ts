@@ -1,6 +1,12 @@
 import chalk from "chalk";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
-import { type AuthCheckResult, checkProviderAuth, createAuthCheckModelRuntime } from "./cli/auth-check.ts";
+import {
+	type AuthCheckResult,
+	checkProviderAuth,
+	createAuthCheckModelRuntime,
+	getProviderCredential,
+	hasExplicitCredentialExportTarget,
+} from "./cli/auth-check.ts";
 import {
 	type AuthCommand,
 	AuthCommandError,
@@ -12,6 +18,7 @@ import {
 	validateAuthCheckArgs,
 } from "./cli/auth-command.ts";
 import {
+	CredentialPrintError,
 	emitCredential,
 	resolveCredentialForPrint,
 	toCredentialPrintError,
@@ -115,14 +122,17 @@ function authCheckErrorMessage(error: unknown): string {
  * `atomic auth …` owns provider-readiness checks and the credential-export
  * door. Its stdout guard routes all ordinary writes to stderr while a command
  * resolves. A readiness result reaches real stdout only as a status record;
- * credential export remains limited to emitCredential's Secret egress.
+ * the opt-in credential branch passes a Secret to emitCredential, the sole
+ * code path that can open it and write it to stdout.
  */
 async function runAuthCheckCommand(command: AuthCommand, parsed: Args): Promise<void> {
 	const requestedAuth = validateAuthCheckArgs(parsed);
 	let result: AuthCheckResult;
+	let credentials: AuthStorage | ReadOnlyAuthStorage | undefined;
+	let modelRuntime: ModelRuntime | undefined;
 	try {
-		const credentials = command.noRefresh ? new ReadOnlyAuthStorage() : AuthStorage.create();
-		const modelRuntime = await createAuthCheckModelRuntime(credentials);
+		credentials = command.noRefresh ? new ReadOnlyAuthStorage() : AuthStorage.create();
+		modelRuntime = await createAuthCheckModelRuntime(credentials);
 		result = await checkProviderAuth(parsed, modelRuntime, { refresh: !command.noRefresh, credentials });
 	} catch (error) {
 		console.error(chalk.red(`Error: ${authCheckErrorMessage(error)}`));
@@ -133,9 +143,53 @@ async function runAuthCheckCommand(command: AuthCommand, parsed: Args): Promise<
 		};
 	}
 
-	const output = command.json ? JSON.stringify(result) : result.status;
-	writeRawStdout(`${output}\n`);
-	await flushRawStdout();
+	let credentialEmitted = false;
+	if (command.credentials && result.status === "ready" && credentials && modelRuntime) {
+		if (!hasExplicitCredentialExportTarget(parsed, modelRuntime, result.provider)) {
+			console.error(chalk.red("Error: Credential export requires --provider or an exact --model target"));
+			result = { status: "invalid", provider: result.provider, reason: "invalid_state" };
+		} else {
+			try {
+				const credential = await getProviderCredential(result.provider, modelRuntime, credentials, {
+					refresh: !command.noRefresh,
+				});
+				if (credential) {
+					await emitCredential(
+						credential,
+						command.json
+							? {
+									status: result.status,
+									provider: result.provider,
+									...(result.reason === undefined ? {} : { reason: result.reason }),
+									...(result.authType === undefined ? {} : { authType: result.authType }),
+								}
+							: undefined,
+					);
+					credentialEmitted = true;
+				} else {
+					result = { status: "not_ready", provider: result.provider, reason: "credential_not_available" };
+				}
+			} catch (error) {
+				if (error instanceof CredentialPrintError) throw error;
+				// Provider text can quote a credential. Explain the export failure with a
+				// constant diagnostic rather than carrying that text into stderr.
+				console.error(chalk.red("Error: Failed to resolve credential for export"));
+				result = { status: "invalid", provider: result.provider, reason: "invalid_state" };
+			}
+		}
+	}
+
+	if (!credentialEmitted) {
+		if (command.credentials && !command.json) {
+			// The explicit credential stream is credential-only. A caller assigning
+			// it to a shell variable receives no status word on a non-zero exit.
+			console.error(result.status);
+		} else {
+			const output = command.json ? JSON.stringify(result) : result.status;
+			writeRawStdout(`${output}\n`);
+			await flushRawStdout();
+		}
+	}
 	process.exitCode = result.status === "ready" ? 0 : result.status === "not_ready" ? 1 : 2;
 }
 async function runAuthCommand(args: string[]): Promise<boolean> {
@@ -176,8 +230,13 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 			try {
 				await runAuthCheckCommand(command, parsed);
 			} catch (error) {
-				console.error(chalk.red(`Error: ${authCheckErrorMessage(error)}`));
-				process.exitCode = 2;
+				if (error instanceof CredentialPrintError) {
+					console.error(chalk.red(`Error: ${error.message}`));
+					process.exitCode = error.exitCode;
+				} else {
+					console.error(chalk.red(`Error: ${authCheckErrorMessage(error)}`));
+					process.exitCode = 2;
+				}
 			}
 			return true;
 		}

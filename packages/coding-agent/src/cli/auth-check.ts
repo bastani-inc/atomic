@@ -1,9 +1,10 @@
-import { type CredentialStore, ModelsError } from "@earendil-works/pi-ai";
-import { resolveCliModel } from "../core/model-resolver.ts";
+import { type AuthResult, type CredentialStore, ModelsError } from "@earendil-works/pi-ai";
+import { findExactModelReferenceMatch, resolveCliModel } from "../core/model-resolver.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../core/models-store.ts";
 import type { Args } from "./args.ts";
 import { AuthCommandError, validateAuthCheckArgs } from "./auth-command.ts";
+import { DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS, Secret } from "./credential-print.ts";
 
 export type AuthCheckStatus = "ready" | "not_ready" | "invalid";
 export type AuthCheckReason =
@@ -66,6 +67,48 @@ export async function checkProviderAuth(
 		}
 		return { status: "invalid", provider, reason: "invalid_state" };
 	}
+}
+
+/**
+ * A credential export must name one target, not accept the CLI resolver's fuzzy
+ * cross-provider match. Provider flags are explicit; a model-only export is
+ * explicit only when its exact reference resolves uniquely to the provider.
+ */
+export function hasExplicitCredentialExportTarget(args: Args, modelRuntime: ModelRuntime, provider: string): boolean {
+	const { provider: cliProvider, model: cliModel } = validateAuthCheckArgs(args);
+	if (cliProvider) return true;
+	if (!cliModel) return false;
+	const exactModel = findExactModelReferenceMatch(cliModel, [...modelRuntime.getModels()]);
+	return exactModel?.provider.toLowerCase() === provider.toLowerCase();
+}
+
+function getAuthCredential(auth: AuthResult | undefined): string | undefined {
+	if (auth?.auth.apiKey) return auth.auth.apiKey;
+	const authorization = Object.entries(auth?.auth.headers ?? {}).find(
+		([name]) => name.toLowerCase() === "authorization",
+	)?.[1];
+	return typeof authorization === "string" ? /^Bearer\s+(.+)$/iu.exec(authorization)?.[1] : undefined;
+}
+
+/** Resolve the credential that the checked provider would use, without exposing it to callers. */
+export async function getProviderCredential(
+	providerId: string,
+	modelRuntime: ModelRuntime,
+	credentials: CredentialStore,
+	options: { refresh: boolean },
+): Promise<Secret | undefined> {
+	if (!options.refresh) {
+		const stored = await credentials.read(providerId);
+		if (stored?.type === "oauth") {
+			return stored.expires - Date.now() >= DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS
+				? new Secret(stored.access)
+				: undefined;
+		}
+	}
+	const credential = getAuthCredential(
+		await modelRuntime.getAuth(providerId, { minOAuthValidityMs: DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS }),
+	);
+	return credential === undefined ? undefined : new Secret(credential);
 }
 
 export async function createAuthCheckModelRuntime(credentials: CredentialStore): Promise<ModelRuntime> {
