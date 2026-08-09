@@ -80,8 +80,13 @@ describe("remote catalog ETag revalidation", () => {
 	});
 
 	it("drops stale validators for unavailable overlays and keeps them after transient errors", async () => {
-		const responses = [new Response("missing", { status: 501 }), new Response("busy", { status: 503 })];
-		vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift()!);
+		const responses = [
+			new Response("missing", { status: 501 }),
+			new Response("busy", { status: 503 }),
+			new Response("busy", { status: 503 }),
+			new Response("busy", { status: 503 }),
+		];
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift()!);
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
 		await store.write(provider.id, { models: [model("cached")], checkedAt: 0, etag: '"one"' });
@@ -93,5 +98,6 @@ describe("remote catalog ETag revalidation", () => {
 		await store.write(provider.id, { models: [model("cached")], checkedAt: 0, etag: '"two"' });
 		await expect(provider.refreshModels?.(await refresh())).rejects.toThrow("503");
 		expect((await store.read(provider.id))?.etag).toBe('"two"');
+		expect(fetchSpy).toHaveBeenCalledTimes(4);
 	});
 });

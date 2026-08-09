@@ -342,5 +342,32 @@ Content`,
 			expect(result.skills.some((resource) => resource.path === skillPath)).toBe(false);
 			expect(result.prompts.some((resource) => resource.path === promptPath)).toBe(true);
 		});
+
+		it("keeps valid npm package resources when another legacy manifest field is malformed", async () => {
+			const packageDir = join(agentDir, "npm", "node_modules", "malformed-npm-manifest-pkg");
+			const skillPath = join(packageDir, "skills", "ignored", "SKILL.md");
+			const promptPath = join(packageDir, "prompts", "valid.md");
+			mkdirSync(join(packageDir, "skills", "ignored"), { recursive: true });
+			mkdirSync(join(packageDir, "prompts"), { recursive: true });
+			writeFileSync(skillPath, "---\nname: ignored\ndescription: Invalid manifest entry\n---\n");
+			writeFileSync(promptPath, "Valid prompt");
+			writeFileSync(
+				join(packageDir, "package.json"),
+				JSON.stringify({
+					name: "malformed-npm-manifest-pkg",
+					version: "1.0.0",
+					pi: {
+						skills: "./skills",
+						prompts: ["./prompts"],
+					},
+				}),
+			);
+			settingsManager.setPackages(["npm:malformed-npm-manifest-pkg"]);
+
+			const result = await packageManager.resolve();
+
+			expect(result.skills.some((resource) => resource.path === skillPath)).toBe(false);
+			expect(result.prompts.some((resource) => resource.path === promptPath)).toBe(true);
+		});
 	});
 });
