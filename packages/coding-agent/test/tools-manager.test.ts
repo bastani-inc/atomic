@@ -51,4 +51,25 @@ describe("managed tool downloads", () => {
 		expect(releaseAttempts).toBe(3);
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(3);
 	});
+
+	it("retries transient archive download errors after release metadata succeeds", async () => {
+		const releaseUrl = "https://api.github.com/repos/sharkdp/fd/releases/latest";
+		const archiveUrlPrefix = "https://github.com/sharkdp/fd/releases/download/v10.2.0/";
+		let archiveAttempts = 0;
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			const url = String(input);
+			if (url === releaseUrl) return Response.json({ tag_name: "v10.2.0" });
+			if (url.startsWith(archiveUrlPrefix)) {
+				archiveAttempts += 1;
+				return archiveAttempts < 3 ? new Response("busy", { status: 503 }) : new Response("archive");
+			}
+			return new Response("unexpected request", { status: 404 });
+		});
+
+		await expect(ensureTool("fd", true)).resolves.toBeUndefined();
+
+		expect(archiveAttempts).toBe(3);
+		expect(fetchMock.mock.calls.filter(([input]) => String(input) === releaseUrl)).toHaveLength(1);
+		expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith(archiveUrlPrefix))).toHaveLength(3);
+	});
 });
