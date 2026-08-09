@@ -1,7 +1,12 @@
 import { Markdown } from "@earendil-works/pi-tui";
 import { APP_NAME, PACKAGE_NAME, VERSION } from "./config.ts";
 import { getMarkdownTheme } from "./modes/interactive/theme/theme.ts";
-import { getLatestPiRelease, isNewerPackageVersion, type LatestPiRelease } from "./utils/version-check.ts";
+import {
+	formatVersionCheckError,
+	getLatestPiRelease,
+	isNewerPackageVersion,
+	type LatestPiRelease,
+} from "./utils/version-check.ts";
 
 export interface SelfUpdatePlan {
 	packageName: string;
@@ -25,10 +30,11 @@ export function buildSelfUpdatePlan(release: LatestPiRelease, force = false): Se
 export async function resolveSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 	let release: LatestPiRelease | undefined;
 	try {
-		release = await getLatestPiRelease();
+		release = await getLatestPiRelease({ retry: true });
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Could not determine latest ${APP_NAME} version: ${message}`);
+		throw new Error(`Could not determine latest ${APP_NAME} version: ${formatVersionCheckError(error)}`, {
+			cause: error,
+		});
 	}
 	if (!release) throw new Error(`Could not determine latest ${APP_NAME} version.`);
 	return buildSelfUpdatePlan(release, force);

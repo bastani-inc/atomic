@@ -144,6 +144,8 @@ describe("remote catalog provider", () => {
 				headers: { "content-type": "application/json", etag: '"catalog-1"' },
 			}),
 			new Response("rate limited", { status: 429 }),
+			new Response("rate limited", { status: 429 }),
+			new Response("rate limited", { status: 429 }),
 			new Response(null, { status: 304, headers: { etag: '"catalog-1"' } }),
 		];
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
@@ -160,7 +162,7 @@ describe("remote catalog provider", () => {
 		expect(stored?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
 
 		await provider.refreshModels?.(await refresh(true));
-		expect(fetchSpy.mock.calls[2]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
+		expect(fetchSpy.mock.calls[4]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
 	});
 
