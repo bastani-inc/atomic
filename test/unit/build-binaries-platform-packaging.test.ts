@@ -22,3 +22,21 @@ test("musl archive staging removes embedded-postgres binary leaves", () => {
 	const syntax = spawnSync("bash", ["-n", buildScriptPath], { encoding: "utf8" });
 	assert.equal(syntax.status, 0, syntax.stderr);
 });
+
+test("x64 release binaries target Bun's baseline CPU runtime", () => {
+	const buildScript = readFileSync(buildScriptPath, "utf8");
+	const compilationLoopStart = 'for platform in "$' + '{PLATFORMS[@]}"; do';
+	const compilationLoop = buildScript.slice(
+		buildScript.indexOf(compilationLoopStart),
+		buildScript.indexOf('echo "==> Copying runtime dependencies..."'),
+	);
+
+	assert.match(compilationLoop, /bun_target="bun-\$platform"/u);
+	assert.match(compilationLoop, /\[\[ "\$platform" == \*-x64 \|\| "\$platform" == \*-x64-\* \]\]/u);
+	assert.match(compilationLoop, /bun_target="\$\{bun_target\}-baseline"/u);
+	assert.match(compilationLoop, /--target="\$bun_target"/u);
+	assert.doesNotMatch(compilationLoop, /--target=bun-\$platform/u);
+
+	const syntax = spawnSync("bash", ["-n", buildScriptPath], { encoding: "utf8" });
+	assert.equal(syntax.status, 0, syntax.stderr);
+});

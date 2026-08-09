@@ -666,6 +666,8 @@ export function createFindToolDefinition(
 									target.pattern !== "**"
 								)
 									fdPattern = `**/${target.pattern}`;
+								// fd matches full paths with native separators on Windows.
+								if (process.platform === "win32") fdPattern = fdPattern.replaceAll("/", String.raw`[/\\]`);
 							}
 							args.push("--", fdPattern, target.searchPath);
 							const remainingMs = deadline - Date.now();

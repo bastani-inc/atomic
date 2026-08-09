@@ -6,6 +6,8 @@ Atomic saves conversations as sessions so you can continue work, branch from ear
 
 Sessions auto-save to `~/.atomic/agent/sessions/`, organized by working directory. Each session is a JSONL file with a tree structure.
 
+The session picker also scans linked project directories inside this default store, so project aliases or relocated session folders remain discoverable through `/resume` and `atomic -r`.
+
 ```bash
 atomic -c                  # Continue most recent session
 atomic -r                  # Browse and select from past sessions

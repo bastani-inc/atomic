@@ -16,6 +16,8 @@ For most users, [Git for Windows](https://git-scm.com/download/win) is sufficien
 }
 ```
 
+Paths copied from Git Bash, MSYS2, Cygwin, or WSL are accepted anywhere Atomic resolves a file path. For example, `/c/Users/name/project/file.ts`, `/cygdrive/c/Users/name/project/file.ts`, and `/mnt/c/Users/name/project/file.ts` resolve as the matching Windows drive path.
+
 ## Filesystem Watchers
 
 On Windows, Atomic canonicalizes paths before starting native filesystem watchers. If a watcher target cannot be canonicalized or still contains an unsafe 8.3 short-name component such as `USERNA~1`, Atomic avoids native `fs.watch` for that target and uses polling where the feature supports it. This protects long-running sessions, async subagent result notifications, footer git status refreshes, and custom theme reloads from Windows/libuv path-prefix assertion crashes.

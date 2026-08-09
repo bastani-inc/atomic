@@ -174,14 +174,20 @@ bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-wo
 for platform in "${PLATFORMS[@]}"; do
     echo "Building for $platform..."
     mkdir -p "binaries/$platform"
+    bun_target="bun-$platform"
+    # Bun's generic x64 runtime assumes newer CPU instructions. Keep every x64
+    # release target, including musl, compatible with baseline x64 machines.
+    if [[ "$platform" == *-x64 || "$platform" == *-x64-* ]]; then
+        bun_target="${bun_target}-baseline"
+    fi
     if [[ "$platform" == windows-* ]]; then
         # Bun 1.3.14 bytecode-compiled Windows standalone executables can
         # segfault before user code runs (llint_entry / bytecode alignment).
         # Keep Windows release binaries standalone-compiled, but ship source
         # payload instead of embedded bytecode until Bun's fix is available.
-        bun build --compile --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-$platform ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
+        bun build --compile --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
     else
-        bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-$platform ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic"
+        bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic"
     fi
 done
 

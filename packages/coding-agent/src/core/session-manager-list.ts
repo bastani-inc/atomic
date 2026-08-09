@@ -276,7 +276,9 @@ export async function listAllSessions(
 			return [];
 		}
 		const entries = await readdir(sessionsDir, { withFileTypes: true });
-		const dirs = entries.filter((e) => e.isDirectory()).map((e) => join(sessionsDir, e.name));
+		const dirs = entries
+			.filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+			.map((entry) => join(sessionsDir, entry.name));
 
 		// Count total files first for accurate progress
 		let totalFiles = 0;

@@ -37,6 +37,7 @@
 - Fixed a stale automatic post-compaction retry resuming after a manual `/compact` finished during the continuation grace period.
 - Fixed a short transcript with repeated below-cap truncations retrying compaction more than once when no compaction boundary could be made, while preserving load-bearing recovery for a later actual context overflow.
 - Fixed `ChatSessionHost` leaving queued prompts stuck when compaction was cancelled or failed; queues now drain after every non-mid-turn compaction completion.
+- Fixed Windows and portable-session handling: Git Bash, MSYS, Cygwin, and WSL drive paths now resolve as Windows paths; fallback `find` glob matching accepts native separators; the session picker scans linked project directories; and x64 standalone binaries use Bun's baseline CPU target.
 
 ### Removed
 
