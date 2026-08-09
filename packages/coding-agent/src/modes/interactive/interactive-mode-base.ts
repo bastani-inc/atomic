@@ -514,6 +514,10 @@ export class InteractiveModeBase {
 					showStatus: (message) => this.showStatus(message),
 					showError: (message) => this.showError(message),
 				}),
+			{
+				isFullscreen: () => this.renderer.mode === "fullscreen",
+				onRendererReplaced: (listener) => this.onTuiRendererChange(listener),
+			},
 			(handler) => {
 				this.interactiveEngineShortcutHandler = handler;
 				this.defaultEditor.onExtensionShortcut = handler;
@@ -524,10 +528,6 @@ export class InteractiveModeBase {
 				};
 			},
 			this.keybindings,
-			{
-				isFullscreen: () => this.renderer.mode === "fullscreen",
-				onRendererReplaced: (listener) => this.onTuiRendererChange(listener),
-			},
 		);
 	}
 

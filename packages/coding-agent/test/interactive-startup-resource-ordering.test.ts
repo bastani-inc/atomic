@@ -277,7 +277,10 @@ test("isolated interactive-engine notify lands below RESOURCES", async () => {
 			return () => {};
 		},
 	});
-	const dispose = attachInteractiveEngineHost(runtime, ui, () => {});
+	const dispose = attachInteractiveEngineHost(runtime, ui, () => {}, {
+		isFullscreen: () => false,
+		onRendererReplaced: () => () => {},
+	});
 	assert.ok(extensionUiHandler);
 	await extensionUiHandler({
 		type: "extension_ui_request",

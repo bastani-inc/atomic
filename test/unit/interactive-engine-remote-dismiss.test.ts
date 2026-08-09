@@ -21,7 +21,10 @@ import {
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
-import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
+import {
+	RemoteComponentController,
+	type TuiRendererLifecycle,
+} from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { sleep } from "../helpers/runtime.js";
 
 interface HostMount {
@@ -40,6 +43,10 @@ interface Bridge {
 	inline(): HostMount[];
 	widgets: string[];
 }
+const regularTuiRendererLifecycle: TuiRendererLifecycle = {
+	isFullscreen: () => false,
+	onRendererReplaced: () => () => {},
+};
 
 function makeBridge(): Bridge {
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
@@ -112,7 +119,7 @@ function makeBridge(): Bridge {
 
 	return {
 		child,
-		controller: new RemoteComponentController(runtime, ui),
+		controller: new RemoteComponentController(runtime, ui, regularTuiRendererLifecycle),
 		mounts,
 		childCommands,
 		widgets,

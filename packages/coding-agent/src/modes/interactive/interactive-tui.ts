@@ -6,6 +6,7 @@ import {
 	TuiMainScreen,
 	type TuiMode,
 } from "@earendil-works/pi-tui";
+import { openBrowser } from "../../utils/open-browser.ts";
 
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
 
@@ -20,8 +21,7 @@ export interface InteractiveTuiOptions {
 export function createInteractiveTui(options: InteractiveTuiOptions): InteractiveTui {
 	const terminal = options.terminal ?? new ProcessTerminal();
 	if (options.tuiMode === "fullscreen") {
-		// Do not activate model-rendered OSC 8 links from the host process.
-		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory);
+		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, { openUrl: openBrowser });
 	}
 	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
 }

@@ -7,6 +7,7 @@ import {
 	createInteractiveTuiReference,
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
+import { openBrowser } from "../src/utils/open-browser.ts";
 
 class RecordingTerminal implements Terminal {
 	columns = 40;
@@ -15,6 +16,7 @@ class RecordingTerminal implements Terminal {
 	startCount = 0;
 	stopCount = 0;
 	cursorVisible = true;
+	readonly writes: string[] = [];
 	private onInput: ((data: string) => void) | undefined;
 
 	start(onInput: (data: string) => void, _onResize: () => void): void {
@@ -28,7 +30,9 @@ class RecordingTerminal implements Terminal {
 	}
 
 	async drainInput(): Promise<void> {}
-	write(_data: string): void {}
+	write(data: string): void {
+		this.writes.push(data);
+	}
 	moveBy(_lines: number): void {}
 	hideCursor(): void {
 		this.cursorVisible = false;
@@ -48,25 +52,31 @@ class RecordingTerminal implements Terminal {
 }
 
 describe("interactive TUI renderer", () => {
-	test("selects the alternate-screen renderer only for fullscreen mode", () => {
+	test("selects the alternate-screen renderer with link activation and alternate-screen bytes", () => {
 		const regular = createInteractiveTui({
 			tuiMode: "regular",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal: new RecordingTerminal(),
 		});
+		const fullscreenTerminal = new RecordingTerminal();
 		const fullscreen = createInteractiveTui({
 			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
-			terminal: new RecordingTerminal(),
+			terminal: fullscreenTerminal,
 		});
 
 		expect(regular.mode).toBe("regular");
 		expect(isViewportTUI(regular)).toBe(false);
 		expect(fullscreen.mode).toBe("fullscreen");
-		expect(Reflect.get(fullscreen, "openUrl")).toBeUndefined();
+		expect(Reflect.get(fullscreen, "openUrl")).toBe(openBrowser);
 		expect(isViewportTUI(fullscreen)).toBe(true);
+
+		fullscreen.start();
+		expect(fullscreenTerminal.writes.some((write) => write.includes("\x1b[?1049h"))).toBe(true);
+		fullscreen.stop();
+		expect(fullscreenTerminal.writes.some((write) => write.includes("\x1b[?1049l"))).toBe(true);
 	});
 
 	test("routes captured methods to a replacement renderer", () => {

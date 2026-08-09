@@ -47,7 +47,7 @@ export class TerminalModeController {
 	private readonly isFullscreen: () => boolean;
 	private readonly components = new Map<string, ComponentTerminalState>();
 
-	constructor(isFullscreen: () => boolean = () => false) {
+	constructor(isFullscreen: () => boolean) {
 		this.isFullscreen = isFullscreen;
 	}
 
@@ -110,14 +110,16 @@ export class TerminalModeController {
 	private write(state: ComponentTerminalState, control: EngineTerminalControl): void {
 		if (control.kind === "mouse-scroll-tracking") {
 			if (control.enabled === state.mouse) return;
+			const hadMouseControl = this.hasMouseControl();
 			state.mouse = control.enabled;
-			this.writeMouse(state.terminal);
+			if (hadMouseControl !== this.hasMouseControl()) this.writeMouse(state.terminal);
 			return;
 		}
 		const disabled = !control.enabled;
 		if (disabled === state.autowrapDisabled) return;
+		const hadAutowrapDisabledControl = this.hasAutowrapDisabledControl();
 		state.autowrapDisabled = disabled;
-		this.writeAutowrap(state.terminal);
+		if (hadAutowrapDisabledControl !== this.hasAutowrapDisabledControl()) this.writeAutowrap(state.terminal);
 	}
 
 	private writeMouse(terminal: HostTerminalWriter | undefined): void {
@@ -132,14 +134,14 @@ export class TerminalModeController {
 
 	private hasMouseControl(): boolean {
 		for (const state of this.components.values()) {
-			if (state.mouse) return true;
+			if (state.terminal && state.mouse) return true;
 		}
 		return false;
 	}
 
 	private hasAutowrapDisabledControl(): boolean {
 		for (const state of this.components.values()) {
-			if (state.autowrapDisabled) return true;
+			if (state.terminal && state.autowrapDisabled) return true;
 		}
 		return false;
 	}
@@ -153,12 +155,14 @@ export class TerminalModeController {
 
 	private reset(state: ComponentTerminalState): void {
 		if (state.mouse) {
+			const hadMouseControl = this.hasMouseControl();
 			state.mouse = false;
-			this.writeMouse(state.terminal);
+			if (hadMouseControl !== this.hasMouseControl()) this.writeMouse(state.terminal);
 		}
 		if (state.autowrapDisabled) {
+			const hadAutowrapDisabledControl = this.hasAutowrapDisabledControl();
 			state.autowrapDisabled = false;
-			this.writeAutowrap(state.terminal);
+			if (hadAutowrapDisabledControl !== this.hasAutowrapDisabledControl()) this.writeAutowrap(state.terminal);
 		}
 		state.buffered = [];
 	}

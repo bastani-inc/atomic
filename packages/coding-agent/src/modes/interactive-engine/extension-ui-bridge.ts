@@ -37,9 +37,9 @@ export function attachInteractiveEngineHost(
 	runtime: AgentSessionRuntime,
 	ui: ExtensionUIContext,
 	onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void,
+	tuiRendererLifecycle: TuiRendererLifecycle,
 	setShortcutHandler?: (handler: (data: string) => boolean) => undefined | (() => void),
 	keybindings?: KeybindingsManager,
-	tuiRendererLifecycle?: TuiRendererLifecycle,
 ): () => void {
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
 	const disposeDiagnostic = runtime.onDiagnostic(onDiagnostic);
