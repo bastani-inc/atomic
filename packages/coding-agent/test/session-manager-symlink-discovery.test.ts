@@ -62,11 +62,13 @@ describe("session discovery through linked project directories", () => {
 		expect(sessions.map((session) => session.id)).toEqual(["regular"]);
 	});
 
-	it.skipIf(process.platform === "win32")("ignores links to files", async () => {
+	it("ignores links to files", async () => {
 		writeSession(join(sessionsDir, "--regular--"), "regular");
 		const targetFile = join(tempDir, "not-a-directory");
+		mkdirSync(targetFile);
+		symlinkSync(targetFile, join(sessionsDir, "--file--"), DIRECTORY_LINK_TYPE);
+		rmSync(targetFile, { recursive: true });
 		writeFileSync(targetFile, "");
-		symlinkSync(targetFile, join(sessionsDir, "--file--"), "file");
 
 		const sessions = await SessionManager.listAll();
 
