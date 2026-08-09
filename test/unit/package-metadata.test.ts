@@ -147,6 +147,13 @@ describe("package metadata", () => {
 		assert.equal(atomicPackageJson.atomicConfig.configDir, ".atomic");
 	});
 
+	test("@bastani/atomic package manifest exports the experimental client entrypoint", () => {
+		assert.deepEqual(atomicPackageJson.exports["./client"], {
+			types: "./dist/client/index.d.ts",
+			import: "./dist/client/index.js",
+		});
+	});
+
 	test("@bastani/atomic package manifest is installable outside the workspace", () => {
 		for (const [sectionName, dependencyName, dependencyRange] of dependencyEntries(atomicPackageJson)) {
 			assert.ok(

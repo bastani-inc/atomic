@@ -29,6 +29,10 @@
       "import": "./dist/rpc-entry.js",
       "default": "./dist/rpc-entry.js"
     },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    },
     "./hooks": {
       "types": "./dist/core/hooks/index.d.ts",
       "import": "./dist/core/hooks/index.js"

@@ -78,6 +78,12 @@ Atomic does not require package install scripts. If you want to disable dependen
 
 The SDK is included in the main package. No separate SDK package is needed.
 
+## Experimental remote sessions
+
+`@bastani/atomic/client` is an experimental entrypoint for remote protocol sessions. It exports `RemoteSession` plus transcript projection helpers. Pass it a connected `PiClient` from `@earendil-works/pi-client`, then use `RemoteSession.open()` or `RemoteSession.create()` to own one remote session.
+
+The entrypoint is separate from Atomic's local interactive engine and does not add an `atomic client` CLI command. Its API may change without notice.
+
 ## Core Concepts
 
 ### createAgentSession()
