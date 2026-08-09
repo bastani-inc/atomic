@@ -1,10 +1,16 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { defaultModelPerProvider, findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
+const COPILOT_ENV_KEYS = [
+	"COPILOT_API_TARGET",
+	"GITHUB_COPILOT_BASE_URL",
+	"COPILOT_GITHUB_TOKEN",
+	"GITHUB_SERVER_URL",
+] as const;
 const allModels: Model<"anthropic-messages">[] = [
 	{
 		id: "claude-sonnet-4-5",
@@ -267,6 +273,90 @@ describe("default model selection", () => {
 		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 
 		expect(getModelRuntime(registry).canRestoreUnknownModel("github-copilot")).toBe(true);
+	});
+	test("restores policy-derived missing Copilot model IDs after runtime refresh", async () => {
+		const previousEnvironment = new Map(COPILOT_ENV_KEYS.map((key) => [key, process.env[key]]));
+		for (const key of COPILOT_ENV_KEYS) delete process.env[key];
+		const policyModelId = "copilot-policy-restoration-probe";
+		const storage = AuthStorage.inMemory({
+			"github-copilot": { type: "oauth", access: "expired-access", refresh: "refresh-token", expires: 0 },
+		});
+		try {
+			const registry = await createInMemoryModelRegistry(storage);
+			const modelRuntime = getModelRuntime(registry);
+			vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+				const url = input.toString();
+				if (url === "https://api.github.com/copilot_internal/v2/token") {
+					return Response.json({
+						token: "tid=test;exp=1;proxy-ep=proxy.individual.githubcopilot.com;st=dotcom",
+						expires_at: Math.floor(Date.now() / 1_000) + 3_600,
+					});
+				}
+				if (url === "https://api.individual.githubcopilot.com/models") {
+					return Response.json({
+						data: [
+							{
+								id: "gpt-5.4",
+								model_picker_enabled: true,
+								policy: { state: "enabled" },
+								capabilities: { supports: { tool_calls: true } },
+							},
+							{
+								id: policyModelId,
+								model_picker_enabled: true,
+								policy: { state: "enabled" },
+								capabilities: { supports: { tool_calls: true } },
+							},
+							{
+								id: "embeddings-only",
+								model_picker_enabled: true,
+								policy: { state: "enabled" },
+								capabilities: { supports: { tool_calls: false } },
+							},
+						],
+					});
+				}
+				if (url.includes("/api/models/providers/")) return new Response("not found", { status: 404 });
+				throw new Error(`Unexpected fetch: ${url}`);
+			});
+
+			const refreshed = await modelRuntime.refresh({ providers: ["github-copilot"], allowNetwork: true });
+			expect(refreshed.errors.size).toBe(0);
+			expect(await storage.read("github-copilot")).toMatchObject({
+				type: "oauth",
+				availableModelIds: ["gpt-5.4", policyModelId],
+			});
+			expect(
+				modelRuntime
+					.getAvailableSnapshot()
+					.filter((model) => model.provider === "github-copilot")
+					.map((model) => model.id),
+			).toEqual(["gpt-5.4"]);
+			expect(modelRuntime.getModel("github-copilot", policyModelId)).toBeUndefined();
+
+			const restored = await restoreModelFromSession(
+				"github-copilot",
+				policyModelId,
+				undefined,
+				false,
+				modelRuntime,
+			);
+			const template = modelRuntime.getModel("github-copilot", "gpt-5.4");
+			expect(restored.fallbackMessage).toBeUndefined();
+			expect(restored.model).toMatchObject({
+				provider: "github-copilot",
+				id: policyModelId,
+				name: policyModelId,
+				contextWindow: template?.contextWindow,
+			});
+		} finally {
+			vi.restoreAllMocks();
+			for (const key of COPILOT_ENV_KEYS) {
+				const value = previousEnvironment.get(key);
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
 	});
 	test("findInitialModel selects ai-gateway default when available", async () => {
 		const aiGatewayModel: Model<"anthropic-messages"> = {

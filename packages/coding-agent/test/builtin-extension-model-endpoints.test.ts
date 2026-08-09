@@ -17,9 +17,7 @@ import { fakeModelRuntime } from "./model-runtime-test-utils.ts";
 
 /**
  * MCP and web-access dispatch direct pi-ai calls and must overlay resolved auth.
- * Workflows and subagents create SDK sessions, covered by `createAgentSession
- * stream options > uses a credential-derived endpoint and null headers for
- * workflow and subagent SDK sessions`; Intercom has no model-request path.
+ * Intercom has no model-request path.
  */
 
 const INDIVIDUAL_ENDPOINT = "https://api.individual.githubcopilot.com";

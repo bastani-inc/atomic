@@ -4,10 +4,19 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	type Api,
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	type Model,
+	type ProviderHeaders,
+} from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
+import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
-import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
+import { type CreateAgentSessionOptions, createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { SubagentChildPolicy } from "../../packages/coding-agent/src/index.js";
@@ -65,8 +74,10 @@ async function createChildSession(options: {
 	/** Drop the bundled package roots, reproducing the pre-fix child loader. */
 	readonly withoutBundledPackages?: boolean;
 	readonly policy?: Partial<SubagentChildPolicy>;
+	readonly model?: Model<Api>;
+	readonly modelRuntime?: CreateAgentSessionOptions["modelRuntime"];
 }) {
-	const model = getModel("anthropic", "claude-sonnet-4-5");
+	const model = options.model ?? getModel("anthropic", "claude-sonnet-4-5");
 	assert.notEqual(model, undefined);
 	const settingsManager = SettingsManager.create(options.cwd, options.agentDir);
 	const loaderOptions = inProcessChildResourceLoaderOptions({
@@ -87,6 +98,7 @@ async function createChildSession(options: {
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(options.cwd),
 		model: model!,
+		...(options.modelRuntime === undefined ? {} : { modelRuntime: options.modelRuntime }),
 		...(options.orchestrationContext ? { orchestrationContext: options.orchestrationContext } : {}),
 		subagentPolicy: {
 			managementActions: "full",
@@ -104,6 +116,60 @@ function sessionCwd(prefix: string): { cwd: string; agentDir: string } {
 	const agentDir = join(cwd, "agent");
 	mkdirSync(agentDir, { recursive: true });
 	return { cwd, agentDir };
+}
+
+const CREDENTIAL_ENDPOINT = "https://credential.example/v1";
+const CREDENTIAL_HEADERS: ProviderHeaders = { Authorization: null, "x-credential": "present" };
+
+type CapturedRequest = {
+	baseUrl: string | undefined;
+	headers: ProviderHeaders | undefined;
+};
+
+function endpointProbeModel(provider: string): Model<Api> {
+	return {
+		id: "credential-endpoint-probe",
+		name: "Credential endpoint probe",
+		api: "openai-completions",
+		provider,
+		baseUrl: "https://catalog.example/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 4_096,
+	};
+}
+
+function completedStream(model: Model<Api>) {
+	const stream = createAssistantMessageEventStream();
+	const message: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: "ok" }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+	stream.end(message);
+	return stream;
+}
+
+function assertCredentialRequest(request: CapturedRequest | undefined): void {
+	assert.ok(request, "expected an in-process child model request");
+	assert.equal(request.baseUrl, CREDENTIAL_ENDPOINT);
+	assert.equal(request.headers?.Authorization, null);
+	assert.equal(request.headers?.["x-credential"], "present");
+	assert.equal(Object.hasOwn(request.headers ?? {}, "Authorization"), true);
 }
 
 const REQUIRED_BUNDLED_TOOLS = ["subagent", "web_search", "fetch_content", "intercom"] as const;
@@ -124,6 +190,47 @@ describe("in-process child session resources", () => {
 				}
 			} finally {
 				session.dispose();
+			}
+		},
+		CHILD_SESSION_RELOAD_TIMEOUT_MS,
+	);
+
+	test(
+		"dispatches in-process child requests to the credential endpoint without dropping null headers",
+		async () => {
+			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-endpoint-cwd-");
+			const model = endpointProbeModel("subagent-endpoint-probe");
+			const modelRuntime = await ModelRuntime.create({
+				credentials: AuthStorage.inMemory(),
+				modelsPath: null,
+				allowModelNetwork: false,
+			});
+			const requests: CapturedRequest[] = [];
+			modelRuntime.registerProvider(model.provider, {
+				api: model.api,
+				apiKey: "test-key",
+				baseUrl: model.baseUrl,
+				streamSimple: (requestModel, _context, streamOptions) => {
+					requests.push({ baseUrl: requestModel.baseUrl, headers: streamOptions?.headers });
+					return completedStream(requestModel);
+				},
+			});
+			vi.spyOn(modelRuntime, "getAuth").mockResolvedValue({
+				auth: { apiKey: "credential-key", baseUrl: CREDENTIAL_ENDPOINT, headers: CREDENTIAL_HEADERS },
+			});
+
+			try {
+				const { session } = await createChildSession({ cwd, agentDir, model, modelRuntime });
+				try {
+					const stream = await session.agent.streamFunction(model, { messages: [] });
+					await stream.result();
+					assertCredentialRequest(requests[0]);
+				} finally {
+					session.dispose();
+				}
+			} finally {
+				modelRuntime.unregisterProvider(model.provider);
+				vi.restoreAllMocks();
 			}
 		},
 		CHILD_SESSION_RELOAD_TIMEOUT_MS,
