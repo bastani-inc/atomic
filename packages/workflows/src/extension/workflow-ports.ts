@@ -24,14 +24,22 @@ export function makeMcpPort(pi: ExtensionAPI): WorkflowMcpPort | undefined {
 	};
 	return {
 		setScope(stageId: string, allow: string[] | null, deny: string[] | null) {
-			setMcpScope(piForMcp, {
-				stageId,
-				allow: allow ?? undefined,
-				deny: deny ?? undefined,
-			});
+			try {
+				setMcpScope(piForMcp, {
+					stageId,
+					allow: allow ?? undefined,
+					deny: deny ?? undefined,
+				});
+			} catch {
+				// A workflow can outlive its extension instance; scope events are advisory.
+			}
 		},
 		clearScope(stageId: string) {
-			clearMcpScope(piForMcp, stageId);
+			try {
+				clearMcpScope(piForMcp, stageId);
+			} catch {
+				// A workflow can outlive its extension instance; scope events are advisory.
+			}
 		},
 	};
 }
