@@ -56,6 +56,7 @@ type InitContext = {
 		requestRender: () => void;
 	};
 	headerContainer: TestNode;
+	documentContainer: TestNode;
 	chatContainer: TestNode;
 	pendingMessagesContainer: TestNode;
 	statusContainer: TestNode;
@@ -63,9 +64,11 @@ type InitContext = {
 	usageMeter: TestNode;
 	editorContainer: TestNode;
 	footer: TestNode;
+	footerContainer: TestNode;
 	widgetContainerBelow: TestNode;
 	editor: TestNode;
 	renderWidgets: () => void;
+	mountInteractiveTui: (tui: InitContext["ui"], components: TestNode[]) => void;
 	setupKeyHandlers: () => void;
 	setupEditorSubmitHandler: () => void;
 	pendingUserInputs: string[];
@@ -217,6 +220,7 @@ describe("InteractiveMode startup latency hooks", () => {
 				requestRender: vi.fn(),
 			},
 			headerContainer: {},
+			documentContainer: {},
 			chatContainer: {},
 			pendingMessagesContainer: {},
 			statusContainer: {},
@@ -224,9 +228,11 @@ describe("InteractiveMode startup latency hooks", () => {
 			usageMeter: {},
 			editorContainer: {},
 			footer: {},
+			footerContainer: {},
 			widgetContainerBelow: {},
 			editor: {},
 			renderWidgets: vi.fn(),
+			mountInteractiveTui: vi.fn(),
 			setupKeyHandlers: vi.fn(),
 			setupEditorSubmitHandler: vi.fn(),
 			pendingUserInputs: [],

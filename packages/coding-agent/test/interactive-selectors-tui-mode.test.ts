@@ -64,6 +64,7 @@ function openSettingsSelector(hasActiveOverlay: boolean) {
 		renderer,
 		ui: undefined as unknown as TUI,
 		mainScreenRenderState: undefined,
+		fullscreenLayoutRoot: { render: () => [], invalidate: () => {} },
 		options: { tuiMode: "regular" as TuiMode },
 		themeController: { getTerminalTheme: () => "dark", rebindTui: () => {} },
 		tuiInputSubscriptions: new Set(),
