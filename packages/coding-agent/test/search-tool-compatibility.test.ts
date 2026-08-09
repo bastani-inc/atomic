@@ -697,12 +697,9 @@ describe("find and search builtins", () => {
 		expect(output).not.toContain("a-old.txt");
 	});
 
-	it("rejects empty find.paths and root scopes", async () => {
+	it("rejects empty find.paths", async () => {
 		await expect(
 			createFindToolDefinition(testDir).execute("find-empty", { paths: [] }, undefined, undefined, {} as never),
 		).rejects.toThrow(/find\.paths/);
-		await expect(
-			createFindToolDefinition(testDir).execute("find-root", { paths: ["/"] }, undefined, undefined, {} as never),
-		).rejects.toThrow(/filesystem root/);
 	});
 });

@@ -157,16 +157,20 @@ function normalizeFindTargets(cwd: string, pathsValue: string[] | undefined, cus
 			exactPathInput: parsed.glob === undefined,
 			inputPath: searchPath,
 		};
-		if (path.parse(target.searchPath).root === target.searchPath)
-			throw new Error("Refusing to search filesystem root with find; provide a narrower path.");
 		return target;
 	});
 }
-function relativizeFoundPath(foundPath: string, searchPath: string): string {
-	const hadTrailingSlash = foundPath.endsWith("/") || foundPath.endsWith("\\");
-	const relativePath = path.relative(searchPath, foundPath) || path.basename(foundPath);
-	const outputPath = hadTrailingSlash && !relativePath.endsWith("/") ? `${relativePath}/` : relativePath;
-	return toPosixPath(outputPath);
+/** Relativize a find result against the search root and normalize it to POSIX separators. */
+export function relativizeFindResultPath(
+	resultPath: string,
+	searchPath: string,
+	pathModule: path.PlatformPath = path,
+): string {
+	const hadTrailingSeparator =
+		resultPath.endsWith(pathModule.sep) || (pathModule.sep === "\\" && resultPath.endsWith("/"));
+	const relativePath = pathModule.isAbsolute(resultPath) ? pathModule.relative(searchPath, resultPath) : resultPath;
+	const posixPath = relativePath.split(pathModule.sep).join("/");
+	return hadTrailingSeparator && !posixPath.endsWith("/") ? `${posixPath}/` : posixPath;
 }
 function formatExactFoundPath(foundPath: string, cwd: string): string {
 	return toPosixPath(path.relative(cwd, foundPath) || path.basename(foundPath));
@@ -180,9 +184,7 @@ function findTargetMentionsNodeModules(target: FindTarget): boolean {
 	return target.pattern.includes("node_modules") || toPosixPath(target.searchPath).split("/").includes("node_modules");
 }
 function formatFoundPath(foundPath: string, searchPath: string, searchPaths: string[], cwd: string): string {
-	let absoluteFoundPath = path.isAbsolute(foundPath) ? foundPath : path.resolve(searchPath, foundPath);
-	if (foundPath.endsWith("/") && !absoluteFoundPath.endsWith("/")) absoluteFoundPath += "/";
-	const relative = relativizeFoundPath(absoluteFoundPath, searchPath);
+	const relative = relativizeFindResultPath(foundPath, searchPath);
 	if (searchPaths.length <= 1) return relative;
 	const rootLabel = toPosixPath(path.relative(cwd, searchPath) || path.basename(searchPath) || ".");
 	return `${rootLabel}/${relative}`;
@@ -421,8 +423,6 @@ export function createFindToolDefinition(
 						const searchableTargets: FindTarget[] = [];
 						const skippedMissingPaths: string[] = [];
 						for (const target of targets) {
-							if (target.searchPath === path.parse(target.searchPath).root)
-								throw new Error("Refusing to search filesystem root with find; provide a narrower path.");
 							const stat = customOps
 								? await customOps.stat?.(target.searchPath)
 								: await fsStat(target.searchPath).catch(() => undefined);
