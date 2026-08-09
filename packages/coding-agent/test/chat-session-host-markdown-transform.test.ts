@@ -85,6 +85,28 @@ test("marks only the live assistant entry as streaming for Markdown transformers
 	}
 });
 
+test("keeps settled long assistant rows whole while a later assistant streams", () => {
+	initTheme("dark");
+	const settledText = ["settled-start", ...Array.from({ length: 240 }, (_, index) => `settled-${index}`)].join("\n");
+	const host = new ChatSessionHost({
+		style,
+		editorTheme,
+		isStreaming: () => true,
+	});
+
+	try {
+		host.appendMessages([assistantMessage(settledText)]);
+		host.applyAgentEvent({ type: "message_start", message: assistantMessage("live") } as never);
+
+		const output = stripAnsi(host.renderBody(100, 300).join("\n"));
+		assert.equal(host.bodyScrollFromBottom(), 0);
+		assert.match(output, /settled-start/);
+		assert.doesNotMatch(output, /\[earlier streaming output hidden while attached\]/);
+	} finally {
+		host.dispose();
+	}
+});
+
 test("rebuilds cached transcript rows when Markdown transformers change", () => {
 	initTheme("dark");
 	let transformer: MarkdownTransformer = (markdown) => `first:${markdown}`;

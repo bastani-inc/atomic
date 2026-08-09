@@ -385,6 +385,7 @@ describeModelRegistry((context) => {
 					},
 				});
 				const staleRefresh = getModelRuntime(registry).refresh();
+				const supersededStaleRefresh = getModelRuntime(registry).refresh();
 				await allStaleStarted;
 
 				const freshModels = providerConfig("https://manual.test/v1", [{ id: "manual" }]).models!;
@@ -396,7 +397,7 @@ describeModelRegistry((context) => {
 				});
 				await getModelRuntime(registry).refresh();
 				releaseStale();
-				await Promise.all([staleRefresh, allStaleFinished]);
+				await Promise.all([staleRefresh, supersededStaleRefresh, allStaleFinished]);
 
 				expect(getModelsForProvider(registry, "dynamic").map((model) => model.id)).toEqual(["manual"]);
 				// Re-registration supersedes both stale refresh generations, so their

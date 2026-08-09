@@ -1798,12 +1798,15 @@ pi.setThinkingLevel("high");
 
 ### pi.events
 
-Shared event bus for communication between extensions:
+Shared event bus for communication between active extensions. A subscription made with `on()` is removed automatically when its extension reloads or the session disposes. Use the returned function if you need to stop listening sooner:
 
 ```typescript
-pi.events.on("my:event", (data) => { ... });
+const unsubscribe = pi.events.on("my:event", (data) => { ... });
 pi.events.emit("my:event", { ... });
+unsubscribe();
 ```
+
+`pi.events` belongs to the extension instance that received it. Register listeners again when that instance reloads, and do not retain the object for later use: calling `on()` or `emit()` through a captured handle after reload or disposal throws.
 
 ### Native providers
 

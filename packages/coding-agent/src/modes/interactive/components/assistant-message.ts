@@ -21,6 +21,7 @@ export class AssistantMessageComponent extends Container {
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
 	private isStreaming = false;
+
 	constructor(
 		message?: AssistantMessage,
 		hideThinkingBlock = false,
@@ -28,6 +29,7 @@ export class AssistantMessageComponent extends Container {
 		hiddenThinkingLabel = "Thinking...",
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
+		// ChatSessionHost creates components per render, so it needs the initial stream state.
 		isStreaming = false,
 	) {
 		super();

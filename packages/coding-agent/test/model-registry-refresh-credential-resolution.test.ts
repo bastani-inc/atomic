@@ -1,8 +1,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { ModelConfig } from "../src/core/model-config.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
-import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
 describeModelRegistry((context) => {
 	describe("extension catalog credential resolution", () => {
@@ -54,6 +55,45 @@ describeModelRegistry((context) => {
 			if (observedKey === undefined) result = await registry.refresh();
 			expect(result.errors.size).toBe(0);
 			expect(observedKey).toBe("command-catalog-key");
+		});
+
+		test("does not let a delayed registration refresh erase a newer resolved key", async () => {
+			const registry = await createInMemoryModelRegistry(context.authStorage);
+			const registrationConfig = await ModelConfig.load(undefined);
+			let releaseRegistrationLoad: () => void = () => {};
+			const registrationLoad = new Promise<typeof registrationConfig>((resolve) => {
+				releaseRegistrationLoad = () => resolve(registrationConfig);
+			});
+			const originalLoad = ModelConfig.load;
+			let loadCount = 0;
+			const load = vi.spyOn(ModelConfig, "load").mockImplementation((modelsJsonPath) => {
+				loadCount += 1;
+				return loadCount === 1 ? registrationLoad : originalLoad(modelsJsonPath);
+			});
+			let refreshCalls = 0;
+			let observedKey: string | undefined;
+			try {
+				registry.registerProvider("delayed-catalog", {
+					apiKey: "configured-catalog-key",
+					refreshModels: async ({ credential }) => {
+						refreshCalls += 1;
+						observedKey = credential?.type === "api_key" ? credential.key : undefined;
+						return [];
+					},
+				});
+
+				await registry.refresh();
+				const callsAfterForegroundRefresh = refreshCalls;
+				expect(observedKey).toBe("configured-catalog-key");
+
+				releaseRegistrationLoad();
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				expect(refreshCalls).toBe(callsAfterForegroundRefresh);
+				expect(observedKey).toBe("configured-catalog-key");
+			} finally {
+				releaseRegistrationLoad();
+				load.mockRestore();
+			}
 		});
 
 		test("resolves stored API-key expressions", async () => {

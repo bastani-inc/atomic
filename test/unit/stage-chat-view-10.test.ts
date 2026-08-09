@@ -166,6 +166,7 @@ describe("StageChatView", () => {
 		assert.doesNotMatch(rendered, /parent:stage answer/);
 		view.dispose();
 	});
+
 	test("renders custom SDK snapshot messages instead of crashing", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
