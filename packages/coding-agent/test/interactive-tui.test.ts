@@ -1,4 +1,4 @@
-import type { Component, Terminal, TUI, TuiMode } from "@earendil-works/pi-tui";
+import type { Component, Terminal, TUI, TuiBase, TuiMode } from "@earendil-works/pi-tui";
 import { isViewportTUI, TuiAltScreen } from "@earendil-works/pi-tui";
 import { describe, expect, test, vi } from "vitest";
 import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
@@ -129,8 +129,8 @@ describe("interactive TUI renderer", () => {
 			extensionTerminalInputSubscriptions: new Set(),
 			tuiRendererChangeListeners: new Set(),
 			keybindings: { matches: matchesClear },
-		}) as InteractiveMode;
-		const stableUi = createInteractiveTuiReference(() => context.renderer);
+		}) as unknown as InteractiveMode;
+		const stableUi = createInteractiveTuiReference(() => Reflect.get(context, "renderer") as TUI);
 		context.ui = stableUi;
 		const render = vi.fn(() => ["content"]);
 		const component = {
@@ -154,8 +154,8 @@ describe("interactive TUI renderer", () => {
 
 		expect(stableUi.mode).toBe("fullscreen");
 		expect(stableUi instanceof TuiAltScreen).toBe(true);
-		expect(context.renderer.children).toEqual([component]);
-		expect(context.renderer.getFocusedComponent()).toBe(component);
+		expect(stableUi.children).toEqual([component]);
+		expect((stableUi as TuiBase).getFocusedComponent()).toBe(component);
 		expect(component.focused).toBe(true);
 		expect(themeController.rebindTui).toHaveBeenCalledOnce();
 		expect(onRendererChange).toHaveBeenCalledOnce();
