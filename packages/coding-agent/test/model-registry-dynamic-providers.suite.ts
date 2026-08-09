@@ -446,8 +446,43 @@ describeModelRegistry((context) => {
 				expect(availableIds()).toEqual([allowed.id]);
 
 				registry.registerProvider("github-copilot", { headers: { "x-test": "1" } });
+
+				// The provisional snapshot the registration publishes synchronously is the
+				// exact trigger: an already-configured provider must keep its credential
+				// filtering instead of being widened back to its whole built-in catalog.
+				expect(availableIds()).toEqual([allowed.id]);
 				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
+				expect(availableIds()).toEqual([allowed.id]);
+			});
+
+			test("a superseded availability pass leaves credential filtering in place", async () => {
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const allowed = registry.getAll().find((model) => model.provider === "github-copilot")!;
+				await context.authStorage.modify("github-copilot", async () => ({
+					type: "oauth",
+					refresh: "r",
+					access: "a",
+					expires: Date.now() + 60_000,
+					availableModelIds: [allowed.id],
+				}));
+				const runtime = getModelRuntime(registry);
+				await runtime.refresh({ allowNetwork: false });
+				const availableIds = () =>
+					registry
+						.getAvailable()
+						.filter((model) => model.provider === "github-copilot")
+						.map((model) => model.id);
+				expect(availableIds()).toEqual([allowed.id]);
+
+				// The second pass supersedes the first, so the first publishes nothing;
+				// the projection it rebuilt models against must still be the filtered one.
+				const first = runtime.refresh({ allowNetwork: false });
+				const second = runtime.refresh({ allowNetwork: false });
+				await first;
+
+				expect(availableIds()).toEqual([allowed.id]);
+				await second;
 				expect(availableIds()).toEqual([allowed.id]);
 			});
 		});

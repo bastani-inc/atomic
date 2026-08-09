@@ -47,7 +47,8 @@ describe("Cloudflare compatibility auth", () => {
 			CLOUDFLARE_ACCOUNT_ID: "test-account",
 			CLOUDFLARE_GATEWAY_ID: "test-gateway",
 		});
-		// A provider without a credential endpoint leaves its catalog endpoint intact.
-		expect(auth.baseUrl).toBeUndefined();
+		// A provider without a credential endpoint leaves its catalog endpoint intact:
+		// the projection omits the key entirely rather than carrying an undefined one.
+		expect(auth).not.toHaveProperty("baseUrl");
 	});
 });

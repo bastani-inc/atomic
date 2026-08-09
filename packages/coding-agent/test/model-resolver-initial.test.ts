@@ -274,7 +274,7 @@ describe("default model selection", () => {
 
 		expect(getModelRuntime(registry).canRestoreUnknownModel("github-copilot")).toBe(true);
 	});
-	test("restores policy-derived missing Copilot model IDs after runtime refresh", async () => {
+	test("restores Individual account policy-fallback Copilot model IDs after runtime refresh", async () => {
 		const previousEnvironment = new Map(COPILOT_ENV_KEYS.map((key) => [key, process.env[key]]));
 		for (const key of COPILOT_ENV_KEYS) delete process.env[key];
 		const policyModelId = "copilot-policy-restoration-probe";
@@ -293,23 +293,32 @@ describe("default model selection", () => {
 					});
 				}
 				if (url === "https://api.individual.githubcopilot.com/models") {
+					// Individual accounts can report every picker flag as false while their
+					// policies stay enabled, so this catalog is only selectable through the
+					// Individual-host policy fallback.
 					return Response.json({
 						data: [
 							{
 								id: "gpt-5.4",
-								model_picker_enabled: true,
+								model_picker_enabled: false,
 								policy: { state: "enabled" },
 								capabilities: { supports: { tool_calls: true } },
 							},
 							{
 								id: policyModelId,
-								model_picker_enabled: true,
+								model_picker_enabled: false,
 								policy: { state: "enabled" },
 								capabilities: { supports: { tool_calls: true } },
 							},
 							{
+								id: "policy-disabled",
+								model_picker_enabled: false,
+								policy: { state: "disabled" },
+								capabilities: { supports: { tool_calls: true } },
+							},
+							{
 								id: "embeddings-only",
-								model_picker_enabled: true,
+								model_picker_enabled: false,
 								policy: { state: "enabled" },
 								capabilities: { supports: { tool_calls: false } },
 							},

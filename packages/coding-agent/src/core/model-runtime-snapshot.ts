@@ -43,11 +43,25 @@ export function createModelRuntimeSnapshot(
 	};
 }
 
+/** Identity of a model inside an availability projection. */
+export function snapshotModelKey(model: Model<Api>): string {
+	return `${model.provider}\0${model.id}`;
+}
+
+/**
+ * Republish the model list without disturbing availability. Availability is a
+ * per-model fact — a credential can entitle an account to a subset of a
+ * provider's catalog — so it is carried over by model ID rather than recomputed
+ * from the provider's configured status, which would widen a filtered provider
+ * back to its whole catalog until the next availability pass lands. A provider
+ * whose filtered result is empty stays empty for the same reason.
+ */
 export function updateSnapshotModels(snapshot: ModelRuntimeSnapshot, all: readonly Model<Api>[]): ModelRuntimeSnapshot {
+	const availableKeys = new Set(snapshot.available.map(snapshotModelKey));
 	return {
 		...snapshot,
 		all,
-		available: all.filter((model) => snapshot.configuredProviders.has(model.provider)),
+		available: all.filter((model) => availableKeys.has(snapshotModelKey(model))),
 	};
 }
 

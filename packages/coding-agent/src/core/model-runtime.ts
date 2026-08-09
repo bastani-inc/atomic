@@ -39,6 +39,7 @@ import {
 	type ModelRuntimeSnapshot,
 	removeStoredCredentialProvider,
 	replaceStoredCredentialProviders,
+	snapshotModelKey,
 	updateSnapshotModels,
 } from "./model-runtime-snapshot.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
@@ -591,12 +592,19 @@ export class ModelRuntime implements Models {
 					source: "configured provider",
 				});
 			}
-			this.snapshot = {
-				...this.snapshot,
-				auth,
-				configuredProviders,
-				available: this.snapshot.all.filter((model) => configuredProviders.has(model.provider)),
-			};
+			// A provider that was already configured has an availability result — possibly
+			// a credential-filtered subset of its catalog, as with an additive GitHub
+			// Copilot override — and keeps it until the refresh this registration schedules
+			// republishes it. Only a provider this registration newly configures has no
+			// result to keep, so only its catalog is exposed provisionally.
+			let available = this.snapshot.available;
+			if (!this.snapshot.configuredProviders.has(providerId)) {
+				const preserved = new Set(available.map(snapshotModelKey));
+				available = this.snapshot.all.filter(
+					(model) => model.provider === providerId || preserved.has(snapshotModelKey(model)),
+				);
+			}
+			this.snapshot = { ...this.snapshot, auth, configuredProviders, available };
 		}
 		void this.refresh({ allowNetwork: false });
 	}
