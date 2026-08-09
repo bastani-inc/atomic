@@ -196,6 +196,8 @@ The credential commands print one configured credential for an external client â
 
 `print-bearer-token` works only on OAuth providers and `print-api-key` only on API-key providers; asking for the wrong kind is an error rather than a silent fallback. A bearer token with less than `--min-expiry` remaining (default `30m`, accepting `ms`, `s`, `m`, or `h`) is refreshed first. Both `--min-expiry 30m` and `--min-expiry=30m` are accepted. `--min-expiry` with `print-api-key` is a usage error â€” even after a `--` terminator â€” because an API key has no expiry. A failed refresh leaves your stored credential untouched.
 
+Credential-export exits (`print-api-key`, `print-bearer-token`, and the `--credentials` write itself):
+
 | Exit | Meaning |
 |------|---------|
 | `0` | Credential written to stdout, one trailing newline |
@@ -208,6 +210,16 @@ The credential commands print one configured credential for an external client â
 | `7` | The provider's OAuth credential could not be used â€” no claim is made about the stored credential |
 | `8` | The credential could not be written; nothing was emitted |
 | `9` | Only part of the credential was written; discard the output |
+
+Auth-check exits:
+
+| Exit | `atomic auth check` |
+|------|---------------------|
+| `0` | `ready` |
+| `1` | `not_ready` |
+| `2` | `invalid`, including check usage errors (unknown option, neither `--provider` nor `--model`, and a fuzzy `--model` with `--credentials`) |
+| `8` | With `--credentials`, the credential could not be written; nothing was emitted |
+| `9` | With `--credentials`, only part of the credential was written; discard the output |
 
 Exit `5` is reported only for a refresh that itself failed, which happens before anything is persisted; that is the only exit that promises your stored credential is untouched. Any other OAuth failure exits `7` and makes no such promise.
 

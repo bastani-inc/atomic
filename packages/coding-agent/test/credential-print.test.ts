@@ -39,7 +39,7 @@ import {
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import { RpcProviderAuth } from "../src/modes/rpc/rpc-provider-auth.ts";
-import { bunExecutable, cliPath, removeTempDirs, runCliProcess } from "./cli-test-helpers.ts";
+import { bunExecutable, cliPath, removeTempDirs, runCliBatch, runCliProcess } from "./cli-test-helpers.ts";
 
 /**
  * Structural: each case starts a real `atomic` child, so the cost is a process
@@ -1246,41 +1246,31 @@ describe("atomic auth on the wire", () => {
 			const configuredKey = `!echo ${key}`;
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: configuredKey } });
 
-			const result = await runCliProcess(["auth", "check", "--provider", "anthropic"], {
-				cwd: agentDir,
-				env: cliEnv(agentDir),
-			});
+			const [result, json, model, exported] = await runCliBatch(
+				[
+					["auth", "check", "--provider", "anthropic"],
+					["auth", "check", "--provider", "anthropic", "--json"],
+					["auth", "check", "--model", "claude-opus-4-5", "--no-refresh", "--json"],
+					["auth", "check", "--provider", "anthropic", "--no-refresh", "--credentials"],
+				],
+				{ cwd: agentDir, env: cliEnv(agentDir), timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS },
+			);
 
 			expect(result.code).toBe(0);
 			expect(result.stdout).toBe("ready\n");
 			expect(result.stdout).not.toContain(key);
 			expect(result.stderr).not.toContain(key);
 
-			const json = await runCliProcess(["auth", "check", "--provider", "anthropic", "--json"], {
-				cwd: agentDir,
-				env: cliEnv(agentDir),
-			});
 			expect(json.code).toBe(0);
 			expect(JSON.parse(json.stdout)).toEqual({ status: "ready", provider: "anthropic", authType: "api_key" });
 			expect(json.stdout).not.toContain(key);
 			expect(json.stderr).not.toContain(key);
 
-			const model = await runCliProcess(["auth", "check", "--model", "claude-opus-4-5", "--no-refresh", "--json"], {
-				cwd: agentDir,
-				env: cliEnv(agentDir),
-			});
 			expect(model.code).toBe(0);
 			expect(JSON.parse(model.stdout)).toEqual({ status: "ready", provider: "anthropic", authType: "api_key" });
 			expect(model.stdout).not.toContain(key);
 			expect(model.stderr).not.toContain(key);
 
-			const exported = await runCliProcess(
-				["auth", "check", "--provider", "anthropic", "--no-refresh", "--credentials"],
-				{
-					cwd: agentDir,
-					env: cliEnv(agentDir),
-				},
-			);
 			expect(exported.code).toBe(0);
 			expect(exported.stdout).toBe(`${key}\n`);
 			expect(exported.stdout).not.toContain(configuredKey);
@@ -1294,9 +1284,18 @@ describe("atomic auth on the wire", () => {
 		async () => {
 			const key = "opaque-auth-check-credential-value";
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key } });
-			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+			const [defaultCheck, exported, json, exactModel, notReady, afterTerminator] = await runCliBatch(
+				[
+					["auth", "check", "--provider", "anthropic", "--json"],
+					["auth", "check", "--provider", "anthropic", "--credentials"],
+					["auth", "check", "--provider", "anthropic", "--credentials", "--json"],
+					["auth", "check", "--model", "anthropic/claude-opus-4-5", "--credentials"],
+					["auth", "check", "--provider", "not-installed", "--credentials"],
+					["auth", "check", "--provider", "anthropic", "--", "--credentials"],
+				],
+				{ cwd: agentDir, env: cliEnv(agentDir), timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS },
+			);
 
-			const defaultCheck = await run(["auth", "check", "--provider", "anthropic", "--json"]);
 			expect(defaultCheck.code).toBe(0);
 			expect(JSON.parse(defaultCheck.stdout)).toEqual({
 				status: "ready",
@@ -1306,12 +1305,10 @@ describe("atomic auth on the wire", () => {
 			expect(defaultCheck.stdout).not.toContain(key);
 			expect(defaultCheck.stderr).not.toContain(key);
 
-			const exported = await run(["auth", "check", "--provider", "anthropic", "--credentials"]);
 			expect(exported.code).toBe(0);
 			expect(exported.stdout).toBe(`${key}\n`);
 			expect(exported.stderr).not.toContain(key);
 
-			const json = await run(["auth", "check", "--provider", "anthropic", "--credentials", "--json"]);
 			expect(json.code).toBe(0);
 			expect(JSON.parse(json.stdout)).toEqual({
 				status: "ready",
@@ -1321,18 +1318,15 @@ describe("atomic auth on the wire", () => {
 			});
 			expect(json.stderr).not.toContain(key);
 
-			const exactModel = await run(["auth", "check", "--model", "anthropic/claude-opus-4-5", "--credentials"]);
 			expect(exactModel.code).toBe(0);
 			expect(exactModel.stdout).toBe(`${key}\n`);
 			expect(exactModel.stderr).not.toContain(key);
 
-			const notReady = await run(["auth", "check", "--provider", "not-installed", "--credentials"]);
 			expect(notReady.code).toBe(1);
 			expect(notReady.stdout).toBe("");
 			expect(notReady.stderr).toContain("not_ready");
 			expect(notReady.stderr).not.toContain(key);
 
-			const afterTerminator = await run(["auth", "check", "--provider", "anthropic", "--", "--credentials"]);
 			expect(afterTerminator.code).toBe(2);
 			expect(afterTerminator.stdout).toBe("");
 			expect(afterTerminator.stderr).not.toContain(key);
@@ -1350,9 +1344,10 @@ describe("atomic auth on the wire", () => {
 				openrouter: { type: "api_key", key: openRouterKey },
 			});
 
-			const result = await runCliProcess(["auth", "check", "--model", "gemini", "--credentials", "--json"], {
+			const [result] = await runCliBatch([["auth", "check", "--model", "gemini", "--credentials", "--json"]], {
 				cwd: agentDir,
 				env: cliEnv(agentDir),
+				timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS,
 			});
 
 			expect(result.code).toBe(2);
@@ -1375,9 +1370,13 @@ describe("atomic auth on the wire", () => {
 			});
 			const authPath = join(agentDir, "auth.json");
 			const before = readFileSync(authPath, "utf8");
-			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
-
-			const noRefresh = await run(["auth", "check", "--provider", "anthropic", "--no-refresh", "--json"]);
+			const [noRefresh, refreshed] = await runCliBatch(
+				[
+					["auth", "check", "--provider", "anthropic", "--no-refresh", "--json"],
+					["auth", "check", "--provider", "anthropic", "--json"],
+				],
+				{ cwd: agentDir, env: cliEnv(agentDir), timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS },
+			);
 			expect(noRefresh.code).toBe(1);
 			expect(JSON.parse(noRefresh.stdout)).toEqual({
 				status: "not_ready",
@@ -1385,7 +1384,6 @@ describe("atomic auth on the wire", () => {
 				reason: "credential_expired",
 			});
 
-			const refreshed = await run(["auth", "check", "--provider", "anthropic", "--json"]);
 			expect(refreshed.code).toBe(1);
 			expect(JSON.parse(refreshed.stdout)).toEqual({
 				status: "not_ready",
@@ -1411,22 +1409,18 @@ describe("atomic auth on the wire", () => {
 			const agentDir = agentDirWith({
 				anthropic: { type: "oauth", access, refresh, expires: Date.now() + 10 * 60_000 },
 			});
-			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+			const [raw, json] = await runCliBatch(
+				[
+					["auth", "check", "--provider", "anthropic", "--credentials", "--no-refresh"],
+					["auth", "check", "--provider", "anthropic", "--credentials", "--no-refresh", "--json"],
+				],
+				{ cwd: agentDir, env: cliEnv(agentDir), timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS },
+			);
 
-			const raw = await run(["auth", "check", "--provider", "anthropic", "--credentials", "--no-refresh"]);
 			expect(raw.code).toBe(1);
 			expect(raw.stdout).toBe("");
 			expect(raw.stderr).toContain("not_ready");
 
-			const json = await run([
-				"auth",
-				"check",
-				"--provider",
-				"anthropic",
-				"--credentials",
-				"--no-refresh",
-				"--json",
-			]);
 			expect(json.code).toBe(1);
 			expect(JSON.parse(json.stdout)).toEqual({
 				status: "not_ready",
@@ -1445,22 +1439,26 @@ describe("atomic auth on the wire", () => {
 		"distinguishes unavailable providers from invalid readiness commands",
 		async () => {
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-auth-check-status" } });
-			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+			const [unavailable, unknownModel, unknownModelJson, unknownOption] = await runCliBatch(
+				[
+					["auth", "check", "--provider", "not-installed"],
+					["auth", "check", "--model", "does-not-exist-auth-check"],
+					["auth", "check", "--model", "does-not-exist-auth-check", "--json"],
+					["auth", "check", "--provider", "anthropic", "--bogus"],
+				],
+				{ cwd: agentDir, env: cliEnv(agentDir), timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS },
+			);
 
-			const unavailable = await run(["auth", "check", "--provider", "not-installed"]);
 			expect(unavailable.code).toBe(1);
 			expect(unavailable.stdout).toBe("not_ready\n");
 
-			const unknownModel = await run(["auth", "check", "--model", "does-not-exist-auth-check"]);
 			expect(unknownModel.stderr).toContain('Model "does-not-exist-auth-check" not found.');
 			expect(unknownModel.code).toBe(2);
 			expect(unknownModel.stdout).toBe("invalid\n");
 
-			const unknownModelJson = await run(["auth", "check", "--model", "does-not-exist-auth-check", "--json"]);
 			expect(unknownModelJson.code).toBe(2);
 			expect(JSON.parse(unknownModelJson.stdout)).toEqual({ status: "invalid", reason: "invalid_state" });
 
-			const unknownOption = await run(["auth", "check", "--provider", "anthropic", "--bogus"]);
 			expect(unknownOption.code).toBe(2);
 			expect(unknownOption.stdout).toBe("");
 			expect(unknownOption.stderr).toContain('Unknown option --bogus for "auth check".');
@@ -1534,38 +1532,29 @@ describe("atomic auth on the wire", () => {
 		"keeps stdout empty and uses a distinct exit code on every failure",
 		async () => {
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-ant-print-me" } });
-			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
+			const [unknownSubcommand, missingModel, minExpiryOnApiKey, helpFlag, noCredential, wrongKind] =
+				await runCliBatch(
+					[
+						["auth", "print-everything"],
+						["auth", "print-api-key"],
+						["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--min-expiry", "30m"],
+						["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--help"],
+						["auth", "print-api-key", "--model", "not-a-real-model"],
+						["auth", "print-bearer-token", "--model", "claude-sonnet-4-5", "--provider", "anthropic"],
+					],
+					{ cwd: agentDir, env: cliEnv(agentDir), timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS },
+				);
 
-			const unknownSubcommand = await run(["auth", "print-everything"]);
 			expect(unknownSubcommand.code).toBe(1);
 
-			const missingModel = await run(["auth", "print-api-key"]);
 			expect(missingModel.code).toBe(1);
 
-			const minExpiryOnApiKey = await run([
-				"auth",
-				"print-api-key",
-				"--model",
-				"claude-sonnet-4-5",
-				"--min-expiry",
-				"30m",
-			]);
 			expect(minExpiryOnApiKey.code).toBe(1);
 
-			const helpFlag = await run(["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--help"]);
 			expect(helpFlag.code).toBe(1);
 
-			const noCredential = await run(["auth", "print-api-key", "--model", "not-a-real-model"]);
 			expect(noCredential.code).toBe(2);
 
-			const wrongKind = await run([
-				"auth",
-				"print-bearer-token",
-				"--model",
-				"claude-sonnet-4-5",
-				"--provider",
-				"anthropic",
-			]);
 			expect(wrongKind.code).toBe(4);
 
 			for (const result of [unknownSubcommand, missingModel, minExpiryOnApiKey, helpFlag, noCredential, wrongKind]) {
@@ -1605,9 +1594,12 @@ describe("atomic auth on the wire", () => {
 		async () => {
 			const agentDir = agentDirWith({});
 
-			for (const argv of [["auth"], ["auth", "--help"], ["auth", "check", "--help"]]) {
-				const result = await runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
-
+			const results = await runCliBatch([["auth"], ["auth", "--help"], ["auth", "check", "--help"]], {
+				cwd: agentDir,
+				env: cliEnv(agentDir),
+				timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS,
+			});
+			for (const result of results) {
 				expect(result.code).toBe(0);
 				expect(result.stderr).toContain("atomic auth print-api-key");
 				expect(result.stderr).toContain("atomic auth print-bearer-token");
@@ -1625,13 +1617,14 @@ describe("atomic auth on the wire", () => {
 		"both subcommands refuse to run without --model",
 		async () => {
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-ant-print-me" } });
-
-			for (const subcommand of ["print-api-key", "print-bearer-token"]) {
-				const result = await runCliProcess(["auth", subcommand, "--provider", "anthropic"], {
-					cwd: agentDir,
-					env: cliEnv(agentDir),
-				});
-
+			const results = await runCliBatch(
+				[
+					["auth", "print-api-key", "--provider", "anthropic"],
+					["auth", "print-bearer-token", "--provider", "anthropic"],
+				],
+				{ cwd: agentDir, env: cliEnv(agentDir), timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS },
+			);
+			for (const result of results) {
 				expect(result.code).toBe(1);
 				expect(result.stdout).toBe("");
 				expect(result.stderr).toContain("requires --model");
@@ -1644,18 +1637,34 @@ describe("atomic auth on the wire", () => {
 		"--min-expiry is a usage error for print-api-key in every spelling, including after --",
 		async () => {
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-ant-print-me" } });
+			const results = await runCliBatch(
+				[
+					[
+						"auth",
+						"print-api-key",
+						"--model",
+						"claude-sonnet-4-5",
+						"--provider",
+						"anthropic",
+						"--min-expiry",
+						"30m",
+					],
+					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic", "--min-expiry=30m"],
+					[
+						"auth",
+						"print-api-key",
+						"--model",
+						"claude-sonnet-4-5",
+						"--provider",
+						"anthropic",
+						"--",
+						"--min-expiry=30m",
+					],
+				],
+				{ cwd: agentDir, env: cliEnv(agentDir), timeoutMs: REAL_CLI_SUITE_TIMEOUT_MS },
+			);
 
-			for (const spelling of [
-				["--min-expiry", "30m"],
-				["--min-expiry=30m"],
-				// It remains an auth option after -- rather than becoming a prompt.
-				["--", "--min-expiry=30m"],
-			]) {
-				const result = await runCliProcess(
-					["auth", "print-api-key", "--model", "claude-sonnet-4-5", "--provider", "anthropic", ...spelling],
-					{ cwd: agentDir, env: cliEnv(agentDir) },
-				);
-
+			for (const result of results) {
 				expect(result.code).toBe(1);
 				expect(result.stdout).toBe("");
 				expect(result.stderr).toContain("--min-expiry is only supported by print-bearer-token");
