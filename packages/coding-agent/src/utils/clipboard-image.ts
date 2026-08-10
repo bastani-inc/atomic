@@ -98,7 +98,7 @@ function runCommand(
 	const result = spawnSync(command, args, {
 		timeout: timeoutMs,
 		maxBuffer: maxBufferBytes,
-		env: options?.env ? { ...options.env, AI_AGENT: "atomic" } : createChildProcessEnvironment(),
+		env: options?.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
 	});
 
 	if (result.error) {

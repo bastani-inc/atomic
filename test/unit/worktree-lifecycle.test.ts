@@ -323,3 +323,61 @@ unixTest("a setup hook that never reads stdin still has its output honored", () 
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+unixTest("subagent setup hooks receive Atomic attribution in a real child", () => {
+	const { root, repo } = createRepository();
+	const hook = join(root, "subagent-env-hook.sh");
+	const output = join(root, "subagent-env.txt");
+	writeFileSync(
+		hook,
+		`#!/bin/sh
+cat >/dev/null
+printf '%s' "$AI_AGENT" > '${output.replaceAll("'", "'\\''")}'
+printf '{}'
+`,
+	);
+	chmodSync(hook, 0o755);
+	let setup: ReturnType<typeof createSubagentWorktrees> | undefined;
+	const previousAiAgent = process.env.AI_AGENT;
+	process.env.AI_AGENT = "caller";
+	try {
+		setup = createSubagentWorktrees(repo, "env/subagent-hook", 1, { setupHook: { hookPath: hook } });
+		assert.equal(readFileSync(output, "utf8"), "atomic");
+	} finally {
+		if (setup) cleanupSubagentWorktrees(setup);
+		if (previousAiAgent === undefined) delete process.env.AI_AGENT;
+		else process.env.AI_AGENT = previousAiAgent;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+unixTest("workflow setup hooks receive Atomic attribution in a real child", () => {
+	const { root, repo } = createRepository();
+	const hook = join(root, "workflow-env-hook.sh");
+	const output = join(root, "workflow-env.txt");
+	writeFileSync(
+		hook,
+		`#!/bin/sh
+cat >/dev/null
+printf '%s' "$AI_AGENT" > '${output.replaceAll("'", "'\\''")}'
+printf '{}'
+`,
+	);
+	chmodSync(hook, 0o755);
+	let setup: ReturnType<typeof createWorktrees> | undefined;
+	const previousAiAgent = process.env.AI_AGENT;
+	process.env.AI_AGENT = "caller";
+	try {
+		setup = createWorktrees(repo, "env/workflow-hook", 1, {
+			baseBranch: "main",
+			setupHook: { hookPath: hook },
+			symlinkDirectories: [],
+		});
+		assert.equal(readFileSync(output, "utf8"), "atomic");
+	} finally {
+		if (setup) cleanupWorktrees(setup);
+		if (previousAiAgent === undefined) delete process.env.AI_AGENT;
+		else process.env.AI_AGENT = previousAiAgent;
+		rmSync(root, { recursive: true, force: true });
+	}
+});

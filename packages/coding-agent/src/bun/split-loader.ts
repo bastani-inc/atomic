@@ -1,13 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { ATOMIC_AI_AGENT } from "../utils/agent-attribution.ts";
 import { INTERNAL_INTERCOM_BROKER_ARG, importInternalIntercomBroker } from "./internal-intercom-broker.ts";
 
 const APP_NAME = "atomic";
 
 process.title = APP_NAME;
 process.env.ATOMIC_CODING_AGENT = "true";
-process.env.AI_AGENT = "atomic";
+process.env.AI_AGENT = ATOMIC_AI_AGENT;
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 const args = process.argv.slice(2);

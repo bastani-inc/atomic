@@ -1,3 +1,4 @@
+import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import { getShellConfig, getShellEnv } from "../../utils/shell.ts";
 
@@ -96,7 +97,14 @@ export async function executeNativePty(
 			{
 				command,
 				cwd,
-				env: { ...getShellEnv(), ...(options.env ?? {}), TERM: "xterm-256color", AI_AGENT: "atomic" },
+				env: Object.fromEntries(
+					Object.entries(
+						createChildProcessEnvironment(
+							{ TERM: "xterm-256color" },
+							{ ...getShellEnv(), ...(options.env ?? {}) },
+						),
+					).filter((entry): entry is [string, string] => entry[1] !== undefined),
+				),
 				timeoutMs: options.timeout !== undefined ? Math.max(1, Math.floor(options.timeout * 1000)) : undefined,
 				cols: options.cols ?? 120,
 				rows: options.rows ?? 40,

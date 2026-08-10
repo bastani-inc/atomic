@@ -9,7 +9,7 @@ import { APP_NAME } from "../../config.ts";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { truncateToVisualLines } from "../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../modes/interactive/theme/theme.ts";
-import { waitForChildProcess } from "../../utils/child-process.ts";
+import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
 import {
 	getShellConfig,
 	getShellEnv,
@@ -133,7 +133,7 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd,
 				detached: process.platform !== "win32",
-				env: { ...(env ?? getShellEnv()), AI_AGENT: "atomic" },
+				env: createChildProcessEnvironment(undefined, env ?? getShellEnv()),
 				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});

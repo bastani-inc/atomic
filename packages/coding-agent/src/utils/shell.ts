@@ -198,7 +198,7 @@ parentPort.on("message", ({ action, pid }) => {
 });
 function killTree(pid) {
   if (process.platform === "win32") {
-    try { spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true, env: { ...process.env, AI_AGENT: "atomic" } }); } catch {}
+    try { spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } }); } catch {}
     return;
   }
   try { process.kill(-pid, "SIGKILL"); }
@@ -216,7 +216,10 @@ timer.unref?.();
 
 export function startParentProcessGuardian(parentPid: number, stopFile?: string): () => Promise<void> {
 	if (detachedChildGuardian) return async () => {};
-	const guardian = new Worker(PARENT_GUARDIAN_SOURCE, { eval: true, workerData: { parentPid, stopFile } });
+	const guardian = new Worker(PARENT_GUARDIAN_SOURCE, {
+		eval: true,
+		workerData: { parentPid, stopFile, aiAgent: createChildProcessEnvironment().AI_AGENT },
+	});
 	detachedChildGuardian = guardian;
 	for (const pid of trackedDetachedChildPids) guardian.postMessage({ action: "track", pid });
 	guardian.unref();

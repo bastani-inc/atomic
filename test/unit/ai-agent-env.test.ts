@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { test } from "vitest";
 import {
 	createChildProcessEnvironment,
@@ -7,18 +6,7 @@ import {
 	spawnProcessSync,
 } from "../../packages/coding-agent/src/utils/child-process.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
-import { createSubagentChildEnvironment } from "../../packages/subagents/src/runs/shared/worktree.js";
-import { createLocalCommandEnvironment, runLocalCommand } from "../../packages/workflows/src/durable/local-command.js";
-import { createWorkflowChildEnvironment } from "../../packages/workflows/src/runs/shared/worktree-git-runner.js";
-
-function readChildAiAgent(env: NodeJS.ProcessEnv): string {
-	const result = spawnSync(process.execPath, ["-e", "process.stdout.write(process.env.AI_AGENT ?? '')"], {
-		env,
-		encoding: "utf8",
-	});
-	assert.equal(result.status, 0, result.stderr);
-	return result.stdout;
-}
+import { runLocalCommand } from "../../packages/workflows/src/durable/local-command.js";
 
 test("Atomic child environment overrides attribution without mutating its base", () => {
 	const parentEnv: NodeJS.ProcessEnv = { ...process.env, AI_AGENT: "caller" };
@@ -64,18 +52,17 @@ test("spawnProcess forces attribution without mutating an explicit environment",
 	assert.equal(callerEnv.AI_AGENT, "caller");
 });
 
-test("subagent and workflow worktree child environments identify Atomic without mutating the parent", () => {
+test("worktree child environments use shared Atomic attribution without mutating the parent", () => {
 	const parentEnv: NodeJS.ProcessEnv = { ...process.env, AI_AGENT: "caller" };
-	assert.equal(readChildAiAgent(createSubagentChildEnvironment(parentEnv)), "atomic");
-	assert.equal(readChildAiAgent(createWorkflowChildEnvironment(parentEnv)), "atomic");
-	assert.equal(readChildAiAgent(createGitEnvironment({}, createSubagentChildEnvironment(parentEnv))), "atomic");
-	assert.equal(readChildAiAgent(createGitEnvironment({}, createWorkflowChildEnvironment(parentEnv))), "atomic");
+	const childEnv = createChildProcessEnvironment(undefined, parentEnv);
+	const gitEnv = createGitEnvironment({}, childEnv);
+	assert.equal(gitEnv.AI_AGENT, "atomic");
 	assert.equal(parentEnv.AI_AGENT, "caller");
 });
 
 test("workflow local-command children identify Atomic and preserve caller environment objects", async () => {
 	const parentEnv: NodeJS.ProcessEnv = { ...process.env, AI_AGENT: "caller" };
-	const childEnv = createLocalCommandEnvironment({ AI_AGENT: "explicit-caller" }, parentEnv);
+	const childEnv = createChildProcessEnvironment({ AI_AGENT: "explicit-caller" }, parentEnv);
 	assert.equal(childEnv.AI_AGENT, "atomic");
 	assert.equal(parentEnv.AI_AGENT, "caller");
 

@@ -3,10 +3,11 @@ import { insertForcedOptionsBeforeTerminator } from "./cli/args.ts";
 import { APP_NAME } from "./config.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { main } from "./main.ts";
+import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 
 process.title = `${APP_NAME}-rpc`;
 process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT`] = "true";
-process.env.AI_AGENT = "atomic";
+process.env.AI_AGENT = ATOMIC_AI_AGENT;
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 configureHttpDispatcher();

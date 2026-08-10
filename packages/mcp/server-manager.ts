@@ -354,17 +354,14 @@ export class McpServerManager {
  * Resolve environment variables with interpolation.
  */
 function resolveEnv(env?: Record<string, string>): Record<string, string> {
-	// Copy Atomic's child environment, filtering out undefined values.
-	const resolved: Record<string, string> = {};
-	for (const [key, value] of Object.entries(createChildProcessEnvironment())) {
-		if (value !== undefined) resolved[key] = value;
-	}
-	if (env) {
-		const overrides = interpolateEnvRecord(env);
-		if (overrides) Object.assign(resolved, overrides);
-	}
-	resolved.AI_AGENT = "atomic";
-	return resolved;
+  const overrides = env ? interpolateEnvRecord(env) : undefined;
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(createChildProcessEnvironment(overrides))) {
+    if (value !== undefined) {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
 }
 
 /**
