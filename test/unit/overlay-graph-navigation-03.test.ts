@@ -3,6 +3,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import {
+	GRAPH_HEADER_ROWS,
+	graphLayoutBodyRows,
+	graphLayoutMarginRows,
+} from "../../packages/workflows/src/tui/graph-view-layout.js";
 import { renderHeader } from "../../packages/workflows/src/tui/header.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
@@ -40,16 +45,18 @@ function graphNodeClick(
 	const scrollCols = opts.scrollCols ?? 0;
 	const layout = computeLayout(stages, { orientation: "vertical" });
 	const node = layout[index]!;
-	const marginRows = rows >= 9 ? 1 : 0;
-	const panelRows = Math.max(7, rows - marginRows * 2);
-	const bodyRows = Math.max(1, panelRows - 6);
+	const marginRows = graphLayoutMarginRows(rows);
+	const bodyRows = graphLayoutBodyRows(rows);
 	const totalGraphRows = Math.max(1, ...layout.map((n) => n.y + NODE_H));
 	const topPad =
 		totalGraphRows <= bodyRows ? Math.min(3, Math.max(0, Math.floor((bodyRows - totalGraphRows) / 2))) : 0;
 	const graphInner = Math.max(1, Math.max(40, width) - 4);
 	const canvasWidth = layout.reduce((max, n) => Math.max(max, n.x + NODE_W), 0);
 	const leftMargin = Math.max(2, canvasWidth <= graphInner ? Math.floor((graphInner - canvasWidth) / 2) : 2);
-	return sgrMousePress(leftMargin + node.x - scrollCols + 2, marginRows + 3 + topPad + node.y - scrollRows + 2);
+	return sgrMousePress(
+		leftMargin + node.x - scrollCols + 2,
+		marginRows + GRAPH_HEADER_ROWS + topPad + node.y - scrollRows + 2,
+	);
 }
 
 describe("GraphView keyboard navigation", () => {
@@ -377,6 +384,79 @@ describe("GraphView keyboard navigation", () => {
 		view.render(96);
 		assert.equal(view._focusedIndex, 0);
 		assert.ok(view._graphScrollOffset > 0);
+		view.dispose();
+	});
+
+	it("contains graph wheel input while the stage switcher is open", () => {
+		const stages = Array.from({ length: 12 }, (_, index) =>
+			makeStage(`switcher-scroll-${index}`, index === 0 ? [] : [`switcher-scroll-${index - 1}`]),
+		);
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeSnap(stages)),
+			graphTheme: defaultTheme,
+			getViewportRows: () => 16,
+		});
+
+		view.render(96);
+		assert.equal(view.handleInput("/"), true);
+		assert.equal(view.handleInput(SGR_MOUSE_WHEEL_DOWN), true);
+		view.render(96);
+		assert.ok(view._graphScrollOffset > 0);
+		view.dispose();
+	});
+
+	it("drags the pi-tui scrollbar without changing focus or leaking to the graph click handler", () => {
+		const stages = Array.from({ length: 12 }, (_, index) =>
+			makeStage(`scrollbar-${index}`, index === 0 ? [] : [`scrollbar-${index - 1}`]),
+		);
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeSnap(stages)),
+			graphTheme: defaultTheme,
+			getViewportRows: () => 16,
+		});
+
+		view.render(96);
+		const initiallyVisible = view._graphScrollbarGeometry;
+		assert.ok(initiallyVisible, "an overflowing graph exposes its scrollbar on first layout");
+		view.handleInput(SGR_MOUSE_WHEEL_DOWN);
+		view.render(96);
+		const scrollbar = view._graphScrollbarGeometry;
+		assert.ok(scrollbar, "a scrolled graph exposes a scrollbar geometry");
+		const before = view._graphScrollOffset;
+		const col = scrollbar.column + 1;
+		const thumbRow = scrollbar.thumbTop + 1;
+		assert.equal(view.handleInput(`\x1b[<0;${col};${thumbRow + 1}M`), true);
+		assert.equal(view.handleInput(`\x1b[<32;${col};${scrollbar.trackTop + scrollbar.trackHeight}M`), true);
+		assert.equal(view.handleInput(`\x1b[<0;${col};${scrollbar.trackTop + scrollbar.trackHeight}m`), true);
+		view.render(96);
+		assert.ok(view._graphScrollOffset > before);
+		assert.equal(view._focusedIndex, 0);
+		assert.equal(view.handleInput("\x1b[5~"), false, "PageUp remains available to the host transcript");
+		assert.equal(view.handleInput("\x1b[6~"), false, "PageDown remains available to the host transcript");
+		view.dispose();
+	});
+	it("keeps the ScrollView thumb visible after a prompt card covers the body", () => {
+		const stages = Array.from({ length: 12 }, (_, index) =>
+			makeStage(`prompt-scrollbar-${index}`, index === 0 ? [] : [`prompt-scrollbar-${index - 1}`]),
+		);
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeRunPromptSnap(stages, makePendingPrompt({ message: "Continue?" }))),
+			graphTheme: defaultTheme,
+			getViewportRows: () => 16,
+		});
+
+		const lines = view.render(96);
+		const scrollbar = view._graphScrollbarGeometry;
+		assert.ok(scrollbar);
+		for (let row = scrollbar.thumbTop; row < scrollbar.thumbTop + scrollbar.thumbHeight; row++) {
+			assert.match(lines[row]!, /\x1b\[100m/, `thumb row ${row} remains painted over the prompt card`);
+		}
 		view.dispose();
 	});
 

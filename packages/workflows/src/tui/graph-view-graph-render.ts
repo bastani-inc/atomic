@@ -1,3 +1,4 @@
+import type { RunSnapshot } from "../shared/store-types.js";
 import { hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphCanvas } from "./graph-canvas.js";
 import { PULSE_PERIOD_MS } from "./graph-view-constants.js";
@@ -11,46 +12,51 @@ interface Placement {
 	line: string;
 }
 
-/** Graph body rendering and vertical/horizontal viewport management. */
+/** Graph body rendering and horizontal canvas management. */
 export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
-	protected _renderGraph(width: number): string[] {
-		const run = this._getCurrentRun();
+	protected _renderGraph(
+		width: number,
+		viewportTop: number,
+		viewportRows: number,
+		renderRun?: RunSnapshot | null,
+	): string[] {
+		const safeRows = Math.max(0, Math.floor(viewportRows));
+		const run = renderRun !== undefined ? renderRun : this._getCurrentRun();
 		if (!run || this.cachedLayout.length === 0) {
 			this.lastGraphViewport = null;
 			this.graphNodeHitRects = [];
-			this.lastGraphTotalRows = 1;
-			const dim = hexToAnsi(this.graphTheme.dim);
-			return [this._centerCanvasContent(`${dim}waiting for stage events…${RESET}`, width)];
+			this.lastGraphTopPad = 0;
+			this.lastGraphVisibleRows = safeRows;
+			const lines = Array.from({ length: safeRows }, () => "");
+			if (safeRows > 0) {
+				const dim = hexToAnsi(this.graphTheme.dim);
+				lines[Math.floor((safeRows - 1) / 2)] = this._centerCanvasContent(
+					`${dim}waiting for stage events…${RESET}`,
+					width,
+				);
+			}
+			return lines;
 		}
 
 		const graphInner = Math.max(1, width - 4);
 		const { canvasWidth, totalRows, bands, edges } = this.cachedRenderGeometry;
-		this.lastGraphTotalRows = totalRows;
 		const leftMargin = Math.max(2, canvasWidth <= graphInner ? Math.floor((graphInner - canvasWidth) / 2) : 2);
 		const viewportWidth = Math.max(1, width - leftMargin);
 		const fullCanvasWidth = Math.max(canvasWidth, viewportWidth);
 		this.lastGraphViewport = { leftMargin, viewportWidth };
+
+		const safeTop = Math.max(0, Math.min(totalRows, Math.floor(viewportTop)));
+		const graphRows = Math.max(0, Math.min(safeRows, totalRows - safeTop));
+		const viewportBottom = safeTop + graphRows;
 		this._clampGraphHorizontalScroll(fullCanvasWidth, viewportWidth);
-		if (this.pendingEnsureFocusedVisible) {
-			this._scrollFocusedColumnIntoView(viewportWidth, fullCanvasWidth);
-		}
-
-		const bodyRows = this._overlayBodyRows(this._overlayPanelLineCount());
-		if (totalRows > bodyRows) {
-			this._clampGraphScroll(totalRows, bodyRows);
-			if (this.pendingEnsureFocusedVisible) this._scrollFocusedIntoView(width, bodyRows, totalRows);
-			this._clampGraphScroll(totalRows, bodyRows);
-		} else {
-			this.graphScrollOffset = 0;
-		}
-
-		const viewportTop = this.graphScrollOffset;
-		const viewportBottom = Math.min(totalRows, viewportTop + bodyRows);
+		const topPad = safeTop === 0 && totalRows <= safeRows ? Math.min(3, Math.floor((safeRows - totalRows) / 2)) : 0;
+		this.lastGraphTopPad = topPad;
+		this.lastGraphVisibleRows = graphRows;
 		const viewportLeft = this.graphScrollColOffset;
 		const viewportRight = viewportLeft + viewportWidth;
 		const pulsePhase = (Date.now() % PULSE_PERIOD_MS) / PULSE_PERIOD_MS;
 		const edgeCanvas = new GraphCanvas({
-			top: viewportTop,
+			top: safeTop,
 			bottom: viewportBottom,
 			left: viewportLeft,
 			right: viewportRight,
@@ -58,7 +64,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 		const edgeColor = this.graphTheme.borderDim;
 		for (const edge of edges) {
 			if (
-				edge.bottom <= viewportTop ||
+				edge.bottom <= safeTop ||
 				edge.top >= viewportBottom ||
 				edge.right <= viewportLeft ||
 				edge.left >= viewportRight
@@ -69,7 +75,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 		}
 		const edgeLines = edgeCanvas.toLines();
 		const placements = new Map<number, Placement[]>();
-		for (let bandIndex = this._firstVisibleLayoutBand(viewportTop); bandIndex < bands.length; bandIndex++) {
+		for (let bandIndex = this._firstVisibleLayoutBand(safeTop); bandIndex < bands.length; bandIndex++) {
 			const band = bands[bandIndex]!;
 			if (band.top >= viewportBottom) break;
 			for (const ni of band.nodeIndices) {
@@ -88,8 +94,8 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 				const visibleRight = Math.min(node.x + NODE_W, viewportRight);
 				for (let li = 0; li < cardLines.length; li++) {
 					const globalRow = node.y + li;
-					if (globalRow < viewportTop || globalRow >= viewportBottom) continue;
-					const localRow = globalRow - viewportTop;
+					if (globalRow < safeTop || globalRow >= viewportBottom) continue;
+					const localRow = globalRow - safeTop;
 					let bucket = placements.get(localRow);
 					if (!bucket) {
 						bucket = [];
@@ -106,10 +112,10 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 
 		const bg = hexBg(this.graphTheme.bg);
 		const leftPad = `${bg}${" ".repeat(leftMargin)}${RESET}`;
-		const composed: string[] = [];
-		for (let localRow = 0; localRow < viewportBottom - viewportTop; localRow++) {
+		const composed = Array.from({ length: safeRows }, () => "");
+		for (let localRow = 0; localRow < graphRows; localRow++) {
 			const line = this._composeRow(edgeLines[localRow] ?? "", placements.get(localRow) ?? [], edgeColor);
-			composed.push(`${leftPad}${this._padCanvas(line, viewportWidth)}`);
+			composed[topPad + localRow] = `${leftPad}${this._padCanvas(line, viewportWidth)}`;
 		}
 		return composed;
 	}
@@ -127,7 +133,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 		const viewportRight = viewport.leftMargin + viewport.viewportWidth;
 		const rects: typeof this.graphNodeHitRects = [];
 		const viewportTop = this.graphScrollOffset;
-		const viewportBottom = viewportTop + visibleRowCount;
+		const viewportBottom = Math.min(this.cachedRenderGeometry.totalRows, viewportTop + visibleRowCount);
 		const { bands } = this.cachedRenderGeometry;
 		for (let bandIndex = this._firstVisibleLayoutBand(viewportTop); bandIndex < bands.length; bandIndex++) {
 			const band = bands[bandIndex]!;
@@ -147,20 +153,5 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 			}
 		}
 		this.graphNodeHitRects = rects;
-	}
-
-	protected _visibleGraphLines(
-		graphLines: string[],
-		_frameWidth: number,
-		bodyRows: number,
-	): { lines: string[]; topPad: number } {
-		this.pendingEnsureFocusedVisible = false;
-		return {
-			lines: graphLines,
-			topPad:
-				this.lastGraphTotalRows <= bodyRows
-					? Math.min(3, Math.max(0, Math.floor((bodyRows - this.lastGraphTotalRows) / 2)))
-					: 0,
-		};
 	}
 }

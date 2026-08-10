@@ -1,25 +1,50 @@
 import type { RunSnapshot } from "../shared/store-types.js";
 import { hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
+import { GRAPH_HEADER_ROWS, GraphViewLayout, graphLayoutNaturalHeight } from "./graph-view-layout.js";
+import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
+import { NODE_H } from "./layout.js";
 import { renderPromptCard } from "./prompt-card.js";
 import { renderSwitcher } from "./switcher.js";
+import { truncateToWidth, visibleWidth } from "./text-helpers.js";
+
+const LAYOUT_OSC_RESET = /\x1b\]8;;(?:\x07|\x1b\\)/g;
 
 /** Overlay/widget rendering orchestration for GraphView. */
 export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
+	protected readonly graphLayout: GraphViewLayout;
+	private lastOverlayFrameHeight = 0;
+	private hasReportedViewportRows = false;
+	private renderRun: RunSnapshot | null | undefined;
+
+	constructor(opts: GraphViewOpts) {
+		super(opts);
+		this.graphLayout = new GraphViewLayout({
+			renderHeader: (width) => this._renderHeader(width),
+			renderBody: (width, top, rows, contentRows) => this._renderBody(width, top, rows, contentRows),
+			renderFooter: (width) => this._renderStatusline(width),
+			bodyContentHeight: (_width, viewportRows) => this._graphBodyContentHeight(viewportRows),
+			beforeFrame: (scrollView, viewportRows, contentRows, width) =>
+				this._prepareGraphScroll(scrollView, viewportRows, contentRows, width),
+			requestRender: () => this.requestRender?.(),
+		});
+	}
+
 	/** Render to string lines. width = terminal columns. */
 	render(width: number): string[] {
-		if (this.mode === "widget") {
-			return this._renderWidget(width);
-		}
+		if (this.mode === "widget") return this._renderWidget(width);
 		return this._renderOverlay(width);
+	}
+
+	override dispose(): void {
+		this.graphLayout.dispose();
+		super.dispose();
 	}
 
 	protected _renderWidget(width: number): string[] {
 		const run = this._getCurrentRun();
-		if (!run) {
-			return [`${hexToAnsi(this.graphTheme.dim)}no active workflow${RESET}`];
-		}
+		if (!run) return [`${hexToAnsi(this.graphTheme.dim)}no active workflow${RESET}`];
 		const displayStages = this._displayStages(run);
 		const headerLines = renderHeader({ ...run, stages: displayStages }, { width, theme: this.graphTheme });
 		const counts = this._counts(displayStages);
@@ -35,115 +60,192 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
 	protected _renderOverlay(width: number): string[] {
 		const frameWidth = Math.max(40, width);
-		this.lastOverlayFrameWidth = frameWidth;
-		const lines: string[] = [];
 		const run = this._getCurrentRun();
+		this.renderRun = run;
+		try {
+			const frameHeight = this._overlayFrameHeight(run);
+			const layoutFrame = this.graphLayout.render(frameWidth, frameHeight);
+			this.graphScrollOffset = this.graphLayout.scrollView.scrollTop;
+			const lines = this._normalizeLayoutLines(
+				layoutFrame.frame.lines,
+				frameWidth,
+				frameHeight,
+				layoutFrame.topMarginRows,
+				layoutFrame.bottomMarginRows,
+			);
+			const bodyStart = layoutFrame.bodyBox?.rect.y ?? layoutFrame.topMarginRows + GRAPH_HEADER_ROWS;
+			const bodyRows = layoutFrame.bodyBox?.rect.height ?? this.graphLayout.viewportRows;
+			if (run) {
+				this._recordGraphNodeHitRects(bodyStart + this.lastGraphTopPad, this.lastGraphVisibleRows);
+				this._renderSwitcherOverlay(lines, run, frameWidth, bodyStart, bodyRows);
+				this._renderPromptOverlay(lines, frameWidth, bodyStart, bodyRows);
+			} else {
+				this.graphNodeHitRects = [];
+				this.lastGraphViewport = null;
+			}
+			this.graphLayout.paintScrollbar(lines, frameWidth);
 
-		if (!run) {
-			return this._renderEmptyState(frameWidth);
+			return lines;
+		} finally {
+			this.renderRun = undefined;
 		}
-
-		// 1. Header chrome (3 rows: outline pill + session name + counts).
-		lines.push(
-			...renderHeader({ ...run, stages: this._displayStages(run) }, { width: frameWidth, theme: this.graphTheme }),
-		);
-
-		// 2. Graph occupies the full body. No section labels, no focused-
-		//    stage panel — status colour on each card carries that signal.
-		const graphLines = this._renderGraph(frameWidth);
-		const bodyTarget = this._overlayBodyRows(this._overlayPanelLineCount());
-		const visibleGraph = this._visibleGraphLines(graphLines, frameWidth, bodyTarget);
-		this._recordGraphNodeHitRects(
-			this._overlayVerticalMarginRows() + 3 + visibleGraph.topPad,
-			visibleGraph.lines.length,
-		);
-		for (let i = 0; i < visibleGraph.topPad; i++) lines.push(this._blankRow(frameWidth));
-		for (const line of visibleGraph.lines) {
-			lines.push(this._canvasRow(line, frameWidth));
-		}
-		while (lines.length < 3 + bodyTarget) lines.push(this._blankRow(frameWidth));
-		if (lines.length > 3 + bodyTarget) lines.length = 3 + bodyTarget;
-
-		this._renderSwitcherOverlay(lines, run, frameWidth, bodyTarget);
-		this._renderPromptOverlay(lines, frameWidth, bodyTarget);
-
-		// 5. Three-row statusline pinned to the bottom.
-		lines.push(...this._renderStatusline(frameWidth));
-
-		return this._withVerticalMargins(lines, frameWidth);
 	}
 
-	protected _renderEmptyState(width: number): string[] {
-		this.graphNodeHitRects = [];
-		this.lastGraphViewport = null;
+	protected _overlayFrameHeight(run: RunSnapshot | null = this._currentRenderRun()): number {
+		const reported = this.getViewportRows?.();
+		if (typeof reported === "number" && Number.isFinite(reported) && reported > 0) {
+			this.hasReportedViewportRows = true;
+			this.lastOverlayFrameHeight = Math.max(1, Math.floor(reported));
+			return this.lastOverlayFrameHeight;
+		}
+		if (this.hasReportedViewportRows && this.lastOverlayFrameHeight > 0) return this.lastOverlayFrameHeight;
+
+		const bodyRows = run ? Math.max(1, this.cachedRenderGeometry.totalRows) : 2;
+		this.lastOverlayFrameHeight = graphLayoutNaturalHeight(bodyRows);
+		return this.lastOverlayFrameHeight;
+	}
+
+	private _currentRenderRun(): RunSnapshot | null {
+		return this.renderRun !== undefined ? this.renderRun : this._getCurrentRun();
+	}
+
+	private _graphBodyContentHeight(viewportRows: number): number {
+		const rows = Math.max(0, Math.floor(viewportRows));
+		if (!this._currentRenderRun() || this.cachedRenderGeometry.totalRows <= 0) return rows;
+		return Math.max(rows, this.cachedRenderGeometry.totalRows);
+	}
+
+	private _prepareGraphScroll(
+		scrollView: GraphViewLayout["scrollView"],
+		viewportRows: number,
+		_contentRows: number,
+		width: number,
+	): void {
+		const run = this._currentRenderRun();
+		if (viewportRows <= 0) return;
+		if (!run || this.cachedRenderGeometry.totalRows <= 0) {
+			scrollView.scrollToStart();
+			this.graphScrollOffset = 0;
+			this.pendingEnsureFocusedVisible = false;
+			return;
+		}
+
+		if (!this.pendingEnsureFocusedVisible && scrollView.scrollTop !== this.graphScrollOffset) {
+			scrollView.scrollTo(this.graphScrollOffset);
+		}
+		if (this.pendingEnsureFocusedVisible) {
+			const node = this.cachedLayout[this.focusedIndex];
+			if (node) {
+				let next = scrollView.scrollTop;
+				if (node.y < next) next = node.y;
+				else if (node.y + NODE_H > next + viewportRows) next = node.y + NODE_H - viewportRows;
+				scrollView.scrollTo(next);
+
+				const graphInner = Math.max(1, width - 4);
+				const leftMargin = Math.max(
+					2,
+					this.cachedRenderGeometry.canvasWidth <= graphInner
+						? Math.floor((graphInner - this.cachedRenderGeometry.canvasWidth) / 2)
+						: 2,
+				);
+				const viewportWidth = Math.max(1, width - leftMargin);
+				const fullCanvasWidth = Math.max(this.cachedRenderGeometry.canvasWidth, viewportWidth);
+				this._scrollFocusedColumnIntoView(viewportWidth, fullCanvasWidth);
+			}
+			this.pendingEnsureFocusedVisible = false;
+		}
+		this.graphScrollOffset = scrollView.scrollTop;
+	}
+
+	private _renderHeader(width: number): string[] {
+		const run = this._currentRenderRun();
+		if (run) return renderHeader({ ...run, stages: this._displayStages(run) }, { width, theme: this.graphTheme });
+
 		const t = this.graphTheme;
 		const muted = hexToAnsi(t.textMuted);
-		const dim = hexToAnsi(t.dim);
-		const accent = hexToAnsi(t.accent);
 		const chromeBg = hexBg(t.backgroundPanel);
-
 		const { top, mid, bot, visibleWidth: pillW } = renderOutlinePill("ORCHESTRATOR", t.accent, chromeBg);
-		const idleLabel = `  ${muted}idle${RESET}`;
-		const fillerVisible = Math.max(0, width - 1 - pillW - 6 /* "  idle" */ - 2);
+		const fillerVisible = Math.max(0, width - 1 - pillW - 6 - 2);
 		const filler = " ".repeat(fillerVisible);
-		const lines: string[] = [
+		return [
 			`${chromeBg} ${RESET}${top}${chromeBg}${" ".repeat(6 + fillerVisible)}${" ".repeat(2)}${RESET}`,
-			`${chromeBg} ${RESET}${mid}${chromeBg}${idleLabel}${filler}${" ".repeat(2)}${RESET}`,
+			`${chromeBg} ${RESET}${mid}${chromeBg}  ${muted}idle${RESET}${filler}${" ".repeat(2)}${RESET}`,
 			`${chromeBg} ${RESET}${bot}${chromeBg}${" ".repeat(6 + fillerVisible)}${" ".repeat(2)}${RESET}`,
 		];
-		const bodyTarget = this._overlayBodyRows(this._overlayPanelLineCount());
-		const body: string[] = [
-			this._canvasRow(`  ${muted}No active workflow run.${RESET}`, width),
-			this._canvasRow(
-				`  ${dim}Start one with ${accent}/workflow <name>${RESET}${dim} or press ${accent}F2${RESET}${dim} on an active run.${RESET}`,
+	}
+
+	private _renderBody(width: number, top: number, rows: number, _contentRows: number): string[] {
+		const run = this._currentRenderRun();
+		const raw = run ? this._renderGraph(width, top, rows, run) : this._renderEmptyBody(width, rows);
+		return raw.map((line) => this._canvasRow(line, width));
+	}
+
+	private _renderEmptyBody(width: number, rows: number): string[] {
+		const body = [
+			this._centerCanvasContent(`  ${hexToAnsi(this.graphTheme.textMuted)}No active workflow run.${RESET}`, width),
+			this._centerCanvasContent(
+				`  ${hexToAnsi(this.graphTheme.dim)}Start one with ${hexToAnsi(this.graphTheme.accent)}/workflow <name>${RESET}${hexToAnsi(this.graphTheme.dim)} or press ${hexToAnsi(this.graphTheme.accent)}F2${RESET}${hexToAnsi(this.graphTheme.dim)} on an active run.${RESET}`,
 				width,
 			),
 		];
-		const topPad = Math.max(0, Math.floor((bodyTarget - body.length) / 2));
-		for (let i = 0; i < topPad; i++) lines.push(this._blankRow(width));
-		for (const l of body) lines.push(l);
-		while (lines.length < 3 + bodyTarget) lines.push(this._blankRow(width));
-		lines.push(...this._renderStatusline(width));
-		return this._withVerticalMargins(lines, width);
+		const lines = Array.from({ length: rows }, () => "");
+		const topPad = Math.max(0, Math.floor((rows - body.length) / 2));
+		for (let index = 0; index < body.length; index++) {
+			const target = topPad + index;
+			if (target < lines.length) lines[target] = body[index]!;
+		}
+		return lines;
 	}
 
-	private _renderSwitcherOverlay(lines: string[], run: RunSnapshot, frameWidth: number, bodyTarget: number): void {
-		// Switcher overlay — floats over the body when open.
-		if (!this.switcherOpen) return;
+	private _normalizeLayoutLines(
+		lines: readonly string[],
+		width: number,
+		height: number,
+		topMarginRows: number,
+		bottomMarginRows: number,
+	): string[] {
+		return Array.from({ length: height }, (_, row) => {
+			if (row < topMarginRows || row >= height - bottomMarginRows) return " ".repeat(width);
+			const clean = (lines[row] ?? "").replace(LAYOUT_OSC_RESET, "");
+			if (visibleWidth(clean) === 0) return this._blankRow(width);
+			if (visibleWidth(clean) > width) return truncateToWidth(clean, width, "…", true);
+			return `${clean}${" ".repeat(width - visibleWidth(clean))}`;
+		});
+	}
 
-		const bodyStart = 3;
-		const bodyEnd = 3 + bodyTarget;
-		for (let row = bodyStart; row < bodyEnd; row++) {
-			lines[row] = this._blankRow(frameWidth);
-		}
+	private _renderSwitcherOverlay(
+		lines: string[],
+		run: RunSnapshot,
+		frameWidth: number,
+		bodyStart: number,
+		bodyRows: number,
+	): void {
+		if (!this.switcherOpen) return;
+		const bodyEnd = bodyStart + bodyRows;
+		for (let row = bodyStart; row < bodyEnd; row++) lines[row] = this._blankRow(frameWidth);
 		const switcherWidth = Math.min(60, Math.max(40, frameWidth - 8));
 		const switcherLines = renderSwitcher(this._displayStages(run), this.switcherState, {
 			width: switcherWidth,
 			theme: this.graphTheme,
 			canOpenStageChat: (stage) => this._stageChatTarget(stage) !== undefined,
 		});
-		const insertAt = Math.max(
-			bodyStart,
-			bodyStart + Math.min(2, Math.floor((bodyTarget - switcherLines.length) / 3)),
-		);
+		const insertAt = Math.max(bodyStart, bodyStart + Math.min(2, Math.floor((bodyRows - switcherLines.length) / 3)));
 		const switcherLeft = Math.max(2, Math.floor((frameWidth - switcherWidth) / 2));
-		for (let i = 0; i < switcherLines.length; i++) {
-			const lineIdx = insertAt + i;
-			if (lineIdx >= bodyEnd) break;
-			const base = lines[lineIdx] ?? this._blankRow(frameWidth);
-			const merged = this._overlayCard(base, switcherLines[i]!, switcherLeft, frameWidth);
-			if (lineIdx < lines.length) lines[lineIdx] = merged;
-			else lines.push(merged);
+		for (let index = 0; index < switcherLines.length; index++) {
+			const lineIndex = insertAt + index;
+			if (lineIndex >= bodyEnd) break;
+			lines[lineIndex] = this._overlayCard(
+				lines[lineIndex] ?? this._blankRow(frameWidth),
+				switcherLines[index]!,
+				switcherLeft,
+				frameWidth,
+			);
 		}
 	}
 
-	private _renderPromptOverlay(lines: string[], frameWidth: number, bodyTarget: number): void {
-		// Pending HIL prompt — floats over the graph body, centred. The
-		// chat editor remains free regardless: the overlay is the only
-		// surface that interacts with the prompt. When the stage switcher is
-		// open it owns the body/input, so hide the prompt card until it closes.
+	private _renderPromptOverlay(lines: string[], frameWidth: number, bodyStart: number, bodyRows: number): void {
 		if (!this.promptState || this.switcherOpen) return;
-		const run = this._getCurrentRun();
+		const run = this._currentRenderRun();
 		const cardWidth = Math.min(72, Math.max(40, frameWidth - 6));
 		const cardLines = renderPromptCard({
 			state: this.promptState,
@@ -151,19 +253,20 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			width: cardWidth,
 			cursorOn: ((Date.now() / 530) | 0) % 2 === 0,
 			identity: run ? { runId: run.id, name: run.name } : undefined,
-			maxRows: bodyTarget,
+			maxRows: bodyRows,
 		});
-		const bodyStart = 3;
-		const bodyEnd = bodyStart + bodyTarget;
-		const slot = Math.max(bodyStart, bodyStart + Math.floor((bodyTarget - cardLines.length) / 2));
-		// The card renderer owns row budgeting, but keep this composition boundary
-		// defensive: a complete card fits wholly in the body or is not painted.
-		if (cardLines.length > bodyTarget || slot + cardLines.length > bodyEnd) return;
+		const bodyEnd = bodyStart + bodyRows;
+		const slot = Math.max(bodyStart, bodyStart + Math.floor((bodyRows - cardLines.length) / 2));
+		if (cardLines.length > bodyRows || slot + cardLines.length > bodyEnd) return;
 		const leftPad = Math.max(0, Math.floor((frameWidth - cardWidth) / 2));
-		for (let i = 0; i < cardLines.length; i++) {
-			const lineIdx = slot + i;
-			const base = lines[lineIdx] ?? this._blankRow(frameWidth);
-			lines[lineIdx] = this._overlayCard(base, cardLines[i]!, leftPad, frameWidth);
+		for (let index = 0; index < cardLines.length; index++) {
+			const lineIndex = slot + index;
+			lines[lineIndex] = this._overlayCard(
+				lines[lineIndex] ?? this._blankRow(frameWidth),
+				cardLines[index]!,
+				leftPad,
+				frameWidth,
+			);
 		}
 	}
 }

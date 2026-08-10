@@ -15,13 +15,14 @@ let _virtualModules: Record<string, object> | null = null;
 let _virtualModulesPromise: Promise<Record<string, object>> | null = null;
 
 async function loadVirtualModules(): Promise<Record<string, object>> {
-	const [typebox, typeboxCompile, typeboxValue, piAgentCore, piTui, piAi, piAiOauth, piCodingAgent] =
+	const [typebox, typeboxCompile, typeboxValue, piAgentCore, piTui, piTuiLayout, piAi, piAiOauth, piCodingAgent] =
 		await Promise.all([
 			import("typebox"),
 			import("typebox/compile"),
 			import("typebox/value"),
 			import("@earendil-works/pi-agent-core"),
 			import("@earendil-works/pi-tui"),
+			import("@earendil-works/pi-tui/dist/layout.js"),
 			// pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
 			// `/compat` (a strict superset). Extensions still `import ... from
 			// "@earendil-works/pi-ai"`, so we load the compat module here and key it
@@ -42,12 +43,14 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@sinclair/typebox/value": typeboxValue,
 		"@earendil-works/pi-agent-core": piAgentCore,
 		"@earendil-works/pi-tui": piTui,
+		"@earendil-works/pi-tui/dist/layout.js": piTuiLayout,
 		"@earendil-works/pi-ai": piAi,
 		"@earendil-works/pi-ai/compat": piAi,
 		"@earendil-works/pi-ai/oauth": piAiOauth,
 		"@bastani/atomic": piCodingAgent,
 		"@mariozechner/pi-agent-core": piAgentCore,
 		"@mariozechner/pi-tui": piTui,
+		"@mariozechner/pi-tui/dist/layout.js": piTuiLayout,
 		"@mariozechner/pi-ai": piAi,
 		"@mariozechner/pi-ai/compat": piAi,
 		"@mariozechner/pi-ai/oauth": piAiOauth,
@@ -412,6 +415,7 @@ function getAliases(): Record<string, string> {
 	const piCodingAgentEntry = packageIndex;
 	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
+	const piTuiLayoutEntry = path.join(path.dirname(piTuiEntry), "layout.js");
 	// The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
 	// upstream layout change moves these files, this join needs updating to
 	// match the package's real dist paths.
@@ -423,12 +427,14 @@ function getAliases(): Record<string, string> {
 		"@bastani/atomic": piCodingAgentEntry,
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
+		"@earendil-works/pi-tui/dist/layout.js": piTuiLayoutEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
 		"@earendil-works/pi-ai/compat": piAiEntry,
 		"@earendil-works/pi-ai": piAiEntry,
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
+		"@mariozechner/pi-tui/dist/layout.js": piTuiLayoutEntry,
 		"@mariozechner/pi-tui": piTuiEntry,
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
 		"@mariozechner/pi-ai/providers/all": piAiProvidersEntry,

@@ -107,8 +107,8 @@ export abstract class GraphViewState {
 	protected graphScrollColOffset = 0;
 	protected graphNodeHitRects: GraphNodeHitRect[] = [];
 	protected lastGraphViewport: GraphViewportGeometry | null = null;
-	protected lastGraphTotalRows = 0;
-	protected lastOverlayFrameWidth = 80;
+	protected lastGraphTopPad = 0;
+	protected lastGraphVisibleRows = 0;
 	protected pendingEnsureFocusedVisible = true;
 	protected lastAutoFocusedAwaitingInputKey: string | null = null;
 	protected lastBuiltSnapshotVersion: number | null = null;

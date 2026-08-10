@@ -1,4 +1,4 @@
-import { GRAPH_SCROLL_STEP_COLS, GRAPH_SCROLL_STEP_ROWS } from "./graph-view-constants.js";
+import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
 import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 import { isTerminalLeftMousePress, parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
@@ -11,6 +11,8 @@ interface MouseWheelDelta {
 	rows: number;
 }
 
+const GRAPH_SCROLL_WHEEL_LINES = 4;
+
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
@@ -19,31 +21,22 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this._returnToMainChat();
 			return true;
 		}
-		if (this.switcherOpen) {
-			return this._handleSwitcherInput(data);
-		}
+		if (this.graphLayout.isScrollbarInput(data)) return this._handleGraphInput(data);
+		const wheelDelta = this._mouseWheelDelta(data);
+		if (wheelDelta) return this._handleWheelDelta(wheelDelta);
+		if (this.switcherOpen) return this._handleSwitcherInput(data);
 		// Stage-local HIL is represented by graph nodes and remains graph-first;
 		// only the legacy run-level prompt card sets `promptState`. Keep that
-		// fallback answerable, but let a narrow set of non-text graph controls
-		// through first so the workflow overlay can still be detached or scrolled
-		// instead of feeling modal while a prompt is visible. Printable keys such
-		// as "/" belong to the prompt card while legacy run-level text/editor
-		// prompts own input.
-		if (this.promptState) {
-			if (this._isNonTextGraphControlBeforePrompt(data)) {
-				return this._handleGraphInput(data);
-			}
-			return this._handlePromptInput(data);
-		}
+		// fallback answerable, but let the scrollbar and wheel controls above
+		// continue to belong to the graph instead of leaking to the transcript.
+		// Printable keys such as "/" belong to the prompt card while legacy
+		// run-level text/editor prompts own input.
+		if (this.promptState) return this._handlePromptInput(data);
 		return this._handleGraphInput(data);
 	}
 
 	private _promptKeybindings(): KeybindingsLike | undefined {
 		return isKeybindingsLike(this.piKeybindings) ? this.piKeybindings : undefined;
-	}
-
-	private _isNonTextGraphControlBeforePrompt(data: string): boolean {
-		return this._mouseWheelDelta(data) !== null;
 	}
 
 	private _isReturnToMainChatInput(data: string): boolean {
@@ -83,12 +76,13 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
 	private _handleGraphInput(data: string): boolean {
 		const stageCount = this.cachedLayout.length;
-		const wheelDelta = this._mouseWheelDelta(data);
-		if (wheelDelta) {
-			if (wheelDelta.rows !== 0) this._scrollGraphBy(wheelDelta.rows);
-			if (wheelDelta.cols !== 0) this._scrollGraphHorizontallyBy(wheelDelta.cols);
+		if (this.graphLayout.handleScrollbarInput(data)) {
+			this.pendingEnsureFocusedVisible = false;
+			this.graphScrollOffset = this.graphLayout.scrollView.scrollTop;
 			return true;
 		}
+		const wheelDelta = this._mouseWheelDelta(data);
+		if (wheelDelta) return this._handleWheelDelta(wheelDelta);
 
 		const clickedNodeIndex = this._graphNodeIndexForClick(data);
 		if (clickedNodeIndex !== undefined) {
@@ -268,10 +262,16 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		this.focusedIndex = next;
 		this.pendingEnsureFocusedVisible = true;
 	}
-
-	private _scrollGraphBy(deltaRows: number): void {
+	private _scrollGraphVertically(deltaRows: number): void {
 		this.pendingEnsureFocusedVisible = false;
-		this.graphScrollOffset = Math.max(0, this.graphScrollOffset + deltaRows);
+		this.graphLayout.scrollView.scrollBy(deltaRows);
+		this.graphScrollOffset = this.graphLayout.scrollView.scrollTop;
+	}
+
+	private _handleWheelDelta(delta: MouseWheelDelta): boolean {
+		if (delta.rows !== 0) this._scrollGraphVertically(delta.rows);
+		if (delta.cols !== 0) this._scrollGraphHorizontallyBy(delta.cols);
+		return true;
 	}
 
 	private _scrollGraphHorizontallyBy(deltaCols: number): void {
@@ -292,7 +292,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		}
 		return null;
 	}
-
 	private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
 		const event = parseTerminalMouseInput(data);
 		if (event?.protocol !== "sgr" || !isTerminalLeftMousePress(event)) return null;
@@ -303,11 +302,14 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const event = parseTerminalMouseInput(data);
 		if (!event) return null;
 		const direction = terminalMouseWheelDirection(event);
-		if (direction === "up") return { cols: 0, rows: -GRAPH_SCROLL_STEP_ROWS };
-		if (direction === "down") return { cols: 0, rows: GRAPH_SCROLL_STEP_ROWS };
+		if (direction === "up") return { cols: 0, rows: -GRAPH_SCROLL_WHEEL_LINES };
+		if (direction === "down") return { cols: 0, rows: GRAPH_SCROLL_WHEEL_LINES };
 		if (direction === "left") return { cols: -GRAPH_SCROLL_STEP_COLS, rows: 0 };
 		if (direction === "right") return { cols: GRAPH_SCROLL_STEP_COLS, rows: 0 };
 		return null;
+	}
+	get _graphScrollbarGeometry() {
+		return this.graphLayout.scrollbarGeometry;
 	}
 
 	// ---- test seams ----

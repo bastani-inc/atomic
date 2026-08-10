@@ -1,12 +1,6 @@
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphCanvas } from "./graph-canvas.js";
-import {
-	COMPACT_HINT_KEYS,
-	HINT_KEYS,
-	MODE_PILL_LABEL,
-	OVERLAY_LINE_COUNT,
-	OVERLAY_VERTICAL_MARGIN_ROWS,
-} from "./graph-view-constants.js";
+import { COMPACT_HINT_KEYS, HINT_KEYS, MODE_PILL_LABEL } from "./graph-view-constants.js";
 import { GraphViewState } from "./graph-view-state.js";
 import { renderOutlinePill } from "./header.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -15,62 +9,6 @@ import { OVERLAY_HIDDEN_STATUS_KEYS, WORKFLOW_STATUS_KEY } from "./workflow-stat
 
 /** Low-level overlay geometry, chrome, ANSI canvas, and edge helpers. */
 export abstract class GraphViewRenderHelpers extends GraphViewState {
-	/**
-	 * Number of rows the overlay frame must paint. Pi-tui anchors the
-	 * overlay vertically by counting rendered lines, so to truly fill the
-	 * terminal under `maxHeight: "100%"` the component must emit
-	 * approximately `terminal.rows` lines. When a host reports fewer
-	 * than the legacy 32 rows, honour that shorter viewport where the
-	 * graph chrome can still fit so the bottom status controls are not
-	 * clipped by pi-tui's overlay max-height slicing. A host that doesn't
-	 * surface terminal dimensions keeps the previous stable rectangle.
-	 */
-	protected _overlayLineCount(): number {
-		const reported = this.getViewportRows?.();
-		if (typeof reported !== "number" || !Number.isFinite(reported)) {
-			return OVERLAY_LINE_COUNT;
-		}
-		// Header (3) + one body row + statusline (3) is the absolute
-		// minimum useful frame. Margins are dropped automatically at this
-		// size by `_overlayVerticalMarginRows`.
-		return Math.max(7, Math.floor(reported));
-	}
-
-	/** Rows available for the graph body (between header and statusline). */
-	protected _overlayBodyRows(lineCount: number): number {
-		return Math.max(1, lineCount - 3 /* header */ - 3 /* statusline */);
-	}
-
-	protected _overlayVerticalMarginRows(lineCount = this._overlayLineCount()): number {
-		return lineCount >= 9 ? OVERLAY_VERTICAL_MARGIN_ROWS : 0;
-	}
-
-	protected _overlayPanelLineCount(): number {
-		const lineCount = this._overlayLineCount();
-		const margins = this._overlayVerticalMarginRows(lineCount) * 2;
-		return Math.max(7, lineCount - margins);
-	}
-
-	protected _marginRow(width: number): string {
-		return " ".repeat(width);
-	}
-
-	protected _withVerticalMargins(panelLines: string[], width: number): string[] {
-		const expected = this._overlayLineCount();
-		const marginRows = this._overlayVerticalMarginRows(expected);
-		const panelTarget = this._overlayPanelLineCount();
-		const body = panelLines.slice(0, panelTarget);
-		while (body.length < panelTarget) body.push(this._blankRow(width));
-		const margins = Array.from({ length: marginRows }, () => this._marginRow(width));
-		const lines = [...margins, ...body, ...margins];
-		if (lines.length > expected) return lines.slice(0, expected);
-		while (lines.length < expected) {
-			const insertAt = marginRows > 0 ? Math.max(0, lines.length - marginRows) : lines.length;
-			lines.splice(insertAt, 0, this._blankRow(width));
-		}
-		return lines;
-	}
-
 	/**
 	 * Three-row statusline pinned to the bottom of the overlay. Mirrors
 	 * the header band: `backgroundPanel` chrome, outlined accent pill
@@ -182,11 +120,6 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return `${bg}${" ".repeat(leftPad)}${RESET}${cardLine}${bg}${" ".repeat(rightPadLen)}${RESET}`;
 	}
 
-	protected _clampGraphScroll(totalRows: number, bodyRows: number): void {
-		const maxOffset = Math.max(0, totalRows - bodyRows);
-		this.graphScrollOffset = Math.max(0, Math.min(maxOffset, this.graphScrollOffset));
-	}
-
 	protected _clampGraphHorizontalScroll(totalCols: number, viewportCols: number): void {
 		const maxOffset = Math.max(0, totalCols - viewportCols);
 		this.graphScrollColOffset = Math.max(0, Math.min(maxOffset, this.graphScrollColOffset));
@@ -204,24 +137,6 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		}
 		this._clampGraphHorizontalScroll(totalCols, viewportCols);
 	}
-
-	protected _scrollFocusedIntoView(frameWidth: number, bodyRows: number, totalRows: number): void {
-		const range = this._focusedGraphRowRange(frameWidth);
-		if (!range) return;
-		if (range.start < this.graphScrollOffset) {
-			this.graphScrollOffset = range.start;
-		} else if (range.end >= this.graphScrollOffset + bodyRows) {
-			this.graphScrollOffset = range.end - bodyRows + 1;
-		}
-		this._clampGraphScroll(totalRows, bodyRows);
-	}
-
-	protected _focusedGraphRowRange(_frameWidth: number): { start: number; end: number } | null {
-		const node = this.cachedLayout[this.focusedIndex];
-		if (!node) return null;
-		return { start: node.y, end: node.y + NODE_H - 1 };
-	}
-
 	/**
 	 * Plot a parent → child edge for the vertical orientation. The edge
 	 * exits from the parent's bottom-centre, runs through a horizontal

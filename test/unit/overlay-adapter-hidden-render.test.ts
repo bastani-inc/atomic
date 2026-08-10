@@ -29,10 +29,15 @@ async function registerIsolatedTests(): Promise<void> {
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { mock } = await import("bun:test");
 	class TestComponent {}
-
+	const [{ ScrollView }, { VStack }] = await Promise.all([
+		import("@earendil-works/pi-tui/dist/components/scroll-view.js"),
+		import("@earendil-works/pi-tui/dist/components/v-stack.js"),
+	]);
 	mock.module("@earendil-works/pi-tui", () => ({
 		Box: TestComponent,
 		Editor: TestComponent,
+		ScrollView,
+		VStack,
 		SelectList: TestComponent,
 		Text: TestComponent,
 		Key: {
