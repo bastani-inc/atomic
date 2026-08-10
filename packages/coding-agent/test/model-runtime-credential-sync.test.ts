@@ -44,4 +44,19 @@ describe("ModelRuntime credential synchronization", () => {
 		expect(refresh).not.toHaveBeenCalled();
 		expect(await credentials.read("anthropic")).toBeUndefined();
 	});
+
+	test("does not leak the credential through enumeration or serialization", () => {
+		// The non-enumerable descriptor on `credential` is the only thing keeping a
+		// live secret out of JSON.stringify, console.log, and any structured error
+		// reporter that walks own enumerable properties. Nothing else pinned it, so
+		// a refactor of the constructor could silently make errors credential-bearing.
+		const secret = { type: "api_key", key: "sk-do-not-log-me" } as const;
+		const error = new CredentialSynchronizationError("anthropic", "saveCredential", secret, {});
+
+		expect(error.credential).toBe(secret);
+		expect(Object.propertyIsEnumerable.call(error, "credential")).toBe(false);
+		expect(Object.keys(error)).not.toContain("credential");
+		expect(JSON.stringify(error)).not.toContain("sk-do-not-log-me");
+		expect(JSON.stringify({ error })).not.toContain("sk-do-not-log-me");
+	});
 });

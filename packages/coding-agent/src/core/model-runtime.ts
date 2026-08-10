@@ -88,8 +88,18 @@ export class CredentialSynchronizationError extends Error {
 		this.name = "CredentialSynchronizationError";
 		this.providerId = providerId;
 		this.operation = operation;
-		this.credential = credential;
-		Object.defineProperty(this, "credential", { enumerable: false });
+		// One call rather than assign-then-redefine: the two-step form is
+		// equivalent (defineProperty with only `enumerable` preserves the existing
+		// value) but reads as a redundant write and trips static analysis. The
+		// non-enumerable descriptor is the load-bearing part — it keeps the
+		// credential out of JSON.stringify, console.log, and structured error
+		// reporting.
+		Object.defineProperty(this, "credential", {
+			value: credential,
+			enumerable: false,
+			writable: true,
+			configurable: true,
+		});
 	}
 }
 
