@@ -193,8 +193,13 @@ describe("remote transcript projection", () => {
 	});
 
 	test("resets revision history when the same session runtime is reacquired", () => {
-		let state = createTranscriptState(snapshot(50, "old runtime"));
-		state = createTranscriptState(snapshot(0, "new runtime"));
+		// `applyTranscriptSnapshot` is the unit under test: it drops a snapshot whose
+		// revision moved BACKWARDS for the same session id, treating it as stale,
+		// unless the runtime was reacquired. Calling `createTranscriptState` twice
+		// would assert nothing — a state built from a revision-0 snapshot trivially
+		// reports revision 0 — so the reacquire path has to go through apply.
+		const previous = createTranscriptState(snapshot(50, "old runtime"));
+		const state = applyTranscriptSnapshot(previous, { ...snapshot(0, "new runtime"), id: "session-2" });
 
 		assert.equal(state.snapshot.revision, 0);
 		assert.deepEqual(selectTranscript(state)[0]?.content, [{ type: "text", text: "new runtime" }]);
