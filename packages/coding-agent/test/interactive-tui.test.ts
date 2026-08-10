@@ -1,5 +1,5 @@
-import type { Component, Terminal, TUI, TuiBase, TuiMode } from "@earendil-works/pi-tui";
-import { Container, isViewportTUI, ScrollView, Text, TuiAltScreen, VStack } from "@earendil-works/pi-tui";
+import type { Component, TUI, TuiBase, TuiMode } from "@earendil-works/pi-tui";
+import { isViewportTUI, TuiAltScreen } from "@earendil-works/pi-tui";
 import { describe, expect, test, vi } from "vitest";
 import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
 import {
@@ -8,57 +8,11 @@ import {
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
 import { openBrowser } from "../src/utils/open-browser.ts";
-
-class RecordingTerminal implements Terminal {
-	columns = 40;
-	rows = 8;
-	kittyProtocolActive = true;
-	startCount = 0;
-	stopCount = 0;
-	cursorVisible = true;
-	readonly writes: string[] = [];
-	private onInput: ((data: string) => void) | undefined;
-	private onResize: (() => void) | undefined;
-
-	start(onInput: (data: string) => void, onResize: () => void): void {
-		this.startCount += 1;
-		this.onInput = onInput;
-		this.onResize = onResize;
-	}
-
-	stop(): void {
-		this.stopCount += 1;
-		this.onInput = undefined;
-		this.onResize = undefined;
-	}
-
-	async drainInput(): Promise<void> {}
-	write(data: string): void {
-		this.writes.push(data);
-	}
-	moveBy(_lines: number): void {}
-	hideCursor(): void {
-		this.cursorVisible = false;
-	}
-	showCursor(): void {
-		this.cursorVisible = true;
-	}
-	clearLine(): void {}
-	clearFromCursor(): void {}
-	clearScreen(): void {}
-	setTitle(_title: string): void {}
-	setProgress(_active: boolean): void {}
-
-	input(data: string): void {
-		this.onInput?.(data);
-	}
-
-	resize(columns: number, rows: number): void {
-		this.columns = columns;
-		this.rows = rows;
-		this.onResize?.();
-	}
-}
+import {
+	createProductionFullscreenContext,
+	getLayoutFrame,
+	RecordingTerminal,
+} from "./helpers/interactive-fullscreen-layout.ts";
 
 describe("interactive TUI renderer", () => {
 	test("selects the alternate-screen renderer with link activation and alternate-screen bytes", () => {
@@ -187,72 +141,60 @@ describe("interactive TUI renderer", () => {
 		await new Promise<void>((resolve) => process.nextTick(resolve));
 		expect(render).toHaveBeenCalledTimes(rendersAtShutdown);
 	});
-	test("keeps the fullscreen dock fixed while the transcript scrolls and resizes", () => {
-		type LayoutFrame = {
-			root: { children: Array<{ rect: { y: number; height: number } }> };
-			lines: string[];
-		};
+	test("keeps the fullscreen dock fixed while the transcript scrolls and resizes", async () => {
+		const { context, terminal, tui, initPromise, resolveTheme, restoreOffline } = createProductionFullscreenContext({
+			columns: 24,
+			rows: 12,
+		});
 
-		const terminal = new RecordingTerminal();
-		terminal.columns = 24;
-		terminal.rows = 6;
-		const document = new Container();
-		for (let index = 1; index <= 10; index += 1) {
-			document.addChild(new Text(`line ${index}`, 0, 0));
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			tui.renderNow();
+
+			const transcript = context.transcriptScrollView;
+			if (!transcript) throw new Error("production transcript did not mount");
+			const getFrame = () => getLayoutFrame(tui);
+			const initial = getFrame();
+			const initialDock = initial.root.children[1];
+			const dock = context.fullscreenLayoutRoot?.children[1];
+			if (!dock) throw new Error("fullscreen dock did not render");
+			expect(initialDock.component).toBe(dock);
+			expect(initialDock.rect.height).toBe(dock.render(terminal.columns).length);
+			expect(initialDock.rect.y).toBe(terminal.rows - initialDock.rect.height);
+			const initialDockLines = initial.lines.slice(initialDock.rect.y, initialDock.rect.y + initialDock.rect.height);
+			expect(initialDockLines.some((line) => line.includes("editor"))).toBe(true);
+			expect(initialDockLines.at(-1)).toContain("footer");
+			const initialScrollTop = transcript.scrollTop;
+			expect(initialScrollTop).toBeGreaterThan(0);
+
+			// The wheel lands on the footer, but the primary transcript handles it.
+			terminal.input(`\x1b[<64;1;${terminal.rows}M`);
+			tui.renderNow();
+			expect(transcript.scrollTop).toBe(initialScrollTop - 1);
+			const scrolled = getFrame();
+			const scrolledDock = scrolled.root.children[1];
+			if (!scrolledDock) throw new Error("fullscreen dock disappeared after scrolling");
+			expect(scrolledDock.rect).toEqual(initialDock.rect);
+			expect(
+				scrolled.lines.slice(scrolledDock.rect.y, scrolledDock.rect.y + scrolledDock.rect.height).at(-1),
+			).toContain("footer");
+
+			terminal.resize(30, 8);
+			tui.renderNow();
+			const resized = getFrame();
+			const resizedDock = resized.root.children[1];
+			if (!resizedDock) throw new Error("fullscreen dock disappeared after resize");
+			expect(resizedDock.rect.height).toBe(initialDock.rect.height);
+			expect(resizedDock.rect.y).toBe(terminal.rows - resizedDock.rect.height);
+			expect(resized.lines.slice(resizedDock.rect.y, resizedDock.rect.y + resizedDock.rect.height).at(-1)).toContain(
+				"footer",
+			);
+			expect(transcript.viewportHeight).toBe(terminal.rows - resizedDock.rect.height);
+		} finally {
+			resolveTheme();
+			await initPromise;
+			tui.stop();
+			restoreOffline();
 		}
-		const transcript = new ScrollView(document, { follow: "end", primary: true, overscroll: "chain" });
-		const editor = new Text("editor", 0, 0);
-		const footer = new Text("footer", 0, 0);
-		const dock = new VStack([editor, footer]);
-		const root = new VStack([
-			{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-			{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
-		]);
-		const tui = new TuiAltScreen(terminal);
-		const context = Object.assign(Object.create(InteractiveMode.prototype), {
-			fullscreenLayoutRoot: root,
-		}) as unknown as InteractiveMode;
-
-		context.mountInteractiveTui(tui, [document, editor, footer]);
-		tui.start();
-		tui.renderNow();
-
-		const getFrame = (): LayoutFrame => {
-			const frame = (tui as unknown as { currentLayout?: LayoutFrame }).currentLayout;
-			if (!frame) throw new Error("fullscreen layout did not render");
-			return frame;
-		};
-		const initial = getFrame();
-		const initialDock = initial.root.children[1];
-		if (!initialDock) throw new Error("fullscreen dock did not render");
-		expect(initialDock.rect.height).toBe(2);
-		expect(initialDock.rect.y).toBe(4);
-		expect(initial.lines.at(-2)).toContain("editor");
-		expect(initial.lines.at(-1)).toContain("footer");
-		const initialScrollTop = transcript.scrollTop;
-		expect(initialScrollTop).toBeGreaterThan(0);
-
-		// The wheel lands on the footer, but the primary transcript handles it.
-		terminal.input("\x1b[<64;1;6M");
-		tui.renderNow();
-		expect(transcript.scrollTop).toBe(initialScrollTop - 1);
-		const scrolled = getFrame();
-		const scrolledDock = scrolled.root.children[1];
-		if (!scrolledDock) throw new Error("fullscreen dock disappeared after scrolling");
-		expect(scrolledDock.rect).toEqual(initialDock.rect);
-		expect(scrolled.lines.at(-2)).toContain("editor");
-		expect(scrolled.lines.at(-1)).toContain("footer");
-
-		terminal.resize(30, 8);
-		tui.renderNow();
-		const resized = getFrame();
-		const resizedDock = resized.root.children[1];
-		if (!resizedDock) throw new Error("fullscreen dock disappeared after resize");
-		expect(resizedDock.rect.height).toBe(2);
-		expect(resizedDock.rect.y).toBe(6);
-		expect(resized.lines.at(-2)).toContain("editor");
-		expect(resized.lines.at(-1)).toContain("footer");
-		expect(transcript.viewportHeight).toBe(6);
-		tui.stop();
 	});
 });

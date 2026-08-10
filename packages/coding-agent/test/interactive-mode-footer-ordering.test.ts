@@ -3,12 +3,14 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 /**
  * Regression for the fullscreen dock: footer swaps must update the stable
- * footer container used by both the flat renderer and the layout root.
+ * footer container used by both the flat renderer and the layout root. The
+ * #1109 invariant also requires that a footer swap never reorders ui.children.
  */
 
 type Comp = { render: (width: number) => string[]; dispose?: () => void };
 
 interface FakeUi {
+	children: Comp[];
 	requestRender(): void;
 }
 
@@ -59,7 +61,7 @@ function makeCtx(): FooterCtx {
 		footer,
 		footerContainer: makeFooterContainer(footer),
 		footerDataProvider: {},
-		ui: { requestRender() {} },
+		ui: { children: [makeComp()], requestRender() {} },
 	};
 }
 
@@ -76,11 +78,13 @@ describe("InteractiveMode.setExtensionFooter dock slot", () => {
 
 	test("restoring the built-in footer restores the stable footer container child", () => {
 		const ctx = makeCtx();
+		const initialUiChildren = [...ctx.ui.children];
 		callSetFooter(ctx, () => makeComp());
 		callSetFooter(ctx, undefined);
 
 		expect(ctx.footerContainer.children).toEqual([ctx.footer]);
 		expect(ctx.customFooter).toBeUndefined();
+		expect(ctx.ui.children).toEqual(initialUiChildren);
 	});
 
 	test("clearing the slot removes stale footer components before mounting the next one", () => {
