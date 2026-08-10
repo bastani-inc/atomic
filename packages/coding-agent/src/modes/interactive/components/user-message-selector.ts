@@ -78,7 +78,7 @@ class UserMessageList implements Component {
 		return lines;
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 		// Up arrow - go to previous (older) message, wrap to bottom when at top
 		if (kb.matches(keyData, "tui.select.up")) {
@@ -100,7 +100,10 @@ class UserMessageList implements Component {
 			if (this.onCancel) {
 				this.onCancel();
 			}
+		} else {
+			return false;
 		}
+		return true;
 	}
 }
 

@@ -197,7 +197,7 @@ export class TreeList implements Component {
 		return lines;
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const state = this.state;
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "tui.select.up")) {
@@ -300,8 +300,11 @@ export class TreeList implements Component {
 				state.searchQuery += keyData;
 				state.foldedNodes.clear();
 				applyTreeFilter(state);
+				return true;
 			}
+			return false;
 		}
+		return true;
 	}
 
 	/**

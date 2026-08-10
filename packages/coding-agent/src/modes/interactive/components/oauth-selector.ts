@@ -179,17 +179,17 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		}
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
-			if (this.filteredProviders.length === 0) return;
+			if (this.filteredProviders.length === 0) return true;
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
 			this.updateList();
 		}
 		// Down arrow
 		else if (kb.matches(keyData, "tui.select.down")) {
-			if (this.filteredProviders.length === 0) return;
+			if (this.filteredProviders.length === 0) return true;
 			this.selectedIndex = Math.min(this.filteredProviders.length - 1, this.selectedIndex + 1);
 			this.updateList();
 		}
@@ -209,5 +209,6 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 			this.searchInput.handleInput(keyData);
 			this.filterProviders(this.searchInput.getValue());
 		}
+		return true;
 	}
 }

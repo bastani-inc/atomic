@@ -24,6 +24,72 @@ import {
 } from "./keybindings-adapter.js";
 import { decodePrintableKey, Key, matchesKey } from "./text-helpers.js";
 
+export function isInputsPickerKey(
+	key: string,
+	state: InputsPickerState,
+	fields: readonly WorkflowInputEntry[],
+	keybindings?: KeybindingsLike,
+): boolean {
+	if (fields.length === 0) return isCancelKey(key);
+	if (isCancelKey(key) || matchesKey(key, Key.tab) || matchesKey(key, Key.shift("tab"))) return true;
+	if (state.focusedIdx === fields.length) {
+		return (
+			matchesAction(keybindings, key, TUI_ACTION.selectUp) ||
+			matchesAction(keybindings, key, TUI_ACTION.selectDown) ||
+			matchesAction(keybindings, key, TUI_ACTION.editorCursorUp) ||
+			matchesAction(keybindings, key, TUI_ACTION.editorCursorDown) ||
+			matchesKey(key, Key.enter) ||
+			matchesAction(keybindings, key, TUI_ACTION.selectConfirm) ||
+			matchesAction(keybindings, key, TUI_ACTION.inputSubmit)
+		);
+	}
+	const field = fields[state.focusedIdx];
+	if (!field) return false;
+	if (field.type === "select") {
+		if ((field.choices ?? []).length === 0) return false;
+		return (
+			matchesAction(keybindings, key, TUI_ACTION.selectUp) ||
+			matchesAction(keybindings, key, TUI_ACTION.selectDown) ||
+			matchesAction(keybindings, key, TUI_ACTION.editorCursorLeft) ||
+			matchesAction(keybindings, key, TUI_ACTION.editorCursorRight) ||
+			matchesAction(keybindings, key, TUI_ACTION.selectConfirm) ||
+			matchesAction(keybindings, key, TUI_ACTION.inputSubmit)
+		);
+	}
+	if (field.type === "boolean") {
+		return (
+			matchesKey(key, Key.space) ||
+			matchesAction(keybindings, key, TUI_ACTION.selectUp) ||
+			matchesAction(keybindings, key, TUI_ACTION.selectDown) ||
+			matchesAction(keybindings, key, TUI_ACTION.editorCursorLeft) ||
+			matchesAction(keybindings, key, TUI_ACTION.editorCursorRight) ||
+			matchesAction(keybindings, key, TUI_ACTION.selectConfirm) ||
+			matchesAction(keybindings, key, TUI_ACTION.inputSubmit)
+		);
+	}
+	if (
+		matchesAction(keybindings, key, TUI_ACTION.editorCursorUp) ||
+		matchesAction(keybindings, key, TUI_ACTION.editorCursorDown) ||
+		matchesAction(keybindings, key, "tui.editor.cursorWordLeft") ||
+		matchesAction(keybindings, key, "tui.editor.cursorWordRight") ||
+		matchesAction(keybindings, key, "tui.editor.cursorLineStart") ||
+		matchesAction(keybindings, key, "tui.editor.cursorLineEnd") ||
+		matchesAction(keybindings, key, TUI_ACTION.editorCursorLeft) ||
+		matchesAction(keybindings, key, TUI_ACTION.editorCursorRight) ||
+		matchesAction(keybindings, key, "tui.editor.deleteWordBackward") ||
+		matchesAction(keybindings, key, "tui.editor.deleteWordForward") ||
+		matchesAction(keybindings, key, "tui.editor.deleteToLineStart") ||
+		matchesAction(keybindings, key, "tui.editor.deleteToLineEnd") ||
+		matchesAction(keybindings, key, "tui.editor.deleteCharBackward") ||
+		matchesAction(keybindings, key, "tui.editor.deleteCharForward") ||
+		matchesAction(keybindings, key, TUI_ACTION.inputSubmit) ||
+		matchesAction(keybindings, key, "tui.input.newLine")
+	) {
+		return true;
+	}
+	return isPrintableGrapheme(decodePrintableKey(key) ?? key);
+}
+
 export function handleInputsPickerInput(
 	key: string,
 	state: InputsPickerState,

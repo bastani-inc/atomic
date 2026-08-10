@@ -268,7 +268,7 @@ export class SessionList implements Component, Focusable {
 		return parts.join("") + branch;
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 
 		// Handle delete confirmation state first - intercept all keys
@@ -277,44 +277,44 @@ export class SessionList implements Component, Focusable {
 				const pathToDelete = this.confirmingDeletePath;
 				this.setConfirmingDeletePath(null);
 				void this.onDeleteSession?.(pathToDelete);
-				return;
+				return true;
 			}
 			if (kb.matches(keyData, "tui.select.cancel")) {
 				this.setConfirmingDeletePath(null);
-				return;
+				return true;
 			}
 			// Ignore all other keys while confirming
-			return;
+			return true;
 		}
 
 		if (kb.matches(keyData, "tui.input.tab")) {
 			if (this.onToggleScope) {
 				this.onToggleScope();
 			}
-			return;
+			return true;
 		}
 
 		if (kb.matches(keyData, "app.session.toggleSort")) {
 			this.onToggleSort?.();
-			return;
+			return true;
 		}
 
 		if (this.keybindings.matches(keyData, "app.session.toggleNamedFilter")) {
 			this.onToggleNameFilter?.();
-			return;
+			return true;
 		}
 
 		// Ctrl+P: toggle path display
 		if (kb.matches(keyData, "app.session.togglePath")) {
 			this.showPath = !this.showPath;
 			this.onTogglePath?.(this.showPath);
-			return;
+			return true;
 		}
 
 		// Ctrl+D: initiate delete confirmation (useful on terminals that don't distinguish Ctrl+Backspace from Backspace)
 		if (kb.matches(keyData, "app.session.delete")) {
 			this.startDeleteConfirmationForSelectedSession();
-			return;
+			return true;
 		}
 
 		// Rename selected session
@@ -323,7 +323,7 @@ export class SessionList implements Component, Focusable {
 			if (selected) {
 				this.onRenameSession?.(selected.session.path);
 			}
-			return;
+			return true;
 		}
 
 		// Ctrl+Backspace: non-invasive convenience alias for delete
@@ -332,11 +332,11 @@ export class SessionList implements Component, Focusable {
 			if (this.searchInput.getValue().length > 0) {
 				this.searchInput.handleInput(keyData);
 				this.filterSessions(this.searchInput.getValue());
-				return;
+				return true;
 			}
 
 			this.startDeleteConfirmationForSelectedSession();
-			return;
+			return true;
 		}
 
 		// Up arrow
@@ -373,5 +373,6 @@ export class SessionList implements Component, Focusable {
 			this.searchInput.handleInput(keyData);
 			this.filterSessions(this.searchInput.getValue());
 		}
+		return true;
 	}
 }

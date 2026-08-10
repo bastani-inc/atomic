@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
-import type { PiCustomOverlayFactory, PiCustomOverlayOptions, PiKeybindings, PiTheme } from "../extension/wiring.js";
+import type {
+	PiCustomComponent,
+	PiCustomOverlayFactory,
+	PiCustomOverlayOptions,
+	PiKeybindings,
+	PiTheme,
+} from "../extension/wiring.js";
 import type { StageInputAnswer, StagePromptAdapter } from "./stage-prompt.js";
 import type { StagePromptAnswerSource, Store } from "./store.js";
 import { store as defaultStore } from "./store.js";
@@ -280,7 +286,7 @@ export class StageUiBroker {
 
 export interface MountedStageCustomUi {
 	readonly request: StageCustomUiRequest;
-	readonly component: Component & { dispose?(): void };
+	readonly component: PiCustomComponent & { invalidate(): void; dispose?(): void } & Partial<Focusable>;
 }
 
 export async function mountStageCustomUi(
@@ -302,10 +308,10 @@ export async function mountStageCustomUi(
 			onDone?.();
 		},
 	);
-	const component: Component & { dispose?(): void } & Partial<Focusable> = {
+	const component: PiCustomComponent & { invalidate(): void; dispose?(): void } & Partial<Focusable> = {
 		render: (width) => rawComponent.render(width),
 		...(rawComponent.handleInput !== undefined
-			? { handleInput: (data: string) => rawComponent.handleInput?.(data) }
+			? { handleInput: (data: string): boolean => rawComponent.handleInput?.(data) === true }
 			: {}),
 		invalidate: () => rawComponent.invalidate?.(),
 		...(rawComponent.dispose !== undefined ? { dispose: () => rawComponent.dispose?.() } : {}),

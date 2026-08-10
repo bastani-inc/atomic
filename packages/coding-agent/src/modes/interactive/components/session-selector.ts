@@ -14,18 +14,18 @@ import type { SessionScope, SessionsLoader } from "./session-selector-types.ts";
  * Component that renders a session selector
  */
 export class SessionSelectorComponent extends Container implements Focusable {
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		if (this.mode === "rename") {
 			const kb = getKeybindings();
 			if (kb.matches(data, "tui.select.cancel")) {
 				this.exitRenameMode();
-				return;
+				return true;
 			}
 			this.renameInput.handleInput(data);
-			return;
+			return true;
 		}
 
-		this.sessionList.handleInput(data);
+		return this.sessionList.handleInput(data);
 	}
 
 	private canRename = true;

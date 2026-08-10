@@ -2628,9 +2628,16 @@ class ConfirmPrompt implements Component {
 
   invalidate(): void {}
 
-  handleInput(data: string): void {
-    if (data === "\r") this.done(true);
-    if (data === "\x1b") this.done(false);
+  handleInput(data: string): boolean {
+    if (data === "\r") {
+      this.done(true);
+      return true;
+    }
+    if (data === "\x1b") {
+      this.done(false);
+      return true;
+    }
+    return false;
   }
 
   constructor(private readonly done: (value: boolean) => void) {}

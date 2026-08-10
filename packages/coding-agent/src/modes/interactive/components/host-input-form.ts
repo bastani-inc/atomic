@@ -100,33 +100,34 @@ export class HostInputFormComponent implements Component, Focusable {
 		this.syncFocus();
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		if (
 			matchesKey(data, Key.escape) ||
 			matchesKey(data, Key.ctrl("c")) ||
 			this.keybindings.matches(data, "tui.select.cancel")
 		) {
 			this.delegate.onCancel();
-			return;
+			return true;
 		}
 		if (matchesKey(data, Key.shift("tab"))) {
 			this.moveFocus(-1);
-			return;
+			return true;
 		}
 		if (matchesKey(data, Key.tab) || this.keybindings.matches(data, "tui.input.tab")) {
 			this.moveFocus(1);
-			return;
+			return true;
 		}
 		if (this.focusedIndex === this.fields.length) {
 			this.handleSubmitRow(data);
-			return;
+			return true;
 		}
 		const field = this.fields[this.focusedIndex];
-		if (!field) return;
+		if (!field) return true;
 		if (field.type === "select") this.handleSelect(data, field);
 		else if (field.type === "boolean") this.handleBoolean(data);
 		else this.handleEditable(data, field);
 		this.tui.requestRender();
+		return true;
 	}
 
 	render(width: number): string[] {

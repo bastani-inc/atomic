@@ -94,12 +94,12 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.treeContainer.addChild(this.treeList);
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		if (this.labelInput) {
 			this.labelInput.handleInput(keyData);
-		} else {
-			this.treeList.handleInput(keyData);
+			return true;
 		}
+		return this.treeList.handleInput(keyData);
 	}
 
 	getTreeList(): TreeList {

@@ -1,4 +1,5 @@
 import {
+	isKeyRelease,
 	ProcessTerminal,
 	type Terminal,
 	type TUI,
@@ -23,12 +24,19 @@ export interface InteractiveTuiOptions {
 
 const viewportInputListeners = new WeakSet<AtomicTuiAltScreen>();
 const viewportInputGates = new WeakMap<AtomicTuiAltScreen, (data: string) => boolean>();
+interface ViewportInputSubscription {
+	routeListener: TuiInputListener;
+	routeUnsubscribe?: () => void;
+}
+
+const viewportInputSubscriptions = new WeakMap<AtomicTuiAltScreen, ViewportInputSubscription>();
 
 /**
  * The first `addInputListener` call is load-bearing: pi-tui 0.84.1 registers
  * its viewport listener from `TuiAltScreen`'s constructor
- * (`dist/tui-alt-screen.js:77`). Keep this gate in that listener so pi-tui's
- * mouse, selection, and focus cleanup paths retain their upstream ordering.
+ * (`dist/tui-alt-screen.js:77`). Keep the viewport wrapper first so mouse,
+ * selection, and focus cleanup retain pi-tui's ordering. Put the focused-input
+ * route last so application listeners still receive deferred viewport keys.
  */
 class AtomicTuiAltScreen extends TuiAltScreen {
 	constructor(
@@ -45,14 +53,59 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	override addInputListener(listener: TuiInputListener): () => void {
 		if (!viewportInputListeners.has(this)) {
 			viewportInputListeners.add(this);
-			const gatedListener: TuiInputListener = (data) => {
+			const subscription: ViewportInputSubscription = {
+				routeListener: (data) => this.routeViewportInput(listener, data),
+			};
+			viewportInputSubscriptions.set(this, subscription);
+			super.addInputListener((data) => {
 				const gate = viewportInputGates.get(this);
 				if (gate && !gate(data)) return undefined;
 				return listener(data);
-			};
-			return super.addInputListener(gatedListener);
+			});
+			subscription.routeUnsubscribe = super.addInputListener(subscription.routeListener);
+			// TuiAltScreen never retains the constructor subscription's disposer.
+			// Keep its viewport and routing listeners installed for the renderer's life.
+			return () => {};
 		}
-		return super.addInputListener(listener);
+
+		const subscription = viewportInputSubscriptions.get(this);
+		if (!subscription) return super.addInputListener(listener);
+		subscription.routeUnsubscribe?.();
+		const unsubscribe = super.addInputListener(listener);
+		subscription.routeUnsubscribe = super.addInputListener(subscription.routeListener);
+		return unsubscribe;
+	}
+
+	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
+		const gate = viewportInputGates.get(this);
+		if (!gate || gate(data)) return undefined;
+
+		const focused = this.getFocusedComponent();
+		if (focused?.handleInput && (!isKeyRelease(data) || focused.wantsKeyRelease === true)) {
+			const handleInput = focused.handleInput as (
+				data: string,
+			) => boolean | undefined | Promise<boolean | undefined>;
+			const result = handleInput.call(focused, data);
+			if (result instanceof Promise) {
+				void result.then(
+					(handled) => {
+						if (handled === true) this.requestRender();
+						else if (handled === false && this.getFocusedComponent() === focused) viewportListener(data);
+					},
+					() => {
+						if (this.getFocusedComponent() === focused) viewportListener(data);
+					},
+				);
+				return { consume: true };
+			}
+			if (result === true) {
+				this.requestRender();
+				return { consume: true };
+			}
+		}
+
+		viewportListener(data);
+		return { consume: true };
 	}
 }
 

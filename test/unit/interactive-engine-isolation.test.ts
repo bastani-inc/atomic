@@ -111,7 +111,9 @@ test("remote custom components render and receive input through the engine proto
 	const result = service.custom<string>((_tui, _theme, _keybindings, done) => ({
 		render: (width) => [`width:${width},rows:${_tui.terminal.rows}`],
 		handleInput: (data) => {
-			if (data === "\r") done("accepted");
+			if (data !== "\r") return false;
+			done("accepted");
+			return true;
 		},
 		invalidate: () => {},
 	}));
@@ -135,6 +137,7 @@ test("remote custom components render and receive input through the engine proto
 		serializeInteractiveEngineFrame({
 			type: "engine_custom_input",
 			componentId: open.componentId,
+			requestId: 1,
 			data: "\r",
 		}),
 	);
@@ -169,7 +172,12 @@ test.sequential("startup custom UI can unblock engine binding after transport re
 				if (message.type === "engine_custom_open") resolve(message);
 			});
 		});
-		client.sendInteractiveEngineCommand({ type: "engine_custom_input", componentId: open.componentId, data: "\r" });
+		client.sendInteractiveEngineCommand({
+			type: "engine_custom_input",
+			componentId: open.componentId,
+			requestId: 1,
+			data: "\r",
+		});
 		await Promise.race([
 			client.waitForInteractiveEngineBound(),
 			sleep(2_000).then(() => {

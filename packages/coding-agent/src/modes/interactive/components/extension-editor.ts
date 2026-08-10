@@ -80,19 +80,20 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		this.addChild(new DynamicBorder());
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onCancelCallback();
-			return;
+			return true;
 		}
 
 		if (this.keybindings.matches(keyData, "app.editor.external")) {
 			void this.handleOpenExternalEditor();
-			return;
+			return true;
 		}
 
 		this.editor.handleInput(keyData);
+		return true;
 	}
 
 	private async handleOpenExternalEditor(): Promise<void> {

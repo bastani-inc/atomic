@@ -13,7 +13,7 @@ All components implement:
 ```typescript
 interface Component {
   render(width: number): string[];
-  handleInput?(data: string): void;
+  handleInput?(data: string): boolean | void;
   wantsKeyRelease?: boolean;
   invalidate(): void;
 }
@@ -22,9 +22,11 @@ interface Component {
 | Method | Description |
 |--------|-------------|
 | `render(width)` | Return array of strings (one per line). Each line **must not exceed `width`**. |
-| `handleInput?(data)` | Receive keyboard input when component has focus. |
+| `handleInput?(data)` | Receive keyboard input when the component has focus. Return `true` when it consumes the key; return `false`, `undefined`, or `void` when a matching fullscreen viewport key should fall through to transcript navigation. |
 | `wantsKeyRelease?` | If true, component receives key release events (Kitty protocol). Default: false. |
 | `invalidate()` | Clear cached render state. Called on theme changes. |
+
+The installed pi-tui type still permits handlers that return `void`; Atomic treats a missing or `undefined` result as unhandled only for a matching fullscreen viewport key. Components that mutate state for such a key must return `true` so the viewport does not apply it a second time.
 
 The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered line. Styles do not carry across lines. If you emit multi-line text with styling, reapply styles per line or use `wrapTextWithAnsi()` so styles are preserved for each wrapped line.
 
@@ -99,7 +101,7 @@ pi.on("session_start", async (_event, ctx) => {
 
 Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable operation. If the signal aborts, Atomic dismisses the custom UI and rejects the returned promise with the signal reason. For overlays, use `options.onHandle` to receive an overlay handle for programmatic visibility control.
 
-In Atomic's default interactive mode, the component instance remains in the isolated engine child. The terminal host caches rendered lines and forwards input asynchronously, so `render()` and `handleInput()` must not depend on direct access to host process objects. The remote bridge preserves pi-tui's key-release contract: release events are filtered unless the child component sets `wantsKeyRelease = true`, matching a directly mounted component. Return values passed to `done()` must be JSON-safe.
+In Atomic's default interactive mode, the component instance remains in the isolated engine child. The terminal host caches rendered lines and forwards input asynchronously, so `render()` and `handleInput()` must not depend on direct access to host process objects. For a matching fullscreen viewport key, the host waits for the child's boolean input reply: `true` keeps the key local, while `false` lets the host transcript process it. A stalled reply has a bounded fallback. The remote bridge preserves pi-tui's key-release contract: release events are filtered unless the child component sets `wantsKeyRelease = true`, matching a directly mounted component. Return values passed to `done()` must be JSON-safe.
 
 ### Host terminal modes from an isolated component
 
@@ -327,16 +329,21 @@ Use `matchesKey()` for key detection:
 ```typescript
 import { matchesKey, Key } from "@earendil-works/pi-tui";
 
-handleInput(data: string) {
+handleInput(data: string): boolean {
   if (matchesKey(data, Key.up)) {
     this.selectedIndex--;
+    return true;
   } else if (matchesKey(data, Key.enter)) {
     this.onSelect?.(this.selectedIndex);
+    return true;
   } else if (matchesKey(data, Key.escape)) {
     this.onCancel?.();
+    return true;
   } else if (matchesKey(data, Key.ctrl("c"))) {
     // CTRL+C
+    return true;
   }
+  return false;
 }
 ```
 
@@ -387,18 +394,23 @@ class MySelector {
     this.items = items;
   }
 
-  handleInput(data: string): void {
+  handleInput(data: string): boolean {
     if (matchesKey(data, Key.up) && this.selected > 0) {
       this.selected--;
       this.invalidate();
+      return true;
     } else if (matchesKey(data, Key.down) && this.selected < this.items.length - 1) {
       this.selected++;
       this.invalidate();
+      return true;
     } else if (matchesKey(data, Key.enter)) {
       this.onSelect?.(this.items[this.selected]);
+      return true;
     } else if (matchesKey(data, Key.escape)) {
       this.onCancel?.();
+      return true;
     }
+    return false;
   }
 
   render(width: number): string[] {
@@ -693,7 +705,11 @@ pi.registerCommand("pick", {
       return {
         render: (w) => container.render(w),
         invalidate: () => container.invalidate(),
-        handleInput: (data) => { selectList.handleInput(data); tui.requestRender(); },
+        handleInput: (data) => {
+          selectList.handleInput(data);
+          tui.requestRender();
+          return true;
+        },
       };
     });
 
@@ -773,7 +789,10 @@ pi.registerCommand("settings", {
       return {
         render: (w) => container.render(w),
         invalidate: () => container.invalidate(),
-        handleInput: (data) => settingsList.handleInput?.(data),
+        handleInput: (data) => {
+          settingsList.handleInput?.(data);
+          return true;
+        },
       };
     });
   },

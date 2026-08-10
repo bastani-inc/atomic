@@ -97,7 +97,7 @@ export class FirstTimeSetupComponent extends Container {
 		} else this.analyticsIndex = Math.max(0, Math.min(ANALYTICS.length - 1, this.analyticsIndex + delta));
 		this.update();
 	}
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		const keys = getKeybindings();
 		if (keys.matches(data, "tui.select.up") || data === "k") this.move(-1);
 		else if (keys.matches(data, "tui.select.down") || data === "j") this.move(1);
@@ -111,5 +111,7 @@ export class FirstTimeSetupComponent extends Container {
 					shareAnalytics: ANALYTICS[this.analyticsIndex]!.value,
 				});
 		} else if (keys.matches(data, "tui.select.cancel")) this.options.onCancel();
+		else return false;
+		return true;
 	}
 }

@@ -3,12 +3,11 @@ import type { HostInputFormField, HostSessionPickerRow } from "../../core/extens
 import type { KeyId } from "../../core/keybindings.ts";
 
 /**
- * Version 2 added `engine_request_accepted`. The host uses that frame to decide
- * whether a submission may be returned to the editor after a transport failure,
- * so a child that cannot send it must not be treated as compatible: without the
- * frame the host would restore work the child had already started.
+ * Version 3 adds correlated replies for `engine_custom_input`. The host uses
+ * those replies to decide whether a matching fullscreen viewport key should be
+ * replayed, so a child that cannot send them must not be treated as compatible.
  */
-export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 2;
+export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 3;
 
 export interface JsonObject {
 	[key: string]: JsonValue;
@@ -80,6 +79,7 @@ export type InteractiveEngineMessage =
 	  }
 	| { type: "engine_custom_close"; componentId: string }
 	| { type: "engine_custom_frame"; componentId: string; requestId: number; lines: string[] }
+	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
 	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
 	| { type: "engine_custom_terminal"; componentId: string; control: EngineTerminalControl }
@@ -104,7 +104,7 @@ export type InteractiveEngineMessage =
 	| { type: "engine_input_form_close"; componentId: string };
 export type InteractiveEngineCommand =
 	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
-	| { type: "engine_custom_input"; componentId: string; data: string }
+	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
 	| { type: "engine_custom_dispose"; componentId: string }
 	| {
 			type: "engine_tool_render";
@@ -367,6 +367,12 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				value.lines.every((entry) => typeof entry === "string")
 				? { type: value.type, componentId: value.componentId, requestId: value.requestId, lines: value.lines }
 				: undefined;
+		case "engine_custom_input_result":
+			return typeof value.componentId === "string" &&
+				typeof value.requestId === "number" &&
+				typeof value.handled === "boolean"
+				? { type: value.type, componentId: value.componentId, requestId: value.requestId, handled: value.handled }
+				: undefined;
 		case "engine_custom_invalidate":
 			return typeof value.componentId === "string"
 				? { type: value.type, componentId: value.componentId }
@@ -453,8 +459,8 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			rows: value.rows,
 		};
 	}
-	if (value.type === "engine_custom_input" && typeof value.data === "string")
-		return { type: value.type, componentId: value.componentId, data: value.data };
+	if (value.type === "engine_custom_input" && typeof value.requestId === "number" && typeof value.data === "string")
+		return { type: value.type, componentId: value.componentId, requestId: value.requestId, data: value.data };
 	if (value.type === "engine_custom_dispose" || value.type === "engine_render_dispose")
 		return { type: value.type, componentId: value.componentId };
 	if (

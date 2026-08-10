@@ -15,10 +15,11 @@
  */
 
 import assert from "node:assert/strict";
-import type { Component } from "@earendil-works/pi-tui";
+import { type Component, ScrollView, Text, type TuiAltScreen, VStack } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { createInteractiveTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
@@ -28,28 +29,60 @@ import {
 	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import {
+	REMOTE_INPUT_REPLY_TIMEOUT_MS,
 	RemoteComponentController,
 	type TuiRendererLifecycle,
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
+import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
 import { sleep } from "../helpers/runtime.js";
 import { createStore, deriveGraphTheme, makeHandle, StageChatView, setupRun } from "./stage-chat-view-helpers.ts";
 
-type HostComponent = Component & { handleInput?: (data: string) => void };
+type HostComponent = Omit<Component, "handleInput"> & {
+	handleInput?: (data: string) => boolean | undefined | Promise<boolean | undefined>;
+};
 
 interface Bridge {
 	readonly child: EngineCustomUiService;
 	readonly childCommands: InteractiveEngineCommand[];
+	readonly tui?: TuiAltScreen;
+	readonly terminal?: RecordingTerminal;
 	hostComponent: HostComponent | undefined;
 }
+
+interface BridgeOptions {
+	fullscreen?: boolean;
+}
+
 const regularTuiRendererLifecycle: TuiRendererLifecycle = {
 	isFullscreen: () => false,
 	onRendererReplaced: () => () => {},
 };
 
-function makeBridge(): Bridge {
+function makeBridge(options: BridgeOptions = {}): Bridge {
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	const childCommands: InteractiveEngineCommand[] = [];
-	const bridge: Bridge = { hostComponent: undefined, childCommands } as Bridge;
+	const keybindings = new KeybindingsManager();
+	const viewportActions = [
+		"tui.altScreen.pageUp",
+		"tui.altScreen.pageDown",
+		"tui.altScreen.top",
+		"tui.altScreen.bottom",
+	] as const;
+	const terminal = options.fullscreen ? new RecordingTerminal() : undefined;
+	if (terminal) {
+		terminal.columns = 40;
+		terminal.rows = 10;
+	}
+	const tui = terminal
+		? (createInteractiveTui({
+				tuiMode: "fullscreen",
+				showHardwareCursor: false,
+				logDirectory: "/tmp",
+				terminal,
+				shouldHandleViewportInput: (data) => !viewportActions.some((action) => keybindings.matches(data, action)),
+			}) as TuiAltScreen)
+		: undefined;
+	const bridge = { hostComponent: undefined, childCommands, terminal, tui } as unknown as Bridge;
 
 	const child = new EngineCustomUiService((line) => {
 		const message = parseInteractiveEngineMessage(line);
@@ -71,18 +104,24 @@ function makeBridge(): Bridge {
 	} as unknown as IsolatedInteractiveRuntime;
 
 	const ui = {
-		requestRender: () => {},
+		requestRender: () => tui?.requestRender(),
 		setWidget: () => {},
 		custom: (
 			factory: (tui: unknown, theme: unknown, keys: unknown, done: (result: unknown) => void) => HostComponent,
 		) =>
-			new Promise(() => {
-				const tui = { terminal: { rows: 40, columns: 100 }, requestRender: () => {} };
-				bridge.hostComponent = factory(tui, {}, {}, () => {});
+			new Promise((resolve) => {
+				const factoryTui = tui ?? { terminal: { rows: 40, columns: 100 }, requestRender: () => {} };
+				bridge.hostComponent = factory(factoryTui, {}, {}, resolve);
 			}),
 	} as unknown as ExtensionUIContext;
 
-	new RemoteComponentController(runtime, ui, regularTuiRendererLifecycle);
+	new RemoteComponentController(
+		runtime,
+		ui,
+		options.fullscreen
+			? { isFullscreen: () => true, onRendererReplaced: () => () => {} }
+			: regularTuiRendererLifecycle,
+	);
 	return Object.assign(bridge, { child });
 }
 
@@ -189,4 +228,96 @@ test("isolated custom UI forwards Kitty releases to an opted-in child component"
 	host.handleInput?.("\x1b[111;5:3u");
 	await flush();
 	assert.deepEqual(inputs, ["\x1b[111;5:1u", "\x1b[111;5:3u"]);
+});
+
+test("an unhandled isolated fullscreen key reaches the transcript once", async () => {
+	const bridge = makeBridge({ fullscreen: true });
+	const inputs: string[] = [];
+	void bridge.child.custom(() => ({
+		render: () => ["remote"],
+		handleInput: (data: string) => {
+			inputs.push(data);
+		},
+		invalidate: () => {},
+	}));
+	await flush();
+	const host = bridge.hostComponent;
+	const tui = bridge.tui;
+	const terminal = bridge.terminal;
+	assert.ok(host, "remote component did not mount on the host");
+	assert.ok(tui, "fullscreen renderer did not mount");
+	assert.ok(terminal, "fullscreen terminal did not mount");
+
+	const transcript = new ScrollView(
+		new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+		{ follow: "end", primary: true },
+	);
+	tui.setLayoutRoot(
+		new VStack([
+			{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+			{ component: host, basis: 1, shrink: 0 },
+		]),
+	);
+	tui.setFocus(host);
+	tui.start();
+	tui.renderNow();
+
+	try {
+		assert.ok(transcript.scrollTop > 0, "transcript did not start scrolled to the end");
+		terminal.input("\x1bOH");
+		await flush();
+		tui.renderNow();
+		assert.deepEqual(inputs, ["\x1bOH"], "the child did not receive exactly one input");
+		assert.equal(transcript.scrollTop, 0, "an unhandled remote key did not reach the transcript");
+	} finally {
+		tui.stop();
+	}
+});
+
+test("does not replay a handled fullscreen key after the remote child closes", async () => {
+	const bridge = makeBridge({ fullscreen: true });
+	const inputs: string[] = [];
+	void bridge.child.custom((_tui, _theme, _keys, done) => ({
+		render: () => ["remote"],
+		handleInput: (data: string) => {
+			inputs.push(data);
+			done("closed");
+			return true;
+		},
+		invalidate: () => {},
+	}));
+	await flush();
+	const host = bridge.hostComponent;
+	const tui = bridge.tui;
+	const terminal = bridge.terminal;
+	assert.ok(host, "remote component did not mount on the host");
+	assert.ok(tui, "fullscreen renderer did not mount");
+	assert.ok(terminal, "fullscreen terminal did not mount");
+
+	const transcript = new ScrollView(
+		new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+		{ follow: "end", primary: true },
+	);
+	tui.setLayoutRoot(
+		new VStack([
+			{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+			{ component: host, basis: 1, shrink: 0 },
+		]),
+	);
+	tui.setFocus(host);
+	tui.start();
+	tui.renderNow();
+
+	try {
+		const initialTop = transcript.scrollTop;
+		assert.ok(initialTop > 0, "transcript did not start scrolled to the end");
+		terminal.input("\x1bOH");
+		await flush();
+		await sleep(REMOTE_INPUT_REPLY_TIMEOUT_MS + 25);
+		tui.renderNow();
+		assert.deepEqual(inputs, ["\x1bOH"], "the child did not receive exactly one input");
+		assert.equal(transcript.scrollTop, initialTop, "a handled key was replayed after the child closed");
+	} finally {
+		tui.stop();
+	}
 });

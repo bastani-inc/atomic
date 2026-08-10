@@ -112,9 +112,9 @@ function handleMountedCustomUiInput(ctx: StageChatViewContext, data: string): bo
 
 	const component = mounted.component;
 	setComponentFocused(component, ctx.focused);
-	component.handleInput?.(data);
+	const handled = component.handleInput?.(data) === true;
 	ctx.requestRender?.();
-	return true;
+	return handled;
 }
 
 function handlePromptInput(ctx: StageChatViewContext, data: string): void {

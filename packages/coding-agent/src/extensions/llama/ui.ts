@@ -267,16 +267,18 @@ class LlamaView implements LlamaUi, Focusable {
 		this.tui.requestRender();
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		if (this.progressResolver && this.keybindings.matches(data, "tui.select.cancel")) {
 			const resolve = this.progressResolver;
 			this.progressPromise = undefined;
 			this.progressResolver = undefined;
 			resolve();
-			return;
+			return true;
 		}
-		this.inputHandler?.handleInput?.(data);
+		if (!this.inputHandler?.handleInput) return false;
+		this.inputHandler.handleInput(data);
 		this.tui.requestRender();
+		return true;
 	}
 
 	render(width: number): string[] {

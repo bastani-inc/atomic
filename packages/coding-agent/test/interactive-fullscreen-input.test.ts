@@ -25,7 +25,10 @@ function makeEditor(inputs: string[]): Component & { focused: boolean } {
 		focused: false,
 		render: () => ["editor"],
 		invalidate: () => {},
-		handleInput: (data: string) => inputs.push(data),
+		handleInput: (data: string) => {
+			inputs.push(data);
+			return true;
+		},
 	};
 }
 
@@ -195,6 +198,7 @@ describe("fullscreen input navigation", () => {
 			handleInput: (data: string) => {
 				const delta = selectMovementDelta(data, keybindings, 10);
 				if (delta !== 0) promptDeltas.push(delta);
+				return delta !== 0;
 			},
 		} satisfies Component & { focused: boolean };
 		const mainEditor = makeEditor([]);

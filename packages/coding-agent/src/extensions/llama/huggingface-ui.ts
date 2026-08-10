@@ -155,35 +155,36 @@ export class HuggingFaceSearch extends Container implements Focusable {
 		this.onSelectModel(model);
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		if (this.keybindings.matches(data, "tui.select.up")) {
 			if (this.filteredResults.length > 0) {
 				this.selectedIndex = this.selectedIndex === 0 ? this.filteredResults.length - 1 : this.selectedIndex - 1;
 				this.updateResults();
 			}
-			return;
+			return true;
 		}
 		if (this.keybindings.matches(data, "tui.select.down")) {
 			if (this.filteredResults.length > 0) {
 				this.selectedIndex = this.selectedIndex === this.filteredResults.length - 1 ? 0 : this.selectedIndex + 1;
 				this.updateResults();
 			}
-			return;
+			return true;
 		}
 		if (this.keybindings.matches(data, "tui.select.confirm")) {
 			const exact = /^[^/\s]+\/[^:\s]+(?::[^\s:]+)?$/u.test(this.query) ? this.query : undefined;
 			const selected = exact ?? this.filteredResults[this.selectedIndex]?.id;
 			if (selected) this.close(selected);
-			return;
+			return true;
 		}
 		if (this.keybindings.matches(data, "tui.select.cancel")) {
 			this.close(undefined);
-			return;
+			return true;
 		}
 		this.input.handleInput(data);
 		const query = this.input.getValue().trim();
-		if (query === this.query) return;
+		if (query === this.query) return true;
 		this.query = query;
 		this.scheduleSearch();
+		return true;
 	}
 }

@@ -3376,7 +3376,11 @@ export const tableSelectorFactory: WorkflowCustomUiFactory<{ id: string; name: s
   render: (width) => ["..."],
   invalidate: () => {},
   handleInput: (data) => {
-    /* ... done({ id, name }) on Enter ... */
+    if (data === "enter") {
+      /* ... done({ id, name }) ... */
+      return true;
+    }
+    return false;
   },
 });
 ```

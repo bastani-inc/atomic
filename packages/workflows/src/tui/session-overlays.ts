@@ -31,6 +31,7 @@ import {
 	createSessionPickerResumeCandidateCache,
 	createSessionPickerState,
 	handleSessionPickerInput,
+	isSessionPickerKey,
 	renderSessionPicker,
 	selectRunsForPicker,
 } from "./session-picker.js";
@@ -127,16 +128,18 @@ export function openSessionPicker(
 					const rows = selectRows();
 					return renderSessionPicker({ width, theme, rows, state, allRuns: store.runs() });
 				},
-				handleInput: (data: string) => {
+				handleInput: (data: string): boolean => {
 					const rows = selectRows();
+					const consumed = isSessionPickerKey(data, state, rows);
 					const action = handleSessionPickerInput(data, state, rows);
 					if (action.kind === "noop") {
 						tui.requestRender?.();
-						return;
+						return consumed;
 					}
 					if (action.kind === "close") finish({ kind: "close" });
 					else if (action.kind === "connect") finish(toResult(action));
 					else finish(toResult(action));
+					return true;
 				},
 				invalidate: () => tui.requestRender?.(),
 				dispose: () => {

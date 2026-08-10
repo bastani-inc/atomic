@@ -323,15 +323,15 @@ export class ResourceList implements Component, Focusable {
 		}
 		return lines;
 	}
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		const kb = getKeybindings();
 		if (kb.matches(data, "tui.select.up")) {
 			this.selectedIndex = this.findNextItem(this.selectedIndex, -1);
-			return;
+			return true;
 		}
 		if (kb.matches(data, "tui.select.down")) {
 			this.selectedIndex = this.findNextItem(this.selectedIndex, 1);
-			return;
+			return true;
 		}
 		if (kb.matches(data, "tui.select.pageUp")) {
 			// Jump up by maxVisible, then find nearest item
@@ -342,7 +342,7 @@ export class ResourceList implements Component, Focusable {
 			if (target < this.filteredItems.length) {
 				this.selectedIndex = target;
 			}
-			return;
+			return true;
 		}
 		if (kb.matches(data, "tui.select.pageDown")) {
 			// Jump down by maxVisible, then find nearest item
@@ -353,19 +353,19 @@ export class ResourceList implements Component, Focusable {
 			if (target >= 0) {
 				this.selectedIndex = target;
 			}
-			return;
+			return true;
 		}
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.onCancel?.();
-			return;
+			return true;
 		}
 		if (matchesKey(data, "ctrl+c")) {
 			this.onExit?.();
-			return;
+			return true;
 		}
 		if (kb.matches(data, "tui.input.tab")) {
 			this.onSwitchMode?.();
-			return;
+			return true;
 		}
 		if (data === " " || kb.matches(data, "tui.select.confirm")) {
 			const entry = this.filteredItems[this.selectedIndex];
@@ -377,10 +377,11 @@ export class ResourceList implements Component, Focusable {
 				this.updateItem(entry.item, newEnabled);
 				this.onToggle?.(entry.item, newEnabled);
 			}
-			return;
+			return true;
 		}
 		this.searchInput.handleInput(data);
 		this.filterItems(this.searchInput.getValue());
+		return true;
 	}
 	private toggleResource(item: ResourceItem, enabled: boolean): void {
 		if (item.metadata.origin === "top-level") {

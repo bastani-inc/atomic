@@ -304,7 +304,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "tui.input.tab")) {
 			if (this.scopedModelItems.length > 0) {
@@ -314,17 +314,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
 					this.scopeHintText.setText(this.getScopeHintText());
 				}
 			}
-			return;
+			return true;
 		}
 		// Up arrow - wrap to bottom when at top
 		if (kb.matches(keyData, "tui.select.up")) {
-			if (this.filteredModels.length === 0) return;
+			if (this.filteredModels.length === 0) return true;
 			this.selectedIndex = this.selectedIndex === 0 ? this.filteredModels.length - 1 : this.selectedIndex - 1;
 			this.updateList();
 		}
 		// Down arrow - wrap to top when at bottom
 		else if (kb.matches(keyData, "tui.select.down")) {
-			if (this.filteredModels.length === 0) return;
+			if (this.filteredModels.length === 0) return true;
 			this.selectedIndex = this.selectedIndex === this.filteredModels.length - 1 ? 0 : this.selectedIndex + 1;
 			this.updateList();
 		}
@@ -345,6 +345,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.searchInput.handleInput(keyData);
 			this.filterModels(this.searchInput.getValue());
 		}
+		return true;
 	}
 
 	private handleSelect(model: Model<Api>): void {

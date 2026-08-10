@@ -44,7 +44,7 @@ export class LabelInput implements Component, Focusable {
 		return lines;
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "tui.select.confirm")) {
 			const value = this.input.getValue().trim();
@@ -54,5 +54,6 @@ export class LabelInput implements Component, Focusable {
 		} else {
 			this.input.handleInput(keyData);
 		}
+		return true;
 	}
 }

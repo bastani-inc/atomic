@@ -28,7 +28,9 @@ export class SearchLine implements Component {
 		return [truncateToWidth(`  ${theme.fg("muted", "Type to search:")}`, width)];
 	}
 
-	handleInput(_keyData: string): void {}
+	handleInput(_keyData: string): boolean {
+		return false;
+	}
 }
 
 /** Component that renders tree help as semantic rows with chunk-aware wrapping */

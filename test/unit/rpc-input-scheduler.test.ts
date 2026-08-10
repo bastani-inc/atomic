@@ -108,7 +108,7 @@ test("host protocol responses bypass a running RPC command", async () => {
 
 	dispatch('{"type":"compact"}');
 	dispatch('{"type":"extension_ui_response","id":"ui-1","value":true}');
-	dispatch('{"type":"engine_custom_input","componentId":"ui-2","data":"escape"}');
+	dispatch('{"type":"engine_custom_input","componentId":"ui-2","requestId":1,"data":"escape"}');
 	await sleep(0);
 
 	assert.deepEqual(handled, ["compact", "extension_ui_response", "engine_custom_input"]);
@@ -121,14 +121,14 @@ test("only validated cancellation and host-control frames bypass the ordinary la
 	}
 	assert.equal(isConcurrentRpcControlLine('{"type":"extension_ui_response","id":"ui-1","cancelled":true}'), true);
 	assert.equal(
-		isConcurrentRpcControlLine('{"type":"engine_custom_input","componentId":"ui-1","data":"escape"}'),
+		isConcurrentRpcControlLine('{"type":"engine_custom_input","componentId":"ui-1","requestId":1,"data":"escape"}'),
 		true,
 	);
 
 	for (const line of [
 		'{"type":"compact"}',
 		'{"type":"extension_ui_response"}',
-		'{"type":"engine_custom_input","componentId":"ui-1"}',
+		'{"type":"engine_custom_input","componentId":"ui-1","requestId":1}',
 		'{"type":"engine_unknown","componentId":"ui-1"}',
 		"not json",
 	]) {

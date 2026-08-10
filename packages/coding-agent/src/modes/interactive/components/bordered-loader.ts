@@ -1,4 +1,4 @@
-import { CancellableLoader, Container, Loader, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import { CancellableLoader, Container, getKeybindings, Loader, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -52,10 +52,10 @@ export class BorderedLoader extends Container {
 		}
 	}
 
-	handleInput(data: string): void {
-		if (this.cancellable) {
-			(this.loader as CancellableLoader).handleInput(data);
-		}
+	handleInput(data: string): boolean {
+		if (!this.cancellable) return false;
+		(this.loader as CancellableLoader).handleInput(data);
+		return getKeybindings().matches(data, "tui.select.cancel");
 	}
 
 	dispose(): void {

@@ -1,4 +1,4 @@
-import { getKeybindings, type Input } from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, getKeybindings, type Input } from "@earendil-works/pi-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.ts";
 import type { QuestionData, QuestionnaireResult, QuestionParams } from "../tool/types.ts";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
@@ -22,6 +22,39 @@ function writeInputCursor(input: Input, cursor: number): void {
 	Reflect.set(input, "cursor", Math.max(0, Math.min(cursor, value.length)));
 }
 
+function inlineInputHandles(data: string): boolean {
+	if (data.includes("\x1b[200~")) return true;
+	if (data === "\n") return true;
+	const keybindings = getKeybindings();
+	const inputActions: Array<Parameters<typeof keybindings.matches>[1]> = [
+		"tui.select.cancel",
+		"tui.editor.undo",
+		"tui.input.submit",
+		"tui.editor.deleteCharBackward",
+		"tui.editor.deleteCharForward",
+		"tui.editor.deleteWordBackward",
+		"tui.editor.deleteWordForward",
+		"tui.editor.deleteToLineStart",
+		"tui.editor.deleteToLineEnd",
+		"tui.editor.yank",
+		"tui.editor.yankPop",
+		"tui.editor.cursorLeft",
+		"tui.editor.cursorRight",
+		"tui.editor.cursorLineStart",
+		"tui.editor.cursorLineEnd",
+		"tui.editor.cursorWordLeft",
+		"tui.editor.cursorWordRight",
+	];
+	if (inputActions.some((action) => keybindings.matches(data, action))) {
+		return true;
+	}
+	if (decodeKittyPrintable(data) !== undefined) return true;
+	return [...data].every((character) => {
+		const code = character.charCodeAt(0);
+		return code >= 32 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f);
+	});
+}
+
 export interface QuestionnaireSessionConfig {
 	tui: { terminal: { columns: number }; requestRender(): void };
 	theme: Theme;
@@ -33,7 +66,7 @@ export interface QuestionnaireSessionConfig {
 export interface QuestionnaireSessionComponent {
 	render(width: number): string[];
 	invalidate(): void;
-	handleInput(data: string): void;
+	handleInput(data: string): boolean;
 }
 
 function initialState(): QuestionnaireState {
@@ -111,13 +144,15 @@ export class QuestionnaireSession {
 		this.viewAdapter.apply(this.state);
 	}
 
-	dispatch(data: string): void {
+	dispatch(data: string): boolean {
 		const action = routeKey(data, this.state, this.runtime());
 		if (action.kind === "ignore") {
+			const hasInlineInput = this.state.inputMode && this.state.inlineInputOwner !== null;
 			this.handleIgnoreInline(data);
-			return;
+			return hasInlineInput && inlineInputHandles(data);
 		}
 		this.commit(action);
+		return true;
 	}
 
 	private commit(action: QuestionnaireAction): void {

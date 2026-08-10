@@ -244,15 +244,16 @@ export class LoginDialogComponent extends Container implements Focusable {
 		this.tui.requestRender();
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		const kb = getKeybindings();
 
 		if (kb.matches(data, "tui.select.cancel")) {
 			this.cancel();
-			return;
+			return true;
 		}
 
 		// Pass to input
 		this.input.handleInput(data);
+		return true;
 	}
 }

@@ -57,8 +57,9 @@ export class WarningSettingsSubmenu extends Container {
 		this.addChild(this.settingsList);
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		this.settingsList.handleInput(data);
+		return true;
 	}
 }
 
@@ -115,8 +116,9 @@ export class SelectSubmenu extends Container {
 		this.addChild(new Text(theme.fg("dim", "  enter select · esc back"), 0, 0));
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		this.selectList.handleInput(data);
+		return true;
 	}
 }
 
@@ -197,8 +199,10 @@ export class ThemeSubmenu extends Container {
 		}
 	}
 
-	handleInput(data: string): void {
-		this.inputComponent?.handleInput?.(data);
+	handleInput(data: string): boolean {
+		if (!this.inputComponent?.handleInput) return false;
+		this.inputComponent.handleInput(data);
+		return true;
 	}
 
 	private setContent(renderComponent: Component, inputComponent: Component = renderComponent): void {

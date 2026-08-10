@@ -386,6 +386,33 @@ export function renderSessionPicker(opts: SessionPickerRenderOpts): string[] {
 
 export type SessionPickerAction = { kind: "noop" } | { kind: "close" } | { kind: "connect"; runId: string };
 
+export function isSessionPickerKey(data: string, state: SessionPickerState, rows: readonly PickerRow[]): boolean {
+	if (state.filterFocused) {
+		return (
+			matchesKey(data, Key.escape) ||
+			data === DOUBLE_ESCAPE_SEQUENCE ||
+			matchesKey(data, Key.enter) ||
+			matchesKey(data, Key.backspace) ||
+			(data.length === 1 && data >= " " && data <= "~")
+		);
+	}
+	if (
+		matchesKey(data, "/") ||
+		matchesKey(data, Key.escape) ||
+		matchesKey(data, "q") ||
+		matchesKey(data, Key.shift("q")) ||
+		matchesKey(data, "a") ||
+		matchesKey(data, Key.shift("a")) ||
+		matchesKey(data, Key.down) ||
+		matchesKey(data, "j") ||
+		matchesKey(data, Key.up) ||
+		matchesKey(data, "k")
+	) {
+		return true;
+	}
+	return matchesKey(data, Key.enter) && rows[state.selectedIndex] !== undefined;
+}
+
 /**
  * Pure key handler — never mutates anything outside `state`. Returns an
  * action describing what the host should do next (for example, mount the GraphView).

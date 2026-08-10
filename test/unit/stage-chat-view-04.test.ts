@@ -48,6 +48,7 @@ describe("StageChatView", () => {
 			render: () => ["QUESTION-PANEL"],
 			handleInput: (data: string) => {
 				received.push(data);
+				return true;
 			},
 			invalidate: () => {},
 		}));
@@ -225,7 +226,7 @@ describe("StageChatView", () => {
 			});
 			const pending = broker.requestCustomUi("run-1", "stage-a", () => ({
 				render: () => ["FUZZ-QUESTION"],
-				handleInput: () => {},
+				handleInput: () => false,
 				invalidate: () => {},
 			}));
 			await flush();

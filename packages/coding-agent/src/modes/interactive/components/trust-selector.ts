@@ -108,7 +108,7 @@ export class TrustSelectorComponent extends Container {
 		}
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "tui.select.up") || keyData === "k") {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
@@ -123,6 +123,9 @@ export class TrustSelectorComponent extends Container {
 			}
 		} else if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onCancelCallback();
+		} else {
+			return false;
 		}
+		return true;
 	}
 }

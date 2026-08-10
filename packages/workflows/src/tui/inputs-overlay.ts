@@ -39,6 +39,7 @@ import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunct
 import type { WorkflowInputValues } from "../shared/types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { coerceValues, createInputsPickerState, handleInputsPickerInput, renderInputsPicker } from "./inputs-picker.js";
+import { isInputsPickerKey } from "./inputs-picker-input.js";
 
 export interface InputsUiSurface {
 	custom?: PiCustomOverlayFunction;
@@ -146,19 +147,21 @@ export function openInputsPicker(ui: InputsUiSurface, opts: OpenInputsPickerOpts
 						state,
 						cursorOn,
 					}),
-				handleInput: (data: string) => {
+				handleInput: (data: string): boolean => {
 					// Pi's `KeybindingsManager` is the third factory arg — the
 					// picker uses it so user-configured text-editing actions
 					// (delete word, line jump, etc.) work the same in the
-					// fallback overlay as in the inline form. Pass it through
-					// structurally; the picker guards the shape itself.
+					// inline form. Pass it through structurally; the picker guards
+					// the shape itself.
 					const kb = keys as Parameters<typeof handleInputsPickerInput>[3];
+					const consumed = isInputsPickerKey(data, state, fields, kb);
 					const action = handleInputsPickerInput(data, state, fields, kb);
 					if (action.kind === "noop") {
 						tui.requestRender?.();
-						return;
+						return consumed;
 					}
 					finish(action);
+					return true;
 				},
 				invalidate: () => tui.requestRender?.(),
 				dispose: () => {

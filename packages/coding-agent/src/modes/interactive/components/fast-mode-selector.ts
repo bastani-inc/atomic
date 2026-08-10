@@ -53,30 +53,32 @@ export class FastModeSelectorComponent {
 		return lines.map((line) => truncateToWidth(line, width));
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		if (matchesKey(data, "tab") || matchesKey(data, "down")) {
 			this.moveRow(1);
-			return;
+			return true;
 		}
 		if (matchesKey(data, "shift+tab") || matchesKey(data, "up")) {
 			this.moveRow(-1);
-			return;
+			return true;
 		}
 		if (matchesKey(data, "enter") || data === " ") {
 			this.toggleCurrentRow();
-			return;
+			return true;
 		}
 		if (matchesKey(data, "left")) {
 			this.setCurrentRow(false);
-			return;
+			return true;
 		}
 		if (matchesKey(data, "right")) {
 			this.setCurrentRow(true);
-			return;
+			return true;
 		}
 		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
 			void this.callbacks.onCancel();
+			return true;
 		}
+		return false;
 	}
 
 	getFocusedRow(): FastModeRow {

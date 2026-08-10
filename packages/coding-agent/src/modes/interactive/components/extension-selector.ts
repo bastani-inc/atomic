@@ -88,7 +88,7 @@ export class ExtensionSelectorComponent extends Container {
 		}
 	}
 
-	handleInput(keyData: string): void {
+	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "app.tools.expand")) {
 			this.onToggleToolsExpanded?.();
@@ -103,7 +103,10 @@ export class ExtensionSelectorComponent extends Container {
 			if (selected) this.onSelectCallback(selected);
 		} else if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onCancelCallback();
+		} else {
+			return false;
 		}
+		return true;
 	}
 
 	dispose(): void {
