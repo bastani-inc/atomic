@@ -43,7 +43,20 @@ export interface GraphViewLayoutFrame {
 	bodyBox: LayoutBox | undefined;
 	topMarginRows: number;
 	bottomMarginRows: number;
+	wrappedRows: boolean[];
 	scrollbar: ScrollbarGeometry | undefined;
+}
+
+function collectWrappedRows(box: LayoutBox, height: number, wrappedRows: boolean[]): void {
+	if (box.lines) {
+		const offset = box.lineOffset ?? 0;
+		const firstRow = Math.max(box.rect.y, box.clip.y, 0);
+		const lastRow = Math.min(box.rect.y + box.rect.height, box.clip.y + box.clip.height, height);
+		for (let row = firstRow; row < lastRow; row++) {
+			if (box.lines[offset + row - box.rect.y] !== undefined) wrappedRows[row] = true;
+		}
+	}
+	for (const child of box.children) collectWrappedRows(child, height, wrappedRows);
 }
 
 class CallbackComponent implements Component {
@@ -117,14 +130,18 @@ export class GraphViewLayout {
 		const bodyBox = getScrollViewBox(frame, this.scrollView);
 		this.scrollbar = bodyBox ? getScrollbarGeometry(bodyBox) : undefined;
 		if (!this.scrollbar) this.draggingScrollbar = undefined;
+		const wrappedRows = Array.from({ length: safeHeight }, () => false);
+		collectWrappedRows(frame.root, safeHeight, wrappedRows);
 		return {
 			frame,
 			bodyBox,
 			topMarginRows: marginRows,
 			bottomMarginRows: marginRows,
+			wrappedRows,
 			scrollbar: this.scrollbar,
 		};
 	}
+
 	/** Repaint the thumb after overlays that cover the body rows. */
 	paintScrollbar(lines: string[], width: number): void {
 		const geometry = this.scrollbar;
@@ -224,6 +241,10 @@ export class GraphViewLayout {
 		for (let index = 0; index < visible.length && index < rows; index++) {
 			lines[top + index] = visible[index]!;
 		}
+		// pi-tui scans upward from scrollTop for an image that crosses the
+		// viewport edge. A non-empty sentinel stops that scan at the first
+		// hidden row instead of making every frame walk the whole graph.
+		if (top > 0) lines[top - 1] = " ";
 		return lines;
 	}
 

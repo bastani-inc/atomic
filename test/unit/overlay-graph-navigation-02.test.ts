@@ -158,17 +158,18 @@ describe("GraphView keyboard navigation", () => {
 		const view = makeView([...stages]);
 		const lines = view.render(96);
 		assert.equal(lines.length, 21);
+		assert.ok(lines.length < 32, "a short graph must not use the old fixed rectangle");
 		view.dispose();
 	});
-
-	it("caps an unhosted frame for a large graph while keeping the body scrollable", () => {
+	it("tracks unhosted frame height with a large graph while keeping the body scrollable", () => {
 		const stages = Array.from({ length: 400 }, (_, index) =>
 			makeStage(`stage-${index}`, index === 0 ? [] : [`stage-${index - 1}`]),
 		);
 		const view = makeView(stages);
 		const lines = view.render(96);
-		assert.equal(lines.length, 32);
-		assert.ok(lines.length < stages.length);
+		assert.ok(lines.length >= 32, "a large graph must not collapse to a short fixed frame");
+		assert.ok(lines.length > stages.length, "the natural frame must track graph content");
+		assert.ok(lines.length < stages.length * 10, "the frame should use graph geometry, not one row per stage");
 		view.dispose();
 	});
 
@@ -223,17 +224,44 @@ describe("GraphView keyboard navigation", () => {
 			layout.dispose();
 		}
 	});
+	it("terminates pi-tui's above-viewport image scan after one hidden row", () => {
+		const layout = new GraphViewLayout({
+			renderHeader: () => ["", "", ""],
+			renderBody: (_width, _top, rows) => Array.from({ length: rows }, () => "row"),
+			renderFooter: () => ["", "", ""],
+			bodyContentHeight: () => 5_000,
+		});
+		try {
+			layout.render(96, 24);
+			layout.scrollView.scrollTo(4_000);
+			const frame = layout.render(96, 24);
+			const content = frame.bodyBox?.scrollContentLines;
+			const scrollTop = layout.scrollView.scrollTop;
+			assert.ok(content && scrollTop > 0);
+			assert.equal(content[scrollTop - 1], " ", "the sentinel must stop the scan at the viewport edge");
+			assert.equal(content[scrollTop - 2], undefined, "rows above the sentinel remain unmaterialized");
+			assert.equal(content.length, 5_000);
+			assert.equal(frame.wrappedRows[frame.bodyBox!.rect.y], true, "painted body rows are tagged for normalization");
+		} finally {
+			layout.dispose();
+		}
+	});
 	it("preserves content OSC-8 terminators and composite seam resets", () => {
 		const view = makeView([makeStage("A")]);
 		const wrapper = "\x1b[0m\x1b]8;;\x07";
 		const content = "\x1b]8;;https://example.com\x07label\x1b[0m\x1b]8;;\x07";
-		const [line] = view._normalizeLayoutLines([`${wrapper}${content}${wrapper}`], 96, 1, 0, 0);
+		const [line] = view._normalizeLayoutLines([`${wrapper}${content}${wrapper}`], [true], 96, 1, 0, 0);
 		assert.match(line, /\x1b\]8;;https:\/\/example\.com\x07label\x1b\[0m\x1b\]8;;\x07/);
 		assert.equal((line.match(/\x1b\[0m\x1b\]8;;\x07/g) ?? []).length, 1);
 
 		const sideBySide = `${wrapper}\x1b[41mleft${wrapper}\x1b[42mright${wrapper}`;
-		const [composited] = view._normalizeLayoutLines([sideBySide], 96, 1, 0, 0);
+		const [composited] = view._normalizeLayoutLines([sideBySide], [true], 96, 1, 0, 0);
 		assert.match(composited, /\x1b\[41mleft\x1b\[0m\x1b\]8;;\x07\x1b\[42mright/);
+
+		const unwrapped = "\x1b]8;;https://example.com\x07label\x1b[0m\x1b]8;;\x07";
+		const [kept] = view._normalizeLayoutLines([unwrapped], [false], 96, 1, 0, 0);
+		assert.ok(kept.startsWith(unwrapped), "unwrapped content keeps its own OSC-8 terminator");
+		assert.equal((kept.match(/\x1b\[0m\x1b\]8;;\x07/g) ?? []).length, 1);
 		view.dispose();
 	});
 
@@ -331,6 +359,23 @@ describe("GraphView keyboard navigation", () => {
 		view.dispose();
 	});
 
+	it("keeps the last hosted frame height while the host terminal disappears", () => {
+		let terminalRows: number | undefined = 40;
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeSnap([makeStage("lifecycle")])),
+			graphTheme: defaultTheme,
+			getViewportRows: () => terminalRows,
+		});
+
+		assert.equal(view.render(96).length, 40);
+		terminalRows = undefined;
+		assert.equal(view.render(96).length, 40, "a torn-down terminal keeps the last hosted frame height");
+		terminalRows = 12;
+		assert.equal(view.render(96).length, 12, "a returning host resizes immediately");
+		view.dispose();
+	});
 	it("hides unstarted placeholder stages while a prompt stage is awaiting input", () => {
 		const stages = [
 			makeStage("capture"),
