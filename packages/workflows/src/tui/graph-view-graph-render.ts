@@ -132,7 +132,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 		const viewportLeft = viewport.leftMargin;
 		const viewportRight = viewport.leftMargin + viewport.viewportWidth;
 		const rects: typeof this.graphNodeHitRects = [];
-		const viewportTop = this.graphScrollOffset;
+		const viewportTop = this._graphScrollTop();
 		const viewportBottom = Math.min(this.cachedRenderGeometry.totalRows, viewportTop + visibleRowCount);
 		const { bands } = this.cachedRenderGeometry;
 		for (let bandIndex = this._firstVisibleLayoutBand(viewportTop); bandIndex < bands.length; bandIndex++) {

@@ -78,7 +78,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const stageCount = this.cachedLayout.length;
 		if (this.graphLayout.handleScrollbarInput(data)) {
 			this.pendingEnsureFocusedVisible = false;
-			this.graphScrollOffset = this.graphLayout.scrollView.scrollTop;
 			return true;
 		}
 		const wheelDelta = this._mouseWheelDelta(data);
@@ -265,7 +264,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	private _scrollGraphVertically(deltaRows: number): void {
 		this.pendingEnsureFocusedVisible = false;
 		this.graphLayout.scrollView.scrollBy(deltaRows);
-		this.graphScrollOffset = this.graphLayout.scrollView.scrollTop;
 	}
 
 	private _handleWheelDelta(delta: MouseWheelDelta): boolean {
@@ -323,7 +321,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return this.switcherState;
 	}
 	get _graphScrollOffset(): number {
-		return this.graphScrollOffset;
+		return this._graphScrollTop();
 	}
 	get _graphScrollColOffset(): number {
 		return this.graphScrollColOffset;

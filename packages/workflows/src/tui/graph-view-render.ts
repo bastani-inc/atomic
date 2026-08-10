@@ -9,7 +9,12 @@ import { renderPromptCard } from "./prompt-card.js";
 import { renderSwitcher } from "./switcher.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
-const LAYOUT_OSC_RESET = /\x1b\]8;;(?:\x07|\x1b\\)/g;
+/**
+ * `renderLayoutFrame` adds its own reset plus an OSC-8 terminator around each
+ * row. Strip only that wrapper; OSC-8 terminators emitted by graph content
+ * must remain so a hyperlink cannot bleed into later rows.
+ */
+const LAYOUT_OSC_RESET = /\x1b\[0m\x1b\]8;;(?:\x07|\x1b\\)/g;
 
 /** Overlay/widget rendering orchestration for GraphView. */
 export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
@@ -29,6 +34,9 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 				this._prepareGraphScroll(scrollView, viewportRows, contentRows, width),
 			requestRender: () => this.requestRender?.(),
 		});
+	}
+	protected override _graphScrollTop(): number {
+		return this.graphLayout.scrollView.scrollTop;
 	}
 
 	/** Render to string lines. width = terminal columns. */
@@ -65,7 +73,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		try {
 			const frameHeight = this._overlayFrameHeight(run);
 			const layoutFrame = this.graphLayout.render(frameWidth, frameHeight);
-			this.graphScrollOffset = this.graphLayout.scrollView.scrollTop;
 			const lines = this._normalizeLayoutLines(
 				layoutFrame.frame.lines,
 				frameWidth,
@@ -125,14 +132,10 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		if (viewportRows <= 0) return;
 		if (!run || this.cachedRenderGeometry.totalRows <= 0) {
 			scrollView.scrollToStart();
-			this.graphScrollOffset = 0;
 			this.pendingEnsureFocusedVisible = false;
 			return;
 		}
 
-		if (!this.pendingEnsureFocusedVisible && scrollView.scrollTop !== this.graphScrollOffset) {
-			scrollView.scrollTo(this.graphScrollOffset);
-		}
 		if (this.pendingEnsureFocusedVisible) {
 			const node = this.cachedLayout[this.focusedIndex];
 			if (node) {
@@ -154,7 +157,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			}
 			this.pendingEnsureFocusedVisible = false;
 		}
-		this.graphScrollOffset = scrollView.scrollTop;
 	}
 
 	private _renderHeader(width: number): string[] {
@@ -197,7 +199,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		return lines;
 	}
 
-	private _normalizeLayoutLines(
+	protected _normalizeLayoutLines(
 		lines: readonly string[],
 		width: number,
 		height: number,

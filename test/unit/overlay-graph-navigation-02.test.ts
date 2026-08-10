@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { GraphViewLayout, graphLayoutBodyRows } from "../../packages/workflows/src/tui/graph-view-layout.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
@@ -156,8 +157,7 @@ describe("GraphView keyboard navigation", () => {
 		const stages = [makeStage("A"), makeStage("B", ["A"])] as const;
 		const view = makeView([...stages]);
 		const lines = view.render(96);
-		assert.ok(lines.length > 0);
-		assert.ok(lines.length < 32, `natural layout should not restore the old 32-row frame: ${lines.length}`);
+		assert.equal(lines.length, 21);
 		view.dispose();
 	});
 
@@ -166,9 +166,36 @@ describe("GraphView keyboard navigation", () => {
 		const view = makeView([...stages]);
 		const lines = view.render(96);
 		assert.equal(lines[0], " ".repeat(96));
+		assert.equal(lines.length, 21);
 		assert.equal(lines.at(-1), " ".repeat(96));
 		assert.match(visibleText(lines.slice(1, 4)), /ORCHESTRATOR/);
 		assert.match(visibleText(lines.slice(-4, -1)), /GRAPH/);
+		view.dispose();
+	});
+	it("keeps the ScrollView body box aligned with its viewport formula", () => {
+		const layout = new GraphViewLayout({
+			renderHeader: () => ["", "", ""],
+			renderBody: (_width, _top, rows) => Array.from({ length: rows }, () => ""),
+			renderFooter: () => ["", "", ""],
+			bodyContentHeight: (_width, rows) => rows,
+		});
+		try {
+			for (let height = 1; height <= 60; height++) {
+				const frame = layout.render(96, height);
+				assert.ok(frame.bodyBox, `layout should expose a body box at height ${height}`);
+				assert.equal(frame.bodyBox.rect.height, graphLayoutBodyRows(height), `body height at ${height}`);
+			}
+		} finally {
+			layout.dispose();
+		}
+	});
+	it("preserves content OSC-8 terminators while removing layout wrappers", () => {
+		const view = makeView([makeStage("A")]);
+		const wrapped =
+			"\x1b[0m\x1b]8;;\x07" + "\x1b]8;;https://example.com\x07label\x1b]8;;\x07" + "\x1b[0m\x1b]8;;\x07";
+		const [line] = view._normalizeLayoutLines([wrapped], 96, 1, 0, 0);
+		assert.match(line, /\x1b\]8;;https:\/\/example\.com\x07label\x1b\]8;;\x07/);
+		assert.doesNotMatch(line, /\x1b\[0m\x1b\]8;;/);
 		view.dispose();
 	});
 
