@@ -118,7 +118,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = function (this: InteractiveMode
 	this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
 	this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 	this.defaultEditor.onAction("app.message.copy", () => {
-		void this.handleCopyCommand();
+		void this.handleCopyCommand({ flashConfirmation: true });
 	});
 	this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
 	this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());

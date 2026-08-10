@@ -29,6 +29,9 @@
 
 ### Fixed
 
+- Fixed fullscreen viewport shortcuts stealing matching keys from a focused overlay or inline custom component. A focused handler now receives the key exactly once and can return `false` to let a no-op fall through to transcript navigation. Fullscreen shutdown also avoids restarting the replacement renderer, and the `ctrl+x` copy shortcut uses a transient `Copied!` flash instead of growing the fixed status dock.
+- Fullscreen rendering now inherits pi-tui 0.84.1's stacked flashes, corrected multi-click selection and focus reset, reduced multiplexer mouse tracking, nested stack minimum sizing, and Kitty image clipping at dock/layout boundaries, single-pass redraw/retransmission, and offscreen caching fixes. Atomic deliberately uses the dependency implementations rather than carrying forked renderer or layout copies.
+
 - Fixed bare exact `--model` IDs shared by providers choosing catalog order. Atomic now uses the sole authenticated matching provider or reports an ambiguity with fully qualified choices ([#7327](https://github.com/earendil-works/pi/issues/7327)).
 - Fixed `/model <name>` and `/scoped-models` waiting for remote catalog refreshes before using cached models. Exact cached matches now resolve immediately, and the scoped selector renders its cache first, refreshes in the background, and cancels that work when it closes ([#7153](https://github.com/earendil-works/pi/issues/7153), [#7443](https://github.com/earendil-works/pi/issues/7443)).
 - Fixed project `retry.provider` overrides discarding unmodified global provider retry fields by recursively merging nested settings ([#7572](https://github.com/earendil-works/pi/issues/7572)).

@@ -86,7 +86,7 @@ The dedicated history actions always change history entries, regardless of the c
 
 These actions apply when interactive mode uses `--tui-mode fullscreen` and target the primary transcript scroll region. Mouse-wheel input scrolls the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects text and copies it to the clipboard.
 
-Fullscreen transcript bindings take precedence over editor bindings while the main editor has focus. The default unmodified navigation keys therefore control the transcript in fullscreen mode, while their `ctrl` variants continue to control the editor. When a fullscreen overlay or inline custom component has focus, matching viewport bindings pass through to that component instead. Outside fullscreen mode, both variants control the focused component.
+Fullscreen transcript bindings take precedence over editor bindings while the main editor has focus. The default unmodified navigation keys therefore control the transcript in fullscreen mode, while their `ctrl` variants continue to control the editor. When a fullscreen overlay or inline custom component has focus, Atomic offers matching viewport bindings to that component first; an explicit `false` result lets the transcript handle the key instead. Outside fullscreen mode, both variants control the focused component.
 
 | Key | Default mode | Fullscreen mode |
 |-----|--------------|-----------------|
@@ -96,7 +96,7 @@ Fullscreen transcript bindings take precedence over editor bindings while the ma
 | `ctrl+pageUp`, `ctrl+pageDown` | Editor | Editor |
 
 This routing remains configurable through the ordinary action bindings. For example, `"tui.altScreen.pageUp": "ctrl+pageUp"` makes `pageUp` control the editor and `ctrl+pageUp` control the transcript in fullscreen mode. Bind `tui.altScreen.halfPageUp` and `tui.altScreen.halfPageDown` for smaller transcript steps while keeping the full-page bindings. Setting `"tui.altScreen.pageUp": []` disables that transcript shortcut entirely. User bindings replace the defaults for that action.
-When a fullscreen overlay or inline custom component owns focus, its matching `pageUp`, `pageDown`, `home`, `end`, and custom `tui.altScreen.*` bindings take precedence over transcript scrolling. This keeps host selectors and workflow stage-chat paging local to their focused component; mouse-wheel routing remains owned by the fullscreen viewport.
+When a fullscreen overlay or inline custom component owns focus, it can consume matching `pageUp`, `pageDown`, `home`, `end`, and custom `tui.altScreen.*` bindings before transcript scrolling. This keeps host selectors and workflow stage-chat paging local to their focused component; returning `false` from `handleInput()` lets a no-op fall through to the transcript. Mouse-wheel routing remains owned by the fullscreen viewport.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
@@ -122,6 +122,8 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
 | `app.clipboard.pasteImage` | `ctrl+v` (`alt+v` on Windows) | Paste image or text from clipboard |
 | `app.message.copy` | `ctrl+x` | Copy the last assistant message (or the selected message in `/tree`) |
+
+In fullscreen mode, a successful `app.message.copy` shortcut shows a short `Copied!` flash without adding a row to the fixed status dock. The `/copy` command keeps its normal status-line confirmation.
 
 When `app.clipboard.pasteImage` finds text rather than an image, Atomic inserts that clipboard text into the editor instead of reporting an image-paste failure.
 
