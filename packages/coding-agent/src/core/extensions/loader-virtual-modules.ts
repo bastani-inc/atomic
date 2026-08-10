@@ -409,16 +409,17 @@ function getAliases(): Record<string, string> {
 		}
 		const packageRoot = findPackageRoot(packageName);
 		const entryRelativePath = workspaceRelativePath.split("/").slice(1).join("/");
-		return path.join(packageRoot, entryRelativePath);
+		const packagePath = path.join(packageRoot, entryRelativePath);
+		if (!fs.existsSync(packagePath)) {
+			throw new Error(`Cannot locate ${workspaceRelativePath} in package "${packageName}"`);
+		}
+		return packagePath;
 	};
 
 	const piCodingAgentEntry = packageIndex;
 	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
-	const piTuiLayoutEntry = path.join(path.dirname(piTuiEntry), "layout.js");
-	// The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
-	// upstream layout change moves these files, this join needs updating to
-	// match the package's real dist paths.
+	const piTuiLayoutEntry = resolveWorkspaceOrImport("tui/dist/layout.js", "@earendil-works/pi-tui");
 	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@earendil-works/pi-ai");

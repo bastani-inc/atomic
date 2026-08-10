@@ -86,7 +86,7 @@ export class GraphViewLayout {
 			axis: "vertical",
 			follow: "none",
 			overscroll: "contain",
-			scrollbar: "auto",
+			scrollbar: "hidden",
 		});
 
 		const marginVisible = ({ height }: { height: number }): boolean => graphLayoutMarginRows(height) > 0;
@@ -110,7 +110,7 @@ export class GraphViewLayout {
 		);
 		const requestRender = this.callbacks.requestRender ?? EMPTY_RENDER;
 		this.scrollView.updateLayout(this.bodyContentRows, this.bodyViewportRows, requestRender);
-		this.scrollView.setScrollbarActive(this.bodyContentRows > this.bodyViewportRows);
+		this.scrollView.setScrollbar(this.bodyContentRows > this.bodyViewportRows ? "always" : "hidden");
 		this.callbacks.beforeFrame?.(this.scrollView, this.bodyViewportRows, this.bodyContentRows, safeWidth);
 
 		const frame = renderLayoutFrame(this.root, safeWidth, safeHeight, requestRender);

@@ -161,6 +161,17 @@ describe("GraphView keyboard navigation", () => {
 		view.dispose();
 	});
 
+	it("caps an unhosted frame for a large graph while keeping the body scrollable", () => {
+		const stages = Array.from({ length: 400 }, (_, index) =>
+			makeStage(`stage-${index}`, index === 0 ? [] : [`stage-${index - 1}`]),
+		);
+		const view = makeView(stages);
+		const lines = view.render(96);
+		assert.equal(lines.length, 32);
+		assert.ok(lines.length < stages.length);
+		view.dispose();
+	});
+
 	it("keeps unpainted margin rows around the layout root", () => {
 		const stages = [makeStage("A"), makeStage("B", ["A"])] as const;
 		const view = makeView([...stages]);
@@ -189,13 +200,40 @@ describe("GraphView keyboard navigation", () => {
 			layout.dispose();
 		}
 	});
-	it("preserves content OSC-8 terminators while removing layout wrappers", () => {
+	it("reserves the scrollbar column only while the body overflows", () => {
+		let overflowing = true;
+		const layout = new GraphViewLayout({
+			renderHeader: () => ["", "", ""],
+			renderBody: (_width, _top, rows) => Array.from({ length: rows }, () => ""),
+			renderFooter: () => ["", "", ""],
+			bodyContentHeight: (_width, rows) => (overflowing ? rows + 1 : rows),
+		});
+		try {
+			const overflowingFrame = layout.render(96, 20);
+			assert.ok(overflowingFrame.bodyBox);
+			assert.equal(overflowingFrame.bodyBox.children[0]?.rect.width, 95);
+			assert.equal(overflowingFrame.scrollbar?.column, 95);
+
+			overflowing = false;
+			const fittedFrame = layout.render(96, 20);
+			assert.ok(fittedFrame.bodyBox);
+			assert.equal(fittedFrame.bodyBox.children[0]?.rect.width, 96);
+			assert.equal(fittedFrame.scrollbar, undefined);
+		} finally {
+			layout.dispose();
+		}
+	});
+	it("preserves content OSC-8 terminators and composite seam resets", () => {
 		const view = makeView([makeStage("A")]);
-		const wrapped =
-			"\x1b[0m\x1b]8;;\x07" + "\x1b]8;;https://example.com\x07label\x1b]8;;\x07" + "\x1b[0m\x1b]8;;\x07";
-		const [line] = view._normalizeLayoutLines([wrapped], 96, 1, 0, 0);
-		assert.match(line, /\x1b\]8;;https:\/\/example\.com\x07label\x1b\]8;;\x07/);
-		assert.doesNotMatch(line, /\x1b\[0m\x1b\]8;;/);
+		const wrapper = "\x1b[0m\x1b]8;;\x07";
+		const content = "\x1b]8;;https://example.com\x07label\x1b[0m\x1b]8;;\x07";
+		const [line] = view._normalizeLayoutLines([`${wrapper}${content}${wrapper}`], 96, 1, 0, 0);
+		assert.match(line, /\x1b\]8;;https:\/\/example\.com\x07label\x1b\[0m\x1b\]8;;\x07/);
+		assert.equal((line.match(/\x1b\[0m\x1b\]8;;\x07/g) ?? []).length, 1);
+
+		const sideBySide = `${wrapper}\x1b[41mleft${wrapper}\x1b[42mright${wrapper}`;
+		const [composited] = view._normalizeLayoutLines([sideBySide], 96, 1, 0, 0);
+		assert.match(composited, /\x1b\[41mleft\x1b\[0m\x1b\]8;;\x07\x1b\[42mright/);
 		view.dispose();
 	});
 

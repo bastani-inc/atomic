@@ -22,9 +22,9 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			return true;
 		}
 		if (this.graphLayout.isScrollbarInput(data)) return this._handleGraphInput(data);
+		if (this.switcherOpen) return this._handleSwitcherInput(data);
 		const wheelDelta = this._mouseWheelDelta(data);
 		if (wheelDelta) return this._handleWheelDelta(wheelDelta);
-		if (this.switcherOpen) return this._handleSwitcherInput(data);
 		// Stage-local HIL is represented by graph nodes and remains graph-first;
 		// only the legacy run-level prompt card sets `promptState`. Keep that
 		// fallback answerable, but let the scrollbar and wheel controls above
@@ -161,21 +161,13 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.switcherOpen = false;
 			return true;
 		}
-		if (matchesKey(data, Key.down)) {
-			const filtered = filterStages(stages, this.switcherState.query);
-			this.switcherState = {
-				...this.switcherState,
-				selectedIndex: Math.min(this.switcherState.selectedIndex + 1, filtered.length - 1),
-			};
-			return true;
-		}
-		if (matchesKey(data, Key.up)) {
-			this.switcherState = {
-				...this.switcherState,
-				selectedIndex: Math.max(this.switcherState.selectedIndex - 1, 0),
-			};
-			return true;
-		}
+		const wheelEvent = parseTerminalMouseInput(data);
+		const wheelDirection = wheelEvent ? terminalMouseWheelDirection(wheelEvent) : null;
+		if (wheelDirection === "down") return this._moveSwitcherSelection(1);
+		if (wheelDirection === "up") return this._moveSwitcherSelection(-1);
+		if (wheelDirection !== null) return true;
+		if (matchesKey(data, Key.down)) return this._moveSwitcherSelection(1);
+		if (matchesKey(data, Key.up)) return this._moveSwitcherSelection(-1);
 		if (matchesKey(data, Key.backspace)) {
 			this.switcherState = {
 				query: this.switcherState.query.slice(0, -1),
@@ -191,6 +183,17 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			return true;
 		}
 		return false;
+	}
+
+	private _moveSwitcherSelection(step: number): boolean {
+		const stages = this.cachedLayout.map((layoutNode) => layoutNode.stage);
+		const filtered = filterStages(stages, this.switcherState.query);
+		const maxIndex = Math.max(0, filtered.length - 1);
+		this.switcherState = {
+			...this.switcherState,
+			selectedIndex: Math.max(0, Math.min(this.switcherState.selectedIndex + step, maxIndex)),
+		};
+		return true;
 	}
 
 	/**

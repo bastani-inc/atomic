@@ -387,7 +387,7 @@ describe("GraphView keyboard navigation", () => {
 		view.dispose();
 	});
 
-	it("contains graph wheel input while the stage switcher is open", () => {
+	it("keeps graph wheel input inside the stage switcher", () => {
 		const stages = Array.from({ length: 12 }, (_, index) =>
 			makeStage(`switcher-scroll-${index}`, index === 0 ? [] : [`switcher-scroll-${index - 1}`]),
 		);
@@ -401,9 +401,13 @@ describe("GraphView keyboard navigation", () => {
 
 		view.render(96);
 		assert.equal(view.handleInput("/"), true);
+		const beforeWheel = view.render(96).join("\n");
+		const initialOffset = view._graphScrollOffset;
 		assert.equal(view.handleInput(SGR_MOUSE_WHEEL_DOWN), true);
-		view.render(96);
-		assert.ok(view._graphScrollOffset > 0);
+		const afterWheel = view.render(96).join("\n");
+		assert.equal(view._graphScrollOffset, initialOffset);
+		assert.equal(view._switcherState.selectedIndex, 1);
+		assert.notEqual(afterWheel, beforeWheel);
 		view.dispose();
 	});
 
