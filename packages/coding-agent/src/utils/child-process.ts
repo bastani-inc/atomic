@@ -13,17 +13,20 @@ import {
 import { basename } from "node:path";
 import type { Readable } from "node:stream";
 import crossSpawn from "cross-spawn";
+import { ATOMIC_AI_AGENT } from "./agent-attribution.ts";
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
 const EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS = 5_000;
 const WINDOWS_EXIT_POLL_INTERVAL_MS = 50;
 const WINDOWS_EXIT_CODE_GRACE_MS = 1_000;
+
 /** Build the environment for every Atomic child process. */
+export { ATOMIC_AI_AGENT } from "./agent-attribution.ts";
 export function createChildProcessEnvironment(
 	overrides?: NodeJS.ProcessEnv,
 	baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-	return { ...baseEnv, ...overrides, AI_AGENT: "atomic" };
+	return { ...baseEnv, ...overrides, AI_AGENT: ATOMIC_AI_AGENT };
 }
 
 type WaitForChildProcessOptions = {
@@ -50,7 +53,7 @@ export function spawnProcess(command: string, args: string[], options: SpawnOpti
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess {
 	const childOptions = {
 		...options,
-		env: options.env ? { ...options.env, AI_AGENT: "atomic" } : createChildProcessEnvironment(),
+		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
 	};
 	return process.platform === "win32"
 		? crossSpawn(command, args, childOptions)
@@ -64,7 +67,7 @@ export function spawnProcessSync(
 ): SpawnSyncReturns<string> {
 	const childOptions = {
 		...options,
-		env: options.env ? { ...options.env, AI_AGENT: "atomic" } : createChildProcessEnvironment(),
+		env: options.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
 	};
 	return process.platform === "win32"
 		? crossSpawn.sync(command, args, childOptions)

@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 
 export interface LocalCommandResult {
 	readonly exitCode: number;
@@ -18,13 +19,6 @@ export interface LocalCommandOptions {
 	readonly gid?: number;
 }
 
-export function createLocalCommandEnvironment(
-	overrides?: Readonly<Record<string, string>>,
-	baseEnv: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-	return { ...baseEnv, ...overrides, AI_AGENT: "atomic" };
-}
-
 export function runLocalCommand(
 	command: string,
 	args: readonly string[],
@@ -34,7 +28,7 @@ export function runLocalCommand(
 		const child = spawn(command, [...args], {
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
-			env: createLocalCommandEnvironment(options?.env),
+			env: createChildProcessEnvironment(options?.env ? { ...options.env } : undefined),
 			...(options?.uid !== undefined ? { uid: options.uid } : {}),
 			...(options?.gid !== undefined ? { gid: options.gid } : {}),
 		});

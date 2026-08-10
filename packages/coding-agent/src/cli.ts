@@ -9,13 +9,14 @@
  * loaded dynamically so metadata fast paths (e.g. --version) skip it entirely.
  */
 import { APP_NAME, VERSION } from "./config.ts";
+import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import { enablePersistentCompileCache } from "./utils/compile-cache.ts";
 
 enablePersistentCompileCache();
 
 process.title = APP_NAME;
 process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT`] = "true";
-process.env.AI_AGENT = "atomic";
+process.env.AI_AGENT = ATOMIC_AI_AGENT;
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 const args = process.argv.slice(2);
