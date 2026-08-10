@@ -80,9 +80,13 @@ The SDK is included in the main package. No separate SDK package is needed.
 
 ## Experimental remote sessions
 
-`@bastani/atomic/client` is an experimental entrypoint for remote protocol sessions. It exports `RemoteSession` plus transcript projection helpers. Pass it a connected `PiClient` from `@earendil-works/pi-client`, then use `RemoteSession.open()` or `RemoteSession.create()` to own one remote session.
+`@bastani/atomic/client` is an experimental entrypoint for upstream remote protocol sessions. It exports `RemoteSession` plus transcript projection helpers. Pass it a connected `PiClient` from `@earendil-works/pi-client`, then use `RemoteSession.open()` or `RemoteSession.create()` to own one remote session.
 
-The entrypoint is separate from Atomic's local interactive engine and does not add an `atomic client` CLI command. Its API may change without notice.
+`RemoteSession` and Atomic's isolated interactive engine deliberately **coexist**; neither adapts the other. `RemoteSession` owns the `pi-client`/`pi-protocol` transport, its `SessionLease`, the leased `SessionSnapshot`, and the transcript projection used by an external protocol client. The isolated engine owns Atomic's in-process host facade, child-process JSONL RPC engine, interactive rendering, custom UI, and engine recovery. The client entrypoint has no `atomic client` CLI command and does not start or control the local interactive engine.
+
+`RemoteSession.sessions` is a durable catalog of `SessionMetadata`. That is enough for listing and selecting stored sessions, but not for Atomic consumers that need runtime phase, model, thinking level, attachment, or lock state. Those consumers need the `SessionSnapshot` from an acquired lease; `RemoteSession.snapshot` exposes the current leased snapshot.
+
+This boundary is intentional. A bridge would join two different protocols and would risk routing isolated-engine teardown through the host facade's unbounded cooperative abort. Keep the surfaces separate until a future upstream `RemoteSession` change supplies an engine-aware/server contract with teardown semantics that can preserve Atomic's recovery guarantee. The API may change without notice while it remains experimental.
 
 ## Experimental Harness factory
 

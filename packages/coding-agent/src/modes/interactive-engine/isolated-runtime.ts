@@ -22,6 +22,13 @@ import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngine
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
+/**
+ * Owns Atomic's local interactive host facade and child-process engine.
+ *
+ * This runtime is deliberately not a RemoteSession adapter. Its JSONL RPC,
+ * rendering, custom UI, and recovery lifecycle stay separate from pi-client's
+ * protocol lease lifecycle.
+ */
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
 	private readonly patchedSessions = new WeakSet<AgentSession>();

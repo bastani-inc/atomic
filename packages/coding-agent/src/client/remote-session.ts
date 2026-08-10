@@ -63,6 +63,13 @@ async function settleRemoteSessionDisposal(cleanup: readonly Promise<void>[]): P
 	if (errors.length > 1) throw new AggregateError(errors, "Failed to dispose remote session");
 }
 
+/**
+ * Owns one upstream pi-client SessionLease and its protocol-facing state.
+ *
+ * This surface deliberately does not adapt Atomic's isolated interactive engine:
+ * the client uses pi-protocol snapshots and the engine uses Atomic's child-process
+ * RPC facade and recovery controls. Keep the two lifecycles independent.
+ */
 export class RemoteSession {
 	readonly #client: PiClient;
 	readonly #onListenerError: ((error: Error) => void) | undefined;
@@ -113,6 +120,10 @@ export class RemoteSession {
 		return this.#client.snapshot?.models ?? [];
 	}
 
+	/**
+	 * Durable identities only. Runtime phase, model, thinking, attachment, and
+	 * lock state come from the acquired lease's `snapshot`, not this catalog.
+	 */
 	get sessions(): readonly SessionMetadata[] {
 		return this.#client.snapshot?.sessions ?? [];
 	}
