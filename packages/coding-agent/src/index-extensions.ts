@@ -132,8 +132,10 @@ export {
 	isFindToolResult,
 	isLsToolResult,
 	isReadToolResult,
+	isStaleExtensionContextError,
 	isToolCallEventType,
 	isWriteToolResult,
+	STALE_EXTENSION_CONTEXT_MARKER,
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";

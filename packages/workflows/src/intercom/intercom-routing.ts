@@ -7,6 +7,7 @@
  * cross-ref: spec §5.10, RFC §8.1 Phase G
  */
 
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import type { NoticeLevel } from "../shared/store-types.js";
 import type { IntercomControlCallbacks, IntercomControlPayload } from "./result-intercom.js";
@@ -68,12 +69,6 @@ function makeId(): string {
  * - unknown / malformed:
  *     Record a warning notice. No ack, no emit.
  */
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
-}
-
 export function buildIntercomCallbacks(deps: IntercomRoutingDeps): IntercomControlCallbacks {
 	const { store, emit, confirm } = deps;
 

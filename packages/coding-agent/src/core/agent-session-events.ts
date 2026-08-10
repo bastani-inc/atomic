@@ -29,6 +29,7 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "./extensions/index.ts";
+import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./extensions/stale-context.ts";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 
@@ -504,9 +505,7 @@ export function dispose(this: AgentSession): void {
 	// Fail closed while protected input remains queued, or flush a consumed
 	// reconciliation before invalidation can discard its recovery state.
 	prepareProtectedStreamingCustomMessagesForDisposal(this);
-	this._extensionRunner.invalidate(
-		"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
-	);
+	this._extensionRunner.invalidate(STALE_EXTENSION_CONTEXT_MESSAGE);
 	disposeSessionAsyncJobManager(this._asyncJobManager, this._asyncJobManagerSessionId);
 	this._disconnectFromAgent();
 	this._eventListeners = [];

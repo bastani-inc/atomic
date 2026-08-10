@@ -1330,6 +1330,7 @@ Lifecycle and footguns:
 - Captured old `pi` / old command `ctx` session-bound objects are stale after replacement and will throw if used. Use only the `ctx` passed to `withSession` for session-bound work.
 - Previously extracted raw objects are still your responsibility. For example, if you capture `const sm = ctx.sessionManager` before replacement, `sm` is still the old `SessionManager` object. Do not reuse it after replacement.
 - Code in `withSession` should assume any state invalidated by your `session_shutdown` handler is already gone. Only capture plain data that survives shutdown cleanly, such as strings, ids, and serialized config.
+- Long-lived callbacks that need to classify a stale API error should use `isStaleExtensionContextError(error)` from `@bastani/atomic`, not match the host's error message.
 
 Safe pattern:
 

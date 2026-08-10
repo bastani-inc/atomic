@@ -1,3 +1,4 @@
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { IntercomEventBus } from "../shared/types.ts";
 
 export const SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT = "subagent:supervisor-authorization";
@@ -6,12 +7,6 @@ export interface SupervisorAuthorization {
 	capability: string;
 	supervisorSessionId: string;
 	childName: string;
-}
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
 /** Ask the parent Intercom extension to mint a broker-issued child capability. */

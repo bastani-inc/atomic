@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@bastani/atomic";
+import { isStaleExtensionContextError, type ExtensionAPI } from "@bastani/atomic";
 import type { Message, SessionInfo } from "./types.js";
 
 export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
@@ -14,12 +14,6 @@ interface DetachHandshake {
 }
 
 export type ForegroundDeliveryDisposition = "delivered" | "unclaimed" | "abandoned";
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
-}
 
 /** Claims a busy inbound message only when its exact foreground owner acknowledges it. */
 export class ForegroundDetachHandoff {

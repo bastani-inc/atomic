@@ -1,4 +1,4 @@
-import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext, SubagentChildPolicy, ToolInfo } from "@bastani/atomic";
+import { isStaleExtensionContextError, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext, type SubagentChildPolicy, type ToolInfo } from "@bastani/atomic";
 import type { McpExtensionState } from "./state.js";
 import type { McpConfig } from "./types.ts";
 import type { MetadataCache } from "./metadata-cache.js";
@@ -12,22 +12,12 @@ import { loadMcpConfig } from "./config.ts";
 import { getConfigPathFromArgv } from "./utils.js";
 import { renderMcpToolResult } from "./tool-result-renderer.js";
 
-/**
- * Marker substring from the host's stale-context error (see ExtensionRunner.invalidate).
- * A captured `pi`/`ctx` becomes stale when its backing session is disposed (e.g. a
- * workflow child stage session, or a reload/replace) without emitting `session_shutdown`.
- */
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
 const STALE_INITIALIZATION_PREFIX = "Stale MCP session initialization cancelled";
 
 interface ActiveMcpSession {
   readonly generation: number;
   readonly ctx: ExtensionContext;
   readonly cleanup: Promise<void>;
-}
-
-function isStaleExtensionContextError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
 /** Probe the host guard to determine whether a captured context remains active. */

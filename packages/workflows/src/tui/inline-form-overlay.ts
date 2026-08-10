@@ -21,6 +21,7 @@
  *  - src/tui/inline-form-editor.ts (custom EditorComponent)
  */
 
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { ExtensionAPI, PiCommandContext } from "../extension/index.js";
 import type { WorkflowInputEntry } from "../extension/render-result.js";
 import type { PiEditorComponent, PiEditorFactory } from "../extension/wiring.js";
@@ -206,7 +207,7 @@ export async function openInlineInputsForm(
 				// extension command context as stale before tearing down the old editor
 				// surface. A workflow form that settles after that point must not write
 				// its captured pre-switch editor factory back into the fresh session.
-				if (err instanceof Error && err.message.includes("This extension ctx is stale")) {
+				if (isStaleExtensionContextError(err)) {
 					return false;
 				}
 				// Preserve the previous best-effort behavior for older or unusual hosts:

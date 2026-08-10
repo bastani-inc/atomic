@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@bastani/atomic";
+import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
 import { type IntercomBridgeState, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	attachNestedChildrenToResultChildren,
@@ -210,11 +210,6 @@ export function replaceForegroundRunChild(
 	run.updatedAt = Date.now();
 }
 
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
-}
 export function emitControlNotification(input: {
 	pi: ExtensionAPI;
 	controlConfig: ExecutionContextData["controlConfig"];

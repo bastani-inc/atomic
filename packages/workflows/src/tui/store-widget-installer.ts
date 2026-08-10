@@ -38,6 +38,7 @@
 import {
 	decideReactiveWidgetAction,
 	installReactiveWidget,
+	isStaleExtensionContextError,
 	type ReactiveWidgetAction,
 	type ReactiveWidgetFactory,
 	type ReactiveWidgetRenderState,
@@ -80,11 +81,6 @@ export interface LiveWidgetAPI {
 }
 
 const WIDGET_KEY = "workflow.run";
-const STALE_CONTEXT = "This extension ctx is stale";
-
-function isStale(err: unknown): boolean {
-	return err instanceof Error && err.message.includes(STALE_CONTEXT);
-}
 
 function liveWidgetSnapshot(storeInstance: Store): StoreSnapshot {
 	return {
@@ -124,7 +120,7 @@ export function installStoreWidget(
 		// must not broadcast a host-wide render (each one becomes terminal
 		// writes that fight native main-chat scrollback).
 		requestRenderOnStateNoop: false,
-		isStaleError: isStale,
+		isStaleError: isStaleExtensionContextError,
 	});
 
 	return () => controller.dispose();

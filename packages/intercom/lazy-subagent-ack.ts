@@ -1,13 +1,8 @@
-import type { ExtensionAPI } from "@bastani/atomic";
+import { isStaleExtensionContextError, type ExtensionAPI } from "@bastani/atomic";
 
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
-}
 export function rejectLazyResultRelay(
   pi: ExtensionAPI,
   eventName: string,
