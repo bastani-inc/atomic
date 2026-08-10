@@ -58,6 +58,12 @@ export interface McpScopeSetPayload {
 	deny: string[] | null;
 }
 
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
+
 // ---------------------------------------------------------------------------
 // Scope helpers
 // ---------------------------------------------------------------------------
@@ -79,7 +85,12 @@ export function setMcpScope(pi: PiMcpExtensionAPI, opts: McpScopeOpts): void {
 		deny: opts.deny ?? null,
 	};
 
-	pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	try {
+		pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// Scope events are advisory and a stage can outlive its extension runtime.
+	}
 }
 
 /**
@@ -98,7 +109,12 @@ export function clearMcpScope(pi: PiMcpExtensionAPI, stageId: string): void {
 		deny: null,
 	};
 
-	pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	try {
+		pi.events.emit("mcp.scope.set", payload as unknown as Record<string, unknown>);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// Scope events are advisory and a stage can outlive its extension runtime.
+	}
 }
 
 /**

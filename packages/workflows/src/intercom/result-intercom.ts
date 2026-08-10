@@ -33,6 +33,12 @@ export interface PiResultIntercomExtensionAPI {
 	[key: string]: unknown;
 }
 
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
+
 // ---------------------------------------------------------------------------
 // Intercom control event payload
 // ---------------------------------------------------------------------------
@@ -153,7 +159,13 @@ export function emitWorkflowControlIntercom(
 		...(parentSession !== undefined ? { parentSession } : {}),
 		createdAt: Date.now(),
 	};
-	port!.emit!("workflow:control-intercom", payload as unknown as Record<string, unknown>);
+	try {
+		port!.emit!("workflow:control-intercom", payload as unknown as Record<string, unknown>);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// A workflow can outlive the extension runtime that supplied the port.
+		return false;
+	}
 	return true;
 }
 
@@ -174,7 +186,13 @@ export function emitWorkflowResultIntercom(
 		...(parentSession !== undefined ? { parentSession } : {}),
 		createdAt: Date.now(),
 	};
-	port!.emit!("workflow:result-intercom", payload as unknown as Record<string, unknown>);
+	try {
+		port!.emit!("workflow:result-intercom", payload as unknown as Record<string, unknown>);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// A workflow can outlive the extension runtime that supplied the port.
+		return false;
+	}
 	return true;
 }
 
@@ -231,10 +249,21 @@ export function subscribeIntercomControl(
 		});
 	};
 
-	const unsubscribe = pi.events!.on!("subagent:control-intercom", handler);
+	let unsubscribe: unknown;
+	try {
+		unsubscribe = pi.events!.on!("subagent:control-intercom", handler);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		return null;
+	}
 
 	return () => {
 		active = false;
-		if (typeof unsubscribe === "function") unsubscribe();
+		try {
+			if (typeof unsubscribe === "function") unsubscribe();
+		} catch (error) {
+			if (!isStaleExtensionContextError(error)) throw error;
+			// Stale event-bus cleanup is best effort.
+		}
 	};
 }

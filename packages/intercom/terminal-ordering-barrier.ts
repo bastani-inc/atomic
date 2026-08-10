@@ -8,6 +8,11 @@ const GLOBAL_BARRIER_HANDLER = "__atomicTerminalOrderingBarrierHandler";
 const GLOBAL_BARRIER_REGISTRY = "__atomicTerminalOrderingBarrierRegistry";
 const terminalOwnerIds = new WeakMap<object, number>();
 let nextTerminalOwnerId = 1;
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
 
 export interface OrderedTerminalPreludeMessage {
   customType: "intercom_message";
@@ -163,6 +168,9 @@ export function registerTerminalOrderingBarrier(
         dispatched = barrier.dispatch(claim.entries.map(options.toMessage));
         dispatchedAsync = isPromiseLike(dispatched);
       } catch (error) {
+        // Owned producers follow the event path with the global fallback. Keep the failed
+        // ownership visible so the fallback observes it instead of dispatching twice.
+        if (barrier.owner) envelope.completion = ownership.promise;
         claim.rollbackFrom(terminalRollbackIndex(error, 0));
         failOwnership(error);
         throw error;
@@ -184,6 +192,9 @@ export function registerTerminalOrderingBarrier(
         delivered = options.deliver(claim.entries[index]!, "prelude");
         deliveredAsync = isPromiseLike(delivered);
       } catch (error) {
+        // Owned producers follow the event path with the global fallback. Keep the failed
+        // ownership visible so the fallback observes it instead of dispatching twice.
+        if (barrier.owner) envelope.completion = ownership.promise;
         claim.rollbackFrom(index);
         failOwnership(error);
         throw error;
@@ -207,16 +218,27 @@ export function registerTerminalOrderingBarrier(
     finish();
   };
   const globals = globalThis as Record<string, unknown>;
-  const registry = globalBarrierRegistry();
   const registration = { handle, isCurrent: () => options.isCurrent?.() !== false };
+  let unsubscribe: () => void;
+  try {
+    unsubscribe = pi.events.on(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, handle);
+  } catch (error) {
+    if (!isStaleExtensionContextError(error)) throw error;
+    return () => {};
+  }
+  const registry = globalBarrierRegistry();
   registry.push(registration);
   globals[GLOBAL_BARRIER_HANDLER] = emitGlobalTerminalOrderingBarrier;
-  const unsubscribe = pi.events.on(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, handle);
   let registered = true;
   return () => {
     if (!registered) return;
     registered = false;
-    unsubscribe();
+    try {
+      unsubscribe();
+    } catch (error) {
+      if (!isStaleExtensionContextError(error)) throw error;
+      // Stale event-bus cleanup is best effort.
+    }
     const index = registry.indexOf(registration);
     if (index >= 0) registry.splice(index, 1);
     if (registry.length === 0) {

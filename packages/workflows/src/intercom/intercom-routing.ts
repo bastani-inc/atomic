@@ -68,6 +68,12 @@ function makeId(): string {
  * - unknown / malformed:
  *     Record a warning notice. No ack, no emit.
  */
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
+
 export function buildIntercomCallbacks(deps: IntercomRoutingDeps): IntercomControlCallbacks {
 	const { store, emit, confirm } = deps;
 
@@ -90,12 +96,17 @@ export function buildIntercomCallbacks(deps: IntercomRoutingDeps): IntercomContr
 					? await confirm("Subagent needs decision", payload.message).catch(() => false)
 					: false;
 
-			emit?.("subagent:control-intercom:response", {
-				requestId: payload.requestId ?? "",
-				runId: payload.runId ?? "",
-				stageId: payload.stageId ?? "",
-				accepted,
-			});
+			try {
+				emit?.("subagent:control-intercom:response", {
+					requestId: payload.requestId ?? "",
+					runId: payload.runId ?? "",
+					stageId: payload.stageId ?? "",
+					accepted,
+				});
+			} catch (error) {
+				if (!isStaleExtensionContextError(error)) throw error;
+				// The decision can finish after the workflow extension reloads.
+			}
 
 			store.ackNotice(noticeId);
 		},

@@ -210,6 +210,11 @@ export function replaceForegroundRunChild(
 	run.updatedAt = Date.now();
 }
 
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
 export function emitControlNotification(input: {
 	pi: ExtensionAPI;
 	controlConfig: ExecutionContextData["controlConfig"];
@@ -227,7 +232,12 @@ export function emitControlNotification(input: {
 		noticeText: formatControlNoticeMessage(input.event, childIntercomTarget),
 	};
 	if (input.controlConfig.notifyChannels.includes("event")) {
-		input.pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
+		try {
+			input.pi.events.emit(SUBAGENT_CONTROL_EVENT, payload);
+		} catch (error) {
+			if (!isStaleExtensionContextError(error)) throw error;
+			// Control notices are best effort after a parent runtime replacement.
+		}
 	}
 	if (
 		input.event.type !== "active_long_running" &&
@@ -235,11 +245,16 @@ export function emitControlNotification(input: {
 		input.intercomBridge.active &&
 		input.intercomBridge.orchestratorTarget
 	) {
-		input.pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
-			...payload,
-			to: input.intercomBridge.orchestratorTarget,
-			message: formatControlIntercomMessage(input.event, childIntercomTarget),
-		});
+		try {
+			input.pi.events.emit(SUBAGENT_CONTROL_INTERCOM_EVENT, {
+				...payload,
+				to: input.intercomBridge.orchestratorTarget,
+				message: formatControlIntercomMessage(input.event, childIntercomTarget),
+			});
+		} catch (error) {
+			if (!isStaleExtensionContextError(error)) throw error;
+			// Intercom control notices are best effort after a parent runtime replacement.
+		}
 	}
 }
 
