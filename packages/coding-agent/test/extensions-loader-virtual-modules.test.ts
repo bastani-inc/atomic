@@ -53,6 +53,7 @@ describe("extension loader pi-ai compat aliases", () => {
 			const modules = await extensionLoaderTestHooks.loadVirtualModules();
 			for (const specifier of specifiers) {
 				expect(aliases[specifier]).toMatch(/[\\/]layout\.js$/);
+				expect(fs.existsSync(aliases[specifier]!)).toBe(true);
 				const layout = modules[specifier] as PiTuiLayoutExports;
 				expect(typeof layout.getScrollbarGeometry).toBe("function");
 				expect(typeof layout.getScrollViewBox).toBe("function");

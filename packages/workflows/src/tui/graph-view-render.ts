@@ -11,11 +11,19 @@ import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 /**
  * `renderLayoutFrame` adds its own reset plus an OSC-8 terminator around each
- * row. Strip only that wrapper; OSC-8 terminators emitted by graph content
+ * row. Strip only the outer wrapper; OSC-8 terminators emitted by graph content
  * must remain so a hyperlink cannot bleed into later rows.
  */
-const LAYOUT_OSC_RESET = /\x1b\[0m\x1b\]8;;(?:\x07|\x1b\\)/g;
+const LAYOUT_OSC_RESET = "\x1b[0m\x1b]8;;\x07";
+const MAX_UNHOSTED_BODY_ROWS = 24;
 
+function stripLayoutWrapper(line: string): string {
+	const startsWithWrapper = line.startsWith(LAYOUT_OSC_RESET);
+	const endsWithWrapper = line.endsWith(LAYOUT_OSC_RESET);
+	const start = startsWithWrapper ? LAYOUT_OSC_RESET.length : 0;
+	const end = endsWithWrapper ? line.length - LAYOUT_OSC_RESET.length : line.length;
+	return line.slice(start, Math.max(start, end));
+}
 /** Overlay/widget rendering orchestration for GraphView. */
 export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	protected readonly graphLayout: GraphViewLayout;
@@ -107,7 +115,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		}
 		if (this.hasReportedViewportRows && this.lastOverlayFrameHeight > 0) return this.lastOverlayFrameHeight;
 
-		const bodyRows = run ? Math.max(1, this.cachedRenderGeometry.totalRows) : 2;
+		const bodyRows = run ? Math.min(Math.max(1, this.cachedRenderGeometry.totalRows), MAX_UNHOSTED_BODY_ROWS) : 2;
 		this.lastOverlayFrameHeight = graphLayoutNaturalHeight(bodyRows);
 		return this.lastOverlayFrameHeight;
 	}
@@ -208,7 +216,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	): string[] {
 		return Array.from({ length: height }, (_, row) => {
 			if (row < topMarginRows || row >= height - bottomMarginRows) return " ".repeat(width);
-			const clean = (lines[row] ?? "").replace(LAYOUT_OSC_RESET, "");
+			const clean = stripLayoutWrapper(lines[row] ?? "");
 			if (visibleWidth(clean) === 0) return this._blankRow(width);
 			if (visibleWidth(clean) > width) return truncateToWidth(clean, width, "…", true);
 			return `${clean}${" ".repeat(width - visibleWidth(clean))}`;
