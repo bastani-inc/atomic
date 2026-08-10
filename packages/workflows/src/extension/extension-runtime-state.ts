@@ -159,6 +159,9 @@ export function createWorkflowExtensionRuntimeState(
 		resumeDurableWorkflow(workflowId, options) {
 			return runtimeRef.current.resumeDurableWorkflow(workflowId, options);
 		},
+		inspectDurableWorkflow(workflowId) {
+			return runtimeRef.current.inspectDurableWorkflow(workflowId);
+		},
 		listDurableResumable() {
 			return runtimeRef.current.listDurableResumable();
 		},

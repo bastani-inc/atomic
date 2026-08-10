@@ -7,7 +7,7 @@ import {
 } from "../shared/expanded-workflow-graph.js";
 import { isFullRunId, malformedRunIdMessage, RUN_ID_LENGTH } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import { store } from "../shared/store.js";
+import { type Store, store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunStatus } from "../shared/store-types.js";
 import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
@@ -87,9 +87,9 @@ export type RunIdResolution =
 	| { kind: "malformed"; message: string }
 	| { kind: "not_found" };
 
-export function resolveRunId(target: string): RunIdResolution {
+export function resolveRunId(target: string, activeStore: Store = store): RunIdResolution {
 	if (!isFullRunId(target)) return { kind: "malformed", message: malformedRunIdMessage(target) };
-	const exact = store.runs().find((r) => r.id === target);
+	const exact = activeStore.runs().find((r) => r.id === target);
 	if (exact) return { kind: "exact", runId: exact.id };
 	return { kind: "not_found" };
 }
@@ -100,12 +100,16 @@ export type ToolRunTarget =
 	| { kind: "malformed"; target: string; message: string }
 	| { kind: "not_found"; target: string; message: string };
 
-export function resolveToolRunTarget(args: WorkflowToolArgs, emptyMessage: string): ToolRunTarget {
+export function resolveToolRunTarget(
+	args: WorkflowToolArgs,
+	emptyMessage: string,
+	activeStore: Store = store,
+): ToolRunTarget {
 	const rawTarget = args.runId?.trim() ?? "";
 	if (args.all === true || rawTarget === "--all") return { kind: "all" };
-	const target = rawTarget || store.activeRunId() || "";
+	const target = rawTarget || activeStore.activeRunId() || "";
 	if (!target) return { kind: "not_found", target: rawTarget, message: emptyMessage };
-	const resolved = resolveRunId(target);
+	const resolved = resolveRunId(target, activeStore);
 	if (resolved.kind === "exact") return { kind: "run", runId: resolved.runId };
 	if (resolved.kind === "malformed") return { kind: "malformed", target, message: resolved.message };
 	return { kind: "not_found", target, message: `Run not found: ${target}` };
@@ -113,10 +117,10 @@ export function resolveToolRunTarget(args: WorkflowToolArgs, emptyMessage: strin
 
 export type ToolStageTarget = { ok: true; runId?: string; stageId?: string } | { ok: false; message: string };
 
-export function resolveStageTarget(runId: string, stageTarget?: string): ToolStageTarget {
+export function resolveStageTarget(runId: string, stageTarget?: string, activeStore: Store = store): ToolStageTarget {
 	const target = stageTarget?.trim();
 	if (!target) return { ok: true, runId };
-	const graph = expandWorkflowGraph(readGraphStoreSnapshot(store), runId);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(activeStore), runId);
 	const exactVirtualIds = graph.stages.filter((stage) => stage.id === target);
 	if (exactVirtualIds.length === 1) return resolvedStageTarget(exactVirtualIds[0]!);
 	if (exactVirtualIds.length > 1) return ambiguousStageTarget(target, exactVirtualIds);
@@ -147,8 +151,12 @@ function ambiguousStageTarget(target: string, stages: readonly ExpandedWorkflowS
 	};
 }
 
-export function resolveToolStageTarget(runId: string, stageTarget?: string): ToolStageTarget {
-	return resolveStageTarget(runId, stageTarget);
+export function resolveToolStageTarget(
+	runId: string,
+	stageTarget?: string,
+	activeStore: Store = store,
+): ToolStageTarget {
+	return resolveStageTarget(runId, stageTarget, activeStore);
 }
 
 /**

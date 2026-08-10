@@ -28,7 +28,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		const sessionFile = messagePreparation().sessionFile;
 		if (sessionFile === undefined) return;
 		await runtime.innerCtx.__ensureSessionFromFile(sessionFile);
-		runtime.captureStageSessionMeta();
+		await runtime.captureStageSessionMeta({ awaitDurable: true });
 	};
 	const toolExecutions = new StageToolExecutionBuffer();
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
@@ -75,7 +75,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			await ensureMessagingSession();
 			await runtime.innerCtx.__ensureSession();
 			runtime.throwIfStageMutationBlocked();
-			runtime.captureStageSessionMeta();
+			await runtime.captureStageSessionMeta({ awaitDurable: true });
 		},
 		async sendUserMessage(text, options, beforeDelivery) {
 			runtime.throwIfStageMutationBlocked();
@@ -91,7 +91,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				}
 				return action;
 			} finally {
-				runtime.captureStageSessionMeta();
+				void runtime.captureStageSessionMeta();
 			}
 		},
 		async prompt(text: string) {
@@ -106,7 +106,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 					preparation,
 				);
 			} finally {
-				runtime.captureStageSessionMeta();
+				void runtime.captureStageSessionMeta();
 			}
 			if (action !== "handled") runtime.throwIfStageMutationBlocked();
 		},
@@ -124,7 +124,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				await runtime.innerCtx.steer(text);
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
 			} finally {
-				runtime.captureStageSessionMeta();
+				void runtime.captureStageSessionMeta();
 			}
 		},
 		async followUp(text: string) {
@@ -137,7 +137,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				await runtime.innerCtx.followUp(text);
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
 			} finally {
-				runtime.captureStageSessionMeta();
+				void runtime.captureStageSessionMeta();
 			}
 		},
 		async pause() {
@@ -206,7 +206,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				}
 				throw err;
 			} finally {
-				runtime.captureStageSessionMeta();
+				void runtime.captureStageSessionMeta();
 			}
 		},
 		subscribe(listener: AgentSessionEventListener) {

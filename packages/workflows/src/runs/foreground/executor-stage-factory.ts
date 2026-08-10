@@ -40,6 +40,7 @@ import {
 	type InternalStageContext,
 	type StageAdapters,
 } from "./stage-runner.js";
+import { createStageSessionHeartbeat } from "./stage-session-heartbeat.js";
 
 export function createWorkflowStageFactory(input: {
 	readonly runId: string;
@@ -151,6 +152,15 @@ export function createWorkflowStageFactory(input: {
 			if (meta.modelAttempts !== undefined) stageSnapshot.modelAttempts = meta.modelAttempts;
 		};
 
+		let runtime!: LiveStageRuntime;
+		const stageSessionHeartbeat = createStageSessionHeartbeat(async () => {
+			try {
+				await runtime.captureStageSessionMeta({ awaitDurable: true });
+			} catch (error) {
+				await runtime.innerCtx.abort().catch(() => {});
+				throw error;
+			}
+		});
 		const innerCtx = createInnerStageContext({
 			stageId,
 			stageName: name,
@@ -165,6 +175,11 @@ export function createWorkflowStageFactory(input: {
 			onModelFallbackMetaChange(meta) {
 				applyModelFallbackMeta(meta);
 				if (stageSnapshot.status === "running") input.activeStore.recordStageStart(input.runId, stageSnapshot);
+			},
+			async onSessionReady() {
+				if (stageSnapshot.status !== "running") return;
+				await runtime.captureStageSessionMeta({ awaitDurable: true });
+				runtime.startStageSessionHeartbeat();
 			},
 		});
 
@@ -234,21 +249,23 @@ export function createWorkflowStageFactory(input: {
 			await innerCtx.__dispose();
 		};
 
-		let runtime: LiveStageRuntime;
-		const captureStageSessionMeta = (checkpointOptions?: StageSessionCheckpointOptions): unknown => {
+		const captureStageSessionMeta = async (checkpointOptions?: StageSessionCheckpointOptions): Promise<void> => {
 			const meta = innerCtx.__sessionMeta();
 			if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
 			if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
 			if (meta.sessionId !== undefined || meta.sessionFile !== undefined)
 				input.activeStore.recordStageSession(input.runId, stageId, meta);
 			const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
-			if (checkpointOptions?.forceDurable === true) return pending;
+			if (checkpointOptions?.forceDurable === true || checkpointOptions?.awaitDurable === true) {
+				await pending;
+				return;
+			}
 			void Promise.resolve(pending).catch(() => {});
-			return undefined;
 		};
 		const releaseLiveHandle = async (): Promise<void> => {
 			if (state.liveHandleReleased) return;
 			state.liveHandleReleased = true;
+			stageSessionHeartbeat.stop();
 			runtime.dropStageControlHandle();
 			runtime.unregisterStageHandle();
 			await disposeInnerContext();
@@ -282,6 +299,7 @@ export function createWorkflowStageFactory(input: {
 		};
 
 		const finalizeStageSnapshot = async (): Promise<boolean> => {
+			stageSessionHeartbeat.stop();
 			if (state.stageFinalized) return false;
 			if (stageSnapshot.endedAt !== undefined && isTerminalStage(stageSnapshot)) {
 				state.stageFinalized = true;
@@ -371,6 +389,9 @@ export function createWorkflowStageFactory(input: {
 			dropStageControlHandle: () => {},
 			unregisterWorkflowExitCleanup: () => {},
 			captureStageSessionMeta,
+			startStageSessionHeartbeat: stageSessionHeartbeat.start,
+			stopStageSessionHeartbeat: stageSessionHeartbeat.stop,
+			raceStageSessionHeartbeat: stageSessionHeartbeat.race,
 			applyModelFallbackMeta,
 			appendStageStartOnce,
 			finalizeStageSnapshot,

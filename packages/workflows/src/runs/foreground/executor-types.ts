@@ -34,6 +34,8 @@ export interface RunContinuationOpts {
 
 export interface StageSessionCheckpointOptions {
 	readonly forceDurable?: boolean;
+	/** Await and surface the persistence result without bypassing duration bucketing. */
+	readonly awaitDurable?: boolean;
 }
 export interface RunOpts
 	extends Omit<

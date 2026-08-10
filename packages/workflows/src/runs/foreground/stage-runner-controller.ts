@@ -1168,9 +1168,12 @@ export class StageSessionController {
 				throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
 			throw this.staleCreationReason(startGeneration);
 		}
-		return attachCreatedStageSession(created, this.disposed, this.opts.stageName, (result) =>
+		const session = attachCreatedStageSession(created, this.disposed, this.opts.stageName, (result) =>
 			this.attachSession(result),
 		);
+		if (session instanceof Promise) return await session;
+		await this.opts.onSessionReady?.();
+		return session;
 	}
 
 	private attachSession(created: StageSessionRuntime | StageSessionCreateResult): StageSessionRuntime {

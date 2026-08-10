@@ -56,16 +56,39 @@ export function recordRunTimingCheckpoint(
 	run: RunSnapshot,
 	options?: { readonly debounce?: boolean; readonly now?: number },
 ): boolean {
+	const checkpoint = runTimingCheckpoint(backend, run, options);
+	if (checkpoint === undefined) return false;
+	backend.recordCheckpoint(checkpoint);
+	return true;
+}
+
+/** Await the timing write so an active turn observes persistent storage faults at once. */
+export async function recordRunTimingCheckpointAsync(
+	backend: DurableWorkflowBackend,
+	run: RunSnapshot,
+	options?: { readonly debounce?: boolean; readonly now?: number },
+): Promise<boolean> {
+	const checkpoint = runTimingCheckpoint(backend, run, options);
+	if (checkpoint === undefined) return false;
+	await backend.recordCheckpointAsync(checkpoint);
+	return true;
+}
+
+function runTimingCheckpoint(
+	backend: DurableWorkflowBackend,
+	run: RunSnapshot,
+	options?: { readonly debounce?: boolean; readonly now?: number },
+): DurableToolCheckpoint | undefined {
 	const now = options?.now ?? Date.now();
 	const elapsedMs = elapsedRunMs(run, now);
-	if (elapsedMs <= 0) return false;
-	if (backend.listCheckpoints(run.id).length === 0) return false;
+	if (elapsedMs <= 0) return undefined;
+	if (backend.listCheckpoints(run.id).length === 0) return undefined;
 	const recorded = priorRunElapsedMs(backend, run.id);
 	if (recorded !== undefined) {
-		if (elapsedMs <= recorded) return false;
-		if (options?.debounce === true && timingBucket(elapsedMs) === timingBucket(recorded)) return false;
+		if (elapsedMs <= recorded) return undefined;
+		if (options?.debounce === true && timingBucket(elapsedMs) === timingBucket(recorded)) return undefined;
 	}
-	const checkpoint: DurableToolCheckpoint = {
+	return {
 		kind: "tool",
 		workflowId: run.id,
 		checkpointId: `run-timing:${elapsedMs}`,
@@ -74,8 +97,6 @@ export function recordRunTimingCheckpoint(
 		output: { elapsedMs },
 		completedAt: now,
 	};
-	backend.recordCheckpoint(checkpoint);
-	return true;
 }
 
 /**

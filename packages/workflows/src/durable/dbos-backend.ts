@@ -5,6 +5,7 @@ import {
 	type DurableInactiveDeleteResult,
 	type DurableWorkflowBackend,
 	type DurableWorkflowCatalogEntries,
+	type DurableWorkflowHydrationResult,
 	InMemoryDurableBackend,
 	type WorkflowRegistrationInput,
 } from "./backend.js";
@@ -439,15 +440,21 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 	}
 
 	async hydrateWorkflow(workflowId: string): Promise<void> {
-		if (this.locallyRegistered.has(workflowId)) return;
-		const info = await this.sdk.retrieveWorkflow(workflowId);
-		if (info !== undefined) {
-			await this.hydrateInfo(info);
-			return;
+		await this.hydrateWorkflowForInspection(workflowId);
+	}
+	async hydrateWorkflowForInspection(workflowId: string): Promise<DurableWorkflowHydrationResult> {
+		if (this.locallyRegistered.has(workflowId)) {
+			const handle = this.getLoadableWorkflow(workflowId);
+			return handle === undefined ? { kind: "malformed" } : { kind: "current", handle };
 		}
+		const info = await this.sdk.retrieveWorkflow(workflowId);
+		if (info !== undefined) return await this.hydrateInfo(info);
 		const records = await this.sdk.listStepRecords(workflowId);
 		const deletion = classifyDbosDeletionTombstone(records, workflowId);
-		if (deletion !== "absent") await this.suppressWorkflow(workflowId);
+		if (deletion === "absent" && records.length === 0) return { kind: "absent" };
+		await this.suppressWorkflow(workflowId);
+		if (deletion === "absent") return { kind: "malformed" };
+		return { kind: deletion === "current" ? "deleted" : "malformed" };
 	}
 	async hydrateResumableWorkflows(): Promise<void> {
 		const all = await this.sdk.listAllWorkflows();
@@ -457,12 +464,17 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		}
 	}
 
-	private async hydrateInfo(info: DbosWorkflowInfo): Promise<void> {
+	private async hydrateInfo(info: DbosWorkflowInfo): Promise<DurableWorkflowHydrationResult> {
 		const records = await this.sdk.listStepRecords(info.workflowId);
+		const deletion = classifyDbosDeletionTombstone(records, info.workflowId);
+		if (deletion !== "absent") {
+			await this.suppressWorkflow(info.workflowId);
+			return { kind: deletion === "current" ? "deleted" : "malformed" };
+		}
 		const metadata = classifyLatestMetadata(records, info.workflowId);
 		if (metadata.kind !== "current") {
 			await this.suppressWorkflow(info.workflowId);
-			return;
+			return { kind: "malformed" };
 		}
 		const checkpoints: DurableCheckpoint[] = [];
 		for (const record of records) {
@@ -475,7 +487,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 			const classified = classifyCheckpointPayload(info.workflowId, record.stepName, record.output);
 			if (classified.kind === "unknown") {
 				await this.suppressWorkflow(info.workflowId);
-				return;
+				return { kind: "malformed" };
 			}
 			checkpoints.push(classified.checkpoint);
 		}
@@ -485,22 +497,28 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 		this.applyMetadata(info.workflowId, metadata.metadata);
 		for (const checkpoint of checkpoints) this.mem.recordCheckpoint(checkpoint);
 		const current = this.mem.getWorkflow(info.workflowId);
-		if (current !== undefined) {
-			const pendingPrompts = this.promptReservations.hydrate(
-				info.workflowId,
-				metadata.metadata.pendingPrompts,
-				records,
-				metadata.metadata.promptReservationEpoch,
-			);
-			// Re-register instead of setWorkflowStatus: hydration is a read-side
-			// reconstruction and must preserve the authoritative updatedAt, which
-			// doubles as the cross-session liveness heartbeat for running handles.
-			this.applyMetadata(info.workflowId, {
-				...metadata.metadata,
-				pendingPrompts,
-				completedCheckpoints: current.completedCheckpoints,
-			});
+		if (current === undefined) {
+			await this.suppressWorkflow(info.workflowId);
+			return { kind: "malformed" };
 		}
+		const pendingPrompts = this.promptReservations.hydrate(
+			info.workflowId,
+			metadata.metadata.pendingPrompts,
+			records,
+			metadata.metadata.promptReservationEpoch,
+		);
+		// Re-register instead of setWorkflowStatus: hydration is a read-side
+		// reconstruction and must preserve the authoritative updatedAt, which
+		// doubles as the cross-session liveness heartbeat for running handles.
+		this.applyMetadata(info.workflowId, {
+			...metadata.metadata,
+			pendingPrompts,
+			completedCheckpoints: current.completedCheckpoints,
+		});
+		const handle = this.getLoadableWorkflow(info.workflowId);
+		if (handle !== undefined) return { kind: "current", handle };
+		await this.suppressWorkflow(info.workflowId);
+		return { kind: "malformed" };
 	}
 
 	private async suppressWorkflow(workflowId: string): Promise<void> {

@@ -1,4 +1,4 @@
-import { recordRunTimingCheckpoint } from "../durable/run-timing.js";
+import { recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import { type DurableStageDeps, recordStageSessionCheckpoint } from "../durable/stage-primitive.js";
 import type { StageSessionCheckpointOptions } from "../runs/foreground/executor-types.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
@@ -27,7 +27,7 @@ export function createDurableStageSessionRecorder(
 		if (stageRunId === input.runId) {
 			await recordStageSessionCheckpoint(input.deps, snapshot, { force: options?.forceDurable === true });
 			if (input.runSnapshot !== undefined) {
-				recordRunTimingCheckpoint(input.deps.backend, input.runSnapshot, {
+				await recordRunTimingCheckpointAsync(input.deps.backend, input.runSnapshot, {
 					debounce: options?.forceDurable !== true,
 				});
 			}
