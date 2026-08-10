@@ -290,9 +290,10 @@ export function buildGraphOverlayAdapter(
 		const unsubscribe = subscribeStoreInvalidation(store, onStoreUpdate);
 		return {
 			render: (width: number) => view.render(width),
-			handleInput: (data: string) => {
+			handleInput: (data: string): boolean => {
 				const consumed = view.handleInput(data);
 				if (consumed) tui.requestRender?.();
+				return consumed === true;
 			},
 			invalidate: () => tui.requestRender?.(),
 			dispose: () => {

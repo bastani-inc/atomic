@@ -387,18 +387,26 @@ class MySelector {
     this.items = items;
   }
 
-  handleInput(data: string): void {
+  handleInput(data: string): boolean {
     if (matchesKey(data, Key.up) && this.selected > 0) {
       this.selected--;
       this.invalidate();
-    } else if (matchesKey(data, Key.down) && this.selected < this.items.length - 1) {
+      return true;
+    }
+    if (matchesKey(data, Key.down) && this.selected < this.items.length - 1) {
       this.selected++;
       this.invalidate();
-    } else if (matchesKey(data, Key.enter)) {
-      this.onSelect?.(this.items[this.selected]);
-    } else if (matchesKey(data, Key.escape)) {
-      this.onCancel?.();
+      return true;
     }
+    if (matchesKey(data, Key.enter)) {
+      this.onSelect?.(this.items[this.selected]);
+      return true;
+    }
+    if (matchesKey(data, Key.escape)) {
+      this.onCancel?.();
+      return true;
+    }
+    return false;
   }
 
   render(width: number): string[] {
@@ -420,6 +428,8 @@ class MySelector {
   }
 }
 ```
+
+Return `false` when the component did nothing and wants a shared fullscreen viewport key to fall through to transcript navigation. Any other result keeps the key local, which preserves pi-tui's `void` component contract. A component may return `true` to state that it consumed the key. Do not mutate state and return `false` for the same key.
 
 Usage in an extension:
 

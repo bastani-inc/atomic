@@ -61,8 +61,8 @@ class RemoteComponent implements Component {
 		return this.frameClamp.clamp(this.lines, width);
 	}
 
-	handleInput(data: string): void {
-		if (this.disposed) return;
+	handleInput(data: string): boolean {
+		if (this.disposed) return false;
 		this.runtime.sendEngineCommand({ type: "engine_custom_input", componentId: this.componentId, data });
 		// Engine commands are delivered in order, so a frame requested now is
 		// rendered by the child only AFTER it has applied this input. Pipelining
@@ -71,6 +71,7 @@ class RemoteComponent implements Component {
 		// child-side invalidate (or an unrelated refresh) to trigger a frame.
 		this.dirty = true;
 		this.requestRender();
+		return true;
 	}
 
 	invalidate(): void {

@@ -1,6 +1,6 @@
 import type { Component, TUI, TuiBase, TuiMode } from "@earendil-works/pi-tui";
 import { isViewportTUI, TuiAltScreen } from "@earendil-works/pi-tui";
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
 import {
 	createInteractiveTui,
@@ -13,6 +13,13 @@ import {
 	getLayoutFrame,
 	RecordingTerminal,
 } from "./helpers/interactive-fullscreen-layout.ts";
+
+const clipboardMocks = vi.hoisted(() => ({
+	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
+	readClipboardText: vi.fn<() => Promise<string | null>>(),
+}));
+
+vi.mock("../src/utils/clipboard.ts", () => clipboardMocks);
 
 describe("interactive TUI renderer", () => {
 	test("selects the alternate-screen renderer with link activation and alternate-screen bytes", () => {
@@ -196,5 +203,67 @@ describe("interactive TUI renderer", () => {
 			tui.stop();
 			restoreOffline();
 		}
+	});
+});
+
+interface CopyCommandContext {
+	session: { getLastAssistantText(): string | undefined };
+	ui: ReturnType<typeof createInteractiveTui>;
+	showStatus(message: string): void;
+	showError(message: string): void;
+}
+
+interface CopyCommandPrototype {
+	handleCopyCommand(this: CopyCommandContext, options?: { flashConfirmation?: boolean }): Promise<void>;
+}
+
+const copyCommandPrototype = InteractiveMode.prototype as unknown as CopyCommandPrototype;
+
+describe("InteractiveMode copy confirmation", () => {
+	beforeEach(() => {
+		clipboardMocks.copyToClipboard.mockReset();
+		clipboardMocks.copyToClipboard.mockResolvedValue(undefined);
+	});
+
+	test("flashes the copy shortcut confirmation in fullscreen mode", async () => {
+		const ui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+		});
+		const flash = vi.spyOn(ui as TuiAltScreen, "flash");
+		const context: CopyCommandContext = {
+			session: { getLastAssistantText: () => "assistant response" },
+			ui,
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+		};
+
+		await copyCommandPrototype.handleCopyCommand.call(context, { flashConfirmation: true });
+
+		expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("assistant response");
+		expect(flash).toHaveBeenCalledWith("Copied!");
+		expect(context.showStatus).not.toHaveBeenCalled();
+		expect(context.showError).not.toHaveBeenCalled();
+	});
+
+	test("keeps slash-command copy confirmation in the status line", async () => {
+		const context: CopyCommandContext = {
+			session: { getLastAssistantText: () => "assistant response" },
+			ui: createInteractiveTui({
+				tuiMode: "fullscreen",
+				showHardwareCursor: false,
+				logDirectory: "/tmp",
+				terminal: new RecordingTerminal(),
+			}),
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+		};
+
+		await copyCommandPrototype.handleCopyCommand.call(context);
+
+		expect(context.showStatus).toHaveBeenCalledWith("Copied last agent message to clipboard");
+		expect(context.showError).not.toHaveBeenCalled();
 	});
 });
