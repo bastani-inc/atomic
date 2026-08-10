@@ -62,6 +62,7 @@ describeModelRegistry((context) => {
 						"demo-model": {
 							name: "Overridden Demo",
 							thinkingLevelMap: { low: "medium", high: "high" },
+							samplingParams: { top_p: 0.5, min_p: 0.1 },
 							headers: { "X-Override": "override", "X-Shared": "override" },
 						},
 					},
@@ -82,6 +83,7 @@ describeModelRegistry((context) => {
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 						contextWindow: 128000,
 						maxTokens: 4096,
+						samplingParams: { top_p: 0.9, top_k: 40 },
 						headers: { "X-Base": "base", "X-Shared": "base" },
 					},
 				],
@@ -91,6 +93,7 @@ describeModelRegistry((context) => {
 			expect(model?.name).toBe("Overridden Demo");
 			expect(model?.thinkingLevelMap).toEqual({ low: "medium", xhigh: "xhigh", high: "high" });
 			expect(model?.contextWindow).toBe(128000);
+			expect(model?.samplingParams).toEqual({ top_p: 0.5, top_k: 40, min_p: 0.1 });
 			if (!model) throw new Error("missing extension model");
 			expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({
 				ok: true,

@@ -63,6 +63,7 @@ export interface ProviderConfigInput {
 		cost: Model<Api>["cost"];
 		contextWindow: number;
 		maxTokens: number;
+		samplingParams?: Record<string, unknown>;
 		headers?: Record<string, string>;
 		compat?: Model<Api>["compat"];
 	}>;
@@ -119,6 +120,9 @@ export function applyModelOverride(model: Model<Api>, override: ModelsJsonModelO
 			: model.cost,
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
+		samplingParams: override.samplingParams
+			? { ...model.samplingParams, ...override.samplingParams }
+			: model.samplingParams,
 		compat: mergeCompat(model.compat, override.compat),
 	};
 }
@@ -155,6 +159,7 @@ function modelFromJson(
 		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: definition.contextWindow ?? 128000,
 		maxTokens: definition.maxTokens ?? 16384,
+		samplingParams: definition.samplingParams,
 		headers: undefined,
 		compat: mergeCompat(providerConfig.compat, definition.compat),
 	};

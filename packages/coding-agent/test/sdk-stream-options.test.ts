@@ -179,6 +179,18 @@ describe("createAgentSession stream options", () => {
 		expect(options?.maxRetryDelayMs).toBe(3000);
 	});
 
+	it("forwards per-request sampling params to extension providers", async () => {
+		const options = await captureStreamOptions(
+			"openai-completions",
+			{},
+			{
+				samplingParams: { top_p: 0.35, top_k: 40, vendor_sampler: "fast" },
+			},
+		);
+
+		expect(options?.samplingParams).toEqual({ top_p: 0.35, top_k: 40, vendor_sampler: "fast" });
+	});
+
 	it("runs before_provider_headers on assembled headers without forwarding the transform", async () => {
 		const options = await captureStreamOptions(
 			"openai-completions",

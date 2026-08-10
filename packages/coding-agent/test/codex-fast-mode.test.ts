@@ -152,12 +152,16 @@ describe("codex fast mode helpers", () => {
 		const calls: CapturedStreamCall[] = [];
 		const streamers = makeStreamers(calls);
 		const options = withCodexFastModeStreamOptions(
-			{ apiKey: "key", reasoning: "medium", sessionId: "session-1" },
+			{ apiKey: "key", reasoning: "medium", sessionId: "session-1", samplingParams: { top_p: 0.5 } },
 			true,
 		);
 
 		streamWithCodexFastMode(
-			fullModel({ api: "openai-responses", provider: "openai" }),
+			fullModel({
+				api: "openai-responses",
+				provider: "openai",
+				samplingParams: { top_p: 0.95, min_p: 0.1 },
+			}),
 			emptyContext,
 			options,
 			streamers,
@@ -170,6 +174,7 @@ describe("codex fast mode helpers", () => {
 		expect(providerOptions?.reasoningEffort).toBe("medium");
 		expect(providerOptions?.apiKey).toBe("key");
 		expect(providerOptions?.sessionId).toBe("session-1");
+		expect(providerOptions?.samplingParams).toEqual({ top_p: 0.5, min_p: 0.1 });
 	});
 
 	it("uses native OpenAI Codex Responses streaming when fast mode is active", () => {

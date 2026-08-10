@@ -132,8 +132,17 @@ export function shouldUseNativeCodexFastMode(
 	);
 }
 
-function buildCodexFastModeBaseProviderOptions(options: CodexFastModeStreamOptions | undefined): StreamOptions {
+function buildCodexFastModeBaseProviderOptions(
+	model: Model<Api>,
+	options: CodexFastModeStreamOptions | undefined,
+): StreamOptions {
+	// Native fast-mode streams bypass pi-ai's streamSimple base-options merge.
+	const samplingParams =
+		model.samplingParams || options?.samplingParams
+			? { ...model.samplingParams, ...options?.samplingParams }
+			: undefined;
 	return {
+		samplingParams,
 		temperature: options?.temperature,
 		maxTokens: options?.maxTokens,
 		signal: options?.signal,
@@ -165,7 +174,7 @@ export function buildOpenAIResponsesCodexFastModeOptions(
 	options: CodexFastModeStreamOptions | undefined,
 ): OpenAIResponsesOptions {
 	return {
-		...buildCodexFastModeBaseProviderOptions(options),
+		...buildCodexFastModeBaseProviderOptions(model, options),
 		reasoningEffort: mapCodexFastModeReasoningEffort(model, options?.reasoning),
 		serviceTier: options?.serviceTier,
 	};
@@ -176,7 +185,7 @@ export function buildOpenAICodexResponsesCodexFastModeOptions(
 	options: CodexFastModeStreamOptions | undefined,
 ): OpenAICodexResponsesOptions {
 	return {
-		...buildCodexFastModeBaseProviderOptions(options),
+		...buildCodexFastModeBaseProviderOptions(model, options),
 		reasoningEffort: mapCodexFastModeReasoningEffort(model, options?.reasoning),
 		serviceTier: options?.serviceTier,
 	};

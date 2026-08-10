@@ -687,6 +687,8 @@ interface ProviderModelConfig {
 
   /** Maximum output tokens. */
   maxTokens: number;
+  /** Default sampling parameters merged into OpenAI-compatible request bodies. */
+  samplingParams?: Record<string, unknown>;
 
   /** Custom headers for this specific model. */
   headers?: Record<string, string>;
@@ -697,6 +699,8 @@ interface ProviderModelConfig {
     supportsDeveloperRole?: boolean;
     supportsReasoningEffort?: boolean;
     supportsUsageInStreaming?: boolean;
+    supportsFinishReason?: boolean;
+    supportsThinkingTokenBudget?: boolean;
     supportsStrictMode?: boolean;
     supportsOpenAIGrammarTools?: boolean;
     /** Atomic alias for supportsOpenAIGrammarTools. */

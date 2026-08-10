@@ -208,6 +208,7 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | `input`            | No       | `["text"]`        | Input types: `["text"]` or `["text", "image"]`                                                             |
 | `contextWindow`    | No       | `128000`          | Default/effective context window size in tokens                                                            |
 | `maxTokens`        | No       | `16384`           | Maximum output tokens                                                                                      |
+| `samplingParams`   | No       | omitted           | Sampling parameters merged verbatim into every request body for OpenAI-compatible APIs (see below) |
 | `cost`             | No       | all zeros         | Complete base rates per million tokens plus optional request-wide `tiers` (see below)                    |
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
 | `deferredToolsMode` | No | omitted | Deferred tool-loading protocol; set to `"kimi"` for Kimi-compatible deferred tools |
@@ -216,6 +217,26 @@ Current behavior:
 - `/model`, `--list-models`, and the interactive footer display entries by model `id`.
 - The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
 
+
+### Sampling Parameters
+
+`samplingParams` is a free-form object merged into every request body for an OpenAI-compatible model after the fields Atomic sets, so its keys win. Use it to send parameters that Atomic does not model, including server-specific values such as llama.cpp's `min_p` or vLLM's `top_k`:
+
+```json
+{
+  "id": "deepseek-v4-flash",
+  "samplingParams": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 0,
+    "min_p": 0
+  }
+}
+```
+
+Only OpenAI-compatible APIs apply these values (`openai-completions`, `openai-responses`, and `azure-openai-responses`); other APIs ignore them. Per-request keys override model defaults and named request fields. In `modelOverrides`, `samplingParams` merges per key with the base model's values. Keys are provider-defined and remain unchanged; malformed `samplingParams` values are rejected while loading `models.json`.
+
+For vLLM OpenAI-compatible models that share the reasoning and answer budgets, set `compat.supportsThinkingTokenBudget` to `true`. Atomic sends the opt-in `thinking_token_budget` value for an enabled thinking level and always leaves 1024 tokens for the final answer. Pi's defaults are 1024, 2048, 8192, and 16384 tokens for `minimal`, `low`, `medium`, and `high`; the `thinkingBudgets` settings override them. `xhigh` and `max` use the `high` budget, and Atomic omits the field when no positive budget remains after reserving answer space.
 
 Model references resolve the complete, unmodified ID before Atomic interprets thinking suffixes or glob syntax. For example, if the catalog contains the literal ID `provider/literal[free]:high`, that complete model wins and `:high` remains part of its ID; it does not become a thinking-level suffix and `[free]` is not treated as a character class. Only when the complete ID is absent does Atomic parse a valid thinking suffix, try the stripped exact ID, then apply glob/fuzzy matching. This preserves literal provider IDs without changing ordinary `*`, `?`, bracket-glob, ambiguity, ordering, or deduplication behavior.
 ### Request-wide Cost Tiers
@@ -416,7 +437,7 @@ Use `modelOverrides` to customize specific models without replacing the provider
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `maxTokens`, `headers`, `compat`.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinkingLevelMap`, `input`, `cost` (partial scalar rates plus optional full tier-array replacement), `contextWindow`, `maxTokens`, `samplingParams` (merged per key), `headers`, `compat`.
 
 Atomic reads one `models.json` from the active agent directory. It does not layer model overrides from `.pi` and `.atomic` files.
 
@@ -494,6 +515,8 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `supportsDeveloperRole`                       | Use `developer` vs `system` role                                                                                                                                                                                                     |
 | `supportsReasoningEffort`                     | Support for `reasoning_effort` parameter                                                                                                                                                                                             |
 | `supportsUsageInStreaming`                    | Supports `stream_options: { include_usage: true }` (default: `true`)                                                                                                                                                                 |
+| `supportsFinishReason`                       | Whether streamed responses include `finish_reason`. When `false`, Atomic infers `stop` or `toolUse` when the stream ends. Default: `true`. |
+| `supportsThinkingTokenBudget`                | Whether the endpoint accepts top-level vLLM `thinking_token_budget`; use it with reasoning models that share the response budget. Default: `false`. |
 | `maxTokensField`                              | Use `max_completion_tokens` or `max_tokens`                                                                                                                                                                                          |
 | `requiresToolResultName`                      | Include `name` on tool result messages                                                                                                                                                                                               |
 | `requiresAssistantAfterToolResult`            | Insert an assistant message before a user message after tool results                                                                                                                                                                 |
