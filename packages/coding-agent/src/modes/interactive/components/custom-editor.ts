@@ -178,6 +178,16 @@ export class CustomEditor extends Editor {
 			// Fall through to editor handling for delete-char-forward when not empty
 		}
 
+		// Explicit history bindings take precedence over app actions while the editor is focused.
+		// This lets users bind Ctrl+P or Ctrl+N without triggering another app action.
+		if (
+			this.keybindings.matches(data, "tui.editor.historyPrevious") ||
+			this.keybindings.matches(data, "tui.editor.historyNext")
+		) {
+			super.handleInput(data);
+			return;
+		}
+
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
 			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
