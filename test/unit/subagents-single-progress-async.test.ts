@@ -191,6 +191,35 @@ test("async completion persists artifacts and delivers one non-empty bounded ter
 	}
 });
 
+test("stale async completion events do not escape the detached-exit callback", async () => {
+	const runId = `stale-completion-${crypto.randomUUID()}`;
+	const completionObserved = Promise.withResolvers<void>();
+	const events = {
+		emit(event: string) {
+			if (event !== SUBAGENT_ASYNC_COMPLETE_EVENT) return;
+			completionObserved.resolve();
+			throw new Error("This extension ctx is stale after session replacement or reload.");
+		},
+	};
+	try {
+		const launched = await executeAsyncSingle(runId, {
+			agent: "worker",
+			task: "complete after reload",
+			agentConfig: makeAgent(),
+			ctx: { pi: { events } as never as ExtensionAPI, cwd: tmpdir(), currentSessionId: "parent" },
+			artifactsDir: tmpdir(),
+			artifactConfig,
+			shareEnabled: false,
+			maxSubagentDepth: 1,
+			testSession: { output: "done" },
+		});
+		assert.equal(launched.details.results[0]?.status, "continued");
+		await completionObserved.promise;
+	} finally {
+		rmSync(join(ASYNC_DIR, runId), { recursive: true, force: true });
+	}
+});
+
 test("async tool dispatch persists terminal artifacts beside the parent session without a duplicate session tree", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-subagent-async-dispatch-"));
 	const parentSessionFile = join(root, "sessions", "parent.jsonl");

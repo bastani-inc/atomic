@@ -107,3 +107,165 @@ test("queued child messages drain before a direct terminal notification", () => 
 
 	assert.deepEqual(delivered, ["Ready…", "subagent-notify"]);
 });
+
+test("stale terminal-barrier emits do not escape the completion callback", async () => {
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	let stale = false;
+	let sends = 0;
+	const events = {
+		on(event: string, handler: (data: unknown) => void) {
+			const set = listeners.get(event) ?? new Set();
+			set.add(handler);
+			listeners.set(event, set);
+			return () => set.delete(handler);
+		},
+		emit(event: string, payload: unknown) {
+			if (stale && event === "subagent:terminal-ordering-barrier") {
+				throw new Error("This extension ctx is stale after session replacement or reload.");
+			}
+			for (const handler of listeners.get(event) ?? []) handler(payload);
+		},
+	};
+	const pi = {
+		events,
+		sendMessage() {
+			sends += 1;
+		},
+	};
+	const unregister = registerSubagentNotify(pi as never);
+	stale = true;
+
+	const delivered = await deliverLocalCompletionNotification(
+		events,
+		{ id: "stale-barrier-run", agent: "worker", summary: "done" },
+		"stale-barrier-notify",
+	);
+
+	assert.equal(delivered, true, "a stale barrier falls back to direct notification delivery");
+	assert.equal(sends, 1);
+	unregister();
+});
+
+test("does not acknowledge a terminal notification when barrier dispatch fails", async () => {
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	let sendAttempts = 0;
+	const events = {
+		on(event: string, handler: (data: unknown) => void) {
+			const set = listeners.get(event) ?? new Set();
+			set.add(handler);
+			listeners.set(event, set);
+			return () => set.delete(handler);
+		},
+		emit(event: string, payload: unknown) {
+			if (event === "subagent:terminal-ordering-barrier") {
+				(payload as { dispatch?: (prefix: unknown[]) => unknown }).dispatch?.([]);
+				return;
+			}
+			for (const handler of listeners.get(event) ?? []) handler(payload);
+		},
+	};
+	const pi = {
+		events,
+		sendMessages() {
+			sendAttempts += 1;
+			throw new Error("This extension ctx is stale after session replacement or reload.");
+		},
+		sendMessage() {
+			sendAttempts += 1;
+		},
+	};
+	const unregister = registerSubagentNotify(pi as never);
+	const payload = { id: "failed-barrier-run", agent: "worker", summary: "done" };
+
+	assert.equal(await deliverLocalCompletionNotification(events, payload, "failed-barrier-notify"), false);
+	assert.equal(await deliverLocalCompletionNotification(events, payload, "failed-barrier-notify"), false);
+	assert.equal(sendAttempts, 2, "a failed dispatch remains retryable and never falls through to success");
+	unregister();
+});
+
+test("keeps a surviving notification handler when replacement cleanup throws", () => {
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	let onCalls = 0;
+	let sends = 0;
+	const events = {
+		on(event: string, handler: (data: unknown) => void) {
+			onCalls += 1;
+			if (onCalls === 2) throw new Error("This extension ctx is stale after session replacement or reload.");
+			const set = listeners.get(event) ?? new Set();
+			set.add(handler);
+			listeners.set(event, set);
+			return () => {
+				throw new Error("This extension ctx is stale after session replacement or reload.");
+			};
+		},
+		emit(event: string, payload: unknown) {
+			for (const handler of listeners.get(event) ?? []) handler(payload);
+		},
+	};
+	const pi = {
+		events,
+		sendMessage: () => {
+			sends += 1;
+		},
+	};
+	const firstCleanup = registerSubagentNotify(pi as never);
+
+	assert.doesNotThrow(() => registerSubagentNotify(pi as never));
+	events.emit("subagent:async-complete", {
+		id: "surviving-handler-run",
+		agent: "worker",
+		status: "ok",
+		summary: "done",
+		timestamp: Date.now(),
+	});
+	assert.equal(onCalls, 2);
+	assert.equal(sends, 1);
+	firstCleanup();
+	events.emit("subagent:async-complete", {
+		id: "after-cleanup-run",
+		agent: "worker",
+		status: "ok",
+		summary: "done",
+		timestamp: Date.now(),
+	});
+	assert.equal(sends, 1);
+});
+
+test("re-registers a per-run completion subscription after invalidation", () => {
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	let onCalls = 0;
+	let stale = false;
+	const events = {
+		on(event: string, handler: (data: unknown) => void) {
+			onCalls += 1;
+			if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
+			const set = listeners.get(event) ?? new Set();
+			set.add(handler);
+			listeners.set(event, set);
+			return () => set.delete(handler);
+		},
+		emit(event: string, payload: unknown) {
+			for (const handler of listeners.get(event) ?? []) handler(payload);
+		},
+	};
+	const sent: unknown[] = [];
+	const pi = { events, sendMessage: (message: unknown) => sent.push(message) };
+	const firstCleanup = registerSubagentNotify(pi as never);
+
+	stale = true;
+	assert.doesNotThrow(() => registerSubagentNotify(pi as never));
+	stale = false;
+	const secondCleanup = registerSubagentNotify(pi as never);
+	assert.equal(onCalls, 3, "the retry registers a fresh event-bus subscription");
+
+	events.emit("subagent:async-complete", {
+		id: "reloaded-run",
+		agent: "worker",
+		status: "ok",
+		summary: "done",
+		timestamp: Date.now(),
+	});
+	assert.equal(sent.length, 1);
+	firstCleanup();
+	secondCleanup();
+});

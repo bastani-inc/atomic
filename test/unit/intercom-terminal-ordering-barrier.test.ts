@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { InboundIdleQueue } from "../../packages/intercom/inbound-idle-queue.js";
 import type { InboundMessageEntry } from "../../packages/intercom/intercom-utils.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
@@ -11,6 +12,7 @@ import {
 	SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT,
 } from "../../packages/intercom/terminal-ordering-barrier.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { deliverLocalCompletionNotification } from "../../packages/subagents/src/runs/background/completion-notification.js";
 import registerSubagentNotify from "../../packages/subagents/src/runs/background/notify.js";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
@@ -484,6 +486,53 @@ describe("per-child terminal ordering barrier", () => {
 			queue.drain().map((queued) => queued.message.id),
 			["first"],
 		);
+	});
+
+	test("a failed dispatch is not retried through the global barrier after host event handling", async () => {
+		const events = createEventBus();
+		const queue = new InboundIdleQueue();
+		const child = source("host-bus-failure-session", "subagent-worker-host-bus-failure");
+		queue.enqueue(entry(child, "first", 1));
+		let attempts = 0;
+		const pi = {
+			events,
+			sendMessages() {
+				attempts += 1;
+				throw new Error("injected terminal dispatch failure");
+			},
+			sendMessage() {},
+			appendEntry() {},
+		};
+		const unregisterBarrier = registerTerminalOrderingBarrier(pi as never, {
+			queue,
+			toMessage: (queued) => ({
+				customType: "intercom_message",
+				content: queued.bodyText,
+				display: true,
+				details: queued,
+			}),
+			deliver: () => {},
+		});
+		const unregisterNotify = registerSubagentNotify(pi as never);
+
+		const delivered = await deliverLocalCompletionNotification(
+			events,
+			{
+				id: "host-bus-failure-run",
+				runId: "host-bus-failure-run",
+				agent: "worker",
+				summary: "done",
+				timestamp: 2,
+				results: [{ agent: "worker", intercomTarget: child.name }],
+			},
+			"host-bus-failure-notify",
+		);
+
+		assert.equal(delivered, false);
+		assert.equal(attempts, 1);
+		assert.equal(queue.size, 1);
+		unregisterNotify();
+		unregisterBarrier();
 	});
 	test("a terminal barrier can win during an in-flight foreground owner probe", () => {
 		const harness = eventHarness();

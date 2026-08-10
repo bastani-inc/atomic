@@ -309,6 +309,12 @@ export async function deliverSubagentResultIntercomEvent(
 	);
 }
 
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
+
 export async function deliverSubagentIntercomMessageEvent(
 	events: IntercomEventBus,
 	to: string,
@@ -326,15 +332,26 @@ export async function deliverSubagentIntercomMessageEvent(
 			if (settled) return;
 			settled = true;
 			if (timer) clearTimeout(timer);
-			unsubscribe?.();
+			try {
+				unsubscribe?.();
+			} catch (error) {
+				if (!isStaleExtensionContextError(error)) throw error;
+				// Stale event-bus cleanup must not change the delivery result.
+			}
 			resolve(delivered);
 		};
-		unsubscribe = events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (data) => {
-			if (!data || typeof data !== "object") return;
-			const delivery = data as { requestId?: unknown; delivered?: unknown };
-			if (delivery.requestId !== requestId) return;
-			finish(delivery.delivered === true);
-		});
+		try {
+			unsubscribe = events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (data) => {
+				if (!data || typeof data !== "object") return;
+				const delivery = data as { requestId?: unknown; delivered?: unknown };
+				if (delivery.requestId !== requestId) return;
+				finish(delivery.delivered === true);
+			});
+		} catch (error) {
+			if (!isStaleExtensionContextError(error)) throw error;
+			finish(false);
+			return;
+		}
 		if (timeoutMs !== false) timer = setTimeout(() => finish(false), timeoutMs);
 		try {
 			events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { ...extra, to, message, requestId });

@@ -28,6 +28,12 @@ const runtimeState: WebSearchRuntimeState = {
 
 const activityState = createActivityWidgetState();
 
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
+
 function abortPendingFetches(): void {
 	for (const controller of pendingFetches.values()) {
 		controller.abort();
@@ -65,7 +71,7 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 		const controller = new AbortController();
 		pendingFetches.set(fetchId, controller);
 		fetchAllContent(urls, controller.signal)
-			.then((fetched) => {
+			.then(async (fetched) => {
 				if (!runtimeState.sessionActive || !pendingFetches.has(fetchId)) return;
 				const data: StoredSearchData = {
 					id: fetchId,
@@ -74,33 +80,46 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 					urls: stripThumbnails(fetched),
 				};
 				storeResult(fetchId, data);
-				pi.appendEntry("web-search-results", data);
-				const ok = fetched.filter(f => !f.error).length;
-				pi.sendMessage(
-					{
-						customType: "web-search-content-ready",
-						content: `Content fetched for ${ok}/${fetched.length} URLs [${fetchId}]. Full page content now available.`,
-						display: true,
-					},
-					{ triggerTurn: true },
-				);
-			})
-			.catch((err) => {
+				try {
+					pi.appendEntry("web-search-results", data);
+					const ok = fetched.filter(f => !f.error).length;
+					await pi.sendMessage(
+						{
+							customType: "web-search-content-ready",
+							content: `Content fetched for ${ok}/${fetched.length} URLs [${fetchId}]. Full page content now available.`,
+							display: true,
+						},
+						{ triggerTurn: true },
+					);
+				} catch (error) {
+					if (!isStaleExtensionContextError(error)) throw error;
+				}
+			}, async (err) => {
+				if (isStaleExtensionContextError(err)) return;
 				if (!runtimeState.sessionActive || !pendingFetches.has(fetchId)) return;
 				const message = err instanceof Error ? err.message : String(err);
 				const isAbort = (err instanceof Error && err.name === "AbortError") || message.toLowerCase().includes("abort");
 				if (!isAbort) {
-					pi.sendMessage(
-						{
-							customType: "web-search-error",
-							content: `Content fetch failed [${fetchId}]: ${message}`,
-							display: true,
-						},
-						{ triggerTurn: false },
-					);
+					try {
+						await pi.sendMessage(
+							{
+								customType: "web-search-error",
+								content: `Content fetch failed [${fetchId}]: ${message}`,
+								display: true,
+							},
+							{ triggerTurn: false },
+						);
+					} catch (error) {
+						if (!isStaleExtensionContextError(error)) throw error;
+					}
 				}
 			})
-			.finally(() => { pendingFetches.delete(fetchId); });
+			.finally(() => { pendingFetches.delete(fetchId); })
+			.catch((error) => {
+				if (!isStaleExtensionContextError(error)) {
+					console.error("Web search background fetch notification failed:", error);
+				}
+			});
 		return fetchId;
 	}
 

@@ -8,6 +8,12 @@ export interface SupervisorAuthorization {
 	childName: string;
 }
 
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
+
 /** Ask the parent Intercom extension to mint a broker-issued child capability. */
 export async function requestSupervisorAuthorization(
 	events: IntercomEventBus | undefined,
@@ -18,6 +24,12 @@ export async function requestSupervisorAuthorization(
 	const request: { childName: string; completion?: Promise<SupervisorAuthorization> } = {
 		childName: normalizedChildName,
 	};
-	events.emit(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, request);
-	return request.completion ? await request.completion : undefined;
+	try {
+		events.emit(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, request);
+		return request.completion ? await request.completion : undefined;
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// Authorization is advisory when a child outlives its parent runtime.
+		return undefined;
+	}
 }

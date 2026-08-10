@@ -268,6 +268,12 @@ function stripWorkflowOnlyOptions(
 	return sessionOptions as CreateAgentSessionOptions;
 }
 
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
+
 function emitLateIntercomRoute(
 	pi: RuntimeWiringSurface,
 	meta: StageExecutionMeta,
@@ -285,7 +291,13 @@ function emitLateIntercomRoute(
 		workflowStageId: meta.stageId,
 		workflowStageName: meta.stageName,
 	};
-	pi.events.emit(LATE_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
+	try {
+		pi.events.emit(LATE_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		// The captured runtime is gone; do not retry through its stale sendMessage API.
+		return Promise.resolve();
+	}
 	if (!event.handled) return undefined;
 	return event.completion ?? Promise.resolve();
 }

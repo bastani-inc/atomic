@@ -345,6 +345,38 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		}, /main-chat late-message route is unavailable/);
 	});
 
+	test("stale late-message events do not retry through the stale generic route", async () => {
+		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+		let sends = 0;
+		const adapters = buildRuntimeAdapters(
+			{
+				events: {
+					emit() {
+						throw new Error("This extension ctx is stale after session replacement or reload.");
+					},
+				},
+				sendMessage() {
+					sends += 1;
+					throw new Error("stale sendMessage");
+				},
+			},
+			{
+				createAgentSession: async (options) => {
+					orchestration = options?.orchestrationContext;
+					return { session: fakeSession() };
+				},
+			},
+		);
+		await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+
+		await orchestration?.lateMessageRouter?.routeMessage({
+			customType: "intercom_message",
+			content: "late",
+			display: true,
+		});
+		assert.equal(sends, 0);
+	});
+
 	test("late batch fallback routing awaits ordered sends and propagates failures", async () => {
 		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
 		const routed: string[] = [];

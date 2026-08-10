@@ -29,6 +29,12 @@ interface SubagentRelayDeps {
   homeGroup?(): string;
 }
 
+const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
+}
+
 async function dispatchRelayFallback(
   pi: ExtensionAPI,
   prefix: Array<{ customType: string; content: string; display: boolean; details?: unknown }>,
@@ -92,7 +98,11 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
         },
       };
       Object.defineProperty(payload, "terminalOwner", { value: pi });
-      pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
+      try {
+        pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
+      } catch (error) {
+        if (!isStaleExtensionContextError(error) || dispatched) throw error;
+      }
       emitGlobalTerminalOrderingBarrier(payload);
       completion = (payload as typeof payload & { completion?: Promise<void> }).completion;
     }
@@ -108,13 +118,25 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
       timestamp: Date.now(),
     });
   }
+  function recordSubagentDeliveryErrorSafely(entryType: string, to: string, message: string, error: unknown): void {
+    try {
+      recordSubagentDeliveryError(entryType, to, message, error);
+    } catch (recordError) {
+      console.error("Failed to record local subagent relay error:", recordError);
+    }
+  }
   function emitResultDelivery(requestId: string | undefined, delivered: boolean, error?: unknown): void {
     if (!requestId) return;
-    pi.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
-      requestId,
-      delivered,
-      ...(error ? { error: getErrorMessage(error) } : {}),
-    });
+    try {
+      pi.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
+        requestId,
+        delivered,
+        ...(error ? { error: getErrorMessage(error) } : {}),
+      });
+    } catch (emitError) {
+      if (!isStaleExtensionContextError(emitError)) throw emitError;
+      // Delivery acknowledgements are best effort after a runtime replacement.
+    }
   }
   function acknowledgeResult(options: { acknowledge?: boolean }, requestId: string | undefined, delivered: boolean, error?: unknown): void {
     if (options.acknowledge) emitResultDelivery(requestId, delivered, error);
@@ -155,11 +177,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
       }
       acknowledgeResult(options, parsed.requestId, true);
     } catch (error) {
-      try {
-        recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
-      } catch (recordError) {
-        console.error("Failed to record local subagent relay error:", recordError);
-      }
+      recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
       try {
         acknowledgeResult(options, parsed.requestId, false, error);
       } catch (ackError) {
@@ -209,7 +227,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
           acknowledgeResult(options, parsed.requestId, false, error);
           return;
         }
-        recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
+        recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
         acknowledgeResult(options, parsed.requestId, false, error);
         return;
       }
@@ -234,7 +252,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
         }
         if (!result.delivered) {
           const error = new Error(result.reason ?? "Session may not exist or has disconnected.");
-          recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
+          recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
           acknowledgeResult(options, parsed.requestId, false, error);
           return;
         }
@@ -244,10 +262,14 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
           acknowledgeResult(options, parsed.requestId, false, error);
           return;
         }
-        recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
+        recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
         acknowledgeResult(options, parsed.requestId, false, error);
       }
-    })();
+    })().catch((error) => {
+      if (!isStaleExtensionContextError(error)) {
+        console.error("Subagent intercom relay failed:", error);
+      }
+    });
   }
   pi.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
