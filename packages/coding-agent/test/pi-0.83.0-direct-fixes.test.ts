@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ENV_AGENT_DIR, getAgentDir, getEnvNames, getLegacyAgentDir } from "../src/config.ts";
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
 import type { ExtensionScopedModels, ScopedModel as PublicScopedModel } from "../src/core/extensions/types.ts";
 import type { ScopedModel } from "../src/core/model-resolver.ts";
@@ -398,6 +399,72 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		const files = loadProjectContextFiles({ cwd: worktree, agentDir });
 
 		expect(files.map((file) => file.content)).toEqual(["worktree copy"]);
+	});
+
+	it("8ecf8a9: loads a nested linked worktree override once, not twice", () => {
+		const root = tempDir("atomic-nested-worktree-override-");
+		const mainRepo = join(root, "repo");
+		const gitDir = join(mainRepo, ".git");
+		const worktree = join(mainRepo, "feature-checkout");
+		const worktreeGitDir = join(gitDir, "worktrees", "feature");
+		mkdirSync(worktreeGitDir, { recursive: true });
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+		writeFileSync(join(worktreeGitDir, "HEAD"), "ref: refs/heads/feature\n");
+		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
+		writeFileSync(join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
+		writeFileSync(join(mainRepo, "AGENTS.md"), "main copy");
+		writeFileSync(join(worktree, "AGENTS.override.md"), "worktree override");
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+
+		const files = loadProjectContextFiles({ cwd: worktree, agentDir });
+
+		expect(files.map((file) => file.content)).toEqual(["worktree override"]);
+	});
+
+	it("8ecf8a9: keeps legacy .pi context and PI_* agent-directory aliases", () => {
+		const root = tempDir("atomic-context-aliases-");
+		const home = join(root, "home");
+		const cwd = join(root, "project");
+		mkdirSync(cwd, { recursive: true });
+
+		const environmentNames = new Set(["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", ...getEnvNames(ENV_AGENT_DIR)]);
+		const previousEnvironment = new Map([...environmentNames].map((name) => [name, process.env[name]] as const));
+		try {
+			process.env.HOME = home;
+			process.env.USERPROFILE = home;
+			delete process.env.HOMEDRIVE;
+			delete process.env.HOMEPATH;
+			for (const name of getEnvNames(ENV_AGENT_DIR)) delete process.env[name];
+
+			const primaryDir = getAgentDir();
+			const legacyDir = getLegacyAgentDir();
+			mkdirSync(primaryDir, { recursive: true });
+			mkdirSync(legacyDir, { recursive: true });
+			writeFileSync(join(primaryDir, "AGENTS.md"), "primary instructions");
+			writeFileSync(join(legacyDir, "AGENTS.md"), "legacy instructions");
+			writeFileSync(join(legacyDir, "AGENTS.override.md"), "legacy override");
+
+			expect(loadProjectContextFiles({ cwd, agentDir: primaryDir }).map((file) => file.content)).toEqual([
+				"legacy override",
+				"primary instructions",
+			]);
+
+			const aliasDir = join(root, "pi-agent");
+			process.env.PI_CODING_AGENT_DIR = aliasDir;
+			mkdirSync(aliasDir, { recursive: true });
+			writeFileSync(join(aliasDir, "AGENTS.override.md"), "PI alias override");
+
+			expect(loadProjectContextFiles({ cwd, agentDir: getAgentDir() }).map((file) => file.content)).toEqual([
+				"PI alias override",
+			]);
+		} finally {
+			for (const [name, value] of previousEnvironment) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
 	});
 
 	it("cced6a21: still inherits an ancestor context file outside a linked worktree", () => {

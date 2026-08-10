@@ -227,10 +227,10 @@ Atomic loads context files at startup. Add an `AGENTS.md` file to tell it how to
 
 Atomic loads:
 
-- `~/.atomic/agent/AGENTS.md` for global instructions
-- `AGENTS.md` or `CLAUDE.md` from parent directories and the current directory
+- `~/.atomic/agent/AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` for global instructions (legacy `~/.pi/agent/` also works)
+- `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` from parent directories and the current directory
 
-Restart Atomic, or run `/reload`, after changing context files.
+An `AGENTS.override.md` file replaces the other context files in its directory. Restart Atomic, or run `/reload`, after changing context files.
 
 ## Common things to try
 

@@ -97,7 +97,7 @@ interface CompactReadClassification {
 	kind: "docs" | "resource" | "skill";
 	label: string;
 }
-const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
+const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
 export interface ReadOperations {
 	readFile: (absolutePath: string) => Promise<Buffer>;
 	access: (absolutePath: string) => Promise<void>;

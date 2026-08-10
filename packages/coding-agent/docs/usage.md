@@ -108,11 +108,13 @@ See [Sessions](/sessions) and [Compaction](/compaction) for details.
 
 ## Context Files
 
-Atomic loads `AGENTS.md` or `CLAUDE.md` at startup from:
+Atomic loads `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` at startup from:
 
-- `~/.atomic/agent/AGENTS.md` for global instructions
+- `~/.atomic/agent/` for global instructions (legacy `~/.pi/agent/` also works)
 - parent directories, walking up from the current working directory
 - the current directory
+
+If a directory contains `AGENTS.override.md`, Atomic uses it instead of that directory's `AGENTS.md` or `CLAUDE.md`. Context files from other directories still layer normally.
 
 Use context files for project conventions, commands, safety rules, and preferences. Disable loading with `--no-context-files` or `-nc`.
 
@@ -302,7 +304,7 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | `--no-prompt-templates` | Disable prompt template discovery |
 | `--theme <path>` | Load a theme; repeatable |
 | `--no-themes` | Disable theme discovery |
-| `--no-context-files`, `-nc` | Disable `AGENTS.md` and `CLAUDE.md` discovery |
+| `--no-context-files`, `-nc` | Disable context-file discovery and loading |
 
 Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings. Example:
 
