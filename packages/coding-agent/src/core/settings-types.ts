@@ -1,5 +1,5 @@
 import type { Transport } from "@earendil-works/pi-ai/compat";
-import type { TuiMode } from "@earendil-works/pi-tui";
+import type { ScrollViewScrollbar, TuiMode } from "@earendil-works/pi-tui";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -136,6 +136,7 @@ export interface Settings {
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	tuiMode?: TuiMode; // default: "regular"
+	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	codexFastMode?: CodexFastModeSettings; // OpenAI priority service tier toggles for chat/workflow

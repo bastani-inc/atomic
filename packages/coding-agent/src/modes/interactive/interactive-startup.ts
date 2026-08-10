@@ -137,6 +137,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		follow: "end",
 		primary: true,
 		overscroll: "chain",
+		scrollbar: this.settingsManager.getFullscreenScrollbar(),
+		scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
 	});
 	const dock = new VStack([
 		{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },

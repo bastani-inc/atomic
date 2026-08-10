@@ -42,6 +42,7 @@
 		"text": "fg",
 		"thinkingText": "subtext_0",
 		"selectedBg": "surface_1",
+		"scrollbarThumb": "surface_1",
 		"userMessageBg": "surface_0",
 		"userMessageText": "fg",
 		"customMessageBg": "surface_0",

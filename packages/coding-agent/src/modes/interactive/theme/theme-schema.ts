@@ -25,8 +25,9 @@ export const ThemeJsonSchema = Type.Object({
 		dim: ColorValueSchema,
 		text: ColorValueSchema,
 		thinkingText: ColorValueSchema,
-		// Backgrounds & Content Text (11 colors)
+		// Backgrounds & Content Text (11 required, 1 optional)
 		selectedBg: ColorValueSchema,
+		scrollbarThumb: Type.Optional(ColorValueSchema),
 		userMessageBg: ColorValueSchema,
 		userMessageText: ColorValueSchema,
 		customMessageBg: ColorValueSchema,

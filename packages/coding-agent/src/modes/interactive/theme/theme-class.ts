@@ -51,6 +51,7 @@ export type ThemeColor =
 
 export type ThemeBg =
 	| "selectedBg"
+	| "scrollbarThumb"
 	| "userMessageBg"
 	| "customMessageBg"
 	| "toolPendingBg"
@@ -70,7 +71,8 @@ export class Theme {
 
 	constructor(
 		fgColors: Record<ThemeColor, string | number>,
-		bgColors: Record<ThemeBg, string | number>,
+		bgColors: Record<Exclude<ThemeBg, "scrollbarThumb">, string | number> &
+			Partial<Record<"scrollbarThumb", string | number>>,
 		mode: ColorMode,
 		options: {
 			name?: string;
@@ -88,7 +90,11 @@ export class Theme {
 			this.fgColors.set(key, fgAnsi(value, mode));
 		}
 		this.bgColors = new Map();
-		for (const [key, value] of Object.entries(bgColors) as [ThemeBg, string | number][]) {
+		const backgrounds = {
+			...bgColors,
+			scrollbarThumb: bgColors.scrollbarThumb ?? bgColors.selectedBg,
+		};
+		for (const [key, value] of Object.entries(backgrounds) as [ThemeBg, string | number][]) {
 			this.bgColors.set(key, bgAnsi(value, mode));
 		}
 		this.workingIndicatorColors = new Map();
