@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed graph overlay rendering to keep its live vertical position in pi-tui's `ScrollView` and preserve OSC-8 hyperlink terminators when normalizing layout rows.
 
-- Fixed headless graph overlays growing with graph height, switcher wheel input scrolling an obscured graph, and the scrollbar covering the final graph column; overflow now reserves its scrollbar column and the switcher owns wheel selection ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
+- Fixed switcher wheel input scrolling an obscured graph and the scrollbar covering the final graph column; overflow now reserves its scrollbar column and the switcher owns wheel selection ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
 - Removed the unhosted graph overlay's fixed-height fallback and kept pi-tui's layout metadata aligned with sparse, deeply scrolled content, so large graphs track their natural geometry without corrupting OSC-8 rows ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
 
 - Fixed the inline workflow form editor not inheriting the host's `autocompleteMaxVisible` setting when Atomic installs it as a custom editor.
