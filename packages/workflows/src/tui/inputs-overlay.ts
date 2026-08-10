@@ -146,35 +146,19 @@ export function openInputsPicker(ui: InputsUiSurface, opts: OpenInputsPickerOpts
 						state,
 						cursorOn,
 					}),
-				handleInput: (data: string): boolean => {
+				handleInput: (data: string) => {
 					// Pi's `KeybindingsManager` is the third factory arg — the
 					// picker uses it so user-configured text-editing actions
 					// (delete word, line jump, etc.) work the same in the
-					// inline form. Pass it through structurally; the picker guards
-					// the shape itself.
+					// fallback overlay as in the inline form. Pass it through
+					// structurally; the picker guards the shape itself.
 					const kb = keys as Parameters<typeof handleInputsPickerInput>[3];
-					const before = {
-						focusedIdx: state.focusedIdx,
-						submitChoiceIdx: state.submitChoiceIdx,
-						invalidIndices: [...state.invalidIndices],
-						caret: state.caret,
-						rawText: { ...state.rawText },
-					};
 					const action = handleInputsPickerInput(data, state, fields, kb);
 					if (action.kind === "noop") {
 						tui.requestRender?.();
-						return (
-							state.focusedIdx !== before.focusedIdx ||
-							state.submitChoiceIdx !== before.submitChoiceIdx ||
-							state.caret !== before.caret ||
-							state.invalidIndices.length !== before.invalidIndices.length ||
-							state.invalidIndices.some((value, index) => value !== before.invalidIndices[index]) ||
-							Object.keys(state.rawText).some((key) => state.rawText[key] !== before.rawText[key]) ||
-							Object.keys(before.rawText).some((key) => state.rawText[key] !== before.rawText[key])
-						);
+						return;
 					}
 					finish(action);
-					return true;
 				},
 				invalidate: () => tui.requestRender?.(),
 				dispose: () => {

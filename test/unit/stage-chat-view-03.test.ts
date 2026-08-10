@@ -2,6 +2,7 @@ import { describe, test } from "vitest";
 import {
 	type AgentSession,
 	assert,
+	type Component,
 	createStore,
 	deriveGraphTheme,
 	expectRightAlignedReturnHint,
@@ -44,10 +45,7 @@ describe("StageChatView", () => {
 
 		const pending = broker.requestCustomUi("run-1", "stage-a", (_tui, _theme, _kb, done) => ({
 			render: () => ["custom question wins"],
-			handleInput: () => {
-				done("custom answer");
-				return true;
-			},
+			handleInput: () => done("custom answer"),
 			invalidate: () => {},
 		}));
 		await flush();
@@ -91,12 +89,9 @@ describe("StageChatView", () => {
 		});
 
 		const pending = broker.requestCustomUi("run-1", "stage-a", (_tui, _theme, _kb, done) => {
-			const component = {
+			const component: Component = {
 				render: () => ["What is your favorite color?"],
-				handleInput: () => {
-					done("blue");
-					return true;
-				},
+				handleInput: () => done("blue"),
 				invalidate: () => {},
 			};
 			return component;
@@ -232,7 +227,7 @@ describe("StageChatView", () => {
 		setupRun(store, "run-1", "stage-a");
 		const broker = new StageUiBroker(store);
 		const { handle } = makeHandle();
-		const component = {
+		const component: Component & { focused: boolean } = {
 			focused: false,
 			render() {
 				return [this.focused ? "focused prompt" : "blurred prompt"];
@@ -372,10 +367,9 @@ describe("StageChatView", () => {
 					`╰${"─".repeat(inner)}╯`,
 				];
 			},
-			handleInput: (data: string): boolean => {
+			handleInput: (data: string) => {
 				questionInputs.push(data);
 				if (data === "y") done("Yes");
-				return true;
 			},
 			invalidate: () => {},
 		}));
