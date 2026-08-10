@@ -47,6 +47,7 @@ type StartupNoticesContext = {
 };
 
 type InitContext = {
+	settingsManager: { getFullscreenScrollbar: () => "auto" };
 	isInitialized: boolean;
 	registerSignalHandlers: () => void;
 	ui: {
@@ -244,6 +245,7 @@ describe("InteractiveMode startup latency hooks", () => {
 				startGitWatcher: vi.fn(),
 			},
 			themeController: { applyFromSettings: vi.fn(() => themeReady) },
+			settingsManager: { getFullscreenScrollbar: () => "auto" },
 		};
 
 		void interactiveModePrototype.init.call(context);

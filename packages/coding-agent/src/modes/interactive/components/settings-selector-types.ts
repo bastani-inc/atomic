@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Transport } from "@earendil-works/pi-ai/compat";
-import type { TuiMode } from "@earendil-works/pi-tui";
+import type { ScrollViewScrollbar, TuiMode } from "@earendil-works/pi-tui";
 import type { DefaultProjectTrust, WarningSettings } from "../../../core/settings-manager.ts";
 import type { TerminalTheme } from "../theme/theme.ts";
 
@@ -32,6 +32,7 @@ export interface SettingsConfig {
 	treeFilterMode: TreeFilterMode;
 	showHardwareCursor: boolean;
 	tuiMode: TuiMode;
+	fullscreenScrollbar: ScrollViewScrollbar;
 	editorPaddingX: number;
 	outputPad: 0 | 1;
 	showCacheMissNotices: boolean;
@@ -65,6 +66,7 @@ export interface SettingsCallbacks {
 	onTreeFilterModeChange: (mode: TreeFilterMode) => void;
 	onShowHardwareCursorChange: (enabled: boolean) => void;
 	onTuiModeChange: (mode: TuiMode) => void;
+	onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
 	onEditorPaddingXChange: (padding: number) => void;
 	onOutputPadChange: (padding: 0 | 1) => void;
 	onShowCacheMissNoticesChange: (enabled: boolean) => void;

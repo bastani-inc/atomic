@@ -73,6 +73,7 @@ vim ~/.atomic/agent/themes/my-theme.json
     "text": "",
     "thinkingText": "secondary",
     "selectedBg": "#2d2d30",
+    "scrollbarThumb": "#555566",
     "userMessageBg": "#2d2d30",
     "userMessageText": "",
     "customMessageBg": "#2d2d30",
@@ -149,14 +150,14 @@ vim ~/.atomic/agent/themes/my-theme.json
 
 - `name` is required, must be unique, and must not contain `/`.
 - `vars` is optional. Define reusable colors here, then reference them in `colors` or `workingIndicator`.
-- `colors` must define all 51 required tokens.
+- `colors` must define all 51 required tokens. `scrollbarThumb` is optional and falls back to `selectedBg` when omitted.
 - `workingIndicator` is optional and may override any subset of the six tones in the outward half of the ordinary `∀` ramp; Atomic derives omitted tones from selected background, accent, and text roles, then mirrors the palette back after `peak`. Explicit numeric values from 0 through 255 remain exact terminal palette indices. When a numeric index from 0 through 15 seeds an omitted tone, Atomic mixes from its built-in approximation of the common ANSI RGB value; the terminal still controls the actual appearance of the explicit index. Both explicit and derived tones update on theme hot reload.
 
 The `$schema` field enables editor auto-completion and validation.
 
 ## Color Tokens
 
-Every theme must define all 51 color tokens. There are no optional colors.
+Every theme must define all 51 required color tokens. `scrollbarThumb` is optional and falls back to `selectedBg` when omitted.
 
 ### Core UI (11 colors)
 
@@ -174,11 +175,12 @@ Every theme must define all 51 color tokens. There are no optional colors.
 | `text` | Default text (usually `""`) |
 | `thinkingText` | Thinking block text |
 
-### Backgrounds & Content (11 colors)
+### Backgrounds & Content (11 required, 1 optional)
 
 | Token | Purpose |
 |-------|---------|
 | `selectedBg` | Selected line background |
+| `scrollbarThumb` | Fullscreen scrollbar thumb background; optional, falls back to `selectedBg` |
 | `userMessageBg` | User message background |
 | `userMessageText` | User message text |
 | `customMessageBg` | Extension message background |

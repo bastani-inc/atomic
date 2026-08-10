@@ -119,6 +119,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 	const bgColors: Record<ThemeBg, string | number> = {} as Record<ThemeBg, string | number>;
 	const bgColorKeys: Set<string> = new Set([
 		"selectedBg",
+		"scrollbarThumb",
 		"userMessageBg",
 		"customMessageBg",
 		"toolPendingBg",

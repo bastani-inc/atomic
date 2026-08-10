@@ -88,6 +88,7 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 };
 
 InteractiveModeBase.prototype.applyRuntimeSettings = function (this: InteractiveModeBase): void {
+	this.transcriptScrollView?.setScrollbar(this.settingsManager.getFullscreenScrollbar());
 	this.footer.setSession(this.session);
 	this.usageMeter.setSession(this.session);
 	this.usageMeter.setAutoCompactEnabled(this.session.autoCompactionEnabled);

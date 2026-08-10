@@ -108,6 +108,7 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 |---------|------|---------|-------------|
 | `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, a Catppuccin built-in, or custom) |
 | `tuiMode` | string | `"regular"` | Experimental terminal layout: `"regular"` or `"fullscreen"`. `--tui-mode` overrides one launch without saving; `/settings` switches the live session and saves a successful choice globally. |
+| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. Has no effect in regular mode |
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |

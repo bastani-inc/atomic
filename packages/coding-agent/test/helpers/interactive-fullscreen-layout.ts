@@ -1,4 +1,11 @@
-import { type Component, Container, type Terminal, Text, TuiAltScreen } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Container,
+	type ScrollViewScrollbar,
+	type Terminal,
+	Text,
+	TuiAltScreen,
+} from "@earendil-works/pi-tui";
 import { ENV_OFFLINE } from "../../src/config.ts";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../src/modes/interactive/theme/theme.ts";
@@ -84,6 +91,7 @@ export interface ProductionFullscreenOptions {
 	columns?: number;
 	rows?: number;
 	transcriptLines?: number;
+	fullscreenScrollbar?: ScrollViewScrollbar;
 }
 
 export interface ProductionFullscreenContext {
@@ -149,6 +157,7 @@ export function createProductionFullscreenContext(
 	const session = {
 		scopedModels: [],
 		modelRuntime: { getAvailableSnapshot: () => [] },
+		settingsManager: { getFullscreenScrollbar: () => options.fullscreenScrollbar ?? "auto" },
 	};
 	const context = Object.assign(Object.create(InteractiveMode.prototype), {
 		isInitialized: false,

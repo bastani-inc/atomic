@@ -21,6 +21,15 @@ const BUNDLED_THEME_NAMES = [
 	"light",
 ] as const;
 
+const BUNDLED_SCROLLBAR_THUMBS: Record<(typeof BUNDLED_THEME_NAMES)[number], string> = {
+	"catppuccin-frappe": "surface_1",
+	"catppuccin-latte": "surface_1",
+	"catppuccin-macchiato": "surface_1",
+	"catppuccin-mocha": "surface_1",
+	dark: "selectedBg",
+	light: "selectedBg",
+};
+
 const CATPPUCCIN_THEMES = [
 	"catppuccin-frappe",
 	"catppuccin-latte",
@@ -70,6 +79,7 @@ describe("built-in themes", () => {
 		for (const name of BUNDLED_THEME_NAMES) {
 			const content = JSON.parse(readFileSync(join(themesDir, `${name}.json`), "utf8"));
 			expect(content.$schema, name).toBe(ATOMIC_THEME_SCHEMA_URL);
+			expect(content.colors.scrollbarThumb, name).toBe(BUNDLED_SCROLLBAR_THUMBS[name]);
 			expect(validateDeclaredSchema(content), `${name}: ${JSON.stringify(validateDeclaredSchema.errors)}`).toBe(
 				true,
 			);

@@ -249,6 +249,17 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	it("validates and persists the fullscreen scrollbar mode", async () => {
+		const manager = SettingsManager.create(projectDir, agentDir);
+		expect(manager.getFullscreenScrollbar()).toBe("auto");
+
+		manager.setFullscreenScrollbar("hidden");
+		await manager.flush();
+		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")).fullscreenScrollbar).toBe("hidden");
+
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ fullscreenScrollbar: "sometimes" }));
+		expect(SettingsManager.create(projectDir, agentDir).getFullscreenScrollbar()).toBe("auto");
+	});
 	describe("error tracking", () => {
 		it("should collect and clear load errors via drainErrors", () => {
 			const globalSettingsPath = join(agentDir, "settings.json");

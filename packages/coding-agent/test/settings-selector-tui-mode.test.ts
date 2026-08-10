@@ -30,6 +30,7 @@ function createSettingsConfig(tuiMode: TuiMode): SettingsConfig {
 		treeFilterMode: "default",
 		showHardwareCursor: false,
 		tuiMode,
+		fullscreenScrollbar: "auto",
 		editorPaddingX: 0,
 		outputPad: 1,
 		showCacheMissNotices: false,
@@ -66,4 +67,24 @@ test("settings exposes and selects the experimental fullscreen TUI mode", () => 
 
 	createSettingsChangeHandler(callbacks)("tui-mode", "fullscreen");
 	expect(onTuiModeChange).toHaveBeenCalledExactlyOnceWith("fullscreen");
+});
+
+test("fullscreen scrollbar setting exposes and selects all three modes", () => {
+	const onFullscreenScrollbarChange = vi.fn();
+	const callbacks = { onFullscreenScrollbarChange } as unknown as SettingsCallbacks;
+	const item = buildSettingsItems(createSettingsConfig("fullscreen"), callbacks).find(
+		({ id }) => id === "fullscreen-scrollbar",
+	);
+
+	expect(item).toMatchObject({
+		label: "Fullscreen scrollbar",
+		description: "Scrollbar behavior in fullscreen mode; has no effect in regular mode",
+		currentValue: "auto",
+		values: ["auto", "always", "hidden"],
+	});
+
+	for (const mode of ["auto", "always", "hidden"] as const) {
+		createSettingsChangeHandler(callbacks)("fullscreen-scrollbar", mode);
+	}
+	expect(onFullscreenScrollbarChange.mock.calls.flat()).toEqual(["auto", "always", "hidden"]);
 });

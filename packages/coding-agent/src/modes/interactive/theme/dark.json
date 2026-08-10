@@ -32,6 +32,7 @@
 		"thinkingText": "gray",
 
 		"selectedBg": "selectedBg",
+		"scrollbarThumb": "selectedBg",
 		"userMessageBg": "userMsgBg",
 		"userMessageText": "",
 		"customMessageBg": "customMsgBg",
