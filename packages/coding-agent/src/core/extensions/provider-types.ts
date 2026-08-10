@@ -78,6 +78,8 @@ export interface ProviderModelConfig {
 	contextWindow: number;
 	/** Maximum output tokens. */
 	maxTokens: number;
+	/** Default sampling parameters merged into OpenAI-compatible request bodies. */
+	samplingParams?: Record<string, unknown>;
 	/** Custom headers for this model. */
 	headers?: Record<string, string>;
 	/** Provider capability settings, including Atomic's `supportsGrammarTools` alias. */

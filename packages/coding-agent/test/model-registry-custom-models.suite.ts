@@ -83,6 +83,54 @@ describeModelRegistry((context) => {
 			expect(sonnetModels[0].baseUrl).toBe("https://my-proxy.example.com/v1");
 		});
 
+		test("custom models and model overrides carry sampling params", async () => {
+			writeRawModelsJson({
+				openrouter: {
+					baseUrl: "https://my-proxy.example.com/v1",
+					api: "openai-completions",
+					models: [
+						{
+							id: "custom/sampling-model",
+							samplingParams: { temperature: 1, top_p: 0.95, vendor_sampler: "fast" },
+							compat: { supportsFinishReason: false, supportsThinkingTokenBudget: true },
+						},
+					],
+					modelOverrides: {
+						"anthropic/claude-sonnet-4": {
+							samplingParams: { top_p: 0.9, min_p: 0.05 },
+						},
+					},
+				},
+			});
+
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			const models = getModelsForProvider(registry, "openrouter");
+
+			const custom = models.find((model) => model.id === "custom/sampling-model");
+			expect(custom?.samplingParams).toEqual({ temperature: 1, top_p: 0.95, vendor_sampler: "fast" });
+			expect(custom?.compat).toMatchObject({ supportsFinishReason: false, supportsThinkingTokenBudget: true });
+
+			const sonnet = models.find((model) => model.id === "anthropic/claude-sonnet-4");
+			expect(sonnet?.samplingParams).toEqual({ top_p: 0.9, min_p: 0.05 });
+
+			const opus = models.find((model) => model.id === "anthropic/claude-opus-4");
+			expect(opus?.samplingParams).toBeUndefined();
+		});
+
+		test("rejects malformed sampling params while loading models.json", async () => {
+			writeRawModelsJson({
+				openrouter: {
+					baseUrl: "https://my-proxy.example.com/v1",
+					api: "openai-completions",
+					models: [{ id: "malformed-sampling-model", samplingParams: ["not", "an", "object"] }],
+				},
+			});
+
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			expect(registry.getError()).toContain("Invalid models.json schema");
+			expect(registry.getError()).toContain("samplingParams");
+		});
+
 		test("custom provider with same name as built-in does not affect other built-in providers", async () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://my-proxy.example.com/v1", [{ id: "claude-custom" }]),
