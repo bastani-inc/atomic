@@ -7,6 +7,7 @@ import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
@@ -683,7 +684,10 @@ export function createFindToolDefinition(
 								return false;
 							}
 							return await new Promise<boolean>((resolveTarget, rejectTarget) => {
-								const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+								const child = spawn(fdPath, args, {
+									env: createChildProcessEnvironment(),
+									stdio: ["ignore", "pipe", "pipe"],
+								});
 								const rl = createInterface({ input: child.stdout });
 								let stderr = "";
 								const lines: string[] = [];

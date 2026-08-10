@@ -1,5 +1,6 @@
 import { ScrollView, VStack } from "@earendil-works/pi-tui";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import {
 	onInteractiveEngineRemoteCommandsChanged,
 	waitForInteractiveEngineBound,
@@ -365,6 +366,7 @@ InteractiveModeBase.prototype.checkTmuxKeyboardSetup = async function (
 		return new Promise((resolve) => {
 			const proc = spawn("tmux", ["show", "-gv", option], {
 				stdio: ["ignore", "pipe", "ignore"],
+				env: createChildProcessEnvironment(),
 			});
 			let stdout = "";
 			const timer = setTimeout(() => {

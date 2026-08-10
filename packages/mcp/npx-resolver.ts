@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, writeFileSync, renameSync, mkdirSync, openSync, readSync, closeSync } from "node:fs";
 import { join, dirname, extname, resolve, sep } from "node:path";
 import { getAgentPath } from "./agent-dir.ts";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 import { spawn, spawnSync } from "node:child_process";
 
 const CACHE_VERSION = 1;
@@ -234,7 +235,7 @@ async function forceNpxCache(packageSpec: string): Promise<void> {
       const proc = spawn(
         "npm",
         ["exec", "--yes", "--package", packageSpec, "--", "node", "-e", "1"],
-        { stdio: "ignore" }
+        { stdio: "ignore", env: createChildProcessEnvironment() }
       );
       const timer = setTimeout(() => {
         proc.kill();
@@ -352,7 +353,7 @@ function getNpmCacheDir(): string | null {
     return npmCacheDirCached;
   }
   try {
-    const result = spawnSync("npm", ["config", "get", "cache"], { encoding: "utf-8" });
+    const result = spawnSync("npm", ["config", "get", "cache"], { encoding: "utf-8", env: createChildProcessEnvironment() });
     if (result.status === 0) {
       const path = String(result.stdout).trim();
       npmCacheDirCached = path || null;

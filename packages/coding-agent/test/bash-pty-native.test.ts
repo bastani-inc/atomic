@@ -26,7 +26,7 @@ describe("native bash PTY execution", () => {
 		let output = "";
 		try {
 			const result = await createLocalBashOperations().exec(
-				'test -t 1 && printf "tty:$FOO:$(basename "$PWD")"',
+				'test -t 1 && printf "tty:$FOO:$AI_AGENT:$(basename "$PWD")"',
 				testDir,
 				{
 					pty: true,
@@ -41,8 +41,20 @@ describe("native bash PTY execution", () => {
 			if (isNativeUnavailable(error)) return;
 			throw error;
 		}
-		expect(output).toContain(`tty:bar:${basename(testDir)}`);
+		expect(output).toContain(`tty:bar:atomic:${basename(testDir)}`);
 		expect(output).not.toContain("not a tty");
+	});
+
+	it("sets Atomic attribution on regular bash children", async () => {
+		if (process.platform === "win32") return;
+		let output = "";
+		const result = await createLocalBashOperations().exec('printf "%s" "$AI_AGENT"', testDir, {
+			onData: (chunk) => {
+				output += chunk.toString();
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		expect(output).toBe("atomic");
 	});
 
 	it("preserves configured shell args instead of using login shell", async () => {

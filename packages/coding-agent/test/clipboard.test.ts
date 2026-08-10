@@ -137,6 +137,7 @@ describe("copyToClipboard", () => {
 			input: "hello",
 			stdio: ["pipe", "ignore", "ignore"],
 			timeout: 5000,
+			env: expect.objectContaining({ AI_AGENT: "atomic" }),
 		});
 		expect(osc52Writes()).toHaveLength(0);
 	});
@@ -171,7 +172,10 @@ describe("copyToClipboard", () => {
 
 		await copyToClipboard("hello");
 
-		expect(mockedSpawn).toHaveBeenCalledWith("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
+		expect(mockedSpawn).toHaveBeenCalledWith("wl-copy", [], {
+			stdio: ["pipe", "ignore", "ignore"],
+			env: expect.objectContaining({ AI_AGENT: "atomic" }),
+		});
 		expect(mockedExecSync.mock.calls.map(([command]) => command)).toEqual(["which wl-copy"]);
 		expect(osc52Writes()).toHaveLength(0);
 	});

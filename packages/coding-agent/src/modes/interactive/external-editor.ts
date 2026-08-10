@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_NAME } from "../../config.ts";
+import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 
 export interface ExternalEditorRequest {
 	command: string;
@@ -112,7 +113,7 @@ export async function editInExternalEditor(request: ExternalEditorRequest): Prom
 			const child = spawn(
 				useShell ? quoteWindowsShellArgument(editor) : editor,
 				useShell ? spawnArgs.map(quoteWindowsShellArgument) : spawnArgs,
-				{ stdio: "inherit", shell: useShell },
+				{ stdio: "inherit", shell: useShell, env: createChildProcessEnvironment() },
 			);
 			child.once("error", () => resolve(null));
 			child.once("close", (code) => resolve(code));

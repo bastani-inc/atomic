@@ -96,7 +96,7 @@ export async function executeNativePty(
 			{
 				command,
 				cwd,
-				env: { ...getShellEnv(), ...(options.env ?? {}), TERM: "xterm-256color" },
+				env: { ...getShellEnv(), ...(options.env ?? {}), TERM: "xterm-256color", AI_AGENT: "atomic" },
 				timeoutMs: options.timeout !== undefined ? Math.max(1, Math.floor(options.timeout * 1000)) : undefined,
 				cols: options.cols ?? 120,
 				rows: options.rows ?? 40,

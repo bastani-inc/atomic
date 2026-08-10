@@ -11,6 +11,10 @@
 
 - Removed every chain-only implementation surface: the chain execution engine and its sequential, parallel, and dynamic-fan-out step runners; chain output bindings and named-output resolution; the chain serializer and saved-chain discovery, including the `.chain.md` exclusion in agent discovery; the saved-chain slash mapping; chain TUI graph rendering and the chain workflow-graph model; chain async/background run handling; chain reporting in `subagent doctor`; and the chain types, results, settings, and formatters. Agent discovery now treats every `.md` file in an agents directory uniformly.
 
+### Changed
+
+- Subagent worktree Git/setup-hook commands and optional global npm probes now receive `AI_AGENT=atomic` for generic child-process attribution without mutating caller-supplied environment objects.
+
 ### Fixed
 
 - Fixed repeated collapsed-tool-output requests from subagent launch paths forcing an already-collapsed host transcript to update.

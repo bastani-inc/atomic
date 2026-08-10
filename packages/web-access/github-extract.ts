@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync, realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { extname, join, resolve as resolvePath, sep as pathSep } from "node:path";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
@@ -26,7 +27,7 @@ function cloneDir(config: GitHubCloneConfig, owner: string, repo: string, ref?: 
 
 function execClone(args: string[], localPath: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
 	return new Promise((resolve) => {
-		const child = execFile(args[0], args.slice(1), { timeout: timeoutMs }, (err) => {
+		const child = execFile(args[0], args.slice(1), { timeout: timeoutMs, env: createChildProcessEnvironment() }, (err) => {
 			if (err) {
 				try {
 					rmSync(localPath, { recursive: true, force: true });

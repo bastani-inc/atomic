@@ -2,7 +2,13 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentConfigPaths, getAgentDirs, getBuiltinPackagePaths, getProjectConfigDirs } from "@bastani/atomic";
+import {
+	createChildProcessEnvironment,
+	getAgentConfigPaths,
+	getAgentDirs,
+	getBuiltinPackagePaths,
+	getProjectConfigDirs,
+} from "@bastani/atomic";
 import type { SkillSource } from "./skills.ts";
 
 export interface SkillSearchPath {
@@ -73,6 +79,7 @@ function getGlobalNpmRoot(): string | null {
 			stdio: ["ignore", "pipe", "ignore"],
 			timeout: GLOBAL_NPM_ROOT_TIMEOUT_MS,
 			windowsHide: true,
+			env: createChildProcessEnvironment(),
 		}).trim();
 		return cachedGlobalNpmRoot;
 	} catch {

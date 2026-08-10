@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
 import {
 	INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
@@ -27,6 +28,13 @@ export interface RpcClientProcessOptions {
 
 const guardianFiles = new WeakMap<ChildProcess, string>();
 const bootstrapHandles = new WeakMap<ChildProcess, InteractiveEngineBootstrapHandle>();
+
+export function createRpcClientProcessEnvironment(
+	overrides?: Record<string, string>,
+	baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	return scrubInteractiveEngineEnv(createChildProcessEnvironment(overrides, baseEnv));
+}
 
 export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildProcess {
 	const guardianFile = options.interactiveEngine
@@ -55,7 +63,7 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 			[...(options.runtimeArgs ?? []), ...(options.cliPath ? [options.cliPath] : []), ...cliArgs],
 			{
 				cwd: options.cwd,
-				env: scrubInteractiveEngineEnv({ ...process.env, ...options.env }),
+				env: createRpcClientProcessEnvironment(options.env),
 				detached: options.interactiveEngine && process.platform !== "win32",
 				stdio: ["pipe", "pipe", "pipe"],
 			},

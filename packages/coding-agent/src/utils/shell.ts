@@ -3,6 +3,7 @@ import { delimiter } from "node:path";
 import { Worker } from "node:worker_threads";
 import { spawn, spawnSync } from "child_process";
 import { getBinDir } from "../config.ts";
+import { createChildProcessEnvironment } from "./child-process.ts";
 
 export interface ShellConfig {
 	shell: string;
@@ -26,7 +27,11 @@ function findBashOnPath(): string | null {
 	if (process.platform === "win32") {
 		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
 		try {
-			const result = spawnSync("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000 });
+			const result = spawnSync("where", ["bash.exe"], {
+				encoding: "utf-8",
+				timeout: 5000,
+				env: createChildProcessEnvironment(),
+			});
 			if (result.status === 0 && result.stdout) {
 				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
 				if (firstMatch && existsSync(firstMatch)) {
@@ -41,7 +46,11 @@ function findBashOnPath(): string | null {
 
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)
 	try {
-		const result = spawnSync("which", ["bash"], { encoding: "utf-8", timeout: 5000 });
+		const result = spawnSync("which", ["bash"], {
+			encoding: "utf-8",
+			timeout: 5000,
+			env: createChildProcessEnvironment(),
+		});
 		if (result.status === 0 && result.stdout) {
 			const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
 			if (firstMatch) {
@@ -189,7 +198,7 @@ parentPort.on("message", ({ action, pid }) => {
 });
 function killTree(pid) {
   if (process.platform === "win32") {
-    try { spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true }); } catch {}
+    try { spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true, env: { ...process.env, AI_AGENT: "atomic" } }); } catch {}
     return;
   }
   try { process.kill(-pid, "SIGKILL"); }
@@ -252,6 +261,7 @@ export function killProcessTree(pid: number): void {
 			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
 				detached: true,
+				env: createChildProcessEnvironment(),
 			});
 		} catch {
 			// Ignore errors if taskkill fails

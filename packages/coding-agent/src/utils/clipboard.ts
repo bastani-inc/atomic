@@ -1,5 +1,6 @@
 import { execSync, spawn } from "child_process";
 import { platform } from "os";
+import { createChildProcessEnvironment } from "./child-process.ts";
 import { isWaylandSession } from "./clipboard-image.ts";
 import { clipboard } from "./clipboard-native.ts";
 
@@ -7,6 +8,7 @@ type NativeClipboardExecOptions = {
 	input: string;
 	timeout: number;
 	stdio: ["pipe", "ignore", "ignore"];
+	env: NodeJS.ProcessEnv;
 };
 
 function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
@@ -72,7 +74,12 @@ export async function copyToClipboard(text: string): Promise<void> {
 		return;
 	}
 
-	const options: NativeClipboardExecOptions = { input: text, timeout: 5000, stdio: ["pipe", "ignore", "ignore"] };
+	const options: NativeClipboardExecOptions = {
+		input: text,
+		timeout: 5000,
+		stdio: ["pipe", "ignore", "ignore"],
+		env: createChildProcessEnvironment(),
+	};
 
 	if (!copied) {
 		try {
@@ -100,11 +107,14 @@ export async function copyToClipboard(text: string): Promise<void> {
 					if (isWayland && hasWaylandDisplay) {
 						try {
 							// Verify wl-copy exists (spawn errors are async and won't be caught)
-							execSync("which wl-copy", { stdio: "ignore" });
+							execSync("which wl-copy", { stdio: "ignore", env: createChildProcessEnvironment() });
 							// wl-copy with execSync hangs due to fork behavior; use spawn instead.
 							// Await its terminal event so failures can fall through to X11 or OSC 52.
 							const exitCode = await new Promise<number>((resolve) => {
-								const proc = spawn("wl-copy", [], { stdio: ["pipe", "ignore", "ignore"] });
+								const proc = spawn("wl-copy", [], {
+									stdio: ["pipe", "ignore", "ignore"],
+									env: createChildProcessEnvironment(),
+								});
 								let settled = false;
 								const finish = (code: number) => {
 									if (settled) return;

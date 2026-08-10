@@ -429,6 +429,7 @@ export {
 	type CreateCodingAgentHarnessOptions,
 	createCodingAgentHarness,
 } from "./server/create-harness.ts";
+export { createChildProcessEnvironment } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";

@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 import type {
   McpTool,
   McpResource,
@@ -353,18 +354,17 @@ export class McpServerManager {
  * Resolve environment variables with interpolation.
  */
 function resolveEnv(env?: Record<string, string>): Record<string, string> {
-  // Copy process.env, filtering out undefined values
-  const resolved: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) {
-      resolved[key] = value;
-    }
-  }
-  
-  if (!env) return resolved;
-
-  const overrides = interpolateEnvRecord(env);
-  return overrides ? { ...resolved, ...overrides } : resolved;
+	// Copy Atomic's child environment, filtering out undefined values.
+	const resolved: Record<string, string> = {};
+	for (const [key, value] of Object.entries(createChildProcessEnvironment())) {
+		if (value !== undefined) resolved[key] = value;
+	}
+	if (env) {
+		const overrides = interpolateEnvRecord(env);
+		if (overrides) Object.assign(resolved, overrides);
+	}
+	resolved.AI_AGENT = "atomic";
+	return resolved;
 }
 
 /**

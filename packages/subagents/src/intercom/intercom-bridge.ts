@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { APP_NAME, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
+import { APP_NAME, createChildProcessEnvironment, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
 import type { AgentConfig } from "../agents/agents.ts";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
@@ -207,7 +207,11 @@ let cachedGlobalNpmRoot: string | null | undefined;
 function getGlobalNpmRoot(): string | null {
 	if (cachedGlobalNpmRoot !== undefined) return cachedGlobalNpmRoot;
 	try {
-		cachedGlobalNpmRoot = execSync("npm root -g", { encoding: "utf-8", timeout: 5000 }).trim();
+		cachedGlobalNpmRoot = execSync("npm root -g", {
+			encoding: "utf-8",
+			timeout: 5000,
+			env: createChildProcessEnvironment(),
+		}).trim();
 		return cachedGlobalNpmRoot;
 	} catch {
 		cachedGlobalNpmRoot = null;

@@ -137,6 +137,7 @@ describe("broker stderr capture shape", () => {
 		assert.equal(options.detached, true);
 		assert.deepEqual(options.stdio, ["ignore", "ignore", 17]);
 		assert.equal(typeof options.stdio[2], "number");
+		assert.equal(options.env.AI_AGENT, "atomic");
 		// Widened deliberately: the declared type already forbids "pipe", and this keeps the
 		// runtime shape asserted rather than resting on the type alone.
 		const stdio: readonly (string | number)[] = options.stdio;

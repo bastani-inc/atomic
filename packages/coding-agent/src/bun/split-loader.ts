@@ -7,6 +7,7 @@ const APP_NAME = "atomic";
 
 process.title = APP_NAME;
 process.env.ATOMIC_CODING_AGENT = "true";
+process.env.AI_AGENT = "atomic";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 const args = process.argv.slice(2);

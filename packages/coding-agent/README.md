@@ -630,6 +630,7 @@ atomic --thinking high "Solve this complex problem"
 
 | Variable | Description |
 |----------|-------------|
+| `AI_AGENT` | Set to `atomic` by Atomic's CLI, RPC, and compiled binary entry points, and in every Atomic-owned child-process environment, so generic tooling can attribute those processes correctly. Child environments force this value even when the caller supplies another value; the caller's environment object is not mutated. |
 | `ATOMIC_CODING_AGENT_DIR` | Override config directory (default: `~/.atomic/agent`; `PI_CODING_AGENT_DIR` is a legacy alias) |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory (overridden by `--session-dir`; `PI_CODING_AGENT_SESSION_DIR` is a legacy alias) |
 | `ATOMIC_PACKAGE_DIR` | Override package directory (useful for Nix/Guix where store paths tokenize poorly; `PI_PACKAGE_DIR` is a legacy alias) |

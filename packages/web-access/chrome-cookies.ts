@@ -3,6 +3,7 @@ import { pbkdf2Sync, createDecipheriv } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir, homedir, platform } from "node:os";
 import { join } from "node:path";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 
 export type CookieMap = Record<string, string>;
 
@@ -190,7 +191,7 @@ function readKeychainPassword(account: string, service: string): Promise<string 
 		execFile(
 			"security",
 			["find-generic-password", "-w", "-a", account, "-s", service],
-			{ timeout: 5000 },
+			{ timeout: 5000, env: createChildProcessEnvironment() },
 			(err, stdout) => {
 				if (err) { resolve(null); return; }
 				resolve(stdout.trim() || null);
@@ -206,7 +207,7 @@ function readLinuxPassword(secretToolApp: string | undefined): Promise<string> {
 		execFile(
 			"secret-tool",
 			["lookup", "application", secretToolApp],
-			{ timeout: 5000 },
+			{ timeout: 5000, env: createChildProcessEnvironment() },
 			(err, stdout) => {
 				if (err) {
 					// KDE Wallet users fall through to peanuts intentionally.
