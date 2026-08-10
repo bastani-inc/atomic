@@ -13,7 +13,7 @@ All components implement:
 ```typescript
 interface Component {
   render(width: number): string[];
-  handleInput?(data: string): boolean | void;
+  handleInput?(data: string): void;
   wantsKeyRelease?: boolean;
   invalidate(): void;
 }
@@ -22,7 +22,7 @@ interface Component {
 | Method | Description |
 |--------|-------------|
 | `render(width)` | Return array of strings (one per line). Each line **must not exceed `width`**. |
-| `handleInput?(data)` | Receive keyboard input when component has focus. Return `true` when it consumes the key; `false`, `undefined`, or `void` leaves matching fullscreen viewport bindings available to transcript scrolling. |
+| `handleInput?(data)` | Receive keyboard input when component has focus. |
 | `wantsKeyRelease?` | If true, component receives key release events (Kitty protocol). Default: false. |
 | `invalidate()` | Clear cached render state. Called on theme changes. |
 
@@ -387,26 +387,18 @@ class MySelector {
     this.items = items;
   }
 
-  handleInput(data: string): boolean {
+  handleInput(data: string): void {
     if (matchesKey(data, Key.up) && this.selected > 0) {
       this.selected--;
       this.invalidate();
-      return true;
-    }
-    if (matchesKey(data, Key.down) && this.selected < this.items.length - 1) {
+    } else if (matchesKey(data, Key.down) && this.selected < this.items.length - 1) {
       this.selected++;
       this.invalidate();
-      return true;
-    }
-    if (matchesKey(data, Key.enter)) {
+    } else if (matchesKey(data, Key.enter)) {
       this.onSelect?.(this.items[this.selected]);
-      return true;
-    }
-    if (matchesKey(data, Key.escape)) {
+    } else if (matchesKey(data, Key.escape)) {
       this.onCancel?.();
-      return true;
     }
-    return false;
   }
 
   render(width: number): string[] {
@@ -428,8 +420,6 @@ class MySelector {
   }
 }
 ```
-
-Return `true` when the component consumes a key. In fullscreen mode, `false`, `undefined`, or `void` means it did not handle a matching viewport binding, so the transcript processes it. Direct pi-tui components may keep the declared `void` contract; Atomic workflow custom components should return a boolean. Do not mutate state and return `false` for the same key.
 
 Usage in an extension:
 

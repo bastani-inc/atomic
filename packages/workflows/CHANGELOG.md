@@ -6,10 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Breaking Changes
-
-- Custom workflow UI components must return `true` when they consume input and `false` when they do not. In fullscreen mode, an unhandled result lets the transcript process matching viewport navigation keys instead of swallowing them.
-
 ### Changed
 
 - Updated the Ralph research stage model configuration. The primary model moves from `openai-codex/gpt-5.6-luna:max` to `anthropic/claude-opus-5:high`, and the fallback chain is rebuilt around high/xhigh thinking levels: GPT-5.6 Sol at `xhigh` replaces the Luna variants, Claude Fable 5 and Claude Opus 4.8 step up from `low`/`medium` to `high`, GPT-5.5 and GLM-5.2 step up to `xhigh`, and Kimi K3 (`kimi-coding`, `moonshotai`, `moonshotai-cn`, and OpenRouter) plus `openrouter/sakana/fugu-ultra:high` join the chain.

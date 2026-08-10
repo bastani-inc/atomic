@@ -112,19 +112,6 @@ test("openSessionPicker mounts via ctx.ui.custom with overlay:false (inline mode
 	assert.equal(calls[0]!.options.onHandle, undefined);
 });
 
-test("openSessionPicker returns false for an unhandled fullscreen viewport key", () => {
-	const { surface, calls } = buildCustomSurface();
-	const store = createStore();
-	store.recordRunStart(makeRun({ id: "run-1", name: "alpha" }));
-	store.recordRunStart(makeRun({ id: "run-2", name: "beta" }));
-	void openSessionPicker(surface as UiSurface, store, deriveGraphTheme({}), "connect");
-
-	const handleInput = calls[0]!.component.handleInput;
-	assert.equal(typeof handleInput, "function");
-	assert.equal(handleInput?.("\x1bOH"), false);
-	assert.equal(handleInput?.("j"), true);
-});
-
 test("openSessionPicker renders at the picker's natural inline height", () => {
 	const { surface, calls } = buildCustomSurface();
 	const store = createStore();

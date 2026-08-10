@@ -8,12 +8,8 @@ import {
 	TuiMainScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import type { PiCustomComponent } from "../../workflows/src/extension/wiring.ts";
-import { createStore } from "../../workflows/src/shared/store.ts";
-import { deriveGraphTheme } from "../../workflows/src/tui/graph-theme.ts";
+import { afterEach, describe, expect, test } from "vitest";
 import { selectMovementDelta } from "../../workflows/src/tui/prompt-card-select.ts";
-import { openSessionPicker, type UiSurface } from "../../workflows/src/tui/session-overlays.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
@@ -29,10 +25,7 @@ function makeEditor(inputs: string[]): Component & { focused: boolean } {
 		focused: false,
 		render: () => ["editor"],
 		invalidate: () => {},
-		handleInput: (data: string): boolean => {
-			inputs.push(data);
-			return true;
-		},
+		handleInput: (data: string) => inputs.push(data),
 	};
 }
 
@@ -160,10 +153,9 @@ describe("fullscreen input navigation", () => {
 			focused: false,
 			render: () => ["prompt card"],
 			invalidate: () => {},
-			handleInput: (data: string): boolean => {
+			handleInput: (data: string) => {
 				const delta = selectMovementDelta(data, keybindings, 10);
 				if (delta !== 0) promptDeltas.push(delta);
-				return delta !== 0;
 			},
 		} satisfies Component & { focused: boolean };
 		tui.addChild(stageChat);
@@ -200,10 +192,9 @@ describe("fullscreen input navigation", () => {
 			focused: false,
 			render: () => ["prompt card"],
 			invalidate: () => {},
-			handleInput: (data: string): boolean => {
+			handleInput: (data: string) => {
 				const delta = selectMovementDelta(data, keybindings, 10);
 				if (delta !== 0) promptDeltas.push(delta);
-				return delta !== 0;
 			},
 		} satisfies Component & { focused: boolean };
 		const mainEditor = makeEditor([]);
@@ -266,165 +257,6 @@ describe("fullscreen input navigation", () => {
 			terminal.input("\x1b[5~");
 			tui.renderNow();
 			expect(transcript.scrollTop).toBeLessThan(initialTop);
-		} finally {
-			tui.stop();
-		}
-	});
-	test.sequential("lets the transcript handle home when a focused component is a no-op", () => {
-		const terminal = new RecordingTerminal();
-		terminal.columns = 40;
-		terminal.rows = 10;
-		const noOpInput = vi.fn(() => {});
-		const focusedOverlay = {
-			focused: false,
-			render: () => ["focused overlay"],
-			invalidate: () => {},
-			handleInput: noOpInput,
-		} satisfies Component & { focused: boolean };
-		const transcript = new ScrollView(
-			new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
-			{ follow: "end", primary: true },
-		);
-		const tui = createInteractiveTui({
-			tuiMode: "fullscreen",
-			showHardwareCursor: false,
-			logDirectory: "/tmp",
-			terminal,
-			shouldHandleViewportInput: (data) => data !== "\x1bOH",
-		}) as TuiAltScreen;
-		tui.setLayoutRoot(
-			new VStack([
-				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
-				{ component: focusedOverlay, basis: 1, shrink: 0 },
-			]),
-		);
-		tui.setFocus(focusedOverlay);
-		tui.start();
-		tui.renderNow();
-
-		try {
-			expect(transcript.scrollTop).toBeGreaterThan(0);
-			terminal.input("\x1bOH");
-			tui.renderNow();
-			expect(noOpInput).toHaveBeenCalledOnce();
-			expect(transcript.scrollTop).toBe(0);
-		} finally {
-			tui.stop();
-		}
-	});
-
-	test.sequential("lets the transcript handle home for the real workflow session picker", () => {
-		const terminal = new RecordingTerminal();
-		terminal.columns = 40;
-		terminal.rows = 10;
-		let picker: PiCustomComponent | undefined;
-		const surface: UiSurface = {
-			custom: (factory) => {
-				picker = factory({ requestRender: () => {} }, {}, {}, () => {});
-				return undefined;
-			},
-		};
-		void openSessionPicker(surface, createStore(), deriveGraphTheme({}), "connect");
-		if (!picker) throw new Error("workflow session picker did not mount");
-		const transcript = new ScrollView(
-			new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
-			{ follow: "end", primary: true },
-		);
-		const tui = createInteractiveTui({
-			tuiMode: "fullscreen",
-			showHardwareCursor: false,
-			logDirectory: "/tmp",
-			terminal,
-			shouldHandleViewportInput: (data) => data !== "\x1bOH",
-		}) as TuiAltScreen;
-		tui.setLayoutRoot(
-			new VStack([
-				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
-				{ component: picker as Component, basis: 1, shrink: 0 },
-			]),
-		);
-		tui.setFocus(picker as Component);
-		tui.start();
-		tui.renderNow();
-
-		try {
-			expect(transcript.scrollTop).toBeGreaterThan(0);
-			terminal.input("\x1bOH");
-			tui.renderNow();
-			expect(transcript.scrollTop).toBe(0);
-		} finally {
-			picker.dispose?.();
-			tui.stop();
-		}
-	});
-
-	test.sequential("does not replay rewritten input after deferring viewport navigation", () => {
-		const terminal = new RecordingTerminal();
-		terminal.columns = 40;
-		terminal.rows = 10;
-		const focusedInputs: string[] = [];
-		const focusedOverlay = {
-			focused: false,
-			render: () => ["focused overlay"],
-			invalidate: () => {},
-			handleInput: (data: string): boolean => {
-				focusedInputs.push(data);
-				return true;
-			},
-		} satisfies Component & { focused: boolean };
-		const tui = createInteractiveTui({
-			tuiMode: "fullscreen",
-			showHardwareCursor: false,
-			logDirectory: "/tmp",
-			terminal,
-			shouldHandleViewportInput: (data) => data !== "\x1bOH",
-		}) as TuiAltScreen;
-		tui.addInputListener((data) => (data === "\x1bOH" ? { data: "x" } : undefined));
-		tui.setLayoutRoot(new VStack([{ component: focusedOverlay, basis: 1, shrink: 0 }]));
-		tui.setFocus(focusedOverlay);
-		tui.start();
-
-		try {
-			terminal.input("\x1bOH");
-			expect(focusedInputs).toEqual(["x"]);
-		} finally {
-			tui.stop();
-		}
-	});
-
-	test.sequential("honors an input listener that consumes deferred viewport navigation", () => {
-		const terminal = new RecordingTerminal();
-		terminal.columns = 40;
-		terminal.rows = 10;
-		const focusedInputs: string[] = [];
-		const focusedOverlay = makeEditor(focusedInputs);
-		const transcript = new ScrollView(
-			new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
-			{ follow: "end", primary: true },
-		);
-		const tui = createInteractiveTui({
-			tuiMode: "fullscreen",
-			showHardwareCursor: false,
-			logDirectory: "/tmp",
-			terminal,
-			shouldHandleViewportInput: (data) => data !== "\x1bOH",
-		}) as TuiAltScreen;
-		tui.addInputListener((data) => (data === "\x1bOH" ? { consume: true } : undefined));
-		tui.setLayoutRoot(
-			new VStack([
-				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
-				{ component: focusedOverlay, basis: 1, shrink: 0 },
-			]),
-		);
-		tui.setFocus(focusedOverlay);
-		tui.start();
-		tui.renderNow();
-
-		try {
-			const initialTop = transcript.scrollTop;
-			terminal.input("\x1bOH");
-			expect(transcript.scrollTop).toBe(initialTop);
-			expect(focusedInputs).toEqual([]);
 		} finally {
 			tui.stop();
 		}
