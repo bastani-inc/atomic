@@ -7,6 +7,7 @@ import {
 	type HarnessTool,
 	type Result,
 } from "@earendil-works/pi-agent-core";
+import { minimatch } from "minimatch";
 import type { Static, TSchema } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../core/extensions/types.ts";
 import type { ReadonlySessionManager } from "../core/session-manager.ts";
@@ -51,6 +52,69 @@ function unwrapFileResult<TValue>(result: Result<TValue, FileError>): TValue {
 	throw result.error;
 }
 
+function unsupportedHarnessOperation(operation: string): never {
+	throw new Error(`Coding-agent Harness does not provide ${operation}`);
+}
+
+async function findExecutionEnvGlob(
+	env: ExecutionEnv,
+	pattern: string,
+	root: string,
+	options: { ignore: string[]; limit: number; hidden: boolean },
+): Promise<string[]> {
+	const matches: string[] = [];
+	const normalizedPattern = pattern.replaceAll("\\", "/");
+	const matchOptions = { dot: true, matchBase: !normalizedPattern.includes("/") };
+	const hasHiddenSegment = (value: string): boolean =>
+		value.split("/").some((segment) => segment.startsWith(".") && segment.length > 1);
+	const isIgnored = (value: string, isDirectory: boolean): boolean =>
+		options.ignore.some(
+			(ignorePattern) =>
+				minimatch(value, ignorePattern, { dot: true }) ||
+				(isDirectory && minimatch(`${value}/__entry__`, ignorePattern, { dot: true })),
+		);
+	const walk = async (directory: string, prefix: string): Promise<void> => {
+		if (matches.length >= options.limit) return;
+		const result = await env.listDir(directory);
+		if (!result.ok) return;
+		const entries = result.value.sort((left, right) => left.name.localeCompare(right.name));
+		for (const entry of entries) {
+			if (matches.length >= options.limit) return;
+			const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+			if (!options.hidden && hasHiddenSegment(relativePath)) continue;
+			const isDirectory = entry.kind === "directory";
+			if (isIgnored(relativePath, isDirectory)) continue;
+			if (minimatch(relativePath, normalizedPattern, matchOptions))
+				matches.push(isDirectory ? `${relativePath}/` : relativePath);
+			if (isDirectory) await walk(entry.path, relativePath);
+		}
+	};
+	const rootInfo = await env.fileInfo(root);
+	let walkRoot = root;
+	if (rootInfo.ok && rootInfo.value.kind === "symlink") {
+		const canonical = await env.canonicalPath(root);
+		if (canonical.ok) walkRoot = canonical.value;
+	}
+	await walk(walkRoot, "");
+	return matches;
+}
+
+async function findExecutionEnvStat(
+	env: ExecutionEnv,
+	path: string,
+): Promise<{ isFile: boolean; isDirectory: boolean } | undefined> {
+	const result = await env.fileInfo(path);
+	if (!result.ok) return undefined;
+	if (result.value.kind !== "symlink") {
+		return { isFile: result.value.kind === "file", isDirectory: result.value.kind === "directory" };
+	}
+	const canonical = await env.canonicalPath(path);
+	if (!canonical.ok) return undefined;
+	const target = await env.fileInfo(canonical.value);
+	if (!target.ok) return undefined;
+	return { isFile: target.value.kind === "file", isDirectory: target.value.kind === "directory" };
+}
+
 function createExecutionEnvToolOptions(
 	env: ExecutionEnv,
 	commandPrefix: string | undefined,
@@ -70,6 +134,10 @@ function createExecutionEnvToolOptions(
 		},
 		bash: {
 			commandPrefix,
+			// Atomic's bash tool normally hands operations the full local spawn
+			// environment. The injected ExecutionEnv owns the base environment;
+			// keep only the session and per-command overlays at this boundary.
+			spawnHook: (context) => ({ ...context, env: {} }),
 			operations: {
 				exec: async (command, cwd, options) => {
 					const envOverrides: Record<string, string> = {};
@@ -116,6 +184,16 @@ function createExecutionEnvToolOptions(
 				},
 			},
 		},
+		find: {
+			operations: {
+				exists: async (path) => {
+					const result = await env.exists(path);
+					return result.ok && result.value;
+				},
+				stat: (path) => findExecutionEnvStat(env, path),
+				glob: (pattern, cwd, globOptions) => findExecutionEnvGlob(env, pattern, cwd, globOptions),
+			},
+		},
 	};
 }
 
@@ -125,13 +203,22 @@ function assertExecutionEnv(env: ExecutionEnv): void {
 	}
 }
 
-function createHarnessSessionManager(
-	metadataId: string,
-	sessionFile: string | undefined,
-): Pick<ReadonlySessionManager, "getSessionId" | "getSessionFile"> {
+function createHarnessSessionManager(metadataId: string, sessionFile: string | undefined): ReadonlySessionManager {
 	return {
+		getCwd: () => unsupportedHarnessOperation("sessionManager.getCwd()"),
+		getSessionDir: () => unsupportedHarnessOperation("sessionManager.getSessionDir()"),
+		usesDefaultSessionDir: () => unsupportedHarnessOperation("sessionManager.usesDefaultSessionDir()"),
 		getSessionId: () => metadataId,
 		getSessionFile: () => sessionFile,
+		getLeafId: () => unsupportedHarnessOperation("sessionManager.getLeafId()"),
+		getLeafEntry: () => unsupportedHarnessOperation("sessionManager.getLeafEntry()"),
+		getEntry: () => unsupportedHarnessOperation("sessionManager.getEntry()"),
+		getLabel: () => unsupportedHarnessOperation("sessionManager.getLabel()"),
+		getBranch: () => unsupportedHarnessOperation("sessionManager.getBranch()"),
+		getHeader: () => unsupportedHarnessOperation("sessionManager.getHeader()"),
+		getEntries: () => unsupportedHarnessOperation("sessionManager.getEntries()"),
+		getTree: () => unsupportedHarnessOperation("sessionManager.getTree()"),
+		getSessionName: () => unsupportedHarnessOperation("sessionManager.getSessionName()"),
 	};
 }
 
@@ -183,7 +270,10 @@ export function buildCodingAgentHarnessSystemPrompt(options: BuildCodingAgentHar
  * and `close()` on the returned harness. The returned harness also exposes the
  * implemented state/configuration getters and setters for model, thinking
  * level, active tools, tools, resources, stream options, retry, compaction,
- * steering, and follow-up modes. It does not invoke `prompt`, `skill`,
+ * steering, and follow-up modes. Its default tools route read, bash, edit,
+ * write, and find through the injected `ExecutionEnv`; `search` still uses
+ * Atomic's local filesystem/ripgrep pipeline until that tool gains a complete
+ * remote operations seam. It does not invoke `prompt`, `skill`,
  * `promptFromTemplate`, `compact`, `navigateTree`, `resume`, `steer`, `followUp`,
  * `nextRun`, `cancelQueued`, `recordUsage`, `abort`, `waitForIdle`,
  * `runWhenIdle`, `peekAction`, `executeAction`, `runToCompletion`, `watch`,
@@ -220,13 +310,30 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 				currentHarness.getThinkingLevel(),
 			]);
 			const context = {
+				get ui() {
+					return unsupportedHarnessOperation("context.ui");
+				},
+				mode: "rpc",
+				hasUI: false,
 				cwd: env.cwd,
+				sessionManager,
+				get modelRegistry() {
+					return unsupportedHarnessOperation("context.modelRegistry");
+				},
 				model,
+				scopedModels: [],
 				thinkingLevel,
-				// Atomic's default Harness tools only use these two read-only session methods.
-				sessionManager: sessionManager as ReadonlySessionManager,
-			} satisfies Pick<ExtensionContext, "cwd" | "model" | "thinkingLevel" | "sessionManager">;
-			return context as ExtensionContext;
+				isIdle: () => true,
+				isProjectTrusted: () => false,
+				signal: undefined,
+				abort: () => unsupportedHarnessOperation("context.abort()"),
+				hasPendingMessages: () => false,
+				shutdown: () => unsupportedHarnessOperation("context.shutdown()"),
+				getContextUsage: () => undefined,
+				compact: () => unsupportedHarnessOperation("context.compact()"),
+				getSystemPrompt: () => unsupportedHarnessOperation("context.getSystemPrompt()"),
+			} satisfies ExtensionContext;
+			return context;
 		};
 		const toolOptions = createExecutionEnvToolOptions(env, bashCommandPrefix, sessionFile);
 		tools = createCodingToolDefinitions(env.cwd, toolOptions).map((definition) =>

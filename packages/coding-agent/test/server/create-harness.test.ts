@@ -27,27 +27,14 @@ class CapturingExecutionEnv extends NodeExecutionEnv {
 	executionOverrides: Record<string, string> | undefined;
 	readCalls = 0;
 	writeCalls = 0;
-
+	listDirCalls = 0;
+	readTextFileCalls = 0;
+	fileInfoCalls = 0;
 	override async exec(
 		command: string,
 		options?: ShellExecOptions,
 	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
-		this.executionOverrides = options?.env
-			? Object.fromEntries(
-					[
-						"ATOMIC_SESSION_ID",
-						"ATOMIC_SESSION_FILE",
-						"ATOMIC_PROVIDER",
-						"ATOMIC_MODEL",
-						"ATOMIC_REASONING_LEVEL",
-						"PI_SESSION_ID",
-						"PI_SESSION_FILE",
-						"PI_PROVIDER",
-						"PI_MODEL",
-						"PI_REASONING_LEVEL",
-					].flatMap((key) => (options.env?.[key] === undefined ? [] : [[key, options.env[key]!]])),
-				)
-			: undefined;
+		this.executionOverrides = options?.env ? { ...options.env } : undefined;
 		return super.exec(command, options);
 	}
 
@@ -59,6 +46,21 @@ class CapturingExecutionEnv extends NodeExecutionEnv {
 	override async writeFile(path: string, content: string | Uint8Array, abortSignal?: AbortSignal) {
 		this.writeCalls++;
 		return super.writeFile(path, content, abortSignal);
+	}
+
+	override async listDir(path: string, abortSignal?: AbortSignal) {
+		this.listDirCalls++;
+		return super.listDir(path, abortSignal);
+	}
+
+	override async readTextFile(path: string, abortSignal?: AbortSignal) {
+		this.readTextFileCalls++;
+		return super.readTextFile(path, abortSignal);
+	}
+
+	override async fileInfo(path: string) {
+		this.fileInfoCalls++;
+		return super.fileInfo(path);
 	}
 }
 
@@ -195,13 +197,16 @@ describe("coding-agent Harness construction", () => {
 			env,
 			sessionFile: "/sessions/current.jsonl",
 		});
+		const originalCodingAgent = process.env.PI_CODING_AGENT;
+		process.env.PI_CODING_AGENT = "false";
 		try {
 			const tools = await created.harness.getTools();
 			const write = tools.find((tool) => tool.name === "write");
 			const read = tools.find((tool) => tool.name === "read");
 			const edit = tools.find((tool) => tool.name === "edit");
 			const bash = tools.find((tool) => tool.name === "bash");
-			if (!write || !read || !edit || !bash) throw new Error("Expected the default Atomic tools");
+			const find = tools.find((tool) => tool.name === "find");
+			if (!write || !read || !edit || !bash || !find) throw new Error("Expected the default Atomic tools");
 
 			await write.execute("write-call", { path: "nested/file.txt", content: "hello" });
 			const readResult = await read.execute("read-call", { path: "nested/file.txt" });
@@ -211,12 +216,32 @@ describe("coding-agent Harness construction", () => {
 			await edit.execute("edit-call", { input: `${header}\nreplace 1..1:\n+world` });
 			const editedReadResult = await read.execute("edited-read-call", { path: "nested/file.txt" });
 			const bashResult = await bash.execute("bash-call", {
-				command: `printf '%s' "$ATOMIC_SESSION_ID|$ATOMIC_SESSION_FILE|$ATOMIC_PROVIDER|$ATOMIC_MODEL|$ATOMIC_REASONING_LEVEL|$PI_SESSION_ID|$PI_SESSION_FILE|$PI_PROVIDER|$PI_MODEL|$PI_REASONING_LEVEL|$PI_CODING_AGENT"`,
+				command: `printf '%s' "$ATOMIC_SESSION_ID|$ATOMIC_SESSION_FILE|$ATOMIC_PROVIDER|$ATOMIC_MODEL|$ATOMIC_REASONING_LEVEL|$PI_SESSION_ID|$PI_SESSION_FILE|$PI_PROVIDER|$PI_MODEL|$PI_REASONING_LEVEL|$PI_CODING_AGENT|$ATOMIC_HARNESS_CALL"`,
+				env: { ATOMIC_HARNESS_CALL: "call-only" },
 			});
+			const findResult = await find.execute("find-call", { paths: ["nested"] });
 
 			expect(env.writeCalls).toBeGreaterThan(0);
 			expect(env.readCalls).toBeGreaterThan(0);
+			expect(env.listDirCalls).toBeGreaterThan(0);
+			expect(env.fileInfoCalls).toBeGreaterThan(0);
+			expect(Object.keys(env.executionOverrides ?? {}).sort()).toEqual(
+				[
+					"ATOMIC_HARNESS_CALL",
+					"ATOMIC_SESSION_ID",
+					"ATOMIC_SESSION_FILE",
+					"ATOMIC_PROVIDER",
+					"ATOMIC_MODEL",
+					"ATOMIC_REASONING_LEVEL",
+					"PI_SESSION_ID",
+					"PI_SESSION_FILE",
+					"PI_PROVIDER",
+					"PI_MODEL",
+					"PI_REASONING_LEVEL",
+				].sort(),
+			);
 			expect(env.executionOverrides).toMatchObject({
+				ATOMIC_HARNESS_CALL: "call-only",
 				ATOMIC_SESSION_ID: "injected-env-session",
 				ATOMIC_SESSION_FILE: "/sessions/current.jsonl",
 				ATOMIC_PROVIDER: "google",
@@ -228,6 +253,7 @@ describe("coding-agent Harness construction", () => {
 				PI_MODEL: "gemini-2.5-flash",
 				PI_REASONING_LEVEL: "high",
 			});
+			expect(env.executionOverrides).not.toHaveProperty("PI_CODING_AGENT");
 			expect(readResult.content).toEqual([
 				{
 					type: "text",
@@ -243,9 +269,41 @@ describe("coding-agent Harness construction", () => {
 			expect(bashResult.content).toEqual([
 				{
 					type: "text",
-					text: "injected-env-session|/sessions/current.jsonl|google|gemini-2.5-flash|high|injected-env-session|/sessions/current.jsonl|google|gemini-2.5-flash|high|true",
+					text: "injected-env-session|/sessions/current.jsonl|google|gemini-2.5-flash|high|injected-env-session|/sessions/current.jsonl|google|gemini-2.5-flash|high|true|call-only",
 				},
 			]);
+			expect(findResult.content).toEqual([{ type: "text", text: "file.txt" }]);
+		} finally {
+			if (originalCodingAgent === undefined) delete process.env.PI_CODING_AGENT;
+			else process.env.PI_CODING_AGENT = originalCodingAgent;
+			await created.harness.close();
+			await env.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("keeps search local until its remote operations seam is complete", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-harness-search-"));
+		const env = new CapturingExecutionEnv({ cwd: root });
+		const created = await createCodingAgentHarness({
+			session: createSession("local-search-harness"),
+			models: createModels(),
+			model: getModel("google", "gemini-2.5-flash"),
+			env,
+		});
+		try {
+			const tools = await created.harness.getTools();
+			const write = tools.find((tool) => tool.name === "write");
+			const search = tools.find((tool) => tool.name === "search");
+			if (!write || !search) throw new Error("Expected the default write and search tools");
+
+			await write.execute("write-search-file", { path: "remote.txt", content: "needle" });
+			const result = await search.execute("search-call", { pattern: "needle", paths: ["remote.txt"] });
+			const text = result.content[0];
+			if (text?.type !== "text") throw new Error("Expected text search output");
+			expect(text.text).toContain("needle");
+			expect(env.readTextFileCalls).toBe(0);
+			expect(env.listDirCalls).toBe(0);
 		} finally {
 			await created.harness.close();
 			await env.cleanup();
