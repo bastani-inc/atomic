@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Workflow command, worktree Git/setup-hook, and Playwright CLI subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution without mutating caller-supplied environment objects.
 
 ### Fixed
+- Fixed graph overlay rendering to keep its live vertical position in pi-tui's `ScrollView` and preserve OSC-8 hyperlink terminators when normalizing layout rows.
 
 - Fixed the inline workflow form editor not inheriting the host's `autocompleteMaxVisible` setting when Atomic installs it as a custom editor.
 - Fixed late workflow messages and MCP scope cleanup that finish after an extension reload. Stale event-bus calls now no-op instead of throwing, while active routes keep their normal fallback behavior.

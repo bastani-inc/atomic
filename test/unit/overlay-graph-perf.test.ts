@@ -8,6 +8,7 @@ import type {
 } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphCanvas } from "../../packages/workflows/src/tui/graph-canvas.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { graphLayoutBodyRows } from "../../packages/workflows/src/tui/graph-view-layout.js";
 import { NODE_H } from "../../packages/workflows/src/tui/layout.js";
 import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
 
@@ -115,11 +116,11 @@ class InstrumentedGraphView extends GraphView {
 	}
 
 	bodyRowsForTest(): number {
-		return this.graphLayout.viewportRows;
+		return graphLayoutBodyRows(24);
 	}
 
 	graphScrollOffsetForTest(): number {
-		return this.graphScrollOffset;
+		return this._graphScrollTop();
 	}
 
 	countRenderReadsForTest(): void {
@@ -311,9 +312,7 @@ describe("GraphView many-stage performance (#2100)", () => {
 			initialFocusedStageId: "s0",
 		});
 		try {
-			view.render(96);
 			const { viewportScoped } = perFrameReadBudgets(view);
-			view.paintedCards = 0;
 			view.countRenderReadsForTest();
 			const text = visibleText(view.render(96));
 			const reads = view.renderReadCountsForTest();

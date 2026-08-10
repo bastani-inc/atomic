@@ -11,6 +11,11 @@ type PiAiExports = {
 	getModel?: object;
 	StringEnum?: object;
 };
+type PiTuiLayoutExports = {
+	getScrollbarGeometry?: object;
+	getScrollViewBox?: object;
+	renderLayoutFrame?: object;
+};
 
 // Provider-owned OAuth is exposed through provider metadata; the removed global
 // OAuth registration bridge is intentionally not part of extension aliases.
@@ -40,6 +45,23 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@earendil-works/pi-ai/compat"]);
 	});
+	it(
+		"maps pi-tui layout helpers through both loader resolution paths",
+		async () => {
+			const specifiers = ["@earendil-works/pi-tui/dist/layout.js", "@mariozechner/pi-tui/dist/layout.js"] as const;
+			const aliases = extensionLoaderTestHooks.getAliases();
+			const modules = await extensionLoaderTestHooks.loadVirtualModules();
+			for (const specifier of specifiers) {
+				expect(aliases[specifier]).toMatch(/[\\/]layout\.js$/);
+				const layout = modules[specifier] as PiTuiLayoutExports;
+				expect(typeof layout.getScrollbarGeometry).toBe("function");
+				expect(typeof layout.getScrollViewBox).toBe("function");
+				expect(typeof layout.renderLayoutFrame).toBe("function");
+			}
+			expect(modules[specifiers[0]]).toBe(modules[specifiers[1]]);
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
 
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {
 		const root = (await import("@earendil-works/pi-ai")) as PiAiExports;

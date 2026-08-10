@@ -103,7 +103,7 @@ export abstract class GraphViewState {
 		targets: new Map(),
 	};
 	protected currentSnapshot: StoreSnapshot | null = null;
-	protected graphScrollOffset = 0;
+	protected abstract _graphScrollTop(): number;
 	protected graphScrollColOffset = 0;
 	protected graphNodeHitRects: GraphNodeHitRect[] = [];
 	protected lastGraphViewport: GraphViewportGeometry | null = null;
@@ -187,7 +187,6 @@ export abstract class GraphViewState {
 			this.cachedRenderGeometry = { canvasWidth: 0, totalRows: 0, bands: [], edges: [] };
 			this.expandedGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
 			this.focusedIndex = 0;
-			this.graphScrollOffset = 0;
 			this.graphScrollColOffset = 0;
 			this.graphNodeHitRects = [];
 			this.lastGraphViewport = null;
@@ -340,7 +339,6 @@ export abstract class GraphViewState {
 
 		if (this.cachedLayout.length === 0) {
 			this.focusedIndex = 0;
-			this.graphScrollOffset = 0;
 			this.graphScrollColOffset = 0;
 		} else if (this.focusedIndex >= this.cachedLayout.length) {
 			this.focusedIndex = this.cachedLayout.length - 1;
