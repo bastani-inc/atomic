@@ -1,4 +1,3 @@
-import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { openLocalHostInputForm } from "./components/host-input-form-mount.ts";
 import { openLocalHostSessionPicker } from "./components/host-session-picker.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -203,10 +202,8 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 			showImages: this.settingsManager.getShowImages(),
 			imageWidthCells: this.settingsManager.getImageWidthCells(),
 			outputPad: this.outputPad,
-			markdownTransformers:
-				this.runtimeHost instanceof IsolatedInteractiveRuntime
-					? []
-					: this.session.extensionRunner.getMarkdownTransformers(),
+			renderLatex: this.settingsManager.getLatexRenderingEnabled(),
+			markdownTransformers: this.getMarkdownTransformers(),
 			getToolDefinition: (toolName: string) => this.getRegisteredToolDefinition(toolName),
 			getCustomMessageRenderer: (customType: string) => this.session.extensionRunner.getMessageRenderer(customType),
 		}),

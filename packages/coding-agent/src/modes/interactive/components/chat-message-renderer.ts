@@ -53,6 +53,7 @@ export interface ChatMessageRenderOptions {
 	outputPad?: number;
 	isStreaming?: boolean;
 	markdownTransformers?: readonly MarkdownTransformer[];
+	renderLatex?: boolean;
 	getToolDefinition?: (toolName: string) => ToolDefinition<TSchema, unknown> | undefined;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	createToolComponent?: (entry: Extract<ChatMessageEntry, { kind: "tool" }>) => Component;
@@ -424,6 +425,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.outputPad ?? 1,
 				options.markdownTransformers,
 				options.isStreaming,
+				options.renderLatex,
 			);
 		case "tool": {
 			if (options.createToolComponent) return options.createToolComponent(messageEntry);
@@ -469,6 +471,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.toolOutputExpanded ?? false,
 				options.outputPad ?? 1,
 				options.markdownTransformers,
+				options.renderLatex,
 			);
 		case "custom": {
 			if (isVerbatimCompactionMessage(messageEntry.message)) {
@@ -480,12 +483,13 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.getCustomMessageRenderer?.(messageEntry.message.customType),
 				markdownTheme,
 				options.outputPad ?? 1,
+				options.renderLatex,
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
 		}
 		case "branchSummary": {
-			const component = new BranchSummaryMessageComponent(messageEntry.message, markdownTheme);
+			const component = new BranchSummaryMessageComponent(messageEntry.message, markdownTheme, options.renderLatex);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
 		}
@@ -499,16 +503,17 @@ function userMessageComponent(
 	expanded: boolean,
 	outputPad = 1,
 	markdownTransformers: readonly MarkdownTransformer[] = [],
+	renderLatex = true,
 ): Component {
 	const skillBlock = parseSkillBlock(text);
-	if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad, markdownTransformers);
+	if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad, markdownTransformers, renderLatex);
 	const container = new Container();
-	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme);
+	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme, renderLatex);
 	skillComponent.setExpanded(expanded);
 	container.addChild(skillComponent);
 	if (skillBlock.userMessage) {
 		container.addChild(
-			new UserMessageComponent(skillBlock.userMessage, markdownTheme, outputPad, markdownTransformers),
+			new UserMessageComponent(skillBlock.userMessage, markdownTheme, outputPad, markdownTransformers, renderLatex),
 		);
 	}
 	return container;

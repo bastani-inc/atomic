@@ -247,6 +247,8 @@ test("rebuilds restored transcript through deferred Markdown transformers", asyn
 			getShowCacheMissNotices: () => false,
 			getShowImages: () => false,
 			getImageWidthCells: () => 80,
+			getMermaidRenderingMode: () => "streaming",
+			getLatexRenderingEnabled: () => true,
 		},
 		extensionRunner: {
 			getMarkdownTransformers: () => transformers,

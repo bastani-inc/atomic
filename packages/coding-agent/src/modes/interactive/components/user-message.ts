@@ -15,18 +15,21 @@ export class UserMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
+	private renderLatex: boolean;
 
 	constructor(
 		text: string,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
+		renderLatex = true,
 	) {
 		super();
 		this.text = text;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
+		this.renderLatex = renderLatex;
 		this.rebuild();
 	}
 
@@ -51,6 +54,7 @@ export class UserMessageComponent extends Container {
 					preserveOrderedListMarkers: true,
 					preserveBackslashEscapes: true,
 					transform: createMarkdownTransform("user", false, this.markdownTransformers),
+					renderLatex: this.renderLatex,
 				},
 			),
 		);

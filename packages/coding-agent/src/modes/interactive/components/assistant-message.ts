@@ -21,6 +21,7 @@ export class AssistantMessageComponent extends Container {
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
 	private isStreaming = false;
+	private renderLatex: boolean;
 
 	constructor(
 		message?: AssistantMessage,
@@ -31,6 +32,7 @@ export class AssistantMessageComponent extends Container {
 		markdownTransformers: readonly MarkdownTransformer[] = [],
 		// ChatSessionHost creates components per render, so it needs the initial stream state.
 		isStreaming = false,
+		renderLatex = true,
 	) {
 		super();
 
@@ -39,6 +41,7 @@ export class AssistantMessageComponent extends Container {
 		this.hiddenThinkingLabel = hiddenThinkingLabel;
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
+		this.renderLatex = renderLatex;
 		// Container for text/thinking content
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
@@ -111,6 +114,7 @@ export class AssistantMessageComponent extends Container {
 				this.contentContainer.addChild(
 					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
 						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+						renderLatex: this.renderLatex,
 					}),
 				);
 			} else if (content.type === "thinking") {
@@ -149,6 +153,7 @@ export class AssistantMessageComponent extends Container {
 									this.isStreaming,
 									this.markdownTransformers,
 								),
+								renderLatex: this.renderLatex,
 							},
 						),
 					);

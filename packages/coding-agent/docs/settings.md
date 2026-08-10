@@ -323,6 +323,8 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `markdown.codeBlockIndent` | string | `"  "` | Indentation for code blocks |
+| `markdown.mermaid` | string | `"streaming"` | Mermaid rendering mode: `"off"`, `"final"`, or `"streaming"` |
+| `markdown.latex` | boolean | `true` | Render LaTeX expressions as terminal-friendly Unicode math |
 
 ### Resources
 

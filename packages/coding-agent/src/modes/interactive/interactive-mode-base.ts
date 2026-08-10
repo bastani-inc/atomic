@@ -12,6 +12,8 @@ import {
 } from "@earendil-works/pi-tui";
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
+import type { MarkdownTransformer } from "../../core/extensions/types.ts";
+import type { MermaidRenderingMode } from "../../core/settings-manager.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.ts";
 import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
@@ -19,6 +21,7 @@ import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import {
 	type AgentSession,
 	type AgentSessionRuntime,
@@ -50,6 +53,9 @@ import {
 	type Text,
 	type ToolExecutionComponent,
 	type TUI,
+
+	TuiMainScreen,
+	theme,
 	UsageMeterComponent,
 	VERSION,
 } from "./interactive-mode-deps.ts";
@@ -247,6 +253,12 @@ export class InteractiveModeBase {
 	// Thinking block visibility state
 	hideThinkingBlock = false;
 	outputPad: 0 | 1 = 1;
+
+	mermaidMarkdownTransformer: MarkdownTransformer = createMermaidMarkdownTransformer({
+		getMode: () => this.settingsManager.getMermaidRenderingMode(),
+		theme,
+	});
+	mermaidMarkdownTransformerMode: MermaidRenderingMode | undefined;
 
 	// Skill commands: command name -> skill file path
 	skillCommands = new Map<string, string>();

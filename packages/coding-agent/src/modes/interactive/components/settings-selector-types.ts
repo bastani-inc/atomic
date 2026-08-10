@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Transport } from "@earendil-works/pi-ai/compat";
 import type { ScrollViewScrollbar, TuiMode } from "@earendil-works/pi-tui";
 import type { DefaultProjectTrust, WarningSettings } from "../../../core/settings-manager.ts";
+import type { DefaultProjectTrust, MermaidRenderingMode, WarningSettings } from "../../../core/settings-manager.ts";
 import type { TerminalTheme } from "../theme/theme.ts";
 
 export type QueueDeliveryMode = "all" | "one-at-a-time";
@@ -26,6 +27,8 @@ export interface SettingsConfig {
 	terminalTheme: TerminalTheme;
 	availableThemes: string[];
 	hideThinkingBlock: boolean;
+	mermaidRenderingMode: MermaidRenderingMode;
+	latexRenderingEnabled: boolean;
 	collapseChangelog: boolean;
 	enableInstallTelemetry: boolean;
 	doubleEscapeAction: DoubleEscapeAction;
@@ -60,6 +63,8 @@ export interface SettingsCallbacks {
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
 	onHideThinkingBlockChange: (hidden: boolean) => void;
+	onMermaidRenderingModeChange: (mode: MermaidRenderingMode) => void;
+	onLatexRenderingEnabledChange: (enabled: boolean) => void;
 	onCollapseChangelogChange: (collapsed: boolean) => void;
 	onEnableInstallTelemetryChange: (enabled: boolean) => void;
 	onDoubleEscapeActionChange: (action: DoubleEscapeAction) => void;

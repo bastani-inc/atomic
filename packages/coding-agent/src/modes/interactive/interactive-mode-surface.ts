@@ -1,5 +1,6 @@
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 
+import type { MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { CustomEntry, SessionEntry } from "../../core/session-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
@@ -77,6 +78,7 @@ declare module "./interactive-mode-base.ts" {
 		getChangelogForDisplay(): string | undefined;
 		reportInstallTelemetry(version: string): void;
 		getMarkdownThemeWithSettings(): MarkdownTheme;
+		getMarkdownTransformers(): MarkdownTransformer[];
 		formatDisplayPath(p: string): string;
 		formatExtensionDisplayPath(path: string): string;
 		formatContextPath(p: string): string;

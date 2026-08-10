@@ -57,6 +57,7 @@ export interface ChatRenderSettings {
 	showImages: boolean;
 	imageWidthCells: number;
 	markdownTransformers: readonly MarkdownTransformer[];
+	renderLatex?: boolean;
 	getToolDefinition(toolName: string): ToolDefinition | undefined;
 	getCustomMessageRenderer(customType: string): MessageRenderer | undefined;
 }

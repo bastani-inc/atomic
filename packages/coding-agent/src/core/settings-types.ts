@@ -50,8 +50,12 @@ export interface ThinkingBudgetsSettings {
 	high?: number;
 }
 
+export type MermaidRenderingMode = "off" | "final" | "streaming";
+
 export interface MarkdownSettings {
 	codeBlockIndent?: string; // default: "  "
+	mermaid?: MermaidRenderingMode; // default: "streaming"
+	latex?: boolean; // default: true
 }
 
 export interface WarningSettings {

@@ -100,6 +100,8 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				terminalTheme: this.themeController.getTerminalTheme(),
 				availableThemes: getAvailableThemes(),
 				hideThinkingBlock: this.hideThinkingBlock,
+				mermaidRenderingMode: this.settingsManager.getMermaidRenderingMode(),
+				latexRenderingEnabled: this.settingsManager.getLatexRenderingEnabled(),
 				collapseChangelog: this.settingsManager.getCollapseChangelog(),
 				enableInstallTelemetry: this.settingsManager.getEnableInstallTelemetry(),
 				doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
@@ -184,6 +186,15 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 						}
 					}
 					this.chatContainer.clear();
+					this.rebuildChatFromMessages();
+				},
+				onMermaidRenderingModeChange: (mode) => {
+					this.settingsManager.setMermaidRenderingMode(mode);
+					this.chatContainer.invalidate();
+					this.ui.requestRender();
+				},
+				onLatexRenderingEnabledChange: (enabled) => {
+					this.settingsManager.setLatexRenderingEnabled(enabled);
 					this.rebuildChatFromMessages();
 				},
 				onCollapseChangelogChange: (collapsed) => {

@@ -6,6 +6,7 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
+import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
@@ -100,6 +101,22 @@ InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
 	this.ui.requestRender();
 };
 
+InteractiveModeBase.prototype.getMarkdownTransformers = function (this: InteractiveModeBase) {
+	const mode = this.settingsManager.getMermaidRenderingMode();
+	if (this.mermaidMarkdownTransformerMode !== mode) {
+		this.mermaidMarkdownTransformerMode = mode;
+		this.mermaidMarkdownTransformer = createMermaidMarkdownTransformer({
+			getMode: () => this.settingsManager.getMermaidRenderingMode(),
+			theme,
+		});
+	}
+	const extensionTransformers =
+		this.runtimeHost instanceof IsolatedInteractiveRuntime
+			? []
+			: this.session.extensionRunner.getMarkdownTransformers();
+	return [this.mermaidMarkdownTransformer, ...extensionTransformers];
+};
+
 InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 	this: InteractiveModeBase,
 ): ChatMessageRenderOptions {
@@ -114,7 +131,8 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 		showImages: this.settingsManager.getShowImages(),
 		imageWidthCells: this.settingsManager.getImageWidthCells(),
 		outputPad: this.outputPad,
-		markdownTransformers: isolated ? [] : this.session.extensionRunner.getMarkdownTransformers(),
+		renderLatex: this.settingsManager.getLatexRenderingEnabled(),
+		markdownTransformers: this.getMarkdownTransformers(),
 		getToolDefinition: isolated ? undefined : (toolName) => this.getRegisteredToolDefinition(toolName),
 		getCustomMessageRenderer: isolated
 			? undefined
@@ -187,10 +205,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 	message: AgentMessage,
 	options?: { populateHistory?: boolean },
 ): void {
-	const markdownTransformers =
-		this.runtimeHost instanceof IsolatedInteractiveRuntime
-			? []
-			: this.session.extensionRunner.getMarkdownTransformers();
+	const markdownTransformers = this.getMarkdownTransformers();
 	switch (message.role) {
 		case "bashExecution": {
 			const component = new BashExecutionComponent(message.command, this.ui, message.excludeFromContext);
@@ -221,6 +236,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								this.session.extensionRunner.getMessageRenderer(message.customType),
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
+								this.settingsManager.getLatexRenderingEnabled(),
 							);
 				component.setExpanded(this.toolOutputExpanded);
 				this.chatContainer.addChild(component);
@@ -229,7 +245,11 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 		}
 		case "branchSummary": {
 			this.chatContainer.addChild(new Spacer(1));
-			const component = new BranchSummaryMessageComponent(message, this.getMarkdownThemeWithSettings());
+			const component = new BranchSummaryMessageComponent(
+				message,
+				this.getMarkdownThemeWithSettings(),
+				this.settingsManager.getLatexRenderingEnabled(),
+			);
 			component.setExpanded(this.toolOutputExpanded);
 			this.chatContainer.addChild(component);
 			break;
@@ -243,7 +263,11 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				const skillBlock = parseSkillBlock(textContent);
 				if (skillBlock) {
 					// Render skill block (collapsible)
-					const component = new SkillInvocationMessageComponent(skillBlock, this.getMarkdownThemeWithSettings());
+					const component = new SkillInvocationMessageComponent(
+						skillBlock,
+						this.getMarkdownThemeWithSettings(),
+						this.settingsManager.getLatexRenderingEnabled(),
+					);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 					// Render user message separately if present
@@ -253,6 +277,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
 							markdownTransformers,
+							this.settingsManager.getLatexRenderingEnabled(),
 						);
 						this.chatContainer.addChild(userComponent);
 					}
@@ -262,6 +287,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						this.getMarkdownThemeWithSettings(),
 						this.outputPad,
 						markdownTransformers,
+						this.settingsManager.getLatexRenderingEnabled(),
 					);
 					this.chatContainer.addChild(userComponent);
 				}
@@ -279,6 +305,8 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				this.hiddenThinkingLabel,
 				this.outputPad,
 				markdownTransformers,
+				false,
+				this.settingsManager.getLatexRenderingEnabled(),
 			);
 			this.chatContainer.addChild(assistantComponent);
 			break;
