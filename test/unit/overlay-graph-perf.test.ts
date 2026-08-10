@@ -116,7 +116,7 @@ class InstrumentedGraphView extends GraphView {
 	}
 
 	bodyRowsForTest(): number {
-		return graphLayoutBodyRows(24);
+		return graphLayoutBodyRows(this._overlayFrameHeight());
 	}
 
 	graphScrollOffsetForTest(): number {

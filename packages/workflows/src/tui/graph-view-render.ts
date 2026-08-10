@@ -10,12 +10,11 @@ import { renderSwitcher } from "./switcher.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 /**
- * `renderLayoutFrame` adds its own reset plus an OSC-8 terminator around each
- * row. Strip only the outer wrapper; OSC-8 terminators emitted by graph content
- * must remain so a hyperlink cannot bleed into later rows.
+ * `renderLayoutFrame` wraps each painted row with its segment reset. The
+ * layout bridge records which rows were painted, so content that was not
+ * wrapped cannot be mistaken for a layout seam during normalization.
  */
 const LAYOUT_OSC_RESET = "\x1b[0m\x1b]8;;\x07";
-const MAX_UNHOSTED_BODY_ROWS = 24;
 
 function stripLayoutWrapper(line: string): string {
 	const startsWithWrapper = line.startsWith(LAYOUT_OSC_RESET);
@@ -83,6 +82,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			const layoutFrame = this.graphLayout.render(frameWidth, frameHeight);
 			const lines = this._normalizeLayoutLines(
 				layoutFrame.frame.lines,
+				layoutFrame.wrappedRows,
 				frameWidth,
 				frameHeight,
 				layoutFrame.topMarginRows,
@@ -113,9 +113,12 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			this.lastOverlayFrameHeight = Math.max(1, Math.floor(reported));
 			return this.lastOverlayFrameHeight;
 		}
+		// A custom overlay may lose its terminal while the host tears down the
+		// TUI. Keep the last hosted frame until a new row count arrives, so the
+		// disappearing overlay does not jump to a different natural height.
 		if (this.hasReportedViewportRows && this.lastOverlayFrameHeight > 0) return this.lastOverlayFrameHeight;
 
-		const bodyRows = run ? Math.min(Math.max(1, this.cachedRenderGeometry.totalRows), MAX_UNHOSTED_BODY_ROWS) : 2;
+		const bodyRows = run ? Math.max(1, this.cachedRenderGeometry.totalRows) : 2;
 		this.lastOverlayFrameHeight = graphLayoutNaturalHeight(bodyRows);
 		return this.lastOverlayFrameHeight;
 	}
@@ -209,6 +212,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
 	protected _normalizeLayoutLines(
 		lines: readonly string[],
+		wrappedRows: readonly boolean[],
 		width: number,
 		height: number,
 		topMarginRows: number,
@@ -216,7 +220,8 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	): string[] {
 		return Array.from({ length: height }, (_, row) => {
 			if (row < topMarginRows || row >= height - bottomMarginRows) return " ".repeat(width);
-			const clean = stripLayoutWrapper(lines[row] ?? "");
+			const source = lines[row] ?? "";
+			const clean = wrappedRows[row] === true ? stripLayoutWrapper(source) : source;
 			if (visibleWidth(clean) === 0) return this._blankRow(width);
 			if (visibleWidth(clean) > width) return truncateToWidth(clean, width, "…", true);
 			return `${clean}${" ".repeat(width - visibleWidth(clean))}`;
