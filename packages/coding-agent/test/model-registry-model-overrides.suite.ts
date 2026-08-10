@@ -102,6 +102,37 @@ describeModelRegistry((context) => {
 			});
 		});
 
+		test("model override deep merges chatTemplateArgs", async () => {
+			writeRawModelsJson({
+				openrouter: {
+					compat: {
+						thinkingFormat: "baseten",
+						chatTemplateArgs: {
+							enable_thinking: { $var: "thinking.enabled" },
+							preserve_thinking: true,
+						},
+					},
+					modelOverrides: {
+						"anthropic/claude-sonnet-4": {
+							compat: {
+								chatTemplateArgs: { effort: { $var: "thinking.effort", omitWhenOff: true } },
+							},
+						},
+					},
+				},
+			});
+
+			const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+			const sonnet = getModelsForProvider(registry, "openrouter").find((m) => m.id === "anthropic/claude-sonnet-4");
+			const compat = sonnet?.compat as OpenAICompletionsCompat | undefined;
+
+			expect(compat?.chatTemplateArgs).toEqual({
+				enable_thinking: { $var: "thinking.enabled" },
+				preserve_thinking: true,
+				effort: { $var: "thinking.effort", omitWhenOff: true },
+			});
+		});
+
 		test("multiple model overrides on same provider", async () => {
 			writeRawModelsJson({
 				openrouter: {

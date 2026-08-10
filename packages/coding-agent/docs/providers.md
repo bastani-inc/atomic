@@ -130,12 +130,14 @@ Remote pi.dev catalogs persist their ETag and are revalidated with `If-None-Matc
 | Hugging Face | `HF_TOKEN` | `huggingface` |
 | Fireworks | `FIREWORKS_API_KEY` | `fireworks` |
 | Together AI | `TOGETHER_API_KEY` | `together` |
+| Baseten | `BASETEN_API_KEY` | `baseten` |
 | Kimi For Coding | `KIMI_API_KEY` | `kimi-coding` |
 | MiniMax | `MINIMAX_API_KEY` | `minimax` |
 | MiniMax (China) | `MINIMAX_CN_API_KEY` | `minimax-cn` |
 | Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
 | Moonshot AI (China) | `MOONSHOT_API_KEY` | `moonshotai-cn` |
-| Qwen Token Plan | `QWEN_TOKEN_PLAN_API_KEY` | `qwen-token-plan` |
+| Qwen Token Plan (existing catalog) | `QWEN_TOKEN_PLAN_API_KEY` | `qwen-token-plan` |
+| Qwen Token Plan (Individual) | `QWEN_TOKEN_PLAN_API_KEY` | `qwen-token-plan-individual` |
 | Qwen Token Plan (China) | `QWEN_TOKEN_PLAN_CN_API_KEY` | `qwen-token-plan-cn` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
 | Xiaomi MiMo Token Plan (China) | `XIAOMI_TOKEN_PLAN_CN_API_KEY` | `xiaomi-token-plan-cn` |
@@ -160,6 +162,7 @@ Store credentials in `~/.atomic/agent/auth.json`:
   "opencode-go": { "type": "api_key", "key": "..." },
   "together": { "type": "api_key", "key": "..." },
   "qwen-token-plan": { "type": "api_key", "key": "sk-sp-..." },
+  "qwen-token-plan-individual": { "type": "api_key", "key": "sk-sp-..." },
   "qwen-token-plan-cn": { "type": "api_key", "key": "sk-sp-..." },
   "xiaomi": { "type": "api_key", "key": "..." },
   "xiaomi-token-plan-cn":  { "type": "api_key", "key": "..." },
@@ -167,6 +170,11 @@ Store credentials in `~/.atomic/agent/auth.json`:
   "xiaomi-token-plan-sgp": { "type": "api_key", "key": "..." }
 }
 ```
+
+`qwen-token-plan-individual` uses the same international endpoint and `QWEN_TOKEN_PLAN_API_KEY` as
+`qwen-token-plan`, but limits the picker to the models documented for Individual subscriptions. The existing
+provider keeps its broader catalog for backward compatibility. When using `auth.json`, store the credential
+under the provider you select; an environment variable is shared by both international providers.
 
 The file is created with `0600` permissions (user read/write only). Auth file credentials take priority over environment variables.
 

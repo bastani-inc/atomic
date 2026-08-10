@@ -90,6 +90,10 @@ describe("default model selection", () => {
 	test("ai-gateway default tracks current model", () => {
 		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
 	});
+	test("Baseten and Qwen Token Plan Individual defaults track current models", () => {
+		expect(defaultModelPerProvider.baseten).toBe("zai-org/GLM-5.2");
+		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
+	});
 	test("findInitialModel accepts explicit provider custom model ids", async () => {
 		const registry = {
 			getModels: () => allModels,

@@ -38,8 +38,12 @@ test("API-key login options follow builtin provider auth metadata", () => {
 	assert.ok(optionIds.has("qwen-token-plan"));
 	assert.ok(optionIds.has("qwen-token-plan-cn"));
 	assert.ok(!optionIds.has("openai-codex"));
+	assert.ok(optionIds.has("baseten"));
+	assert.ok(optionIds.has("qwen-token-plan-individual"));
 	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES.radius, "Radius");
 	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES["github-copilot"], "GitHub Copilot");
+	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES.baseten, "Baseten");
+	assert.equal(BUILT_IN_PROVIDER_DISPLAY_NAMES["qwen-token-plan-individual"], "Qwen Token Plan (Individual)");
 });
 
 test("login provider reference resolution handles ids, names, methods, and misses", () => {
@@ -73,11 +77,13 @@ test("login command advertises its provider argument", () => {
 	assert.equal(BUILTIN_SLASH_COMMANDS.find((command) => command.name === "login")?.argumentHint, "<provider>");
 });
 
-test("every adopted builtin provider has a preferred default except deferred feature ports", () => {
+test("every adopted builtin provider has a preferred default", () => {
 	const missing = builtinProviders()
 		.map((provider) => provider.id)
 		.filter((providerId) => defaultModelPerProvider[providerId] === undefined);
-	assert.deepEqual(missing, ["baseten", "qwen-token-plan-individual"]);
+	assert.deepEqual(missing, []);
+	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.2");
+	assert.equal(defaultModelPerProvider["qwen-token-plan-individual"], "qwen3.8-max");
 	assert.equal(defaultModelPerProvider.radius, "auto");
 	assert.equal(defaultModelPerProvider.nvidia, "nvidia/nemotron-3-super-120b-a12b");
 	assert.equal(defaultModelPerProvider["zai-coding-cn"], "glm-5.1");
