@@ -13,7 +13,7 @@ All components implement:
 ```typescript
 interface Component {
   render(width: number): string[];
-  handleInput?(data: string): void;
+  handleInput?(data: string): boolean | void;
   wantsKeyRelease?: boolean;
   invalidate(): void;
 }
@@ -22,7 +22,7 @@ interface Component {
 | Method | Description |
 |--------|-------------|
 | `render(width)` | Return array of strings (one per line). Each line **must not exceed `width`**. |
-| `handleInput?(data)` | Receive keyboard input when component has focus. |
+| `handleInput?(data)` | Receive keyboard input when component has focus. Return `true` when it consumes the key; `false`, `undefined`, or `void` leaves matching fullscreen viewport bindings available to transcript scrolling. |
 | `wantsKeyRelease?` | If true, component receives key release events (Kitty protocol). Default: false. |
 | `invalidate()` | Clear cached render state. Called on theme changes. |
 
@@ -429,7 +429,7 @@ class MySelector {
 }
 ```
 
-Return `false` when the component did nothing and wants a shared fullscreen viewport key to fall through to transcript navigation. Any other result keeps the key local, which preserves pi-tui's `void` component contract. A component may return `true` to state that it consumed the key. Do not mutate state and return `false` for the same key.
+Return `true` when the component consumes a key. In fullscreen mode, `false`, `undefined`, or `void` means it did not handle a matching viewport binding, so the transcript processes it. Direct pi-tui components may keep the declared `void` contract; Atomic workflow custom components should return a boolean. Do not mutate state and return `false` for the same key.
 
 Usage in an extension:
 

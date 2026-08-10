@@ -203,9 +203,9 @@ export class InlineFormEditor implements PiEditorComponent {
 	render(_width: number): string[] {
 		return [];
 	}
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		const state = getForm(this.opts.formId);
-		if (state?.status !== "editing") return;
+		if (state?.status !== "editing") return false;
 		if (data.includes(PASTE_START)) {
 			this.isInPaste = true;
 			this.pasteBuffer = "";
@@ -214,7 +214,7 @@ export class InlineFormEditor implements PiEditorComponent {
 		if (this.isInPaste) {
 			this.pasteBuffer += data;
 			const endIdx = this.pasteBuffer.indexOf(PASTE_END);
-			if (endIdx === -1) return; // wait for the close marker
+			if (endIdx === -1) return true; // wait for the close marker
 			const content = this.pasteBuffer.slice(0, endIdx);
 			const remaining = this.pasteBuffer.slice(endIdx + PASTE_END.length);
 			this.isInPaste = false;
@@ -224,20 +224,22 @@ export class InlineFormEditor implements PiEditorComponent {
 				this.tui.requestRender?.();
 			}
 			if (remaining.length > 0) this.handleInput(remaining);
-			return;
+			return true;
 		}
 		if (data.length > 1 && isPrintableTextChunk(data)) {
-			if (this.applyPaste(data, state)) {
+			const consumed = this.applyPaste(data, state);
+			if (consumed) {
 				touch(state);
 				this.tui.requestRender?.();
 			}
-			return;
+			return consumed;
 		}
 		const consumed = this.routeKey(data, state);
 		if (consumed) {
 			touch(state);
 			this.tui.requestRender?.();
 		}
+		return consumed;
 	}
 	private applyPaste(content: string, state: InlineFormState): boolean {
 		const field = state.fields[state.focusedIdx];

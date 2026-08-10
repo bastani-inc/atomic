@@ -305,7 +305,7 @@ export async function mountStageCustomUi(
 	const component: Component & { dispose?(): void } & Partial<Focusable> = {
 		render: (width) => rawComponent.render(width),
 		...(rawComponent.handleInput !== undefined
-			? { handleInput: (data: string) => rawComponent.handleInput?.(data) }
+			? { handleInput: (data: string): boolean => rawComponent.handleInput?.(data) === true }
 			: {}),
 		invalidate: () => rawComponent.invalidate?.(),
 		...(rawComponent.dispose !== undefined ? { dispose: () => rawComponent.dispose?.() } : {}),

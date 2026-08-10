@@ -32,9 +32,10 @@ interface ViewportInputSubscription {
 const viewportInputSubscriptions = new WeakMap<AtomicTuiAltScreen, ViewportInputSubscription>();
 
 /**
- * The first `addInputListener` call is load-bearing: pi-tui registers its
- * viewport listener from `TuiAltScreen`'s constructor. Capture that listener
- * so application listeners can run before the focused-component gate.
+ * The first `addInputListener` call is load-bearing: pi-tui 0.84.1 registers
+ * its viewport listener from `TuiAltScreen`'s constructor
+ * (`dist/tui-alt-screen.js:77`). Capture that listener so application
+ * listeners can run before the focused-component gate.
  */
 class AtomicTuiAltScreen extends TuiAltScreen {
 	constructor(
@@ -58,7 +59,10 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			return () => {
 				subscription.unsubscribe?.();
 				subscription.unsubscribe = undefined;
-				viewportInputSubscriptions.delete(this);
+				// Keep the record and restore the internal listener if it was mounted;
+				// pi-tui discards this constructor disposer, but later listeners may
+				// still rely on the viewport listener remaining last in the chain.
+				this.appendViewportInputListener();
 			};
 		}
 
@@ -88,8 +92,10 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		const focused = this.getFocusedComponent();
 		if (focused?.handleInput && (!isKeyRelease(data) || focused.wantsKeyRelease)) {
 			const handleInput = focused.handleInput as (data: string) => boolean | undefined;
-			if (handleInput.call(focused, data) !== false) {
-				this.requestRender();
+			if (handleInput.call(focused, data) === true) {
+				// Match pi-tui's latency-sensitive focused-input path, which uses
+				// its immediate render branch for keyboard input.
+				this.requestRender(true);
 				return { consume: true };
 			}
 		}
