@@ -73,7 +73,7 @@ export function createRpcCommandHandler({
 					})
 					.catch((promptError: unknown) => {
 						if (!preflightSucceeded) {
-							output(createRpcErrorResponse(id, "prompt", formatRpcErrorMessage(promptError)));
+							output(createRpcErrorResponse(id, "prompt", formatRpcErrorMessage(promptError), promptError));
 						}
 					});
 				return undefined;

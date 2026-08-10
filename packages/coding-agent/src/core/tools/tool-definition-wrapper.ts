@@ -36,6 +36,8 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 		...(Object.hasOwn(definition, "constrainedSampling")
 			? { constrainedSampling: definition.constrainedSampling }
 			: {}),
+		promptSnippet: definition.promptSnippet,
+		promptGuidelines: definition.promptGuidelines ? [...definition.promptGuidelines] : undefined,
 		maxResultSizeChars: definition.maxResultSizeChars,
 		prepareArguments: definition.prepareArguments
 			? (args) =>

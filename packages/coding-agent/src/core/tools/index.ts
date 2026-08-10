@@ -6,6 +6,7 @@ export {
 	type BashToolDetails,
 	type BashToolInput,
 	type BashToolOptions,
+	bashToolSystemPromptContribution,
 	createBashTool,
 	createBashToolDefinition,
 	createLocalBashOperations,
@@ -17,6 +18,7 @@ export {
 	type EditToolDetails,
 	type EditToolInput,
 	type EditToolOptions,
+	editToolSystemPromptContribution,
 } from "./edit.ts";
 export { withFileMutationQueue } from "./file-mutation-queue.ts";
 export {
@@ -26,6 +28,7 @@ export {
 	type FindToolDetails,
 	type FindToolInput,
 	type FindToolOptions,
+	findToolSystemPromptContribution,
 } from "./find.ts";
 export {
 	createLsTool,
@@ -34,6 +37,7 @@ export {
 	type LsToolDetails,
 	type LsToolInput,
 	type LsToolOptions,
+	lsToolSystemPromptContribution,
 } from "./ls.ts";
 export {
 	createReadTool,
@@ -42,6 +46,7 @@ export {
 	type ReadToolDetails,
 	type ReadToolInput,
 	type ReadToolOptions,
+	readToolSystemPromptContribution,
 } from "./read.ts";
 export {
 	createSearchTool,
@@ -49,6 +54,7 @@ export {
 	type SearchToolDetails,
 	type SearchToolInput,
 	type SearchToolOptions,
+	searchToolSystemPromptContribution,
 } from "./search.ts";
 export {
 	createStructuredOutputCapture,
@@ -78,6 +84,7 @@ export {
 	type WriteOperations,
 	type WriteToolInput,
 	type WriteToolOptions,
+	writeToolSystemPromptContribution,
 } from "./write.ts";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";

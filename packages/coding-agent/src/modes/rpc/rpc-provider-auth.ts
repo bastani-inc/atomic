@@ -1,6 +1,7 @@
 import type { Credential } from "@earendil-works/pi-ai";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { HostInputFormRequest } from "../../core/extensions/ui-types.ts";
+import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { createAuthInteraction, isOAuthLoginCancelled } from "../../core/oauth-login.ts";
 import { createRpcOAuthCallbacks, type OAuthInteractionTransport } from "./rpc-oauth-interaction.ts";
 import type { RpcLoginProviderResult, RpcModelCatalog, RpcOAuthLoginProviderResult } from "./rpc-types.ts";
@@ -60,6 +61,7 @@ export class RpcProviderAuth {
 			// and never sent back down the stdout pipe.
 			return { provider, cancelled: false, type: "api_key", ...this.catalog(session) };
 		} catch (error) {
+			if (error instanceof CredentialSynchronizationError) throw error;
 			if (controller.signal.aborted || (error instanceof Error && error.message === "Login cancelled"))
 				return { provider, cancelled: true };
 			throw error;

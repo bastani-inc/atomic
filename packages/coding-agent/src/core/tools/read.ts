@@ -61,6 +61,12 @@ const readSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+export const readToolSystemPromptContribution = Object.freeze({
+	snippet: "Read a path selector.",
+	guidelines: Object.freeze([
+		"Use read to inspect file and resource contents; use path selectors for line ranges, raw output, and conflict views.",
+	] as const),
+} as const);
 export type ReadToolInput = Static<typeof readSchema>;
 const READ_TOOL_MAX_RESULT_CHARS = 50_000;
 export interface OversizedReadDetails {
@@ -308,10 +314,8 @@ export function createReadToolDefinition(
 		label: "read",
 		description:
 			"Read files, directories, archives, SQLite databases, internal resources, images, documents, and URLs through one path string.",
-		promptSnippet: "Read a path selector.",
-		promptGuidelines: [
-			"Use read to inspect file and resource contents; use path selectors for line ranges, raw output, and conflict views.",
-		],
+		promptSnippet: readToolSystemPromptContribution.snippet,
+		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		parameters: readSchema,
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?) {

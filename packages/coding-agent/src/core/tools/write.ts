@@ -53,6 +53,12 @@ const writeSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+export const writeToolSystemPromptContribution = Object.freeze({
+	snippet: "Create or overwrite a writable path selector.",
+	guidelines: Object.freeze([
+		"Use write when replacing the full content of a target; use edit for source edits anchored to existing hashline snapshots.",
+	] as const),
+} as const);
 export type WriteToolInput = Static<typeof writeSchema>;
 export interface WriteToolDetails {
 	resolvedPath?: string;
@@ -315,10 +321,8 @@ export function createWriteToolDefinition(
 		label: "write",
 		description:
 			"Create or overwrite a file, writable internal resource, archive entry, SQLite row, or merge-conflict resolution.",
-		promptSnippet: "Create or overwrite a writable path selector.",
-		promptGuidelines: [
-			"Use write when replacing the full content of a target; use edit for source edits anchored to existing hashline snapshots.",
-		],
+		promptSnippet: writeToolSystemPromptContribution.snippet,
+		promptGuidelines: [...writeToolSystemPromptContribution.guidelines],
 		parameters: writeSchema,
 		async execute(
 			_toolCallId,

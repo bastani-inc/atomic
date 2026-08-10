@@ -1,5 +1,6 @@
 import { ModelsError } from "@earendil-works/pi-ai";
 import type { AgentSession } from "./agent-session.ts";
+import { CredentialSynchronizationError } from "./model-runtime.ts";
 import {
 	type AtomicOAuthLoginCallbacks,
 	createAuthInteraction,
@@ -19,6 +20,7 @@ export async function loginRuntimeOAuthProvider(
 	try {
 		await runtime.login(provider, "oauth", createAuthInteraction(callbacks));
 	} catch (error) {
+		if (error instanceof CredentialSynchronizationError) throw error;
 		if (
 			error instanceof ModelsError &&
 			error.code === "auth" &&

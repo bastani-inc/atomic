@@ -1,3 +1,4 @@
+import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { isOAuthLoginCancelled } from "../../core/oauth-login.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -151,7 +152,11 @@ InteractiveModeBase.prototype.showApiKeyLoginDialog = async function (
 	} catch (error: unknown) {
 		restoreEditor();
 		const errorMsg = error instanceof Error ? error.message : String(error);
-		if (!isOAuthLoginCancelled(error)) {
+		if (error instanceof CredentialSynchronizationError) {
+			this.showError(
+				`Saved API key for ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
+			);
+		} else if (!isOAuthLoginCancelled(error)) {
 			this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
 		}
 	}
@@ -296,7 +301,9 @@ InteractiveModeBase.prototype.showLoginDialog = async function (
 	} catch (error: unknown) {
 		restoreEditor();
 		const errorMsg = error instanceof Error ? error.message : String(error);
-		if (loginSucceeded || !isOAuthLoginCancelled(error)) {
+		if (error instanceof CredentialSynchronizationError) {
+			this.showError(`Logged in to ${providerName}, but local model state could not be synchronized: ${errorMsg}`);
+		} else if (loginSucceeded || !isOAuthLoginCancelled(error)) {
 			this.showError(`Failed to login to ${providerName}: ${errorMsg}`);
 		}
 	}

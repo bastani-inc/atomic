@@ -65,6 +65,10 @@ const searchSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+export const searchToolSystemPromptContribution = Object.freeze({
+	snippet: "Search file contents with regex patterns.",
+	guidelines: Object.freeze([] as const),
+} as const);
 export type SearchToolInput = Static<typeof searchSchema>;
 export type SearchToolOptions = GrepToolOptions & {
 	hashlineStore?: HashlineSnapshotStore;
@@ -501,7 +505,7 @@ export function createSearchToolDefinition(
 		name: "search",
 		label: "search",
 		description: "Search file contents with a regex across files, directories, globs, and internal URLs.",
-		promptSnippet: "Search file contents with regex patterns.",
+		promptSnippet: searchToolSystemPromptContribution.snippet,
 		parameters: searchSchema,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const resourceCtx = ctx as InternalResourceContext | undefined;

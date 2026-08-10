@@ -43,6 +43,15 @@ describe("tool definition wrappers", () => {
 		expect(updates).toEqual([4]);
 	});
 
+	test("preserves prompt metadata while wrapping builtin definitions", () => {
+		const definition = createReadToolDefinition("/workspace");
+		const wrapped = wrapToolDefinition(definition);
+
+		expect(wrapped.promptSnippet).toBe(definition.promptSnippet);
+		expect(wrapped.promptGuidelines).toEqual(definition.promptGuidelines);
+		expect(wrapped.promptGuidelines).not.toBe(definition.promptGuidelines);
+	});
+
 	test("preserves constrained sampling by identity in both wrapper directions", () => {
 		const definition: ToolDefinition<typeof parameters, { value: number }> = {
 			name: "grammar",

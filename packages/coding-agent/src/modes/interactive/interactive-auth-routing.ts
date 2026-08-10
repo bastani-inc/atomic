@@ -1,4 +1,5 @@
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -192,7 +193,12 @@ InteractiveModeBase.prototype.showOAuthSelector = async function (
 					this.setupAutocompleteProvider();
 					this.showStatus(formatLogoutStatus(providerOption.name, providerOption.authType, result.authStatus));
 				} catch (error: unknown) {
-					this.showError(`Logout failed: ${error instanceof Error ? error.message : String(error)}`);
+					const message = error instanceof Error ? error.message : String(error);
+					this.showError(
+						error instanceof CredentialSynchronizationError
+							? `Credentials removed for ${providerOption.name}, but local model state could not be synchronized: ${message}`
+							: `Logout failed: ${message}`,
+					);
 				}
 			},
 			() => {

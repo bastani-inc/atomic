@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
+import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import type { BashOutputChannel } from "../../core/tools/bash.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
@@ -525,7 +526,16 @@ export class RpcClient extends RpcClientApi {
 		return response;
 	}
 	private assertSuccess(response: RpcResponse): void {
-		if (!response.success) throw new Error(response.error);
+		if (response.success) return;
+		if (response.errorCode === "credential_synchronization" && response.errorDetails) {
+			throw new CredentialSynchronizationError(
+				response.errorDetails.providerId,
+				response.errorDetails.operation,
+				undefined,
+				{ cause: new Error(response.error) },
+			);
+		}
+		throw new Error(response.error);
 	}
 	protected data<T>(response: RpcResponse): T {
 		this.assertSuccess(response);

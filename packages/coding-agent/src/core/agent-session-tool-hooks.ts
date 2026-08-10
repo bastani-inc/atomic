@@ -14,12 +14,18 @@ export function _installAgentToolHooks(this: AgentSession): void {
 		await this._agentEventQueue;
 
 		try {
-			return await runner.emitToolCall({
+			const result = await runner.emitToolCall({
 				type: "tool_call",
 				toolName: toolCall.name,
 				toolCallId: toolCall.id,
 				input: args as Record<string, unknown>,
 			});
+			if (result?.block && result.terminate === true) {
+				this._terminatingToolCallIds.add(toolCall.id);
+			} else {
+				this._terminatingToolCallIds.delete(toolCall.id);
+			}
+			return result;
 		} catch (err) {
 			if (err instanceof Error) {
 				throw err;

@@ -432,6 +432,34 @@ describe("post-tool compaction preflight", () => {
 		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 
+	it("does not compact an all-blocked terminating batch", async () => {
+		const blockTerminatingTool: ExtensionFactory = (pi) => {
+			pi.on("tool_call", () => ({ block: true, reason: "blocked", terminate: true }));
+		};
+		const harness = await createHarnessWithExtensions({
+			contextWindow: 1_000,
+			settings: {
+				compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+			},
+			responses: [
+				{
+					toolCalls: [{ id: "call-blocked-terminate", name: "large_result", args: {} }],
+					usage: { input: 700, output: 20, totalTokens: 720 },
+				},
+			],
+			baseToolsOverride: { large_result: largeResultTool },
+			extensionFactories: [compactOffline, blockTerminatingTool],
+		});
+		harnesses.push(harness);
+		await wireHarness(harness);
+
+		await harness.session.prompt(longPrompt);
+
+		expect(harness.faux.callCount).toBe(1);
+		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
+		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+	});
+
 	it("applies the hard-limit gate after context extensions transform the compacted messages", async () => {
 		const expandingContext: ExtensionFactory = (pi) => {
 			let compacted = false;

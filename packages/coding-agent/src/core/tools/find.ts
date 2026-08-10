@@ -35,6 +35,10 @@ const findSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+export const findToolSystemPromptContribution = Object.freeze({
+	snippet: "Find filesystem paths by glob.",
+	guidelines: Object.freeze([] as const),
+} as const);
 export type FindToolInput = Static<typeof findSchema>;
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 200;
@@ -381,7 +385,7 @@ export function createFindToolDefinition(
 		name: "find",
 		label: "find",
 		description: "Find filesystem paths by glob; use search when you need content matches instead of path matches.",
-		promptSnippet: "Find filesystem paths by glob.",
+		promptSnippet: findToolSystemPromptContribution.snippet,
 		parameters: findSchema,
 		async execute(_toolCallId, params: FindToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
 			return new Promise((resolve, reject) => {

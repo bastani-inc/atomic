@@ -1,3 +1,4 @@
+import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import type { RpcCommand, RpcExtensionUIRequest, RpcResponse } from "./rpc-types.ts";
 
 export type RpcOutputRecord = RpcResponse | RpcExtensionUIRequest | object;
@@ -14,7 +15,23 @@ export function createRpcSuccessResponse<T extends RpcCommand["type"]>(
 	return { id, type: "response", command, success: true, data } as RpcResponse;
 }
 
-export function createRpcErrorResponse(id: string | undefined, command: string, message: string): RpcResponse {
+export function createRpcErrorResponse(
+	id: string | undefined,
+	command: string,
+	message: string,
+	cause?: unknown,
+): RpcResponse {
+	if (cause instanceof CredentialSynchronizationError) {
+		return {
+			id,
+			type: "response",
+			command,
+			success: false,
+			error: message,
+			errorCode: "credential_synchronization",
+			errorDetails: { providerId: cause.providerId, operation: cause.operation },
+		};
+	}
 	return { id, type: "response", command, success: false, error: message };
 }
 

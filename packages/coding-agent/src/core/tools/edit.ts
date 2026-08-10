@@ -38,6 +38,16 @@ const editSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+export const editToolSystemPromptContribution = Object.freeze({
+	snippet: "Apply source edits with hashline patch input",
+	guidelines: Object.freeze([
+		"hashline edit format: a header ending in ':' is followed by '+'TEXT body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
+		"Ops: 'replace N..M:' replaces original lines N..M (INCLUSIVE — line M is consumed); 'replace block N:' replaces the whole syntactic block that BEGINS on line N (Atomic resolves the closing line with a brace/indent heuristic; point N at the opener); 'delete N..M' / 'delete block N' delete (no body); 'insert before N:' / 'insert after N:' insert relative to a line; 'insert after block N:' inserts after the END of the block beginning on N; 'insert head:' / 'insert tail:' insert at file start/end. Single line: 'replace N..N:' / 'delete N'. The range is the ORIGINAL lines you touch; body length is irrelevant.",
+		"Body rows appear only under a ':' header. Every row is '+TEXT' (adds a literal line, leading whitespace kept; '+' alone adds a blank line). There is NO other body row kind — never write '-old' or a bare/context line. To keep a line, leave it out of every range. For a literal line starting with '-' or '+', prefix it: '+-x', '++x'.",
+		"Numbers refer to the ORIGINAL file and do not shift as hunks apply; they die with the call — every applied edit mints a fresh #TAG and renumbers, so anchor the next edit on the edit response or a fresh read. Ranges are TIGHT: cover ONLY lines whose content changes; a stale wide range shreds everything it spans. Pure additions use 'insert', never a widened 'replace'. Whole construct → 'replace block N'; lines inside it → 'replace N..M'.",
+		"On a stale-tag rejection or any surprising result: STOP and re-read before further edits. Never start or end a range mid-expression/mid-block, and never span a hunk across an elided ('…') region — read it first. Never use edit to reformat/restyle code; run the project formatter instead.",
+	] as const),
+} as const);
 
 export type EditToolInput = Static<typeof editSchema>;
 
@@ -208,14 +218,8 @@ export function createEditToolDefinition(
 		label: "edit",
 		description:
 			"Edit existing files with the hashline patch language: each section starts with [PATH#TAG] (TAG is the 4-hex snapshot tag from your latest read/search), then hunk headers (replace N..M:, replace block N:, delete N..M, delete block N, insert before|after N:, insert after block N:, insert head:, insert tail:) followed by +TEXT body rows. Numbers refer to the original file. Use the write tool to create new files.",
-		promptSnippet: "Apply source edits with hashline patch input",
-		promptGuidelines: [
-			"hashline edit format: a header ending in ':' is followed by '+'TEXT body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
-			"Ops: 'replace N..M:' replaces original lines N..M (INCLUSIVE — line M is consumed); 'replace block N:' replaces the whole syntactic block that BEGINS on line N (Atomic resolves the closing line with a brace/indent heuristic; point N at the opener); 'delete N..M' / 'delete block N' delete (no body); 'insert before N:' / 'insert after N:' insert relative to a line; 'insert after block N:' inserts after the END of the block beginning on N; 'insert head:' / 'insert tail:' insert at file start/end. Single line: 'replace N..N:' / 'delete N'. The range is the ORIGINAL lines you touch; body length is irrelevant.",
-			"Body rows appear only under a ':' header. Every row is '+TEXT' (adds a literal line, leading whitespace kept; '+' alone adds a blank line). There is NO other body row kind — never write '-old' or a bare/context line. To keep a line, leave it out of every range. For a literal line starting with '-' or '+', prefix it: '+-x', '++x'.",
-			"Numbers refer to the ORIGINAL file and do not shift as hunks apply; they die with the call — every applied edit mints a fresh #TAG and renumbers, so anchor the next edit on the edit response or a fresh read. Ranges are TIGHT: cover ONLY lines whose content changes; a stale wide range shreds everything it spans. Pure additions use 'insert', never a widened 'replace'. Whole construct → 'replace block N'; lines inside it → 'replace N..M'.",
-			"On a stale-tag rejection or any surprising result: STOP and re-read before further edits. Never start or end a range mid-expression/mid-block, and never span a hunk across an elided ('…') region — read it first. Never use edit to reformat/restyle code; run the project formatter instead.",
-		],
+		promptSnippet: editToolSystemPromptContribution.snippet,
+		promptGuidelines: [...editToolSystemPromptContribution.guidelines],
 		parameters: editSchema,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal) {
 			if (typeof input.input !== "string" || input.input.trim() === "")

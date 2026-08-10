@@ -138,7 +138,13 @@ export {
 	normalizeModelFailureSignal,
 } from "./core/model-fallback-failures.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
-export { type CreateModelRuntimeOptions, ModelRuntime, type ModelRuntimeAuthOverrides } from "./core/model-runtime.ts";
+export {
+	type CreateModelRuntimeOptions,
+	CredentialSynchronizationError,
+	type CredentialSynchronizationOperation,
+	ModelRuntime,
+	type ModelRuntimeAuthOverrides,
+} from "./core/model-runtime.ts";
 export type {
 	PackageManager,
 	PathMetadata,
@@ -261,6 +267,7 @@ export {
 	type BashToolDetails,
 	type BashToolInput,
 	type BashToolOptions,
+	bashToolSystemPromptContribution,
 	createAskUserQuestionToolDefinition,
 	createBashToolDefinition,
 	createEditToolDefinition,
@@ -276,22 +283,27 @@ export {
 	type EditToolDetails,
 	type EditToolInput,
 	type EditToolOptions,
+	editToolSystemPromptContribution,
 	type FindOperations,
 	type FindToolDetails,
 	type FindToolInput,
 	type FindToolOptions,
+	findToolSystemPromptContribution,
 	formatSize,
 	type LsOperations,
 	type LsToolDetails,
 	type LsToolInput,
 	type LsToolOptions,
+	lsToolSystemPromptContribution,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,
 	type ReadToolOptions,
+	readToolSystemPromptContribution,
 	type SearchToolDetails,
 	type SearchToolInput,
 	type SearchToolOptions,
+	searchToolSystemPromptContribution,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,
@@ -302,6 +314,7 @@ export {
 	type WriteToolInput,
 	type WriteToolOptions,
 	withFileMutationQueue,
+	writeToolSystemPromptContribution,
 } from "./core/tools/index.ts";
 export {
 	hasProjectTrustInputs,

@@ -142,9 +142,12 @@ describe("AgentSession model and extension characterization", () => {
 			],
 		});
 		harnesses.push(harness);
+		let followUpCalls = 0;
+
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
 			(context) => {
+				followUpCalls += 1;
 				const toolResult = context.messages.find((message) => message.role === "toolResult");
 				const errorText =
 					toolResult?.role === "toolResult"
@@ -160,6 +163,48 @@ describe("AgentSession model and extension characterization", () => {
 		await harness.session.prompt("hi");
 
 		expect(getAssistantTexts(harness)).toContain("Blocked by test");
+		expect(followUpCalls).toBe(1);
+		expect(harness.getPendingResponseCount()).toBe(0);
+		expect(
+			harness.session.messages.find((message) => message.role === "toolResult" && message.isError),
+		).toBeDefined();
+	});
+	it("allows a blocked tool_call handler to terminate the batch without a follow-up model call", async () => {
+		const echoTool: AgentTool = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo text back",
+			parameters: Type.Object({ text: Type.String() }),
+			execute: async () => {
+				throw new Error("tool should have been blocked");
+			},
+		};
+		const harness = await createHarness({
+			tools: [echoTool],
+			extensionFactories: [
+				(pi) => {
+					pi.on("tool_call", async () => ({
+						block: true,
+						reason: "Blocked by terminating test",
+						terminate: true,
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" }), fauxToolCall("echo", { text: "world" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("should not run"),
+		]);
+
+		await harness.session.prompt("hi");
+
+		expect(harness.getPendingResponseCount()).toBe(1);
+		expect(getAssistantTexts(harness)).not.toContain("should not run");
+		expect(harness.eventsOfType("tool_execution_end")).toHaveLength(2);
+		expect(harness.eventsOfType("tool_execution_end").map((event) => event.result?.terminate)).toEqual([true, true]);
 		expect(
 			harness.session.messages.find((message) => message.role === "toolResult" && message.isError),
 		).toBeDefined();

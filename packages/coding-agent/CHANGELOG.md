@@ -16,6 +16,11 @@
 - Added `atomic auth check` to verify a provider or model's effective authentication before a session starts. It reports `ready`, `not_ready`, or `invalid`, supports JSON output and a no-refresh read-only mode, and does not emit credential material unless `--credentials` explicitly requests it.
 
 - Added the explicit `--credentials` opt-in to `atomic auth check` for scripts that need the resolved credential. Checks remain status-only unless that flag is present.
+- Added immutable system-prompt contribution constants for Atomic's builtin coding tools, with alignment coverage that keeps each factory's prompt metadata in sync without duplicating prompt assembly.
+
+- Added `CredentialSynchronizationError` for credential mutations that commit successfully but fail to update local model state. Credential-save failures remain distinct from post-commit synchronization failures, and interactive auth surfaces report the distinction.
+
+- Added `terminate` to blocked extension `tool_call` results. A terminating blocked call suppresses the follow-up model request only when every finalized call in its batch also terminates.
 
 - Added the configurable and package-exported `createCodingAgentHarness()` factory, with Atomic's hashline coding tools, live prompt metadata, Atomic and `PI_*` bash session variables, injectable pi-agent-core execution environments for read (including directory trees), bash, edit, write, and find, and runtime rejection of environments that omit `renameFile()`. URL reads now use the session id for cache scope, avoid unsupported session-manager access, and do not persist host-local artifacts in factory contexts. The default `search` tool remains local until its filesystem and matching pipeline gains a complete remote operations seam; read and edit retain local path-variant probes and notebook projection, read also retains local archive, SQLite, and internal-resource selectors, write retains local generated-file, shebang, conflict, and resource helpers, and bash validates its cwd locally and uses Atomic's local temp storage for overflow output.
 

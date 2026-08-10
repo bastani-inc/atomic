@@ -83,7 +83,7 @@ export function createRpcInputLineHandler({
 			await checkShutdownRequested();
 		} catch (commandError: unknown) {
 			const failed = getCommandIdentity(command);
-			output(createRpcErrorResponse(failed.id, failed.type, formatRpcErrorMessage(commandError)));
+			output(createRpcErrorResponse(failed.id, failed.type, formatRpcErrorMessage(commandError), commandError));
 			await waitForRawStdoutBackpressure();
 		}
 	};

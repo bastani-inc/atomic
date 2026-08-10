@@ -1,4 +1,5 @@
 import type { AuthInfoLink, AuthInteraction, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import { CredentialSynchronizationError } from "./model-runtime.ts";
 
 export interface AtomicOAuthLoginCallbacks extends OAuthLoginCallbacks {
 	onManualCodeCancel?(): void;
@@ -26,7 +27,7 @@ export function isOAuthLoginCancelled(
 	signal?: AbortSignal,
 	options: { includeActiveSignal?: boolean } = {},
 ): boolean {
-	if (error instanceof OAuthLoginTransactionError) return false;
+	if (error instanceof OAuthLoginTransactionError || error instanceof CredentialSynchronizationError) return false;
 	if (options.includeActiveSignal !== false && signal?.aborted) return true;
 	const reason = signal?.reason;
 	const seen = new Set<object>();
