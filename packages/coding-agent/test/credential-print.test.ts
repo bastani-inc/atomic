@@ -1449,6 +1449,11 @@ describe("atomic auth on the wire", () => {
 			const agentDir = agentDirWith({ anthropic: { type: "api_key", key: "sk-auth-check-status" } });
 			const run = (argv: string[]) => runCliProcess(argv, { cwd: agentDir, env: cliEnv(agentDir) });
 
+			const missingTarget = await run(["auth", "check"]);
+			expect(missingTarget.code).toBe(2);
+			expect(missingTarget.stdout).toBe("");
+			expect(missingTarget.stderr).toContain("Auth checks require --provider <provider> or --model <model>");
+
 			const unavailable = await run(["auth", "check", "--provider", "not-installed"]);
 			expect(unavailable.code).toBe(1);
 			expect(unavailable.stdout).toBe("not_ready\n");
