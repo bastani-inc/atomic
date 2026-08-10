@@ -8,8 +8,12 @@ import {
 	TuiMainScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import type { PiCustomComponent } from "../../workflows/src/extension/wiring.ts";
+import { createStore } from "../../workflows/src/shared/store.ts";
+import { deriveGraphTheme } from "../../workflows/src/tui/graph-theme.ts";
 import { selectMovementDelta } from "../../workflows/src/tui/prompt-card-select.ts";
+import { openSessionPicker, type UiSurface } from "../../workflows/src/tui/session-overlays.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
@@ -270,15 +274,12 @@ describe("fullscreen input navigation", () => {
 		const terminal = new RecordingTerminal();
 		terminal.columns = 40;
 		terminal.rows = 10;
-		let focusedCalls = 0;
+		const noOpInput = vi.fn(() => {});
 		const focusedOverlay = {
 			focused: false,
 			render: () => ["focused overlay"],
 			invalidate: () => {},
-			handleInput: (_data: string): boolean => {
-				focusedCalls += 1;
-				return false;
-			},
+			handleInput: noOpInput,
 		} satisfies Component & { focused: boolean };
 		const transcript = new ScrollView(
 			new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
@@ -305,9 +306,54 @@ describe("fullscreen input navigation", () => {
 			expect(transcript.scrollTop).toBeGreaterThan(0);
 			terminal.input("\x1bOH");
 			tui.renderNow();
+			expect(noOpInput).toHaveBeenCalledOnce();
 			expect(transcript.scrollTop).toBe(0);
-			expect(focusedCalls).toBe(1);
 		} finally {
+			tui.stop();
+		}
+	});
+
+	test.sequential("lets the transcript handle home for the real workflow session picker", () => {
+		const terminal = new RecordingTerminal();
+		terminal.columns = 40;
+		terminal.rows = 10;
+		let picker: PiCustomComponent | undefined;
+		const surface: UiSurface = {
+			custom: (factory) => {
+				picker = factory({ requestRender: () => {} }, {}, {}, () => {});
+				return undefined;
+			},
+		};
+		void openSessionPicker(surface, createStore(), deriveGraphTheme({}), "connect");
+		if (!picker) throw new Error("workflow session picker did not mount");
+		const transcript = new ScrollView(
+			new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ follow: "end", primary: true },
+		);
+		const tui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			shouldHandleViewportInput: (data) => data !== "\x1bOH",
+		}) as TuiAltScreen;
+		tui.setLayoutRoot(
+			new VStack([
+				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+				{ component: picker as Component, basis: 1, shrink: 0 },
+			]),
+		);
+		tui.setFocus(picker as Component);
+		tui.start();
+		tui.renderNow();
+
+		try {
+			expect(transcript.scrollTop).toBeGreaterThan(0);
+			terminal.input("\x1bOH");
+			tui.renderNow();
+			expect(transcript.scrollTop).toBe(0);
+		} finally {
+			picker.dispose?.();
 			tui.stop();
 		}
 	});

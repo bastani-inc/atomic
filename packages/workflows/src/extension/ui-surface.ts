@@ -51,7 +51,8 @@ export interface PiOverlayOptions {
 
 export interface PiCustomComponent {
 	render(width: number): string[];
-	handleInput?: (data: string) => void;
+	/** Return true when input was consumed; false lets fullscreen viewport input fall through. */
+	handleInput?: (data: string) => boolean;
 	invalidate?: () => void;
 	dispose?: () => void;
 }

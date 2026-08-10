@@ -1,6 +1,22 @@
-import type { Component, TUI, TuiBase, TuiMode } from "@earendil-works/pi-tui";
-import { isViewportTUI, TuiAltScreen } from "@earendil-works/pi-tui";
+import { crc32, deflateSync } from "node:zlib";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import {
+	type Component,
+	getCapabilities,
+	isViewportTUI,
+	resetCapabilitiesCache,
+	setCapabilities,
+	setCellDimensions,
+	type TUI,
+	TuiAltScreen,
+	type TuiBase,
+	type TuiMode,
+} from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { registerContentTools } from "../../web-access/content-tools.ts";
+import type { ExtensionAPI } from "../src/core/extensions/api-types.ts";
+import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
 import {
 	createInteractiveTui,
@@ -20,6 +36,51 @@ const clipboardMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/utils/clipboard.ts", () => clipboardMocks);
+
+function pngChunk(type: string, body: Buffer): Buffer {
+	const header = Buffer.alloc(8);
+	header.writeUInt32BE(body.length, 0);
+	header.write(type, 4, "ascii");
+	const checksum = Buffer.alloc(4);
+	checksum.writeUInt32BE(crc32(Buffer.concat([header.subarray(4), body])), 0);
+	return Buffer.concat([header, body, checksum]);
+}
+
+function createPng(width: number, height: number): Buffer {
+	const ihdr = Buffer.alloc(13);
+	ihdr.writeUInt32BE(width, 0);
+	ihdr.writeUInt32BE(height, 4);
+	ihdr[8] = 8;
+	ihdr[9] = 0;
+	const raw = Buffer.alloc((width + 1) * height);
+	for (let row = 0; row < height; row += 1) {
+		raw.fill(row % 256, row * (width + 1) + 1, (row + 1) * (width + 1));
+	}
+	return Buffer.concat([
+		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+		pngChunk("IHDR", ihdr),
+		pngChunk("IDAT", deflateSync(raw)),
+		pngChunk("IEND", Buffer.alloc(0)),
+	]);
+}
+
+function registerFetchContentTool(): ToolDefinition {
+	const tools: ToolDefinition[] = [];
+	registerContentTools(
+		{
+			registerTool: (tool: ToolDefinition) => tools.push(tool),
+			appendEntry: () => {},
+		} as unknown as ExtensionAPI,
+		{
+			maxInlineContent: 100_000,
+			stripThumbnails: (results) => results,
+			formatFullResults: () => "",
+		},
+	);
+	const tool = tools.find(({ name }) => name === "fetch_content");
+	if (!tool) throw new Error("content-tools did not register fetch_content");
+	return tool;
+}
 
 describe("interactive TUI renderer", () => {
 	test("selects the alternate-screen renderer with link activation and alternate-screen bytes", () => {
@@ -202,6 +263,100 @@ describe("interactive TUI renderer", () => {
 			await initPromise;
 			tui.stop();
 			restoreOffline();
+		}
+	});
+	test.sequential("clips a real fetch_content Kitty image at the sticky dock and reuses its upload", async () => {
+		setCellDimensions({ widthPx: 9, heightPx: 18 });
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		expect(getCapabilities().images).toBe("kitty");
+		const { context, terminal, tui, initPromise, resolveTheme, restoreOffline } = createProductionFullscreenContext({
+			columns: 80,
+			rows: 24,
+			transcriptLines: 0,
+		});
+		const imageBytes = createPng(360, 720);
+		const imageData = imageBytes.toString("base64");
+
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			tui.renderNow();
+			const fetchContent = registerFetchContentTool();
+			const content: AgentToolResult<unknown>["content"] = [
+				{ type: "image", data: imageData, mimeType: "image/png" },
+				{ type: "text", text: "Frame at 0:01" },
+			];
+			const component = new ToolExecutionComponent(
+				"fetch_content",
+				"tool-frame-1",
+				{ url: "file:///clip.mp4", timestamp: "0:01" },
+				{ showImages: true, imageWidthCells: 60 },
+				fetchContent,
+				tui,
+				process.cwd(),
+			);
+			component.updateResult(
+				{
+					content,
+					details: {
+						urls: ["file:///clip.mp4"],
+						urlCount: 1,
+						successful: 1,
+						totalChars: 14,
+						title: "Clip frame",
+						hasImage: true,
+						imageCount: 1,
+					},
+					isError: false,
+				},
+				false,
+			);
+
+			const rawImageLine = component.render(terminal.columns).find((line) => line.includes("\x1b_G"));
+			expect(rawImageLine).toBeDefined();
+			if (!rawImageLine) return;
+			const rawRows = Number(/(?:^|,)r=(\d+)(?:,|;)/.exec(rawImageLine)?.[1]);
+			expect(rawRows).toBeGreaterThan(0);
+
+			const transcript = context.transcriptScrollView;
+			if (!transcript) throw new Error("production transcript did not mount");
+			context.documentContainer.addChild(component);
+			transcript.scrollTo(0);
+			const firstWriteStart = terminal.writes.length;
+			tui.renderNow();
+			const firstWrite = terminal.writes.slice(firstWriteStart).join("");
+			const firstFrameWrites = terminal.writes.join("");
+			const frame = getLayoutFrame(tui);
+			const transcriptBox = frame.root.children[0];
+			const dockBox = frame.root.children[1];
+			if (!transcriptBox || !dockBox) throw new Error("fullscreen dock did not render");
+			expect(dockBox.rect.y).toBe(terminal.rows - dockBox.rect.height);
+			expect(rawRows).toBeGreaterThan(transcriptBox.rect.height);
+			expect(firstWrite).toContain("f=100");
+			expect(firstWrite).toContain(imageData);
+			expect(firstFrameWrites).toContain("\x1b_Ga=d,d=A,q=2\x1b\\");
+			expect(firstFrameWrites).toContain("\x1b[2J");
+			const croppedImageLine = frame.lines.find((line) => line.includes("\x1b_G"));
+			expect(croppedImageLine).toBeDefined();
+			if (!croppedImageLine) return;
+			const croppedRows = Number(/(?:^|,)r=(\d+)(?:,|;)/.exec(croppedImageLine)?.[1]);
+			expect(croppedRows).toBe(transcriptBox.rect.height);
+			expect(croppedRows).toBeLessThan(rawRows);
+			expect(frame.lines.slice(dockBox.rect.y).some((line) => line.includes("\x1b_G"))).toBe(false);
+
+			const secondWriteStart = terminal.writes.length;
+			terminal.resize(terminal.columns, terminal.rows - 2);
+			tui.renderNow();
+			const secondWrite = terminal.writes.slice(secondWriteStart).join("");
+			expect(secondWrite).toContain("\x1b_Ga=p,q=2");
+			expect(secondWrite).toContain("\x1b_Ga=d,d=a,q=2\x1b\\");
+			expect(secondWrite).not.toContain("\x1b_Ga=d,d=A,q=2\x1b\\");
+			expect(secondWrite).not.toContain(imageData);
+		} finally {
+			resolveTheme();
+			await initPromise;
+			tui.stop();
+			restoreOffline();
+			resetCapabilitiesCache();
 		}
 	});
 });
