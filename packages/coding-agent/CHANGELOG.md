@@ -30,6 +30,7 @@
 ### Fixed
 
 - Fixed fullscreen viewport shortcuts stealing matching keys from a focused overlay or inline custom component. When host focus policy defers transcript navigation, the matching input stays with the focused component. Fullscreen shutdown avoids restarting the replacement renderer, and `ctrl+x` shows a transient `Copied!` flash instead of growing the fixed status dock.
+- Fixed isolated fullscreen tool renderers rebuilding Kitty image components on every engine render, which retransmitted visible payloads and rendered the transcript twice per frame during layout changes.
 - Verified the remaining fullscreen polish against pi-tui 0.84.1: stacked flashes, phantom-selection prevention, nested stack minimum sizing, Kitty clipping at dock boundaries, redraw reuse, and offscreen caching are supplied by the dependency. Its multi-click text-selection and tmux/Zellij/Screen mouse-tracking reductions also ship there, so Atomic deliberately does not port them. The fullscreen shutdown query-leak fix is already present in Atomic's `7a5a2674e` core layer.
 
 - Fixed bare exact `--model` IDs shared by providers choosing catalog order. Atomic now uses the sole authenticated matching provider or reports an ambiguity with fully qualified choices ([#7327](https://github.com/earendil-works/pi/issues/7327)).

@@ -18,6 +18,13 @@ type RenderableToolResult = Omit<AgentToolResult<unknown>, "details"> & {
 };
 type RenderableImageContent = Extract<RenderableToolResult["content"][number], { type: "image" }>;
 type DisposableRendererComponent = Component & { dispose?: () => void };
+/** Keep isolated-engine image components stable so pi-tui can reuse Kitty uploads. */
+interface RenderedImageSpec {
+	data: string;
+	mimeType: string;
+	protocol: "kitty" | "iterm2";
+	widthCells: number;
+}
 const SUBAGENT_RESULT_ANIMATION_TIMER_KEY = "subagentResultAnimationTimer";
 const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
 
@@ -45,6 +52,7 @@ export class ToolExecutionComponent extends Container {
 	private argsComplete = false;
 	private result?: RenderableToolResult;
 	private convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
+	private renderedImageSpecs: RenderedImageSpec[] = [];
 	private hideComponent = false;
 
 	constructor(
@@ -206,17 +214,21 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.expanded === expanded) return;
 		this.expanded = expanded;
 		this.updateDisplay();
 	}
 
 	setShowImages(show: boolean): void {
+		if (this.showImages === show) return;
 		this.showImages = show;
 		this.updateDisplay();
 	}
 
 	setImageWidthCells(width: number): void {
-		this.imageWidthCells = Math.max(1, Math.floor(width));
+		const nextWidth = Math.max(1, Math.floor(width));
+		if (this.imageWidthCells === nextWidth) return;
+		this.imageWidthCells = nextWidth;
 		this.updateDisplay();
 	}
 
@@ -333,46 +345,61 @@ export class ToolExecutionComponent extends Container {
 			hasContent = true;
 		}
 
-		for (const img of this.imageComponents) {
-			this.removeChild(img);
-		}
-		this.imageComponents = [];
-		for (const spacer of this.imageSpacers) {
-			this.removeChild(spacer);
-		}
-		this.imageSpacers = [];
-
-		if (this.result) {
-			const imageBlocks = this.result.content.filter((c): c is RenderableImageContent => c.type === "image");
-			const caps = getCapabilities();
-			for (let i = 0; i < imageBlocks.length; i++) {
-				const img = imageBlocks[i];
-				if (img !== undefined && caps.images && this.showImages && img.data && img.mimeType) {
-					const converted = this.convertedImages.get(i);
-					const imageData = converted?.data ?? img.data;
-					const imageMimeType = converted?.mimeType ?? img.mimeType;
-					if (caps.images === "kitty" && imageMimeType !== "image/png") continue;
-
-					const spacer = new Spacer(1);
-					this.addChild(spacer);
-					this.imageSpacers.push(spacer);
-					const imageComponent = new Image(
-						imageData,
-						imageMimeType,
-						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						{ maxWidthCells: this.imageWidthCells },
-					);
-					this.imageComponents.push(imageComponent);
-					this.addChild(imageComponent);
-				}
-			}
-		}
+		this.syncImageComponents();
 
 		if (this.hasRendererDefinition() && !hasContent && this.imageComponents.length === 0) {
 			this.hideComponent = true;
 		}
 	}
 
+	private syncImageComponents(): void {
+		const capabilities = getCapabilities();
+		const nextSpecs: RenderedImageSpec[] = [];
+		if (this.result && this.showImages && capabilities.images) {
+			const imageBlocks = this.result.content.filter((c): c is RenderableImageContent => c.type === "image");
+			for (const [index, image] of imageBlocks.entries()) {
+				if (!image.data || !image.mimeType) continue;
+				const converted = this.convertedImages.get(index);
+				const data = converted?.data ?? image.data;
+				const mimeType = converted?.mimeType ?? image.mimeType;
+				if (capabilities.images === "kitty" && mimeType !== "image/png") continue;
+				nextSpecs.push({ data, mimeType, protocol: capabilities.images, widthCells: this.imageWidthCells });
+			}
+		}
+
+		const unchanged =
+			nextSpecs.length === this.renderedImageSpecs.length &&
+			nextSpecs.every((spec, index) => {
+				const previous = this.renderedImageSpecs[index];
+				return (
+					previous?.data === spec.data &&
+					previous.mimeType === spec.mimeType &&
+					previous.protocol === spec.protocol &&
+					previous.widthCells === spec.widthCells
+				);
+			});
+		if (unchanged) return;
+
+		for (const image of this.imageComponents) this.removeChild(image);
+		this.imageComponents = [];
+		for (const spacer of this.imageSpacers) this.removeChild(spacer);
+		this.imageSpacers = [];
+		this.renderedImageSpecs = nextSpecs;
+
+		for (const spec of nextSpecs) {
+			const spacer = new Spacer(1);
+			this.addChild(spacer);
+			this.imageSpacers.push(spacer);
+			const image = new Image(
+				spec.data,
+				spec.mimeType,
+				{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
+				{ maxWidthCells: spec.widthCells },
+			);
+			this.imageComponents.push(image);
+			this.addChild(image);
+		}
+	}
 	private getTextOutput(): string {
 		return getRenderedTextOutput(this.result, this.showImages);
 	}
