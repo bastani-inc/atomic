@@ -134,13 +134,11 @@ function metaText(stage: StageSnapshot): string {
 }
 
 /**
- * Compact model label for the card's dedicated model row. The card is only
- * ~22 cells wide, so the provider prefix is dropped
- * (`anthropic/claude-opus-4.8` → `claude-opus-4.8`), the thinking level is
- * appended when set (omitted when off), and the Codex fast tier is appended
- * via the shared footer helper (`… fast`), mirroring the main-session footer.
- * When model + level + fast would overflow the card, the level is dropped so
- * the fast marker is never truncated away. `—` when no model is resolved yet.
+ * Compact model label for the card's dedicated model row (~22 cells): provider
+ * prefix dropped, thinking level appended when set (omitted when off), and the
+ * Codex fast tier appended via the shared footer helper. On overflow the
+ * thinking level is dropped first and then the model name is truncated, so the
+ * whole ` fast` marker always survives. `—` when no model is resolved yet.
  */
 function modelText(stage: StageSnapshot, innerWidth: number): string {
 	const model = stage.model;
@@ -152,10 +150,14 @@ function modelText(stage: StageSnapshot, innerWidth: number): string {
 	const fast = stage.fastMode === true;
 	const withLevel = showLevel ? `${short} · ${level}` : short;
 	const full = codexFastModeLabel(withLevel, fast);
-	if (fast && showLevel && visibleWidth(full) > innerWidth) {
-		return codexFastModeLabel(short, true);
-	}
-	return full;
+	if (!fast || visibleWidth(full) <= innerWidth) return full;
+	// Fast overflows: drop the thinking level first.
+	const withoutLevel = codexFastModeLabel(short, true);
+	if (visibleWidth(withoutLevel) <= innerWidth) return withoutLevel;
+	// Still too wide: truncate the model name but keep the whole ` fast` marker.
+	const marker = codexFastModeLabel("", true);
+	const room = Math.max(1, innerWidth - visibleWidth(marker));
+	return `${truncateToWidth(short, room, "…")}${marker}`;
 }
 
 function workflowChildRunRows(stage: StageSnapshot, width: number): string[] {

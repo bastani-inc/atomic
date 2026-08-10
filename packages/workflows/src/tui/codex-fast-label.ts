@@ -12,5 +12,5 @@
  * cross-ref: packages/coding-agent/src/core/codex-fast-mode.ts
  */
 export function codexFastModeLabel(label: string, enabled: boolean): string {
-  return enabled ? `${label} fast` : label;
+	return enabled ? `${label} fast` : label;
 }

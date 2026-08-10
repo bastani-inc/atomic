@@ -561,6 +561,24 @@ describe("renderNodeCard — metadata line", () => {
 		assert.doesNotMatch(stripAnsi(lines[4]!), /fast/);
 	});
 
+	test("keeps the full fast marker and truncates a long model name instead of the marker", () => {
+		// A long configured Codex model + fast overflows the ~22-cell card. The
+		// marker is load-bearing, so the model name is truncated, never ` fast`.
+		const lines = renderNodeCard(
+			makeStage({
+				status: "running",
+				startedAt: Date.now() - 500,
+				model: "openai-codex/gpt-5.3-codex-spark",
+				fastMode: true,
+			}),
+			{ theme },
+		);
+		const modelRow = stripAnsi(lines[3]!);
+		assert.ok(modelRow.replaceAll("│", "").trimEnd().endsWith("fast"), modelRow);
+		assert.doesNotMatch(modelRow, /f…|fa…|fas…/);
+		assert.match(modelRow, /…/);
+	});
+
 	test("model row keeps both the thinking level and the fast marker when they fit", () => {
 		const lines = renderNodeCard(
 			makeStage({
