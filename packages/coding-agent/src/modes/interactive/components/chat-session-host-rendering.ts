@@ -229,6 +229,7 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
 		inherited?.showImages !== false,
 		inherited?.imageWidthCells ?? null,
 		inherited?.outputPad ?? null,
+		inherited?.renderLatex !== false,
 		markdownTransformersKey,
 		state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
 		state.bodyViewport.getScrollFromBottom() === 0,

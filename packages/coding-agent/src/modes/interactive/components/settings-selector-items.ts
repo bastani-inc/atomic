@@ -161,6 +161,20 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 			values: ["true", "false"],
 		},
 		{
+			id: "mermaid-rendering",
+			label: "Mermaid diagrams",
+			description: "Render Mermaid code blocks as Unicode diagrams",
+			currentValue: config.mermaidRenderingMode,
+			values: ["off", "final", "streaming"],
+		},
+		{
+			id: "latex-rendering",
+			label: "LaTeX math",
+			description: "Render LaTeX expressions as Unicode math",
+			currentValue: config.latexRenderingEnabled ? "true" : "false",
+			values: ["true", "false"],
+		},
+		{
 			id: "collapse-changelog",
 			label: "Collapse changelog",
 			description: "Show condensed changelog after updates",

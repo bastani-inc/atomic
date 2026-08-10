@@ -128,3 +128,27 @@ test("rebuilds cached transcript rows when Markdown transformers change", () => 
 		host.dispose();
 	}
 });
+
+test("rebuilds cached transcript rows when LaTeX rendering changes", () => {
+	initTheme("dark");
+	let renderLatex = true;
+	const source = String.raw`Inline $\frac{1}{2}$`;
+	const host = new ChatSessionHost({
+		style,
+		editorTheme,
+		getChatRenderSettings: () => ({ renderLatex }),
+	});
+
+	try {
+		host.appendMessages([assistantMessage(source)]);
+		const enabled = stripAnsi(host.renderBody(100, 20).join("\n"));
+		assert.match(enabled, /1\/2/);
+
+		renderLatex = false;
+		const disabled = stripAnsi(host.renderBody(100, 20).join("\n"));
+		assert.match(disabled, /\\frac\{1\}\{2\}/);
+		assert.doesNotMatch(disabled, /1\/2/);
+	} finally {
+		host.dispose();
+	}
+});

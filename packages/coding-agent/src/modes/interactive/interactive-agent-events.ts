@@ -168,9 +168,9 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					this.getMarkdownThemeWithSettings(),
 					this.hiddenThinkingLabel,
 					this.outputPad,
-					this.runtimeHost instanceof IsolatedInteractiveRuntime
-						? []
-						: this.session.extensionRunner.getMarkdownTransformers(),
+					this.getMarkdownTransformers(),
+					true,
+					this.settingsManager.getLatexRenderingEnabled(),
 				);
 				this.streamingMessage = beginStreamingAssistantMessage(event.message);
 				this.chatContainer.addChild(this.streamingComponent);

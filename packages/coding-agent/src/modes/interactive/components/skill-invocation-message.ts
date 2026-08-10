@@ -12,11 +12,13 @@ export class SkillInvocationMessageComponent extends Box {
 	private expanded = false;
 	private skillBlock: ParsedSkillBlock;
 	private markdownTheme: MarkdownTheme;
+	private renderLatex: boolean;
 
-	constructor(skillBlock: ParsedSkillBlock, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
+	constructor(skillBlock: ParsedSkillBlock, markdownTheme: MarkdownTheme = getMarkdownTheme(), renderLatex = true) {
 		super(1, 1, (t) => theme.bg("customMessageBg", t));
 		this.skillBlock = skillBlock;
 		this.markdownTheme = markdownTheme;
+		this.renderLatex = renderLatex;
 		this.updateDisplay();
 	}
 
@@ -39,9 +41,16 @@ export class SkillInvocationMessageComponent extends Box {
 			this.addChild(new Text(label, 0, 0));
 			const header = `**${this.skillBlock.name}**\n\n`;
 			this.addChild(
-				new Markdown(header + this.skillBlock.content, 0, 0, this.markdownTheme, {
-					color: (text: string) => theme.fg("customMessageText", text),
-				}),
+				new Markdown(
+					header + this.skillBlock.content,
+					0,
+					0,
+					this.markdownTheme,
+					{
+						color: (text: string) => theme.fg("customMessageText", text),
+					},
+					{ renderLatex: this.renderLatex },
+				),
 			);
 		} else {
 			// Collapsed: single line - [skill] name (expand hint)

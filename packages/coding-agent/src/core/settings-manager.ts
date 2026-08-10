@@ -11,6 +11,7 @@ export type {
 	DefaultProjectTrust,
 	ImageSettings,
 	MarkdownSettings,
+	MermaidRenderingMode,
 	PackageSource,
 	ProviderRetrySettings,
 	RetrySettings,

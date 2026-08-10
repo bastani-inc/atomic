@@ -364,6 +364,47 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("markdown.mermaid", () => {
+		it("defaults to streaming and persists rendering modes", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getMermaidRenderingMode()).toBe("streaming");
+
+			manager.setMermaidRenderingMode("final");
+			await manager.flush();
+
+			expect(manager.getMermaidRenderingMode()).toBe("final");
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.markdown.mermaid).toBe("final");
+		});
+
+		it("falls back to streaming for unsupported values", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ markdown: { mermaid: "sometimes" } }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getMermaidRenderingMode()).toBe("streaming");
+		});
+	});
+	describe("markdown.latex", () => {
+		it("defaults to enabled and persists the rendering toggle", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getLatexRenderingEnabled()).toBe(true);
+
+			manager.setLatexRenderingEnabled(false);
+			await manager.flush();
+
+			expect(manager.getLatexRenderingEnabled()).toBe(false);
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.markdown.latex).toBe(false);
+		});
+
+		it("falls back to enabled for unsupported values", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ markdown: { latex: "sometimes" } }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getLatexRenderingEnabled()).toBe(true);
+		});
+	});
+
 	describe("shellCommandPrefix", () => {
 		it("should load shellCommandPrefix from settings", () => {
 			const settingsPath = join(agentDir, "settings.json");

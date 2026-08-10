@@ -1,7 +1,7 @@
 import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals } from "./settings-manager-internals.ts";
-import type { WarningSettings } from "./settings-types.ts";
+import type { MermaidRenderingMode, WarningSettings } from "./settings-types.ts";
 
 interface SettingsManagerUiAccessors {
 	getShowImages(): boolean;
@@ -31,6 +31,10 @@ interface SettingsManagerUiAccessors {
 	getAutocompleteMaxVisible(): number;
 	setAutocompleteMaxVisible(maxVisible: number): void;
 	getCodeBlockIndent(): string;
+	getMermaidRenderingMode(): MermaidRenderingMode;
+	setMermaidRenderingMode(mode: MermaidRenderingMode): void;
+	getLatexRenderingEnabled(): boolean;
+	setLatexRenderingEnabled(enabled: boolean): void;
 	getWarnings(): WarningSettings;
 	setWarnings(warnings: WarningSettings): void;
 	getCodexFastModeSettings(): { chat: boolean; workflow: boolean };
@@ -216,6 +220,31 @@ const uiAccessors: SettingsManagerUiAccessors = {
 
 	getCodeBlockIndent() {
 		return settingsInternals(this).settings.markdown?.codeBlockIndent ?? "  ";
+	},
+
+	getMermaidRenderingMode() {
+		const mode = settingsInternals(this).settings.markdown?.mermaid;
+		return mode === "off" || mode === "final" ? mode : "streaming";
+	},
+
+	setMermaidRenderingMode(mode) {
+		const state = settingsInternals(this);
+		state.globalSettings.markdown ??= {};
+		state.globalSettings.markdown.mermaid = mode;
+		state.markModified("markdown", "mermaid");
+		state.save();
+	},
+
+	getLatexRenderingEnabled() {
+		return settingsInternals(this).settings.markdown?.latex !== false;
+	},
+
+	setLatexRenderingEnabled(enabled) {
+		const state = settingsInternals(this);
+		state.globalSettings.markdown ??= {};
+		state.globalSettings.markdown.latex = enabled;
+		state.markModified("markdown", "latex");
+		state.save();
 	},
 
 	getWarnings() {

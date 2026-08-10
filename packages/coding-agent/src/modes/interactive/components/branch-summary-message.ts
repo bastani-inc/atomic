@@ -11,11 +11,13 @@ export class BranchSummaryMessageComponent extends Box {
 	private expanded = false;
 	private message: BranchSummaryMessage;
 	private markdownTheme: MarkdownTheme;
+	private renderLatex: boolean;
 
-	constructor(message: BranchSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
+	constructor(message: BranchSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme(), renderLatex = true) {
 		super(1, 1, (t) => theme.bg("customMessageBg", t));
 		this.message = message;
 		this.markdownTheme = markdownTheme;
+		this.renderLatex = renderLatex;
 		this.updateDisplay();
 	}
 
@@ -39,9 +41,16 @@ export class BranchSummaryMessageComponent extends Box {
 		if (this.expanded) {
 			const header = "**Branch Summary**\n\n";
 			this.addChild(
-				new Markdown(header + this.message.summary, 0, 0, this.markdownTheme, {
-					color: (text: string) => theme.fg("customMessageText", text),
-				}),
+				new Markdown(
+					header + this.message.summary,
+					0,
+					0,
+					this.markdownTheme,
+					{
+						color: (text: string) => theme.fg("customMessageText", text),
+					},
+					{ renderLatex: this.renderLatex },
+				),
 			);
 		} else {
 			const hint = parenthesizedKeyHint("app.tools.expand", "Expand");

@@ -29,18 +29,21 @@ export class CustomMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private _expanded = false;
 	private outputPad: number;
+	private renderLatex: boolean;
 
 	constructor(
 		message: CustomMessage<unknown>,
 		customRenderer?: MessageRenderer,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
+		renderLatex = true,
 	) {
 		super();
 		this.message = message;
 		this.customRenderer = customRenderer;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
+		this.renderLatex = renderLatex;
 
 		// Create box with purple background (used for default rendering)
 		this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
@@ -135,9 +138,16 @@ export class CustomMessageComponent extends Container {
 		}
 
 		this.box.addChild(
-			new Markdown(text, 0, 0, this.markdownTheme, {
-				color: (text: string) => theme.fg("customMessageText", text),
-			}),
+			new Markdown(
+				text,
+				0,
+				0,
+				this.markdownTheme,
+				{
+					color: (text: string) => theme.fg("customMessageText", text),
+				},
+				{ renderLatex: this.renderLatex },
+			),
 		);
 	}
 }

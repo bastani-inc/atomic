@@ -292,7 +292,7 @@ test("isolated interactive-engine notify lands below RESOURCES", async () => {
 	assertResourcesBefore(normalizeStartupOutput(mode.chatContainer), "isolated engine warning");
 });
 
-test("isolated chat settings exclude host Markdown transformers", () => {
+test("isolated chat settings include only the builtin Mermaid transformer", () => {
 	const mode = createOrderingMode();
 	const transformer = (markdown: string): string => `host:${markdown}`;
 	const runtime = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;
@@ -306,6 +306,8 @@ test("isolated chat settings exclude host Markdown transformers", () => {
 			settingsManager: {
 				getShowImages: () => true,
 				getImageWidthCells: () => 60,
+				getMermaidRenderingMode: () => "streaming",
+				getLatexRenderingEnabled: () => true,
 			},
 		},
 	});
@@ -315,10 +317,13 @@ test("isolated chat settings exclude host Markdown transformers", () => {
 		hiddenThinkingLabel: "Thinking...",
 		toolOutputExpanded: false,
 		outputPad: 1,
+		mermaidMarkdownTransformer: (markdown: string) => markdown,
 	});
 
 	const ui = InteractiveMode.prototype.createExtensionUIContext.call(mode) as ExtensionUIContext;
-	assert.deepEqual(ui.getChatRenderSettings().markdownTransformers, []);
+	const transformers = ui.getChatRenderSettings().markdownTransformers;
+	assert.equal(transformers?.length, 1);
+	assert.notEqual(transformers?.[0], transformer);
 });
 
 for (const startupPath of ["eager", "deferred"] as const) {
