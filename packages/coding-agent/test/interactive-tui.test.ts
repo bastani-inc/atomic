@@ -3,6 +3,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	type Component,
 	getCapabilities,
+	type Image,
 	isViewportTUI,
 	resetCapabilitiesCache,
 	setCapabilities,
@@ -342,6 +343,26 @@ describe("interactive TUI renderer", () => {
 			expect(croppedRows).toBe(transcriptBox.rect.height);
 			expect(croppedRows).toBeLessThan(rawRows);
 			expect(frame.lines.slice(dockBox.rect.y).some((line) => line.includes("\x1b_G"))).toBe(false);
+
+			const imageComponentsBefore = Reflect.get(component, "imageComponents") as Image[];
+			expect(imageComponentsBefore).toHaveLength(1);
+			const imageComponent = imageComponentsBefore[0];
+			if (!imageComponent) throw new Error("Kitty image component did not mount");
+			const imageId = imageComponent.getImageId();
+			expect(imageId).toBeDefined();
+
+			const isolatedReseedWriteStart = terminal.writes.length;
+			component.updateArgs({ url: "file:///clip.mp4", timestamp: "0:01" });
+			component.updateResult({ content: [...content], isError: false }, false);
+			component.setExpanded(false);
+			component.setShowImages(true);
+			component.setImageWidthCells(60);
+			tui.renderNow();
+			const isolatedReseedWrite = terminal.writes.slice(isolatedReseedWriteStart).join("");
+			const imageComponentsAfter = Reflect.get(component, "imageComponents") as Image[];
+			expect(imageComponentsAfter[0]).toBe(imageComponent);
+			expect(imageComponent.getImageId()).toBe(imageId);
+			expect(isolatedReseedWrite).not.toContain(imageData);
 
 			const secondWriteStart = terminal.writes.length;
 			terminal.resize(terminal.columns, terminal.rows - 2);
