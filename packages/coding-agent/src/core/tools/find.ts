@@ -300,7 +300,10 @@ function buildFindResult(
 export interface FindOperations {
 	stat?: (
 		path: string,
-	) => Promise<{ isFile: boolean; isDirectory: boolean }> | { isFile: boolean; isDirectory: boolean } | undefined;
+	) =>
+		| Promise<{ isFile: boolean; isDirectory: boolean } | undefined>
+		| { isFile: boolean; isDirectory: boolean }
+		| undefined;
 	exists: (path: string) => Promise<boolean> | boolean;
 	glob: (
 		pattern: string,
