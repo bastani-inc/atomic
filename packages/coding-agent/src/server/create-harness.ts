@@ -4,6 +4,7 @@ import {
 	type ExecutionEnv,
 	type ExecutionError,
 	type FileError,
+	type FileInfo,
 	type HarnessTool,
 	type Result,
 } from "@earendil-works/pi-agent-core";
@@ -12,6 +13,7 @@ import type { Static, TSchema } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../core/extensions/types.ts";
 import type { ReadonlySessionManager } from "../core/session-manager.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
+import type { DirectoryTreeEntry } from "../core/tools/directory-tree.ts";
 import { createCodingToolDefinitions, type ToolsOptions } from "../core/tools/index.ts";
 import { detectSupportedImageMimeType } from "../utils/mime.ts";
 
@@ -115,6 +117,45 @@ async function findExecutionEnvStat(
 	return { isFile: target.value.kind === "file", isDirectory: target.value.kind === "directory" };
 }
 
+async function toExecutionEnvDirectoryEntry(
+	env: ExecutionEnv,
+	info: FileInfo,
+): Promise<DirectoryTreeEntry | undefined> {
+	if (info.kind !== "symlink")
+		return {
+			name: info.name,
+			path: info.path,
+			isDirectory: info.kind === "directory",
+			mtimeMs: info.mtimeMs,
+			size: info.size,
+		};
+	const canonical = await env.canonicalPath(info.path);
+	if (!canonical.ok) return undefined;
+	const target = await env.fileInfo(canonical.value);
+	if (!target.ok) return undefined;
+	return {
+		name: info.name,
+		path: canonical.value,
+		isDirectory: target.value.kind === "directory",
+		mtimeMs: target.value.mtimeMs,
+		size: target.value.size,
+	};
+}
+
+async function listExecutionEnvDirectory(env: ExecutionEnv, path: string): Promise<DirectoryTreeEntry[] | undefined> {
+	let result = await env.listDir(path);
+	if (!result.ok) {
+		const info = await env.fileInfo(path);
+		if (!info.ok || info.value.kind !== "symlink") return undefined;
+		const canonical = await env.canonicalPath(path);
+		if (!canonical.ok) return undefined;
+		result = await env.listDir(canonical.value);
+	}
+	if (!result.ok) return undefined;
+	const entries = await Promise.all(result.value.map((entry) => toExecutionEnvDirectoryEntry(env, entry)));
+	return entries.filter((entry): entry is DirectoryTreeEntry => entry !== undefined);
+}
+
 function createExecutionEnvToolOptions(
 	env: ExecutionEnv,
 	commandPrefix: string | undefined,
@@ -125,9 +166,10 @@ function createExecutionEnvToolOptions(
 			operations: {
 				readFile: async (path) => Buffer.from(unwrapFileResult(await env.readBinaryFile(path))),
 				access: async (path) => {
-					const info = unwrapFileResult(await env.fileInfo(path));
-					if (info.kind === "directory") throw new Error(`Cannot read directory: ${path}`);
+					unwrapFileResult(await env.fileInfo(path));
 				},
+				stat: (path) => findExecutionEnvStat(env, path),
+				listDir: (path) => listExecutionEnvDirectory(env, path),
 				detectImageMimeType: async (path) =>
 					detectSupportedImageMimeType(unwrapFileResult(await env.readBinaryFile(path))),
 			},
@@ -206,7 +248,9 @@ function assertExecutionEnv(env: ExecutionEnv): void {
 function createHarnessSessionManager(metadataId: string, sessionFile: string | undefined): ReadonlySessionManager {
 	return {
 		getCwd: () => unsupportedHarnessOperation("sessionManager.getCwd()"),
-		getSessionDir: () => unsupportedHarnessOperation("sessionManager.getSessionDir()"),
+		// The factory has no local session directory. URL reads still use the session id for cache scope,
+		// but skip host-local artifact persistence rather than treating the ExecutionEnv cwd as local storage.
+		getSessionDir: () => "",
 		usesDefaultSessionDir: () => unsupportedHarnessOperation("sessionManager.usesDefaultSessionDir()"),
 		getSessionId: () => metadataId,
 		getSessionFile: () => sessionFile,
@@ -270,10 +314,17 @@ export function buildCodingAgentHarnessSystemPrompt(options: BuildCodingAgentHar
  * and `close()` on the returned harness. The returned harness also exposes the
  * implemented state/configuration getters and setters for model, thinking
  * level, active tools, tools, resources, stream options, retry, compaction,
- * steering, and follow-up modes. Its default tools route read, bash, edit,
- * write, and find through the injected `ExecutionEnv`; `search` still uses
- * Atomic's local filesystem/ripgrep pipeline until that tool gains a complete
- * remote operations seam. It does not invoke `prompt`, `skill`,
+ * steering, and follow-up modes. Its default tools route the primary operations
+ * for read, bash, edit, write, and find through the injected `ExecutionEnv`;
+ * read and edit still use Atomic's local path-variant probes and notebook
+ * projection; read also uses local archive, SQLite, and internal-resource
+ * selectors, while write still uses local generated-file, shebang, conflict,
+ * and resource helpers. Bash validates its cwd locally and uses Atomic's local
+ * temp storage for overflow output. URL fetches use the process network and do
+ * not persist host-local artifacts in this factory. `search` still uses Atomic's
+ * local filesystem/ripgrep pipeline
+ * until that tool gains a complete remote operations seam. It does not invoke
+ * `prompt`, `skill`,
  * `promptFromTemplate`, `compact`, `navigateTree`, `resume`, `steer`, `followUp`,
  * `nextRun`, `cancelQueued`, `recordUsage`, `abort`, `waitForIdle`,
  * `runWhenIdle`, `peekAction`, `executeAction`, `runToCompletion`, `watch`,

@@ -84,6 +84,14 @@ The SDK is included in the main package. No separate SDK package is needed.
 
 The entrypoint is separate from Atomic's local interactive engine and does not add an `atomic client` CLI command. Its API may change without notice.
 
+## Experimental Harness factory
+
+The package root also exports `createCodingAgentHarness()` for applications that provide a pi-agent-core `ExecutionEnv`. It creates a Harness with Atomic's six coding tools: `read`, `bash`, `edit`, `write`, `find`, and `search`.
+
+The factory routes the primary operations for the first five tools through the supplied execution environment, including directory-tree reads. URL reads use the session id for cache scope, fetch through the process network, and do not persist host-local artifacts because the factory has no local session directory. `search` is fully local; read and edit still use local path-variant probes and notebook projection, read also uses local archive, SQLite, and internal-resource selectors, write retains local generated-file, shebang, conflict, and resource helpers, and bash validates its cwd locally and uses Atomic's local temp storage for overflow output.
+
+The factory requires `ExecutionEnv.renameFile()` and does not add a fallback filesystem implementation.
+
 ## Core Concepts
 
 ### createAgentSession()

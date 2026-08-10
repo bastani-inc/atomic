@@ -2161,6 +2161,8 @@ pi.registerTool({
 });
 ```
 
+`ReadOperations` may also provide `stat` and `listDir` to keep directory-tree reads on the injected filesystem. The Harness factory supplies both. A custom read backend without both members keeps the existing file-only remote behavior. Archive, SQLite, internal-resource, notebook, and path-variant helpers still use Atomic's local filesystem unless the tool gains dedicated remote seams.
+
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 
 For `user_bash`, extensions can reuse atomic's local shell backend via `createLocalBashOperations()` instead of reimplementing local process spawning, shell resolution, and process-tree termination.

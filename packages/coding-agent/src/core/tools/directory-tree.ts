@@ -8,6 +8,18 @@ export interface DirectoryTreeResult {
 	totalLines: number;
 }
 
+export interface DirectoryTreeEntry {
+	name: string;
+	path: string;
+	isDirectory: boolean;
+	mtimeMs: number;
+	size: number;
+}
+
+export interface DirectoryTreeOperations {
+	listDir: (path: string) => Promise<DirectoryTreeEntry[] | undefined>;
+}
+
 interface TreeNode {
 	name: string;
 	path: string;
@@ -75,6 +87,33 @@ async function buildNode(
 	return node;
 }
 
+async function buildNodeFromOperations(
+	entry: DirectoryTreeEntry,
+	depth: number,
+	maxDepth: number,
+	operations: DirectoryTreeOperations,
+): Promise<TreeNode> {
+	const node: TreeNode = {
+		name: entry.name,
+		path: entry.path,
+		isDir: entry.isDirectory,
+		mtimeMs: entry.mtimeMs,
+		size: entry.size,
+		depth,
+		children: [],
+		droppedCount: 0,
+	};
+	if (!node.isDir || depth >= maxDepth) return node;
+	const entries =
+		(await operations.listDir(entry.path))?.filter(
+			(child) => !child.isDirectory || !shouldSkipDirectory(child.name),
+		) ?? [];
+	node.children = (
+		await Promise.all(entries.map((child) => buildNodeFromOperations(child, depth + 1, maxDepth, operations)))
+	).sort(byRecency);
+	return node;
+}
+
 function applyChildLimit(node: TreeNode, perDirLimit: number | null, rootLimit: number | null): boolean {
 	let truncated = false;
 	const limit = node.depth === 0 ? rootLimit : perDirLimit;
@@ -119,6 +158,28 @@ export async function buildDirectoryTree(
 ): Promise<DirectoryTreeResult> {
 	const root = await buildNode(rootPath, ".", 0, options.maxDepth ?? 2);
 	if (!root || root.children.length === 0) return { rendered: "(empty directory)", truncated: false, totalLines: 1 };
+	const truncated = applyChildLimit(
+		root,
+		options.perDirLimit ?? 12,
+		options.rootLimit === undefined ? null : options.rootLimit,
+	);
+	const lines: string[] = [];
+	renderNode(root, Date.now(), lines);
+	return { rendered: lines.join("\n"), truncated, totalLines: lines.length };
+}
+
+export async function buildDirectoryTreeFromOperations(
+	rootPath: string,
+	operations: DirectoryTreeOperations,
+	options: DirectoryTreeOptions = {},
+): Promise<DirectoryTreeResult> {
+	const root = await buildNodeFromOperations(
+		{ name: ".", path: rootPath, isDirectory: true, mtimeMs: 0, size: 0 },
+		0,
+		options.maxDepth ?? 2,
+		operations,
+	);
+	if (root.children.length === 0) return { rendered: "(empty directory)", truncated: false, totalLines: 1 };
 	const truncated = applyChildLimit(
 		root,
 		options.perDirLimit ?? 12,

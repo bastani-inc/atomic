@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,37 +30,59 @@ class CapturingExecutionEnv extends NodeExecutionEnv {
 	listDirCalls = 0;
 	readTextFileCalls = 0;
 	fileInfoCalls = 0;
+	operationLog: string[] = [];
 	override async exec(
 		command: string,
 		options?: ShellExecOptions,
 	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
+		this.operationLog.push("exec");
 		this.executionOverrides = options?.env ? { ...options.env } : undefined;
 		return super.exec(command, options);
 	}
 
 	override async readBinaryFile(path: string, abortSignal?: AbortSignal) {
+		this.operationLog.push("readBinaryFile");
 		this.readCalls++;
 		return super.readBinaryFile(path, abortSignal);
 	}
 
 	override async writeFile(path: string, content: string | Uint8Array, abortSignal?: AbortSignal) {
+		this.operationLog.push("writeFile");
 		this.writeCalls++;
 		return super.writeFile(path, content, abortSignal);
 	}
 
 	override async listDir(path: string, abortSignal?: AbortSignal) {
+		this.operationLog.push("listDir");
 		this.listDirCalls++;
 		return super.listDir(path, abortSignal);
 	}
 
 	override async readTextFile(path: string, abortSignal?: AbortSignal) {
+		this.operationLog.push("readTextFile");
 		this.readTextFileCalls++;
 		return super.readTextFile(path, abortSignal);
 	}
 
 	override async fileInfo(path: string) {
+		this.operationLog.push("fileInfo");
 		this.fileInfoCalls++;
 		return super.fileInfo(path);
+	}
+
+	override async exists(path: string) {
+		this.operationLog.push("exists");
+		return super.exists(path);
+	}
+
+	override async canonicalPath(path: string) {
+		this.operationLog.push("canonicalPath");
+		return super.canonicalPath(path);
+	}
+
+	override async createDir(path: string, options?: { recursive?: boolean; abortSignal?: AbortSignal }) {
+		this.operationLog.push("createDir");
+		return super.createDir(path, options);
 	}
 }
 
@@ -282,6 +304,38 @@ describe("coding-agent Harness construction", () => {
 		}
 	});
 
+	test("reads directories through the injected ExecutionEnv", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-harness-directory-"));
+		const env = new CapturingExecutionEnv({ cwd: root });
+		const created = await createCodingAgentHarness({
+			session: createSession("directory-read-harness"),
+			models: createModels(),
+			model: getModel("google", "gemini-2.5-flash"),
+			env,
+		});
+		try {
+			const tools = await created.harness.getTools();
+			const write = tools.find((tool) => tool.name === "write");
+			const read = tools.find((tool) => tool.name === "read");
+			if (!write || !read) throw new Error("Expected the default read and write tools");
+
+			await write.execute("directory-write", { path: "sub/a.txt", content: "hello" });
+			const result = await read.execute("directory-read", { path: "sub" });
+			const text = result.content[0];
+			if (text?.type !== "text") throw new Error("Expected directory text output");
+
+			expect(text.text).toContain(".");
+			expect(text.text).toContain("- a.txt");
+			expect(result.details).toMatchObject({ isDirectory: true, resolvedPath: join(root, "sub") });
+			expect(env.listDirCalls).toBeGreaterThan(0);
+			expect(env.fileInfoCalls).toBeGreaterThan(0);
+		} finally {
+			await created.harness.close();
+			await env.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("keeps search local until its remote operations seam is complete", async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-harness-search-"));
 		const env = new CapturingExecutionEnv({ cwd: root });
@@ -305,6 +359,44 @@ describe("coding-agent Harness construction", () => {
 			expect(env.readTextFileCalls).toBe(0);
 			expect(env.listDirCalls).toBe(0);
 		} finally {
+			await created.harness.close();
+			await env.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("reads URLs without unsupported session operations or host artifacts", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-harness-url-"));
+		const env = new CapturingExecutionEnv({ cwd: root });
+		const created = await createCodingAgentHarness({
+			session: createSession("url-read-harness"),
+			models: createModels(),
+			model: getModel("google", "gemini-2.5-flash"),
+			env,
+		});
+		const originalAllowPrivate = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+		const fetchMock = vi.fn(
+			async () => new Response("remote body", { status: 200, headers: { "content-type": "text/plain" } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = "1";
+		try {
+			const read = (await created.harness.getTools()).find((tool) => tool.name === "read");
+			if (!read) throw new Error("Expected the default read tool");
+
+			const result = await read.execute("url-read", { path: "http://127.0.0.1/harness-test" });
+			const text = result.content[0];
+			if (text?.type !== "text") throw new Error("Expected URL text output");
+
+			expect(text.text).toContain("remote body");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(result.details?.meta?.artifactId).toBeUndefined();
+			expect(existsSync(join(root, "artifacts"))).toBe(false);
+			expect(env.operationLog).toEqual([]);
+		} finally {
+			if (originalAllowPrivate === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+			else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = originalAllowPrivate;
+			vi.unstubAllGlobals();
 			await created.harness.close();
 			await env.cleanup();
 			rmSync(root, { recursive: true, force: true });
@@ -569,6 +661,69 @@ describe("coding-agent Harness construction", () => {
 		expect(prompt.indexOf("Use write when replacing the full content")).toBeLessThan(
 			prompt.indexOf("Use read to inspect file and resource contents"),
 		);
+	});
+
+	test("records the ExecutionEnv boundary reached by every default tool", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-harness-tool-boundaries-"));
+		const env = new CapturingExecutionEnv({ cwd: root });
+		const created = await createCodingAgentHarness({
+			session: createSession("tool-boundaries-harness"),
+			models: createModels(),
+			model: getModel("google", "gemini-2.5-flash"),
+			env,
+		});
+		const operationsByTool: Record<string, string[]> = {};
+		const record = async (name: string, action: () => Promise<void>): Promise<void> => {
+			const start = env.operationLog.length;
+			await action();
+			operationsByTool[name] = env.operationLog.slice(start);
+		};
+		try {
+			const tools = await created.harness.getTools();
+			const byName = new Map(tools.map((tool) => [tool.name, tool]));
+			const read = byName.get("read");
+			const bash = byName.get("bash");
+			const edit = byName.get("edit");
+			const write = byName.get("write");
+			const find = byName.get("find");
+			const search = byName.get("search");
+			if (!read || !bash || !edit || !write || !find || !search) throw new Error("Expected all six default tools");
+
+			await record("write", async () => {
+				await write.execute("boundary-write", { path: "nested/file.txt", content: "needle" });
+			});
+			let header = "";
+			await record("read", async () => {
+				const result = await read.execute("boundary-read", { path: "nested/file.txt" });
+				const text = result.content[0];
+				if (text?.type !== "text") throw new Error("Expected hashline read text");
+				header = text.text.split("\n", 1)[0] ?? "";
+			});
+			await record("edit", async () => {
+				await edit.execute("boundary-edit", { input: `${header}\nreplace 1..1:\n+updated` });
+			});
+			await record("bash", async () => {
+				await bash.execute("boundary-bash", { command: "printf boundary" });
+			});
+			await record("find", async () => {
+				await find.execute("boundary-find", { paths: ["nested"] });
+			});
+			await record("search", async () => {
+				await search.execute("boundary-search", { pattern: "updated", paths: ["nested/file.txt"] });
+			});
+
+			expect(Object.keys(operationsByTool).sort()).toEqual(["bash", "edit", "find", "read", "search", "write"]);
+			expect(operationsByTool.read).toEqual(expect.arrayContaining(["fileInfo", "readBinaryFile"]));
+			expect(operationsByTool.bash).toContain("exec");
+			expect(operationsByTool.edit).toEqual(expect.arrayContaining(["fileInfo", "readBinaryFile", "writeFile"]));
+			expect(operationsByTool.write).toEqual(expect.arrayContaining(["createDir", "writeFile"]));
+			expect(operationsByTool.find).toEqual(expect.arrayContaining(["exists", "fileInfo", "listDir"]));
+			expect(operationsByTool.search).toEqual([]);
+		} finally {
+			await created.harness.close();
+			await env.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test("does not exercise AgentHarness v2 paths that reject with HarnessNotImplemented", async () => {
