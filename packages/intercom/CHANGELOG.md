@@ -6,6 +6,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Fixed
 - Fixed Intercom relay and detach-handshake callbacks that finish after an extension reload. Stale event-bus emissions and subscription cleanup are now best-effort, so runtime replacement does not turn a late delivery into an unhandled rejection.
+- Fixed late Intercom callbacks using a stale extension runtime by using the host's exported stale-context predicate instead of a duplicated error-message marker.
 
 - Fixed the intercom broker failing to start on standalone-binary installs, where every `intercom` call and every `subagent` delegation failed with `Intercom not connected: Intercom broker exited before startup with code 1`. The broker is a detached subprocess, so it never inherits the host extension loader's `@bastani/atomic` alias, and release archives ship no physical copy of that optional peer; `group.ts` now reads `ATOMIC_INTERCOM_GROUP` (and the legacy `PI_INTERCOM_GROUP`) locally instead of importing the host package. A defined-but-empty `ATOMIC_INTERCOM_GROUP` still shadows the legacy name, exactly as before ([#2208](https://github.com/bastani-inc/atomic/issues/2208)).
 - Removing that import also keeps the entire coding-agent module graph out of broker startup on every platform, not only standalone installs: measured spawn-to-socket-connectable startup went from 1104 ms minimum / 1318 ms average to 85 ms / 96 ms on Node with tsx, and from 252 ms / 260 ms to 17 ms / 18 ms on Bun ([#2208](https://github.com/bastani-inc/atomic/issues/2208)).

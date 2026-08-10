@@ -15,6 +15,7 @@
  * cross-ref: spec §5.10 Integration with pi-intercom, §8.1 Phase G
  */
 
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { WorkflowDetails } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -31,12 +32,6 @@ export interface PiEventBus {
 export interface PiResultIntercomExtensionAPI {
 	events?: PiEventBus;
 	[key: string]: unknown;
-}
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import {
 	type Details,
 	type IntercomEventBus,
@@ -307,12 +308,6 @@ export async function deliverSubagentResultIntercomEvent(
 		timeoutMs,
 		payload as unknown as Record<string, unknown>,
 	);
-}
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
 export async function deliverSubagentIntercomMessageEvent(

@@ -21,7 +21,11 @@
  *            pi docs/sdk.md createAgentSession
  */
 
-import type { CreateAgentSessionOptions, DefaultResourceLoaderInheritanceSnapshot } from "@bastani/atomic";
+import {
+	type CreateAgentSessionOptions,
+	type DefaultResourceLoaderInheritanceSnapshot,
+	isStaleExtensionContextError,
+} from "@bastani/atomic";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
@@ -266,12 +270,6 @@ function stripWorkflowOnlyOptions(
 		...sessionOptions
 	} = maybeWorkflowOptions;
 	return sessionOptions as CreateAgentSessionOptions;
-}
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
 function emitLateIntercomRoute(

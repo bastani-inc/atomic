@@ -40,6 +40,7 @@ export type {
 	SwitchSessionHandler,
 } from "./runner.ts";
 export { ExtensionRunner } from "./runner.ts";
+export { isStaleExtensionContextError, STALE_EXTENSION_CONTEXT_MARKER } from "./stale-context.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,

@@ -2,7 +2,7 @@
  * Subagent completion notifications.
  */
 
-import type { ExtensionAPI } from "@bastani/atomic";
+import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
@@ -109,12 +109,6 @@ function isPromiseLike(value: unknown): value is PromiseLike<void> {
 		value !== null &&
 		typeof (value as { then?: unknown }).then === "function"
 	);
-}
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
 async function dispatchFallback(

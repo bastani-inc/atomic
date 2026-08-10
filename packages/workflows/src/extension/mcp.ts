@@ -11,6 +11,7 @@
  * without a bundled MCP adapter dependency.
  */
 
+import { isStaleExtensionContextError } from "@bastani/atomic";
 // ---------------------------------------------------------------------------
 // Minimal structural types — no hard imports from host MCP internals
 // ---------------------------------------------------------------------------
@@ -56,12 +57,6 @@ export interface McpScopeSetPayload {
 	stageId: string;
 	allow: string[] | null;
 	deny: string[] | null;
-}
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@bastani/atomic";
+import { isStaleExtensionContextError, type ExtensionAPI } from "@bastani/atomic";
 import { SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, type InboundMessageEntry } from "./intercom-utils.js";
 import type { InboundIdleQueue } from "./inbound-idle-queue.js";
 
@@ -8,11 +8,6 @@ const GLOBAL_BARRIER_HANDLER = "__atomicTerminalOrderingBarrierHandler";
 const GLOBAL_BARRIER_REGISTRY = "__atomicTerminalOrderingBarrierRegistry";
 const terminalOwnerIds = new WeakMap<object, number>();
 let nextTerminalOwnerId = 1;
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
-}
 
 export interface OrderedTerminalPreludeMessage {
   customType: "intercom_message";

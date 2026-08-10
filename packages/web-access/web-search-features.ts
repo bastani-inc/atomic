@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import { isStaleExtensionContextError, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
 import { fetchAllContent } from "./extract.js";
 import { clearCloneCache } from "./github-extract.js";
 import { registerContentTools } from "./content-tools.js";
@@ -27,12 +27,6 @@ const runtimeState: WebSearchRuntimeState = {
 };
 
 const activityState = createActivityWidgetState();
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
-}
 
 function abortPendingFetches(): void {
 	for (const controller of pendingFetches.values()) {

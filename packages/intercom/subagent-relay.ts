@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import { isStaleExtensionContextError, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
 import { randomUUID } from "crypto";
 import type { IntercomClient } from "./broker/client.js";
 import type { SessionInfo, Message } from "./types.js";
@@ -27,12 +27,6 @@ interface SubagentRelayDeps {
   authorizeSupervisorChild?(childName: string): Promise<import("./broker/client.js").SupervisorAuthorization>;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup?(): string;
-}
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
 async function dispatchRelayFallback(

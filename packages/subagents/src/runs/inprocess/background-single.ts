@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { injectSingleProgressInstruction, writeInitialProgressFile } from "../../shared/settings.ts";
 import {
@@ -26,12 +27,6 @@ import {
 	formatAsyncStartedMessage,
 	UNAVAILABLE_SUBAGENT_SKILL_ERROR,
 } from "./background.ts";
-
-const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
-
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
-}
 
 /**
  * Execute a single agent asynchronously using the in-process runner.
