@@ -84,6 +84,17 @@ describe("project trust input detection", () => {
 		expect(hasProjectTrustInputs(nested)).toBe(true);
 	});
 
+	it("detects AGENTS.override.md as an ancestor project trust input", () => {
+		const root = createTempProject();
+		const nested = join(root, "a", "b");
+		mkdirSync(nested, { recursive: true });
+
+		expect(hasProjectTrustInputs(nested)).toBe(false);
+
+		writeFileSync(join(root, "AGENTS.override.md"), "project override instructions");
+		expect(hasProjectTrustInputs(nested)).toBe(true);
+	});
+
 	it("detects ancestor .agents skills as project trust inputs", () => {
 		const root = createTempProject();
 		const nested = join(root, "a", "b");

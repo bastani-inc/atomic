@@ -37,7 +37,7 @@ export function resolveExistingPromptSourcePaths(inputs: readonly string[]): str
 }
 
 function loadContextFileFromDir(dir: string): { path: string; content: string } | null {
-	const candidates = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+	const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 	for (const filename of candidates) {
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
@@ -100,7 +100,7 @@ function isDescendantOf(directory: string, child: string): boolean {
 
 /**
  * The main repo's context file that a nested linked worktree's own copy shadows: both
- * are the same tracked AGENTS.md/CLAUDE.md, so loading both loads it twice. Returns
+ * occupy the same logical repository scope, so loading both applies that context twice. Returns
  * undefined when nothing is shadowed, leaving normal ancestor inheritance alone.
  *
  * Returned canonicalized (realpath), because `git worktree add` writes the `.git`
@@ -122,7 +122,14 @@ function findShadowedContextFile(cwd: string): string | undefined {
 	// submodule's gitdir has no `commondir`, so it lands under `.git/modules`.
 	if (!samePath(realPath(join(mainRepoRoot, ".git")), commonGitDir)) return undefined;
 	const worktreeContextFile = loadContextFileFromDir(worktreeRoot);
-	return worktreeContextFile ? realPath(join(mainRepoRoot, basename(worktreeContextFile.path))) : undefined;
+	if (!worktreeContextFile) return undefined;
+	// An override replaces every context candidate in its directory, so it shadows
+	// the main checkout's selected candidate even when the filenames differ.
+	if (basename(worktreeContextFile.path) === "AGENTS.override.md") {
+		const mainRepoContextFile = loadContextFileFromDir(mainRepoRoot);
+		return mainRepoContextFile ? realPath(mainRepoContextFile.path) : undefined;
+	}
+	return realPath(join(mainRepoRoot, basename(worktreeContextFile.path)));
 }
 
 export function loadProjectContextFiles(options: {
@@ -155,8 +162,8 @@ export function loadProjectContextFiles(options: {
 	const shadowedContextFile = findShadowedContextFile(resolvedCwd);
 	for (const currentDir of getAncestorDirectories(resolvedCwd)) {
 		const contextFile = loadContextFileFromDir(currentDir);
-		// A nested linked worktree's own AGENTS.md/CLAUDE.md and the main repo's copy
-		// are the same tracked file; skip the main repo's so it is not loaded twice.
+		// A nested linked worktree's context file and the main repo's selected copy
+		// occupy one logical repository scope; skip the main repo's copy so it is not loaded twice.
 		const isShadowed =
 			shadowedContextFile !== undefined &&
 			contextFile !== null &&

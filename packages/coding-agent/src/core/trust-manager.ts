@@ -223,7 +223,7 @@ export function hasProjectTrustInputs(cwd: string): boolean {
 		return true;
 	}
 	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));
-	const contextFileNames = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+	const contextFileNames = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
 	while (true) {
 		for (const contextFileName of contextFileNames) {

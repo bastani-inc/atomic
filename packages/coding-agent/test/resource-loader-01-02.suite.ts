@@ -252,7 +252,44 @@ Content`,
 			const { agentsFiles } = loader.getAgentsFiles();
 			expect(agentsFiles.some((f) => f.path.includes("AGENTS.md"))).toBe(true);
 		});
-		it("should skip AGENTS.md and CLAUDE.md discovery when noContextFiles is true", async () => {
+		it("should prefer AGENTS.override.md within each directory while preserving context from other directories", async () => {
+			const nestedCwd = join(cwd, "service");
+			mkdirSync(nestedCwd);
+			writeFileSync(join(agentDir, "AGENTS.md"), "global instructions");
+			writeFileSync(join(agentDir, "AGENTS.override.md"), "global override");
+			writeFileSync(join(cwd, "AGENTS.md"), "project instructions");
+			writeFileSync(join(cwd, "CLAUDE.md"), "project fallback");
+			writeFileSync(join(nestedCwd, "AGENTS.md"), "service instructions");
+			writeFileSync(join(nestedCwd, "CLAUDE.md"), "service fallback");
+			writeFileSync(join(nestedCwd, "AGENTS.override.md"), "service override");
+
+			const loader = new DefaultResourceLoader({ cwd: nestedCwd, agentDir });
+			await loader.reload();
+
+			expect(loader.getAgentsFiles().agentsFiles).toEqual([
+				{ path: join(agentDir, "AGENTS.override.md"), content: "global override" },
+				{ path: join(cwd, "AGENTS.md"), content: "project instructions" },
+				{ path: join(nestedCwd, "AGENTS.override.md"), content: "service override" },
+			]);
+		});
+		it("should preserve existing context precedence when no override is present", async () => {
+			const nestedCwd = join(cwd, "service");
+			mkdirSync(nestedCwd);
+			writeFileSync(join(cwd, "AGENTS.md"), "project instructions");
+			writeFileSync(join(cwd, "CLAUDE.md"), "project fallback");
+			writeFileSync(join(nestedCwd, "CLAUDE.md"), "service instructions");
+
+			const loader = new DefaultResourceLoader({ cwd: nestedCwd, agentDir });
+			await loader.reload();
+
+			expect(loader.getAgentsFiles().agentsFiles).toEqual([
+				{ path: join(cwd, "AGENTS.md"), content: "project instructions" },
+				{ path: join(nestedCwd, "CLAUDE.md"), content: "service instructions" },
+			]);
+		});
+
+		it("should skip context file discovery when noContextFiles is true", async () => {
+			writeFileSync(join(cwd, "AGENTS.override.md"), "# Override Guidelines\n\nBe helpful.");
 			writeFileSync(join(cwd, "AGENTS.md"), "# Project Guidelines\n\nBe helpful.");
 			writeFileSync(join(cwd, "CLAUDE.md"), "# Claude Guidelines\n\nBe helpful.");
 

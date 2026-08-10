@@ -289,14 +289,14 @@ Use `--offline` or `ATOMIC_OFFLINE=1` (`PI_OFFLINE=1` remains a legacy alias) to
 
 ## Context Files
 
-Atomic loads `AGENTS.md` (or `CLAUDE.md`) at startup from:
-- `~/.atomic/agent/AGENTS.md` (global; legacy `~/.pi/agent/AGENTS.md` also works)
+Atomic loads `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` at startup from:
+- `~/.atomic/agent/` (global; legacy `~/.pi/agent/` also works)
 - Parent directories (walking up from cwd)
 - Current directory
 
-Use for project instructions, conventions, common commands. All matching files are concatenated.
+An `AGENTS.override.md` file replaces that directory's `AGENTS.md` or `CLAUDE.md`; context from other directories is still concatenated.
 
-Disable context file loading with `--no-context-files` (or `-nc`).
+Use for project instructions, conventions, common commands. Disable context file loading with `--no-context-files` (or `-nc`).
 
 ### System Prompt
 
@@ -571,7 +571,7 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | `--no-prompt-templates` | Disable prompt template discovery |
 | `--theme <path>` | Load theme (repeatable) |
 | `--no-themes` | Disable theme discovery |
-| `--no-context-files`, `-nc` | Disable AGENTS.md and CLAUDE.md context file discovery |
+| `--no-context-files`, `-nc` | Disable context-file discovery and loading |
 
 Combine `--no-*` with explicit flags to load exactly what you need, ignoring settings.json (e.g., `--no-extensions -e ./my-ext.ts`).
 
