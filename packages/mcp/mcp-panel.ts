@@ -101,82 +101,76 @@ class McpPanel {
     return buildMcpPanelResult(this.servers);
   }
 
-  handleInput(data: string): void {
+  handleInput(data: string): boolean {
     this.resetInactivityTimeout();
     this.importNotice = null;
     if (!this.authInFlight) this.authNotice = null;
 
-    if (this.confirmingDiscard) {
-      this.handleDiscardInput(data);
-      return;
-    }
+    if (this.confirmingDiscard) return this.handleDiscardInput(data);
 
     if (matchesKey(data, "ctrl+c")) {
       this.cleanup();
       this.done({ cancelled: true, changes: new Map() });
-      return;
+      return true;
     }
 
     if (matchesKey(data, "ctrl+s")) {
       this.cleanup();
       this.done(this.buildResult());
-      return;
+      return true;
     }
 
-    if (this.descSearchActive) {
-      this.handleDescriptionSearchInput(data);
-      return;
-    }
+    if (this.descSearchActive) return this.handleDescriptionSearchInput(data);
 
     if (matchesKey(data, "escape")) {
       if (this.nameQuery) {
         this.nameQuery = "";
         this.rebuildVisibleItemsAndClampCursor();
-        return;
+        return true;
       }
       if (this.dirty) {
         this.confirmingDiscard = true;
         this.discardSelected = 1;
-        return;
+        return true;
       }
       this.cleanup();
       this.done({ cancelled: true, changes: new Map() });
-      return;
+      return true;
     }
 
-    if (matchesKey(data, "up")) { this.moveCursor(-1); return; }
-    if (matchesKey(data, "down")) { this.moveCursor(1); return; }
+    if (matchesKey(data, "up")) { this.moveCursor(-1); return true; }
+    if (matchesKey(data, "down")) { this.moveCursor(1); return true; }
 
     if (matchesKey(data, "space")) {
       const item = this.visibleItems[this.cursorIndex];
       if (item && !this.authOnly) this.toggleItem(item);
-      return;
+      return true;
     }
 
     if (matchesKey(data, "return")) {
       const item = this.visibleItems[this.cursorIndex];
       if (item) this.activateItem(item);
-      return;
+      return true;
     }
 
     if (matchesKey(data, "ctrl+a")) {
       const item = this.visibleItems[this.cursorIndex];
       if (item) this.authenticateSelectedServer(item);
-      return;
+      return true;
     }
 
     if (matchesKey(data, "ctrl+r")) {
       const item = this.visibleItems[this.cursorIndex];
       if (item) this.reconnectSelectedServer(item);
-      return;
+      return true;
     }
 
     if (data === "?") {
-      if (this.authOnly) return;
+      if (this.authOnly) return false;
       this.descSearchActive = true;
       this.descQuery = "";
       this.rebuildVisibleItemsAndClampCursor();
-      return;
+      return true;
     }
 
     if (matchesKey(data, "backspace")) {
@@ -184,41 +178,46 @@ class McpPanel {
         this.nameQuery = this.nameQuery.slice(0, -1);
         this.rebuildVisibleItemsAndClampCursor();
       }
-      return;
+      return true;
     }
 
     if (data.length === 1 && data.charCodeAt(0) >= 32) {
       this.nameQuery += data;
       this.rebuildVisibleItemsAndClampCursor();
+      return true;
     }
+    return false;
   }
 
-  private handleDescriptionSearchInput(data: string): void {
+  private handleDescriptionSearchInput(data: string): boolean {
     if (matchesKey(data, "escape") || matchesKey(data, "return")) {
       this.descSearchActive = false;
       this.descQuery = "";
       this.rebuildVisibleItemsAndClampCursor();
-      return;
+      return true;
     }
     if (matchesKey(data, "backspace")) {
       if (this.descQuery.length > 0) {
         this.descQuery = this.descQuery.slice(0, -1);
         this.rebuildVisibleItemsAndClampCursor();
       }
-      return;
+      return true;
     }
-    if (matchesKey(data, "up")) { this.moveCursor(-1); return; }
-    if (matchesKey(data, "down")) { this.moveCursor(1); return; }
+    if (matchesKey(data, "up")) { this.moveCursor(-1); return true; }
+    if (matchesKey(data, "down")) { this.moveCursor(1); return true; }
     if (matchesKey(data, "space")) {
       const item = this.visibleItems[this.cursorIndex];
       if (item) this.toggleItem(item);
-      return;
+      return true;
     }
     if (data.length === 1 && data.charCodeAt(0) >= 32) {
       this.descQuery += data;
       this.rebuildVisibleItemsAndClampCursor();
+      return true;
     }
+    return false;
   }
+
 
   private activateItem(item: VisibleItem): void {
     const server = this.servers[item.serverIndex];
@@ -316,15 +315,15 @@ class McpPanel {
     this.updateDirty();
   }
 
-  private handleDiscardInput(data: string): void {
+  private handleDiscardInput(data: string): boolean {
     if (matchesKey(data, "ctrl+c")) {
       this.cleanup();
       this.done({ cancelled: true, changes: new Map() });
-      return;
+      return true;
     }
     if (matchesKey(data, "escape") || data === "n" || data === "N") {
       this.confirmingDiscard = false;
-      return;
+      return true;
     }
     if (matchesKey(data, "return")) {
       if (this.discardSelected === 0) {
@@ -333,16 +332,18 @@ class McpPanel {
       } else {
         this.confirmingDiscard = false;
       }
-      return;
+      return true;
     }
     if (data === "y" || data === "Y") {
       this.cleanup();
       this.done({ cancelled: true, changes: new Map() });
-      return;
+      return true;
     }
     if (matchesKey(data, "left") || matchesKey(data, "right") || matchesKey(data, "tab")) {
       this.discardSelected = this.discardSelected === 0 ? 1 : 0;
+      return true;
     }
+    return false;
   }
 
   private moveCursor(delta: number): void {

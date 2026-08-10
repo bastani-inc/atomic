@@ -90,32 +90,34 @@ export class SessionListOverlay implements Component {
 
   invalidate(): void {}
 
-  handleInput(data: string): void {
+  handleInput(data: string): boolean {
     if (this.keybindings.matches(data, "tui.select.cancel")) {
       this.done(undefined);
-      return;
+      return true;
     }
 
     if (this.sessions.length === 0) {
-      return;
+      return false;
     }
 
     if (this.keybindings.matches(data, "tui.select.up")) {
       this.selectedIndex = this.selectedIndex === 0 ? this.sessions.length - 1 : this.selectedIndex - 1;
-      return;
+      return true;
     }
 
     if (this.keybindings.matches(data, "tui.select.down")) {
       this.selectedIndex = this.selectedIndex === this.sessions.length - 1 ? 0 : this.selectedIndex + 1;
-      return;
+      return true;
     }
 
     if (this.keybindings.matches(data, "tui.select.confirm")) {
       const session = this.sessions[this.selectedIndex];
       if (session) {
         this.onSessionSelect(session.id);
+        return true;
       }
     }
+    return false;
   }
 
   render(width: number): string[] {

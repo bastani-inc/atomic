@@ -87,6 +87,7 @@ export type {
 	ExtensionCommandContextActions,
 	ExtensionContext,
 	ExtensionContextActions,
+	ExtensionCustomComponent,
 	// Errors
 	ExtensionError,
 	ExtensionEvent,

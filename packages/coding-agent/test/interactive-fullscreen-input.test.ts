@@ -8,11 +8,38 @@ import {
 	TuiMainScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { selectMovementDelta } from "../../workflows/src/tui/prompt-card-select.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import type { SessionMessageEntry, SessionTreeNode } from "../src/core/session-manager.ts";
+import { TreeSelectorComponent } from "../src/modes/interactive/components/tree-selector-component.ts";
 import { createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
+
+beforeAll(() => {
+	initTheme("dark");
+});
+
+function makeLinearTree(length: number): { roots: SessionTreeNode[]; leafId: string } {
+	const nodes: SessionTreeNode[] = [];
+	let parentId: string | null = null;
+	for (let index = 0; index < length; index += 1) {
+		const id = `selector-entry-${index}`;
+		const entry: SessionMessageEntry = {
+			type: "message",
+			id,
+			parentId,
+			timestamp: new Date(index * 1000).toISOString(),
+			message: { role: "user", content: `entry ${index}`, timestamp: index * 1000 },
+		};
+		const node: SessionTreeNode = { entry, children: [] };
+		if (nodes.length > 0) nodes[nodes.length - 1]!.children.push(node);
+		nodes.push(node);
+		parentId = id;
+	}
+	return { roots: nodes.length > 0 ? [nodes[0]!] : [], leafId: nodes.at(-1)?.entry.id ?? "" };
+}
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const initialKeybindings = getKeybindings();
@@ -261,6 +288,170 @@ describe("fullscreen input navigation", () => {
 			terminal.input("\x1b[5~");
 			tui.renderNow();
 			expect(transcript.scrollTop).toBeLessThan(initialTop);
+		} finally {
+			tui.stop();
+		}
+	});
+	test.sequential("lets a real selector page without scrolling the transcript twice", () => {
+		setKeybindings(new KeybindingsManager());
+		const terminal = new RecordingTerminal();
+		terminal.columns = 40;
+		terminal.rows = 16;
+		const mainEditor = makeEditor([]);
+		const { roots, leafId } = makeLinearTree(30);
+		const selector = new TreeSelectorComponent(
+			roots,
+			leafId,
+			terminal.rows,
+			() => {},
+			() => {},
+		);
+		const viewportActions = ["tui.altScreen.pageUp", "tui.altScreen.pageDown"] as const;
+		let tui: TuiAltScreen;
+		const shouldHandleViewportInput = (data: string): boolean => {
+			if (tui.getFocusedComponent() === mainEditor) return true;
+			return !viewportActions.some((action) => getKeybindings().matches(data, action));
+		};
+		tui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			shouldHandleViewportInput,
+		}) as TuiAltScreen;
+		const transcript = new ScrollView(
+			new Text(Array.from({ length: 50 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ follow: "end", primary: true },
+		);
+		tui.setLayoutRoot(
+			new VStack([
+				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+				{ component: selector, basis: 8, shrink: 0 },
+				{ component: mainEditor, basis: 1, shrink: 0 },
+			]),
+		);
+		tui.setFocus(selector);
+		tui.start();
+		tui.renderNow();
+
+		try {
+			const initialTop = transcript.scrollTop;
+			const initialSelection = selector.getTreeList().getSelectedNode()?.entry.id;
+			expect(initialTop).toBeGreaterThan(0);
+			expect(initialSelection).toBe(leafId);
+
+			terminal.input("\x1b[5~");
+			tui.renderNow();
+
+			expect(selector.getTreeList().getSelectedNode()?.entry.id).not.toBe(initialSelection);
+			expect(transcript.scrollTop).toBe(initialTop);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	test.sequential("repairs focus before routing a key after its overlay becomes hidden", () => {
+		setKeybindings(new KeybindingsManager());
+		const terminal = new RecordingTerminal();
+		terminal.columns = 40;
+		terminal.rows = 24;
+		const mainEditor = makeEditor([]);
+		const overlayInputs: string[] = [];
+		const overlay: Component = {
+			render: () => ["overlay"],
+			invalidate: () => {},
+			handleInput: (data: string) => {
+				overlayInputs.push(data);
+				return true;
+			},
+		};
+		const viewportActions = ["tui.altScreen.pageUp"] as const;
+		let tui: TuiAltScreen;
+		const shouldHandleViewportInput = (data: string): boolean => {
+			if (tui.getFocusedComponent() === mainEditor) return true;
+			return !viewportActions.some((action) => getKeybindings().matches(data, action));
+		};
+		tui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			shouldHandleViewportInput,
+		}) as TuiAltScreen;
+		const transcript = new ScrollView(
+			new Text(Array.from({ length: 50 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ follow: "end", primary: true },
+		);
+		tui.setLayoutRoot(
+			new VStack([
+				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+				{ component: mainEditor, basis: 1, shrink: 0 },
+			]),
+		);
+		tui.setFocus(mainEditor);
+		tui.start();
+		tui.renderNow();
+		const overlayHandle = tui.showOverlay(overlay, { visible: (_width, rows) => rows >= 20 });
+		tui.renderNow();
+
+		try {
+			expect(overlayHandle.isFocused()).toBe(true);
+			terminal.resize(40, 10);
+			tui.renderNow();
+			const beforeHiddenKey = transcript.scrollTop;
+			terminal.input("\x1b[5~");
+			expect(overlayInputs).toEqual([]);
+			expect(tui.getFocusedComponent()).toBe(mainEditor);
+			tui.renderNow();
+			expect(transcript.scrollTop).toBe(beforeHiddenKey);
+
+			terminal.input("\x1b[5~");
+			tui.renderNow();
+			expect(transcript.scrollTop).toBeLessThan(beforeHiddenKey);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	test.sequential("uses the immediate render path for a handled viewport key", async () => {
+		setKeybindings(new KeybindingsManager());
+		const terminal = new RecordingTerminal();
+		terminal.columns = 40;
+		terminal.rows = 10;
+		const mainEditor = makeEditor([]);
+		const focusedComponent: Component = {
+			render: () => ["focused"],
+			invalidate: () => {},
+			handleInput: () => true,
+		};
+		let tui: TuiAltScreen;
+		const shouldHandleViewportInput = (data: string): boolean => {
+			if (tui.getFocusedComponent() === mainEditor) return true;
+			return !getKeybindings().matches(data, "tui.altScreen.pageUp");
+		};
+		tui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			shouldHandleViewportInput,
+		}) as TuiAltScreen;
+		tui.setLayoutRoot(
+			new VStack([
+				{ component: new Text("transcript"), basis: 0, grow: 1, minSize: 1 },
+				{ component: focusedComponent, basis: 1, shrink: 0 },
+				{ component: mainEditor, basis: 1, shrink: 0 },
+			]),
+		);
+		tui.setFocus(focusedComponent);
+		tui.start();
+		tui.renderNow();
+
+		try {
+			const writesBeforeInput = terminal.writes.length;
+			terminal.input("\x1b[5~");
+			await new Promise<void>((resolve) => process.nextTick(resolve));
+			expect(terminal.writes.length).toBeGreaterThan(writesBeforeInput);
 		} finally {
 			tui.stop();
 		}

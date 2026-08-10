@@ -47,6 +47,7 @@ export {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
+	type ExtensionCustomComponent,
 	type ExtensionError,
 	type ExtensionEvent,
 	type ExtensionFactory,

@@ -60,35 +60,37 @@ export class ComposeOverlay implements Component {
 
   invalidate(): void {}
 
-  handleInput(data: string): void {
-    if (this.sending) return;
+  handleInput(data: string): boolean {
+    if (this.sending) return false;
     if (this.keybindings.matches(data, "tui.select.cancel")) {
       this.done({ sent: false });
-      return;
+      return true;
     }
 
     if (data.startsWith("\x1b")) {
-      return;
+      return false;
     }
 
     if (this.keybindings.matches(data, "tui.select.confirm")) {
       if (this.inputBuffer.trim()) {
         this.sendMessage();
       }
-      return;
+      return true;
     }
 
     if (this.keybindings.matches(data, "tui.editor.deleteCharBackward")) {
       this.inputBuffer = [...this.inputBuffer].slice(0, -1).join("");
       this.tui.requestRender();
-      return;
+      return true;
     }
 
     const printable = [...data].filter(c => c >= " ").join("");
     if (printable) {
       this.inputBuffer += printable;
       this.tui.requestRender();
+      return true;
     }
+    return false;
   }
 
   private async sendMessage(): Promise<void> {

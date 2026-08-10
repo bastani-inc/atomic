@@ -32,6 +32,7 @@ export type {
 	ExtensionCommandContextActions,
 	ExtensionContext,
 	ExtensionContextActions,
+	ExtensionCustomComponent,
 	ExtensionError,
 	ExtensionEvent,
 	ExtensionFactory,

@@ -1,10 +1,98 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { createInputsPickerState, handleInputsPickerInput } from "../../packages/workflows/src/tui/inputs-picker.ts";
+import { isInputsPickerKey } from "../../packages/workflows/src/tui/inputs-picker-input.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.ts";
 import { FIELDS, KB } from "./inputs-picker-helpers.js";
 
 export function registerInputsPickerSuite4(): void {
+	test("input picker consumption stays aligned with its pure input handler", () => {
+		const cases = [
+			{
+				label: "empty form",
+				fields: [],
+				state: () => createInputsPickerState([]),
+				keys: ["\x1b", "x"],
+			},
+			{
+				label: "text field",
+				fields: FIELDS,
+				state: () => {
+					const state = createInputsPickerState(FIELDS, { prompt: "alpha beta" });
+					state.focusedIdx = 0;
+					state.caret = 3;
+					return state;
+				},
+				keys: [
+					"\x1b",
+					"\t",
+					"\x1b[Z",
+					"\x1b[A",
+					"\x1b[B",
+					"\x1b[D",
+					"\x1b[C",
+					"\x1b[1;3D",
+					"\x1b[1;3C",
+					"\x01",
+					"\x05",
+					"\x17",
+					"\x1bd",
+					"\x15",
+					"\x0b",
+					"\x7f",
+					"\x04",
+					"\r",
+					"\x1b[13;2u",
+					"\x18",
+				],
+			},
+			{
+				label: "select field",
+				fields: FIELDS,
+				state: () => {
+					const state = createInputsPickerState(FIELDS);
+					state.focusedIdx = 2;
+					return state;
+				},
+				keys: ["\x1b[A", "\x1b[B", "\x1b[D", "\x1b[C", "\r", "\x18"],
+			},
+			{
+				label: "boolean field",
+				fields: FIELDS,
+				state: () => {
+					const state = createInputsPickerState(FIELDS);
+					state.focusedIdx = 3;
+					return state;
+				},
+				keys: [" ", "\x1b[A", "\x1b[B", "\x1b[D", "\x1b[C", "\r", "\x18"],
+			},
+			{
+				label: "submit row",
+				fields: FIELDS,
+				state: () => {
+					const state = createInputsPickerState(FIELDS, { prompt: "ready" });
+					state.focusedIdx = FIELDS.length;
+					return state;
+				},
+				keys: ["\x1b[A", "\x1b[B", "\r", "x"],
+			},
+		];
+
+		for (const candidate of cases) {
+			for (const key of candidate.keys) {
+				const predicateState = candidate.state();
+				const handlerState = candidate.state();
+				const before = JSON.stringify(handlerState);
+				const action = handleInputsPickerInput(key, handlerState, candidate.fields, KB);
+				const handlerConsumed = action.kind !== "noop" || JSON.stringify(handlerState) !== before;
+				assert.equal(
+					isInputsPickerKey(key, predicateState, candidate.fields, KB),
+					handlerConsumed,
+					`${candidate.label} key ${JSON.stringify(key)} disagrees with its handler`,
+				);
+			}
+		}
+	});
 	// ── injected keybindings: word / line / char editing (picker overlay) ──────
 
 	test("picker: ctrl+w deletes the word left of the caret", () => {

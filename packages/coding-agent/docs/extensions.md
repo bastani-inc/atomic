@@ -2659,6 +2659,7 @@ The callback receives:
 - `done(value)` - Call to close component and return value
 
 Pass `{ signal }` to dismiss the custom UI if an operation is aborted; the returned promise rejects with the signal reason.
+Custom component `handleInput` methods must return `true` when they consume an input and `false` (or `undefined`) when they do not. In fullscreen mode, an unhandled viewport key continues to the transcript; remote components also fall through on a failed or timed-out reply.
 
 Pass `{ handlesCtrlC: true }` when the component binds Ctrl+C itself (cancel, skip, close). In isolated interactive sessions the host otherwise closes a component that owns input on the first Ctrl+C, so that a component which never resolves cannot trap the keyboard. See [Interactive callback isolation](#interactive-callback-isolation).
 

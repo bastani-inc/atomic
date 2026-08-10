@@ -20,6 +20,7 @@ import {
 	createSessionPickerResumeCandidateCache,
 	createSessionPickerState,
 	handleSessionPickerInput,
+	isSessionPickerKey,
 	renderSessionPicker,
 	selectRunsForPicker,
 } from "../../packages/workflows/src/tui/session-picker.ts";
@@ -287,6 +288,47 @@ test("handleSessionPickerInput: esc variants close", () => {
 		const state = createSessionPickerState();
 		const action = handleSessionPickerInput(key, state, []);
 		assert.deepEqual(action, { kind: "close" }, JSON.stringify(key));
+	}
+});
+test("session picker consumption stays aligned with its pure input handler", () => {
+	const rows = [
+		{ run: makeRun({ id: "id-1" }), bucket: "active" as const },
+		{ run: makeRun({ id: "id-2" }), bucket: "active" as const },
+		{ run: makeRun({ id: "id-3" }), bucket: "active" as const },
+	];
+	const cases = [
+		{
+			label: "navigation",
+			state: (): ReturnType<typeof createSessionPickerState> => ({
+				...createSessionPickerState(),
+				selectedIndex: 1,
+			}),
+			keys: ["/", "\x1b", "q", "Q", "a", "A", "\x1b[B", "j", "\x1b[A", "k", "\r", "x"],
+		},
+		{
+			label: "filter",
+			state: (): ReturnType<typeof createSessionPickerState> => ({
+				...createSessionPickerState(),
+				filterFocused: true,
+				query: "typed",
+			}),
+			keys: ["\x1b", "\x1b\x1b", "\r", "\x7f", "x", "\x18"],
+		},
+	];
+
+	for (const candidate of cases) {
+		for (const key of candidate.keys) {
+			const predicateState = candidate.state();
+			const handlerState = candidate.state();
+			const before = JSON.stringify(handlerState);
+			const action = handleSessionPickerInput(key, handlerState, rows);
+			const handlerConsumed = action.kind !== "noop" || JSON.stringify(handlerState) !== before;
+			assert.equal(
+				isSessionPickerKey(key, predicateState, rows),
+				handlerConsumed,
+				`${candidate.label} key ${JSON.stringify(key)} disagrees with its handler`,
+			);
+		}
 	}
 });
 

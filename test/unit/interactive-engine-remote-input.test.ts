@@ -51,6 +51,7 @@ interface Bridge {
 
 interface BridgeOptions {
 	fullscreen?: boolean;
+	stallInput?: boolean;
 }
 
 const regularTuiRendererLifecycle: TuiRendererLifecycle = {
@@ -99,6 +100,7 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 		},
 		sendEngineCommand: (command: InteractiveEngineCommand) => {
 			childCommands.push(command);
+			if (options.stallInput && command.type === "engine_custom_input") return;
 			child.handleLine(serializeInteractiveEngineFrame(command));
 		},
 	} as unknown as IsolatedInteractiveRuntime;
@@ -269,6 +271,62 @@ test("an unhandled isolated fullscreen key reaches the transcript once", async (
 		tui.renderNow();
 		assert.deepEqual(inputs, ["\x1bOH"], "the child did not receive exactly one input");
 		assert.equal(transcript.scrollTop, 0, "an unhandled remote key did not reach the transcript");
+	} finally {
+		tui.stop();
+	}
+});
+test("an unresponsive remote child falls back to the viewport and keeps later input routable", async () => {
+	const bridge = makeBridge({ fullscreen: true, stallInput: true });
+	const inputs: string[] = [];
+	void bridge.child.custom(() => ({
+		render: () => ["remote"],
+		handleInput: (data: string) => {
+			inputs.push(data);
+			return true;
+		},
+		invalidate: () => {},
+	}));
+	await flush();
+	const host = bridge.hostComponent;
+	const tui = bridge.tui;
+	const terminal = bridge.terminal;
+	assert.ok(host, "remote component did not mount on the host");
+	assert.ok(tui, "fullscreen renderer did not mount");
+	assert.ok(terminal, "fullscreen terminal did not mount");
+
+	const transcript = new ScrollView(
+		new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+		{ follow: "end", primary: true },
+	);
+	tui.setLayoutRoot(
+		new VStack([
+			{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+			{ component: host, basis: 1, shrink: 0 },
+		]),
+	);
+	tui.setFocus(host);
+	tui.start();
+	tui.renderNow();
+
+	try {
+		const initialTop = transcript.scrollTop;
+		assert.ok(initialTop > 0, "transcript did not start scrolled to the end");
+
+		terminal.input("\x1bOH");
+		await sleep(REMOTE_INPUT_REPLY_TIMEOUT_MS + 25);
+		tui.renderNow();
+		assert.equal(transcript.scrollTop, 0, "a stalled remote child did not release the key to the viewport");
+
+		terminal.input("\x1bOF");
+		await sleep(REMOTE_INPUT_REPLY_TIMEOUT_MS + 25);
+		tui.renderNow();
+		assert.equal(transcript.scrollTop, initialTop, "input routing hung after the first stalled request");
+		assert.equal(
+			bridge.childCommands.filter((command) => command.type === "engine_custom_input").length,
+			2,
+			"the host did not issue the second remote request",
+		);
+		assert.deepEqual(inputs, [], "the stalled child unexpectedly received input");
 	} finally {
 		tui.stop();
 	}

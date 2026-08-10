@@ -114,96 +114,98 @@ export class McpSetupPanel {
     const actions = this.getActions();
     return actions[this.actionCursor] ?? null;
   }
-  handleInput(data: string): void {
+  handleInput(data: string): boolean {
     this.resetInactivityTimeout();
     if (!this.busy) this.notice = null;
     if (matchesKey(data, "ctrl+c")) {
       this.cleanup();
       this.done();
-      return;
+      return true;
     }
     if (matchesKey(data, "escape")) {
       if (this.screen === "imports" || this.screen === "paths") {
         this.screen = this.discovery.hasAnyConfig ? "setup" : "empty";
         this.tui.requestRender();
-        return;
+        return true;
       }
       this.cleanup();
       this.done();
-      return;
+      return true;
     }
-    if (this.busy) return;
-    if (this.screen === "imports") {
-      this.handleImportsInput(data);
-      return;
-    }
-    if (this.screen === "paths") {
-      this.handlePathsInput(data);
-      return;
-    }
+    if (this.busy) return true;
+    if (this.screen === "imports") return this.handleImportsInput(data);
+    if (this.screen === "paths") return this.handlePathsInput(data);
     const actions = this.getActions();
     if (matchesKey(data, "up")) {
       this.actionCursor = Math.max(0, this.actionCursor - 1);
       this.tui.requestRender();
-      return;
+      return true;
     }
     if (matchesKey(data, "down")) {
       this.actionCursor = Math.min(actions.length - 1, this.actionCursor + 1);
       this.tui.requestRender();
-      return;
+      return true;
     }
     if (matchesKey(data, "return")) {
       const selected = this.getSelectedAction();
       if (selected) void this.runAction(selected.id);
+      return true;
     }
+    return false;
   }
-  private handleImportsInput(data: string): void {
+  private handleImportsInput(data: string): boolean {
     const imports = this.discovery.imports;
     if (matchesKey(data, "up")) {
       this.importCursor = Math.max(0, this.importCursor - 1);
       this.tui.requestRender();
-      return;
+      return true;
     }
     if (matchesKey(data, "down")) {
       this.importCursor = Math.min(imports.length - 1, this.importCursor + 1);
       this.tui.requestRender();
-      return;
+      return true;
     }
     if (matchesKey(data, "space")) {
       const current = imports[this.importCursor];
-      if (!current) return;
-      if (this.selectedImports.has(current.kind)) {
-        this.selectedImports.delete(current.kind);
-      } else {
-        this.selectedImports.add(current.kind);
+      if (current) {
+        if (this.selectedImports.has(current.kind)) {
+          this.selectedImports.delete(current.kind);
+        } else {
+          this.selectedImports.add(current.kind);
+        }
+        this.tui.requestRender();
       }
-      this.tui.requestRender();
-      return;
+      return true;
     }
     if (matchesKey(data, "return")) {
       void this.applySelectedImports();
+      return true;
     }
+    return false;
   }
-  private handlePathsInput(data: string): void {
+  private handlePathsInput(data: string): boolean {
     const paths = this.getDetectedPaths();
     if (matchesKey(data, "up")) {
       this.pathCursor = Math.max(0, this.pathCursor - 1);
       this.tui.requestRender();
-      return;
+      return true;
     }
     if (matchesKey(data, "down")) {
       this.pathCursor = Math.min(paths.length - 1, this.pathCursor + 1);
       this.tui.requestRender();
-      return;
+      return true;
     }
     if (matchesKey(data, "return")) {
       const selected = paths[this.pathCursor];
-      if (!selected) return;
-      void this.runBusy(async () => {
-        await this.callbacks.openPath(selected);
-        this.notice = { text: `Opened ${selected}`, tone: "success" };
-      });
+      if (selected) {
+        void this.runBusy(async () => {
+          await this.callbacks.openPath(selected);
+          this.notice = { text: `Opened ${selected}`, tone: "success" };
+        });
+      }
+      return true;
     }
+    return false;
   }
   private async runAction(action: ActionId): Promise<void> {
     if (action === "run-setup") {
