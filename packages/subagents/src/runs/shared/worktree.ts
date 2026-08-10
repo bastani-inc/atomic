@@ -70,9 +70,16 @@ interface RepoState {
 	baseCommit: string;
 	baseRef: string;
 }
+export function createSubagentChildEnvironment(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	return { ...baseEnv, AI_AGENT: "atomic" };
+}
+
 const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 function runGit(cwd: string, args: string[]): GitResult {
-	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8", env: createGitEnvironment() });
+	const result = spawnSync("git", ["-C", cwd, ...args], {
+		encoding: "utf-8",
+		env: createGitEnvironment({}, createSubagentChildEnvironment()),
+	});
 	return {
 		stdout: result.stdout ?? "",
 		stderr: result.stderr ?? "",
@@ -268,6 +275,7 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 		cwd: input.worktreePath,
 		encoding: "utf-8",
 		input: JSON.stringify(input),
+		env: createSubagentChildEnvironment(),
 		timeout: hook.timeoutMs,
 		shell: false,
 	});

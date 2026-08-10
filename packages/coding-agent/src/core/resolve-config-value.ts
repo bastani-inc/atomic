@@ -4,6 +4,7 @@
  */
 
 import { execSync, spawnSync } from "child_process";
+import { createChildProcessEnvironment } from "../utils/child-process.ts";
 import { getShellConfig } from "../utils/shell.ts";
 
 // Cache for shell command results (persists for process lifetime)
@@ -166,6 +167,7 @@ function executeWithConfiguredShell(command: string): { executed: boolean; value
 			stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "ignore"],
 			shell: false,
 			windowsHide: true,
+			env: createChildProcessEnvironment(),
 		});
 
 		if (result.error) {
@@ -193,6 +195,7 @@ function executeWithDefaultShell(command: string): string | undefined {
 			encoding: "utf-8",
 			timeout: 10000,
 			stdio: ["ignore", "pipe", "ignore"],
+			env: createChildProcessEnvironment(),
 		});
 		return output.trim() || undefined;
 	} catch {

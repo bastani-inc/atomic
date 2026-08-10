@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runGit, runGitChecked } from "./worktree-git.js";
+import { createWorkflowChildEnvironment } from "./worktree-git-runner.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
 import type {
@@ -219,6 +220,7 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 		cwd: input.worktreePath,
 		encoding: "utf-8",
 		input: JSON.stringify(input),
+		env: createWorkflowChildEnvironment(),
 		timeout: hook.timeoutMs,
 		shell: false,
 	});

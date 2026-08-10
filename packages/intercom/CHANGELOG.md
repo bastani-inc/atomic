@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- Detached intercom broker processes now receive `AI_AGENT=atomic` for generic child-process attribution.
+
 ### Fixed
 - Fixed Intercom relay and detach-handshake callbacks that finish after an extension reload. Stale event-bus emissions and subscription cleanup are now best-effort, so runtime replacement does not turn a late delivery into an unhandled rejection.
 - Fixed late Intercom callbacks using a stale extension runtime by using the host's exported stale-context predicate instead of a duplicated error-message marker.

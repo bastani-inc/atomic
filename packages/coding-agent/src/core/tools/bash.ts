@@ -133,7 +133,7 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd,
 				detached: process.platform !== "win32",
-				env: env ?? getShellEnv(),
+				env: { ...(env ?? getShellEnv()), AI_AGENT: "atomic" },
 				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});

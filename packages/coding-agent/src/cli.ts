@@ -15,6 +15,7 @@ enablePersistentCompileCache();
 
 process.title = APP_NAME;
 process.env[`${APP_NAME.toUpperCase()}_CODING_AGENT`] = "true";
+process.env.AI_AGENT = "atomic";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 const args = process.argv.slice(2);

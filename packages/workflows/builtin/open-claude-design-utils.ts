@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 
 
@@ -229,6 +230,7 @@ export function ensurePlaywrightCli(): PlaywrightCliStatus {
         stdio: "ignore",
         timeout: 15_000,
         shell: isWindows,
+        env: createChildProcessEnvironment(),
       });
       return probe.status === 0;
     } catch {
@@ -265,6 +267,7 @@ export function ensurePlaywrightCli(): PlaywrightCliStatus {
       stdio: "ignore",
       timeout: 180_000,
       shell: isWindows,
+      env: createChildProcessEnvironment(),
     });
     if (install.status === 0) {
       return {

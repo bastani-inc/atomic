@@ -4,7 +4,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import net from "net";
-import { isBunBinary } from "@bastani/atomic";
+import { createChildProcessEnvironment, isBunBinary } from "@bastani/atomic";
 import {
   getBrokerLogPath,
   getBrokerPidPath,
@@ -227,7 +227,7 @@ export function getBrokerSpawnOptions(
     detached: true,
     stdio: ["ignore", "ignore", stderr],
     cwd: extensionDir,
-    env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    env: createChildProcessEnvironment({ NODE_NO_WARNINGS: "1" }),
     windowsHide: true,
   };
 }

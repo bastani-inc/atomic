@@ -18,6 +18,13 @@ export interface LocalCommandOptions {
 	readonly gid?: number;
 }
 
+export function createLocalCommandEnvironment(
+	overrides?: Readonly<Record<string, string>>,
+	baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	return { ...baseEnv, ...overrides, AI_AGENT: "atomic" };
+}
+
 export function runLocalCommand(
 	command: string,
 	args: readonly string[],
@@ -27,7 +34,7 @@ export function runLocalCommand(
 		const child = spawn(command, [...args], {
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
-			...(options?.env !== undefined ? { env: { ...process.env, ...options.env } } : {}),
+			env: createLocalCommandEnvironment(options?.env),
 			...(options?.uid !== undefined ? { uid: options.uid } : {}),
 			...(options?.gid !== undefined ? { gid: options.gid } : {}),
 		});

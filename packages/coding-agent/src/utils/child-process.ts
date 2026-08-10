@@ -18,6 +18,13 @@ const EXIT_STDIO_IDLE_GRACE_MS = 100;
 const EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS = 5_000;
 const WINDOWS_EXIT_POLL_INTERVAL_MS = 50;
 const WINDOWS_EXIT_CODE_GRACE_MS = 1_000;
+/** Build the environment for every Atomic child process. */
+export function createChildProcessEnvironment(
+	overrides?: NodeJS.ProcessEnv,
+	baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	return { ...baseEnv, ...overrides, AI_AGENT: "atomic" };
+}
 
 type WaitForChildProcessOptions = {
 	platform?: NodeJS.Platform;
@@ -41,7 +48,13 @@ export function spawnProcess(
 ): ChildProcessByStdio<null, Readable, Readable>;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess {
-	return process.platform === "win32" ? crossSpawn(command, args, options) : nodeSpawn(command, args, options);
+	const childOptions = {
+		...options,
+		env: options.env ? { ...options.env, AI_AGENT: "atomic" } : createChildProcessEnvironment(),
+	};
+	return process.platform === "win32"
+		? crossSpawn(command, args, childOptions)
+		: nodeSpawn(command, args, childOptions);
 }
 
 export function spawnProcessSync(
@@ -49,13 +62,21 @@ export function spawnProcessSync(
 	args: string[],
 	options: SpawnSyncOptionsWithStringEncoding,
 ): SpawnSyncReturns<string> {
+	const childOptions = {
+		...options,
+		env: options.env ? { ...options.env, AI_AGENT: "atomic" } : createChildProcessEnvironment(),
+	};
 	return process.platform === "win32"
-		? crossSpawn.sync(command, args, options)
-		: nodeSpawnSync(command, args, options);
+		? crossSpawn.sync(command, args, childOptions)
+		: nodeSpawnSync(command, args, childOptions);
 }
 
 function isWindowsProcessAlive(pid: number): boolean {
-	const result = nodeSpawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], { encoding: "utf-8", windowsHide: true });
+	const result = nodeSpawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
+		encoding: "utf-8",
+		windowsHide: true,
+		env: createChildProcessEnvironment(),
+	});
 	if (result.status !== 0) return true;
 	return new RegExp(`\\b${pid}\\b`).test(result.stdout);
 }

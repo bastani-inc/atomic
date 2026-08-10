@@ -1,5 +1,6 @@
 import { computeCacheWaste } from "../../core/cache-stats.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -223,6 +224,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	try {
 		const authResult = spawnSync("gh", ["auth", "status"], {
 			encoding: "utf-8",
+			env: createChildProcessEnvironment(),
 		});
 		if (authResult.status !== 0) {
 			this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
@@ -276,7 +278,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 			stderr: string;
 			code: number | null;
 		}>((resolve) => {
-			proc = spawn("gh", ["gist", "create", "--public=false", tmpFile]);
+			proc = spawn("gh", ["gist", "create", "--public=false", tmpFile], { env: createChildProcessEnvironment() });
 			let stdout = "";
 			let stderr = "";
 			proc.stdout?.on("data", (data) => {

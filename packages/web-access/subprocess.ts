@@ -1,3 +1,5 @@
+import { createChildProcessEnvironment } from "@bastani/atomic";
+
 export interface BunSubprocessOptions {
 	timeoutMs: number;
 	maxStdoutBytes: number;
@@ -60,7 +62,7 @@ export async function runBunSubprocess(
 	try {
 		proc = Bun.spawn([command, ...args], {
 			cwd: options.cwd,
-			env: options.env ? { ...process.env, ...options.env } : process.env,
+			env: createChildProcessEnvironment(options.env),
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",

@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { platform } from "node:os";
 import { createRequire } from "node:module";
+import { createChildProcessEnvironment } from "@bastani/atomic";
 
 let glimpseAvailable: boolean | null = null;
 let resolvedBinaryPath: string | null = null;
@@ -35,7 +36,7 @@ function getGlimpseBinaryPath(): string | null {
 
   // Global npm install
   try {
-    const globalRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf-8" }).trim();
+    const globalRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf-8", env: createChildProcessEnvironment() }).trim();
     const binaryPath = join(globalRoot, "glimpseui", "src", "glimpse");
     if (existsSync(binaryPath)) return binaryPath;
   } catch {}

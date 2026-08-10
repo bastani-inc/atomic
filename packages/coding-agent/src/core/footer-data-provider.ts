@@ -1,6 +1,7 @@
 import { type ExecFileException, execFile, spawnSync } from "child_process";
 import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatchFile, watchFile } from "fs";
 import { dirname, join, resolve } from "path";
+import { createChildProcessEnvironment } from "../utils/child-process.ts";
 import {
 	closeWatcher,
 	FS_WATCH_RETRY_DELAY_MS,
@@ -58,7 +59,7 @@ function resolveBranchWithGitSync(repoDir: string): string | null {
 	const result = spawnSync("git", ["--no-optional-locks", "symbolic-ref", "--quiet", "--short", "HEAD"], {
 		cwd: repoDir,
 		encoding: "utf8",
-		env: createGitEnvironment(),
+		env: createGitEnvironment(undefined, createChildProcessEnvironment()),
 		stdio: ["ignore", "pipe", "ignore"],
 	});
 	const branch = result.status === 0 ? result.stdout.trim() : "";
@@ -74,7 +75,7 @@ function resolveBranchWithGitAsync(repoDir: string): Promise<string | null> {
 			{
 				cwd: repoDir,
 				encoding: "utf8",
-				env: createGitEnvironment(),
+				env: createGitEnvironment(undefined, createChildProcessEnvironment()),
 			},
 			(error: ExecFileException | null, stdout: string) => {
 				if (error) {

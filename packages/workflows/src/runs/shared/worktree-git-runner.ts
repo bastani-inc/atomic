@@ -7,6 +7,9 @@ const GIT_COMMAND_TIMEOUT_MS = 60_000;
 const GIT_READ_ONLY_PROBE_TIMEOUT_ATTEMPTS = 2;
 export type GitRunner = (cwd: string, args: readonly string[]) => GitResult;
 let gitRunnerOverride: GitRunner | undefined;
+export function createWorkflowChildEnvironment(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	return { ...baseEnv, AI_AGENT: "atomic" };
+}
 
 function gitCommandArgs(args: readonly string[]): string[] {
 	return ["-c", `core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`, "-c", "core.fsmonitor=false", ...args];
@@ -27,7 +30,10 @@ function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResu
 	const result = spawnSync("git", plain ? args : gitCommandArgs(args), {
 		cwd,
 		encoding: "utf-8",
-		env: createGitEnvironment({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" }),
+		env: createGitEnvironment(
+			{ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+			createWorkflowChildEnvironment(),
+		),
 		timeout: GIT_COMMAND_TIMEOUT_MS,
 	});
 	return {

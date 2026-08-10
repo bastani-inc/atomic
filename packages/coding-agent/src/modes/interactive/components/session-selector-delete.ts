@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { unlink } from "node:fs/promises";
+import { createChildProcessEnvironment } from "../../../utils/child-process.ts";
 
 export interface DeleteSessionFileResult {
 	ok: boolean;
@@ -14,7 +15,7 @@ export interface DeleteSessionFileResult {
 export async function deleteSessionFile(sessionPath: string): Promise<DeleteSessionFileResult> {
 	// Try `trash` first (if installed)
 	const trashArgs = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
-	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8" });
+	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8", env: createChildProcessEnvironment() });
 
 	const getTrashErrorHint = (): string | null => {
 		const parts: string[] = [];

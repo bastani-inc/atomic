@@ -4,6 +4,7 @@ import { readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { createChildProcessEnvironment } from "./child-process.ts";
 import { clipboard } from "./clipboard-native.ts";
 import { loadPhoton } from "./photon.ts";
 
@@ -97,7 +98,7 @@ function runCommand(
 	const result = spawnSync(command, args, {
 		timeout: timeoutMs,
 		maxBuffer: maxBufferBytes,
-		env: options?.env,
+		env: options?.env ? { ...options.env, AI_AGENT: "atomic" } : createChildProcessEnvironment(),
 	});
 
 	if (result.error) {
