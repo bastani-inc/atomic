@@ -13,6 +13,7 @@ import {
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
+import { readClipboardText } from "../../utils/clipboard.ts";
 import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
@@ -57,6 +58,17 @@ import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interact
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { createInteractiveTui, createInteractiveTuiReference, type InteractiveTui } from "./interactive-tui.ts";
+
+const FULLSCREEN_VIEWPORT_ACTIONS = [
+	"tui.altScreen.pageUp",
+	"tui.altScreen.pageDown",
+	"tui.altScreen.halfPageUp",
+	"tui.altScreen.halfPageDown",
+	"tui.altScreen.previousPrompt",
+	"tui.altScreen.nextPrompt",
+	"tui.altScreen.top",
+	"tui.altScreen.bottom",
+] as const;
 
 function isCommandLikeStartupInput(text: string): boolean {
 	const trimmed = text.trimStart();
@@ -103,6 +115,16 @@ export class InteractiveModeBase {
 
 	ui: TUI;
 	private renderer: InteractiveTui;
+
+	private readonly shouldHandleViewportInput = (data: string): boolean => {
+		const focused = this.renderer.getFocusedComponent();
+		if (focused === this.editor || !focused?.handleInput) return true;
+		return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => this.keybindings.matches(data, action));
+	};
+
+	private readonly onRightClickPaste = (): void => {
+		void this.handleRightClickPaste();
+	};
 
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 
@@ -395,6 +417,20 @@ export class InteractiveModeBase {
 		}
 	}
 
+	private async handleRightClickPaste(): Promise<void> {
+		const target = this.renderer.getFocusedComponent();
+		const handleInput = target?.handleInput;
+		if (!target || !handleInput) return;
+		try {
+			const text = await readClipboardText();
+			if (!text || this.renderer.getFocusedComponent() !== target) return;
+			handleInput.call(target, `\x1b[200~${text}\x1b[201~`);
+			this.ui.requestRender();
+		} catch {
+			// Clipboard paste is best-effort; permission and native-module failures are common.
+		}
+	}
+
 	stopInteractiveTui(): void {
 		if (this.renderer.mode === "fullscreen") {
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
@@ -429,6 +465,8 @@ export class InteractiveModeBase {
 			showHardwareCursor,
 			logDirectory: this.runtimeHost.services.agentDir,
 			terminal,
+			onRightClickPaste: this.onRightClickPaste,
+			shouldHandleViewportInput: this.shouldHandleViewportInput,
 		});
 		nextUi.setClearOnShrink(clearOnShrink);
 		nextUi.onDebug = onDebug;
@@ -476,6 +514,8 @@ export class InteractiveModeBase {
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 			logDirectory: runtimeHost.services.agentDir,
 			terminal: options.terminal,
+			onRightClickPaste: this.onRightClickPaste,
+			shouldHandleViewportInput: this.shouldHandleViewportInput,
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
