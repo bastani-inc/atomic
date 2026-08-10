@@ -1,116 +1,75 @@
-import type { Terminal } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
 import { TuiMainScreen } from "@earendil-works/pi-tui";
-import { expect, test, vi } from "vitest";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { expect, test } from "vitest";
+import {
+	createProductionFullscreenContext,
+	getLayoutFrame,
+	RecordingTerminal,
+} from "./helpers/interactive-fullscreen-layout.ts";
 
-type TestNode = {
-	children?: TestNode[];
-};
-
-type InitContext = {
-	isInitialized: boolean;
-	registerSignalHandlers: () => void;
-	ui: {
-		addChild: (child: TestNode) => void;
-		setFocus: (target: TestNode) => void;
-		start: () => void;
-		requestRender: () => void;
-	};
-	headerContainer: TestNode;
-	documentContainer: TestNode;
-	chatContainer: TestNode;
-	pendingMessagesContainer: TestNode;
-	statusContainer: TestNode;
-	widgetContainerAbove: TestNode;
-	usageMeter: TestNode;
-	editorContainer: TestNode;
-	footerContainer: TestNode;
-	widgetContainerBelow: TestNode;
-	editor: TestNode;
-	renderWidgets: () => void;
-	mountInteractiveTui: (tui: InitContext["ui"], components: TestNode[]) => void;
-	setupKeyHandlers: () => void;
-	setupEditorSubmitHandler: () => void;
-	pendingUserInputs: string[];
-	defaultEditor: TestNode;
-	options: { startupInputCapture?: { consume: () => { text: string; submissions: string[] } } };
-	startupReplayInputs: string[];
-	footerDataProvider: { onBranchChange: (callback: () => void) => void };
-	themeController: { applyFromSettings: () => Promise<void> };
-	fullscreenLayoutRoot?: TestNode;
-	transcriptScrollView?: TestNode;
-};
-
-const interactiveModePrototype = InteractiveMode.prototype as unknown as {
-	init(this: InitContext): Promise<void>;
+type StackLike = {
+	children: Component[];
 };
 
 test("InteractiveMode.init builds the fullscreen dock and preserves flat mount order", async () => {
-	const mounted: TestNode[] = [];
-	const themeReady = new Promise<void>(() => {});
-	const component = (): TestNode => ({});
-	const context: InitContext = {
-		isInitialized: false,
-		registerSignalHandlers: vi.fn(),
-		ui: {
-			addChild: (child) => mounted.push(child),
-			setFocus: vi.fn(),
-			start: vi.fn(),
-			requestRender: vi.fn(),
-		},
-		headerContainer: component(),
-		documentContainer: component(),
-		chatContainer: component(),
-		pendingMessagesContainer: component(),
-		statusContainer: component(),
-		widgetContainerAbove: component(),
-		usageMeter: component(),
-		editorContainer: component(),
-		footerContainer: component(),
-		widgetContainerBelow: component(),
-		editor: component(),
-		renderWidgets: vi.fn(),
-		mountInteractiveTui: InteractiveMode.prototype
-			.mountInteractiveTui as unknown as InitContext["mountInteractiveTui"],
-		setupKeyHandlers: vi.fn(),
-		setupEditorSubmitHandler: vi.fn(),
-		pendingUserInputs: [],
-		defaultEditor: component(),
-		options: {},
-		startupReplayInputs: [],
-		footerDataProvider: { onBranchChange: vi.fn() },
-		themeController: { applyFromSettings: vi.fn(() => themeReady) },
-	};
+	const { context, terminal, tui, initPromise, resolveTheme, restoreOffline } = createProductionFullscreenContext();
 
-	void interactiveModePrototype.init.call(context);
-	await new Promise<void>((resolve) => setImmediate(resolve));
+	try {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		tui.renderNow();
 
-	const root = context.fullscreenLayoutRoot;
-	const transcript = root?.children?.[0];
-	const dock = root?.children?.[1];
-	if (!root?.children || !transcript?.children || !dock?.children) {
-		throw new Error("InteractiveMode.init did not build the fullscreen layout");
+		const root = context.fullscreenLayoutRoot as StackLike | undefined;
+		const transcript = context.transcriptScrollView;
+		if (!root || !transcript) {
+			throw new Error("InteractiveMode.init did not build the fullscreen layout");
+		}
+		const [rootTranscript, dock] = root.children as [Component | undefined, StackLike | undefined];
+		if (!rootTranscript || !dock) {
+			throw new Error("InteractiveMode.init did not mount the transcript and dock");
+		}
+
+		const dockChildren = [
+			context.pendingMessagesContainer,
+			context.statusContainer,
+			context.widgetContainerAbove,
+			context.usageMeter,
+			context.editorContainer,
+			context.footerContainer,
+			context.widgetContainerBelow,
+		];
+		const flatMountOrder = [context.documentContainer, ...dockChildren];
+
+		// These are production components, not a hand-built test root. Their
+		// identities and order catch wiring changes before rendering.
+		expect(root.children).toHaveLength(2);
+		expect(rootTranscript).toBe(transcript);
+		expect(transcript.children).toEqual([context.documentContainer]);
+		expect(dock.children).toEqual(dockChildren);
+		expect(tui.children).toEqual(flatMountOrder);
+
+		tui.renderNow();
+		const initial = getLayoutFrame(tui);
+		expect(initial.root.component).toBe(context.fullscreenLayoutRoot);
+		const initialTranscript = initial.root.children[0];
+		const initialDock = initial.root.children[1];
+		if (!initialTranscript || !initialDock) throw new Error("fullscreen layout children disappeared");
+		expect(initialTranscript.component).toBe(transcript);
+		expect(initialDock.component).toBe(dock);
+		const expectedDockHeight = dock.render(terminal.columns).length;
+		expect(initialDock.rect.height).toBe(expectedDockHeight);
+		expect(initialDock.rect.y).toBe(terminal.rows - initialDock.rect.height);
+		expect(initialTranscript.rect.height).toBe(initialDock.rect.y);
+		const dockLines = initial.lines.slice(initialDock.rect.y, initialDock.rect.y + initialDock.rect.height);
+		expect(dockLines.some((line) => line.includes("editor"))).toBe(true);
+		expect(dockLines.at(-1)).toContain("footer");
+
+		const regularTui = new TuiMainScreen(new RecordingTerminal());
+		context.mountInteractiveTui(regularTui, flatMountOrder);
+		expect(regularTui.children).toEqual(flatMountOrder);
+	} finally {
+		resolveTheme();
+		await initPromise;
+		tui.stop();
+		restoreOffline();
 	}
-
-	const dockChildren = [
-		context.pendingMessagesContainer,
-		context.statusContainer,
-		context.widgetContainerAbove,
-		context.usageMeter,
-		context.editorContainer,
-		context.footerContainer,
-		context.widgetContainerBelow,
-	];
-	const flatMountOrder = [context.documentContainer, ...dockChildren];
-
-	expect(root.children).toEqual([transcript, dock]);
-	expect(transcript.children).toEqual([context.documentContainer]);
-	expect(dock.children).toEqual(dockChildren);
-	expect(mounted).toEqual(flatMountOrder);
-
-	// Use a real regular renderer to keep the ordering assertion on the production
-	// mount method rather than a test double that only records an equivalent list.
-	const regularTui = new TuiMainScreen({} as Terminal);
-	context.mountInteractiveTui(regularTui as unknown as InitContext["ui"], mounted);
-	expect(regularTui.children).toEqual(flatMountOrder);
 });

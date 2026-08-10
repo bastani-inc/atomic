@@ -145,6 +145,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		{ component: this.usageMeter, shrink: 1, minSize: 1 },
 		{ component: this.editorContainer, shrink: 1, minSize: 3 },
 		{ component: this.footerContainer, shrink: 1, minSize: 1 },
+		// Keep widgetContainerBelow after the footer for #1109's stable dock order.
 		{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
 	]);
 	this.fullscreenLayoutRoot = new VStack([
