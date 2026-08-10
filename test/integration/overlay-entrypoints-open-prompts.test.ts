@@ -438,14 +438,15 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
 		assert.equal(lines.length, 50, "should fill the terminal-row viewport");
 	});
 
-	test("falls back to 32-row frame when tui.terminal is absent", () => {
+	test("sizes the graph overlay from its natural layout when tui.terminal is absent", () => {
 		const { ui, calls } = buildMockUi();
 		const store = createStore();
 		const adapter = buildGraphOverlayAdapter({ ui }, store);
 
 		adapter.open("run-fallback");
 		const lines = calls[0]!.component.render(120);
-		assert.equal(lines.length, 32, "fallback line count keeps the legacy rectangle");
+		assert.ok(lines.length > 0);
+		assert.ok(lines.length < 32, "fallback must not restore the old fixed rectangle");
 	});
 });
 

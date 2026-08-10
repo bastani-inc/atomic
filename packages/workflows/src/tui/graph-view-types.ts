@@ -42,12 +42,9 @@ export interface GraphViewOpts {
 	initialFocusedStageId?: string;
 	initialFocusedRunId?: string;
 	/**
-	 * Optional accessor returning the current terminal row count. When
-	 * present in overlay mode the renderer expands the frame to roughly
-	 * `viewportRows` lines (clamped to at least the header + statusline
-	 * budget) so the popup fills the terminal under pi-tui's
-	 * `width: "100%" / maxHeight: "100%"` geometry. Returning `undefined`
-	 * falls back to the constant `OVERLAY_LINE_COUNT` rectangle.
+	 * Optional terminal row accessor used by the custom-overlay bridge. The
+	 * graph layout root consumes the current height on every render so a resize
+	 * changes the ScrollView viewport instead of a fixed rectangle.
 	 */
 	getViewportRows?: () => number | undefined;
 	/**

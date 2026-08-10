@@ -81,24 +81,13 @@ export interface GraphOverlayPort {
 }
 
 /**
- * Aspirational full-screen overlay geometry. In a future host that
- * forwards `overlayOptions` to pi-tui's `resolveOverlayLayout`,
- * `width`/`maxHeight` would expand against terminal dimensions so the
- * popup fills the entire frame, with `margin: 0` removing the breathing
- * room a centered popup needs.
+ * Full-screen overlay geometry. The custom-overlay host supplies terminal rows
+ * to the graph layout bridge, which reuses pi-tui's installed VStack/ScrollView
+ * frame pass before the component is painted.
  *
- * Current pi interactive `ExtensionUiController.custom` ignores
- * this object: it always mounts overlays with `{ anchor:
- * "bottom-center", width: "100%", maxHeight: "100%", margin: 0 }`. The
- * value is retained for `onHandle`-based toggle support and forward
- * compatibility — see `PiCustomOverlayOptions` for the host-compat
- * note.
- *
- * Note: percent geometry is necessary but not sufficient for a true
- * full-screen overlay — pi-tui positions the popup based on the
- * rendered overlay line count, so the mounted component must also
- * emit `terminal.rows` lines per frame. That row count is threaded
- * through `WorkflowAttachPane.getViewportRows` below.
+ * Keep the percentage geometry here so the host gives the overlay the complete
+ * terminal width and height; the graph component still owns its body viewport,
+ * scrollbar, and resize response.
  */
 const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
 	anchor: "center",
@@ -386,11 +375,9 @@ export function buildGraphOverlayAdapter(
 				getToolsExpanded: ui?.getToolsExpanded,
 				setToolsExpanded: ui?.setToolsExpanded,
 				footerData: ui?.getFooterDataProvider?.(),
-				// Pi-tui owns terminal dimensions; thread its row count down
-				// so the overlay frame fills the actual viewport rather than
-				// a hard-coded 32-row rectangle. Returning `undefined` keeps
-				// the existing fallback for hosts that don't expose
-				// `tui.terminal`.
+				// Pi-tui owns terminal dimensions; the graph layout bridge consumes
+				// the current row count on every render so resize changes its
+				// ScrollView viewport. Hosts without a terminal use natural content size.
 				getViewportRows: () => tui.terminal?.rows,
 				// Drive the graph-view animation tick. Short-circuit when the
 				// overlay is hidden so a `setHidden(true)`-ed overlay does

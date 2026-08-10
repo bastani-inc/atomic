@@ -115,7 +115,7 @@ class InstrumentedGraphView extends GraphView {
 	}
 
 	bodyRowsForTest(): number {
-		return this._overlayBodyRows(this._overlayPanelLineCount());
+		return this.graphLayout.viewportRows;
 	}
 
 	graphScrollOffsetForTest(): number {
@@ -311,7 +311,9 @@ describe("GraphView many-stage performance (#2100)", () => {
 			initialFocusedStageId: "s0",
 		});
 		try {
+			view.render(96);
 			const { viewportScoped } = perFrameReadBudgets(view);
+			view.paintedCards = 0;
 			view.countRenderReadsForTest();
 			const text = visibleText(view.render(96));
 			const reads = view.renderReadCountsForTest();

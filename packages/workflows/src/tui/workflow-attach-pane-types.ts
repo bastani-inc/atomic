@@ -58,10 +58,9 @@ export interface WorkflowAttachPaneOpts {
 	initialAttachRunId?: string;
 	/**
 	 * Optional accessor returning the current terminal row count. Threaded
-	 * into both `GraphView` and `StageChatView` so the overlay renders a
-	 * frame that fills the full viewport instead of a fixed 32-row pane.
-	 * Returns `undefined` when the host has not surfaced terminal
-	 * dimensions; views fall back to their constant row budget.
+	 * into the graph overlay so its VStack root gets the live terminal height
+	 * on every frame; attached stage chat keeps its existing frame budget when
+	 * the host does not surface terminal dimensions.
 	 */
 	getViewportRows?: () => number | undefined;
 	/**
