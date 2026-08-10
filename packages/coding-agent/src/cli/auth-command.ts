@@ -15,11 +15,15 @@ export interface AuthCommand {
 }
 
 export class AuthCommandError extends Error {
-	constructor(
-		message: string,
-		readonly exitCode = 1,
-	) {
+	// Declared and assigned explicitly rather than as a constructor parameter
+	// property: `tsconfig.base.json` sets `erasableSyntaxOnly`, under which a
+	// parameter property is TS1294. Root `tsc --noEmit` does not surface it,
+	// but the shipped build does.
+	readonly exitCode: number;
+
+	constructor(message: string, exitCode = 1) {
 		super(message);
+		this.exitCode = exitCode;
 		this.name = "AuthCommandError";
 	}
 }
