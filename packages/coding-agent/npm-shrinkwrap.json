@@ -35,7 +35,7 @@
 				"markit-ai": "0.5.3",
 				"minimatch": "10.2.5",
 				"open": "^11.0.0",
-				"p-limit": "^7.3.0",
+				"p-limit": "^7.3.1",
 				"proper-lockfile": "4.1.2",
 				"semver": "7.8.0",
 				"turndown": "^7.2.0",
@@ -3474,9 +3474,9 @@
 			"license": "BSD-2-Clause"
 		},
 		"node_modules/p-limit": {
-			"version": "7.3.0",
-			"resolved": "https://registry.npmjs.org/p-limit/-/p-limit-7.3.0.tgz",
-			"integrity": "sha512-7cIXg/Z0M5WZRblrsOla88S4wAK+zOQQWeBYfV3qJuJXMr+LnbYjaadrFaS0JILfEDPVqHyKnZ1Z/1d6J9VVUw==",
+			"version": "7.3.1",
+			"resolved": "https://registry.npmjs.org/p-limit/-/p-limit-7.3.1.tgz",
+			"integrity": "sha512-0trZaiG7Y7kN/Egy9a8j47t9osC0Tch4PaIWd9yGF6bvmlk7muExRvGNYb8sXBwEKMoNKsbNN9P8EefuQekE4Q==",
 			"license": "MIT",
 			"dependencies": {
 				"yocto-queue": "^1.2.1"

@@ -122,7 +122,7 @@ interface SemverApi {
 const pinned: SemverApi = { compare, maxSatisfying, rcompare, satisfies, valid, validRange };
 
 /**
- * `@napi-rs/cli` 3.8.1 declares `semver@^7.8.2`, which the pin does not satisfy.
+ * `@napi-rs/cli` 3.8.2 declares `semver@^7.8.2`, which the pin does not satisfy.
  * A flat `semver` override held it below that range and `npm ls` reported the
  * edge invalid, so the override is scoped instead: everything collapses onto
  * 7.8.0 except the CLI, which keeps 7.8.5. The CLI is a build-time
@@ -626,9 +626,11 @@ describe("semver pinned at 7.8.0", () => {
 		assert.equal(natives.devDependencies.semver, undefined, "packages/natives must not declare a semver dependency");
 
 		// The declared range this measurement is about. If @napi-rs/cli moves off
-		// 3.8.1 its semver surface has to be re-measured, so pin the version the
-		// table above was taken against.
-		assert.equal(natives.devDependencies["@napi-rs/cli"], "3.8.1");
+		// 3.8.2 its semver surface has to be re-measured, so pin the version the
+		// table above was taken against. 3.8.2 was diffed against 3.8.1: its
+		// dependency table, semver imports and restrictWasiNodeEngine body are
+		// byte-identical, so the 3.8.1 measurement carries over unchanged.
+		assert.equal(natives.devDependencies["@napi-rs/cli"], "3.8.2");
 		assert.ok(
 			BASELINE_NAPI_WASI_ENGINE.has(natives.engines.node),
 			`packages/natives engines.node ${natives.engines.node} is not in BASELINE_NAPI_WASI_ENGINE`,

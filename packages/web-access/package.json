@@ -44,7 +44,7 @@
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "linkedom": "^0.18.13",
-    "p-limit": "^7.3.0",
+    "p-limit": "^7.3.1",
     "turndown": "^7.2.0",
     "unpdf": "1.7.0"
   }
