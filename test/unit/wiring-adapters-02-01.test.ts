@@ -13,6 +13,7 @@ import type {
 	DefaultResourceLoaderInheritanceSnapshot,
 	PackageSource,
 } from "@bastani/atomic";
+import { isStaleExtensionContextError, STALE_EXTENSION_CONTEXT_MARKER } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import type {
 	PiCodingAgentSdk,
@@ -345,14 +346,14 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		}, /main-chat late-message route is unavailable/);
 	});
 
-	test("stale late-message events do not retry through the stale generic route", async () => {
+	test("stale late-message batches reject without retrying through a stale generic route", async () => {
 		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
 		let sends = 0;
 		const adapters = buildRuntimeAdapters(
 			{
 				events: {
 					emit() {
-						throw new Error("This extension ctx is stale after session replacement or reload.");
+						throw new Error(STALE_EXTENSION_CONTEXT_MARKER);
 					},
 				},
 				sendMessage() {
@@ -369,11 +370,77 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 		);
 		await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
 
-		await orchestration?.lateMessageRouter?.routeMessage({
-			customType: "intercom_message",
-			content: "late",
-			display: true,
-		});
+		await assert.rejects(
+			orchestration!.lateMessageRouter!.routeMessages([
+				{ customType: "intercom_message", content: "late", display: true },
+			]),
+			(error: unknown) => isStaleExtensionContextError(error),
+		);
+		assert.equal(sends, 0);
+	});
+
+	test("stale generic late-message batches reject as stale drops", async () => {
+		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+		let sends = 0;
+		const adapters = buildRuntimeAdapters(
+			{
+				sendMessages() {
+					sends += 1;
+					throw new Error(STALE_EXTENSION_CONTEXT_MARKER);
+				},
+			},
+			{
+				createAgentSession: async (options) => {
+					orchestration = options?.orchestrationContext;
+					return { session: fakeSession() };
+				},
+			},
+		);
+		await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+
+		await assert.rejects(
+			orchestration!.lateMessageRouter!.routeMessages([
+				{ customType: "async-job-result", content: "late", display: true },
+			]),
+			(error: unknown) => isStaleExtensionContextError(error),
+		);
+		assert.equal(sends, 1);
+	});
+
+	test("non-stale late-message failures remain visible", async () => {
+		let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+		const failure = new Error("event bus failed");
+		let sends = 0;
+		const adapters = buildRuntimeAdapters(
+			{
+				events: {
+					emit() {
+						throw failure;
+					},
+				},
+				sendMessage() {
+					sends += 1;
+				},
+			},
+			{
+				createAgentSession: async (options) => {
+					orchestration = options?.orchestrationContext;
+					return { session: fakeSession() };
+				},
+			},
+		);
+		await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+
+		await assert.rejects(
+			async () => {
+				await orchestration!.lateMessageRouter!.routeMessage({
+					customType: "intercom_message",
+					content: "late",
+					display: true,
+				});
+			},
+			(error: unknown) => error === failure,
+		);
 		assert.equal(sends, 0);
 	});
 

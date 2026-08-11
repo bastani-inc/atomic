@@ -29,6 +29,12 @@ export interface CompactOptions {
 	onError?: (error: Error) => void;
 }
 
+/**
+ * Late routes settle as delivery acknowledgements: resolution means the route
+ * accepted delivery, while rejection means delivery was not fully accepted. A
+ * sequential batch may have delivered a prefix before it rejects; stale-context
+ * rejection identifies the dropped route, and other failures reject unchanged.
+ */
 export interface WorkflowStageLateMessageRouter {
 	routeMessage<T>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,

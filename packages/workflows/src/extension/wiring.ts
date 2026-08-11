@@ -293,11 +293,27 @@ function emitLateIntercomRoute(
 		pi.events.emit(LATE_STAGE_MESSAGE_EVENT, event as unknown as Record<string, unknown>);
 	} catch (error) {
 		if (!isStaleExtensionContextError(error)) throw error;
-		// The captured runtime is gone; do not retry through its stale sendMessage API.
-		return Promise.resolve();
+		// The captured runtime is gone; reject so callers can distinguish this drop
+		// from a route that was accepted. Do not retry through stale sendMessage.
+		return Promise.reject(error);
 	}
 	if (!event.handled) return undefined;
 	return event.completion ?? Promise.resolve();
+}
+
+/**
+ * Preserve one late-route contract: a resolved call means delivery was accepted,
+ * while a stale-runtime rejection tells the caller that the message was dropped.
+ * This helper normalizes stale synchronous host throws without hiding any other
+ * failure.
+ */
+function routeThroughStaleContextGuard(route: () => void | Promise<void>): void | Promise<void> {
+	try {
+		return route();
+	} catch (error) {
+		if (!isStaleExtensionContextError(error)) throw error;
+		return Promise.reject(error);
+	}
 }
 
 function makeWorkflowStageOrchestrationContext(
@@ -318,13 +334,15 @@ function makeWorkflowStageOrchestrationContext(
 			routeMessage(message, options) {
 				const intercomRoute = emitLateIntercomRoute(pi, meta, [message], options, false);
 				if (intercomRoute) return intercomRoute;
-				if (!pi.sendMessage) throw new Error("atomic-workflows: main-chat late-message route is unavailable");
-				return pi.sendMessage(message, options);
+				const sendMessage = pi.sendMessage;
+				if (!sendMessage) throw new Error("atomic-workflows: main-chat late-message route is unavailable");
+				return routeThroughStaleContextGuard(() => sendMessage(message, options));
 			},
 			routeMessages(messages, options) {
 				const intercomRoute = emitLateIntercomRoute(pi, meta, messages, options, true);
 				if (intercomRoute) return intercomRoute;
-				if (pi.sendMessages) return pi.sendMessages(messages, options);
+				const sendMessages = pi.sendMessages;
+				if (sendMessages) return routeThroughStaleContextGuard(() => sendMessages(messages, options));
 				const sendMessage = pi.sendMessage;
 				if (!sendMessage) throw new Error("atomic-workflows: main-chat late-message route is unavailable");
 				return (async () => {
