@@ -2,6 +2,7 @@ import {
 	type BridgeRequestSettlement,
 	emitBridgeEvent,
 	readBridgeRequestSettlement,
+	registerBridgeRequestSettlement,
 	rejectStoppedBridgeRequest,
 } from "./bridge-settlement.ts";
 export const PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT = "prompt-template:subagent:request";
@@ -9,6 +10,18 @@ export const PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT = "prompt-template:subagent:
 export const PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT = "prompt-template:subagent:response";
 export const PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT = "prompt-template:subagent:update";
 export const PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT = "prompt-template:subagent:cancel";
+
+/**
+ * Register the rejection path for an out-of-tree prompt-template requester.
+ * The requester must unregister this hook when its response or cancellation
+ * path settles; the hook is used only when a stale bridge drops an emit.
+ */
+export function registerPromptTemplateBridgeRequestSettlement(
+	requestId: string,
+	reject: (error: unknown) => void,
+): () => void {
+	return registerBridgeRequestSettlement("prompt-template", requestId, { reject });
+}
 
 interface PromptTemplateDelegationTask {
 	agent: string;

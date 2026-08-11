@@ -51,6 +51,14 @@ import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
 import { SubagentParams } from "./schemas.ts";
 import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
 
+export {
+	PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT,
+	PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT,
+	PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT,
+	PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT,
+	PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT,
+	registerPromptTemplateBridgeRequestSettlement,
+} from "../slash/prompt-template-bridge.ts";
 export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
 
 import {

@@ -176,8 +176,12 @@ async function requestSlashRun(
 		const onTerminalInput = ctx.hasUI
 			? ctx.ui.onTerminalInput((input) => {
 					if (!matchesKey(input, Key.escape)) return undefined;
-					pi.events.emit(SLASH_SUBAGENT_CANCEL_EVENT, { requestId });
-					finish(() => reject(new Error("Cancelled")));
+					try {
+						pi.events.emit(SLASH_SUBAGENT_CANCEL_EVENT, { requestId });
+						finish(() => reject(new Error("Cancelled")));
+					} catch (error) {
+						finish(() => reject(error));
+					}
 					return { consume: true };
 				})
 			: undefined;

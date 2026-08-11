@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { isStaleExtensionContextError, STALE_EXTENSION_CONTEXT_MARKER } from "@bastani/atomic";
+import { registerPromptTemplateBridgeRequestSettlement } from "@bastani/subagents";
 import { test } from "vitest";
-import { registerBridgeRequestSettlement } from "../../packages/subagents/src/slash/bridge-settlement.js";
 import {
 	PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT,
 	PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT,
@@ -43,13 +43,35 @@ const request = {
 	cwd: "/repo",
 };
 
-test("a stale prompt-template response emit rejects its registered settlement", async () => {
+function requestFromPromptTemplateModel(events: FakeEvents, payload: typeof request): Promise<unknown> {
+	return new Promise((resolve, reject) => {
+		let done = false;
+		let unregisterSettlement: (() => void) | undefined;
+		const unsubscribeResponse = events.on(PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, (data) => {
+			if (!data || typeof data !== "object") return;
+			if ((data as { requestId?: unknown }).requestId !== payload.requestId) return;
+			finish(() => resolve(data));
+		});
+		const finish = (next: () => void): void => {
+			if (done) return;
+			done = true;
+			unsubscribeResponse();
+			unregisterSettlement?.();
+			next();
+		};
+		unregisterSettlement = registerPromptTemplateBridgeRequestSettlement(payload.requestId, (error) =>
+			finish(() => reject(error)),
+		);
+		try {
+			events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, payload);
+		} catch (error) {
+			finish(() => reject(error));
+		}
+	});
+}
+test("a stale prompt-template response emit rejects the external caller", async () => {
 	const events = new FakeEvents((event) => {
 		if (event === PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT) throw new Error(STALE_EXTENSION_CONTEXT_MARKER);
-	});
-	const settlementResult = Promise.withResolvers<unknown>();
-	const unregister = registerBridgeRequestSettlement("prompt-template", request.requestId, {
-		reject: settlementResult.resolve,
 	});
 	const bridge = registerPromptTemplateDelegationBridge({
 		events,
@@ -61,11 +83,11 @@ test("a stale prompt-template response emit rejects its registered settlement", 
 	});
 
 	try {
-		events.emit(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, request);
-		const error = await settlementResult.promise;
-		assert.equal(isStaleExtensionContextError(error), true);
+		await assert.rejects(requestFromPromptTemplateModel(events, request), (error: unknown) => {
+			assert.equal(isStaleExtensionContextError(error), true);
+			return true;
+		});
 	} finally {
-		unregister();
 		bridge.dispose();
 	}
 });

@@ -12,12 +12,17 @@ import { describe, test } from "vitest";
 import { CONFIG_DIR_NAME } from "../../packages/coding-agent/src/config.js";
 import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
 import type { SubagentParamsLike } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import { SLASH_SUBAGENT_RESPONSE_EVENT, type SubagentState } from "../../packages/subagents/src/shared/types.js";
+import {
+	SLASH_SUBAGENT_CANCEL_EVENT,
+	SLASH_SUBAGENT_RESPONSE_EVENT,
+	type SubagentState,
+} from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
 import { registerSlashCommands } from "../../packages/subagents/src/slash/slash-commands.js";
 
 type EventHandler = (data: unknown) => void | Promise<void>;
 type CommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
+type TerminalInputHandler = (input: string) => { consume?: boolean; data?: string } | undefined;
 const STALE_RESPONSE_SETTLEMENT_TIMEOUT_MS = 5_000;
 
 class FakeEvents {
@@ -63,6 +68,7 @@ interface FakeContextOptions {
 	hasUI?: boolean;
 	onNotify?: (message: string, type?: "info" | "warning" | "error") => void;
 	onStatus?: (key: string, text: string | undefined) => void;
+	onTerminalInput?: (handler: TerminalInputHandler) => () => void;
 }
 
 function makeContext(cwd: string, options: FakeContextOptions = {}): ExtensionCommandContext {
@@ -74,7 +80,7 @@ function makeContext(cwd: string, options: FakeContextOptions = {}): ExtensionCo
 			notify: options.onNotify ?? (() => {}),
 			setToolsExpanded: () => {},
 			setStatus: options.onStatus ?? (() => {}),
-			onTerminalInput: () => () => {},
+			onTerminalInput: options.onTerminalInput ?? (() => () => {}),
 		},
 		sessionManager: { getSessionFile: () => undefined },
 	} as unknown as ExtensionCommandContext;
@@ -230,6 +236,73 @@ describe("human subagent slash command bridge", () => {
 		}
 	});
 
+	test("stale Escape cancellation rejects the slash command instead of leaving it pending", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-stale-escape-"));
+		writeAgent(cwd, "stale-escape-worker");
+		let stale = false;
+		let terminalInput: TerminalInputHandler | undefined;
+		const events = new FakeEvents((event) => {
+			if (stale && event === SLASH_SUBAGENT_CANCEL_EVENT) throw new Error(STALE_EXTENSION_CONTEXT_MARKER);
+		});
+		const commands = new Map<string, CommandOptions>();
+		const execution = Promise.withResolvers<{
+			content: Array<{ type: "text"; text: string }>;
+			details: { mode: "single"; results: [] };
+		}>();
+		const executionStarted = Promise.withResolvers<void>();
+		const ctx = makeContext(cwd, {
+			hasUI: true,
+			onTerminalInput: (handler) => {
+				terminalInput = handler;
+				return () => {};
+			},
+		});
+		const pi = {
+			events,
+			registerCommand: (name: string, options: CommandOptions) => commands.set(name, options),
+			sendMessage: () => {},
+		} as unknown as ExtensionAPI;
+		const bridge = registerSlashSubagentBridge({
+			events,
+			getContext: () => ctx,
+			execute: async () => {
+				executionStarted.resolve();
+				return execution.promise;
+			},
+		});
+		registerSlashCommands(pi, { baseCwd: cwd } as SubagentState);
+		const command = commands.get("run");
+		assert.ok(command);
+
+		try {
+			const pending = command.handler("stale-escape-worker wait", ctx);
+			await executionStarted.promise;
+			assert.ok(terminalInput, "the slash command must register its Escape handler");
+			stale = true;
+			assert.deepEqual(terminalInput!("\u001b"), { consume: true });
+
+			const bounded = await Promise.race([
+				pending.then(
+					() => ({ status: "resolved" as const }),
+					(error: unknown) => ({ status: "rejected" as const, error }),
+				),
+				new Promise<{ status: "timed-out" }>((resolve) =>
+					setTimeout(() => resolve({ status: "timed-out" }), STALE_RESPONSE_SETTLEMENT_TIMEOUT_MS),
+				),
+			]);
+
+			assert.notEqual(bounded.status, "timed-out", "stale Escape must settle the slash command");
+			assert.equal(bounded.status, "rejected");
+			assert.equal(isStaleExtensionContextError(bounded.error), true);
+		} finally {
+			execution.resolve({
+				content: [{ type: "text", text: "done" }],
+				details: { mode: "single", results: [] },
+			});
+			bridge.dispose();
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 	test("a non-stale bridge cancellation renders a terminal failure result", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-stopped-slash-"));
 		writeAgent(cwd, "stopped-worker");

@@ -845,6 +845,23 @@ The in-process status watch emits `subagent:async-complete`; `src/extension/inde
 ## Prompt-template integration
 
 `pi-subagents` works standalone through natural language, the `subagent` tool, slash commands, and the packaged prompt shortcuts listed near the top of this README. If you use [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model), you can also wrap subagent delegation in your own reusable prompt templates.
+The request emitter is the separately installed `pi-prompt-template-model` extension (`requestDelegatedRun` in its `subagent-step.ts`), not this package. A caller that keeps a request alive across reloads must register its rejection path before emitting the request:
+
+```ts
+import { registerPromptTemplateBridgeRequestSettlement } from "@bastani/subagents";
+
+const unregister = registerPromptTemplateBridgeRequestSettlement(request.requestId, reject);
+try {
+	pi.events.emit("prompt-template:subagent:request", request);
+} catch (error) {
+	unregister();
+	reject(error);
+}
+// Call unregister() from the caller's response, cancellation, or abort path.
+```
+
+The hook rejects only when Atomic drops a bridge emit because the captured extension runtime is stale. Continue listening for `prompt-template:subagent:response` for normal completion. This opt-in is needed because the external emitter and the reloaded bridge do not share the same runtime lifetime; Atomic cannot register it on the caller's behalf.
+
 
 Example:
 
