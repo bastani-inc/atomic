@@ -93,12 +93,16 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - GitHub Copilot
 - OpenRouter (browser PKCE, optional key minting)
 - Kimi Code (device authorization with token refresh)
+- xAI (Grok/X subscription)
+- Radius
 
 **API keys:**
 - Anthropic
+- Ant Ling
 - OpenAI
 - Azure OpenAI
 - DeepSeek
+- NVIDIA NIM
 - Google Gemini
 - Google Vertex
 - Amazon Bedrock
@@ -111,13 +115,22 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - OpenRouter
 - Vercel AI Gateway
 - ZAI
+- ZAI Coding Plan (China)
 - OpenCode Zen
 - OpenCode Go
+- Radius
 - Hugging Face
 - Fireworks
 - Together AI
+- Baseten
 - Kimi For Coding
 - MiniMax
+- MiniMax (China)
+- Moonshot AI
+- Moonshot AI (China)
+- Qwen Token Plan
+- Qwen Token Plan (Individual)
+- Qwen Token Plan (China)
 - Xiaomi MiMo
 - Xiaomi MiMo Token Plan (China)
 - Xiaomi MiMo Token Plan (Amsterdam)
@@ -125,9 +138,9 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 
 See [docs/providers.md](docs/providers.md) for detailed setup instructions.
 
-Atomic's Pi 0.82.1 model/runtime surface includes Claude Opus 5 on Anthropic and Bedrock, model-capability-aware strict JSON-schema and OpenAI Lark/regex tool sampling, ETag-revalidated cached catalogs, persisted llama.cpp models, and live layered `.pi`/`.atomic` `models.json` reload whenever `/model` opens. A populated `ANTHROPIC_AUTH_TOKEN` makes Anthropic models available/selectable while sending header-only bearer auth—with no synthesized API key or `x-api-key`—across chat and summary/compaction requests. Typed RPC model listings expose constrained-sampling flags through optional `ModelInfo.compat`; capability flags are enforcement claims, so unsupported `require` constraints fail instead of being silently weakened. See [models](docs/models.md), [providers](docs/providers.md), [RPC](docs/rpc.md#get_available_models), and [extensions](docs/extensions.md#constrained-sampling).
+Atomic's Pi 0.84.1 model/runtime surface includes Claude Opus 5 on Anthropic and Bedrock, model-capability-aware strict JSON-schema and OpenAI Lark/regex tool sampling, ETag-revalidated cached catalogs, persisted llama.cpp models, arbitrary OpenAI-compatible `samplingParams`, opt-in vLLM thinking-token budgets through `compat.supportsThinkingTokenBudget`, and finishless-stream stop inference through `compat.supportsFinishReason`. A populated `ANTHROPIC_AUTH_TOKEN` makes Anthropic models available/selectable while sending header-only bearer auth—with no synthesized API key or `x-api-key`—across chat and summary/compaction requests. Typed RPC model listings expose constrained-sampling flags through optional `ModelInfo.compat`; capability flags are enforcement claims, so unsupported `require` constraints fail instead of being silently weakened. Custom `models.json` is read from the active Atomic agent directory only; it is not merged across `.pi` and `.atomic` paths. See [models](docs/models.md), [providers](docs/providers.md), [RPC](docs/rpc.md#get_available_models), and [extensions](docs/extensions.md#constrained-sampling).
 
-**Custom providers & models:** Add providers via `~/.atomic/agent/models.json` (legacy `~/.pi/agent/models.json` also works) if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
+**Custom providers & models:** Add providers via the active agent directory's `models.json` (normally `~/.atomic/agent/models.json`; `ATOMIC_CODING_AGENT_DIR`/`PI_CODING_AGENT_DIR` can select another directory) if they speak a supported API (OpenAI, Anthropic, Google). For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
 
 ---
 
@@ -185,7 +198,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 
 ### Keyboard Shortcuts
 
-See `/hotkeys` for the full list. Customize via `~/.atomic/agent/keybindings.json` (legacy `~/.pi/agent/keybindings.json` also works). See [docs/keybindings.md](docs/keybindings.md).
+See `/hotkeys` for the full list. Customize via the active agent directory's `keybindings.json` (normally `~/.atomic/agent/keybindings.json`). See [docs/keybindings.md](docs/keybindings.md).
 
 **Commonly used:**
 
@@ -213,7 +226,7 @@ Submit messages while the agent is working:
 
 On Windows Terminal, `ALT+Enter` is fullscreen by default. Remap it in [docs/terminal-setup.md](docs/terminal-setup.md) so Atomic can receive the follow-up shortcut.
 
-Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUpMode` can be `"one-at-a-time"` (default, waits for response) or `"all"` (delivers all queued at once). `transport` selects provider transport preference (`"sse"`, `"websocket"`, or `"auto"`) for providers that support multiple transports.
+Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUpMode` can be `"one-at-a-time"` (default, waits for response) or `"all"` (delivers all queued at once). `transport` selects provider transport preference (`"sse"`, `"websocket"`, `"websocket-cached"`, or `"auto"`) for providers that support multiple transports.
 
 ---
 
@@ -504,6 +517,7 @@ atomic config                        # Enable/disable package resources
 | Flag | Description |
 |------|-------------|
 | (default) | Interactive mode |
+| `--tui-mode <mode>` | Experimental interactive layout: `regular` (default) or `fullscreen`; `/settings` can switch it while Atomic runs |
 | `-p`, `--print` | Print response and exit |
 | `--mode json` | Output all events as JSON lines (see [docs/json.md](docs/json.md)) |
 | `--mode rpc` | RPC mode for process integration (see [docs/rpc.md](docs/rpc.md)) |
@@ -564,11 +578,11 @@ Project trust gates `.atomic`/legacy `.pi` project resources, project package se
 | Option | Description |
 |--------|-------------|
 | `-e`, `--extension <source>` | Load extension from path, npm, or git (repeatable) |
-| `--no-extensions` | Disable extension discovery |
+| `--no-extensions`, `-ne` | Disable extension discovery |
 | `--skill <path>` | Load skill (repeatable) |
-| `--no-skills` | Disable skill discovery |
+| `--no-skills`, `-ns` | Disable skill discovery |
 | `--prompt-template <path>` | Load prompt template (repeatable) |
-| `--no-prompt-templates` | Disable prompt template discovery |
+| `--no-prompt-templates`, `-np` | Disable prompt template discovery |
 | `--theme <path>` | Load theme (repeatable) |
 | `--no-themes` | Disable theme discovery |
 | `--no-context-files`, `-nc` | Disable context-file discovery and loading |
@@ -581,6 +595,7 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 |--------|-------------|
 | `--system-prompt <text>` | Replace default prompt (context files and skills still appended) |
 | `--append-system-prompt <text>` | Append to system prompt |
+| `--offline` | Disable startup network operations, including update checks, package updates, and telemetry |
 | `--verbose` | Force verbose startup |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
@@ -620,7 +635,7 @@ atomic --model sonnet:high "Solve this complex problem"
 atomic --models "claude-*,gpt-4o"
 
 # Read-only mode
-atomic --tools read,grep,find,ls -p "Review the code"
+atomic --tools read,search,find,ls -p "Review the code"
 
 # High thinking level
 atomic --thinking high "Solve this complex problem"
@@ -637,6 +652,9 @@ atomic --thinking high "Solve this complex problem"
 | `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry (`PI_OFFLINE` is a legacy alias) |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. `PI_SKIP_VERSION_CHECK` is a legacy alias. |
 | `ATOMIC_TELEMETRY` | Override install/update telemetry. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks (`PI_TELEMETRY` is a legacy alias). |
+| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and use a static working identity |
+| `ATOMIC_NO_PTY` | Set to `1` to disable PTY use for bash commands (`PI_NO_PTY` is a legacy alias) |
+| `NODE_COMPILE_CACHE` | Override Node's persistent compile-cache directory; set `NODE_DISABLE_COMPILE_CACHE=1` to opt out |
 | `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported. This is not an `ATOMIC_*` alias and has no Atomic-prefixed equivalent. |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
 

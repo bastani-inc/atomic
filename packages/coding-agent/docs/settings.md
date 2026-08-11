@@ -109,6 +109,8 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, a Catppuccin built-in, or custom) |
 | `tuiMode` | string | `"regular"` | Experimental terminal layout: `"regular"` or `"fullscreen"`. `--tui-mode` overrides one launch without saving; `/settings` switches the live session and saves a successful choice globally. |
 | `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. Has no effect in regular mode |
+| `tuiMode` | string | `"regular"` | **Experimental** terminal layout: `"regular"` or `"fullscreen"`. `--tui-mode` overrides one launch without saving; `/settings` switches the live session and saves a successful choice globally. |
+| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. Has no effect in regular mode. |
 | `quietStartup` | boolean | `false` | Hide startup header |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
@@ -126,6 +128,9 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 
 In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures scroll the alternate-screen viewport rather than engine-hosted overlays such as workflow graphs. Switch to `regular` to scroll those overlays with a mouse or trackpad.
+In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures scroll the viewport rather than engine-hosted overlays such as workflow graphs; switch to `regular` to scroll those overlays. Fullscreen is selectable and experimental, not the default.
+
+The fullscreen renderer keeps minimum sizes for nested layout stacks during resize, and transient fullscreen notices stack instead of replacing a notice that is still visible.
 
 Ctrl+G in main chat, embedded chat, and extension editor dialogs uses one shared asynchronous launcher. Atomic chooses `externalEditor`, then `$VISUAL`, then `$EDITOR`, then Notepad on Windows or `nano` elsewhere. Each edit uses a private `atomic-editor-*` directory containing only `prompt.md`, removes the directory recursively afterward, and never scans the system temporary directory. A successful empty edit is preserved; a failed editor leaves the original text unchanged, and the TUI always restarts and renders after the editor exits.
 
@@ -256,7 +261,9 @@ The `/settings` picker offers these presets:
 | `followUpMode` | string | `"one-at-a-time"` | How follow-up messages are sent: `"all"` or `"one-at-a-time"` |
 | `transport` | string | `"auto"` | Preferred transport for providers that support multiple transports: `"sse"`, `"websocket"`, `"websocket-cached"`, or `"auto"` |
 | `httpIdleTimeoutMs` | number or string | `600000` | HTTP idle timeout in milliseconds, a duration string, or `"disabled"`; also used by providers with explicit stream idle timeouts. |
-| `websocketConnectTimeoutMs` | number | `15000` | WebSocket connect/open handshake timeout in milliseconds for providers that support WebSocket transports. Set to `0` to disable. |
+| `websocketConnectTimeoutMs` | number or string | `15000` | WebSocket connect/open handshake timeout; accepts milliseconds, a duration string, or `"disabled"`/`0` to disable. |
+
+Older settings with a boolean `websockets` value are migrated to `transport`: `true` becomes `"websocket"` and `false` becomes `"sse"` when `transport` is not already set.
 
 ### Terminal & Images
 
@@ -265,8 +272,11 @@ The `/settings` picker offers these presets:
 | `terminal.showImages` | boolean | `true` | Show images in terminal (if supported) |
 | `terminal.imageWidthCells` | number | `60` | Preferred inline image width in terminal cells |
 | `terminal.clearOnShrink` | boolean | `false` | Clear empty rows when content shrinks (can cause flicker) |
-| `images.autoResize` | boolean | `true` | Resize images to 2000x2000 max. Applies to `@file` attachments, `read`, and images returned by tools |
+| `terminal.showTerminalProgress` | boolean | `false` | Show OSC 9;4 progress indicators in the terminal tab bar |
+| `images.autoResize` | boolean | `true` | Resize oversized images to a 2000x2000 maximum. Applies to `@file` attachments, `read`, and images returned by tools |
 | `images.blockImages` | boolean | `false` | Block all images from being sent to LLM |
+
+When `images.autoResize` is enabled, Atomic normalizes images before sending them to the model. Tool-result images are normalized after `tool_result` extension handlers run, so images an extension inserts receive the same limit; if processing fails, Atomic keeps the original image. Set it to `false` to preserve source dimensions.
 
 ### Shell
 
@@ -326,6 +336,10 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 | `markdown.mermaid` | string | `"streaming"` | Mermaid rendering mode: `"off"`, `"final"`, or `"streaming"` |
 | `markdown.latex` | boolean | `true` | Render LaTeX expressions as terminal-friendly Unicode math |
 
+Mermaid code blocks render as themed Unicode diagrams in interactive transcripts when they fit the available width. `"off"` keeps the Markdown fence, `"final"` renders only finalized responses, and `"streaming"` also renders partial assistant responses. Invalid or too-wide diagrams remain as code, and rendering is display-only: stored messages and model context keep the original Markdown. LaTeX rendering is also display-only and converts supported expressions to terminal-friendly Unicode math; set `markdown.latex` to `false` to keep the source form.
+
+The installed pi-tui 0.84.1 LaTeX renderer also handles whitespace and matrix layouts correctly.
+
 ### Resources
 
 These settings define where to load extensions, skills, prompts, themes, and workflows from.
@@ -368,6 +382,8 @@ Object form filters which resources to load:
   ]
 }
 ```
+
+Set `autoload` to `false` on an object-form package entry to start that package with no discovered resources and apply only its explicit `extensions`, `skills`, `prompts`, `themes`, or `workflows` patterns. This is useful when a package contains resources you do not want to load by default.
 
 See [Atomic packages](/packages) for package management details.
 

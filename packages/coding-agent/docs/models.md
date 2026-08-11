@@ -196,6 +196,8 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 }
 ```
 
+In `models.json`, `headers` values must be strings. A `null` suppression marker is supplied only by provider/catalog auth or a `before_provider_headers` extension hook; when present there, `null` suppresses the provider's default header with the same name.
+
 ## Model Configuration
 
 | Field              | Required | Default           | Description                                                                                                |
@@ -541,7 +543,7 @@ Strict JSON-schema support currently includes OpenAI, Anthropic, capable Bedrock
 
 ### Catalog freshness and precedence
 
-Authenticated remote catalogs are cached in `models-store.json`. Atomic revalidates pi.dev catalogs with the stored ETag through `If-None-Match`; an empty `304 Not Modified` is success and retains the cached body while updating its check time. A newer bundled catalog wins over an older persisted overlay even when package file mtimes are misleading. Final visibility is built-ins, persisted/remote data subject to freshness, configured `.pi` then `.atomic` layers, and live provider catalogs/overrides. Provider failures retain the last usable provider-specific snapshot.
+Authenticated remote catalogs are cached in `models-store.json`. Atomic revalidates pi.dev catalogs with the stored ETag through `If-None-Match`; an empty `304 Not Modified` is success and retains the cached body while updating its check time. A newer bundled catalog wins over an older persisted overlay even when package file mtimes are misleading. Final visibility is built-ins, persisted/remote data subject to freshness, the single active-agent `models.json` configuration, and live provider catalogs/overrides; Atomic does not merge project `.atomic`/`.pi` model files or a legacy agent-directory fallback. Provider failures retain the last usable provider-specific snapshot.
 
 Claude Opus 5 is present in the generated Anthropic and Amazon Bedrock catalogs. Its metadata enables adaptive thinking, including `xhigh` where advertised. Bedrock uses its generated inference-profile ID, prompt-caching and strict-tool metadata, and preserves provider/AWS validation errors. Custom entries must reproduce those capabilities honestly rather than copying a display name alone.
 `openrouter` uses `reasoning: { effort }`. `together` uses `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking` and `preserve_thinking`. Use `chat-template` for vLLM/Hugging Face chat templates that need configurable `chat_template_kwargs`, such as `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }` for DeepSeek V3.x templates.
