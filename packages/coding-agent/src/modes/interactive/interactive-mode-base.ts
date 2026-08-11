@@ -78,16 +78,19 @@ const FULLSCREEN_VIEWPORT_ACTIONS = [
  * Decide whether the fullscreen viewport should run before the focused
  * component. `isMouseInput` is classified by pi-tui's own mouse predicate in
  * `AtomicTuiAltScreen`, so this policy does not duplicate terminal grammars.
+ * Mouse deferral is limited to actual overlays so inline components do not
+ * disable pi-tui's application-owned transcript selection path.
  */
 export function shouldHandleFullscreenViewportInput(
 	focused: Component | null,
 	editor: Component,
 	data: string,
 	isMouseInput: boolean,
+	focusedIsOverlay: boolean,
 	keybindings: KeybindingsManager,
 ): boolean {
 	if (focused === editor || !focused?.handleInput) return true;
-	if (isMouseInput) return false;
+	if (isMouseInput) return !focusedIsOverlay;
 	return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
 }
 
@@ -137,12 +140,17 @@ export class InteractiveModeBase {
 	ui: TUI;
 	private renderer: InteractiveTui;
 
-	private readonly shouldHandleViewportInput = (data: string, isMouseInput: boolean): boolean => {
+	private readonly shouldHandleViewportInput = (
+		data: string,
+		isMouseInput: boolean,
+		focusedIsOverlay: boolean,
+	): boolean => {
 		return shouldHandleFullscreenViewportInput(
 			this.renderer.getFocusedComponent(),
 			this.editor,
 			data,
 			isMouseInput,
+			focusedIsOverlay,
 			this.keybindings,
 		);
 	};

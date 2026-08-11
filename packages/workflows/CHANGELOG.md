@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed fullscreen workflow graph and stage-chat mouse routing. Focused overlays now receive SGR/X10 wheel and click press/release sequences through the host's bounded custom-input reply channel before pi-tui's alternate-screen viewport, restoring graph scrolling and click-to-attach without relying on the legacy mouse-tracking seam ([#2303](https://github.com/bastani-inc/atomic/issues/2303)).
+- Fixed fullscreen workflow graph and stage-chat mouse routing. Focused workflow overlays now receive SGR/X10 wheel and click press/release sequences through the host's bounded custom-input reply channel before pi-tui's alternate-screen viewport, restoring graph scrolling and click-to-attach without using the local TTY-tracking seam for fullscreen input routing; regular-mode hosts still use that seam for mouse reporting ([#2303](https://github.com/bastani-inc/atomic/issues/2303)).
 - Fixed graph overlay rendering to keep its live vertical position in pi-tui's `ScrollView` and preserve OSC-8 hyperlink terminators when normalizing layout rows.
 
 - Fixed switcher wheel input scrolling an obscured graph and the scrollbar covering the final graph column; overflow now reserves its scrollbar column and the switcher owns wheel selection ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).

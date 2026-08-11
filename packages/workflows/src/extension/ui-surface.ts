@@ -156,9 +156,12 @@ export interface PiRemoteTerminalControl {
 /**
  * Surface of the Pi `TUI` instance exposed to overlay factories. The
  * `terminal` accessor is optional because some host implementations and
- * test mocks do not surface it; consumers must handle `undefined`.
+ * test mocks do not surface it; consumers must handle `undefined`. `mode`
+ * identifies whether the host renderer already owns fullscreen terminal
+ * modes, so local fallback controls do not disable that baseline.
  */
 export interface PiCustomOverlayFactoryTui {
+	readonly mode?: "regular" | "fullscreen";
 	requestRender?: () => void;
 	terminal?: {
 		rows?: number;
