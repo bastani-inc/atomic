@@ -145,22 +145,59 @@ const READ_SECURITY_SCRIPT = [
 /** Bounded wait for the security read; a wedged subprocess must not hang a spill. */
 const READ_SECURITY_TIMEOUT_MS = 30_000;
 
+/** PowerShell hosts to try, most specific first: an absolute Windows
+ * PowerShell path immune to a stripped `PATH`, then whichever of
+ * `powershell.exe`/`pwsh.exe` the environment resolves. */
+function powershellCandidates(): string[] {
+	const candidates: string[] = [];
+	const systemRoot = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
+	candidates.push(`${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`);
+	candidates.push("powershell.exe", "pwsh.exe");
+	return candidates;
+}
+
+let lastReadFailure: string | undefined;
+
+/** Test seam: why the most recent `readWindowsDirectorySecurity` returned `undefined`. */
+export function getLastWindowsSecurityReadFailureForTesting(): string | undefined {
+	return lastReadFailure;
+}
+
 /**
  * Read the security descriptor of `path`, or `undefined` when it cannot be
  * read (access denied, missing PowerShell, timeout). Callers treat
  * `undefined` as unverifiable and refuse the directory.
  */
 export function readWindowsDirectorySecurity(path: string): WindowsDirectorySecurity | undefined {
-	const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
-		env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: path },
-		encoding: "utf8",
-		timeout: READ_SECURITY_TIMEOUT_MS,
-		windowsHide: true,
-	});
-	if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
-		return undefined;
+	lastReadFailure = undefined;
+	const failures: string[] = [];
+	for (const executable of powershellCandidates()) {
+		const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
+			env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: path },
+			encoding: "utf8",
+			timeout: READ_SECURITY_TIMEOUT_MS,
+			windowsHide: true,
+		});
+		if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+			failures.push(
+				`${executable}: status=${result.status} signal=${result.signal} error=${result.error?.message} stderr=${
+					typeof result.stderr === "string" ? result.stderr.trim().slice(0, 500) : result.stderr
+				}`,
+			);
+			continue;
+		}
+		const parsed = parseSecurityOutput(result.stdout);
+		if (parsed !== undefined) {
+			return parsed;
+		}
+		failures.push(`${executable}: unparseable output ${JSON.stringify(result.stdout.slice(0, 500))}`);
 	}
-	const [currentSid, ownerSid, dacl, ...ruleLines] = result.stdout.split("\n").map((line) => line.trim());
+	lastReadFailure = failures.join(" | ");
+	return undefined;
+}
+
+function parseSecurityOutput(stdout: string): WindowsDirectorySecurity | undefined {
+	const [currentSid, ownerSid, dacl, ...ruleLines] = stdout.split("\n").map((line) => line.trim());
 	if (!currentSid || !ownerSid || dacl === undefined) {
 		return undefined;
 	}

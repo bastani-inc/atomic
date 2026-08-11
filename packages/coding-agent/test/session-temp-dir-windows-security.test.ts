@@ -18,6 +18,7 @@ import {
 } from "../src/core/tools/session-temp-dir.ts";
 import {
 	evaluateWindowsDirectorySecurity,
+	getLastWindowsSecurityReadFailureForTesting,
 	readWindowsDirectorySecurity,
 	setWindowsDirectorySecurityReaderForTesting,
 	type WindowsDirectorySecurity,
@@ -188,7 +189,10 @@ describe("windows session temp root verification", () => {
 	it.skipIf(!isWindows)("reads a real descriptor for an owned directory", () => {
 		const dir = getSessionTempDir("descriptor-read");
 		const descriptor = readWindowsDirectorySecurity(dir);
-		assert.ok(descriptor, "the descriptor of an owned directory must be readable");
+		assert.ok(
+			descriptor,
+			`the descriptor of an owned directory must be readable: ${getLastWindowsSecurityReadFailureForTesting()}`,
+		);
 		assert.match(descriptor.currentSid, /^S-1-/);
 		assert.match(descriptor.ownerSid, /^S-1-/);
 		assert.equal(evaluateWindowsDirectorySecurity(descriptor), undefined);
