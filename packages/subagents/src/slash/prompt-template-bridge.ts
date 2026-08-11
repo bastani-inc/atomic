@@ -1,3 +1,9 @@
+import {
+	type BridgeRequestSettlement,
+	emitBridgeEvent,
+	readBridgeRequestSettlement,
+	rejectStoppedBridgeRequest,
+} from "./bridge-settlement.ts";
 export const PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT = "prompt-template:subagent:request";
 export const PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT = "prompt-template:subagent:started";
 export const PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT = "prompt-template:subagent:response";
@@ -294,6 +300,7 @@ export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: strin
 	dispose: () => void;
 } {
 	const controllers = new Map<string, AbortController>();
+	const activeSettlements = new Map<string, BridgeRequestSettlement>();
 	const pendingCancels = new Set<string>();
 	const subscriptions: Array<() => void> = [];
 
@@ -317,6 +324,7 @@ export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: strin
 	subscribe(PROMPT_TEMPLATE_SUBAGENT_REQUEST_EVENT, async (data) => {
 		const request = parsePromptTemplateRequest(data);
 		if (!request) return;
+		const settlement = readBridgeRequestSettlement(data, "prompt-template");
 
 		const ctx = options.getContext();
 		if (!ctx) {
@@ -326,12 +334,13 @@ export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: strin
 				isError: true,
 				errorText: "No active extension context for delegated subagent execution.",
 			};
-			options.events.emit(PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, response);
+			emitBridgeEvent(options.events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, response, settlement);
 			return;
 		}
 
 		const controller = new AbortController();
 		controllers.set(request.requestId, controller);
+		if (settlement) activeSettlements.set(request.requestId, settlement);
 
 		if (pendingCancels.delete(request.requestId)) {
 			controller.abort();
@@ -341,18 +350,33 @@ export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: strin
 				isError: true,
 				errorText: "Delegated prompt cancelled.",
 			};
-			options.events.emit(PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, response);
+			emitBridgeEvent(options.events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, response, settlement);
 			controllers.delete(request.requestId);
+			activeSettlements.delete(request.requestId);
 			return;
 		}
 
-		options.events.emit(PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT, { requestId: request.requestId });
+		if (
+			!emitBridgeEvent(
+				options.events,
+				PROMPT_TEMPLATE_SUBAGENT_STARTED_EVENT,
+				{ requestId: request.requestId },
+				settlement,
+			)
+		) {
+			controller.abort();
+			controllers.delete(request.requestId);
+			activeSettlements.delete(request.requestId);
+			return;
+		}
 
 		try {
 			const result = await options.execute(request.requestId, request, controller.signal, ctx, (update) => {
 				const payload = toDelegationUpdate(request.requestId, update);
 				if (!payload) return;
-				options.events.emit(PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT, payload);
+				if (!emitBridgeEvent(options.events, PROMPT_TEMPLATE_SUBAGENT_UPDATE_EVENT, payload, settlement)) {
+					controller.abort();
+				}
 			});
 			const contentText = firstTextContent(result.content);
 			const messages = buildDelegationMessages(result.details?.results?.[0] ?? {}, contentText);
@@ -384,7 +408,7 @@ export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: strin
 				isError: result.isError === true,
 				errorText: result.isError ? contentText : undefined,
 			};
-			options.events.emit(PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, response);
+			emitBridgeEvent(options.events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, response, settlement);
 		} catch (error) {
 			const response: PromptTemplateDelegationResponse = {
 				...request,
@@ -392,18 +416,21 @@ export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: strin
 				isError: true,
 				errorText: error instanceof Error ? error.message : String(error),
 			};
-			options.events.emit(PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, response);
+			emitBridgeEvent(options.events, PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT, response, settlement);
 		} finally {
 			controllers.delete(request.requestId);
+			activeSettlements.delete(request.requestId);
 		}
 	});
 
 	return {
 		cancelAll: () => {
-			for (const controller of controllers.values()) {
+			for (const [requestId, controller] of controllers) {
+				rejectStoppedBridgeRequest(activeSettlements.get(requestId));
 				controller.abort();
 			}
 			controllers.clear();
+			activeSettlements.clear();
 			pendingCancels.clear();
 		},
 		dispose: () => {

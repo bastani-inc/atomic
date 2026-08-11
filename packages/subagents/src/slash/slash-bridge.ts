@@ -9,6 +9,12 @@ import {
 	SLASH_SUBAGENT_STARTED_EVENT,
 	SLASH_SUBAGENT_UPDATE_EVENT,
 } from "../shared/types.ts";
+import {
+	type BridgeRequestSettlement,
+	emitBridgeEvent,
+	readBridgeRequestSettlement,
+	rejectStoppedBridgeRequest,
+} from "./bridge-settlement.ts";
 
 interface SlashSubagentRequest {
 	requestId: string;
@@ -51,6 +57,7 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 	dispose: () => void;
 } {
 	const controllers = new Map<string, AbortController>();
+	const activeSettlements = new Map<string, BridgeRequestSettlement>();
 	const pendingCancels = new Set<string>();
 	const subscriptions: Array<() => void> = [];
 
@@ -76,6 +83,7 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 		const request = data as Partial<SlashSubagentRequest>;
 		if (typeof request.requestId !== "string" || !request.params) return;
 		const { requestId, params } = request as SlashSubagentRequest;
+		const settlement = readBridgeRequestSettlement(data, "slash");
 
 		const ctx = options.getContext();
 		if (!ctx) {
@@ -88,12 +96,13 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 				isError: true,
 				errorText: "No active extension context.",
 			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
+			emitBridgeEvent(options.events, SLASH_SUBAGENT_RESPONSE_EVENT, response, settlement);
 			return;
 		}
 
 		const controller = new AbortController();
 		controllers.set(requestId, controller);
+		if (settlement) activeSettlements.set(requestId, settlement);
 
 		if (pendingCancels.delete(requestId)) {
 			controller.abort();
@@ -106,12 +115,18 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 				isError: true,
 				errorText: "Cancelled before start.",
 			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
+			emitBridgeEvent(options.events, SLASH_SUBAGENT_RESPONSE_EVENT, response, settlement);
 			controllers.delete(requestId);
+			activeSettlements.delete(requestId);
 			return;
 		}
 
-		options.events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
+		if (!emitBridgeEvent(options.events, SLASH_SUBAGENT_STARTED_EVENT, { requestId }, settlement)) {
+			controller.abort();
+			controllers.delete(requestId);
+			activeSettlements.delete(requestId);
+			return;
+		}
 
 		try {
 			const result = await options.execute(
@@ -127,7 +142,9 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 						currentTool: first?.currentTool,
 						toolCount: first?.toolCount,
 					};
-					options.events.emit(SLASH_SUBAGENT_UPDATE_EVENT, payload);
+					if (!emitBridgeEvent(options.events, SLASH_SUBAGENT_UPDATE_EVENT, payload, settlement)) {
+						controller.abort();
+					}
 				},
 				ctx,
 			);
@@ -140,7 +157,7 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 					? result.content.find((c) => c.type === "text")?.text
 					: undefined,
 			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
+			emitBridgeEvent(options.events, SLASH_SUBAGENT_RESPONSE_EVENT, response, settlement);
 		} catch (error) {
 			const response: SlashSubagentResponse = {
 				requestId,
@@ -151,18 +168,21 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 				isError: true,
 				errorText: error instanceof Error ? error.message : String(error),
 			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
+			emitBridgeEvent(options.events, SLASH_SUBAGENT_RESPONSE_EVENT, response, settlement);
 		} finally {
 			controllers.delete(requestId);
+			activeSettlements.delete(requestId);
 		}
 	});
 
 	return {
 		cancelAll: () => {
-			for (const controller of controllers.values()) {
+			for (const [requestId, controller] of controllers) {
+				rejectStoppedBridgeRequest(activeSettlements.get(requestId));
 				controller.abort();
 			}
 			controllers.clear();
+			activeSettlements.clear();
 			pendingCancels.clear();
 		},
 		dispose: () => {

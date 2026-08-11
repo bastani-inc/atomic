@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type ExtensionAPI, type ExtensionContext, keyHintIfBound } from "@bastani/atomic";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	isStaleExtensionContextError,
+	keyHintIfBound,
+} from "@bastani/atomic";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
@@ -15,6 +20,7 @@ import {
 	SLASH_SUBAGENT_UPDATE_EVENT,
 	type SubagentState,
 } from "../shared/types.ts";
+import { registerBridgeRequestSettlement } from "./bridge-settlement.ts";
 import type { SlashSubagentResponse, SlashSubagentUpdate } from "./slash-bridge.ts";
 import { applySlashUpdate, buildSlashInitialResult, failSlashResult, finalizeSlashResult } from "./slash-live-state.ts";
 
@@ -180,6 +186,8 @@ async function requestSlashRun(
 		const unsubResponse = pi.events.on(SLASH_SUBAGENT_RESPONSE_EVENT, onResponse);
 		const unsubUpdate = pi.events.on(SLASH_SUBAGENT_UPDATE_EVENT, onUpdate);
 
+		let unregisterSettlement: (() => void) | undefined;
+		let reportedStaleStop = false;
 		const finish = (next: () => void) => {
 			if (done) return;
 			done = true;
@@ -188,10 +196,25 @@ async function requestSlashRun(
 			unsubResponse();
 			unsubUpdate();
 			onTerminalInput?.();
+			unregisterSettlement?.();
 			next();
 		};
 
-		pi.events.emit(SLASH_SUBAGENT_REQUEST_EVENT, { requestId, params });
+		unregisterSettlement = registerBridgeRequestSettlement("slash", requestId, {
+			reject: (error: unknown) => {
+				if (!reportedStaleStop) {
+					reportedStaleStop = true;
+					console.error("Subagent slash command stopped because its response runtime was replaced or reloaded.");
+				}
+				finish(() => reject(error));
+			},
+		});
+		try {
+			pi.events.emit(SLASH_SUBAGENT_REQUEST_EVENT, { requestId, params });
+		} catch (error) {
+			finish(() => reject(error));
+			return;
+		}
 
 		// Bridge emits STARTED synchronously during REQUEST emit.
 		// If not started, no bridge received the request.
@@ -281,6 +304,7 @@ async function runSlashSubagent(pi: ExtensionAPI, ctx: ExtensionContext, params:
 			ctx.ui.notify(response.errorText || "Subagent failed", "error");
 		}
 	} catch (error) {
+		if (isStaleExtensionContextError(error)) throw error;
 		const message = error instanceof Error ? error.message : String(error);
 		const failedDetails = failSlashResult(requestId, params, message, pi);
 		pi.sendMessage({

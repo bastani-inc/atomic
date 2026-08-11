@@ -309,7 +309,11 @@ export function notifyDetachedForegroundChildExit(input: {
 			noticeLabel: "Detached subagent task",
 		},
 		`foreground-detach-${runId}-${index}`,
-	);
+	).catch((error) => {
+		if (!isStaleExtensionContextError(error)) {
+			console.error("Failed to emit detached subagent completion notification:", error);
+		}
+	});
 }
 
 async function emitForegroundResultIntercom(input: {

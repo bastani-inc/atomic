@@ -2,20 +2,27 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
+import {
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	isStaleExtensionContextError,
+	STALE_EXTENSION_CONTEXT_MARKER,
+} from "@bastani/atomic";
 import { describe, test } from "vitest";
 import { CONFIG_DIR_NAME } from "../../packages/coding-agent/src/config.js";
 import { BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../packages/coding-agent/src/core/slash-commands.js";
 import type { SubagentParamsLike } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import type { SubagentState } from "../../packages/subagents/src/shared/types.js";
+import { SLASH_SUBAGENT_RESPONSE_EVENT, type SubagentState } from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
 import { registerSlashCommands } from "../../packages/subagents/src/slash/slash-commands.js";
 
-type EventHandler = (data: unknown) => void;
+type EventHandler = (data: unknown) => void | Promise<void>;
 type CommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
 
 class FakeEvents {
 	private readonly handlers = new Map<string, Set<EventHandler>>();
+
+	constructor(private readonly beforeEmit?: (event: string) => void) {}
 
 	on(event: string, handler: EventHandler): () => void {
 		const handlers = this.handlers.get(event) ?? new Set<EventHandler>();
@@ -25,7 +32,14 @@ class FakeEvents {
 	}
 
 	emit(event: string, data: unknown): void {
-		for (const handler of this.handlers.get(event) ?? []) handler(data);
+		this.beforeEmit?.(event);
+		for (const handler of this.handlers.get(event) ?? []) {
+			try {
+				void Promise.resolve(handler(data)).catch(() => {});
+			} catch {
+				// Match the host event bus, which contains synchronous handler failures.
+			}
+		}
 	}
 }
 
@@ -143,6 +157,68 @@ describe("human subagent slash command bridge", () => {
 				context: "fork",
 			});
 		});
+	});
+
+	test("a stale response emit rejects the slash command instead of leaving it pending", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-stale-slash-"));
+		writeAgent(cwd, "stale-worker");
+		let stale = false;
+		const events = new FakeEvents((event) => {
+			if (stale && event === SLASH_SUBAGENT_RESPONSE_EVENT) throw new Error(STALE_EXTENSION_CONTEXT_MARKER);
+		});
+		const commands = new Map<string, CommandOptions>();
+		const execution = Promise.withResolvers<{
+			content: Array<{ type: "text"; text: string }>;
+			details: { mode: "single"; results: [] };
+		}>();
+		const executionStarted = Promise.withResolvers<void>();
+		const ctx = makeContext(cwd);
+		const pi = {
+			events,
+			registerCommand: (name: string, options: CommandOptions) => commands.set(name, options),
+			sendMessage: () => {},
+		} as unknown as ExtensionAPI;
+		const bridge = registerSlashSubagentBridge({
+			events,
+			getContext: () => ctx,
+			execute: async () => {
+				executionStarted.resolve();
+				return execution.promise;
+			},
+		});
+		registerSlashCommands(pi, { baseCwd: cwd } as SubagentState);
+		const command = commands.get("run");
+		assert.ok(command);
+		const diagnostics: string[] = [];
+		const originalConsoleError = console.error;
+		console.error = (...args: unknown[]) => diagnostics.push(args.map(String).join(" "));
+
+		try {
+			const pending = command.handler("stale-worker wait", ctx);
+			await executionStarted.promise;
+			stale = true;
+			execution.resolve({
+				content: [{ type: "text", text: "done" }],
+				details: { mode: "single", results: [] },
+			});
+
+			const bounded = await Promise.race([
+				pending.then(
+					() => ({ status: "resolved" as const }),
+					(error: unknown) => ({ status: "rejected" as const, error }),
+				),
+				new Promise<{ status: "timed-out" }>((resolve) => setTimeout(() => resolve({ status: "timed-out" }), 250)),
+			]);
+
+			assert.notEqual(bounded.status, "timed-out", "the slash command must settle after a stale response drop");
+			assert.equal(bounded.status, "rejected");
+			assert.equal(isStaleExtensionContextError(bounded.error), true);
+			assert.match(diagnostics.join("\n"), /response runtime was replaced or reloaded/);
+		} finally {
+			console.error = originalConsoleError;
+			bridge.dispose();
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 
 	test("removed slash commands are not registered", async () => {

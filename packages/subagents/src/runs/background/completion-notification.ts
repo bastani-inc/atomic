@@ -12,13 +12,18 @@ export function deliverLocalCompletionNotification(
 	payload: Record<string, unknown>,
 	notificationId: string,
 ): Promise<boolean> {
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		let settled = false;
 		let deferred = false;
 		const finish = (delivered: boolean) => {
 			if (settled) return;
 			settled = true;
 			resolve(delivered);
+		};
+		const fail = (error: unknown) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
 		};
 		try {
 			events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
@@ -30,8 +35,8 @@ export function deliverLocalCompletionNotification(
 				acknowledge: finish,
 			} satisfies CompletionNotificationEnvelope);
 			if (!deferred) finish(true);
-		} catch {
-			finish(false);
+		} catch (error) {
+			fail(error);
 		}
 	});
 }

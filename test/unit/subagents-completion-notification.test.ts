@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isStaleExtensionContextError, STALE_EXTENSION_CONTEXT_MARKER } from "@bastani/atomic";
 import { test } from "vitest";
 import { deliverLocalCompletionNotification } from "../../packages/subagents/src/runs/background/completion-notification.js";
 import registerSubagentNotify from "../../packages/subagents/src/runs/background/notify.js";
@@ -35,6 +36,20 @@ test("local completion acknowledgement retries failures and dedupes successful r
 	assert.equal(await deliverLocalCompletionNotification(harness.pi.events, payload, "stable-notify"), true);
 	assert.equal(harness.sends(), 2, "the duplicate request is acknowledged without another message");
 	unregister();
+});
+
+test("stale completion notification emits reject instead of reporting ordinary non-delivery", async () => {
+	const events = {
+		on: () => () => {},
+		emit: () => {
+			throw new Error(STALE_EXTENSION_CONTEXT_MARKER);
+		},
+	};
+
+	await assert.rejects(
+		deliverLocalCompletionNotification(events, { id: "stale-notify" }, "stale-notify"),
+		(error: unknown) => isStaleExtensionContextError(error),
+	);
 });
 
 test("local completion acknowledgement waits for rejected async delivery before retrying", async () => {
