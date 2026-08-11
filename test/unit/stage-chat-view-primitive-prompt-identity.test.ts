@@ -92,7 +92,6 @@ test("primitive prompt row budgets emit only complete attribution and editor box
 				piTheme: {},
 				piKeybindings: makeFakeKeybindings(),
 				piEditorFactory: () => new FakePromptEditor(),
-				getViewportRows: () => viewportRows,
 			});
 
 			const lines = view.render(100).map((line) => stripAnsi(line));

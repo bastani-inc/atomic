@@ -79,7 +79,7 @@ export abstract class GraphViewState {
 	protected onDetach?: () => void;
 	protected initialFocusedStageId?: string;
 	protected initialFocusedRunId?: string;
-	protected getViewportRows?: () => number | undefined;
+	protected piTui?: GraphViewOpts["piTui"];
 	protected requestRender?: () => void;
 	protected piKeybindings?: unknown;
 	protected footerData?: ReadonlyFooterDataProvider;
@@ -132,7 +132,7 @@ export abstract class GraphViewState {
 		this.onDetach = opts.onDetach;
 		this.initialFocusedStageId = opts.initialFocusedStageId;
 		this.initialFocusedRunId = opts.initialFocusedRunId;
-		this.getViewportRows = opts.getViewportRows;
+		this.piTui = opts.piTui;
 		this.requestRender = opts.requestRender;
 		this.piKeybindings = opts.piKeybindings;
 		this.footerData = opts.footerData;

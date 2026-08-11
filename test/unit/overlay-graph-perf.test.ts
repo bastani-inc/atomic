@@ -193,7 +193,7 @@ function renderPairGraph(count: number): { composed: number; edges: number; card
 		runId: "run-1",
 		store,
 		graphTheme: defaultTheme,
-		getViewportRows: () => 24,
+		piTui: { terminal: { rows: 24 } },
 		initialFocusedStageId: "root-0",
 	});
 	try {
@@ -274,7 +274,7 @@ describe("GraphView many-stage performance (#2100)", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 24,
+			piTui: { terminal: { rows: 24 } },
 			initialFocusedStageId: "s399",
 		});
 		try {
@@ -308,7 +308,7 @@ describe("GraphView many-stage performance (#2100)", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 24,
+			piTui: { terminal: { rows: 24 } },
 			initialFocusedStageId: "s0",
 		});
 		try {
@@ -362,7 +362,7 @@ describe("GraphView many-stage performance (#2100)", () => {
 			runId: "run-1",
 			store: makeStore(snap),
 			graphTheme: defaultTheme,
-			getViewportRows: () => 24,
+			piTui: { terminal: { rows: 24 } },
 		});
 		try {
 			const text = visibleText(view.render(96));
@@ -516,7 +516,7 @@ describe("GraphView many-stage performance (#2100)", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 24,
+			piTui: { terminal: { rows: 24 } },
 			initialFocusedStageId: "s999",
 		});
 		try {
@@ -578,7 +578,7 @@ describe("overlay graph paints what the budgets do not constrain", () => {
 			runId: "run-1",
 			store: twoStageStore(),
 			graphTheme: defaultTheme,
-			getViewportRows: () => 24,
+			piTui: { terminal: { rows: 24 } },
 		});
 		try {
 			const lines = visibleText(view.render(60)).split("\n");
@@ -612,7 +612,7 @@ describe("overlay graph paints what the budgets do not constrain", () => {
 			runId: "run-1",
 			store: twoStageStore(),
 			graphTheme: defaultTheme,
-			getViewportRows: () => 24,
+			piTui: { terminal: { rows: 24 } },
 		});
 		try {
 			const header = visibleText(view.render(60))

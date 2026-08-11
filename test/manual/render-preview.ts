@@ -241,7 +241,7 @@ const view = new GraphView({
 	store,
 	graphTheme: deriveGraphTheme({}),
 	onClose: () => {},
-	getViewportRows: () => rows,
+	piTui: { terminal: { rows } },
 });
 
 if (scenarioKey === "stages") {

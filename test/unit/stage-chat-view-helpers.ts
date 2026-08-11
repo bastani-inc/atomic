@@ -31,6 +31,20 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 
+export function makeTestTui(rows: number | (() => number | undefined)): TUI {
+	if (typeof rows === "function") {
+		const readRows = rows;
+		return {
+			terminal: {
+				get rows() {
+					return readRows();
+				},
+			},
+		} as unknown as TUI;
+	}
+	return { terminal: { rows } } as unknown as TUI;
+}
+
 beforeAll(() => {
 	initTheme("dark", false);
 });
@@ -311,7 +325,7 @@ export function makeCompletedPromptArchiveView(message: string, response: string
 		handle: undefined,
 		onDetach: () => {},
 		onClose: () => {},
-		getViewportRows: () => 10,
+		piTui: makeTestTui(10),
 	});
 }
 
@@ -334,6 +348,7 @@ export class FakePromptEditor implements EditorComponent {
 			this.onSubmit?.(this.text);
 			return;
 		}
+		if (["\x1b[A", "\x1b[B", "pageUp", "pageDown", "home", "end", "\t"].includes(data)) return;
 		this.text += data;
 		this.onChange?.(this.text);
 	}

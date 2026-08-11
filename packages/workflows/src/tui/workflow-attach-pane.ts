@@ -36,7 +36,6 @@ export class WorkflowAttachPane implements Component {
 	private onClose: () => void;
 	private onHide?: () => void;
 	private onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
-	private getViewportRows?: () => number | undefined;
 	private hostRequestRender?: () => void;
 	private hostRequestFocus?: () => void;
 	private setMouseScrollTracking?: (enabled: boolean) => void;
@@ -74,7 +73,6 @@ export class WorkflowAttachPane implements Component {
 		this.onClose = opts.onClose;
 		this.onHide = opts.onHide;
 		this.onPromptResolve = opts.onPromptResolve;
-		this.getViewportRows = opts.getViewportRows;
 		this.hostRequestRender = opts.requestRender;
 		this.hostRequestFocus = opts.requestFocus;
 		this.setMouseScrollTracking = opts.setMouseScrollTracking;
@@ -123,7 +121,7 @@ export class WorkflowAttachPane implements Component {
 			},
 			initialFocusedStageId,
 			initialFocusedRunId,
-			getViewportRows: this.getViewportRows,
+			piTui: this.piTui,
 			piKeybindings: this.piKeybindings,
 			footerData: this.footerData,
 			getStageQueuedMessageCount: (runId, stageId) => this._stageQueuedMessageCount(runId, stageId),
@@ -202,7 +200,6 @@ export class WorkflowAttachPane implements Component {
 			getToolsExpanded: this.getToolsExpanded,
 			setToolsExpanded: this.setToolsExpanded,
 			footerData: this.footerData,
-			getViewportRows: this.getViewportRows,
 			stageUiBroker: this.stageUiBroker,
 			canSubmitPrompt: (candidateRunId, candidateStageId) =>
 				this.visible &&

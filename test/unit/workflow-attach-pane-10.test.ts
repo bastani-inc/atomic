@@ -262,10 +262,9 @@ describe("WorkflowAttachPane", () => {
 		pane.dispose();
 	});
 
-	test("forwards getViewportRows to graph mode", () => {
-		// The host provides terminal.rows through `getViewportRows`; the
-		// attach pane must thread that through to GraphView so the
-		// overlay frame fills the terminal in graph mode.
+	test("uses host terminal rows in graph mode", () => {
+		// The attach pane passes the host TUI to GraphView so the overlay
+		// frame fills the terminal in graph mode.
 		const store = createStore();
 		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
 		const pane = new WorkflowAttachPane({
@@ -273,7 +272,7 @@ describe("WorkflowAttachPane", () => {
 			graphTheme: deriveGraphTheme({}),
 			runId: "run-1",
 			onClose: () => {},
-			getViewportRows: () => 50,
+			piTui: { terminal: { rows: 50 } },
 		});
 		const lines = pane.render(120);
 		assert.equal(pane._mode, "graph");
@@ -281,10 +280,9 @@ describe("WorkflowAttachPane", () => {
 		pane.dispose();
 	});
 
-	test("forwards getViewportRows to stage-chat mode after attach", () => {
+	test("uses host terminal rows in stage-chat mode after attach", () => {
 		// After Enter on a graph node the attach pane swaps the interior
-		// to StageChatView. The viewport accessor must continue to apply
-		// so the chat surface keeps filling the terminal.
+		// to StageChatView, which reads the same host terminal geometry.
 		const store = createStore();
 		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
 		const registry = createStageControlRegistry();
@@ -295,7 +293,7 @@ describe("WorkflowAttachPane", () => {
 			runId: "run-1",
 			stageControlRegistry: registry,
 			onClose: () => {},
-			getViewportRows: () => 44,
+			piTui: { terminal: { rows: 44 } },
 		});
 		pane.handleInput(Key.enter);
 		assert.equal(pane._mode, "stage-chat");

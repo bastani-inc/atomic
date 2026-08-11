@@ -26,7 +26,7 @@ describe("GraphView rendered node hit rects", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (_runId, stageId) => attached.push(stageId),
 		});
 

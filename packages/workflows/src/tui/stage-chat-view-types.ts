@@ -66,14 +66,6 @@ export interface StageChatViewOpts {
 	setToolsExpanded?: (expanded: boolean) => void;
 	/** Parent footer data provider inherited from the host UI for core footer/usage rendering. */
 	footerData?: ReadonlyFooterDataProvider;
-	/**
-	 * Optional accessor returning the current terminal row count. The chat
-	 * surface expands its body band to roughly `viewportRows` minus the fixed
-	 * header / loader / editor / footer rows so the popup fills the
-	 * terminal under pi-tui's `width: "100%" / maxHeight: "100%"` geometry.
-	 * Returning `undefined` falls back to the constant 32-row frame.
-	 */
-	getViewportRows?: () => number | undefined;
 	/** Broker that routes stage-local custom UI, such as ask_user_question, into this node. */
 	stageUiBroker?: StageUiBroker;
 	/**
@@ -130,7 +122,6 @@ export interface StageChatViewContext {
 	requestRender: (() => void) | undefined;
 	requestFocus: (() => void) | undefined;
 	focusHoldTimer: ReturnType<typeof setInterval> | undefined;
-	getViewportRows: (() => number | undefined) | undefined;
 	piTui: TUI | undefined;
 	piTheme: unknown;
 	piKeybindings: unknown;

@@ -104,7 +104,6 @@ function makePromptView(
 		...(usePrimitiveEditor
 			? { piKeybindings: makeFakeKeybindings(), piEditorFactory: () => new FakePromptEditor() }
 			: {}),
-		getViewportRows: () => viewportRows,
 	});
 }
 

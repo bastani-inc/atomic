@@ -32,7 +32,7 @@ function renderOverlay(statuses: Map<string, string>): string {
 		store: makeStore(makeSnap([{ ...makeStage("stage-1"), status: "running" }])),
 		graphTheme: defaultTheme,
 		footerData: footerData(statuses),
-		getViewportRows: () => 20,
+		piTui: { terminal: { rows: 20 } },
 	});
 	try {
 		return visibleText(view.render(100));

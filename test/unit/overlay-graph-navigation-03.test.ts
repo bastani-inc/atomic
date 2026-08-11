@@ -69,7 +69,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (runId, stageId) => attached.push({ runId, stageId }),
 		});
 
@@ -90,7 +90,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (_runId, stageId) => attached.push(stageId),
 		});
 
@@ -112,7 +112,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (_runId, stageId) => attached.push(stageId),
 		});
 
@@ -143,7 +143,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (_runId, stageId) => attached.push(stageId),
 		});
 
@@ -178,7 +178,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (_runId, stageId) => attached.push(stageId),
 		});
 
@@ -231,7 +231,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 		});
 
 		view.render(96);
@@ -258,7 +258,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onDetach: () => {
 				detached += 1;
 			},
@@ -350,7 +350,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 		});
 
 		assert.doesNotMatch(visibleText(view.render(96)), /stage-5/);
@@ -375,7 +375,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 		});
 
 		view.render(96);
@@ -396,7 +396,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeSnap(stages)),
 			graphTheme: defaultTheme,
-			getViewportRows: () => 16,
+			piTui: { terminal: { rows: 16 } },
 		});
 
 		view.render(96);
@@ -420,7 +420,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeSnap(stages)),
 			graphTheme: defaultTheme,
-			getViewportRows: () => 16,
+			piTui: { terminal: { rows: 16 } },
 		});
 
 		view.render(96);
@@ -452,7 +452,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeRunPromptSnap(stages, makePendingPrompt({ message: "Continue?" }))),
 			graphTheme: defaultTheme,
-			getViewportRows: () => 16,
+			piTui: { terminal: { rows: 16 } },
 		});
 
 		const lines = view.render(96);
@@ -472,7 +472,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 16,
+			piTui: { terminal: { rows: 16 } },
 		});
 		const width = 80;
 		const message = "waiting for stage events…";
@@ -496,7 +496,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: null,
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 42,
+			piTui: { terminal: { rows: 42 } },
 		});
 		const lines = view.render(96);
 		assert.equal(lines.length, 42);
@@ -556,7 +556,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 20,
+			piTui: { terminal: { rows: 20 } },
 		});
 		const lines = view.render(40);
 		assert.equal(lines.length, 20);

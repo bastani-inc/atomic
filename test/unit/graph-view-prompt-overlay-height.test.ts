@@ -15,7 +15,7 @@ function renderPromptOverlay(viewportRows: number, prompt = makePendingPrompt({ 
 		runId: RUN_ID,
 		store: makeStore({ ...snapshot, runs: [run] }),
 		graphTheme: defaultTheme,
-		getViewportRows: () => viewportRows,
+		piTui: { terminal: { rows: viewportRows } },
 	});
 	const lines = view.render(96);
 	view.dispose();

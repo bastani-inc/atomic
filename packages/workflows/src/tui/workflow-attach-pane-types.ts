@@ -57,13 +57,6 @@ export interface WorkflowAttachPaneOpts {
 	/** Owning nested run for `initialAttachStageId`; omitted stages resolve through the root graph. */
 	initialAttachRunId?: string;
 	/**
-	 * Optional accessor returning the current terminal row count. Threaded
-	 * into the graph overlay so its VStack root gets the live terminal height
-	 * on every frame; attached stage chat keeps its existing frame budget when
-	 * the host does not surface terminal dimensions.
-	 */
-	getViewportRows?: () => number | undefined;
-	/**
 	 * Render-tick callback supplied by the overlay host. Forwarded to the
 	 * embedded `GraphView` so its 10 FPS animation tick (running-stage
 	 * border pulse, duration counter) can request frames without a key

@@ -3,7 +3,7 @@ import { test } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
-import { makeHandle, stripAnsi } from "./stage-chat-view-helpers.js";
+import { makeHandle, makeTestTui, stripAnsi } from "./stage-chat-view-helpers.js";
 
 const SESSION_ID = "339e05a4-2289-408e-9076-d1a348f582ae";
 
@@ -34,7 +34,7 @@ function renderStageHeader(workflowName: string, stageName: string, width: numbe
 		stageId: "stage-a",
 		workflowName,
 		handle,
-		getViewportRows: () => viewportRows,
+		piTui: makeTestTui(viewportRows),
 		onDetach: () => {},
 		onClose: () => {},
 	});

@@ -42,11 +42,11 @@ export interface GraphViewOpts {
 	initialFocusedStageId?: string;
 	initialFocusedRunId?: string;
 	/**
-	 * Optional terminal row accessor used by the custom-overlay bridge. The
-	 * graph layout root consumes the current height on every render so a resize
-	 * changes the ScrollView viewport instead of a fixed rectangle.
+	 * Host TUI used for live terminal geometry. The graph layout reads the
+	 * current terminal height while it renders instead of threading a row
+	 * callback through the view stack.
 	 */
-	getViewportRows?: () => number | undefined;
+	piTui?: { terminal?: { rows?: number } };
 	/**
 	 * Invoked on each animation tick (~10 FPS) so the host can call
 	 * `tui.requestRender()`. Only wired in `overlay` mode; supplying it

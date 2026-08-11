@@ -137,7 +137,7 @@ describe("async subagent status while workflow overlay is active", () => {
 			store: makeStore(makeSnap([{ ...makeStage("stage-1"), status: "running" }])),
 			graphTheme: defaultTheme,
 			footerData: footerData(statuses),
-			getViewportRows: () => 20,
+			piTui: { terminal: { rows: 20 } },
 		});
 
 		assert.equal(statuses.size, 0);

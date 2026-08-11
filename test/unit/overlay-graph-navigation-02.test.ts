@@ -61,7 +61,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeSnap(stages)),
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 		});
 
 		const beforePan = visibleText(view.render(48));
@@ -107,7 +107,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onPromptResolve: (runId, promptId, response) => {
 				resolved.push({ runId, promptId, response });
 			},
@@ -267,7 +267,7 @@ describe("GraphView keyboard navigation", () => {
 
 	it("expands overlay to the reported viewport row count", () => {
 		// Full-screen overlay path: when the host surfaces terminal.rows
-		// through `getViewportRows`, the renderer must paint that many
+		// from the host TUI's terminal rows, the renderer must paint that many
 		// lines so pi-tui anchors the popup as a full-frame overlay.
 		const stages = [makeStage("A"), makeStage("B", ["A"])];
 		const snap = makeSnap(stages);
@@ -277,7 +277,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 48,
+			piTui: { terminal: { rows: 48 } },
 		});
 		const lines = view.render(96);
 		assert.equal(lines.length, 48);
@@ -293,7 +293,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 10,
+			piTui: { terminal: { rows: 10 } },
 		});
 		const lines = view.render(96);
 		assert.equal(lines.length, 10);
@@ -308,7 +308,13 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeSnap([makeStage("tiny")])),
 			graphTheme: defaultTheme,
-			getViewportRows: () => rows,
+			piTui: {
+				terminal: {
+					get rows() {
+						return rows;
+					},
+				},
+			},
 		});
 		for (rows of [5, 3, 1]) {
 			const lines = view.render(96);
@@ -329,7 +335,13 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => terminalRows,
+			piTui: {
+				terminal: {
+					get rows() {
+						return terminalRows;
+					},
+				},
+			},
 		});
 
 		assert.equal(view.render(96).length, 10);
@@ -366,7 +378,13 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeSnap([makeStage("lifecycle")])),
 			graphTheme: defaultTheme,
-			getViewportRows: () => terminalRows,
+			piTui: {
+				terminal: {
+					get rows() {
+						return terminalRows;
+					},
+				},
+			},
 		});
 
 		assert.equal(view.render(96).length, 40);
@@ -400,7 +418,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 		});
 
 		const rendered = visibleText(view.render(96));
@@ -434,7 +452,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach,
 		});
 
@@ -464,7 +482,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			piKeybindings: makeFakeKeybindings({
 				"tui.select.down": ["d"],
 				"tui.select.confirm": ["s"],
@@ -511,7 +529,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach,
 		});
 		assert.equal(view._focusedIndex, 0);

@@ -79,7 +79,6 @@ export class StageChatView implements Component, Focusable {
 	private requestRender!: StageChatViewContext["requestRender"];
 	private requestFocus!: StageChatViewContext["requestFocus"];
 	private focusHoldTimer!: StageChatViewContext["focusHoldTimer"];
-	private getViewportRows!: StageChatViewContext["getViewportRows"];
 	private piTui!: StageChatViewContext["piTui"];
 	private piTheme!: StageChatViewContext["piTheme"];
 	private piKeybindings!: StageChatViewContext["piKeybindings"];
@@ -218,7 +217,6 @@ export class StageChatView implements Component, Focusable {
 		void this.requestRender;
 		void this.requestFocus;
 		void this.focusHoldTimer;
-		void this.getViewportRows;
 		void this.piTui;
 		void this.piTheme;
 		void this.piKeybindings;

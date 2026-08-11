@@ -107,7 +107,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	}
 
 	protected _overlayFrameHeight(run: RunSnapshot | null = this._currentRenderRun()): number {
-		const reported = this.getViewportRows?.();
+		const reported = this.piTui?.terminal?.rows;
 		if (typeof reported === "number" && Number.isFinite(reported) && reported > 0) {
 			this.hasReportedViewportRows = true;
 			this.lastOverlayFrameHeight = Math.max(1, Math.floor(reported));

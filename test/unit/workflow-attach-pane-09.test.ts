@@ -176,7 +176,7 @@ describe("WorkflowAttachPane", () => {
 				hidden += 1;
 			},
 			onClose: () => {},
-			getViewportRows: () => 36,
+			piTui: { terminal: { rows: 36 } },
 		});
 
 		pane.handleInput(Key.ctrl("x"));

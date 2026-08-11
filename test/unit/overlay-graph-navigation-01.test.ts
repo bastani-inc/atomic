@@ -424,7 +424,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 40,
+			piTui: { terminal: { rows: 40 } },
 		});
 
 		view.handleInput("/");

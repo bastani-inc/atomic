@@ -78,7 +78,7 @@ describe("non-attachable tool interactions", () => {
 			runId: testRunId("tool-interaction-run"),
 			store: localStore,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (_runId, stageId) => attached.push(stageId),
 		});
 
@@ -120,7 +120,7 @@ describe("non-attachable tool interactions", () => {
 			runId: testRunId("postmortem-run"),
 			store: localStore,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (runId, stageId) => attached.push(`${runId}/${stageId}`),
 		});
 

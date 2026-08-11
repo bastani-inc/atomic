@@ -9,6 +9,7 @@ import {
 	makeFakeKeybindings,
 	makeHandle,
 	makePendingPrompt,
+	makeTestTui,
 	StageChatView,
 	setupRun,
 	stripAnsi,
@@ -195,7 +196,6 @@ describe("StageChatView", () => {
 				createdEditor = new FakePromptEditor();
 				return createdEditor;
 			},
-			getViewportRows: () => 12,
 		});
 
 		view.render(80);
@@ -242,7 +242,6 @@ describe("StageChatView", () => {
 				createdEditor = new FakePromptEditor();
 				return createdEditor;
 			},
-			getViewportRows: () => 12,
 		});
 
 		view.render(80);
@@ -268,6 +267,7 @@ describe("StageChatView", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const prompt = makePendingPrompt({
+			kind: "custom",
 			message: [
 				"SECTION 1 top of the long question.",
 				"SECTION 2 middle of the long question with enough words to wrap across several rows in a narrow viewport.",
@@ -287,7 +287,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => 12,
+			piTui: makeTestTui(12),
 		});
 
 		const top = stripAnsi(view.render(72).join("\n"));

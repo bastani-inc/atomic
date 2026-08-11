@@ -49,7 +49,6 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.requestRender = opts.requestRender;
 	ctx.requestFocus = opts.requestFocus;
 	ctx.focusHoldTimer = undefined;
-	ctx.getViewportRows = opts.getViewportRows;
 	ctx.piTui = opts.piTui;
 	ctx.piTheme = opts.piTheme;
 	ctx.piKeybindings = opts.piKeybindings;
@@ -471,7 +470,7 @@ export function resolvePromptResponse(
 }
 
 export function viewLineCount(ctx: StageChatViewContext): number {
-	const reported = ctx.getViewportRows?.();
+	const reported = ctx.piTui?.terminal?.rows;
 	if (typeof reported !== "number" || !Number.isFinite(reported)) {
 		return VIEW_LINE_COUNT;
 	}

@@ -54,7 +54,7 @@ function viewFor(stages: StageSnapshot[], tools: ToolNodeSnapshot[] = []): Graph
 		runId: "hint-run",
 		store: localStore,
 		graphTheme: defaultTheme,
-		getViewportRows: () => 32,
+		piTui: { terminal: { rows: 32 } },
 		onStageAttach() {},
 	});
 }

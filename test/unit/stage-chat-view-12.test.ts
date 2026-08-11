@@ -7,6 +7,7 @@ import {
 	fakeFooterAgentSession,
 	flush,
 	makeHandle,
+	makeTestTui,
 	StageChatView,
 	setupRun,
 	stripAnsi,
@@ -437,7 +438,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => 12,
+			piTui: makeTestTui(12),
 		});
 
 		const lines = view.render(96).map(stripAnsi);
@@ -460,7 +461,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => rows,
+			piTui: makeTestTui(() => rows),
 		});
 
 		assert.equal(view.render(96).length, 44);
@@ -491,7 +492,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => 7,
+			piTui: makeTestTui(7),
 		});
 		const rendered = view.render(64).map(stripAnsi).join("\n");
 		assert.match(rendered, /❯/);

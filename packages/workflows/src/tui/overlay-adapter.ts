@@ -81,13 +81,8 @@ export interface GraphOverlayPort {
 }
 
 /**
- * Full-screen overlay geometry. The custom-overlay host supplies terminal rows
- * to the graph layout bridge, which reuses pi-tui's installed VStack/ScrollView
- * frame pass before the component is painted.
- *
- * Keep the percentage geometry here so the host gives the overlay the complete
- * terminal width and height; the graph component still owns its body viewport,
- * scrollbar, and resize response.
+ * Full-screen overlay geometry. The host TUI owns terminal dimensions and
+ * the graph layout consumes them while rendering its ScrollView frame.
  */
 const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
 	anchor: "center",
@@ -376,10 +371,6 @@ export function buildGraphOverlayAdapter(
 				getToolsExpanded: ui?.getToolsExpanded,
 				setToolsExpanded: ui?.setToolsExpanded,
 				footerData: ui?.getFooterDataProvider?.(),
-				// Pi-tui owns terminal dimensions; the graph layout bridge consumes
-				// the current row count on every render so resize changes its
-				// ScrollView viewport. Hosts without a terminal use natural content size.
-				getViewportRows: () => tui.terminal?.rows,
 				// Drive the graph-view animation tick. Short-circuit when the
 				// overlay is hidden so a `setHidden(true)`-ed overlay does
 				// not waste CPU on render passes the user can't see. The

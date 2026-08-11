@@ -5,6 +5,7 @@ import {
 	deriveGraphTheme,
 	flush,
 	makeHandle,
+	makeTestTui,
 	StageChatView,
 	setupRun,
 } from "./stage-chat-view-helpers.js";
@@ -63,8 +64,8 @@ describe("StageChatView", () => {
 
 	test("expands the chat surface to the reported viewport row count", () => {
 		// Full-screen overlay: when the host surfaces terminal.rows
-		// through `getViewportRows`, the renderer must paint that many
-		// lines so the popup fills the terminal.
+		// Full-screen overlay: when the host surfaces terminal.rows,
+		// the renderer must paint that many lines so the popup fills the terminal.
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const { handle } = makeHandle();
@@ -77,7 +78,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => 44,
+			piTui: makeTestTui(44),
 		});
 		const lines = view.render(96);
 		assert.equal(lines.length, 44);
@@ -104,7 +105,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			getViewportRows: () => 60,
+			piTui: makeTestTui(60),
 		});
 		for (let i = 0; i < 30; i++) {
 			for (const ch of `msg-${i}`) view.handleInput(ch);

@@ -8,6 +8,7 @@ import {
 	makeFakeKeybindings,
 	makeHandle,
 	makePendingPrompt,
+	makeTestTui,
 	StageChatView,
 	setupRun,
 	stripAnsi,
@@ -385,7 +386,8 @@ describe("StageChatView", () => {
 			},
 			onClose: () => {},
 			piKeybindings: makeFakeKeybindings(),
-			getViewportRows: () => 12,
+			piTui: makeTestTui(12),
+			piEditorFactory: () => new FakePromptEditor(),
 		});
 
 		view.render(80);

@@ -163,7 +163,7 @@ describe("completed workflow inspection", () => {
 			runId: testRunId("completed-inspection"),
 			store,
 			graphTheme: defaultTheme,
-			getViewportRows: () => 32,
+			piTui: { terminal: { rows: 32 } },
 			onStageAttach: (runId, stageId) => {
 				attached.push(`${runId}/${stageId}`);
 			},
