@@ -77,6 +77,8 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 				try {
 					pi.appendEntry("web-search-results", data);
 					const ok = fetched.filter(f => !f.error).length;
+					// Keep the fetch pending until notification admission settles so session
+					// changes can still clear the entry and abort its controller while admission is in flight.
 					await pi.sendMessage(
 						{
 							customType: "web-search-content-ready",
@@ -88,7 +90,8 @@ export function registerWebSearchFeatures(pi: ExtensionAPI, initConfig: WebSearc
 				} catch (error) {
 					if (!isStaleExtensionContextError(error)) throw error;
 				}
-			}, async (err) => {
+			})
+			.catch(async (err) => {
 				if (isStaleExtensionContextError(err)) return;
 				if (!runtimeState.sessionActive || !pendingFetches.has(fetchId)) return;
 				const message = err instanceof Error ? err.message : String(err);

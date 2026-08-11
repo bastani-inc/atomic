@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - Fixed background content fetch notifications that completed after an extension reload from throwing through stale runtime handles.
 - Fixed background fetch stale-context checks by consuming the host's exported predicate instead of copying its error-message marker.
+- Restored visible background content-fetch error notifications for non-stale success-path failures while keeping stale runtime errors contained and pending state alive until notification admission settles.
 
 - Routed query rewriting and summary-review model calls through Atomic's model runtime so registered custom providers and resolved request authentication apply.
 - Fixed frames and thumbnails returned by `fetch_content` bypassing the host's `images.autoResize` processing before they enter session history.
