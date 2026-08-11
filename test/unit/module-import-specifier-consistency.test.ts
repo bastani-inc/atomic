@@ -40,6 +40,7 @@ const packageSources: readonly PackageSource[] = [
 	{ name: "@bastani/subagents", root: join(repositoryRoot, "packages/subagents") },
 	{ name: "@bastani/mcp", root: join(repositoryRoot, "packages/mcp") },
 	{ name: "@bastani/web-access", root: join(repositoryRoot, "packages/web-access") },
+	{ name: "@bastani/i-have-adhd", root: join(repositoryRoot, "packages/i-have-adhd") },
 	{ name: "@bastani/intercom", root: join(repositoryRoot, "packages/intercom") },
 ];
 const sourceFilePattern = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;

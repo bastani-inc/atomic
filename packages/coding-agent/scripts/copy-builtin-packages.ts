@@ -60,6 +60,7 @@ const WORKSPACE_BUILTINS = [
 	{ packageName: "@bastani/subagents", workspaceDirName: "subagents" },
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access" },
+	{ packageName: "@bastani/i-have-adhd", workspaceDirName: "i-have-adhd" },
 	{ packageName: "@bastani/intercom", workspaceDirName: "intercom" },
 ] as const;
 

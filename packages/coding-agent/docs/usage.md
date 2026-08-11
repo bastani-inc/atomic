@@ -393,6 +393,6 @@ The snapshot is taken when the command executes, not when the tool is created, s
 
 ## Design Principles
 
-Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, and [intercom](/intercom). Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
+Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, [intercom](/intercom), and [i-have-adhd](/i-have-adhd). Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
 
 For the full rationale, read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/).

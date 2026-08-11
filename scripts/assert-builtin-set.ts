@@ -1,7 +1,14 @@
 import { lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export const EXPECTED_BUILTIN_DIRECTORY_NAMES = ["intercom", "mcp", "subagents", "web-access", "workflows"] as const;
+export const EXPECTED_BUILTIN_DIRECTORY_NAMES = [
+	"i-have-adhd",
+	"intercom",
+	"mcp",
+	"subagents",
+	"web-access",
+	"workflows",
+] as const;
 
 export function assertExactBuiltinSet(root: string): string[] {
 	const actual = readdirSync(root, { withFileTypes: true })

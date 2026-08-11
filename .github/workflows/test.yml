@@ -295,6 +295,8 @@ jobs:
             builtin/mcp/index.ts \
             builtin/web-access/package.json \
             builtin/web-access/index.ts \
+            builtin/i-have-adhd/package.json \
+            builtin/i-have-adhd/index.ts \
             builtin/intercom/package.json \
             builtin/intercom/index.ts \
             node_modules/@bastani/atomic-natives/package.json \
@@ -347,6 +349,8 @@ jobs:
             "builtin/mcp/index.ts",
             "builtin/web-access/package.json",
             "builtin/web-access/index.ts",
+            "builtin/i-have-adhd/package.json",
+            "builtin/i-have-adhd/index.ts",
             "builtin/intercom/package.json",
             "builtin/intercom/index.ts",
             "node_modules/@bastani/atomic-natives/package.json",

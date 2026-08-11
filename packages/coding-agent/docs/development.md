@@ -92,5 +92,6 @@ packages/
   subagents/    # Built-in subagent orchestration and reusable agents
   mcp/          # Built-in MCP adapter extension
   web-access/   # Built-in web search and content extraction tools
+  i-have-adhd/   # Built-in ADHD-friendly response style extension
   intercom/     # Built-in cross-session coordination channel
 ```

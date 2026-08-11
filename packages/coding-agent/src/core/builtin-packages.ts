@@ -49,6 +49,12 @@ const WORKSPACE_BUILTINS: readonly WorkspaceBuiltinSpec[] = [
 		requiredEntry: "index.ts",
 	},
 	{
+		packageName: "@bastani/i-have-adhd",
+		workspaceDirName: "i-have-adhd",
+		distDirName: "i-have-adhd",
+		requiredEntry: "index.ts",
+	},
+	{
 		packageName: "@bastani/intercom",
 		workspaceDirName: "intercom",
 		distDirName: "intercom",

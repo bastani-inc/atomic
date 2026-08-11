@@ -1,0 +1,56 @@
+{
+  "name": "@bastani/i-have-adhd",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Atomic extension that shapes responses for readers with ADHD. Fork of: https://github.com/ayghri/i-have-adhd",
+  "contributors": [
+    "Ayoub Ghriss",
+    "Norin Lavaee",
+    "Alex Lavaee"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "*.ts",
+    "skills/**/*",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "atomic-package",
+    "pi-package"
+  ],
+  "atomic": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@bastani/atomic": "*"
+  },
+  "peerDependenciesMeta": {
+    "@bastani/atomic": {
+      "optional": true
+    }
+  }
+}
