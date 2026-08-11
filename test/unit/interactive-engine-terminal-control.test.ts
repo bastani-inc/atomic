@@ -365,9 +365,29 @@ describe("isolated overlay autowrap bridge (source-path)", () => {
 			[],
 			"death teardown sent a command to the replacement generation",
 		);
+		// A later engine_ready from the replacement child is an idempotent no-op.
+		bridge.emitEngineReady(4242);
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 		bridge.controller.dispose();
 	});
 
+	test("generation death releases a remote widget key without notifying the new engine", async () => {
+		const bridge = makeBridge();
+		bridge.child.setWidget("remote-widget", () => ({
+			render: () => ["widget"],
+			handleInput: () => {},
+			invalidate: () => {},
+		}));
+		await sleep(0);
+		const commandsBeforeDeath = bridge.childCommands.length;
+		bridge.emitGenerationEnded(1);
+		await sleep(0);
+		assert.deepEqual(
+			bridge.childCommands.slice(commandsBeforeDeath).map((command) => command.type),
+			[],
+		);
+		bridge.controller.dispose();
+	});
 	test("Windows autowrap can be enabled and restored through the child bridge", async () => {
 		const bridge = makeBridge();
 		let done!: (result: unknown) => void;

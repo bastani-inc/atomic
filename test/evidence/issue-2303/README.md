@@ -1,20 +1,22 @@
 # #2303 fullscreen workflow mouse evidence
 
-These raw pane files are `tmux capture-pane -p -J` output from the #2303 reproduction and fix run. They are kept with the repair commit so the gate does not depend on ignored `.ci-diagnostics/` files.
+These remaining raw pane files are `tmux capture-pane -p -J` output from the #2303 reproduction and fix run.
+The four stale after/control captures from that older run (`after-fullscreen-click.txt`,
+`after-stage-before-wheel.txt`, `after-stage-wheel.txt`, and `regular-control-click.txt`)
+were removed in the #2222 repair instead of editing their footer; their branch, model,
+and transcript metadata do not describe this layer. No current-layer capture is claimed
+for those scenarios.
 
 ## Before and control
 
 - `before-fullscreen-graph.txt` is the fullscreen graph before input.
 - `before-fullscreen-wheel.txt` is the same fullscreen graph after SGR wheel-down; the graph did not move.
 - `before-fullscreen-click.txt` is after fullscreen left-button press/release; it remains on `GRAPH` and does not open a `STAGE` pane.
-- `regular-control-click.txt` is the regular-mode control. The same workflow click opens `STAGE fan-out-and-synthesize / branch-01-typescript-fact`.
 
 ## After
 
 - `after-fullscreen-graph.txt` is the fixed fullscreen graph before input.
 - `after-fullscreen-wheel.txt` records the fixed fullscreen wheel dispatch. That graph fit its viewport, so its pane text is unchanged.
-- `after-fullscreen-click.txt` shows `STAGE goal / completion-reviewer-1` after the fixed fullscreen node click.
-- `after-stage-before-wheel.txt` and `after-stage-wheel.txt` show a fixed attached stage chat before and after wheel-down. The diff adds the older transcript lines, proving stage-chat wheel scrolling moved the pane.
 
 ## Keyboard paths re-tested in this repair
 
