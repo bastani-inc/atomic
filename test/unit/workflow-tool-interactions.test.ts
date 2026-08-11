@@ -2,6 +2,8 @@
 
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
 import {
@@ -64,6 +66,7 @@ beforeEach(() => {
 	stageControlRegistry.clear();
 });
 afterEach(() => {
+	setDurableBackend(undefined);
 	store.clear();
 	stageControlRegistry.clear();
 });
@@ -218,5 +221,91 @@ describe("non-attachable tool interactions", () => {
 		assert.match(commandErrors.join("\n"), /Stage not found/);
 		assert.equal(overlayOpens, 0);
 		assert.deepEqual(stageControlRegistry.forRun(testRunId("tool-interaction-run")), []);
+	});
+
+	test("tool resumes a failed author exit through the durable backend", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const id = testRunId("failed-author-exit-tool");
+		backend.registerWorkflow({
+			workflowId: id,
+			name: "failed-author-exit-tool-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "failed",
+			resumable: true,
+		});
+		store.recordRunStart({
+			id,
+			name: "failed-author-exit-tool-flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordRunEnd(id, "failed", undefined, undefined, { exited: true, resumable: true });
+
+		const entry = backend.listResumableWorkflows()[0]!;
+		let resumeCalls = 0;
+		const result = await workflowResumeAction(
+			{ action: "resume", runId: id },
+			{
+				getRuntime: () => ({
+					prepareDurableResumable: async () => [entry],
+					resumeDurableWorkflow: () => {
+						resumeCalls += 1;
+						return Promise.resolve({
+							ok: true as const,
+							runId: id,
+							workflowId: id,
+							name: entry.name,
+							message: "resumed failed author exit from tool",
+						});
+					},
+				}),
+				policy: {},
+				ensureWorkflowResourcesLoaded() {},
+			},
+		);
+
+		assert.equal(resumeCalls, 1);
+		assert.equal(result.status, "running");
+		assert.match(result.message, /resumed failed author exit from tool/);
+	});
+
+	test("tool does not snapshot-resume an exited failure without a durable registration", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const id = testRunId("missing-author-exit-tool");
+		store.recordRunStart({
+			id,
+			name: "missing-author-exit-tool-flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordRunEnd(id, "failed", undefined, undefined, { exited: true, resumable: true });
+		await backend.deleteWorkflow(id);
+		let resumeCalls = 0;
+
+		const result = await workflowResumeAction(
+			{ action: "resume", runId: id },
+			{
+				getRuntime: () => ({
+					prepareDurableResumable: async () => [],
+					resumeDurableWorkflow: () => {
+						resumeCalls += 1;
+						throw new Error("must not dispatch without durable state");
+					},
+				}),
+				policy: {},
+				ensureWorkflowResourcesLoaded() {},
+			},
+		);
+
+		assert.equal(resumeCalls, 0);
+		assert.equal(result.status, "noop");
+		assert.match(result.message, /Run not found/);
 	});
 });

@@ -239,7 +239,13 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
 			workflow,
 			runId: childRunId,
 			status,
-			...(typeof exited === "boolean" ? { exited } : status === "completed" ? { exited: false } : {}),
+			...(typeof exited === "boolean"
+				? { exited }
+				: status === "failed"
+					? {}
+					: status !== "completed" || typeof exitReason === "string"
+						? { exited: true }
+						: {}),
 			outputs: clonedOutputs,
 			...(typeof exitReason === "string" ? { exitReason } : {}),
 		},

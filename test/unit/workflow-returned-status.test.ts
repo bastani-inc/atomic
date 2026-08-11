@@ -62,6 +62,24 @@ describe("workflow returned status outputs", () => {
 		assert.equal(store.runs().find((candidate) => candidate.id === result.runId)?.status, "failed");
 	});
 
+	test("completed author exits keep the reserved returned-status convention", async () => {
+		const store = createStore();
+		const def = workflow({
+			name: "completed-exit-reserved-status",
+			description: "",
+			inputs: {},
+			outputs: {
+				status: Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("blocked")]),
+				summary: Type.String(),
+			},
+			run: async (ctx) => ctx.exit({ outputs: { status: "blocked", summary: "awaiting review" } }),
+		});
+
+		await run(def, {}, { store });
+
+		assert.equal(statusRuns({ store })[0]?.status, "blocked");
+	});
+
 	test("blocked result.status makes the run blocked instead of completing successfully", async () => {
 		const store = createStore();
 		const def = workflow({

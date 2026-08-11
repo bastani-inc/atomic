@@ -357,4 +357,75 @@ describe("/workflow resume — durable regression coverage", () => {
 		assert.match(joined, /missing-continuation-wf/);
 		assert.doesNotMatch(joined, /Snapshot available/);
 	});
+
+	test("combined picker routes failed author exits through durable resume", async () => {
+		const now = Date.now();
+		const failedRunId = testRunId(`failed-author-exit-${now}`);
+		const backend = new InMemoryDurableBackend();
+		backend.registerWorkflow({
+			workflowId: failedRunId,
+			name: "failed-author-exit-wf",
+			inputs: {},
+			createdAt: now,
+			updatedAt: now,
+			status: "failed",
+			resumable: true,
+		});
+		setDurableBackend(backend);
+		singletonStore.recordRunStart({
+			id: failedRunId,
+			name: "failed-author-exit-wf",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: now,
+		});
+		singletonStore.recordRunEnd(failedRunId, "failed", { attempted: 1 }, undefined, {
+			exited: true,
+			exitReason: "retry from the picker",
+			resumable: true,
+		});
+
+		const entry = backend.listResumableWorkflows()[0]!;
+		let resumeCalls = 0;
+		const runtime = {
+			registry: { has: () => true },
+			prepareDurableResumable: async () => [entry],
+			prepareCompletedDurable: async () => [],
+			resumeDurableWorkflow: () => {
+				resumeCalls += 1;
+				return Promise.resolve({
+					ok: true as const,
+					runId: failedRunId,
+					workflowId: failedRunId,
+					name: entry.name,
+					message: "resumed author exit from picker",
+				});
+			},
+		} as unknown as ExtensionRuntime;
+		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
+		const command = handleRunControlCommand(
+			"resume",
+			[],
+			ctx,
+			{
+				info: (message) => messages.push(message),
+				error: (message) => messages.push(message),
+			},
+			{
+				pi: buildMockPi().pi,
+				overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+				runtimeForContext: () => runtime,
+				ensureWorkflowResourcesLoaded: () => undefined,
+			},
+		);
+
+		await delay(5);
+		assert.ok(customCalls.length >= 1);
+		customCalls[0]!.component.handleInput?.("\r");
+		await command;
+
+		assert.equal(resumeCalls, 1);
+		assert.match(messages.join("\n"), /resumed author exit from picker/);
+	});
 });

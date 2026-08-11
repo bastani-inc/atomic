@@ -504,6 +504,24 @@ describe("renderStatusList — populated", () => {
 		assert.match(out, /⊘ skipped/);
 	});
 
+	test("ordinary failed runs do not show a rejected author-exit reason", () => {
+		const out = renderStatusList(
+			[
+				makeRun({
+					id: "failed-rejected-exit",
+					name: "failed-author-exit",
+					status: "failed",
+					exitReason: "invalid partial outputs",
+					startedAt: 1,
+					endedAt: 2,
+				}),
+			],
+			{ width: 120, now: 3, showDetailHint: false },
+		);
+
+		assert.doesNotMatch(stripAnsi(out), /invalid partial outputs/);
+	});
+
 	test("narrow width truncates progress strip with …", () => {
 		const now = 1_000_000;
 		const stages = Array.from({ length: 12 }, (_, i) =>

@@ -357,6 +357,22 @@ describe("resumeRun", () => {
 		}
 	});
 
+	test("ordinary resumable terminal failure keeps the snapshot-only path", async () => {
+		const st = createStore();
+		st.recordRunStart(makeRun({ id: "r1" }));
+		st.recordRunEnd("r1", "failed", undefined, "boom", {
+			failureKind: "unknown",
+			failedStageId: "s1",
+			resumable: true,
+		});
+		const result = await resumeRun("r1", { store: st });
+		assert.equal(result.ok, true);
+		if (result.ok) {
+			assert.equal(result.mode, "snapshot");
+			assert.equal(result.message, undefined);
+		}
+	});
+
 	test("failed non-resumable terminal run returns a clear non-resumable snapshot mode", async () => {
 		const st = createStore();
 		st.recordRunStart(makeRun({ id: "r1" }));

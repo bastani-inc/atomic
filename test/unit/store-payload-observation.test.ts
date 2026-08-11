@@ -7,7 +7,7 @@ import type { ToolEvent, WorkflowChildReplaySnapshot } from "../../packages/work
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 
-describe("payload-free store observation", () => {
+describe("payload-bounded store observation", () => {
 	test("notifies synchronously without traversing unrelated workflow inputs", () => {
 		const store = createStore();
 		let payloadReads = 0;

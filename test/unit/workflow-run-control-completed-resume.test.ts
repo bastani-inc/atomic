@@ -531,6 +531,93 @@ describe("/workflow resume completed target", () => {
 		assert.match(result.messages.join("\n"), /resumed failed durable run/);
 	});
 
+	test("routes a local failed author exit through durable resume", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const id = testRunId("failed-author-exit-command");
+		backend.registerWorkflow({
+			workflowId: id,
+			name: "failed-author-exit-flow",
+			inputs: {},
+			createdAt: 1,
+			status: "failed",
+			resumable: true,
+		});
+		store.recordRunStart({
+			id,
+			name: "failed-author-exit-flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordRunEnd(id, "failed", { attempted: 1 }, undefined, {
+			exited: true,
+			exitReason: "retry this run",
+			resumable: true,
+		});
+
+		const entry = backend.listResumableWorkflows()[0]!;
+		let resumeCalls = 0;
+		const runtime = {
+			registry: { has: () => true },
+			prepareDurableResumable: async () => [entry],
+			prepareCompletedDurable: async () => [],
+			resumeDurableWorkflow: () => {
+				resumeCalls += 1;
+				return Promise.resolve({
+					ok: true as const,
+					runId: id,
+					workflowId: id,
+					name: entry.name,
+					message: "resumed failed author exit",
+				});
+			},
+		} as unknown as ExtensionRuntime;
+
+		const result = await resume(id, runtime);
+
+		assert.equal(resumeCalls, 1);
+		assert.deepEqual(result.errors, []);
+		assert.match(result.messages.join("\n"), /resumed failed author exit/);
+	});
+
+	test("surfaces the durable error instead of snapshot-resuming an unregistered author exit", async () => {
+		const backend = new InMemoryDurableBackend();
+		setDurableBackend(backend);
+		const id = testRunId("missing-author-exit-durable");
+		store.recordRunStart({
+			id,
+			name: "missing-author-exit-flow",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordRunEnd(id, "failed", undefined, undefined, { exited: true, resumable: true });
+		await backend.deleteWorkflow(id);
+
+		let resumeCalls = 0;
+		const runtime = {
+			registry: { has: () => true },
+			prepareDurableResumable: async () => [],
+			prepareCompletedDurable: async () => [],
+			resumeDurableWorkflow: () => {
+				resumeCalls += 1;
+				return Promise.resolve({
+					ok: false as const,
+					reason: "workflow_not_found" as const,
+					message: "durable handle missing",
+				});
+			},
+		} as unknown as ExtensionRuntime;
+
+		const result = await resume(id, runtime);
+
+		assert.equal(resumeCalls, 1);
+		assert.match(result.errors.join("\n"), /durable handle missing/);
+	});
+
 	test("keeps exact full live ids on the existing paused resume path without listing completed durable runs", async () => {
 		const backend = new InMemoryDurableBackend();
 		let completedCatalogReads = 0;

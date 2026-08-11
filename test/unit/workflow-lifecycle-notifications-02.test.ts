@@ -175,6 +175,23 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.match(sent[0]?.content ?? "", /Partial outputs: \{"attempted":3\}/);
 	});
 
+	test("completed author-exit notices omit failed-only resumable metadata", () => {
+		const { store, sent } = install();
+		startRun(store, "run-exited-completed", "completed exit");
+
+		assert.equal(
+			store.recordRunEnd("run-exited-completed", "completed", { summary: "done" }, undefined, {
+				exited: true,
+				exitReason: "completed early",
+				resumable: false,
+			}),
+			true,
+		);
+
+		assert.equal(sent.length, 1);
+		assert.equal(sent[0]?.details?.resumable, undefined);
+	});
+
 	test("async suppression stays active until the awaited operation settles", async () => {
 		const store = createStore();
 		const state = createWorkflowLifecycleNotificationState();

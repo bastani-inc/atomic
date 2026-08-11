@@ -75,10 +75,6 @@ export function structuredRecoverableWorkflowFailureText(
 }
 
 export function effectiveRunStatus(run: RunSnapshot): RunStatus {
-	// An author-selected ctx.exit() status is authoritative. Partial exit
-	// outputs may legitimately contain a field named `status`; do not treat that
-	// output as the legacy returned-status convention.
-	if (run.exited === true) return run.status;
 	if (
 		(run.status === "running" || run.status === "completed") &&
 		structuredRecoverableWorkflowFailure(run) !== undefined

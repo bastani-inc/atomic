@@ -81,7 +81,7 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly toolName?: string;
 	readonly durationMs?: number;
 	readonly active?: boolean;
-	/** Whether a terminal author exit or quit run advertises itself as resumable. */
+	/** Whether a failed author exit or quit run advertises itself as resumable. */
 	readonly resumable?: boolean;
 	/** Who performed this lifecycle action, when a control path attributed it. */
 	readonly actor?: WorkflowActor;
@@ -438,7 +438,9 @@ function makeTerminalNotice(
 		workflowName: run.name,
 		status: effectiveRunStatus(run),
 		...(activeBlocked ? { active: true } : {}),
-		...(run.exited === true && run.resumable !== undefined ? { resumable: run.resumable } : {}),
+		...(run.exited === true && run.status === "failed" && run.resumable !== undefined
+			? { resumable: run.resumable }
+			: {}),
 		...(error ? { error: truncateSnippet(error) } : {}),
 		...(outputs !== undefined ? { outputs } : {}),
 		...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
@@ -682,7 +684,7 @@ function renderLifecycleNoticeCard(
 			{ label: "prompt", value: details.promptMessage, tone: "muted" },
 			{ label: "error", value: details.error, tone: "error" },
 			{
-				label: details.kind === "completed" ? "outputs" : "partial outputs",
+				label: "partial outputs",
 				value: formatLifecycleOutputs(details.outputs),
 				tone: "muted",
 			},
