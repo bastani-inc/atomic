@@ -36,6 +36,7 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Built-in Workflows](#built-in-workflows)
 - [Writing a Workflow](#writing-a-workflow)
 - [Scope-Guard Starter Pattern](#scope-guard-starter-pattern)
+- [Stacked Implementation Slices Starter Pattern](#stacked-implementation-slices-starter-pattern)
 - [The `workflow()` Definition](#the-workflow-definition)
 - [WorkflowContext](#workflowcontext)
 - [Task and Stage Options](#task-and-stage-options)
@@ -337,6 +338,8 @@ The rubric prevents two common misuses: using parent-controlled subagent calls f
 #### Task queues and software factories
 
 Some requests are not one task but a queue of them: "address all open issues", "fix every Linear ticket assigned to me", "burn down the TODO backlog", or "implement issue A and create a PR after; also implement issue B and create a PR after". One monolithic worker loop would process the queue serially in a growing context and make unrelated work share one root failure boundary.
+
+Do not confuse splitting a queue across runs with splitting one objective across slices. Queue triage separates unrelated implementation items into top-level lifecycles; [Stacked implementation slices](#stacked-implementation-slices-starter-pattern) keeps one dependent objective in one parent and verifies each ordered child slice before the next.
 
 **Interpret ordering words locally unless a cross-item dependency is explicit.** "Implement A and create PR A after; implement B and create PR B after" normally means `implement A → validate A → PR A` and `implement B → validate B → PR B`; those two item lifecycles may run concurrently. It does not mean `PR A → start B`. Serialize only when the user or repository evidence says, for example, "implement B after A is merged", "B builds on A's branch", "use A's generated schema in B", or "do these in order". Do not infer a cross-item sequence from list order or from "create a PR after" when "after" naturally refers to that item's own implementation. Prove the dependency before serializing independent workflow items. If wording remains materially ambiguous after dependency research, ask one grouped clarification instead of silently serializing.
 
@@ -4425,9 +4428,9 @@ Summarize root cause, proposed fix, files involved, validation plan, and remaini
 
 For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
 
-The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** is an authoring starter pattern rather than a builtin; compose its [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives.
+The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** and **Stacked implementation slices** are authoring starter patterns rather than builtins; compose scope guard's [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives, and use stacked slices to unroll dependent implementation children through existing `ctx.workflow(...)` boundaries.
 
-These graph patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run.
+These graph patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run. Stacked implementation slices split one objective inside that lifecycle; queue triage splits separate whole items.
 
 | Pattern | Use it when | Atomic shape |
 |---|---|---|
@@ -4438,6 +4441,7 @@ These graph patterns organize work **inside one root lifecycle**. They do not re
 | **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → pairwise judges compare results → bracket reducer returns winners. |
 | **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
 | **Scope guard** | A worker or repair stage may turn valid adjacent findings into unplanned work. | Immutable contract artifact → fresh boundary or live scope checker → bounded decision artifact → forked worker continuation; correctness review stays separate. |
+| **Stacked implementation slices** | One dependent implementation objective is too broad for one verified diff but can be divided into ordered, independently verifiable concerns. | Pre-launch slice plan → sequential child `ctx.workflow(...)` boundaries (`goal`, `ralph`, or a task-specific child) → each slice's gates → next slice based on the previous verified branch and worktree, or stop/report at the first failure. |
 
 #### Pattern diagrams
 
@@ -4600,6 +4604,62 @@ Best practices:
 - Bound loops by iterations, budget, or convergence criteria so exhausting a bound produces an inspectable failure instead of letting the loop continue indefinitely.
 - Materialize every iteration as distinct tracked work with stable iteration identity and call order. Never represent repetition by a self-edge, a back-edge to an ancestor, or reopening an ancestor below its downstream work.
 
+##### Stacked implementation slices starter pattern
+
+Use this authoring pattern when one implementation objective should land as a stack of small, independently verified changes. It is not a queue dispatcher: the slices belong to one dependency chain, so slice N+1 starts only after slice N is verified.
+
+During the pre-launch architecture pass, enumerate the slices in the coverage matrix. Give every slice its own objective, acceptance criteria, changed-file scope, and verification gates. Target roughly 100–500 changed lines between verification points by default, but treat that as a reviewability default rather than a law: keep a genuinely atomic mechanical change or generated-artifact refresh in one slice, and do not split a small objective just to reach a count.
+
+Run each slice through a child workflow that owns its implement/review/repair lifecycle. Import `goal` or `ralph` from `@bastani/workflows/builtin`, or use a task-specific child when neither builtin matches. Pass the previous verified branch as `base_branch` and a distinct `git_worktree_dir` to the next child. Make the branch/worktree setup explicit in the slice contract; the inputs do not silently create a feature branch from prose.
+
+The parent should verify each child before creating the next boundary. If a gate fails, stop at the first failed gate, report that slice as unverified, and retain the earlier verified slices and their branch/worktree records. Do not roll earlier slices back and do not continue past the failure.
+
+The calls below are deliberately unrolled. Repeat the downstream shape for the planned slices, giving every call a fresh child boundary and distinct tracked nodes; do not reopen an ancestor or add a back-edge.
+
+```ts
+import { workflow } from "@bastani/workflows";
+import { goal } from "@bastani/workflows/builtin";
+
+export default workflow({
+  name: "stacked-slices",
+  inputs: {},
+  outputs: {},
+  run: async (ctx) => {
+    const slice1 = await ctx.workflow(goal, {
+      inputs: {
+        objective: "Implement the first independently verified concern.",
+        acceptance_criteria: "The first concern builds, passes its focused tests, and leaves its branch verified.",
+        base_branch: "origin/main",
+        git_worktree_dir: "../slice-1",
+        create_pr: false,
+      },
+      stageName: "slice 1",
+    });
+    if (slice1.exited === true || slice1.outputs.approved !== true) {
+      return ctx.exit({ status: "blocked", reason: "slice 1 is unverified" });
+    }
+
+    const slice2 = await ctx.workflow(goal, {
+      inputs: {
+        objective: "Implement the next concern on the verified slice-1 branch.",
+        acceptance_criteria: "The second concern builds, passes its focused tests, and preserves slice 1.",
+        base_branch: "slice-1-verified",
+        git_worktree_dir: "../slice-2",
+        create_pr: false,
+      },
+      stageName: "slice 2",
+    });
+    if (slice2.exited === true || slice2.outputs.approved !== true) {
+      return ctx.exit({ status: "blocked", reason: "slice 2 is unverified; slice 1 remains verified" });
+    }
+
+    return {};
+  },
+});
+```
+
+Use `ralph` or a task-specific child in the same positions when its input contract fits better. For a longer stack, keep the same explicit downstream shape and pass each newly verified branch to the next slice's `base_branch`; do not replace the chain with a loop that points back to an ancestor. A final handoff can report `slice → branch → worktree → verified/failed` without reopening completed child work.
+
 #### Choosing a common workflow pattern
 
 - Pick **classify-and-act** when routing correctness matters more than breadth.
@@ -4609,6 +4669,7 @@ Best practices:
 - Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
 - Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
 - Pick **scope guard** when valid adjacent findings could expand a worker or repair stage beyond its immutable contract; choose a boundary task by default and live parallel steering only when timing requires it.
+- Pick **stacked implementation slices** when one dependent implementation objective needs ordered, independently verified layers. Keep the 100–500 line range as a default with atomic-change escapes, base each next child on the previous verified branch through `base_branch` and `git_worktree_dir`, and stop at the first failed gate.
 
 Record the selected pattern in your spec or workflow README, then adapt the diagram to the stage graph. If the final design does not resemble any common pattern, explain why in the workflow's design notes.
 

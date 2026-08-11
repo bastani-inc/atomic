@@ -203,6 +203,77 @@ describe("workflow-first execution routing", () => {
 			expect(modelVisibleRouting).toContain(phrase);
 		}
 	});
+	test("sizes the unit of verified implementation work", () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"roughly 100–500 changed lines",
+			"between verification points",
+			"by default",
+			"genuinely atomic change",
+			"stays one slice",
+			"small objective is not split merely to reach a count",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+	});
+
+	test("routes each implementation slice to a child workflow", () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"Run every slice through a child workflow",
+			"own implement/review/repair lifecycle",
+			"goal",
+			"ralph",
+			"task-specific child",
+			"ctx.workflow(...)",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+	});
+
+	test("stacks slices on the previous verified slice", () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"previous verified slice",
+			"slice N+1 uses slice N's verified branch",
+			"base_branch",
+			"git_worktree_dir",
+			"distinct branch and worktree",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+	});
+
+	test("stops the stack at the first unverified slice", () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"Verify each slice before proceeding",
+			"stop at the first unverified slice",
+			"earlier verified slices remain verified",
+			"reported as such",
+			"do not roll them back or continue past the failure",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+	});
+
+	test("keeps the guidance to three blocks", () => {
+		expect(workflowGuidance).toHaveLength(3);
+	});
+
+	test("documents stacked implementation slices separately from task queues", async () => {
+		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		for (const phrase of [
+			"Stacked implementation slices",
+			"splitting a queue across runs",
+			"splitting one objective across slices",
+			"base_branch",
+			"git_worktree_dir",
+			"stop at the first failed gate",
+		]) {
+			expect(documentation).toContain(phrase);
+		}
+	});
 
 	test("requires dynamic workflow topologies to remain acyclic", async () => {
 		const authoringGuidance = workflowGuidance.join("\n");
