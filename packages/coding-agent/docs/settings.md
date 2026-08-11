@@ -127,8 +127,7 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `autocompleteMaxVisible` | number | `5` | Max visible items in the default editor and custom editors installed through `ctx.ui.setEditorComponent()` (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 
-In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures scroll the alternate-screen viewport rather than engine-hosted overlays such as workflow graphs. Switch to `regular` to scroll those overlays with a mouse or trackpad.
-In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures scroll the viewport rather than engine-hosted overlays such as workflow graphs; switch to `regular` to scroll those overlays. Fullscreen is selectable and experimental, not the default.
+In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures go first to the focused overlay, including workflow graphs and stage chats; an unhandled event falls through to the alternate-screen viewport. Fullscreen is selectable and experimental, not the default.
 
 The fullscreen renderer keeps minimum sizes for nested layout stacks during resize, and transient fullscreen notices stack instead of replacing a notice that is still visible.
 
