@@ -1,17 +1,10 @@
 /**
- * Keypress latency path for remote custom components.
- *
- * A remote component's child-side state changes on `engine_custom_input`, but
- * the child may never self-invalidate (e.g. a selector that only mutates its
- * cursor index). The host must therefore pipeline a fresh frame request behind
- * every forwarded input — engine commands are delivered in order, so the frame
- * rendered for that request reflects the post-input state. Without this, the
- * picker cursor only repaints when an unrelated refresh fires (regression:
- * `/workflow resume` arrow-key lag).
+ * Remote custom-component input paths.
  *
  * These tests wire the real child `EngineCustomUiService` to the real host
  * `RemoteComponentController` through an in-process message pump (no spawned
- * process).
+ * process). They cover both the existing keypress latency path and the
+ * fullscreen workflow mouse route.
  */
 
 import assert from "node:assert/strict";
@@ -19,6 +12,7 @@ import { type Component, ScrollView, Text, type TuiAltScreen, VStack } from "@ea
 import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { shouldHandleFullscreenViewportInput } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { createInteractiveTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
@@ -34,7 +28,9 @@ import {
 	type TuiRendererLifecycle,
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
+import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { sleep } from "../helpers/runtime.js";
+import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 import { createStore, deriveGraphTheme, makeHandle, StageChatView, setupRun } from "./stage-chat-view-helpers.ts";
 
 type HostComponent = Omit<Component, "handleInput"> & {
@@ -62,27 +58,30 @@ const regularTuiRendererLifecycle: TuiRendererLifecycle = {
 function makeBridge(options: BridgeOptions = {}): Bridge {
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	const childCommands: InteractiveEngineCommand[] = [];
+	const mainEditor: Component = { render: () => [], invalidate: () => {} };
 	const keybindings = new KeybindingsManager();
-	const viewportActions = [
-		"tui.altScreen.pageUp",
-		"tui.altScreen.pageDown",
-		"tui.altScreen.top",
-		"tui.altScreen.bottom",
-	] as const;
 	const terminal = options.fullscreen ? new RecordingTerminal() : undefined;
 	if (terminal) {
 		terminal.columns = 40;
 		terminal.rows = 10;
 	}
-	const tui = terminal
-		? (createInteractiveTui({
-				tuiMode: "fullscreen",
-				showHardwareCursor: false,
-				logDirectory: "/tmp",
-				terminal,
-				shouldHandleViewportInput: (data) => !viewportActions.some((action) => keybindings.matches(data, action)),
-			}) as TuiAltScreen)
-		: undefined;
+	let tui: TuiAltScreen | undefined;
+	if (terminal) {
+		tui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			shouldHandleViewportInput: (data, isMouseInput): boolean =>
+				shouldHandleFullscreenViewportInput(
+					tui?.getFocusedComponent() ?? null,
+					mainEditor,
+					data,
+					isMouseInput,
+					keybindings,
+				),
+		}) as TuiAltScreen;
+	}
 	const bridge = { hostComponent: undefined, childCommands, terminal, tui } as unknown as Bridge;
 
 	const child = new EngineCustomUiService((line) => {
@@ -130,6 +129,15 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 async function flush(times = 4): Promise<void> {
 	for (let index = 0; index < times; index += 1) await sleep(0);
 }
+interface GraphHitRect {
+	readonly index: number;
+	readonly left: number;
+	readonly top: number;
+}
+
+function sgrMouse(buttonCode: number, col: number, row: number, final: "M" | "m" = "M"): string {
+	return `\x1b[<${buttonCode};${col + 1};${row + 1}${final}`;
+}
 
 test("a forwarded keypress pipelines a fresh frame request behind the input", async () => {
 	const bridge = makeBridge();
@@ -167,6 +175,106 @@ test("a forwarded keypress pipelines a fresh frame request behind the input", as
 	const renderRequestsAfter = bridge.childCommands.filter((command) => command.type === "engine_custom_render").length;
 	assert.ok(renderRequestsAfter > renderRequestsBefore, "keypress did not schedule a fresh remote frame request");
 	assert.deepEqual(host.render(80), ["selected:1"], "frame does not reflect the post-input state");
+});
+interface FullscreenGraphFixture {
+	bridge: Bridge;
+	graph: GraphView;
+	attached: Array<{ runId: string; stageId: string }>;
+	transcript: ScrollView;
+	tui: TuiAltScreen;
+	terminal: RecordingTerminal;
+}
+
+async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
+	const bridge = makeBridge({ fullscreen: true });
+	const stages = Array.from({ length: 8 }, (_, index) =>
+		makeStage(`stage-${index}`, index === 0 ? [] : [`stage-${index - 1}`]),
+	);
+	const attached: Array<{ runId: string; stageId: string }> = [];
+	const graph = new GraphView({
+		mode: "overlay",
+		runId: "run-1",
+		store: makeStore(makeSnap(stages)),
+		graphTheme: defaultTheme,
+		getViewportRows: () => 8,
+		onStageAttach: (runId, stageId) => attached.push({ runId, stageId }),
+	});
+	void bridge.child.custom(() => ({
+		render: (width: number) => graph.render(width),
+		handleInput: (data: string) => graph.handleInput(data),
+		invalidate: () => graph.invalidate(),
+		dispose: () => graph.dispose(),
+	}));
+	await flush();
+	const host = bridge.hostComponent;
+	const tui = bridge.tui;
+	const terminal = bridge.terminal;
+	assert.ok(host, "remote workflow graph did not mount on the host");
+	assert.ok(tui, "fullscreen renderer did not mount");
+	assert.ok(terminal, "fullscreen terminal did not mount");
+
+	const transcript = new ScrollView(
+		new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+		{ follow: "end", primary: true },
+	);
+	tui.setLayoutRoot(
+		new VStack([
+			{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+			{ component: host, basis: 1, shrink: 0 },
+		]),
+	);
+	tui.setFocus(host);
+	tui.start();
+	tui.renderNow();
+	return { bridge, graph, attached, transcript, tui, terminal };
+}
+
+test("fullscreen forwards workflow graph wheel through the remote input path", async () => {
+	const { graph, transcript, tui, terminal, bridge } = await makeFullscreenGraphFixture();
+	try {
+		const initialTranscriptTop = transcript.scrollTop;
+		const initialGraphTop = graph._graphScrollOffset;
+		const wheel = sgrMouse(65, 9, 4);
+		terminal.input(wheel);
+		await flush();
+		tui.renderNow();
+		assert.ok(graph._graphScrollOffset > initialGraphTop, "fullscreen wheel did not scroll the workflow graph");
+		assert.equal(transcript.scrollTop, initialTranscriptTop, "graph wheel leaked into the fullscreen transcript");
+		assert.equal(
+			bridge.childCommands.filter((command) => command.type === "engine_custom_input").at(-1)?.data,
+			wheel,
+		);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("fullscreen forwards workflow node click press and release through the remote input path", async () => {
+	const { graph, attached, tui, terminal, bridge } = await makeFullscreenGraphFixture();
+	try {
+		graph.render(40);
+		const hitRects = Reflect.get(graph, "graphNodeHitRects") as GraphHitRect[];
+		const target = hitRects[0];
+		assert.ok(target, "workflow graph did not expose a visible node hit rectangle");
+		const press = sgrMouse(0, target.left, target.top);
+		const release = sgrMouse(0, target.left, target.top, "m");
+		terminal.input(press);
+		terminal.input(release);
+		await flush();
+		tui.renderNow();
+
+		assert.equal(attached.length, 1, "fullscreen node click did not attach a stage");
+		assert.deepEqual(attached[0], { runId: "run-1", stageId: "stage-0" });
+		assert.deepEqual(
+			bridge.childCommands
+				.filter((command) => command.type === "engine_custom_input")
+				.slice(-2)
+				.map((command) => command.data),
+			[press, release],
+		);
+	} finally {
+		tui.stop();
+	}
 });
 
 test("one Kitty Ctrl+O press/release cycle toggles an isolated stage chat once", async () => {

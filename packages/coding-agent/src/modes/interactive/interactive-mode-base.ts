@@ -74,6 +74,23 @@ const FULLSCREEN_VIEWPORT_ACTIONS = [
 	"tui.altScreen.bottom",
 ] as const;
 
+/**
+ * Decide whether the fullscreen viewport should run before the focused
+ * component. `isMouseInput` is classified by pi-tui's own mouse predicate in
+ * `AtomicTuiAltScreen`, so this policy does not duplicate terminal grammars.
+ */
+export function shouldHandleFullscreenViewportInput(
+	focused: Component | null,
+	editor: Component,
+	data: string,
+	isMouseInput: boolean,
+	keybindings: KeybindingsManager,
+): boolean {
+	if (focused === editor || !focused?.handleInput) return true;
+	if (isMouseInput) return false;
+	return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
+}
+
 function isCommandLikeStartupInput(text: string): boolean {
 	const trimmed = text.trimStart();
 	return trimmed.startsWith("/") || trimmed.startsWith("!");
@@ -120,10 +137,14 @@ export class InteractiveModeBase {
 	ui: TUI;
 	private renderer: InteractiveTui;
 
-	private readonly shouldHandleViewportInput = (data: string): boolean => {
-		const focused = this.renderer.getFocusedComponent();
-		if (focused === this.editor || !focused?.handleInput) return true;
-		return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => this.keybindings.matches(data, action));
+	private readonly shouldHandleViewportInput = (data: string, isMouseInput: boolean): boolean => {
+		return shouldHandleFullscreenViewportInput(
+			this.renderer.getFocusedComponent(),
+			this.editor,
+			data,
+			isMouseInput,
+			this.keybindings,
+		);
 	};
 
 	private readonly onRightClickPaste = (): void => {

@@ -110,6 +110,16 @@ describe("interactive TUI renderer", () => {
 		fullscreen.stop();
 		expect(fullscreenTerminal.writes.some((write) => write.includes("\x1b[?1049l"))).toBe(true);
 	});
+	test("pins pi-tui's private mouse-sequence predicate used by fullscreen routing", () => {
+		const tui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal: new RecordingTerminal(),
+		});
+		const piTuiPrototype = Object.getPrototypeOf(Object.getPrototypeOf(tui));
+		expect(typeof Reflect.get(piTuiPrototype, "isMouseSequence")).toBe("function");
+	});
 
 	test("routes captured methods to a replacement renderer", () => {
 		const regularRequestRender = vi.fn();
