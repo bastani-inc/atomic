@@ -148,14 +148,17 @@ export class InteractiveModeBase {
 			this.keybindings,
 		);
 	};
-	private readonly onOverlayUnhandledInput = (data: string): boolean => {
+	private readonly onOverlayUnhandledInput = (data: string): boolean => this.handleOverlayUnhandledInput(data);
+
+	/** Dispatch the host thinking action after a focused workflow overlay declines input. */
+	handleOverlayUnhandledInput(data: string): boolean {
 		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.thinking.toggle")) return false;
 		// Reuse the default editor's action dispatcher even while a workflow
 		// overlay owns focus. This keeps the host binding and its user remap as
 		// the source of truth instead of calling the implementation directly.
 		this.defaultEditor.handleInput(data);
 		return true;
-	};
+	}
 
 	private readonly onRightClickPaste = (): void => {
 		void this.handleRightClickPaste();

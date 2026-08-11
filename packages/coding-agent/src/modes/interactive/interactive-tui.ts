@@ -78,6 +78,8 @@ function isLeftMouseSequence(data: string): boolean {
 		const button = Number.parseInt(sgr[1]!, 10);
 		return (button & 64) === 0 && (button & 3) === 0;
 	}
+	// X10 release is encoded as button 3. pi-tui's selection handler rejects
+	// that mask too, so only left press/motion codes are mirrored here.
 	if (!data.startsWith("\x1b[M") || data.length !== 6) return false;
 	const button = data.charCodeAt(3) - 32;
 	return button >= 0 && (button & 64) === 0 && (button & 3) === 0;

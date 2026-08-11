@@ -24,6 +24,8 @@ import type { KeybindingsLike } from "../../packages/workflows/src/tui/keybindin
  */
 const DEFAULTS: Readonly<Record<string, readonly string[]>> = {
 	"app.tools.expand": ["\x0f"],
+	// Ctrl+T in legacy, Kitty CSI-u, and modifyOtherKeys encodings.
+	"app.thinking.toggle": ["\x14", "\x1b[116;5u", "\x1b[116;5:1u", "\x1b[27;5;116~"],
 	"tui.editor.cursorUp": ["\x1b[A"],
 	"tui.editor.cursorDown": ["\x1b[B"],
 	// ctrl+b — readline backward-char (default pi-tui binding for cursorLeft)

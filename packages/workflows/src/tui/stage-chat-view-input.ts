@@ -19,7 +19,9 @@ import { Key, matchesKey } from "./text-helpers.js";
 
 export function handleStageChatInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	if (matchesAction(keybindings, data, "app.thinking.toggle") || (!keybindings && matchesKey(data, Key.ctrl("t")))) {
+	// Only the default physical Ctrl+T belongs to the host thinking action. A
+	// user remap may reuse an editor key, so let that key reach the composer.
+	if (matchesKey(data, Key.ctrl("t")) && matchesAction(keybindings, data, APP_ACTION.thinkingToggle)) {
 		return false;
 	}
 	if (matchesKey(data, Key.ctrl("x"))) {

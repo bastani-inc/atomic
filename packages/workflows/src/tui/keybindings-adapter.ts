@@ -40,6 +40,7 @@ export interface KeybindingsLike {
 
 export const APP_ACTION = {
 	toolsExpand: "app.tools.expand",
+	thinkingToggle: "app.thinking.toggle",
 } as const;
 
 export const TUI_ACTION = {

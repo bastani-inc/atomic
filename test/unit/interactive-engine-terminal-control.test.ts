@@ -38,6 +38,7 @@ import {
 import { sleep } from "../helpers/runtime.js";
 
 const isRegularTui = (): boolean => false;
+const WHEEL_UP = "\x1b[<64;10;10M";
 
 /** The child's RemoteTerminal augments pi-tui's Terminal with this setter. */
 interface RemoteTerm {
@@ -236,6 +237,52 @@ describe("engine_custom_terminal protocol", () => {
 			undefined,
 		);
 	});
+});
+
+test("resume-style selection preserves picker focus handoff and wire ordering before overlay input", async () => {
+	const bridge = makeBridge();
+	let pickerDone!: (result: unknown) => void;
+	void bridge.child.custom(
+		(_tui, _theme, _keys, done) => {
+			pickerDone = done as (result: unknown) => void;
+			return { render: () => ["picker"], handleInput: () => {}, invalidate: () => {} };
+		},
+		{ overlay: false },
+	);
+	await sleep(0);
+	assert.equal(bridge.focus, "inline", "the resume picker must take inline focus");
+
+	pickerDone("resume");
+	await sleep(0);
+	assert.equal(bridge.focus, "editor", "picker completion must restore editor focus");
+	assert.deepEqual(bridge.hostWrites, [], "the inline picker must not change host terminal modes");
+
+	const graphInputs: string[] = [];
+	void bridge.child.custom(
+		() => ({
+			render: () => ["overlay"],
+			handleInput: (data: string) => graphInputs.push(data),
+			invalidate: () => {},
+		}),
+		{ overlay: true },
+	);
+	await sleep(0);
+
+	const overlayOpen = bridge.hostMessages.find(
+		(message) => message.type === "engine_custom_open" && message.overlay === true,
+	);
+	assert.ok(overlayOpen, "the resumed workflow must open an overlay");
+	const doneIndex = bridge.hostMessages.findIndex((message) => message.type === "engine_custom_done");
+	const openIndex = bridge.hostMessages.indexOf(overlayOpen);
+	assert.ok(doneIndex !== -1 && doneIndex < openIndex, "picker done must precede overlay open");
+	assert.equal(bridge.focus, "overlay", "the workflow overlay must take focus");
+	const overlayMount = bridge.mounts.find((mount) => mount.overlay);
+	assert.ok(overlayMount?.focused, "the workflow overlay must be focused");
+
+	overlayMount?.component.handleInput?.(WHEEL_UP);
+	await sleep(0);
+	assert.deepEqual(graphInputs, [WHEEL_UP], "overlay input must still reach the resumed component");
+	bridge.controller.dispose();
 });
 
 describe("TerminalModeController", () => {

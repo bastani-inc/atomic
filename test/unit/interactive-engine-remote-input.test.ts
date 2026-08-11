@@ -10,19 +10,26 @@
 import assert from "node:assert/strict";
 import {
 	type Component,
-	isKeyRelease,
 	type OverlayHandle,
 	ScrollView,
 	stripTerminalSequences,
 	Text,
+	type TUI,
 	type TuiAltScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { shouldHandleFullscreenViewportInput } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
+import {
+	InteractiveModeBase,
+	shouldHandleFullscreenViewportInput,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import "../../packages/coding-agent/src/modes/interactive/interactive-editor-actions.ts";
+import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
 import { createInteractiveTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.ts";
+import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import {
@@ -57,6 +64,7 @@ interface Bridge {
 interface BridgeOptions {
 	fullscreen?: boolean;
 	stallInput?: boolean;
+	keybindings?: KeybindingsManager;
 	onOverlayUnhandledInput?: (data: string) => boolean;
 }
 
@@ -69,7 +77,7 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	const childCommands: InteractiveEngineCommand[] = [];
 	const mainEditor: Component = { render: () => [], invalidate: () => {} };
-	const keybindings = new KeybindingsManager();
+	const keybindings = options.keybindings ?? new KeybindingsManager();
 	const terminal = options.fullscreen ? new RecordingTerminal() : undefined;
 	if (terminal) {
 		terminal.columns = 40;
@@ -139,6 +147,39 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 
 async function flush(times = 4): Promise<void> {
 	for (let index = 0; index < times; index += 1) await sleep(0);
+}
+
+interface ThinkingHandlerFixture {
+	readonly handler: (data: string) => boolean;
+	readonly mode: InteractiveModeBase;
+	readonly settingWrites: boolean[];
+}
+
+function makeProductionThinkingHandler(keybindings: KeybindingsManager): ThinkingHandlerFixture {
+	initTheme("dark", false);
+	const settingWrites: boolean[] = [];
+	const editor = new CustomEditor({ requestRender: () => {} } as TUI, getEditorTheme(), keybindings);
+	const mode = Object.assign(Object.create(InteractiveModeBase.prototype), {
+		addTuiInputListener: () => () => {},
+		chatContainer: { clear: () => {} },
+		defaultEditor: editor,
+		hideThinkingBlock: false,
+		keybindings,
+		rebuildChatFromMessages: () => {},
+		runtimeHost: {
+			session: {
+				settingsManager: {
+					setHideThinkingBlock: (hidden: boolean) => settingWrites.push(hidden),
+				},
+			},
+		},
+		showStatus: () => {},
+		streamingComponent: undefined,
+		streamingMessage: undefined,
+		ui: {},
+	}) as InteractiveModeBase;
+	mode.setupKeyHandlers();
+	return { handler: (data) => mode.handleOverlayUnhandledInput(data), mode, settingWrites };
 }
 function sgrMouse(buttonCode: number, col: number, row: number, final: "M" | "m" = "M"): string {
 	return `\x1b[<${buttonCode};${col + 1};${row + 1}${final}`;
@@ -532,17 +573,14 @@ test("an unhandled isolated fullscreen key reaches the transcript once", async (
 		tui.stop();
 	}
 });
-test("fullscreen workflow overlay Ctrl+T falls through to the host thinking action", async () => {
-	let thinkingToggles = 0;
+test("fullscreen workflow overlay Ctrl+T invokes the production host thinking action", async () => {
 	const inputs: string[] = [];
 	const hostKeybindings = new KeybindingsManager();
+	const thinking = makeProductionThinkingHandler(hostKeybindings);
 	const bridge = makeBridge({
 		fullscreen: true,
-		onOverlayUnhandledInput: (data) => {
-			if (isKeyRelease(data) || !hostKeybindings.matches(data, "app.thinking.toggle")) return false;
-			thinkingToggles += 1;
-			return true;
-		},
+		keybindings: hostKeybindings,
+		onOverlayUnhandledInput: thinking.handler,
 	});
 	void bridge.child.custom(
 		() => ({
@@ -574,7 +612,8 @@ test("fullscreen workflow overlay Ctrl+T falls through to the host thinking acti
 		await flush();
 		tui.renderNow();
 		assert.deepEqual(inputs, ["\x14"], "the focused workflow overlay must see Ctrl+T first");
-		assert.equal(thinkingToggles, 1, "Ctrl+T must reach the host thinking action once");
+		assert.equal(thinking.mode.hideThinkingBlock, true, "Ctrl+T must flip the production thinking state");
+		assert.deepEqual(thinking.settingWrites, [true], "the production thinking action must persist its new state");
 	} finally {
 		overlay.hide();
 		tui.stop();

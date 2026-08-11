@@ -84,8 +84,8 @@ function captureStdoutWrites(action: () => void): string[] {
 }
 
 describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
-	test("open enables button-event SGR mouse tracking and close disables it", () => {
-		const { ui } = buildMockUi();
+	test("open and close leave terminal mouse tracking to the fullscreen host", () => {
+		const { ui, calls } = buildMockUi();
 		const store = createStore();
 
 		const writes = captureStdoutWrites(() => {
@@ -94,13 +94,10 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
 			adapter.close();
 		});
 
+		assert.equal(calls.length, 1, "overlay must actually mount through ui.custom");
 		assert.ok(
-			writes.some((write) => write.includes("\x1b[?1000h\x1b[?1002h\x1b[?1006h")),
-			"expected overlay open to enable normal, button-event, and SGR mouse tracking",
-		);
-		assert.ok(
-			writes.some((write) => write.includes("\x1b[?1006l\x1b[?1002l\x1b[?1000l")),
-			"expected overlay close to disable SGR, button-event, and normal mouse tracking",
+			writes.every((write) => !/\x1b\[\?10(?:00|02|06)[hl]/.test(write)),
+			"workflow overlay must not toggle mouse tracking; fullscreen pi-tui owns the terminal mode",
 		);
 	});
 
