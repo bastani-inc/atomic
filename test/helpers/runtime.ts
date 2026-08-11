@@ -275,7 +275,8 @@ export function spawnProcess(first: readonly string[] | BunSpawnOptions, second?
 	// since Node 20.12 (CVE-2024-27980) it refuses to exec a `.cmd` or `.bat`
 	// without a shell. Spawn the resolved path, through a shell only for shims.
 	const isShim = /\.(?:cmd|bat)$/iu.test(executable);
-	const child = nodeSpawn(executable, args, {
+	const commandLine = isShim ? `"${executable}"` : executable;
+	const child = nodeSpawn(commandLine, args, {
 		cwd: options.cwd,
 		env: environment(options.env),
 		timeout: options.timeout,
