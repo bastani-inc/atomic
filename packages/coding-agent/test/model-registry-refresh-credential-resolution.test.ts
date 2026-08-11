@@ -1,9 +1,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
-import { ModelConfig } from "../src/core/model-config.ts";
-import { describeModelRegistry } from "./model-registry-fixtures.ts";
-import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { ModelConfig } from "../src/core/model-config.js";
+import { describeModelRegistry } from "./model-registry-fixtures.js";
+import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.js";
 
 describeModelRegistry((context) => {
 	describe("extension catalog credential resolution", () => {
