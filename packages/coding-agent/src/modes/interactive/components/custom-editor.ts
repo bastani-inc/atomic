@@ -137,16 +137,16 @@ export class CustomEditor extends Editor {
 		return draft;
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		// Check extension-registered shortcuts first
 		if (this.onExtensionShortcut?.(data)) {
-			return;
+			return true;
 		}
 
 		// Check for paste image keybinding
 		if (this.keybindings.matches(data, "app.clipboard.pasteImage")) {
 			this.onPasteImage?.();
-			return;
+			return true;
 		}
 
 		// Check app keybindings first
@@ -160,12 +160,12 @@ export class CustomEditor extends Editor {
 				const handler = this.onEscape ?? this.actionHandlers.get("app.interrupt");
 				if (handler) {
 					handler();
-					return;
+					return true;
 				}
 			}
 			// Let parent handle escape for autocomplete cancellation
 			super.handleInput(data);
-			return;
+			return true;
 		}
 
 		// Exit (Ctrl+D) - only when editor is empty
@@ -173,7 +173,7 @@ export class CustomEditor extends Editor {
 			if (this.getText().length === 0) {
 				const handler = this.onCtrlD ?? this.actionHandlers.get("app.exit");
 				if (handler) handler();
-				return;
+				return true;
 			}
 			// Fall through to editor handling for delete-char-forward when not empty
 		}
@@ -185,14 +185,14 @@ export class CustomEditor extends Editor {
 			this.keybindings.matches(data, "tui.editor.historyNext")
 		) {
 			super.handleInput(data);
-			return;
+			return true;
 		}
 
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
 			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
 				handler();
-				return;
+				return true;
 			}
 		}
 
@@ -204,5 +204,6 @@ export class CustomEditor extends Editor {
 		} finally {
 			this.submittedDraftSnapshot = undefined;
 		}
+		return false;
 	}
 }

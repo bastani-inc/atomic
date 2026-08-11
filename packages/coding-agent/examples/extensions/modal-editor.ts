@@ -28,21 +28,19 @@ const NORMAL_KEYS: Record<string, string | null> = {
 class ModalEditor extends CustomEditor {
 	private mode: "normal" | "insert" = "insert";
 
-	handleInput(data: string): void {
-		// Escape toggles to normal mode, or passes through for app handling
+	handleInput(data: string): boolean {
+		// Escape toggles to normal, or passes through for app handling
 		if (matchesKey(data, "escape")) {
 			if (this.mode === "insert") {
 				this.mode = "normal";
-			} else {
-				super.handleInput(data); // abort agent, etc.
+				return true;
 			}
-			return;
+			return super.handleInput(data); // abort agent, etc.
 		}
 
 		// Insert mode: pass everything through
 		if (this.mode === "insert") {
-			super.handleInput(data);
-			return;
+			return super.handleInput(data);
 		}
 
 		// Normal mode: check mapped keys
@@ -56,12 +54,12 @@ class ModalEditor extends CustomEditor {
 			} else if (seq) {
 				super.handleInput(seq);
 			}
-			return;
+			return true;
 		}
 
 		// Pass control sequences (ctrl+c, etc.) to super, ignore printable chars
-		if (data.length === 1 && data.charCodeAt(0) >= 32) return;
-		super.handleInput(data);
+		if (data.length === 1 && data.charCodeAt(0) >= 32) return false;
+		return super.handleInput(data);
 	}
 
 	render(width: number): string[] {

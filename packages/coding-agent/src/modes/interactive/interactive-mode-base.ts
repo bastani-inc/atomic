@@ -156,7 +156,7 @@ export class InteractiveModeBase {
 		// Reuse the default editor's action dispatcher even while a workflow
 		// overlay owns focus. This keeps the host binding and its user remap as
 		// the source of truth instead of calling the implementation directly.
-		return this.defaultEditor.handleInput(data) ?? true;
+		return this.defaultEditor.handleInput(data);
 	}
 
 	private readonly onRightClickPaste = (): void => {

@@ -2754,16 +2754,16 @@ import { matchesKey } from "@earendil-works/pi-tui";
 class VimEditor extends CustomEditor {
   private mode: "normal" | "insert" = "insert";
 
-  handleInput(data: string): void {
+  handleInput(data: string): boolean {
     if (matchesKey(data, "escape") && this.mode === "insert") {
       this.mode = "normal";
-      return;
+      return true;
     }
     if (this.mode === "normal" && data === "i") {
       this.mode = "insert";
-      return;
+      return true;
     }
-    super.handleInput(data);  // App keybindings + text editing
+    return super.handleInput(data);  // App keybindings + text editing
   }
 }
 

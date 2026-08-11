@@ -313,8 +313,8 @@ export interface ExtensionUIContext {
 	 * - `keybindings`: KeybindingsManager for app-level keybindings
 	 *
 	 * For full app keybinding support (escape, ctrl+d, model switching, etc.),
-	 * extend `CustomEditor` from `@bastani/atomic` and call
-	 * `super.handleInput(data)` for keys you don't handle.
+	 * extend `CustomEditor` from `@bastani/atomic` and return `super.handleInput(data)`
+	 * for keys you don't handle.
 	 *
 	 * @example
 	 * ```ts
@@ -323,12 +323,12 @@ export interface ExtensionUIContext {
 	 * class VimEditor extends CustomEditor {
 	 *   private mode: "normal" | "insert" = "insert";
 	 *
-	 *   handleInput(data: string): void {
+	 *   handleInput(data: string): boolean {
 	 *     if (this.mode === "normal") {
 	 *       // Handle vim normal mode keys...
-	 *       if (data === "i") { this.mode = "insert"; return; }
+	 *       if (data === "i") { this.mode = "insert"; return true; }
 	 *     }
-	 *     super.handleInput(data);  // App keybindings + text editing
+	 *     return super.handleInput(data);  // App keybindings + text editing
 	 *   }
 	 * }
 	 *

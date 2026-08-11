@@ -75,9 +75,10 @@ const viewportInputSubscriptions = new WeakMap<AtomicTuiAltScreen, ViewportInput
 interface ParsedMouseSequence {
 	readonly data: string;
 	readonly button: number;
+	readonly isRelease: boolean;
 }
 
-const SGR_MOUSE_SEQUENCE = /^\x1b\[<(\d+);\d+;\d+[Mm]/;
+const SGR_MOUSE_SEQUENCE = /^\x1b\[<(\d+);\d+;\d+([Mm])/;
 const LEFT_MOUSE_MODIFIER_MASK = 4 | 8 | 16;
 
 function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
@@ -89,13 +90,13 @@ function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
 		const sgr = SGR_MOUSE_SEQUENCE.exec(remaining);
 		if (sgr) {
 			const sequence = sgr[0]!;
-			sequences.push({ data: sequence, button: Number.parseInt(sgr[1]!, 10) });
+			sequences.push({ data: sequence, button: Number.parseInt(sgr[1]!, 10), isRelease: sgr[2] === "m" });
 			offset += sequence.length;
 			continue;
 		}
 		if (remaining.startsWith("\x1b[M") && remaining.length >= 6) {
 			const sequence = remaining.slice(0, 6);
-			sequences.push({ data: sequence, button: sequence.charCodeAt(3) - 32 });
+			sequences.push({ data: sequence, button: sequence.charCodeAt(3) - 32, isRelease: false });
 			offset += 6;
 			continue;
 		}
@@ -104,15 +105,17 @@ function parseMouseSequences(data: string): ParsedMouseSequence[] | undefined {
 	return sequences;
 }
 
-function isLeftMouseButton(button: number): boolean {
-	// Shift, Meta/Option, and Ctrl are application-bypass gestures. Legacy X10
-	// release is button 3, which pi-tui rejects and cannot identify by button.
-	return (button & (3 | 64 | LEFT_MOUSE_MODIFIER_MASK)) === 0;
+function isLeftMouseButton(sequence: ParsedMouseSequence): boolean {
+	const { button } = sequence;
+	// Shift, Meta/Option, and Ctrl are application-bypass gestures on press and
+	// motion. SGR releases can retain those bits and still need to close a
+	// selection. Legacy X10 release is button 3, which pi-tui cannot identify.
+	return (button & (3 | 64)) === 0 && (sequence.isRelease || (button & LEFT_MOUSE_MODIFIER_MASK) === 0);
 }
 
 /** Whether a mouse chunk contains a left-button selection gesture. */
 function isLeftMouseSequence(data: string): boolean {
-	return parseMouseSequences(data)?.some(({ button }) => isLeftMouseButton(button)) ?? false;
+	return parseMouseSequences(data)?.some((sequence) => isLeftMouseButton(sequence)) ?? false;
 }
 
 /** Replay a chunk one report at a time because pi-tui parses one report per call. */
@@ -227,12 +230,11 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	private forwardSelectionMouseInput(viewportListener: TuiInputListener, data: string, focused: Component): void {
 		if (this.getFocusedComponent() !== focused || !isLeftMouseSequence(data)) return;
 		for (const sequence of parseMouseSequences(data) ?? []) {
-			if (isLeftMouseButton(sequence.button)) viewportListener(sequence.data);
+			if (isLeftMouseButton(sequence)) viewportListener(sequence.data);
 		}
 	}
 	private replayViewportInput(viewportListener: TuiInputListener, data: string): void {
 		replayMouseInput(viewportListener, data);
-		if (parseMouseSequences(data)) (this as unknown as TuiOverlayInternals).requestImmediateRender();
 	}
 	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
 		const gate = viewportInputGates.get(this);

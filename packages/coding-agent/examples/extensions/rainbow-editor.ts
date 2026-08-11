@@ -64,13 +64,14 @@ class RainbowEditor extends CustomEditor {
 		}
 	}
 
-	handleInput(data: string): void {
-		super.handleInput(data);
+	handleInput(data: string): boolean {
+		const handled = super.handleInput(data);
 		if (this.hasUltrathink()) {
 			this.startAnimation();
 		} else {
 			this.stopAnimation();
 		}
+		return handled;
 	}
 
 	render(width: number): string[] {
