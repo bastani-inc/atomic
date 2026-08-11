@@ -267,7 +267,6 @@ describe("StageChatView", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const prompt = makePendingPrompt({
-			kind: "custom",
 			message: [
 				"SECTION 1 top of the long question.",
 				"SECTION 2 middle of the long question with enough words to wrap across several rows in a narrow viewport.",
@@ -294,12 +293,12 @@ describe("StageChatView", () => {
 		assert.match(top, /SECTION 1/);
 		assert.doesNotMatch(top, /SECTION 5/);
 
-		view.handleInput("end");
+		for (let i = 0; i < 20; i++) assert.equal(view.handleInput("\x1b[<65;1;1M"), true);
 		const bottom = stripAnsi(view.render(72).join("\n"));
 		assert.doesNotMatch(bottom, /SECTION 1/);
 		assert.match(bottom, /SECTION 5|response|Submit/);
 
-		view.handleInput("home");
+		for (let i = 0; i < 20; i++) assert.equal(view.handleInput("\x1b[<64;1;1M"), true);
 		const restoredTop = stripAnsi(view.render(72).join("\n"));
 		assert.match(restoredTop, /SECTION 1/);
 		view.dispose();

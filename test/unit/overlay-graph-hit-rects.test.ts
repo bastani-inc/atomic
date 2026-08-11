@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
-import { ANSI_RE, defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
+import { ANSI_RE, defaultTheme, makeSnap, makeStage, makeStore, makeTestTui } from "./overlay-graph-helpers.js";
 
 function sgrMousePress(col: number, row: number, buttonCode = 0, final = "M"): string {
 	return `\x1b[<${buttonCode};${col + 1};${row + 1}${final}`;
@@ -26,7 +26,7 @@ describe("GraphView rendered node hit rects", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 32 } },
+			piTui: makeTestTui(32),
 			onStageAttach: (_runId, stageId) => attached.push(stageId),
 		});
 

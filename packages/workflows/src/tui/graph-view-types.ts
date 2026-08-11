@@ -1,4 +1,5 @@
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 
@@ -42,11 +43,12 @@ export interface GraphViewOpts {
 	initialFocusedStageId?: string;
 	initialFocusedRunId?: string;
 	/**
-	 * Host TUI used for live terminal geometry. The graph layout reads the
-	 * current terminal height while it renders instead of threading a row
-	 * callback through the view stack.
+	 * Host TUI used for live terminal geometry. The overlay adapter passes the
+	 * same concrete host object to the graph and attached stage chat; GraphView
+	 * reads its terminal rows while the custom overlay renders and keeps the
+	 * hosted frame stable during teardown.
 	 */
-	piTui?: { terminal?: { rows?: number } };
+	piTui?: TUI;
 	/**
 	 * Invoked on each animation tick (~10 FPS) so the host can call
 	 * `tui.requestRender()`. Only wired in `overlay` mode; supplying it

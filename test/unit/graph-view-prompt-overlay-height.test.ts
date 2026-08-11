@@ -3,7 +3,14 @@ import { describe, test } from "vitest";
 import type { PendingPrompt, RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
-import { ANSI_RE, defaultTheme, makePendingPrompt, makeRunPromptSnap, makeStore } from "./overlay-graph-helpers.js";
+import {
+	ANSI_RE,
+	defaultTheme,
+	makePendingPrompt,
+	makeRunPromptSnap,
+	makeStore,
+	makeTestTui,
+} from "./overlay-graph-helpers.js";
 
 const RUN_ID = "339e05a4-2289-408e-9076-d1a348f582ae";
 
@@ -15,7 +22,7 @@ function renderPromptOverlay(viewportRows: number, prompt = makePendingPrompt({ 
 		runId: RUN_ID,
 		store: makeStore({ ...snapshot, runs: [run] }),
 		graphTheme: defaultTheme,
-		piTui: { terminal: { rows: viewportRows } },
+		piTui: makeTestTui(viewportRows),
 	});
 	const lines = view.render(96);
 	view.dispose();

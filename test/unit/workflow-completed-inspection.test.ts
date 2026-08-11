@@ -19,7 +19,7 @@ import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { testRunId } from "../helpers/run-id.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
-import { defaultTheme, visibleText } from "./overlay-graph-helpers.js";
+import { defaultTheme, makeTestTui, visibleText } from "./overlay-graph-helpers.js";
 
 let tempDir = "";
 
@@ -163,7 +163,7 @@ describe("completed workflow inspection", () => {
 			runId: testRunId("completed-inspection"),
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 32 } },
+			piTui: makeTestTui(32),
 			onStageAttach: (runId, stageId) => {
 				attached.push(`${runId}/${stageId}`);
 			},

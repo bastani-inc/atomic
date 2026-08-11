@@ -8,7 +8,7 @@ import { createAsyncJobTracker } from "../../packages/subagents/src/runs/backgro
 import type { AsyncStatus, SubagentState } from "../../packages/subagents/src/shared/types.js";
 import { stopWidgetAnimation } from "../../packages/subagents/src/tui/render.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
-import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
+import { defaultTheme, makeSnap, makeStage, makeStore, makeTestTui, visibleText } from "./overlay-graph-helpers.js";
 
 type SetWidgetArgs = Parameters<ExtensionContext["ui"]["setWidget"]>;
 
@@ -137,7 +137,7 @@ describe("async subagent status while workflow overlay is active", () => {
 			store: makeStore(makeSnap([{ ...makeStage("stage-1"), status: "running" }])),
 			graphTheme: defaultTheme,
 			footerData: footerData(statuses),
-			piTui: { terminal: { rows: 20 } },
+			piTui: makeTestTui(20),
 		});
 
 		assert.equal(statuses.size, 0);

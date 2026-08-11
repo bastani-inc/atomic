@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
-import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
+import { defaultTheme, makeSnap, makeStage, makeStore, makeTestTui, visibleText } from "./overlay-graph-helpers.js";
 
 function footerData(statuses: Map<string, string>): ReadonlyFooterDataProvider {
 	return {
@@ -32,7 +32,7 @@ function renderOverlay(statuses: Map<string, string>): string {
 		store: makeStore(makeSnap([{ ...makeStage("stage-1"), status: "running" }])),
 		graphTheme: defaultTheme,
 		footerData: footerData(statuses),
-		piTui: { terminal: { rows: 20 } },
+		piTui: makeTestTui(20),
 	});
 	try {
 		return visibleText(view.render(100));

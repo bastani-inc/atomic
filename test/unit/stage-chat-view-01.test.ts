@@ -387,11 +387,12 @@ describe("StageChatView", () => {
 			onClose: () => {},
 			piKeybindings: makeFakeKeybindings(),
 			piTui: makeTestTui(12),
-			piEditorFactory: () => new FakePromptEditor(),
+			// Use the production Editor path; the viewport host now supplies the
+			// terminal geometry that the editor also uses for paging.
 		});
 
 		view.render(80);
-		for (const key of ["\x1b[A", "\x1b[B", "pageUp", "pageDown", "\x1b"]) {
+		for (const key of ["\x1b[A", "\x1b[B", "\x1b[5~", "\x1b[6~", "\x1b"]) {
 			assert.equal(view.handleInput(key), true, JSON.stringify(key));
 		}
 		await flush();
@@ -399,7 +400,6 @@ describe("StageChatView", () => {
 		assert.equal(detached, 0);
 		assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
 
-		view.handleInput("\t");
 		view.handleInput("\r");
 		assert.equal(await pending, "line one\nline two");
 		assert.equal(detached, 1);

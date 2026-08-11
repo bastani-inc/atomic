@@ -11,6 +11,7 @@ import type { Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { makeTestTui } from "../unit/overlay-graph-helpers.js";
 
 function stage(
 	id: string,
@@ -241,7 +242,7 @@ const view = new GraphView({
 	store,
 	graphTheme: deriveGraphTheme({}),
 	onClose: () => {},
-	piTui: { terminal: { rows } },
+	piTui: makeTestTui(rows),
 });
 
 if (scenarioKey === "stages") {
