@@ -66,24 +66,16 @@ describe("fullscreen right-click paste", () => {
 		expect(context.ui.requestRender).not.toHaveBeenCalled();
 	});
 
-	test("forwards the callback to the fullscreen renderer only", () => {
+	test("forwards the callback to the forced fullscreen renderer", () => {
 		const onRightClickPaste = vi.fn();
-		const fullscreen = createInteractiveTui({
-			tuiMode: "fullscreen",
-			showHardwareCursor: false,
-			logDirectory: "/tmp",
-			terminal: new RecordingTerminal(),
-			onRightClickPaste,
-		});
-		const regular = createInteractiveTui({
-			tuiMode: "regular",
+		const tui = createInteractiveTui({
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal: new RecordingTerminal(),
 			onRightClickPaste,
 		});
 
-		expect(Reflect.get(fullscreen, "onRightClickPaste")).toBe(onRightClickPaste);
-		expect(Reflect.get(regular, "onRightClickPaste")).toBeUndefined();
+		expect(tui.mode).toBe("fullscreen");
+		expect(Reflect.get(tui, "onRightClickPaste")).toBe(onRightClickPaste);
 	});
 });

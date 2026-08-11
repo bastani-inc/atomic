@@ -516,8 +516,7 @@ atomic config                        # Enable/disable package resources
 
 | Flag | Description |
 |------|-------------|
-| (default) | Interactive mode |
-| `--tui-mode <mode>` | Experimental interactive layout: `regular` (default) or `fullscreen`; `/settings` can switch it while Atomic runs |
+| (default) | Interactive mode (fullscreen TUI) |
 | `-p`, `--print` | Print response and exit |
 | `--mode json` | Output all events as JSON lines (see [docs/json.md](docs/json.md)) |
 | `--mode rpc` | RPC mode for process integration (see [docs/rpc.md](docs/rpc.md)) |

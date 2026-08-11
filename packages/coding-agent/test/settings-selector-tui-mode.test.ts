@@ -1,11 +1,10 @@
-import type { TuiMode } from "@earendil-works/pi-tui";
 import { expect, test, vi } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.ts";
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
 
-function createSettingsConfig(tuiMode: TuiMode): SettingsConfig {
+function createSettingsConfig(): SettingsConfig {
 	return {
 		autoCompact: true,
 		showImages: true,
@@ -27,9 +26,10 @@ function createSettingsConfig(tuiMode: TuiMode): SettingsConfig {
 		collapseChangelog: false,
 		enableInstallTelemetry: true,
 		doubleEscapeAction: "tree",
+		mermaidRenderingMode: "streaming",
+		latexRenderingEnabled: true,
 		treeFilterMode: "default",
 		showHardwareCursor: false,
-		tuiMode,
 		fullscreenScrollbar: "auto",
 		editorPaddingX: 0,
 		outputPad: 1,
@@ -43,46 +43,36 @@ function createSettingsConfig(tuiMode: TuiMode): SettingsConfig {
 	};
 }
 
-test("TUI mode setting defaults to regular and persists fullscreen", () => {
-	const settingsManager = SettingsManager.inMemory({});
-	expect(settingsManager.getTuiMode()).toBe("regular");
-
-	settingsManager.setTuiMode("fullscreen");
-
-	expect(settingsManager.getTuiMode()).toBe("fullscreen");
-	expect(settingsManager.getGlobalSettings().tuiMode).toBe("fullscreen");
-});
-
-test("settings exposes and selects the experimental fullscreen TUI mode", () => {
-	const onTuiModeChange = vi.fn<(mode: TuiMode) => void>();
-	const callbacks = { onTuiModeChange } as SettingsCallbacks;
-	const item = buildSettingsItems(createSettingsConfig("regular"), callbacks).find(({ id }) => id === "tui-mode");
-
-	expect(item).toMatchObject({
-		label: "TUI mode",
-		description: "Interface layout; fullscreen mode is experimental",
-		currentValue: "regular",
-		values: ["regular", "fullscreen"],
-	});
-
-	createSettingsChangeHandler(callbacks)("tui-mode", "fullscreen");
-	expect(onTuiModeChange).toHaveBeenCalledExactlyOnceWith("fullscreen");
-});
-
-test("fullscreen scrollbar setting exposes and selects all three modes", () => {
-	const onFullscreenScrollbarChange = vi.fn();
-	const callbacks = { onFullscreenScrollbarChange } as unknown as SettingsCallbacks;
-	const item = buildSettingsItems(createSettingsConfig("fullscreen"), callbacks).find(
+test("settings removes the TUI mode row while keeping fullscreen scrollbar", () => {
+	const item = buildSettingsItems(createSettingsConfig(), {} as SettingsCallbacks).find(
 		({ id }) => id === "fullscreen-scrollbar",
 	);
+	const tuiMode = buildSettingsItems(createSettingsConfig(), {} as SettingsCallbacks).find(
+		({ id }) => id === "tui-mode",
+	);
 
+	expect(tuiMode).toBeUndefined();
 	expect(item).toMatchObject({
 		label: "Fullscreen scrollbar",
-		description: "Scrollbar behavior in fullscreen mode; has no effect in regular mode",
+		description: "Scrollbar behavior for the fullscreen transcript",
 		currentValue: "auto",
 		values: ["auto", "always", "hidden"],
 	});
+});
 
+test("fullscreen scrollbar setting defaults to auto and persists", () => {
+	const settingsManager = SettingsManager.inMemory({});
+	expect(settingsManager.getFullscreenScrollbar()).toBe("auto");
+
+	settingsManager.setFullscreenScrollbar("always");
+
+	expect(settingsManager.getFullscreenScrollbar()).toBe("always");
+	expect(settingsManager.getGlobalSettings().fullscreenScrollbar).toBe("always");
+});
+
+test("fullscreen scrollbar setting dispatches all three modes", () => {
+	const onFullscreenScrollbarChange = vi.fn();
+	const callbacks = { onFullscreenScrollbarChange } as unknown as SettingsCallbacks;
 	for (const mode of ["auto", "always", "hidden"] as const) {
 		createSettingsChangeHandler(callbacks)("fullscreen-scrollbar", mode);
 	}

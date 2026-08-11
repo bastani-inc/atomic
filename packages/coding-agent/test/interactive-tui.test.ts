@@ -1,7 +1,6 @@
 import { crc32, deflateSync } from "node:zlib";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
-	type Component,
 	getCapabilities,
 	type Image,
 	isViewportTUI,
@@ -11,16 +10,14 @@ import {
 	setCellDimensions,
 	Text,
 	type TUI,
-	TuiAltScreen,
-	type TuiBase,
-	type TuiMode,
+	type TuiAltScreen,
+	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { registerContentTools } from "../../web-access/content-tools.ts";
 import type { ExtensionAPI } from "../src/core/extensions/api-types.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { registerStartupInputListeners } from "../src/modes/interactive/interactive-input-handling.ts";
 import {
 	createInteractiveTui,
 	createInteractiveTuiReference,
@@ -85,36 +82,98 @@ function registerFetchContentTool(): ToolDefinition {
 	return tool;
 }
 
+function withTtyState(stdinIsTTY: boolean, stdoutIsTTY: boolean, callback: () => void): void {
+	const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+	const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+	Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+	Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+	try {
+		callback();
+	} finally {
+		if (stdinDescriptor) Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+		else Reflect.deleteProperty(process.stdin, "isTTY");
+		if (stdoutDescriptor) Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+		else Reflect.deleteProperty(process.stdout, "isTTY");
+	}
+}
+
+function createGuardedTui() {
+	return createInteractiveTui({ showHardwareCursor: false, logDirectory: "/tmp" });
+}
+
 describe("interactive TUI renderer", () => {
-	test("selects the alternate-screen renderer with link activation and alternate-screen bytes", () => {
-		const regular = createInteractiveTui({
-			tuiMode: "regular",
+	test("always selects the alternate-screen renderer with link activation and alternate-screen bytes", () => {
+		const terminal = new RecordingTerminal();
+		const tui = createInteractiveTui({
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
-			terminal: new RecordingTerminal(),
-		});
-		const fullscreenTerminal = new RecordingTerminal();
-		const fullscreen = createInteractiveTui({
-			tuiMode: "fullscreen",
-			showHardwareCursor: false,
-			logDirectory: "/tmp",
-			terminal: fullscreenTerminal,
+			terminal,
 		});
 
-		expect(regular.mode).toBe("regular");
-		expect(isViewportTUI(regular)).toBe(false);
-		expect(fullscreen.mode).toBe("fullscreen");
-		expect(Reflect.get(fullscreen, "openUrl")).toBe(openBrowser);
-		expect(isViewportTUI(fullscreen)).toBe(true);
+		expect(tui.mode).toBe("fullscreen");
+		expect(Reflect.get(tui, "openUrl")).toBe(openBrowser);
+		expect(isViewportTUI(tui)).toBe(true);
 
-		fullscreen.start();
-		expect(fullscreenTerminal.writes.some((write) => write.includes("\x1b[?1049h"))).toBe(true);
-		fullscreen.stop();
-		expect(fullscreenTerminal.writes.some((write) => write.includes("\x1b[?1049l"))).toBe(true);
+		tui.start();
+		expect(terminal.writes.some((write) => write.includes("\x1b[?1049h"))).toBe(true);
+		tui.stop();
+		expect(terminal.writes.some((write) => write.includes("\x1b[?1049l"))).toBe(true);
+	});
+	test("uses fullscreen for an interactive TTY session", () => {
+		const previousCi = process.env.CI;
+		const previousTerm = process.env.TERM;
+		delete process.env.CI;
+		process.env.TERM = "xterm-256color";
+		try {
+			withTtyState(true, true, () => {
+				expect(createGuardedTui().mode).toBe("fullscreen");
+			});
+		} finally {
+			if (previousCi === undefined) delete process.env.CI;
+			else process.env.CI = previousCi;
+			if (previousTerm === undefined) delete process.env.TERM;
+			else process.env.TERM = previousTerm;
+		}
+	});
+	test("uses the main-screen fallback when stdout is not a TTY", () => {
+		withTtyState(true, false, () => {
+			expect(createGuardedTui()).toBeInstanceOf(TuiMainScreen);
+		});
+	});
+	test("uses the main-screen fallback for TERM=dumb", () => {
+		const previousTerm = process.env.TERM;
+		process.env.TERM = "dumb";
+		try {
+			expect(
+				createInteractiveTui({
+					showHardwareCursor: false,
+					logDirectory: "/tmp",
+					terminal: new RecordingTerminal(),
+				}),
+			).toBeInstanceOf(TuiMainScreen);
+		} finally {
+			if (previousTerm === undefined) delete process.env.TERM;
+			else process.env.TERM = previousTerm;
+		}
+	});
+	test("uses the main-screen fallback in CI even when stdio has TTYs", () => {
+		const previousCi = process.env.CI;
+		const previousTerm = process.env.TERM;
+		process.env.CI = "true";
+		process.env.TERM = "xterm-256color";
+		try {
+			withTtyState(true, true, () => {
+				expect(createGuardedTui()).toBeInstanceOf(TuiMainScreen);
+			});
+		} finally {
+			if (previousCi === undefined) delete process.env.CI;
+			else process.env.CI = previousCi;
+			if (previousTerm === undefined) delete process.env.TERM;
+			else process.env.TERM = previousTerm;
+		}
 	});
 	test("pins pi-tui's private mouse-sequence predicate used by fullscreen routing", () => {
 		const tui = createInteractiveTui({
-			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal: new RecordingTerminal(),
@@ -125,7 +184,6 @@ describe("interactive TUI renderer", () => {
 	test("falls back to keyboard routing if pi-tui removes its mouse predicate", () => {
 		const terminal = new RecordingTerminal();
 		const tui = createInteractiveTui({
-			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
@@ -173,80 +231,24 @@ describe("interactive TUI renderer", () => {
 		expect(tui.render(80)).toEqual(["width: 80"]);
 	});
 
-	test("switches renderers without losing host components, focus, or input listeners", async () => {
+	test("stops the forced fullscreen renderer without a regular-mode replacement", () => {
 		const terminal = new RecordingTerminal();
 		const renderer = createInteractiveTui({
-			tuiMode: "regular",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
 		});
-		const themeController = { rebindTui: vi.fn() };
-		const matchesClear = vi.fn<(candidate: string, action: string) => boolean>(() => false);
-		const session = {
-			isStreaming: false,
-			isCompacting: false,
-			settingsManager: { getShowTerminalProgress: () => false },
-		};
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			renderer,
-			ui: undefined as unknown as TUI,
-			mainScreenRenderState: undefined,
-			options: { tuiMode: "regular" as TuiMode },
-			runtimeHost: { services: { agentDir: "/tmp" }, session },
-			themeController,
-			tuiInputSubscriptions: new Set(),
-			extensionTerminalInputSubscriptions: new Set(),
-			tuiRendererChangeListeners: new Set(),
-			keybindings: { matches: matchesClear },
+			ui: renderer,
 		}) as unknown as InteractiveMode;
-		const stableUi = createInteractiveTuiReference(() => Reflect.get(context, "renderer") as TUI);
-		context.ui = stableUi;
-		const render = vi.fn(() => ["content"]);
-		const component = {
-			focused: false,
-			render,
-			invalidate: vi.fn(),
-		} as Component & { focused: boolean };
-		context.fullscreenLayoutRoot = component;
-		const onRendererChange = vi.fn();
-		context.onTuiRendererChange(onRendererChange);
-		const inputListener = vi.fn();
 
-		registerStartupInputListeners(context);
-		const inputSubscription = { handler: inputListener, unsubscribe: stableUi.addInputListener(inputListener) };
-		context.tuiInputSubscriptions.add(inputSubscription);
-		expect(context.tuiInputSubscriptions.size).toBe(3);
-		renderer.addChild(component);
-		renderer.setFocus(component);
 		renderer.start();
-
-		expect(context.switchTuiMode("fullscreen", false)).toBe(true);
-
-		expect(stableUi.mode).toBe("fullscreen");
-		expect(stableUi instanceof TuiAltScreen).toBe(true);
-		expect(stableUi.children).toEqual([component]);
-		expect((stableUi as TuiBase).getFocusedComponent()).toBe(component);
-		expect(component.focused).toBe(true);
-		expect(themeController.rebindTui).toHaveBeenCalledOnce();
-		expect(onRendererChange).toHaveBeenCalledOnce();
-		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 1]);
-
-		terminal.input("x");
-		expect(inputListener).toHaveBeenCalledWith("x");
-		expect(matchesClear).toHaveBeenCalledWith("x", "app.clear");
-
 		context.stopInteractiveTui();
 
-		expect(stableUi.mode).toBe("regular");
-		// Shutdown stops the replacement renderer without starting the terminal again.
-		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 3]);
+		expect(renderer.mode).toBe("fullscreen");
+		expect([terminal.startCount, terminal.stopCount]).toEqual([1, 1]);
 		expect(terminal.cursorVisible).toBe(true);
-
-		const rendersAtShutdown = render.mock.calls.length;
-		stableUi.requestRender(true);
-		await new Promise<void>((resolve) => process.nextTick(resolve));
-		expect(render).toHaveBeenCalledTimes(rendersAtShutdown);
 	});
 	test("keeps the fullscreen dock fixed while the transcript scrolls and resizes", async () => {
 		const { context, terminal, tui, initPromise, resolveTheme, restoreOffline } = createProductionFullscreenContext({
@@ -441,7 +443,6 @@ describe("InteractiveMode copy confirmation", () => {
 
 	test("flashes the copy shortcut confirmation in fullscreen mode", async () => {
 		const ui = createInteractiveTui({
-			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal: new RecordingTerminal(),
@@ -466,7 +467,6 @@ describe("InteractiveMode copy confirmation", () => {
 		const context: CopyCommandContext = {
 			session: { getLastAssistantText: () => "assistant response" },
 			ui: createInteractiveTui({
-				tuiMode: "fullscreen",
 				showHardwareCursor: false,
 				logDirectory: "/tmp",
 				terminal: new RecordingTerminal(),

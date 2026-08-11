@@ -76,7 +76,6 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 	let tui: TuiAltScreen | undefined;
 	if (terminal) {
 		tui = createInteractiveTui({
-			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,

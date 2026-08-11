@@ -243,7 +243,6 @@ describe("fullscreen input navigation", () => {
 			return !viewportActions.some((action) => keybindings.matches(data, action));
 		};
 		tui = createInteractiveTui({
-			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
@@ -313,7 +312,6 @@ describe("fullscreen input navigation", () => {
 			return !viewportActions.some((action) => getKeybindings().matches(data, action));
 		};
 		tui = createInteractiveTui({
-			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
@@ -372,7 +370,6 @@ describe("fullscreen input navigation", () => {
 			return !viewportActions.some((action) => getKeybindings().matches(data, action));
 		};
 		tui = createInteractiveTui({
-			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
@@ -430,7 +427,6 @@ describe("fullscreen input navigation", () => {
 			return !getKeybindings().matches(data, "tui.altScreen.pageUp");
 		};
 		tui = createInteractiveTui({
-			tuiMode: "fullscreen",
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
