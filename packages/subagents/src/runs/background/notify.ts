@@ -326,8 +326,21 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		try {
 			previous.unsubscribe();
 		} catch (error) {
-			if (!isStaleExtensionContextError(error)) throw error;
-			// The old handler is inert because the registry now belongs to this registration.
+			if (isStaleExtensionContextError(error)) {
+				// The old handler is inert because the registry now belongs to this registration.
+			} else {
+				// A failed replacement cleanup aborts activation; remove the new entry before rethrowing.
+				if (registry.get(pi) === registration) registry.delete(pi);
+				try {
+					unsubscribe();
+				} catch (rollbackError) {
+					if (!isStaleExtensionContextError(rollbackError)) {
+						throw new AggregateError([error, rollbackError], "Failed to roll back notification registration");
+					}
+					// Stale cleanup is best effort after the registry rollback.
+				}
+				throw error;
+			}
 		}
 	}
 	return () => {

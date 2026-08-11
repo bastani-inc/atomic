@@ -269,3 +269,55 @@ test("re-registers a per-run completion subscription after invalidation", () => 
 	firstCleanup();
 	secondCleanup();
 });
+test("rolls back a failed replacement before activation can expose a registry entry", () => {
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	const activeHandlers = new Set<(data: unknown) => void>();
+	const registeredHandlers: Array<(data: unknown) => void> = [];
+	let onCalls = 0;
+	let sends = 0;
+	const events = {
+		on(event: string, handler: (data: unknown) => void) {
+			onCalls += 1;
+			registeredHandlers.push(handler);
+			const set = listeners.get(event) ?? new Set();
+			set.add(handler);
+			listeners.set(event, set);
+			activeHandlers.add(handler);
+			const subscriptionCall = onCalls;
+			return () => {
+				if (subscriptionCall === 1) throw new Error("injected replacement cleanup failure");
+				activeHandlers.delete(handler);
+				set.delete(handler);
+			};
+		},
+		emit(event: string, payload: unknown) {
+			for (const handler of listeners.get(event) ?? []) handler(payload);
+		},
+	};
+	const pi = {
+		events,
+		sendMessage: () => {
+			sends += 1;
+		},
+	};
+	const firstCleanup = registerSubagentNotify(pi as never);
+	const registry = (globalThis as Record<string, unknown>).__piSubagentsNotifyRegistrations as WeakMap<
+		object,
+		{ unsubscribe: () => void }
+	>;
+	assert.ok(registry.get(pi), "the first subscription is registered");
+
+	assert.throws(() => registerSubagentNotify(pi as never), /injected replacement cleanup failure/);
+	assert.equal(registry.get(pi), undefined, "failed activation leaves no notification registry entry");
+	assert.equal(activeHandlers.has(registeredHandlers[1]!), false, "the failed replacement is unsubscribed");
+
+	events.emit("subagent:async-complete", {
+		id: "rolled-back-run",
+		agent: "worker",
+		status: "ok",
+		summary: "must not deliver",
+		timestamp: Date.now(),
+	});
+	assert.equal(sends, 0, "no subscription remains active after the failed activation");
+	firstCleanup();
+});
