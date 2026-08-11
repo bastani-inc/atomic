@@ -1,4 +1,4 @@
-import type { Terminal, TuiMode } from "@earendil-works/pi-tui";
+import type { Terminal } from "@earendil-works/pi-tui";
 import type { EarlyInputCapture } from "../../main-early-input.ts";
 import type { ImageContent } from "./interactive-mode-deps.ts";
 
@@ -40,6 +40,4 @@ export interface InteractiveModeOptions {
 	startupInputCapture?: EarlyInputCapture;
 	/** Internal deterministic terminal seam used by default-main integration tests. */
 	terminal?: Terminal;
-	/** TUI layout selected for this interactive session. */
-	tuiMode?: TuiMode;
 }

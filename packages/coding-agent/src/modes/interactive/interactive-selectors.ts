@@ -80,7 +80,6 @@ InteractiveModeBase.prototype.showFastModeSelector = function (this: Interactive
 
 InteractiveModeBase.prototype.showSettingsSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
-		let selector: SettingsSelectorComponent | undefined;
 		const component = new SettingsSelectorComponent(
 			{
 				autoCompact: this.session.autoCompactionEnabled,
@@ -107,7 +106,6 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
 				treeFilterMode: this.settingsManager.getTreeFilterMode(),
 				showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
-				tuiMode: this.ui.mode,
 				fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 				editorPaddingX: this.settingsManager.getEditorPaddingX(),
 				outputPad: this.settingsManager.getOutputPad(),
@@ -219,15 +217,6 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 					this.settingsManager.setShowHardwareCursor(enabled);
 					this.ui.setShowHardwareCursor(enabled);
 				},
-				onTuiModeChange: (mode) => {
-					if (!this.switchTuiMode(mode)) {
-						selector?.getSettingsList().updateValue("tui-mode", this.ui.mode);
-						this.showStatus("Close active overlays before changing TUI mode");
-						return;
-					}
-					this.settingsManager.setTuiMode(mode);
-					this.showStatus(`TUI mode: ${mode}`);
-				},
 				onFullscreenScrollbarChange: (mode) => {
 					this.settingsManager.setFullscreenScrollbar(mode);
 					this.transcriptScrollView?.setScrollbar(mode);
@@ -271,7 +260,6 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				},
 			},
 		);
-		selector = component;
 		return { component, focus: component.getSettingsList() };
 	});
 };

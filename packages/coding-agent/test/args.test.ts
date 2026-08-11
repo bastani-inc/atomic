@@ -327,33 +327,30 @@ describe("parseArgs", () => {
 		});
 	});
 
-	describe("--tui-mode flag", () => {
-		test.each(["regular", "fullscreen"] as const)("parses %s mode", (mode) => {
+	describe("removed --tui-mode flag", () => {
+		test.each(["regular", "fullscreen"])("treats %s as an unknown flag value", (mode) => {
 			const result = parseArgs(["--tui-mode", mode]);
-			expect(result.tuiMode).toBe(mode);
+			expect(result.unknownFlags.get("tui-mode")).toBe(mode);
 		});
 
-		test("rejects invalid modes", () => {
+		test("treats an invalid mode as an unknown flag value", () => {
 			const result = parseArgs(["--tui-mode", "other"]);
-			expect(result.diagnostics).toEqual([
-				{ type: "error", message: 'Invalid TUI mode "other". Valid values: regular, fullscreen' },
-			]);
+			expect(result.unknownFlags.get("tui-mode")).toBe("other");
 		});
 
-		test("requires a mode", () => {
+		test("accepts no mode value", () => {
 			const result = parseArgs(["--tui-mode"]);
-			expect(result.diagnostics).toEqual([{ type: "error", message: "--tui-mode requires regular or fullscreen" }]);
+			expect(result.unknownFlags.get("tui-mode")).toBe(true);
 		});
 
-		test("does not consume a following option when the mode is missing", () => {
+		test("does not consume a following option", () => {
 			const result = parseArgs(["--tui-mode", "--verbose"]);
+			expect(result.unknownFlags.get("tui-mode")).toBe(true);
 			expect(result.verbose).toBe(true);
-			expect(result.diagnostics).toEqual([{ type: "error", message: "--tui-mode requires regular or fullscreen" }]);
 		});
 
-		test("does not recognize the old --ui-mode flag", () => {
+		test("continues treating the old --ui-mode flag as unknown", () => {
 			const result = parseArgs(["--ui-mode", "fullscreen"]);
-			expect(result.tuiMode).toBeUndefined();
 			expect(result.unknownFlags.get("ui-mode")).toBe("fullscreen");
 		});
 	});

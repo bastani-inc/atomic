@@ -1,4 +1,4 @@
-import type { Component, Terminal, TUI, TuiMode } from "@earendil-works/pi-tui";
+import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
 import {
 	getKeybindings,
 	KeybindingsManager,
@@ -6,7 +6,7 @@ import {
 	stripTerminalSequences,
 	TUI_KEYBINDINGS,
 } from "@earendil-works/pi-tui";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.ts";
 import {
@@ -37,12 +37,10 @@ class SelectorTerminal implements Terminal {
 	setProgress(_active: boolean): void {}
 }
 
-function openSettingsSelector(hasActiveOverlay: boolean) {
+function openSettingsSelector() {
 	const settingsManager = SettingsManager.inMemory({});
-	const showStatus = vi.fn<(message: string) => void>();
 	let selector: SettingsSelectorComponent | undefined;
 	const renderer = createInteractiveTui({
-		tuiMode: "regular",
 		showHardwareCursor: false,
 		logDirectory: "/tmp",
 		terminal: new SelectorTerminal(),
@@ -63,29 +61,19 @@ function openSettingsSelector(hasActiveOverlay: boolean) {
 		},
 		renderer,
 		ui: undefined as unknown as TUI,
-		mainScreenRenderState: undefined,
 		fullscreenLayoutRoot: { render: () => [], invalidate: () => {} },
-		options: { tuiMode: "regular" as TuiMode },
 		themeController: { getTerminalTheme: () => "dark", rebindTui: () => {} },
 		tuiInputSubscriptions: new Set(),
 		tuiRendererChangeListeners: new Set(),
 		showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
 			selector = create(() => {}).component as SettingsSelectorComponent;
 		},
-		showStatus,
 	}) as unknown as InteractiveMode;
 	mode.ui = createInteractiveTuiReference(() => Reflect.get(mode, "renderer") as TUI);
-	if (hasActiveOverlay) renderer.showOverlay({ render: () => [], invalidate: () => {} });
 
 	mode.showSettingsSelector();
 	if (!selector) throw new Error("settings selector was not created");
-	return { mode, selector, settingsManager, showStatus };
-}
-
-function selectFullscreen(selector: SettingsSelectorComponent): void {
-	const settingsList = selector.getSettingsList();
-	settingsList.handleInput("tui mode");
-	settingsList.handleInput("\r");
+	return { mode, selector };
 }
 
 beforeEach(() => {
@@ -97,24 +85,19 @@ afterEach(() => {
 	setKeybindings(previousKeybindings);
 });
 
-test("settings selector switches, persists, and reports a successful TUI mode change", () => {
-	const { mode, selector, settingsManager, showStatus } = openSettingsSelector(false);
+test("settings selector has no TUI mode row", () => {
+	const { mode, selector } = openSettingsSelector();
+	const rendered = stripTerminalSequences(selector.getSettingsList().render(120).join("\n"));
 
-	selectFullscreen(selector);
-
-	expect(mode.ui.mode).toBe("fullscreen");
-	expect(settingsManager.getTuiMode()).toBe("fullscreen");
-	expect(showStatus).toHaveBeenCalledExactlyOnceWith("TUI mode: fullscreen");
+	expect(rendered).not.toMatch(/TUI mode/);
+	expect(rendered).toMatch(/Fullscreen scrollbar/);
 	mode.ui.stop();
 });
 
-test("settings selector restores its current TUI mode when an active overlay blocks the change", () => {
-	const { mode, selector, settingsManager, showStatus } = openSettingsSelector(true);
+test("settings selector keeps fullscreen scrollbar available", () => {
+	const { mode, selector } = openSettingsSelector();
+	const rendered = stripTerminalSequences(selector.getSettingsList().render(120).join("\n"));
 
-	selectFullscreen(selector);
-
-	expect(mode.ui.mode).toBe("regular");
-	expect(settingsManager.getTuiMode()).toBe("regular");
-	expect(showStatus).toHaveBeenCalledExactlyOnceWith("Close active overlays before changing TUI mode");
-	expect(stripTerminalSequences(selector.getSettingsList().render(120).join("\n"))).toMatch(/TUI mode\s+regular/);
+	expect(rendered).toMatch(/Fullscreen scrollbar\s+auto/);
+	mode.ui.stop();
 });

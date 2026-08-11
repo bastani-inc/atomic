@@ -7,7 +7,6 @@ import {
 	TuiAltScreen,
 	type TuiInputListener,
 	TuiMainScreen,
-	type TuiMode,
 } from "@earendil-works/pi-tui";
 import { openBrowser } from "../../utils/open-browser.ts";
 
@@ -43,7 +42,6 @@ interface TuiAltScreenMouseInternals {
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
 
 export interface InteractiveTuiOptions {
-	tuiMode: TuiMode;
 	showHardwareCursor: boolean;
 	logDirectory: string;
 	terminal?: Terminal;
@@ -204,22 +202,36 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	}
 }
 
-/** Creates the selected host-side renderer for an interactive session. */
+function isTruthyEnvFlag(value: string | undefined): boolean {
+	if (!value) return false;
+	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
+	if (process.env.TERM?.toLowerCase() === "dumb") return false;
+	if (usesInjectedTerminal) return true;
+	return process.stdin.isTTY === true && process.stdout.isTTY === true && !isTruthyEnvFlag(process.env.CI);
+}
+
+/** Creates the fullscreen renderer for interactive TTY sessions. */
 export function createInteractiveTui(options: InteractiveTuiOptions): InteractiveTui {
+	const usesInjectedTerminal = options.terminal !== undefined;
 	const terminal = options.terminal ?? new ProcessTerminal();
-	if (options.tuiMode === "fullscreen") {
-		return new AtomicTuiAltScreen(
-			terminal,
-			options.showHardwareCursor,
-			options.logDirectory,
-			{
-				openUrl: openBrowser,
-				onRightClickPaste: options.onRightClickPaste,
-			},
-			options.shouldHandleViewportInput,
-		);
+	if (!shouldUseFullscreenTui(usesInjectedTerminal)) {
+		// The normal CLI never reaches the interactive mode without a TTY. Keep a
+		// main-screen renderer for internal harnesses and guarded fallback paths.
+		return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
 	}
-	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
+	return new AtomicTuiAltScreen(
+		terminal,
+		options.showHardwareCursor,
+		options.logDirectory,
+		{
+			openUrl: openBrowser,
+			onRightClickPaste: options.onRightClickPaste,
+		},
+		options.shouldHandleViewportInput,
+	);
 }
 
 /** Keeps existing components pointed at the renderer selected at runtime. */

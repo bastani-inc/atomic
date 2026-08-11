@@ -1,5 +1,5 @@
 import type { Transport } from "@earendil-works/pi-ai/compat";
-import type { ScrollViewScrollbar, TuiMode } from "@earendil-works/pi-tui";
+import type { ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import type { MermaidRenderingMode } from "../../../core/settings-manager.ts";
 import { DEFAULT_PROJECT_TRUST_BY_LABEL } from "./settings-selector-options.ts";
@@ -81,9 +81,6 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 				break;
 			case "show-hardware-cursor":
 				callbacks.onShowHardwareCursorChange(newValue === "true");
-				break;
-			case "tui-mode":
-				callbacks.onTuiModeChange(newValue as TuiMode);
 				break;
 			case "fullscreen-scrollbar":
 				callbacks.onFullscreenScrollbarChange(newValue as ScrollViewScrollbar);
