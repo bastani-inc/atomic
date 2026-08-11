@@ -252,6 +252,22 @@ describe("windows session temp root verification", () => {
 		assert.equal(reads.length, firstReads, "repeat spill-path creations must not re-run the subprocess");
 	});
 
+	it.skipIf(!isWindows)("re-verifies a directory swapped underneath a verified path", () => {
+		const dir = getSessionTempDir("swap-detect");
+		const reads: string[] = [];
+		setWindowsDirectorySecurityReaderForTesting((path) => {
+			reads.push(path);
+			return readWindowsDirectorySecurity(path);
+		});
+		assert.equal(getSessionTempDir("swap-detect"), dir);
+		assert.equal(reads.length, 0, "the unchanged directory is served from the cache");
+
+		rmSync(dir, { recursive: true, force: true });
+		mkdirSync(dir, { recursive: true });
+		getSessionTempDir("swap-detect");
+		assert.ok(reads.includes(dir), "a recreated directory must be re-verified");
+	});
+
 	it.skipIf(isWindows)("never consults the Windows reader on POSIX", () => {
 		let reads = 0;
 		setWindowsDirectorySecurityReaderForTesting(() => {

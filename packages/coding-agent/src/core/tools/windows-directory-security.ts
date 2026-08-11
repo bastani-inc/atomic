@@ -10,13 +10,16 @@
  * but never a SID.
  *
  * A subprocess per directory creation would sit on the spill hot path, so a
- * successful verification is cached per canonical path per process (see
+ * successful verification is cached per canonical path per process, keyed to
+ * the directory's creation time so a directory swapped underneath the path is
+ * re-verified rather than trusted from a stale check (see
  * `verifyWindowsDirectorySecurity`). Failures are not cached: a refusal means
  * "no spill file this time", and a transient read failure must not disable
  * persistence for the rest of the process.
  */
 
 import { spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
 export interface WindowsAccessRule {
@@ -219,18 +222,31 @@ type SecurityReader = (path: string) => WindowsDirectorySecurity | undefined;
 
 let securityReader: SecurityReader = readWindowsDirectorySecurity;
 
-const verifiedPaths = new Set<string>();
+/** Verified paths mapped to the creation time (`birthtimeMs`) observed when
+ * the descriptor was read. A directory recreated underneath the path carries
+ * a fresh creation time, so a matching value proves the verified directory
+ * is still the one at the path. (Creation time is stable across spill-file
+ * writes, unlike the NTFS change time, keeping the cache effective.) */
+const verifiedPaths = new Map<string, number>();
 
 /**
  * Verify `path` as adoptable, returning the refusal reason when it is not.
  *
- * A successful verification is cached for the life of the process: the read
- * is a subprocess and sits on the spill path, and the symlink/directory
- * checks in `session-temp-dir.ts` still run on every use. A failure is never
- * cached, so a transient read error does not permanently disable spills.
+ * The subprocess read sits on the spill path, so a successful verification
+ * is cached for the life of the process while the same directory (by
+ * creation time) sits at the path; a swapped directory forces a fresh read.
+ * The symlink/directory checks in `session-temp-dir.ts` still run on every
+ * use. A failure is never cached, so a transient read error does not
+ * permanently disable spills.
  */
 export function verifyWindowsDirectorySecurity(path: string): string | undefined {
-	if (verifiedPaths.has(path)) {
+	let birthTime: number;
+	try {
+		birthTime = statSync(path).birthtimeMs;
+	} catch {
+		return "its ownership could not be verified";
+	}
+	if (verifiedPaths.get(path) === birthTime) {
 		return undefined;
 	}
 	const security = securityReader(path);
@@ -239,9 +255,10 @@ export function verifyWindowsDirectorySecurity(path: string): string | undefined
 	}
 	const refusal = evaluateWindowsDirectorySecurity(security);
 	if (refusal !== undefined) {
+		verifiedPaths.delete(path);
 		return refusal;
 	}
-	verifiedPaths.add(path);
+	verifiedPaths.set(path, birthTime);
 	return undefined;
 }
 
