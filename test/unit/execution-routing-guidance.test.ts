@@ -231,14 +231,15 @@ describe("workflow-first execution routing", () => {
 		}
 	});
 
-	test("stacks slices on the previous verified slice", () => {
+	test("stacks slices on the previous verified branch", () => {
 		const authoringGuidance = workflowGuidance.join("\n");
 		for (const phrase of [
-			"previous verified slice",
-			"slice N+1 uses slice N's verified branch",
-			"base_branch",
-			"git_worktree_dir",
-			"distinct branch and worktree",
+			"Slice N+1 must be created from slice N's verified branch",
+			"explicit branch input",
+			"create or check out that named branch in its worktree with a durable `ctx.tool(...)` step",
+			"`base_branch` and `git_worktree_dir` alone do not create/check out a feature branch",
+			"pass that branch as `base_branch`",
+			"distinct worktree",
 		]) {
 			expect(authoringGuidance).toContain(phrase);
 		}
@@ -257,22 +258,30 @@ describe("workflow-first execution routing", () => {
 		}
 	});
 
-	test("keeps the guidance to three blocks", () => {
-		expect(workflowGuidance).toHaveLength(3);
-	});
-
-	test("documents stacked implementation slices separately from task queues", async () => {
+	test("documents the complete stacked-slices starter section", async () => {
 		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows.md");
+		const heading = "##### Stacked implementation slices starter pattern";
+		const sectionStart = documentation.indexOf(heading);
+		expect(sectionStart).toBeGreaterThanOrEqual(0);
+		const sectionEnd = documentation.indexOf("\n#### Choosing a common workflow pattern", sectionStart);
+		expect(sectionEnd).toBeGreaterThan(sectionStart);
+		const section = documentation.slice(sectionStart, sectionEnd);
+
 		for (const phrase of [
 			"Stacked implementation slices",
-			"splitting a queue across runs",
-			"splitting one objective across slices",
-			"base_branch",
-			"git_worktree_dir",
+			"prepare branch/worktree",
+			"Give every slice its own objective",
+			"prepareSliceWorktree",
+			"slice1_branch",
+			"git worktree add -b",
+			"base_branch: slice1Branch",
 			"stop at the first failed gate",
 		]) {
-			expect(documentation).toContain(phrase);
+			expect(section).toContain(phrase);
 		}
+
+		expect(documentation).toContain("splitting a queue across runs");
+		expect(documentation).toContain("splitting one objective across slices");
 	});
 
 	test("requires dynamic workflow topologies to remain acyclic", async () => {

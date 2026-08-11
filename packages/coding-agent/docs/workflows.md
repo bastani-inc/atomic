@@ -36,7 +36,6 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Built-in Workflows](#built-in-workflows)
 - [Writing a Workflow](#writing-a-workflow)
 - [Scope-Guard Starter Pattern](#scope-guard-starter-pattern)
-- [Stacked Implementation Slices Starter Pattern](#stacked-implementation-slices-starter-pattern)
 - [The `workflow()` Definition](#the-workflow-definition)
 - [WorkflowContext](#workflowcontext)
 - [Task and Stage Options](#task-and-stage-options)
@@ -4610,25 +4609,99 @@ Use this authoring pattern when one implementation objective should land as a st
 
 During the pre-launch architecture pass, enumerate the slices in the coverage matrix. Give every slice its own objective, acceptance criteria, changed-file scope, and verification gates. Target roughly 100–500 changed lines between verification points by default, but treat that as a reviewability default rather than a law: keep a genuinely atomic mechanical change or generated-artifact refresh in one slice, and do not split a small objective just to reach a count.
 
-Run each slice through a child workflow that owns its implement/review/repair lifecycle. Import `goal` or `ralph` from `@bastani/workflows/builtin`, or use a task-specific child when neither builtin matches. Pass the previous verified branch as `base_branch` and a distinct `git_worktree_dir` to the next child. Make the branch/worktree setup explicit in the slice contract; the inputs do not silently create a feature branch from prose.
+```text
+┌─ Stacked implementation slices ─────────────────────────────┐
+│ plan → prepare branch/worktree → child slice 1 → gates      │
+│                                      │ verified              │
+│                                      ▼                       │
+│              prepare branch from slice 1's verified branch  │
+│                                      ▼                       │
+│                         child slice 2 → gates              │
+│                                      │ failed → stop/report │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Run each slice through a child workflow that owns its implement/review/repair lifecycle. Import `goal` or `ralph` from `@bastani/workflows/builtin`, or use a task-specific child when neither builtin matches. Before each child, use a durable `ctx.tool(...)` step to create or check out the slice's explicit branch in its worktree. `worktreeFromInputs` creates a missing target with a detached checkout and reuses an existing target as-is; `base_branch` and `git_worktree_dir` do not create or check out a feature branch by themselves. Create slice N+1's branch from slice N's verified branch, then pass that previous branch as `base_branch` and give the child a distinct `git_worktree_dir`.
 
 The parent should verify each child before creating the next boundary. If a gate fails, stop at the first failed gate, report that slice as unverified, and retain the earlier verified slices and their branch/worktree records. Do not roll earlier slices back and do not continue past the failure.
 
 The calls below are deliberately unrolled. Repeat the downstream shape for the planned slices, giving every call a fresh child boundary and distinct tracked nodes; do not reopen an ancestor or add a back-edge.
 
 ```ts
+import { resolve } from "node:path";
+import { Type } from "typebox";
 import { workflow } from "@bastani/workflows";
 import { goal } from "@bastani/workflows/builtin";
 
+function runCommand(argv: readonly string[], cwd: string): string {
+  const result = Bun.spawnSync([...argv], { cwd, stdout: "pipe", stderr: "pipe" });
+  const stdout = result.stdout.toString().trim();
+  const stderr = result.stderr.toString().trim();
+  if (result.exitCode !== 0) {
+    throw new Error(`${argv.join(" ")} failed (${result.exitCode})\n${stderr || stdout}`);
+  }
+  return stdout;
+}
+
 export default workflow({
   name: "stacked-slices",
-  inputs: {},
+  inputs: {
+    slice1_branch: Type.String({ default: "stacked/slice-1" }),
+    slice2_branch: Type.String({ default: "stacked/slice-2" }),
+  },
   outputs: {},
   run: async (ctx) => {
+    const repoRoot = runCommand(["git", "rev-parse", "--show-toplevel"], ctx.cwd ?? process.cwd());
+    const slice1Branch = ctx.inputs.slice1_branch;
+    const slice2Branch = ctx.inputs.slice2_branch;
+    if (slice1Branch === slice2Branch) {
+      return ctx.exit({ status: "blocked", reason: "slice branches must be distinct" });
+    }
+
+    const prepareSliceWorktree = async (
+      toolName: string,
+      branch: string,
+      gitWorktreeDir: string,
+      baseBranch: string,
+    ) => {
+      const worktreePath = resolve(repoRoot, gitWorktreeDir);
+      await ctx.tool(
+        toolName,
+        { branch, base_branch: baseBranch, git_worktree_dir: gitWorktreeDir },
+        async () => {
+          const current = Bun.spawnSync(
+            ["git", "-C", worktreePath, "branch", "--show-current"],
+            { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+          );
+          if (current.exitCode === 0) {
+            const checkedOutBranch = current.stdout.toString().trim();
+            if (checkedOutBranch !== branch) {
+              throw new Error(`${worktreePath} is checked out on ${checkedOutBranch || "detached HEAD"}, expected ${branch}`);
+            }
+            return { branch, worktree: worktreePath };
+          }
+
+          const branchProbe = Bun.spawnSync(
+            ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+            { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+          );
+          if (branchProbe.exitCode === 0) {
+            runCommand(["git", "worktree", "add", worktreePath, branch], repoRoot);
+          } else if (branchProbe.exitCode === 1) {
+            runCommand(["git", "worktree", "add", "-b", branch, worktreePath, baseBranch], repoRoot);
+          } else {
+            throw new Error(branchProbe.stderr.toString().trim() || `could not inspect branch ${branch}`);
+          }
+          return { branch, worktree: worktreePath };
+        },
+      );
+    };
+
+    await prepareSliceWorktree("prepare-slice-1-branch", slice1Branch, "../slice-1", "origin/main");
     const slice1 = await ctx.workflow(goal, {
       inputs: {
         objective: "Implement the first independently verified concern.",
-        acceptance_criteria: "The first concern builds, passes its focused tests, and leaves its branch verified.",
+        acceptance_criteria: "The first concern builds, passes its focused tests, and commits all changes on the current feature branch.",
         base_branch: "origin/main",
         git_worktree_dir: "../slice-1",
         create_pr: false,
@@ -4639,11 +4712,12 @@ export default workflow({
       return ctx.exit({ status: "blocked", reason: "slice 1 is unverified" });
     }
 
+    await prepareSliceWorktree("prepare-slice-2-branch", slice2Branch, "../slice-2", slice1Branch);
     const slice2 = await ctx.workflow(goal, {
       inputs: {
         objective: "Implement the next concern on the verified slice-1 branch.",
-        acceptance_criteria: "The second concern builds, passes its focused tests, and preserves slice 1.",
-        base_branch: "slice-1-verified",
+        acceptance_criteria: "The second concern builds, passes its focused tests, preserves slice 1, and commits all changes on the current feature branch.",
+        base_branch: slice1Branch,
         git_worktree_dir: "../slice-2",
         create_pr: false,
       },
@@ -4658,7 +4732,9 @@ export default workflow({
 });
 ```
 
-Use `ralph` or a task-specific child in the same positions when its input contract fits better. For a longer stack, keep the same explicit downstream shape and pass each newly verified branch to the next slice's `base_branch`; do not replace the chain with a loop that points back to an ancestor. A final handoff can report `slice → branch → worktree → verified/failed` without reopening completed child work.
+The `prepareSliceWorktree` tools run before their child boundaries and use `git worktree add -b`, so each child starts in a named feature branch. Once the path exists, the child's worktree binding reuses it as-is; `base_branch` remains the comparison base for its reviewers. The child owns implementation, review, repair, and acceptance, while the parent owns branch/worktree setup and the stop boundary.
+
+Use `ralph` or a task-specific child in the same positions when its input contract fits better. For a longer stack, keep the same explicit downstream shape: create each next named branch from the previous verified branch, pass that previous branch as the next child's `base_branch`, and use a distinct worktree. Do not replace the chain with a loop that points back to an ancestor. A final handoff can report `slice → branch → worktree → verified/failed` from the explicit inputs and preparation records without reopening completed child work.
 
 #### Choosing a common workflow pattern
 
@@ -4669,7 +4745,7 @@ Use `ralph` or a task-specific child in the same positions when its input contra
 - Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
 - Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
 - Pick **scope guard** when valid adjacent findings could expand a worker or repair stage beyond its immutable contract; choose a boundary task by default and live parallel steering only when timing requires it.
-- Pick **stacked implementation slices** when one dependent implementation objective needs ordered, independently verified layers. Keep the 100–500 line range as a default with atomic-change escapes, base each next child on the previous verified branch through `base_branch` and `git_worktree_dir`, and stop at the first failed gate.
+- Pick **stacked implementation slices** when one dependent implementation objective needs ordered, independently verified layers. Keep the 100–500 line range as a default with atomic-change escapes; create or check out each named branch before its child, create each next branch from the previous verified branch, pass that previous branch as `base_branch`, use a distinct `git_worktree_dir`, and stop at the first failed gate.
 
 Record the selected pattern in your spec or workflow README, then adapt the diagram to the stage graph. If the final design does not resemble any common pattern, explain why in the workflow's design notes.
 
