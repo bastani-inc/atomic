@@ -23,7 +23,7 @@
     "test:ci-contracts": "vitest --run --project ci",
     "test:all": "npm run test:unit && npm run test:integration",
     "test:scripts": "node --test \"scripts/*.test.mjs\"",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace=@bastani/atomic",
     "format": "biome format --write .",
     "check": "biome check --error-on-warnings . && npm run typecheck && npm run check:shrinkwrap",
     "lint": "npm run check",
