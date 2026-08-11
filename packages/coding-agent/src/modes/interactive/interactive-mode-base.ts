@@ -53,8 +53,6 @@ import {
 	type Text,
 	type ToolExecutionComponent,
 	type TUI,
-
-	TuiMainScreen,
 	theme,
 	UsageMeterComponent,
 	VERSION,
