@@ -170,6 +170,40 @@ describe("interactive TUI renderer", () => {
 			else process.env.TERM = previousTerm;
 		}
 	});
+	test("treats any nonempty unconventional CI value as CI (Greptile P1: CI=github-actions)", () => {
+		const previousCi = process.env.CI;
+		const previousTerm = process.env.TERM;
+		process.env.CI = "github-actions";
+		process.env.TERM = "xterm-256color";
+		try {
+			withTtyState(true, true, () => {
+				expect(createGuardedTui()).toBeInstanceOf(TuiMainScreen);
+			});
+		} finally {
+			if (previousCi === undefined) delete process.env.CI;
+			else process.env.CI = previousCi;
+			if (previousTerm === undefined) delete process.env.TERM;
+			else process.env.TERM = previousTerm;
+		}
+	});
+	test("honors explicit CI opt-outs (CI=false, CI=0) on a real TTY", () => {
+		const previousCi = process.env.CI;
+		const previousTerm = process.env.TERM;
+		process.env.TERM = "xterm-256color";
+		try {
+			for (const optOut of ["false", "0", ""]) {
+				process.env.CI = optOut;
+				withTtyState(true, true, () => {
+					expect(createGuardedTui()).not.toBeInstanceOf(TuiMainScreen);
+				});
+			}
+		} finally {
+			if (previousCi === undefined) delete process.env.CI;
+			else process.env.CI = previousCi;
+			if (previousTerm === undefined) delete process.env.TERM;
+			else process.env.TERM = previousTerm;
+		}
+	});
 	test("pins pi-tui's private mouse-sequence predicate used by fullscreen routing", () => {
 		const tui = createInteractiveTui({
 			showHardwareCursor: false,
