@@ -63,7 +63,11 @@ async function registerIsolatedTests(): Promise<void> {
 		writes: string[];
 	}
 
-	function buildHarness(platform: NodeJS.Platform = "win32", isTTY = true): AdapterHarness {
+	function buildHarness(
+		platform: NodeJS.Platform = "win32",
+		isTTY = true,
+		mode: "regular" | "fullscreen" = "regular",
+	): AdapterHarness {
 		const writes: string[] = [];
 		let hidden = false;
 		let focused = true;
@@ -88,6 +92,7 @@ async function registerIsolatedTests(): Promise<void> {
 				custom: (factory, options) => {
 					options.onHandle?.(handle);
 					const tui: PiCustomOverlayFactoryTui = {
+						mode,
 						requestRender: () => undefined,
 						terminal: { rows: 24, columns: 80 },
 					};
@@ -216,6 +221,15 @@ async function registerIsolatedTests(): Promise<void> {
 
 			assert.deepEqual(autowrapWrites(writes), [TERMINAL_AUTOWRAP_OFF]);
 			assert.equal(writes.includes(MOUSE_SCROLL_TRACKING_ON), true);
+		});
+		test("leaves fullscreen terminal modes to pi-tui on the local fallback path", () => {
+			const { adapter, writes } = buildHarness("win32", true, "fullscreen");
+
+			adapter.open(null);
+			adapter.toggle(null);
+			adapter.close();
+
+			assert.deepEqual(writes, [], "fullscreen alt-screen mode must not be disabled by the overlay seam");
 		});
 
 		test("restores autowrap once when hidden and does not duplicate on close", () => {

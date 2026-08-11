@@ -1,0 +1,50 @@
+
+ ╭──────────────╮                                                                                                                                                                                       
+ │ ORCHESTRATOR │  goal                                                                                                                                                                       ✓ 1  ● 3  
+ ╰──────────────╯                                                                                                                                                                                       
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                      ╭─── orchestrator-1 ───╮                                                                                          
+                                                                                      │         38s          │                                                                                          
+                                                                                      │      ✓ complete      │                                                                                          
+                                                                                      │         root         │                                                                                          
+                                                                                      ╰──────────────────────╯                                                                                          
+                                                                                                  │                                                                                                     
+                                                                      ╭───────────────────────────┼───────────────────────────╮                                                                         
+                                                                      │                           │                           │                                                                         
+                                                          ╭─ completion-review… ─╮    ╭─ evidence-reviewer… ─╮    ╭── risk-reviewer-1 ───╮                                                              
+                                                          │         31s          │    │         31s          │    │         31s          │                                                              
+                                                          │      ● running       │    │      ● running       │    │      ● running       │                                                              
+                                                          │        1 dep         │    │        1 dep         │    │        1 dep         │                                                              
+                                                          ╰──────────────────────╯    ╰──────────────────────╯    ╰──────────────────────╯                                                              
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+ ╭───────╮                                                                                                                                                                                              
+ │ GRAPH │                                                                                                             ctrl+x return to main chat  ·  ↵ open stage chat  ·  ↑↓←→ navigate  ·  / stages  
+ ╰───────╯                                                                                                                                                                                              
+

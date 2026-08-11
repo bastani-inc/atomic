@@ -8,7 +8,15 @@
  */
 
 import assert from "node:assert/strict";
-import { type Component, ScrollView, Text, type TuiAltScreen, VStack } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	type OverlayHandle,
+	ScrollView,
+	stripTerminalSequences,
+	Text,
+	type TuiAltScreen,
+	VStack,
+} from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
@@ -72,12 +80,13 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
-			shouldHandleViewportInput: (data, isMouseInput): boolean =>
+			shouldHandleViewportInput: (data, isMouseInput, focusedIsOverlay): boolean =>
 				shouldHandleFullscreenViewportInput(
 					tui?.getFocusedComponent() ?? null,
 					mainEditor,
 					data,
 					isMouseInput,
+					focusedIsOverlay,
 					keybindings,
 				),
 		}) as TuiAltScreen;
@@ -129,12 +138,6 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 async function flush(times = 4): Promise<void> {
 	for (let index = 0; index < times; index += 1) await sleep(0);
 }
-interface GraphHitRect {
-	readonly index: number;
-	readonly left: number;
-	readonly top: number;
-}
-
 function sgrMouse(buttonCode: number, col: number, row: number, final: "M" | "m" = "M"): string {
 	return `\x1b[<${buttonCode};${col + 1};${row + 1}${final}`;
 }
@@ -178,8 +181,10 @@ test("a forwarded keypress pipelines a fresh frame request behind the input", as
 });
 interface FullscreenGraphFixture {
 	bridge: Bridge;
+	host: HostComponent;
 	graph: GraphView;
 	attached: Array<{ runId: string; stageId: string }>;
+	overlay: OverlayHandle;
 	transcript: ScrollView;
 	tui: TuiAltScreen;
 	terminal: RecordingTerminal;
@@ -187,6 +192,12 @@ interface FullscreenGraphFixture {
 
 async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
 	const bridge = makeBridge({ fullscreen: true });
+	const terminal = bridge.terminal;
+	const tui = bridge.tui;
+	assert.ok(tui, "fullscreen renderer did not mount");
+	assert.ok(terminal, "fullscreen terminal did not mount");
+	terminal.rows = 20;
+
 	const stages = Array.from({ length: 8 }, (_, index) =>
 		makeStage(`stage-${index}`, index === 0 ? [] : [`stage-${index - 1}`]),
 	);
@@ -196,7 +207,7 @@ async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
 		runId: "run-1",
 		store: makeStore(makeSnap(stages)),
 		graphTheme: defaultTheme,
-		getViewportRows: () => 8,
+		getViewportRows: () => terminal.rows,
 		onStageAttach: (runId, stageId) => attached.push({ runId, stageId }),
 	});
 	void bridge.child.custom(() => ({
@@ -207,30 +218,26 @@ async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
 	}));
 	await flush();
 	const host = bridge.hostComponent;
-	const tui = bridge.tui;
-	const terminal = bridge.terminal;
 	assert.ok(host, "remote workflow graph did not mount on the host");
-	assert.ok(tui, "fullscreen renderer did not mount");
-	assert.ok(terminal, "fullscreen terminal did not mount");
 
 	const transcript = new ScrollView(
 		new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
 		{ follow: "end", primary: true },
 	);
-	tui.setLayoutRoot(
-		new VStack([
-			{ component: transcript, basis: 0, grow: 1, minSize: 1 },
-			{ component: host, basis: 1, shrink: 0 },
-		]),
-	);
-	tui.setFocus(host);
+	tui.setLayoutRoot(transcript);
+	const overlay = tui.showOverlay(host, {
+		anchor: "center",
+		width: "100%",
+		maxHeight: "100%",
+		margin: 0,
+	});
 	tui.start();
 	tui.renderNow();
-	return { bridge, graph, attached, transcript, tui, terminal };
+	return { bridge, host, graph, attached, overlay, transcript, tui, terminal };
 }
 
 test("fullscreen forwards workflow graph wheel through the remote input path", async () => {
-	const { graph, transcript, tui, terminal, bridge } = await makeFullscreenGraphFixture();
+	const { graph, transcript, overlay, tui, terminal, bridge } = await makeFullscreenGraphFixture();
 	try {
 		const initialTranscriptTop = transcript.scrollTop;
 		const initialGraphTop = graph._graphScrollOffset;
@@ -245,19 +252,30 @@ test("fullscreen forwards workflow graph wheel through the remote input path", a
 			wheel,
 		);
 	} finally {
+		overlay.hide();
 		tui.stop();
 	}
 });
-
 test("fullscreen forwards workflow node click press and release through the remote input path", async () => {
-	const { graph, attached, tui, terminal, bridge } = await makeFullscreenGraphFixture();
+	const { host, attached, overlay, tui, terminal, bridge } = await makeFullscreenGraphFixture();
 	try {
-		graph.render(40);
-		const hitRects = Reflect.get(graph, "graphNodeHitRects") as GraphHitRect[];
-		const target = hitRects[0];
-		assert.ok(target, "workflow graph did not expose a visible node hit rectangle");
-		const press = sgrMouse(0, target.left, target.top);
-		const release = sgrMouse(0, target.left, target.top, "m");
+		const overlayLines = host.render(terminal.columns);
+		const visibleOverlayLines = overlayLines.map((line) => stripTerminalSequences(line));
+		const targetRow = visibleOverlayLines.findIndex((line) => line.includes("stage-0"));
+		assert.ok(
+			targetRow >= 0,
+			`workflow graph did not render the target node in the overlay:\n${visibleOverlayLines.join("\n")}`,
+		);
+		const targetLine = visibleOverlayLines[targetRow]!;
+		const targetCol = targetLine.indexOf("stage-0");
+		assert.ok(targetCol >= 0, "workflow graph did not render a clickable target label");
+		assert.equal(overlayLines.length, terminal.rows, "fullscreen graph overlay did not fill the terminal frame");
+		const overlayTop = Math.floor((terminal.rows - overlayLines.length) / 2);
+		assert.equal(overlayTop, 0, "fullscreen graph overlay placement changed unexpectedly");
+		const screenRow = overlayTop + targetRow;
+		assert.ok(screenRow > 0, "workflow graph target must have a non-zero screen row");
+		const press = sgrMouse(0, targetCol, screenRow);
+		const release = sgrMouse(0, targetCol, screenRow, "m");
 		terminal.input(press);
 		terminal.input(release);
 		await flush();
@@ -273,10 +291,75 @@ test("fullscreen forwards workflow node click press and release through the remo
 			[press, release],
 		);
 	} finally {
+		overlay.hide();
+		tui.stop();
+	}
+});
+test("fullscreen transcript wheel resumes after the workflow overlay closes", async () => {
+	const { transcript, overlay, tui, terminal } = await makeFullscreenGraphFixture();
+	try {
+		overlay.hide();
+		const initialTranscriptTop = transcript.scrollTop;
+		terminal.input(sgrMouse(64, 1, 1));
+		tui.renderNow();
+		assert.equal(
+			transcript.scrollTop,
+			initialTranscriptTop - 1,
+			"transcript wheel stayed blocked after overlay close",
+		);
+	} finally {
 		tui.stop();
 	}
 });
 
+test("fullscreen keeps transcript mouse selection with a focused non-overlay component", async () => {
+	const bridge = makeBridge({ fullscreen: true });
+	void bridge.child.custom(() => ({
+		render: () => ["consumer"],
+		handleInput: () => true,
+		invalidate: () => {},
+	}));
+	await flush();
+	const host = bridge.hostComponent;
+	const tui = bridge.tui;
+	const terminal = bridge.terminal;
+	assert.ok(host, "remote component did not mount on the host");
+	assert.ok(tui, "fullscreen renderer did not mount");
+	assert.ok(terminal, "fullscreen terminal did not mount");
+
+	const transcript = new ScrollView(
+		new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+		{ follow: "end", primary: true },
+	);
+	tui.setLayoutRoot(transcript);
+	tui.setFocus(host);
+	tui.start();
+	tui.renderNow();
+
+	try {
+		const initialTranscriptTop = transcript.scrollTop;
+		const wheel = sgrMouse(64, 1, 1);
+		terminal.input(wheel);
+		tui.renderNow();
+		assert.equal(
+			transcript.scrollTop,
+			initialTranscriptTop - 1,
+			"focused inline input stole transcript wheel scrolling",
+		);
+
+		terminal.input(sgrMouse(0, 1, 1));
+		terminal.input(sgrMouse(32, 5, 2));
+		terminal.input(sgrMouse(0, 5, 2, "m"));
+		assert.equal(Reflect.get(tui, "selectionPressActive"), false, "transcript selection did not complete");
+		assert.equal(Reflect.get(tui, "selectionDragged"), true, "focused inline input stole selection drag events");
+		assert.ok(
+			terminal.writes.some((write) => write.includes("\x1b]52;c;")),
+			"transcript did not copy the dragged selection",
+		);
+	} finally {
+		tui.stop();
+	}
+});
 test("one Kitty Ctrl+O press/release cycle toggles an isolated stage chat once", async () => {
 	const bridge = makeBridge();
 	const store = createStore();

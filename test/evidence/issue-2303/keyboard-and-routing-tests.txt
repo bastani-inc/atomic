@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 /Users/tonystark/Documents/projects/atomic-pi-fullscreen
+
+
+ Test Files  4 passed (4)
+      Tests  62 passed (62)
+   Start at  00:57:28
+   Duration  2.87s (transform 4.73s, setup 6.70s, import 450ms, tests 1.12s, environment 0ms)
+

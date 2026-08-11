@@ -49,14 +49,19 @@ export interface InteractiveTuiOptions {
 	terminal?: Terminal;
 	onRightClickPaste?: () => void;
 	/**
-	 * Return false to let a focused non-main component receive viewport input.
-	 * The second argument is pi-tui's mouse classification.
+	 * Return false to let a focused overlay receive viewport input first.
+	 * Mouse input is deferred only while the focused component belongs to an
+	 * overlay; non-overlay focus keeps pi-tui's transcript selection path.
 	 */
-	shouldHandleViewportInput?: (data: string, isMouseInput: boolean) => boolean;
+	shouldHandleViewportInput?: (data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean;
 }
 
 const viewportInputListeners = new WeakSet<AtomicTuiAltScreen>();
-const viewportInputGates = new WeakMap<AtomicTuiAltScreen, (data: string, isMouseInput: boolean) => boolean>();
+
+const viewportInputGates = new WeakMap<
+	AtomicTuiAltScreen,
+	(data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean
+>();
 interface ViewportInputSubscription {
 	viewportUnsubscribe: () => void;
 	routeListener: TuiInputListener;
@@ -78,7 +83,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		showHardwareCursor: boolean,
 		logDirectory: string,
 		options: ConstructorParameters<typeof TuiAltScreen>[3],
-		viewportInputGate?: (data: string, isMouseInput: boolean) => boolean,
+		viewportInputGate?: (data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean,
 	) {
 		super(terminal, showHardwareCursor, logDirectory, options);
 		if (viewportInputGate) viewportInputGates.set(this, viewportInputGate);
@@ -90,7 +95,13 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	 * declaration is private (`tui-alt-screen.d.ts:93`).
 	 */
 	private isPiTuiMouseSequence(data: string): boolean {
-		return (this as unknown as TuiAltScreenMouseInternals).isMouseSequence(data);
+		const predicate = (this as unknown as Partial<TuiAltScreenMouseInternals>).isMouseSequence;
+		return typeof predicate === "function" ? predicate.call(this, data) : false;
+	}
+
+	private isFocusedOverlay(): boolean {
+		const tui = this as unknown as TuiOverlayInternals;
+		return tui.overlayStack.some((entry) => entry.component === this.getFocusedComponent());
 	}
 
 	override addInputListener(listener: TuiInputListener): () => void {
@@ -105,7 +116,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			subscription.viewportUnsubscribe = super.addInputListener((data) => {
 				const gate = viewportInputGates.get(this);
 				const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
-				if (gate && !gate(data, isMouseInput)) return undefined;
+				if (gate && !gate(data, isMouseInput, this.isFocusedOverlay())) return undefined;
 				return listener(data);
 			});
 			subscription.routeUnsubscribe = super.addInputListener(subscription.routeListener);
@@ -157,7 +168,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
 		const gate = viewportInputGates.get(this);
 		const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
-		if (!gate || gate(data, isMouseInput)) return undefined;
+		if (!gate || gate(data, isMouseInput, this.isFocusedOverlay())) return undefined;
 
 		// Returning `consume` below skips pi-tui's post-listener phase. Mirror its
 		// overlay-focus repair before reading the focused component so a resize

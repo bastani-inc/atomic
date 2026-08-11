@@ -127,7 +127,7 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `autocompleteMaxVisible` | number | `5` | Max visible items in the default editor and custom editors installed through `ctx.ui.setEditorComponent()` (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 
-In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures go first to the focused overlay, including workflow graphs and stage chats; an unhandled event falls through to the alternate-screen viewport. Fullscreen is selectable and experimental, not the default.
+In `fullscreen` mode, the transcript scrolls in its own viewport while the editor, status line, usage meter, extension widgets, and footer stay docked at the bottom. Wheel and trackpad gestures go first to a focused workflow overlay, including workflow graphs and stage chats. Events that overlay does not consume fall through to the alternate-screen viewport; non-overlay focused components leave mouse input with pi-tui so transcript scrolling, scrollbar interaction, and drag selection remain available. Fullscreen is selectable and experimental, not the default.
 
 The fullscreen renderer keeps minimum sizes for nested layout stacks during resize, and transient fullscreen notices stack instead of replacing a notice that is still visible.
 

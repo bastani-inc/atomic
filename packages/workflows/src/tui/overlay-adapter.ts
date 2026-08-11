@@ -133,11 +133,13 @@ export function buildGraphOverlayAdapter(
 	};
 	// Isolated interactive mode exposes a remote terminal-control capability;
 	// prefer it so the real host TTY (not the child's non-TTY JSONL stdout) gets
-	// the modes. Otherwise fall back to the local process.stdout seam.
+	// the modes. Otherwise fall back to the local process.stdout seam, except
+	// when the host's fullscreen renderer already owns those modes.
 	let remoteTerminalControl: PiRemoteTerminalControl | null = null;
+	let localTerminalModesSuppressed = false;
 	const updateMouseScrollTracking = (enabled: boolean): void => {
 		if (remoteTerminalControl) remoteTerminalControl.setMouseScrollTracking(enabled);
-		else setMouseScrollTracking(enabled, terminalOutput);
+		else if (!localTerminalModesSuppressed) setMouseScrollTracking(enabled, terminalOutput);
 	};
 	let currentView: WorkflowAttachPane | null = null;
 	// pi-tui returns an OverlayHandle via `options.onHandle`. We hold onto
@@ -164,7 +166,7 @@ export function buildGraphOverlayAdapter(
 			if (terminalOutput.platform === "win32") remoteTerminalControl.setAutowrap(!visible);
 			return;
 		}
-		setTerminalAutowrap(!visible, terminalOutput);
+		if (!localTerminalModesSuppressed) setTerminalAutowrap(!visible, terminalOutput);
 	}
 
 	function readHostCustomUiActive(ui: OverlayUISurface | undefined = observedUi): boolean {
@@ -213,6 +215,7 @@ export function buildGraphOverlayAdapter(
 		currentView = null;
 		mounted = false;
 		remoteTerminalControl = null;
+		localTerminalModesSuppressed = false;
 		requestMountedRender = null;
 		clearHostCustomUiObservation();
 	}
@@ -332,6 +335,10 @@ export function buildGraphOverlayAdapter(
 		): PiCustomComponent => {
 			// Prefer the host's remote terminal-control capability (isolated mode);
 			// stays null for non-isolated hosts, keeping the local process.stdout seam.
+			// In a fullscreen host, pi-tui already enabled and owns mouse/autowrap
+			// modes; the local fallback must not turn them off on overlay close or
+			// stage-chat copy-mode changes.
+			localTerminalModesSuppressed = tui.mode === "fullscreen";
 			remoteTerminalControl = remoteTerminalControlFrom(tui);
 			const finish = (): void => {
 				if (settled) return;
@@ -350,6 +357,7 @@ export function buildGraphOverlayAdapter(
 				} finally {
 					updateTerminalAutowrap(false);
 					remoteTerminalControl = null;
+					localTerminalModesSuppressed = false;
 				}
 			};
 			const view = new WorkflowAttachPane({

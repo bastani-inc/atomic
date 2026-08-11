@@ -6,8 +6,10 @@ import {
 	type Image,
 	isViewportTUI,
 	resetCapabilitiesCache,
+	ScrollView,
 	setCapabilities,
 	setCellDimensions,
+	Text,
 	type TUI,
 	TuiAltScreen,
 	type TuiBase,
@@ -117,6 +119,32 @@ describe("interactive TUI renderer", () => {
 		});
 		const piTuiPrototype = Object.getPrototypeOf(Object.getPrototypeOf(tui));
 		expect(typeof Reflect.get(piTuiPrototype, "isMouseSequence")).toBe("function");
+	});
+	test("falls back to keyboard routing if pi-tui removes its mouse predicate", () => {
+		const terminal = new RecordingTerminal();
+		const tui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			shouldHandleViewportInput: () => true,
+		}) as TuiAltScreen;
+		Object.defineProperty(tui, "isMouseSequence", { value: undefined });
+		const transcript = new ScrollView(
+			new Text(Array.from({ length: 48 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ follow: "end", primary: true },
+		);
+		tui.setLayoutRoot(transcript);
+
+		tui.start();
+		try {
+			tui.renderNow();
+			const initialScrollTop = transcript.scrollTop;
+			expect(() => terminal.input("\x1b[<64;1;1M")).not.toThrow();
+			expect(transcript.scrollTop).toBe(initialScrollTop - 1);
+		} finally {
+			tui.stop();
+		}
 	});
 
 	test("routes captured methods to a replacement renderer", () => {

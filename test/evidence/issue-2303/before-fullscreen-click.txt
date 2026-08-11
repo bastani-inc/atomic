@@ -1,0 +1,50 @@
+
+ ╭──────────────╮                                                                                                                                                                                       
+ │ ORCHESTRATOR │  fan-out-and-synthesize                                                                                                                                                     ✓ 3  ● 1  
+ ╰──────────────╯                                                                                                                                                                                       
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                      ╭─── artifact-root ────╮                                                                                          
+                                                                                      │"/Users/tonystark/Doc…│                                                                                          
+                                                                                      │     ✓ completed      │                                                                                          
+                                                                                      │         root         │                                                                                          
+                                                                                      ╰──────────────────────╯                                                                                          
+                                                                                                  │                                                                                                     
+                                                                                                  │                                                                                                     
+                                                                                                  │                                                                                                     
+                                                                                      ╭───── partition ──────╮                                                                                          
+                                                                                      │          3s          │                                                                                          
+                                                                                      │      ✓ complete      │                                                                                          
+                                                                                      │        1 dep         │                                                                                          
+                                                                                      ╰──────────────────────╯                                                                                          
+                                                                                                  │                                                                                                     
+                                                                                                  │                                                                                                     
+                                                                                                  │                                                                                                     
+                                                                                      ╭─ branch-01-typescr… ─╮                                                                                          
+                                                                                      │         15s          │                                                                                          
+                                                                                      │      ✓ complete      │                                                                                          
+                                                                                      │        1 dep         │                                                                                          
+                                                                                      ╰──────────────────────╯                                                                                          
+                                                                                                  │                                                                                                     
+                                                                                                  │                                                                                                     
+                                                                                                  │                                                                                                     
+                                                                                      ╭───── synthesize ─────╮                                                                                          
+                                                                                      │         14s          │                                                                                          
+                                                                                      │      ● running       │                                                                                          
+                                                                                      │        1 dep         │                                                                                          
+                                                                                      ╰──────────────────────╯                                                                                          
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+ ╭───────╮                                                                                                                                                                                              
+ │ GRAPH │                                                                                                                                   ctrl+x return to main chat  ·  ↑↓←→ navigate  ·  / stages  
+ ╰───────╯                                                                                                                                                                                              
+
