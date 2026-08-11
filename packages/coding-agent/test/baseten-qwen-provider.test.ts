@@ -1,6 +1,8 @@
+import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, test } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import { _getRequiredRequestAuth } from "../src/core/agent-session-models.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -100,19 +102,23 @@ describe("Baseten and Qwen Token Plan Individual providers", () => {
 			const model = getProviderModel(runtime, provider);
 			const models = runtime.getModels().filter((candidate) => candidate.provider === provider.provider);
 
-			expect(models.map((candidate) => candidate.id)).toEqual(provider.modelIds);
-			expect(defaultModelPerProvider[provider.provider]).toBe(provider.defaultModel);
-			expect(models).toContainEqual(model);
-			expect(getSupportedThinkingLevels(model)).toEqual(provider.thinkingLevels);
-			expect(runtime.getProvider(provider.provider)?.name).toBe(
+			assert.deepEqual(
+				models.map((candidate) => candidate.id),
+				provider.modelIds,
+			);
+			assert.equal(defaultModelPerProvider[provider.provider], provider.defaultModel);
+			assert.ok(models.some((candidate) => isDeepStrictEqual(candidate, model)));
+			assert.deepEqual(getSupportedThinkingLevels(model), provider.thinkingLevels);
+			assert.equal(
+				runtime.getProvider(provider.provider)?.name,
 				provider.provider === "baseten" ? "Baseten" : "Qwen Token Plan Individual",
 			);
-			expect(runtime.getProviderAuthStatus(provider.provider)).toEqual({
+			assert.deepEqual(runtime.getProviderAuthStatus(provider.provider), {
 				configured: true,
 				source: "environment",
 				label: provider.envVar,
 			});
-			expect((await runtime.getAuth(model))?.auth.apiKey).toBe(`test-${provider.provider}-key`);
+			assert.equal((await runtime.getAuth(model))?.auth.apiKey, `test-${provider.provider}-key`);
 		},
 	);
 
@@ -121,12 +127,16 @@ describe("Baseten and Qwen Token Plan Individual providers", () => {
 		const runtime = await createRuntime();
 		const model = getProviderModel(runtime, provider);
 
-		expect(runtime.getProviderAuthStatus(provider.provider)).toEqual({ configured: false });
-		expect(runtime.getAvailableSnapshot().some((candidate) => candidate.provider === provider.provider)).toBe(false);
-		expect(await runtime.getAuth(model)).toBeUndefined();
+		assert.deepEqual(runtime.getProviderAuthStatus(provider.provider), { configured: false });
+		assert.equal(
+			runtime.getAvailableSnapshot().some((candidate) => candidate.provider === provider.provider),
+			false,
+		);
+		assert.equal(await runtime.getAuth(model), undefined);
 		const session = { _modelRuntime: runtime } as AgentSessionInternalSurface;
-		await expect(_getRequiredRequestAuth.call(session, model)).rejects.toThrow(
-			`No API key found for ${provider.provider}.`,
+		await assert.rejects(
+			_getRequiredRequestAuth.call(session, model),
+			new RegExp(`No API key found for ${provider.provider}\\.`, "u"),
 		);
 	});
 
@@ -142,7 +152,7 @@ describe("Baseten and Qwen Token Plan Individual providers", () => {
 			});
 			const model = getProviderModel(runtime, provider);
 
-			await expect(runtime.getAuth(model)).rejects.toThrow(`for ${provider.provider}`);
+			await assert.rejects(runtime.getAuth(model), new RegExp(`for ${provider.provider}`, "u"));
 		},
 	);
 });

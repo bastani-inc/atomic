@@ -67,17 +67,15 @@ function createPng(width: number, height: number): Buffer {
 
 function registerFetchContentTool(): ToolDefinition {
 	const tools: ToolDefinition[] = [];
-	registerContentTools(
-		{
-			registerTool: (tool: ToolDefinition) => tools.push(tool),
-			appendEntry: () => {},
-		} as unknown as ExtensionAPI,
-		{
-			maxInlineContent: 100_000,
-			stripThumbnails: (results) => results,
-			formatFullResults: () => "",
-		},
-	);
+	const extensionApi: Pick<ExtensionAPI, "registerTool" | "appendEntry"> = {
+		registerTool: (tool: ToolDefinition) => tools.push(tool),
+		appendEntry: () => {},
+	};
+	registerContentTools(extensionApi as ExtensionAPI, {
+		maxInlineContent: 100_000,
+		stripThumbnails: (results) => results,
+		formatFullResults: () => "",
+	});
 	const tool = tools.find(({ name }) => name === "fetch_content");
 	if (!tool) throw new Error("content-tools did not register fetch_content");
 	return tool;
@@ -282,7 +280,7 @@ describe("interactive TUI renderer", () => {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			tui.renderNow();
 			const fetchContent = registerFetchContentTool();
-			const content: AgentToolResult<unknown>["content"] = [
+			const content: Pick<AgentToolResult<never>, "content">["content"] = [
 				{ type: "image", data: imageData, mimeType: "image/png" },
 				{ type: "text", text: "Frame at 0:01" },
 			];
@@ -389,11 +387,9 @@ interface CopyCommandContext {
 	showError(message: string): void;
 }
 
-interface CopyCommandPrototype {
-	handleCopyCommand(this: CopyCommandContext, options?: { flashConfirmation?: boolean }): Promise<void>;
-}
+type CopyCommandPrototype = Pick<InteractiveMode, "handleCopyCommand">;
 
-const copyCommandPrototype = InteractiveMode.prototype as unknown as CopyCommandPrototype;
+const copyCommandPrototype: CopyCommandPrototype = InteractiveMode.prototype;
 
 describe("InteractiveMode copy confirmation", () => {
 	beforeEach(() => {
