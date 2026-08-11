@@ -13,7 +13,6 @@ import {
 	StageChatView,
 	setupRun,
 	stripAnsi,
-	type TUI,
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
@@ -186,10 +185,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			piTui: {
-				requestRender: () => {},
-				terminal: { rows: 12, columns: 80 },
-			} as unknown as TUI,
+			piTui: makeTestTui(12),
 			piTheme: {},
 			piKeybindings: makeFakeKeybindings(),
 			piEditorFactory: () => {
@@ -232,10 +228,7 @@ describe("StageChatView", () => {
 			handle,
 			onDetach: () => {},
 			onClose: () => {},
-			piTui: {
-				requestRender: () => {},
-				terminal: { rows: 12, columns: 80 },
-			} as unknown as TUI,
+			piTui: makeTestTui(12),
 			piTheme: {},
 			piKeybindings: makeFakeKeybindings(),
 			piEditorFactory: () => {

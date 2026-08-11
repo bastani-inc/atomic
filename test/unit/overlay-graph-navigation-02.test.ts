@@ -18,6 +18,7 @@ const {
 	makeInputRequest,
 	makeStore,
 	makeRun,
+	makeTestTui,
 	defaultTheme,
 	visibleText,
 	typeIntoView,
@@ -61,7 +62,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeSnap(stages)),
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 32 } },
+			piTui: makeTestTui(32),
 		});
 
 		const beforePan = visibleText(view.render(48));
@@ -107,7 +108,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 32 } },
+			piTui: makeTestTui(32),
 			onPromptResolve: (runId, promptId, response) => {
 				resolved.push({ runId, promptId, response });
 			},
@@ -277,7 +278,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 48 } },
+			piTui: makeTestTui(48),
 		});
 		const lines = view.render(96);
 		assert.equal(lines.length, 48);
@@ -293,7 +294,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 10 } },
+			piTui: makeTestTui(10),
 		});
 		const lines = view.render(96);
 		assert.equal(lines.length, 10);
@@ -308,13 +309,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeSnap([makeStage("tiny")])),
 			graphTheme: defaultTheme,
-			piTui: {
-				terminal: {
-					get rows() {
-						return rows;
-					},
-				},
-			},
+			piTui: makeTestTui(() => rows),
 		});
 		for (rows of [5, 3, 1]) {
 			const lines = view.render(96);
@@ -335,13 +330,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: {
-				terminal: {
-					get rows() {
-						return terminalRows;
-					},
-				},
-			},
+			piTui: makeTestTui(() => terminalRows),
 		});
 
 		assert.equal(view.render(96).length, 10);
@@ -378,13 +367,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store: makeStore(makeSnap([makeStage("lifecycle")])),
 			graphTheme: defaultTheme,
-			piTui: {
-				terminal: {
-					get rows() {
-						return terminalRows;
-					},
-				},
-			},
+			piTui: makeTestTui(() => terminalRows),
 		});
 
 		assert.equal(view.render(96).length, 40);
@@ -418,7 +401,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 32 } },
+			piTui: makeTestTui(32),
 		});
 
 		const rendered = visibleText(view.render(96));
@@ -452,7 +435,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 32 } },
+			piTui: makeTestTui(32),
 			onStageAttach,
 		});
 
@@ -482,7 +465,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 32 } },
+			piTui: makeTestTui(32),
 			piKeybindings: makeFakeKeybindings({
 				"tui.select.down": ["d"],
 				"tui.select.confirm": ["s"],
@@ -529,7 +512,7 @@ describe("GraphView keyboard navigation", () => {
 			runId: "run-1",
 			store,
 			graphTheme: defaultTheme,
-			piTui: { terminal: { rows: 32 } },
+			piTui: makeTestTui(32),
 			onStageAttach,
 		});
 		assert.equal(view._focusedIndex, 0);

@@ -13,6 +13,7 @@ import type { StageControlHandle } from "../../packages/workflows/src/runs/foreg
 import { createStore } from "../../packages/workflows/src/shared/store.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.ts";
+import { makeTestTui } from "../unit/overlay-graph-helpers.js";
 
 const ANSI = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 const strip = (s: string): string => s.replace(ANSI, "");
@@ -107,7 +108,7 @@ const theme = deriveGraphTheme({});
 		handle: makeHandle({ status: "pending" }),
 		onDetach: () => {},
 		onClose: () => {},
-		piTui: { terminal: { rows: 32 } } as never,
+		piTui: makeTestTui(32),
 	});
 	console.log(snapshot("§1 IDLE", view));
 	view.dispose();
@@ -126,7 +127,7 @@ const theme = deriveGraphTheme({});
 		handle: makeHandle({ isStreaming: true }),
 		onDetach: () => {},
 		onClose: () => {},
-		piTui: { terminal: { rows: 32 } } as never,
+		piTui: makeTestTui(32),
 	});
 	for (const ch of "Review the auth module for setRuntimeApiKey lifecycle.") view.handleInput(ch);
 	view.handleInput("\r");
@@ -174,7 +175,7 @@ const theme = deriveGraphTheme({});
 		handle: makeHandle({ status: "paused" }),
 		onDetach: () => {},
 		onClose: () => {},
-		piTui: { terminal: { rows: 28 } } as never,
+		piTui: makeTestTui(28),
 	});
 	const writable = view as unknown as { transcript: unknown[] };
 	writable.transcript.push({ role: "user", text: "Review the auth module for security issues." });
@@ -200,7 +201,7 @@ const theme = deriveGraphTheme({});
 		handle: makeHandle({ isStreaming: true }),
 		onDetach: () => {},
 		onClose: () => {},
-		piTui: { terminal: { rows: 28 } } as never,
+		piTui: makeTestTui(28),
 	});
 	const writable = view as unknown as { transcript: unknown[] };
 	writable.transcript.unshift({
@@ -224,7 +225,7 @@ const theme = deriveGraphTheme({});
 		handle: undefined,
 		onDetach: () => {},
 		onClose: () => {},
-		piTui: { terminal: { rows: 28 } } as never,
+		piTui: makeTestTui(28),
 	});
 	const writable = view as unknown as { transcript: unknown[] };
 	writable.transcript.push({ role: "user", text: "Review the auth module for security issues." });

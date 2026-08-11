@@ -30,19 +30,9 @@ import type { PendingPrompt } from "../../packages/workflows/src/shared/store-ty
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
+import { makeTestTui } from "../support/fake-tui.js";
 
-export function makeTestTui(rows: number | (() => number | undefined)): TUI {
-	const readRows = typeof rows === "function" ? rows : () => rows;
-	return {
-		requestRender: () => {},
-		terminal: {
-			get rows() {
-				return readRows();
-			},
-			columns: 80,
-		},
-	} as unknown as TUI;
-}
+export { makeTestTui };
 
 beforeAll(() => {
 	initTheme("dark", false);

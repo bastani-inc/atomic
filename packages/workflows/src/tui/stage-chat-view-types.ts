@@ -13,6 +13,7 @@ import type { RunStatus, StageNotice, StageStatus } from "../shared/store-types.
 import type { GraphTheme } from "./graph-theme.js";
 import type { PromptCardState } from "./prompt-card.js";
 
+/** Unhosted fallback frame height used when no host terminal supplies rows. */
 export const VIEW_LINE_COUNT = 32;
 export const PROMPT_SCROLL_STEP_ROWS = 4;
 /** Header rows reserved by prompt paging for the normal UUID continuation shape. */
