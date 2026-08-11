@@ -279,7 +279,14 @@ async function makeFullscreenGraphFixture(): Promise<FullscreenGraphFixture> {
 		runId: "run-1",
 		store: makeStore(makeSnap(stages)),
 		graphTheme: defaultTheme,
-		getViewportRows: () => terminal.rows,
+		// getViewportRows was retired (#2315); geometry now comes from the host TUI.
+		piTui: {
+			terminal: {
+				get rows() {
+					return terminal.rows;
+				},
+			},
+		},
 		onStageAttach: (runId, stageId) => attached.push({ runId, stageId }),
 	});
 	void bridge.child.custom(() => ({
