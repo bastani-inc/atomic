@@ -101,21 +101,20 @@ pi.on("session_start", async (_event, ctx) => {
 
 Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable operation. If the signal aborts, Atomic dismisses the custom UI and rejects the returned promise with the signal reason. For overlays, use `options.onHandle` to receive an overlay handle for programmatic visibility control.
 
-In Atomic's default interactive mode, the component instance remains in the isolated engine child. The terminal host caches rendered lines and forwards input asynchronously, so `render()` and `handleInput()` must not depend on direct access to host process objects. For a matching fullscreen viewport key, or for mouse input while a workflow overlay has focus, the host waits for the child's boolean input reply: `true` keeps the input local, while `false` lets the host transcript process it. Mouse input remains with pi-tui when a non-overlay component has focus, preserving transcript scrolling, scrollbar interaction, and drag selection. A stalled reply has a bounded fallback. The remote bridge preserves pi-tui's key-release contract: release events are filtered unless the child component sets `wantsKeyRelease = true`, matching a directly mounted component. Return values passed to `done()` must be JSON-safe.
+In Atomic's default interactive mode, the component instance remains in the isolated engine child. The terminal host caches rendered lines and forwards input asynchronously, so `render()` and `handleInput()` must not depend on direct access to host process objects. For a matching fullscreen viewport key, or for mouse input while a workflow overlay has focus, the host waits for the child's boolean input reply: `true` keeps the input local, while `false` lets the host transcript process it. Left-button selection events are also mirrored to pi-tui when an overlay handles them, so drag and multi-click selection stays available over fullscreen workflow overlays. Mouse input remains with pi-tui when a non-overlay component has focus, preserving transcript scrolling, scrollbar interaction, and drag selection. A stalled reply has a bounded fallback. The remote bridge preserves pi-tui's key-release contract: release events are filtered unless the child component sets `wantsKeyRelease = true`, matching a directly mounted component. Return values passed to `done()` must be JSON-safe.
 
 ### Host terminal modes from an isolated component
 
-Because the component runs in the engine child — whose stdout is the JSONL transport, not a TTY — writing raw terminal escape sequences to `process.stdout` from `render()`/`handleInput()` is a no-op and never reaches the real host terminal. For the two host-terminal modes an overlay commonly needs, the factory `tui.terminal` exposes typed, allowlisted setters that the host applies to the real TTY over the engine protocol:
+Because the component runs in the engine child — whose stdout is the JSONL transport, not a TTY — writing raw terminal escape sequences to `process.stdout` from `render()`/`handleInput()` is a no-op and never reaches the real host terminal. For the host autowrap mode an overlay may need, the factory `tui.terminal` exposes a typed, allowlisted setter that the host applies to the real TTY over the engine protocol:
 
 ```typescript
 await ctx.ui.custom((tui, theme, keybindings, done) => {
-  tui.terminal.setMouseScrollTracking?.(true); // enable SGR mouse-scroll reporting on the host TTY
-  tui.terminal.setAutowrap?.(false);           // disable autowrap (DECAWM) — Windows terminals only
+  tui.terminal.setAutowrap?.(false); // disable autowrap (DECAWM) — Windows terminals only
   return new MyOverlay({ onClose: done });
 }, { overlay: true });
 ```
 
-These are the only terminal controls exposed; arbitrary child bytes are never forwarded to the terminal. The host resets any mode a component enabled when the overlay hides, closes, is disposed, or when the engine child crashes/restarts, so a stranded child can never leave the terminal in mouse-reporting or autowrap-off mode. In fullscreen, pi-tui owns its baseline mouse and autowrap modes; non-isolated overlay fallbacks do not disable that baseline. On regular non-isolated hosts and test seams the setters are absent, and callers may fall back to writing escape sequences to their own `process.stdout`.
+This is the only terminal control exposed; arbitrary child bytes are never forwarded to the terminal. The host resets the mode when a component hides, closes, is disposed, or when the engine child crashes or restarts. In fullscreen, pi-tui owns its baseline mouse and autowrap modes; non-isolated overlay fallbacks do not disable that baseline. On regular non-isolated hosts and test seams the setter is absent, and callers may fall back to writing escape sequences to their own `process.stdout`.
 
 ### Host-native session picker
 

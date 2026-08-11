@@ -1,20 +1,17 @@
 /**
- * Source-path regression coverage for the isolated workflow-overlay mouse /
- * autowrap bridge.
+ * Source-path regression coverage for the isolated workflow-overlay autowrap
+ * bridge.
  *
  * In isolated interactive mode the workflow extension runs inside the engine
- * child, whose stdout is the JSONL transport rather than a TTY, so writing raw
- * mouse-tracking escape sequences to `process.stdout` there is a no-op. A remote
- * custom component instead sends typed, allowlisted `engine_custom_terminal`
- * controls; the host `RemoteComponentController` applies them to the real host
- * TTY associated with the mounted overlay.
+ * child, whose stdout is the JSONL transport rather than a TTY. A remote custom
+ * component therefore sends a typed, allowlisted `engine_custom_terminal`
+ * control; the host `RemoteComponentController` applies it to the real host TTY
+ * associated with the mounted overlay.
  *
  * These tests wire the real child `EngineCustomUiService` to the real host
- * `RemoteComponentController` through an in-process message pump (no spawned
- * process) and assert the full chain:
- *   engine_custom_open overlay:true → host overlay handle focused →
- *   host mouse mode enabled → wheel forwarded to the child graph → reset on
- *   done/close/dispose/crash, with stale-generation safety.
+ * `RemoteComponentController` through an in-process message pump and assert
+ * buffering, fullscreen suppression, reset, generation safety, and nested
+ * mount teardown for the remaining autowrap control.
  */
 
 import assert from "node:assert/strict";
@@ -34,20 +31,16 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import {
-	HOST_MOUSE_SCROLL_TRACKING_OFF,
-	HOST_MOUSE_SCROLL_TRACKING_ON,
 	HOST_TERMINAL_AUTOWRAP_OFF,
 	HOST_TERMINAL_AUTOWRAP_ON,
 	TerminalModeController,
 } from "../../packages/coding-agent/src/modes/interactive-engine/terminal-mode-controller.ts";
 import { sleep } from "../helpers/runtime.js";
 
-const WHEEL_UP = "\x1b[<64;10;10M";
 const isRegularTui = (): boolean => false;
 
-/** The child's RemoteTerminal augments pi-tui's Terminal with these setters. */
+/** The child's RemoteTerminal augments pi-tui's Terminal with this setter. */
 interface RemoteTerm {
-	setMouseScrollTracking?: (enabled: boolean) => void;
 	setAutowrap?: (enabled: boolean) => void;
 }
 function remoteTerm(tui: TUI): RemoteTerm {
@@ -74,7 +67,7 @@ interface Bridge {
 	focus: "editor" | "inline" | "overlay";
 	replaceTuiMode(fullscreen: boolean): void;
 	emitEngineReady(pid: number): void;
-	/** Publish the host-local generation-death event (see engine-generation.ts). */
+	/** Publish the host-local generation-death event. */
 	emitGenerationEnded(generation: number): void;
 }
 
@@ -115,7 +108,7 @@ function makeBridge(options: { fullscreen?: boolean } = {}): Bridge {
 	} as unknown as IsolatedInteractiveRuntime;
 
 	// The most recently opened engine_custom_open carries the componentId; capture
-	// it so the fake host mount can be correlated for input routing.
+	// it so the fake host mount can be correlated for controller teardown.
 	let pendingComponentId: string | undefined;
 	engineListeners.push((message) => {
 		if (message.type === "engine_custom_open") pendingComponentId = message.componentId;
@@ -137,7 +130,7 @@ function makeBridge(options: { fullscreen?: boolean } = {}): Bridge {
 					done: (result: unknown) => {
 						closeOrder.push(componentId);
 						// Real host: overlay done hides + restores previous focus; inline
-						// done runs restoreEditor(setFocus editor). Model both as → editor.
+						// done restores the editor. Model both as → editor.
 						if (mount.overlay ? bridge.focus === "overlay" : bridge.focus === "inline") {
 							bridge.focus = "editor";
 						}
@@ -204,35 +197,21 @@ function makeBridge(options: { fullscreen?: boolean } = {}): Bridge {
 	return Object.assign(bridge, { child, controller, hostWrites, hostMessages, mounts, childCommands, closeOrder });
 }
 
-/** Simulate the workflow graph overlay factory: enable mouse on mount, record input. */
-function graphFactory(inputs: string[]) {
+function autowrapFactory(enabled: boolean, onDisposeEnabled?: boolean) {
 	return (tui: TUI, _t: unknown, _k: unknown, _done: (r: unknown) => void) => {
-		// Mirror the overlay-adapter: enable host mouse-scroll reporting on mount.
-		remoteTerm(tui).setMouseScrollTracking?.(true);
+		remoteTerm(tui).setAutowrap?.(enabled);
 		return {
-			render: () => ["graph"],
-			handleInput: (data: string) => {
-				inputs.push(data);
-			},
+			render: () => ["component"],
+			handleInput: () => {},
 			invalidate: () => {},
-			dispose: () => {
-				remoteTerm(tui).setMouseScrollTracking?.(false);
-			},
+			dispose: onDisposeEnabled === undefined ? undefined : () => remoteTerm(tui).setAutowrap?.(onDisposeEnabled),
 		};
 	};
 }
 
-function overlayMount(bridge: Bridge): HostMount {
-	const mount = bridge.mounts.find((candidate) => candidate.overlay);
-	assert.ok(mount, "expected an overlay mount");
-	return mount;
-}
-
 describe("engine_custom_terminal protocol", () => {
-	test("round-trips allowlisted mouse and autowrap controls", () => {
+	test("round-trips the allowlisted autowrap control", () => {
 		for (const control of [
-			{ kind: "mouse-scroll-tracking", enabled: true },
-			{ kind: "mouse-scroll-tracking", enabled: false },
 			{ kind: "autowrap", enabled: true },
 			{ kind: "autowrap", enabled: false },
 		] as const) {
@@ -245,10 +224,10 @@ describe("engine_custom_terminal protocol", () => {
 	test("rejects unknown kinds, non-boolean enabled, and missing control", () => {
 		const reject = (control: unknown) =>
 			parseInteractiveEngineMessage(JSON.stringify({ type: "engine_custom_terminal", componentId: "c1", control }));
-		assert.equal(reject({ kind: "resize", enabled: true }), undefined);
-		assert.equal(reject({ kind: "mouse-scroll-tracking", enabled: "yes" }), undefined);
-		assert.equal(reject({ kind: "mouse-scroll-tracking" }), undefined);
-		assert.equal(reject("\x1b[?1000h"), undefined);
+		assert.equal(reject({ kind: "mouse", enabled: true }), undefined);
+		assert.equal(reject({ kind: "autowrap", enabled: "yes" }), undefined);
+		assert.equal(reject({ kind: "autowrap" }), undefined);
+		assert.equal(reject("escape sequence"), undefined);
 		assert.equal(reject(undefined), undefined);
 		assert.equal(
 			parseInteractiveEngineMessage(
@@ -260,236 +239,92 @@ describe("engine_custom_terminal protocol", () => {
 });
 
 describe("TerminalModeController", () => {
-	test("buffers controls received before mount and flushes on mount", () => {
+	test("buffers autowrap controls received before mount and flushes on mount", () => {
 		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
-		controller.applyControl("c1", { kind: "mouse-scroll-tracking", enabled: true });
+		controller.applyControl("c1", { kind: "autowrap", enabled: false });
 		assert.equal(writes.length, 0);
-		controller.onMount("c1", {
-			write: (d: string) => {
-				writes.push(d);
-			},
-		});
-		assert.deepEqual(writes, [HOST_MOUSE_SCROLL_TRACKING_ON]);
+		controller.onMount("c1", { write: (data: string) => writes.push(data) });
+		assert.deepEqual(writes, [HOST_TERMINAL_AUTOWRAP_OFF]);
 	});
 
-	test("resets only the modes a component turned on when it unmounts", () => {
+	test("resets autowrap when a component unmounts", () => {
 		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
-		controller.onMount("c1", {
-			write: (d: string) => {
-				writes.push(d);
-			},
-		});
-		controller.applyControl("c1", { kind: "mouse-scroll-tracking", enabled: true });
+		controller.onMount("c1", { write: (data: string) => writes.push(data) });
 		controller.applyControl("c1", { kind: "autowrap", enabled: false });
 		controller.onUnmount("c1");
-		assert.deepEqual(writes, [
-			HOST_MOUSE_SCROLL_TRACKING_ON,
-			HOST_TERMINAL_AUTOWRAP_OFF,
-			HOST_MOUSE_SCROLL_TRACKING_OFF,
-			HOST_TERMINAL_AUTOWRAP_ON,
-		]);
+		assert.deepEqual(writes, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 	});
 
-	test("holds remote controls while fullscreen owns terminal modes, then reapplies them in regular mode", () => {
+	test("holds autowrap while fullscreen owns terminal modes, then reapplies it in regular mode", () => {
 		let fullscreen = true;
 		const controller = new TerminalModeController(() => fullscreen);
 		const writes: string[] = [];
-		controller.onMount("c1", {
-			write: (data: string) => {
-				writes.push(data);
-			},
-		});
-		controller.applyControl("c1", { kind: "mouse-scroll-tracking", enabled: true });
+		controller.onMount("c1", { write: (data: string) => writes.push(data) });
 		controller.applyControl("c1", { kind: "autowrap", enabled: false });
 		assert.deepEqual(writes, []);
 
 		fullscreen = false;
 		controller.rebindTui();
 		controller.onUnmount("c1");
-
-		assert.deepEqual(writes, [
-			HOST_MOUSE_SCROLL_TRACKING_ON,
-			HOST_TERMINAL_AUTOWRAP_OFF,
-			HOST_MOUSE_SCROLL_TRACKING_OFF,
-			HOST_TERMINAL_AUTOWRAP_ON,
-		]);
+		assert.deepEqual(writes, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 	});
 
-	test("writes a shared mode only when its regular-owner aggregate changes", () => {
+	test("writes shared autowrap only when the aggregate changes", () => {
 		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
 		const terminal = { write: (data: string) => writes.push(data) };
 		controller.onMount("first", terminal);
 		controller.onMount("second", terminal);
-		controller.applyControl("first", { kind: "mouse-scroll-tracking", enabled: true });
-		controller.applyControl("second", { kind: "mouse-scroll-tracking", enabled: true });
+		controller.applyControl("first", { kind: "autowrap", enabled: false });
+		controller.applyControl("second", { kind: "autowrap", enabled: false });
 		controller.onUnmount("first");
 		controller.onUnmount("second");
-
-		assert.deepEqual(writes, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
+		assert.deepEqual(writes, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 	});
 
-	test("ignores default-restoring controls from unmounted/stale components", () => {
+	test("ignores the default-restoring control from an unmounted component", () => {
 		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
-		// No state yet; a stray "disable" must not create or apply anything.
-		controller.applyControl("stale", { kind: "mouse-scroll-tracking", enabled: false });
 		controller.applyControl("stale", { kind: "autowrap", enabled: true });
-		controller.onMount("stale", {
-			write: (d: string) => {
-				writes.push(d);
-			},
-		});
+		controller.onMount("stale", { write: (data: string) => writes.push(data) });
 		assert.deepEqual(writes, []);
 	});
 
-	test("resetAll restores every active mode and clears state", () => {
+	test("resetAll restores active autowrap and clears state", () => {
 		const controller = new TerminalModeController(isRegularTui);
 		const writes: string[] = [];
-		controller.onMount("c1", {
-			write: (d: string) => {
-				writes.push(d);
-			},
-		});
-		controller.applyControl("c1", { kind: "mouse-scroll-tracking", enabled: true });
+		controller.onMount("c1", { write: (data: string) => writes.push(data) });
+		controller.applyControl("c1", { kind: "autowrap", enabled: false });
 		writes.length = 0;
 		controller.resetAll();
-		assert.deepEqual(writes, [HOST_MOUSE_SCROLL_TRACKING_OFF]);
-		// After reset the component is forgotten; a repeat reset is a no-op.
+		assert.deepEqual(writes, [HOST_TERMINAL_AUTOWRAP_ON]);
 		controller.resetAll();
-		assert.deepEqual(writes, [HOST_MOUSE_SCROLL_TRACKING_OFF]);
+		assert.deepEqual(writes, [HOST_TERMINAL_AUTOWRAP_ON]);
 	});
 });
 
-describe("isolated overlay mouse bridge (source-path)", () => {
-	test("resume-style selection: picker disposes, then overlay mounts focused with mouse enabled and wheel forwarded", async () => {
-		const bridge = makeBridge();
-		const graphInputs: string[] = [];
-
-		// 1. Inline resume picker (overlay:false) mounts and takes inline focus.
-		let pickerDone!: (result: unknown) => void;
-		void bridge.child.custom<string>(
-			(_tui, _t, _k, done) => {
-				pickerDone = done as (result: unknown) => void;
-				return { render: () => ["picker"], handleInput: () => {}, invalidate: () => {} };
-			},
-			{ overlay: false },
-		);
-		await sleep(0);
-		assert.equal(bridge.focus, "inline");
-
-		// 2. Selecting a row disposes the picker (host restores editor focus) BEFORE
-		//    the graph overlay opens. The picker never touched the terminal modes.
-		pickerDone("resume");
-		await sleep(0);
-		assert.equal(bridge.focus, "editor");
-		assert.deepEqual(bridge.hostWrites, [], "inline picker must not toggle host terminal modes");
-
-		// 3. The durable resume then mounts the graph overlay (overlay:true).
-		void bridge.child.custom(graphFactory(graphInputs), { overlay: true });
-		await sleep(0);
-
-		const overlayOpen = bridge.hostMessages.find((m) => m.type === "engine_custom_open" && m.overlay === true);
-		assert.ok(overlayOpen, "expected engine_custom_open overlay:true");
-		// Deterministic ordering: picker teardown precedes the overlay open.
-		const doneIndex = bridge.hostMessages.findIndex((m) => m.type === "engine_custom_done");
-		const openIndex = bridge.hostMessages.indexOf(overlayOpen);
-		assert.ok(doneIndex !== -1 && doneIndex < openIndex, "picker done must precede overlay open");
-
-		// Host focused the overlay and enabled mouse reporting on the TTY.
-		assert.equal(bridge.focus, "overlay");
-		assert.equal(overlayMount(bridge).focused, true);
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
-
-		// 4. A mouse wheel gesture reaches the child graph's handleInput.
-		overlayMount(bridge).component.handleInput?.(WHEEL_UP);
-
-		await sleep(0);
-		assert.deepEqual(graphInputs, [WHEEL_UP]);
-
-		bridge.controller.dispose();
-	});
-
-	test("fullscreen keeps remote terminal controls quiet and reapplies them after a renderer switch", async () => {
+describe("isolated overlay autowrap bridge (source-path)", () => {
+	test("keeps remote autowrap quiet in fullscreen and reapplies it after a renderer switch", async () => {
 		const bridge = makeBridge({ fullscreen: true });
-		let done!: (result: unknown) => void;
-		void bridge.child.custom(
-			(_tui, _t, _k, complete) => {
-				done = complete as (result: unknown) => void;
-				remoteTerm(_tui).setMouseScrollTracking?.(true);
-				remoteTerm(_tui).setAutowrap?.(false);
-				return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
-			},
-			{ overlay: true },
-		);
+		void bridge.child.custom(autowrapFactory(false), { overlay: true });
 		await sleep(0);
 		assert.deepEqual(bridge.hostWrites, []);
 
 		bridge.replaceTuiMode(false);
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_TERMINAL_AUTOWRAP_OFF]);
-
-		done(undefined);
-		await sleep(0);
-		assert.deepEqual(bridge.hostWrites, [
-			HOST_MOUSE_SCROLL_TRACKING_ON,
-			HOST_TERMINAL_AUTOWRAP_OFF,
-			HOST_MOUSE_SCROLL_TRACKING_OFF,
-			HOST_TERMINAL_AUTOWRAP_ON,
-		]);
-
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF]);
 		bridge.controller.dispose();
 	});
 
-	test("hiding the overlay via done resets host mouse reporting", async () => {
+	test("resets autowrap when the overlay completes", async () => {
 		const bridge = makeBridge();
 		let done!: (result: unknown) => void;
 		void bridge.child.custom(
-			(_tui, _t, _k, complete) => {
+			(tui, _t, _k, complete) => {
 				done = complete as (result: unknown) => void;
-				remoteTerm(_tui).setMouseScrollTracking?.(true);
-				return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
-			},
-			{ overlay: true },
-		);
-		await sleep(0);
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
-
-		done(undefined);
-		await sleep(0);
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
-
-		bridge.controller.dispose();
-	});
-
-	test("engine restart (engine_ready) resets stranded host terminal modes", async () => {
-		const bridge = makeBridge();
-		void bridge.child.custom(
-			(_tui, _t, _k, _done) => {
-				remoteTerm(_tui).setMouseScrollTracking?.(true);
-				return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
-			},
-			{ overlay: true },
-		);
-		await sleep(0);
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
-
-		// The engine child crashes and a fresh generation binds: modes must reset.
-		bridge.emitEngineReady(4242);
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
-
-		bridge.controller.dispose();
-	});
-
-	test("Windows autowrap toggles reach the host terminal and reset on unmount", async () => {
-		const bridge = makeBridge();
-		let done!: (result: unknown) => void;
-		void bridge.child.custom(
-			(_tui, _t, _k, complete) => {
-				done = complete as (result: unknown) => void;
-				remoteTerm(_tui).setAutowrap?.(false);
-				return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
+				remoteTerm(tui).setAutowrap?.(false);
+				return { render: () => ["component"], handleInput: () => {}, invalidate: () => {} };
 			},
 			{ overlay: true },
 		);
@@ -499,73 +334,60 @@ describe("isolated overlay mouse bridge (source-path)", () => {
 		done(undefined);
 		await sleep(0);
 		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
-
 		bridge.controller.dispose();
 	});
-});
 
-describe("engine-death teardown of remote custom UI", () => {
-	test("generation death settles the host promise, restores focus, and resets modes locally", async () => {
+	test("engine restart resets stranded autowrap", async () => {
 		const bridge = makeBridge();
-		const settled: Array<{ resolved: boolean }> = [];
-		void bridge.child
-			.custom(
-				(_tui, _t, _k, _done) => {
-					remoteTerm(_tui).setMouseScrollTracking?.(true);
-					return { render: () => ["graph"], handleInput: () => {}, invalidate: () => {} };
-				},
-				{ overlay: true },
-			)
-			.then(() => settled.push({ resolved: true }));
+		void bridge.child.custom(autowrapFactory(false), { overlay: true });
+		await sleep(0);
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF]);
+
+		bridge.emitEngineReady(4242);
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
+		bridge.controller.dispose();
+	});
+
+	test("generation death resets autowrap locally without notifying the replacement engine", async () => {
+		const bridge = makeBridge();
+		void bridge.child.custom(autowrapFactory(false), { overlay: true });
 		await sleep(0);
 		assert.equal(bridge.focus, "overlay");
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON]);
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF]);
 		const commandsBeforeDeath = bridge.childCommands.length;
 
 		bridge.emitGenerationEnded(1);
 		await sleep(0);
-
-		assert.equal(bridge.focus, "editor", "the dead overlay kept input ownership");
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
-		// Disposal must be local: the writer already points at a replacement child
-		// whose component IDs restart at remote_component_1, so an engine_custom_dispose
-		// here would address an unrelated component in the new generation.
+		assert.equal(bridge.focus, "editor");
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 		assert.deepEqual(
 			bridge.childCommands.slice(commandsBeforeDeath).map((command) => command.type),
 			[],
 			"death teardown sent a command to the replacement generation",
 		);
-
-		// A later engine_ready from the replacement child is an idempotent no-op.
-		bridge.emitEngineReady(4242);
-		assert.deepEqual(bridge.hostWrites, [HOST_MOUSE_SCROLL_TRACKING_ON, HOST_MOUSE_SCROLL_TRACKING_OFF]);
 		bridge.controller.dispose();
 	});
 
-	test("generation death releases a remote widget key without notifying the new engine", async () => {
+	test("Windows autowrap can be enabled and restored through the child bridge", async () => {
 		const bridge = makeBridge();
-		bridge.child.setWidget("remote-widget", () => ({
-			render: () => ["widget"],
-			handleInput: () => {},
-			invalidate: () => {},
-		}));
-		await sleep(0);
-		const commandsBeforeDeath = bridge.childCommands.length;
-		bridge.emitGenerationEnded(1);
-		await sleep(0);
-		assert.deepEqual(
-			bridge.childCommands.slice(commandsBeforeDeath).map((command) => command.type),
-			[],
+		let done!: (result: unknown) => void;
+		void bridge.child.custom(
+			(tui, _t, _k, complete) => {
+				done = complete as (result: unknown) => void;
+				remoteTerm(tui).setAutowrap?.(false);
+				return { render: () => ["component"], handleInput: () => {}, invalidate: () => {} };
+			},
+			{ overlay: true },
 		);
+		await sleep(0);
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF]);
+		done(undefined);
+		await sleep(0);
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 		bridge.controller.dispose();
 	});
 });
 
-/**
- * Nested remote mounts must unwind newest-first. Oldest-first let an overlay
- * mounted above an inline proxy restore focus to that proxy after it had
- * already been closed and disposed.
- */
 test("generation death closes nested remote mounts newest-first", async () => {
 	const bridge = makeBridge();
 	void bridge.child.custom(() => ({ render: () => ["inline"], handleInput: () => {}, invalidate: () => {} }), {
@@ -583,7 +405,6 @@ test("generation death closes nested remote mounts newest-first", async () => {
 
 	bridge.emitGenerationEnded(1);
 	await sleep(0);
-
 	assert.deepEqual(
 		bridge.closeOrder,
 		[overlayMount!.componentId, inlineMount!.componentId],

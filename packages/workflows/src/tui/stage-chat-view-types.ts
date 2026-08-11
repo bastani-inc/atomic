@@ -19,7 +19,6 @@ export const PROMPT_SCROLL_STEP_ROWS = 4;
 /** Header rows reserved by prompt paging for the normal UUID continuation shape. */
 export const HEADER_ROWS = 2;
 export const SEP_ROWS = 1;
-export const STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL = "ctrl+t";
 
 export function isReadOnlyArchiveStatus(status: StageStatus): boolean {
 	return status === "completed" || status === "failed" || status === "skipped";
@@ -143,7 +142,6 @@ export interface StageChatViewContext {
 	promptMaxScroll: number;
 	promptVisibleRows: number;
 	localPaused: boolean;
-	mouseScrollCaptureEnabled: boolean;
 	lastObservedStageStatus: StageStatus | undefined;
 	lastObservedRunStatus: RunStatus | undefined;
 	seenNoticeIds: Set<string>;

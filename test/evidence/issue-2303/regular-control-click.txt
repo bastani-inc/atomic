@@ -93,4 +93,4 @@ RESOURCES ~/Documents/projects/atomic-pi-fullscreen/AGENTS.md · 18 skills · 14
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯                                                                                                                                                                                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-(anthropic) claude-fable-5 high • ~/Documents/projects/atomic-pi-fullscreen/packages/coding-agent (fix/2303-fullscreen-workflow-mouse)                     ctrl+x return to graph · ctrl+t copy mode off
+(anthropic) claude-fable-5 high • ~/Documents/projects/atomic-pi-fullscreen/packages/coding-agent (fix/2303-fullscreen-workflow-mouse)                                            ctrl+x return to graph

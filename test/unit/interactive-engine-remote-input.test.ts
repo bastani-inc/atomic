@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import {
 	type Component,
+	isKeyRelease,
 	type OverlayHandle,
 	ScrollView,
 	stripTerminalSequences,
@@ -56,6 +57,7 @@ interface Bridge {
 interface BridgeOptions {
 	fullscreen?: boolean;
 	stallInput?: boolean;
+	onOverlayUnhandledInput?: (data: string) => boolean;
 }
 
 const regularTuiRendererLifecycle: TuiRendererLifecycle = {
@@ -88,6 +90,7 @@ function makeBridge(options: BridgeOptions = {}): Bridge {
 					focusedIsOverlay,
 					keybindings,
 				),
+			onOverlayUnhandledInput: options.onOverlayUnhandledInput,
 		}) as TuiAltScreen;
 	}
 	const bridge = { hostComponent: undefined, childCommands, terminal, tui } as unknown as Bridge;
@@ -140,6 +143,32 @@ async function flush(times = 4): Promise<void> {
 function sgrMouse(buttonCode: number, col: number, row: number, final: "M" | "m" = "M"): string {
 	return `\x1b[<${buttonCode};${col + 1};${row + 1}${final}`;
 }
+
+test("fullscreen viewport ownership keeps Ctrl+T with its focused host owner", () => {
+	const keybindings = new KeybindingsManager();
+	const editor: Component = { render: () => [], invalidate: () => {} };
+	const inline: Component = { render: () => [], invalidate: () => {}, handleInput: () => false };
+	const overlay: Component = { render: () => [], invalidate: () => {}, handleInput: () => false };
+	const ctrlT = "\x14";
+	const mouse = sgrMouse(64, 1, 1);
+
+	assert.equal(keybindings.matches(ctrlT, "app.thinking.toggle"), true);
+	assert.equal(keybindings.matches(ctrlT, "app.tree.filter.noTools"), true);
+	assert.equal(
+		shouldHandleFullscreenViewportInput(overlay, editor, ctrlT, false, true, keybindings),
+		false,
+		"focused overlays must defer the host thinking binding until their input declines",
+	);
+	assert.equal(
+		shouldHandleFullscreenViewportInput(inline, editor, ctrlT, false, false, keybindings),
+		true,
+		"inline tree selectors must keep their own Ctrl+T binding",
+	);
+	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, "a", false, true, keybindings), true);
+	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, mouse, true, true, keybindings), false);
+	assert.equal(shouldHandleFullscreenViewportInput(inline, editor, mouse, true, false, keybindings), true);
+	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, "\x1bOH", false, true, keybindings), false);
+});
 
 test("a forwarded keypress pipelines a fresh frame request behind the input", async () => {
 	const bridge = makeBridge();
@@ -288,6 +317,44 @@ test("fullscreen forwards workflow node click press and release through the remo
 				.slice(-2)
 				.map((command) => command.data),
 			[press, release],
+		);
+	} finally {
+		overlay.hide();
+		tui.stop();
+	}
+});
+
+test("fullscreen keeps pi-tui selection active while a workflow overlay owns focus", async () => {
+	const { host, overlay, tui, terminal } = await makeFullscreenGraphFixture();
+	try {
+		const lines = host.render(terminal.columns).map((line) => stripTerminalSequences(line));
+		const targetRow = lines.findIndex((line) => line.includes("stage-0"));
+		assert.ok(targetRow >= 0, "workflow overlay did not render a selectable row");
+		const targetCol = lines[targetRow]!.indexOf("stage-0");
+		assert.ok(targetCol >= 0, "workflow overlay did not render selectable text");
+
+		terminal.input(sgrMouse(0, targetCol, targetRow));
+		await flush();
+		terminal.input(sgrMouse(32, targetCol + 4, targetRow));
+		await flush();
+		terminal.input(sgrMouse(0, targetCol + 4, targetRow, "m"));
+		await flush();
+		tui.renderNow();
+		assert.equal(Reflect.get(tui, "selectionPressActive"), false, "overlay drag selection did not complete");
+		assert.equal(Reflect.get(tui, "selectionDragged"), true, "overlay consumed the drag selection");
+		assert.ok(
+			terminal.writes.some((write) => write.includes("\x1b]52;c;")),
+			"pi-tui did not copy a selection made over the workflow overlay",
+		);
+
+		const writesBeforeMultiClick = terminal.writes.length;
+		for (const final of ["M", "m", "M", "m"] as const) {
+			terminal.input(sgrMouse(0, targetCol, targetRow, final));
+			await flush();
+		}
+		assert.ok(
+			terminal.writes.slice(writesBeforeMultiClick).some((write) => write.includes("\x1b]52;c;")),
+			"pi-tui did not copy a multi-click selection over the overlay",
 		);
 	} finally {
 		overlay.hide();
@@ -462,6 +529,54 @@ test("an unhandled isolated fullscreen key reaches the transcript once", async (
 		assert.deepEqual(inputs, ["\x1bOH"], "the child did not receive exactly one input");
 		assert.equal(transcript.scrollTop, 0, "an unhandled remote key did not reach the transcript");
 	} finally {
+		tui.stop();
+	}
+});
+test("fullscreen workflow overlay Ctrl+T falls through to the host thinking action", async () => {
+	let thinkingToggles = 0;
+	const inputs: string[] = [];
+	const hostKeybindings = new KeybindingsManager();
+	const bridge = makeBridge({
+		fullscreen: true,
+		onOverlayUnhandledInput: (data) => {
+			if (isKeyRelease(data) || !hostKeybindings.matches(data, "app.thinking.toggle")) return false;
+			thinkingToggles += 1;
+			return true;
+		},
+	});
+	void bridge.child.custom(
+		() => ({
+			render: () => ["workflow overlay"],
+			handleInput: (data: string) => {
+				inputs.push(data);
+				return false;
+			},
+			invalidate: () => {},
+		}),
+		{ overlay: true },
+	);
+	await flush();
+	const host = bridge.hostComponent;
+	const tui = bridge.tui;
+	const terminal = bridge.terminal;
+	assert.ok(host, "remote workflow overlay did not mount on the host");
+	assert.ok(tui, "fullscreen renderer did not mount");
+	assert.ok(terminal, "fullscreen terminal did not mount");
+
+	tui.setLayoutRoot(new Text("transcript", 0, 0));
+	const overlay = tui.showOverlay(host, { anchor: "center", width: "100%", maxHeight: "100%", margin: 0 });
+	tui.start();
+	tui.renderNow();
+	try {
+		assert.equal(hostKeybindings.matches("\x14", "app.thinking.toggle"), true);
+		assert.equal(hostKeybindings.matches("\x14", "app.tree.filter.noTools"), true);
+		terminal.input("\x14");
+		await flush();
+		tui.renderNow();
+		assert.deepEqual(inputs, ["\x14"], "the focused workflow overlay must see Ctrl+T first");
+		assert.equal(thinkingToggles, 1, "Ctrl+T must reach the host thinking action once");
+	} finally {
+		overlay.hide();
 		tui.stop();
 	}
 });

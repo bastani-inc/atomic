@@ -72,10 +72,6 @@ class RemoteTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
-	/** Ask the host to toggle host-TTY mouse-scroll reporting for this component. */
-	setMouseScrollTracking(enabled: boolean): void {
-		this.control?.({ kind: "mouse-scroll-tracking", enabled });
-	}
 	/** Ask the host to toggle host-TTY autowrap (DECAWM) for this component. */
 	setAutowrap(enabled: boolean): void {
 		this.control?.({ kind: "autowrap", enabled });

@@ -265,6 +265,10 @@ describe("WorkflowAttachPane", () => {
 	test("uses host terminal rows in graph mode", () => {
 		// The attach pane passes the host TUI to GraphView so the overlay
 		// frame fills the terminal in graph mode.
+	test("forwards getViewportRows to graph mode", () => {
+		// The host provides terminal.rows through `getViewportRows`; the
+		// attach pane must thread that through to GraphView so the
+		// overlay frame fills the terminal in graph mode.
 		const store = createStore();
 		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
 		const pane = new WorkflowAttachPane({

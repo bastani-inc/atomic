@@ -12,7 +12,7 @@ import {
 	trailingWidgetBorderChar,
 	widgetHintTargetLineIndex,
 } from "./stage-chat-view-render-helpers.js";
-import { STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, type StageChatViewContext } from "./stage-chat-view-types.js";
+import type { StageChatViewContext } from "./stage-chat-view-types.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 export function renderHeader(ctx: StageChatViewContext, width: number, stage: StageSnapshot | undefined): string[] {
@@ -136,22 +136,13 @@ function mergeOrchestratorReturnHintIntoLine(
 		minimumPrefixWidth?: number;
 	} = {},
 ): string {
-	const copyModeState = ctx.mouseScrollCaptureEnabled ? "off" : "on";
 	const fullHint = {
-		plain: `ctrl+x return to graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`,
-		styled:
-			paint("ctrl+x", ctx.theme.text, { bold: true }) +
-			paint(" return to graph · ", ctx.theme.textMuted) +
-			paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
-			paint(` copy mode ${copyModeState}`, ctx.theme.textMuted),
+		plain: "ctrl+x return to graph",
+		styled: paint("ctrl+x", ctx.theme.text, { bold: true }) + paint(" return to graph", ctx.theme.textMuted),
 	};
 	const compactHint = {
-		plain: `ctrl+x graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} ${copyModeState}`,
-		styled:
-			paint("ctrl+x", ctx.theme.text, { bold: true }) +
-			paint(" graph · ", ctx.theme.textMuted) +
-			paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
-			paint(` ${copyModeState}`, ctx.theme.textMuted),
+		plain: "ctrl+x graph",
+		styled: paint("ctrl+x", ctx.theme.text, { bold: true }) + paint(" graph", ctx.theme.textMuted),
 	};
 	const trailingBorder = options.preserveTrailingBorder === true ? trailingWidgetBorderChar(line) : "";
 	const suffixWidth = visibleWidth(trailingBorder);

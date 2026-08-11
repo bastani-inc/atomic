@@ -363,9 +363,8 @@ export class RemoteComponentController {
 					);
 					mounted = { component, done, engineDone: false, handlesCtrlC };
 					this.mounted.set(componentId, mounted);
-					// Bind this component to the real host terminal so buffered/pending
-					// terminal-mode controls (e.g. mouse-scroll reporting the overlay
-					// enabled before the mount frame) apply to the host TTY.
+					// Bind this component to the real host terminal so a buffered
+					// autowrap control emitted before the mount frame applies to the host TTY.
 					this.terminalModes.onMount(componentId, hostTerminal(tui));
 					return component;
 				},

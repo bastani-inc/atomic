@@ -99,7 +99,6 @@ export class StageChatView implements Component, Focusable {
 	private promptMaxScroll!: StageChatViewContext["promptMaxScroll"];
 	private promptVisibleRows!: StageChatViewContext["promptVisibleRows"];
 	private localPaused!: StageChatViewContext["localPaused"];
-	private mouseScrollCaptureEnabled!: StageChatViewContext["mouseScrollCaptureEnabled"];
 	private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
 	private _unsubscribeStore!: StageChatViewContext["_unsubscribeStore"];
 	private _unsubscribeHandle!: StageChatViewContext["_unsubscribeHandle"];
@@ -185,10 +184,6 @@ export class StageChatView implements Component, Focusable {
 		return fitStageChatFrame(lines, totalRows, blankLine(w));
 	}
 
-	wantsMouseScrollTracking(): boolean {
-		return this.mouseScrollCaptureEnabled;
-	}
-
 	handleInput(data: string): boolean {
 		return handleStageChatInput(this._ctx(), data);
 	}
@@ -233,7 +228,6 @@ export class StageChatView implements Component, Focusable {
 		void this.promptScrollOffset;
 		void this.promptMaxScroll;
 		void this.promptVisibleRows;
-		void this.mouseScrollCaptureEnabled;
 		void this.seenNoticeIds;
 		void this._unsubscribeStore;
 		void this._unsubscribeHandle;

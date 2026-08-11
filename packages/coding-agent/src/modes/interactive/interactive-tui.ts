@@ -52,6 +52,8 @@ export interface InteractiveTuiOptions {
 	 * overlay; non-overlay focus keeps pi-tui's transcript selection path.
 	 */
 	shouldHandleViewportInput?: (data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean;
+	/** Handle an unconsumed overlay input before replaying it to the viewport. */
+	onOverlayUnhandledInput?: (data: string) => boolean;
 }
 
 const viewportInputListeners = new WeakSet<AtomicTuiAltScreen>();
@@ -60,6 +62,7 @@ const viewportInputGates = new WeakMap<
 	AtomicTuiAltScreen,
 	(data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean
 >();
+const overlayUnhandledInputHandlers = new WeakMap<AtomicTuiAltScreen, (data: string) => boolean>();
 interface ViewportInputSubscription {
 	viewportUnsubscribe: () => void;
 	routeListener: TuiInputListener;
@@ -68,6 +71,17 @@ interface ViewportInputSubscription {
 
 const viewportInputSubscriptions = new WeakMap<AtomicTuiAltScreen, ViewportInputSubscription>();
 
+/** Whether a mouse sequence belongs to the left-button selection gesture. */
+function isLeftMouseSequence(data: string): boolean {
+	const sgr = /^\x1b\[<(\d+);\d+;\d+[Mm]$/.exec(data);
+	if (sgr) {
+		const button = Number.parseInt(sgr[1]!, 10);
+		return (button & 64) === 0 && (button & 3) === 0;
+	}
+	if (!data.startsWith("\x1b[M") || data.length !== 6) return false;
+	const button = data.charCodeAt(3) - 32;
+	return button >= 0 && (button & 64) === 0 && (button & 3) === 0;
+}
 /**
  * The first `addInputListener` call is load-bearing: pi-tui 0.84.1 registers
  * its viewport listener from `TuiAltScreen`'s constructor
@@ -82,9 +96,11 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		logDirectory: string,
 		options: ConstructorParameters<typeof TuiAltScreen>[3],
 		viewportInputGate?: (data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean,
+		onOverlayUnhandledInput?: (data: string) => boolean,
 	) {
 		super(terminal, showHardwareCursor, logDirectory, options);
 		if (viewportInputGate) viewportInputGates.set(this, viewportInputGate);
+		if (onOverlayUnhandledInput) overlayUnhandledInputHandlers.set(this, onOverlayUnhandledInput);
 	}
 
 	/**
@@ -163,6 +179,10 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		}
 	}
 
+	/** Keep pi-tui's selection state in sync while an overlay handles a click. */
+	private forwardSelectionMouseInput(viewportListener: TuiInputListener, data: string, focused: Component): void {
+		if (isLeftMouseSequence(data) && this.getFocusedComponent() === focused) viewportListener(data);
+	}
 	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
 		const gate = viewportInputGates.get(this);
 		const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
@@ -174,6 +194,10 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		this.repairOverlayFocus();
 		const focused = this.getFocusedComponent();
 		const tui = this as unknown as TuiOverlayInternals;
+		const handleOverlayUnhandledInput = (): boolean => {
+			if (this.getFocusedComponent() !== focused || !this.isFocusedOverlay()) return false;
+			return overlayUnhandledInputHandlers.get(this)?.(data) === true;
+		};
 		if (focused?.handleInput && (!isKeyRelease(data) || focused.wantsKeyRelease === true)) {
 			const handleInput = focused.handleInput as (
 				data: string,
@@ -182,21 +206,34 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			if (result instanceof Promise) {
 				void result.then(
 					(handled) => {
-						if (handled === true) tui.requestImmediateRender();
-						else if (handled === false && this.getFocusedComponent() === focused) viewportListener(data);
+						if (handled === true) {
+							this.forwardSelectionMouseInput(viewportListener, data, focused);
+							tui.requestImmediateRender();
+						} else if (handled === false && this.getFocusedComponent() === focused) {
+							if (handleOverlayUnhandledInput()) tui.requestImmediateRender();
+							else viewportListener(data);
+						}
 					},
 					() => {
-						if (this.getFocusedComponent() === focused) viewportListener(data);
+						if (this.getFocusedComponent() === focused) {
+							if (handleOverlayUnhandledInput()) tui.requestImmediateRender();
+							else viewportListener(data);
+						}
 					},
 				);
 				return { consume: true };
 			}
 			if (result === true) {
+				this.forwardSelectionMouseInput(viewportListener, data, focused);
 				tui.requestImmediateRender();
 				return { consume: true };
 			}
 		}
 
+		if (handleOverlayUnhandledInput()) {
+			tui.requestImmediateRender();
+			return { consume: true };
+		}
 		viewportListener(data);
 		return { consume: true };
 	}
@@ -240,6 +277,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): Interactiv
 			onRightClickPaste: options.onRightClickPaste,
 		},
 		options.shouldHandleViewportInput,
+		options.onOverlayUnhandledInput,
 	);
 }
 

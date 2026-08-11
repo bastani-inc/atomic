@@ -61,7 +61,6 @@ export type {
 	PiKeybindings,
 	PiOverlayHandle,
 	PiOverlayOptions,
-	PiRemoteTerminalControl,
 	PiTheme,
 	PiUIDialogOptions,
 	PiUISurface,

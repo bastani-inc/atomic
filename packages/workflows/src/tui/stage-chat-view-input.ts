@@ -18,6 +18,10 @@ import { PROMPT_SCROLL_STEP_ROWS, type StageChatViewContext } from "./stage-chat
 import { Key, matchesKey } from "./text-helpers.js";
 
 export function handleStageChatInput(ctx: StageChatViewContext, data: string): boolean {
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	if (matchesAction(keybindings, data, "app.thinking.toggle") || (!keybindings && matchesKey(data, Key.ctrl("t")))) {
+		return false;
+	}
 	if (matchesKey(data, Key.ctrl("x"))) {
 		if (ctx.mountedCustomUi) releaseMountedCustomUi(ctx);
 		else {
@@ -26,11 +30,6 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 			recordCurrentPromptDraft(ctx);
 		}
 		ctx.onDetach();
-		return true;
-	}
-	if (matchesKey(data, Key.ctrl("t"))) {
-		ctx.mouseScrollCaptureEnabled = !ctx.mouseScrollCaptureEnabled;
-		ctx.requestRender?.();
 		return true;
 	}
 	if (ctx.mountedCustomUi) {

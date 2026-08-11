@@ -122,6 +122,8 @@
 - Removed the `tsx` dependency from the shipped runtime. The Intercom broker's Node path now runs on Atomic's bundled `jiti` loader, which is dependency-free pure JavaScript, instead of resolving `tsx` first. `tsx` was the only thing pulling `esbuild`, so this removes `esbuild`, its 26 platform packages, and `fsevents` from `npm-shrinkwrap.json` and from every release archive — about 11.5 MB across 72 files. The `npx --no-install tsx` config pair remains a recognized compatibility sentinel, and explicit custom broker commands are unaffected ([#2208](https://github.com/bastani-inc/atomic/issues/2208)).
 - Behavior change worth noting for extension authors: TypeScript reached through the Node broker path is now transpiled by jiti (Babel-based) rather than esbuild. Both erase types without type-checking, but they are not identical — jiti defaults JSX support and `tsconfig` path aliases to off, and enables legacy decorators. A third-party extension that resolved `tsx` from the bundled `node_modules` was relying on an undocumented dependency and will no longer find it ([#2208](https://github.com/bastani-inc/atomic/issues/2208)).
 
+- Removed the Atomic-only workflow custom-terminal mouse-scroll control from the isolated engine protocol and host terminal-mode arbiter; remote overlays retain the typed autowrap control only. Focused workflow overlays now leave `ctrl+t` to the host `app.thinking.toggle` action, while the tree selector continues to receive the same key through `app.tree.filter.noTools`. Fullscreen pi-tui owns application selection over overlays; copy still uses OSC 52, and terminals that refuse OSC 52 writes require the modifier-drag bypass (Shift/Option, as provided by the terminal).
+
 ## [0.9.13-alpha.1] - 2026-08-05
 
 ### Added

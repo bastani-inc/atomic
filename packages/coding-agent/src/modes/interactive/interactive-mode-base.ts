@@ -2,7 +2,7 @@
  * Shared state and constructor wiring for interactive mode.
  * Responsibility-specific behavior is installed by sibling modules.
  */
-import { isViewportTUI, type ScrollView, type TuiInputListener } from "@earendil-works/pi-tui";
+import { isKeyRelease, isViewportTUI, type ScrollView, type TuiInputListener } from "@earendil-works/pi-tui";
 
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
@@ -84,6 +84,7 @@ export function shouldHandleFullscreenViewportInput(
 ): boolean {
 	if (focused === editor || !focused?.handleInput) return true;
 	if (isMouseInput) return !focusedIsOverlay;
+	if (focusedIsOverlay && keybindings.matches(data, "app.thinking.toggle")) return false;
 	return !FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
 }
 
@@ -146,6 +147,14 @@ export class InteractiveModeBase {
 			focusedIsOverlay,
 			this.keybindings,
 		);
+	};
+	private readonly onOverlayUnhandledInput = (data: string): boolean => {
+		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.thinking.toggle")) return false;
+		// Reuse the default editor's action dispatcher even while a workflow
+		// overlay owns focus. This keeps the host binding and its user remap as
+		// the source of truth instead of calling the implementation directly.
+		this.defaultEditor.handleInput(data);
+		return true;
 	};
 
 	private readonly onRightClickPaste = (): void => {
@@ -483,6 +492,7 @@ export class InteractiveModeBase {
 			terminal: options.terminal,
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
+			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());

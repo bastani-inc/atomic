@@ -53,8 +53,6 @@ async function registerIsolatedTests(): Promise<void> {
 		import("../../packages/workflows/src/shared/store.js"),
 	]);
 
-	const MOUSE_SCROLL_TRACKING_ON = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
-	const MOUSE_SCROLL_TRACKING_OFF = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 	const TERMINAL_AUTOWRAP_ON = "\x1b[?7h";
 	const TERMINAL_AUTOWRAP_OFF = "\x1b[?7l";
 
@@ -121,13 +119,11 @@ async function registerIsolatedTests(): Promise<void> {
 	interface RemoteHarness {
 		adapter: GraphOverlayPort;
 		localWrites: string[];
-		remoteMouse: boolean[];
 		remoteAutowrap: boolean[];
 	}
 
 	function buildRemoteHarness(platform: NodeJS.Platform = "win32"): RemoteHarness {
 		const localWrites: string[] = [];
-		const remoteMouse: boolean[] = [];
 		const remoteAutowrap: boolean[] = [];
 		let hidden = false;
 		let focused = true;
@@ -158,7 +154,6 @@ async function registerIsolatedTests(): Promise<void> {
 						terminal: {
 							rows: 24,
 							columns: 80,
-							setMouseScrollTracking: (enabled) => remoteMouse.push(enabled),
 							setAutowrap: (enabled) => remoteAutowrap.push(enabled),
 						},
 					};
@@ -177,38 +172,35 @@ async function registerIsolatedTests(): Promise<void> {
 				write: (data) => localWrites.push(data),
 			},
 		});
-		return { adapter, localWrites, remoteMouse, remoteAutowrap };
+		return { adapter, localWrites, remoteAutowrap };
 	}
 
-	describe("workflow overlay remote terminal control", () => {
-		test("routes mouse + autowrap through the host capability, never the local stdout seam", () => {
-			const { adapter, localWrites, remoteMouse, remoteAutowrap } = buildRemoteHarness();
+	describe("workflow overlay remote autowrap control", () => {
+		test("routes autowrap through the host capability, never the local stdout seam", () => {
+			const { adapter, localWrites, remoteAutowrap } = buildRemoteHarness();
 
 			adapter.open(null);
 
 			assert.deepEqual(localWrites, [], "must not write escape sequences to local stdout in isolated mode");
-			assert.equal(remoteMouse.at(0), true, "mouse-scroll tracking enabled via host capability");
 			assert.deepEqual(remoteAutowrap, [false], "Windows autowrap disabled via host capability");
 		});
 
-		test("resets mouse + autowrap through the host capability on close", () => {
-			const { adapter, localWrites, remoteMouse, remoteAutowrap } = buildRemoteHarness();
+		test("resets autowrap through the host capability on close", () => {
+			const { adapter, localWrites, remoteAutowrap } = buildRemoteHarness();
 
 			adapter.open(null);
 			adapter.close();
 
 			assert.deepEqual(localWrites, []);
-			assert.equal(remoteMouse.at(-1), false, "mouse-scroll tracking reset off on close");
 			assert.deepEqual(remoteAutowrap, [false, true], "autowrap restored on close");
 		});
 
-		test("skips autowrap on non-Windows hosts but still drives mouse remotely", () => {
-			const { adapter, localWrites, remoteMouse, remoteAutowrap } = buildRemoteHarness("darwin");
+		test("skips autowrap on non-Windows hosts", () => {
+			const { adapter, localWrites, remoteAutowrap } = buildRemoteHarness("darwin");
 
 			adapter.open(null);
 
 			assert.deepEqual(localWrites, []);
-			assert.equal(remoteMouse.at(0), true);
 			assert.deepEqual(remoteAutowrap, [], "autowrap is Windows-only");
 		});
 	});
@@ -220,7 +212,6 @@ async function registerIsolatedTests(): Promise<void> {
 			adapter.open(null);
 
 			assert.deepEqual(autowrapWrites(writes), [TERMINAL_AUTOWRAP_OFF]);
-			assert.equal(writes.includes(MOUSE_SCROLL_TRACKING_ON), true);
 		});
 		test("leaves fullscreen terminal modes to pi-tui on the local fallback path", () => {
 			const { adapter, writes } = buildHarness("win32", true, "fullscreen");
@@ -275,7 +266,7 @@ async function registerIsolatedTests(): Promise<void> {
 			adapter.open(null);
 			adapter.toggle(null);
 
-			assert.deepEqual(writes, [MOUSE_SCROLL_TRACKING_ON, MOUSE_SCROLL_TRACKING_ON, MOUSE_SCROLL_TRACKING_OFF]);
+			assert.deepEqual(writes, []);
 		});
 
 		test("writes no terminal controls when stdout is not a TTY", () => {

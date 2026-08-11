@@ -30,14 +30,12 @@ export interface SerializableOverlayOptions {
 }
 
 /**
- * Allowlisted terminal-mode controls a remote custom component may ask the host
+ * Allowlisted terminal-mode control a remote custom component may ask the host
  * to apply to the real host TTY. Deliberately NOT a raw byte channel: the child
  * names an intent and the host owns the concrete escape sequence, so a buggy or
- * compromised child can only toggle these two documented modes.
+ * compromised child can only toggle this documented mode.
  */
-export type EngineTerminalControl =
-	| { kind: "mouse-scroll-tracking"; enabled: boolean }
-	| { kind: "autowrap"; enabled: boolean };
+export type EngineTerminalControl = { kind: "autowrap"; enabled: boolean };
 
 export interface EngineExtensionShortcut {
 	key: string;
@@ -173,11 +171,10 @@ function isCallbackActivity(value: JsonValue): value is JsonObject & CallbackAct
 }
 
 function parseEngineTerminalControl(value: JsonValue | undefined): EngineTerminalControl | undefined {
-	if (value === undefined || !isJsonObject(value) || typeof value.enabled !== "boolean") return undefined;
-	if (value.kind === "mouse-scroll-tracking" || value.kind === "autowrap") {
-		return { kind: value.kind, enabled: value.enabled };
+	if (value === undefined || !isJsonObject(value) || value.kind !== "autowrap" || typeof value.enabled !== "boolean") {
+		return undefined;
 	}
-	return undefined;
+	return { kind: "autowrap", enabled: value.enabled };
 }
 
 const SESSION_PICKER_MESSAGE_COLORS = ["success", "warning", "accent", "error"] as const;

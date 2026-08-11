@@ -430,8 +430,8 @@ describe("StageChatView", () => {
 		const footer = view
 			.render(40)
 			.map(stripAnsi)
-			.find((line) => line.includes("ctrl+x graph"));
-		assert.match(footer ?? "", /\sctrl\+x graph · ctrl\+t off$/);
+			.find((line) => line.includes("ctrl+x return to graph"));
+		assert.match(footer ?? "", /\sctrl\+x return to graph$/);
 		assert.equal(footer?.length, 40);
 		assert.doesNotMatch(footer ?? "", /clactrl\+x/);
 		view.dispose();

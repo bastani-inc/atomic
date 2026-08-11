@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed fullscreen workflow graph and stage-chat mouse routing. Focused workflow overlays now receive SGR/X10 wheel and click press/release sequences through the host's bounded custom-input reply channel before pi-tui's alternate-screen viewport, restoring graph scrolling and click-to-attach without using the local TTY-tracking seam for fullscreen input routing; regular-mode hosts still use that seam for mouse reporting ([#2303](https://github.com/bastani-inc/atomic/issues/2303)).
+- Fixed fullscreen workflow graph and stage-chat mouse routing. Focused workflow overlays now receive SGR/X10 wheel and click press/release sequences through the host's bounded custom-input reply channel before pi-tui's alternate-screen viewport, restoring graph scrolling and click-to-attach without a workflow-owned TTY-tracking seam; the fullscreen route also mirrors consumed left-button events into pi-tui's application-owned selection path ([#2303](https://github.com/bastani-inc/atomic/issues/2303)).
 - Fixed graph overlay rendering to keep its live vertical position in pi-tui's `ScrollView` and preserve OSC-8 hyperlink terminators when normalizing layout rows.
 
 - Fixed switcher wheel input scrolling an obscured graph and the scrollbar covering the final graph column; overflow now reserves its scrollbar column and the switcher owns wheel selection ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
@@ -36,6 +36,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed workflow stages being unable to use the `subagent` tool at all. The stage policy set `managementActions: "full"` and `fanoutAuthorized: false` together, which contradict: stages could neither delegate nor, because of the companion subagents defect, run read-only management such as `subagent list`. Workflow stages are top-level sessions rather than subagent children, so the policy now sets `fanoutAuthorized: true`, restoring the delegation the workflow docs already describe. Nesting remains bounded by the typed in-process depth policy and Rust admission’s five-level ceiling ([#2220](https://github.com/bastani-inc/atomic/pull/2220), regression from [#2205](https://github.com/bastani-inc/atomic/pull/2205)).
 - Fixed nested subagents in workflow-stage sessions losing the bundled `subagent` extension. In-process child resource loading now carries the bundled package roots and disables only the workflow extension's repeated stage lifecycle, so a stage can delegate and its nested child receives the bundled tools instead of only the base built-in ones ([#2220](https://github.com/bastani-inc/atomic/pull/2220), regression from [#2205](https://github.com/bastani-inc/atomic/pull/2205)).
 - Fixed a stage chat opened on a stage that was already mid-turn showing an empty transcript. The stage's assistant message joins the handle's message list only when its turn ends, and streaming updates now carry a delta rather than the message so far, so a chat mounted after the stream started had nothing to draw and nothing that would restate it — a stage held mid-turn stayed blank for the whole turn. The chat now seeds itself from the stage session's in-flight assistant message when it mounts, and the deltas that arrive after that continue the same message.
+
+### Removed
+
+- Removed workflow-owned mouse-scroll reporting and attached-stage copy mode. Fullscreen pi-tui now keeps application-owned drag and multi-click selection available over workflow overlays, and `ctrl+t` is left to the host keybindings. Copy still uses OSC 52; terminals that refuse OSC 52 writes require the modifier-drag bypass (Shift/Option, as provided by the terminal).
 
 ## [0.9.13-alpha.1] - 2026-08-05
 
