@@ -61,6 +61,10 @@ export interface DurableWorkflowHandle {
 	readonly rootWorkflowId?: string;
 	/** Explicit resumability flag for failed/blocked runs. */
 	readonly resumable?: boolean;
+	/** True when the terminal status came from an author-selected ctx.exit(). */
+	readonly exited?: boolean;
+	/** Author-supplied reason from ctx.exit(), when present. */
+	readonly exitReason?: string;
 	readonly error?: string;
 	readonly failureKind?: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
@@ -278,6 +282,10 @@ export interface DurableWorkflowMetadata {
 	readonly failedToolNodeId?: string;
 	readonly rootWorkflowId?: string;
 	readonly resumable?: boolean;
+	/** True when the terminal status came from an author-selected ctx.exit(). */
+	readonly exited?: boolean;
+	/** Author-supplied reason from ctx.exit(), when present. */
+	readonly exitReason?: string;
 	readonly invocationCwd?: string;
 	readonly origin?: WorkflowActor;
 	readonly workflowCwd?: string;
@@ -304,6 +312,10 @@ export interface ResumableWorkflowEntry {
 	readonly failedToolNodeId?: string;
 	readonly rootWorkflowId?: string;
 	readonly resumable?: boolean;
+	/** True when the terminal status came from an author-selected ctx.exit(). */
+	readonly exited?: boolean;
+	/** Author-supplied reason from ctx.exit(), when present. */
+	readonly exitReason?: string;
 	readonly invocationCwd?: string;
 	readonly origin?: WorkflowActor;
 	readonly workflowCwd?: string;
@@ -314,7 +326,11 @@ export interface ResumableWorkflowEntry {
 }
 
 export interface DurableWorkflowFailureMetadata {
-	readonly error: string;
+	readonly error?: string;
+	/** True when the terminal status came from an author-selected ctx.exit(). */
+	readonly exited?: boolean;
+	/** Author-supplied reason from ctx.exit(), when present. */
+	readonly exitReason?: string;
 	readonly failureKind?: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
 	readonly failureRecoverability?: WorkflowFailureRecoverability;

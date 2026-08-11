@@ -1226,7 +1226,7 @@ export default workflow({
 
 `ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked" | "failed"`; `status` defaults to `"completed"`. Choose `completed` when the objective was met and declared outputs are complete and trustworthy; `skipped` when a precondition made the run a valid no-op; `cancelled` when the work is no longer wanted, which is a decision rather than a defect; `blocked` when valid progress needs a changed condition or a later decision; and `failed` when required work was attempted and definitively could not complete. A bounded reviewer or repair loop that does not converge is `blocked`, not `failed`.
 
-`reason` is persisted and shown in status surfaces and lifecycle notices, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable. `failed` exits default to `resumable: false`; set `resumable: true` only when a later retry is intended. The other exit statuses keep their existing non-resumable author-exit behavior. Public `pause`, `interrupt`, and `quit`, plus internal destructive cancellation, keep their distinct existing behavior.
+`reason` is persisted and shown in status surfaces and lifecycle notices, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable. `failed` exits default to `resumable: false`; set `resumable: true` only when a later durable retry is intended. `resumable` is valid only with `status: "failed"`; supplying it for another status records a non-resumable authoring failure. A durable retry keeps the failed handle in the resume catalog and re-dispatches the workflow with completed checkpoints replayed. The low-level `resumeRun()` helper only inspects terminal runs; it reports the durable retry path instead of silently claiming that it resumed. The other exit statuses keep their existing non-resumable author-exit behavior. Public `pause`, `interrupt`, and `quit`, plus internal destructive cancellation, keep their distinct existing behavior.
 
 An author-initiated failed exit returns to a parent as `{ exited: true, status: "failed" }` with its reason and partial outputs; it does not throw. An unintentional child failure still throws, so check `child.exited === true` before reading required child outputs and use the discriminator to branch. The lifecycle terminal notice uses the same steer/trigger-turn delivery path and references partial outputs so the launching agent does not need a separate status call.
 
@@ -2222,12 +2222,13 @@ type WorkflowExitOutputValues<TOutputs extends WorkflowOutputValues> =
 interface WorkflowExitOptions<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> {
   readonly status?: "completed" | "skipped" | "cancelled" | "blocked" | "failed";
   readonly reason?: string;
+  /** Valid only when status is failed; defaults to false. */
   readonly resumable?: boolean;
   readonly outputs?: WorkflowExitOutputValues<TOutputs>;
 }
 ```
 
-Intentionally ends the current run from any call depth. `status` defaults to `"completed"`; `failed` exits default to `resumable: false`, and `resumable: true` opts into a later retry. The runtime persists and displays `reason`, and `outputs` may provide only declared, schema-valid, serializable output keys.
+Intentionally ends the current run from any call depth. `status` defaults to `"completed"`; `failed` exits default to `resumable: false`, and `resumable: true` keeps the durable run eligible for a later retry. Supplying `resumable` with another status records a non-resumable authoring failure. The runtime persists and displays `reason`, and `outputs` may provide only declared, schema-valid, serializable output keys.
 
 See [Early exit with `ctx.exit()`](#early-exit-with-ctxexit) for snapshotting, cleanup, replay, and race semantics.
 
@@ -3825,7 +3826,7 @@ interface Store {
 
 This is the stable core exposed by the standalone authoring declaration. Atomic's runtime store also has graph, prompt, session, pause/resume, snapshot, and subscription methods used by embedded integrations; those richer runtime controls are not part of the lean workflow-package `Store` contract shown here.
 
-The embedded runtime's `graphSnapshot()` returns one deeply frozen, payload-free projection for each store version; repeated reads at the same version return the same object. Runtime code must change graph-visible state through a version-bumping store method before another task can observe it. `subscribeInvalidation()` reports those changes synchronously without creating a full snapshot. Legacy `subscribe(snapshot)` consumers still receive a full cloned snapshot; this includes status-file output when `statusFile: true`, while the default `statusFile: false` path avoids that payload traversal.
+The embedded runtime's `graphSnapshot()` returns one deeply frozen, payload-bounded projection for each store version; repeated reads at the same version return the same object. Runtime code must change graph-visible state through a version-bumping store method before another task can observe it. `subscribeInvalidation()` reports those changes synchronously without creating a full snapshot. Legacy `subscribe(snapshot)` consumers still receive a full cloned snapshot; this includes status-file output when `statusFile: true`, while the default `statusFile: false` path avoids that payload traversal. Authored stage results remain omitted; a failed author-exit result may retain a bounded JSON output object for status inspection, and oversized output falls back to the existing bounded string fields without adding synthetic output keys.
 
 ### `createCancellationRegistry()` / `cancellationRegistry`
 

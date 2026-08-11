@@ -265,7 +265,9 @@ export interface Store {
 	clear(): void;
 	snapshot(): StoreSnapshot;
 	/**
-	 * Return one immutable payload-free graph projection per store version.
+	 * Return one immutable payload-bounded graph projection per store version.
+	 * Authored failed-exit results may retain bounded JSON output values; all
+	 * other run payloads stay omitted or compacted to bounded diagnostic fields.
 	 * Graph-visible state may change only through a version-bumping store method;
 	 * direct mutation of values returned by `runs()` would leave this cache stale.
 	 */

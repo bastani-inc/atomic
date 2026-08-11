@@ -14,7 +14,6 @@ import type { WorkflowOutputValues, WorkflowSerializableValue } from "./types.js
 
 export const COMPACT_RESULT_FIELD_LIMIT = 1024;
 const COMPACT_EXIT_OUTPUT_LIMIT = COMPACT_RESULT_FIELD_LIMIT * 4;
-const COMPACT_EXIT_OUTPUT_KEYS = "__atomic_partial_output_keys";
 
 function compactResultField(value: WorkflowSerializableValue | undefined): string | undefined {
 	if (typeof value !== "string") return undefined;
@@ -56,18 +55,9 @@ function compactExitedOutputs(
 			}
 		}
 	} catch {
-		// Fall through to the bounded key reference below.
+		// Fall through to the bounded legacy fields below.
 	}
-
-	const omittedKeys = Object.entries(result)
-		.filter(([key]) => !isCompactResultKey(key))
-		.map(([key]) => key);
-	if (omittedKeys.length === 0) return Object.keys(compact).length === 0 ? undefined : compact;
-	const keyReference = compactResultField(omittedKeys.join(", "));
-	return {
-		...compact,
-		...(keyReference !== undefined ? { [COMPACT_EXIT_OUTPUT_KEYS]: keyReference } : {}),
-	};
+	return Object.keys(compact).length === 0 ? undefined : compact;
 }
 
 function compactExitedObject(result: Record<string, WorkflowSerializableValue>): WorkflowOutputValues | undefined {
@@ -77,10 +67,6 @@ function compactExitedObject(result: Record<string, WorkflowSerializableValue>):
 		if (typeof value === "string") compacted[key] = compactResultField(value) ?? "";
 	}
 	return Object.keys(compacted).length === 0 ? undefined : compacted;
-}
-
-function isCompactResultKey(key: string): boolean {
-	return key === "status" || key === "summary" || key === "remaining_work" || key === "result";
 }
 
 // Both cloners are called only from a `!== undefined` guard at their call sites,
@@ -152,7 +138,7 @@ function compactToolNode(node: ToolNodeSnapshot): ToolNodeSnapshot {
 
 function compactRun(run: RunSnapshot): RunSnapshot {
 	const { inputs: _inputs, result: sourceResult, stages, toolNodes, pendingPrompt, ...metadata } = run;
-	const result = compactRunResult(sourceResult, run.exited === true);
+	const result = compactRunResult(sourceResult, run.exited === true && run.status === "failed");
 	return {
 		...metadata,
 		inputs: {},

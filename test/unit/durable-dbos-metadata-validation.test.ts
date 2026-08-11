@@ -6,7 +6,8 @@ import {
 	type DbosStepRecord,
 	type DbosWorkflowInfo,
 } from "../../packages/workflows/src/durable/dbos-backend.js";
-import { parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
+import { encodeMetadata, parseCurrentMetadataRecord } from "../../packages/workflows/src/durable/dbos-metadata.js";
+import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 
 interface MockDbosState {
@@ -97,6 +98,28 @@ test("DBOS hydration hides malformed and non-current metadata without mutating i
 	assert.deepEqual(sdk.state.deletions, []);
 	assert.equal(sdk.state.workflows.has("wf-meta-valid"), true);
 });
+test("DBOS metadata round-trips intentional failed-exit fields", () => {
+	const metadata: DurableWorkflowMetadata = {
+		workflowId: "wf-exit-metadata",
+		name: "exit-metadata",
+		inputs: {},
+		status: "failed",
+		completedCheckpoints: 1,
+		pendingPrompts: 0,
+		createdAt: 10,
+		promptReservationEpoch: "epoch-1",
+		updatedAt: 20,
+		exited: true,
+		exitReason: "retry later",
+	};
+	const parsed = parseCurrentMetadataRecord(
+		{ stepName: "__atomic_metadata:20:exit", output: encodeMetadata(metadata) },
+		metadata.workflowId,
+	);
+	assert.equal(parsed?.exited, true);
+	assert.equal(parsed?.exitReason, "retry later");
+	assert.equal(parsed?.error, undefined);
+});
 
 test("DBOS metadata rejects invalid workflow failure enums", () => {
 	const metadata = {
@@ -116,6 +139,8 @@ test("DBOS metadata rejects invalid workflow failure enums", () => {
 		["failureCode", "invalid_code"],
 		["failureRecoverability", "invalid_recoverability"],
 		["failureDisposition", "invalid_disposition"],
+		["exited", "invalid_exited"],
+		["exitReason", 42],
 	] as const) {
 		const record: DbosStepRecord = {
 			stepName: `__atomic_metadata:20:${field}`,

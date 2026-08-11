@@ -249,6 +249,30 @@ describe("payload-free store observation", () => {
 		);
 		assert.equal(store.graphSnapshot().runs[0]?.result, undefined);
 	});
+	test("bounds oversized failed exit outputs without adding projection keys", () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-oversized-exit-output",
+			name: "oversized-exit-output",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordRunEnd(
+			"run-oversized-exit-output",
+			"failed",
+			{ status: "failed", huge: "x".repeat(COMPACT_RESULT_FIELD_LIMIT * 5), nested: { secret: true } },
+			undefined,
+			{ exited: true, resumable: false },
+		);
+
+		const projected = store.graphSnapshot().runs[0]?.result;
+		assert.equal(projected?.status, "failed");
+		assert.equal(projected?.huge, undefined);
+		assert.equal(projected?.nested, undefined);
+		assert.equal(projected?.__atomic_partial_output_keys, undefined);
+	});
 
 	test("deep-freezes the shared graph snapshot", () => {
 		const store = createStore();

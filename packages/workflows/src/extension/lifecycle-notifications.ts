@@ -384,9 +384,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 	if (details.kind === "blocked") {
 		const errorText = details.error ? `: ${details.error}` : "";
 		const stateText = details.active === true ? "is blocked" : "ended blocked";
-		const outputsText = formatLifecycleOutputs(details.outputs);
-		const outputSuffix = outputsText === undefined ? "" : ` Partial outputs: ${outputsText}`;
-		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}${outputSuffix}. Inspect: /workflow status ${details.runId}`;
+		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Inspect: /workflow status ${details.runId}`;
 	}
 	if (details.kind === "paused" || details.kind === "quit") {
 		const stopStage = details.stageName ?? details.stageId;
@@ -427,7 +425,7 @@ function makeTerminalNotice(
 	const failedToolNodeId = kind === "failed" && run.failedStageId === undefined ? run.failedToolNodeId : undefined;
 	const failedTool = (run.toolNodes ?? []).find((node) => node.id === failedToolNodeId);
 	const activeBlocked = kind === "blocked" && isActiveRecoverableBlockedRun(run);
-	const outputs = run.exited === true && run.result !== undefined ? run.result : undefined;
+	const outputs = kind === "failed" && run.exited === true && run.result !== undefined ? run.result : undefined;
 	const error = activeBlocked
 		? (run.failureMessage ?? structuredRecoverableWorkflowFailureText(run) ?? run.error)
 		: (run.error ??
@@ -633,8 +631,6 @@ function truncateSnippet(value: string): string {
 
 function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): string | undefined {
 	if (outputs === undefined) return undefined;
-	const outputKeys = outputs.__atomic_partial_output_keys;
-	if (typeof outputKeys === "string") return `declared keys: ${outputKeys}`;
 	try {
 		const serialized = JSON.stringify(outputs);
 		return serialized === undefined ? "available; inspect the run result" : truncateSnippet(serialized);

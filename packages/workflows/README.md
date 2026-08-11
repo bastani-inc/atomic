@@ -319,9 +319,9 @@ Choose the status by the outcome:
 - `skipped` means a precondition made the run a valid no-op; no work was needed.
 - `cancelled` means the work is no longer wanted; it is a decision, not a defect.
 - `blocked` means valid progress needs a changed condition or a later decision. A bounded reviewer or repair loop that does not converge is blocked, not failed.
-- `failed` means required work was attempted and definitively could not complete. Do not use it for a non-converged reviewer loop. Failed exits are non-resumable by default; set `resumable: true` when a later retry is intended.
+- `failed` means required work was attempted and definitively could not complete. Do not use it for a non-converged reviewer loop. Failed exits are non-resumable by default; set `resumable: true` when a later durable retry is intended. `resumable` is valid only with `failed`; another status records a non-resumable authoring failure.
 
-`reason` is persisted and shown in status and lifecycle notices. `outputs` may be a partial subset of the declared `outputs` contract, but every provided key must be declared, schema-valid, and JSON-serializable. Missing required keys are allowed only on the exit path.
+`reason` is persisted and shown in status and lifecycle notices. `outputs` may be a partial subset of the declared `outputs` contract, but every provided key must be declared, schema-valid, and JSON-serializable. Missing required keys are allowed only on the exit path. A durable retry re-dispatches the workflow with completed checkpoints replayed. The low-level `resumeRun()` helper only inspects terminal runs and reports the durable retry path; it does not silently claim that it resumed one.
 
 When a child uses `ctx.exit()`, `ctx.workflow(child)` returns a discriminated result instead of throwing. Check `child.exited` before reading a required output:
 

@@ -343,6 +343,21 @@ export async function resumeRun(
 		};
 	}
 	if (
+		current.status === "failed" &&
+		current.endedAt !== undefined &&
+		current.exited === true &&
+		current.resumable === true
+	) {
+		return {
+			ok: true,
+			runId,
+			snapshot,
+			resumed: resumedCopy,
+			mode: "snapshot",
+			message: `This failed run is marked resumable; use /workflow resume ${runId} to ask the durable backend to retry it or start a new workflow run.`,
+		};
+	}
+	if (
 		current.endedAt === undefined &&
 		current.resumable === true &&
 		current.failureRecoverability === "recoverable" &&

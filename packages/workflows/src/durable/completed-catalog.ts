@@ -7,6 +7,7 @@ import {
 	boundaryOwner,
 	childRunIdFromDraft,
 	childRunStatus,
+	childScopedEvidenceExists,
 	compareDraftSourceOrder,
 	isSyntheticExitedChild,
 	mergeStageDraft,
@@ -108,6 +109,8 @@ export function completedWorkflowRunSnapshots(
 		endedAt: handle.updatedAt,
 		durationMs: rootDuration,
 		...(handle.error !== undefined ? { error: handle.error } : {}),
+		...(handle.exited !== undefined ? { exited: handle.exited } : {}),
+		...(handle.exitReason !== undefined ? { exitReason: handle.exitReason } : {}),
 		...(handle.failureKind !== undefined ? { failureKind: handle.failureKind } : {}),
 		...(handle.failureCode !== undefined ? { failureCode: handle.failureCode } : {}),
 		...(handle.failureRecoverability !== undefined ? { failureRecoverability: handle.failureRecoverability } : {}),
@@ -285,7 +288,7 @@ function runSnapshotsFromCheckpoints(
 	}
 	for (const group of grouped.values()) group.sort(compareDraftSourceOrder);
 	retainReachableRunGroups(grouped, rootRunId);
-	if (!validateRunGroups(grouped, rootRunId, toolCheckpoints)) return [];
+	if (!validateRunGroups(grouped, rootRunId, toolCheckpoints, checkpoints)) return [];
 	const syntheticChildren: Array<{
 		readonly parentRunId: string;
 		readonly owner: StageDraft;
@@ -295,7 +298,10 @@ function runSnapshotsFromCheckpoints(
 		for (const draft of runDrafts) {
 			const child = workflowChildFromDraft(draft);
 			if (child?.exited !== true || grouped.has(child.runId)) continue;
-			if (!isSyntheticExitedChild(draft, parentRunId, child.runId, rootRunId)) {
+			if (
+				!isSyntheticExitedChild(draft, parentRunId, child.runId, rootRunId) ||
+				childScopedEvidenceExists(checkpoints, draft.replayKey, child.runId)
+			) {
 				if (strict) return [];
 				continue;
 			}

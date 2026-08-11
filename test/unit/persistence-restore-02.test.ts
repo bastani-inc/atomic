@@ -275,6 +275,38 @@ describe("restoreOnSessionStart", () => {
 		assert.equal(stage.workflowChild?.exited, true);
 		assert.deepEqual(stage.workflowChild?.outputs, { summary: "ok" });
 	});
+	test("does not infer an exited child from a failed status without the discriminator", () => {
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{ id: "e1", type: "workflow.run.start", payload: { runId: "r3", name: "wf", inputs: {}, ts: 1 } },
+			{
+				id: "e2",
+				type: "workflow.stage.start",
+				payload: { runId: "r3", stageId: "boundary", name: "import:child", parentIds: [], ts: 2 },
+			},
+			{
+				id: "e3",
+				type: "workflow.stage.end",
+				payload: {
+					runId: "r3",
+					stageId: "boundary",
+					status: "completed",
+					workflowChild: {
+						alias: "child",
+						workflow: "child-wf",
+						runId: "child-run",
+						status: "failed",
+						exitReason: "ordinary failure metadata",
+						outputs: { attempted: 1 },
+					},
+				},
+			},
+		];
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const child = st.runs()[0]!.stages[0]!.workflowChild;
+		assert.equal(child?.exited, undefined);
+		assert.equal(child?.exitReason, "ordinary failure metadata");
+	});
 	test("ignores workflow child replay metadata from skipped and failed stage.end entries", () => {
 		for (const status of ["skipped", "failed"] as const) {
 			const st = createStore();

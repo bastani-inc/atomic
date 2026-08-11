@@ -175,6 +175,12 @@ export function createWorkflowExitManager(input: {
 					`atomic-workflows: ctx.exit() resumable must be a boolean when provided; got ${workflowSerializableTypeName(rawResumable)}`,
 				),
 			);
+		} else if (rawResumable !== undefined && rawStatus !== "failed") {
+			captureValidationError(
+				new TypeError(
+					`atomic-workflows: ctx.exit() resumable is only valid with status failed; got ${describeWorkflowExitOptionValue(rawStatus)}`,
+				),
+			);
 		}
 		const resumable = status === "failed" && rawResumable === true;
 

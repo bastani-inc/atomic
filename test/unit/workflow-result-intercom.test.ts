@@ -31,28 +31,25 @@ test("intercom result deliveries preserve intentional failed status, reason, and
 	assert.equal(emitWorkflowResultIntercom(port, details, { delivery: "control-and-result" }), true);
 
 	assert.deepEqual(
-		events.map(({ event, payload }) => ({
-			event,
-			status: payload.status,
-			exited: payload.exited,
-			exitReason: payload.exitReason,
-			outputs: payload.outputs,
-		})),
-		[
-			{
-				event: "workflow:control-intercom",
-				status: "failed",
-				exited: true,
-				exitReason: "all candidates rejected",
-				outputs: { attempted: 3 },
-			},
-			{
-				event: "workflow:result-intercom",
-				status: "failed",
-				exited: true,
-				exitReason: "all candidates rejected",
-				outputs: { attempted: 3 },
-			},
-		],
+		{
+			event: events[0]?.event,
+			status: events[0]?.payload.status,
+			exited: events[0]?.payload.exited,
+			exitReason: events[0]?.payload.exitReason,
+			outputs: events[0]?.payload.outputs,
+		},
+		{
+			event: "workflow:control-intercom",
+			status: "failed",
+			exited: true,
+			exitReason: "all candidates rejected",
+			outputs: { attempted: 3 },
+		},
 	);
+	assert.equal(events[1]?.event, "workflow:result-intercom");
+	assert.equal(events[1]?.payload.status, "failed");
+	assert.deepEqual(events[1]?.payload.details, details);
+	assert.equal(events[1]?.payload.exited, undefined);
+	assert.equal(events[1]?.payload.exitReason, undefined);
+	assert.equal(events[1]?.payload.outputs, undefined);
 });

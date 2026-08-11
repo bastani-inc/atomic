@@ -59,6 +59,8 @@ export function encodeMetadata(metadata: DurableWorkflowMetadata): WorkflowSeria
 			...(metadata.label !== undefined ? { label: metadata.label } : {}),
 			...(metadata.rootWorkflowId !== undefined ? { rootWorkflowId: metadata.rootWorkflowId } : {}),
 			...(metadata.resumable !== undefined ? { resumable: metadata.resumable } : {}),
+			...(metadata.exited !== undefined ? { exited: metadata.exited } : {}),
+			...(metadata.exitReason !== undefined ? { exitReason: metadata.exitReason } : {}),
 			...(metadata.error !== undefined ? { error: metadata.error } : {}),
 			...(metadata.failureKind !== undefined ? { failureKind: metadata.failureKind } : {}),
 			...(metadata.failureCode !== undefined ? { failureCode: metadata.failureCode } : {}),
@@ -156,6 +158,8 @@ function parseDurableWorkflowMetadata(
 		(metadata.label !== undefined && typeof metadata.label !== "string") ||
 		(metadata.rootWorkflowId !== undefined && typeof metadata.rootWorkflowId !== "string") ||
 		(metadata.resumable !== undefined && typeof metadata.resumable !== "boolean") ||
+		(metadata.exited !== undefined && typeof metadata.exited !== "boolean") ||
+		(metadata.exitReason !== undefined && typeof metadata.exitReason !== "string") ||
 		(metadata.error !== undefined && typeof metadata.error !== "string") ||
 		(metadata.failureKind !== undefined && !isWorkflowFailureKind(metadata.failureKind)) ||
 		(metadata.failureCode !== undefined && !isWorkflowFailureCode(metadata.failureCode)) ||

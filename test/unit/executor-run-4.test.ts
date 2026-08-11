@@ -313,6 +313,66 @@ describe("executor.run", () => {
 		assert.deepEqual(after.parentIds, [boundary.id]);
 		assert.equal(continued.result?.after, "after-ok");
 	});
+	test("continuation rejects a failed child replay without an exited discriminator", async () => {
+		const st = createStore();
+		const child = workflow({
+			name: "resume-invalid-child-discriminator",
+			description: "",
+			inputs: {},
+			outputs: { value: Type.Optional(Type.String()) },
+			run: async (ctx) => ({ value: await ctx.stage("child").prompt("child") }),
+		});
+		const parent = workflow({
+			name: "resume-invalid-parent-discriminator",
+			description: "",
+			inputs: {},
+			outputs: { after: Type.Optional(Type.String()) },
+			run: async (ctx) => {
+				const childResult = await ctx.workflow(child);
+				return { after: await ctx.stage("after").prompt(`after:${String(childResult.outputs.value)}`) };
+			},
+		});
+		const registry = createRegistry([parent, child]);
+
+		const first = await run(
+			parent,
+			{},
+			{
+				store: st,
+				registry,
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							if (text === "after:child") throw new Error("stop for replay validation");
+							return "child";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(first.status, "failed");
+		const source = st.runs().find((candidate) => candidate.id === first.runId)!;
+		const sourceBoundary = source.stages.find(
+			(stage) => stage.name === "workflow:resume-invalid-child-discriminator",
+		)!;
+		const malformedChild = sourceBoundary.workflowChild!;
+		Object.assign(malformedChild, { status: "failed" });
+		Reflect.deleteProperty(malformedChild, "exited");
+		Reflect.deleteProperty(malformedChild, "exitReason");
+
+		const continued = await run(
+			parent,
+			{},
+			{
+				store: st,
+				registry,
+				continuation: { source, resumeFromStageId: source.failedStageId! },
+				adapters: { prompt: { prompt: async () => "unreachable" } },
+			},
+		);
+		assert.equal(continued.status, "failed");
+		assert.match(continued.error ?? "", /invalid exited\/status\/output discriminant/);
+	});
 
 	test("continuation deep-clones replayed ctx.workflow metadata", async () => {
 		const st = createStore();

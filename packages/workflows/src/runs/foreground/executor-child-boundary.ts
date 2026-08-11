@@ -41,7 +41,7 @@ export interface WorkflowBoundaryStage {
 }
 
 function workflowChildResultFromReplay(snapshot: WorkflowChildReplaySnapshot): WorkflowChildResult {
-	const exited = snapshot.exited ?? snapshot.status !== "completed";
+	const exited = snapshot.exited ?? (snapshot.status === "completed" ? false : undefined);
 	const candidate = {
 		workflow: snapshot.workflow,
 		runId: snapshot.runId,

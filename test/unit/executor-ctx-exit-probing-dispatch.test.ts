@@ -427,6 +427,22 @@ describe("ctx.exit", () => {
 		assert.equal(result.exited, true);
 		assert.equal(store.runs().find((candidate) => candidate.id === result.runId)?.resumable, true);
 	});
+	test("rejects resumable metadata on non-failed exits", async () => {
+		const store = createStore();
+		const def = workflow({
+			name: "exit-resumable-invalid-status",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => ctx.exit({ status: "skipped", resumable: true }),
+		});
+
+		const result = await run(def, {}, { store });
+
+		assert.equal(result.status, "failed");
+		assert.match(result.error ?? "", /resumable is only valid with status failed/);
+		assert.equal(store.runs().find((candidate) => candidate.id === result.runId)?.resumable, false);
+	});
 
 	test("returns an intentional failed child result instead of throwing", async () => {
 		const store = createStore();

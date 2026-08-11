@@ -231,7 +231,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 			...(handle.rootWorkflowId !== undefined ? { rootWorkflowId: handle.rootWorkflowId } : {}),
 			...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
 			...workflowFailureFields(
-				handle.error !== undefined ? handle : handle.status === "running" ? undefined : existing?.handle,
+				hasWorkflowFailureMetadata(handle) ? handle : handle.status === "running" ? undefined : existing?.handle,
 			),
 			...(handle.ownerExecutorId !== undefined
 				? { ownerExecutorId: handle.ownerExecutorId }
@@ -371,6 +371,8 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 		rec.handle = {
 			...rec.handle,
 			error: undefined,
+			exited: undefined,
+			exitReason: undefined,
 			failureKind: undefined,
 			failureCode: undefined,
 			failureRecoverability: undefined,
@@ -527,12 +529,27 @@ function isHistoricalHandle(handle: DurableWorkflowHandle): boolean {
 	);
 }
 
+function hasWorkflowFailureMetadata(handle: Partial<DurableWorkflowHandle>): boolean {
+	return (
+		handle.error !== undefined ||
+		handle.exited !== undefined ||
+		handle.exitReason !== undefined ||
+		handle.failureKind !== undefined ||
+		handle.failureCode !== undefined ||
+		handle.failureRecoverability !== undefined ||
+		handle.failureDisposition !== undefined ||
+		handle.failedToolNodeId !== undefined
+	);
+}
+
 function workflowFailureFields(
 	handle: Partial<DurableWorkflowHandle> | undefined,
 ): Partial<DurableWorkflowFailureMetadata> {
 	if (handle === undefined) return {};
 	return {
 		...(handle.error !== undefined ? { error: handle.error } : {}),
+		...(handle.exited !== undefined ? { exited: handle.exited } : {}),
+		...(handle.exitReason !== undefined ? { exitReason: handle.exitReason } : {}),
 		...(handle.failureKind !== undefined ? { failureKind: handle.failureKind } : {}),
 		...(handle.failureCode !== undefined ? { failureCode: handle.failureCode } : {}),
 		...(handle.failureRecoverability !== undefined ? { failureRecoverability: handle.failureRecoverability } : {}),

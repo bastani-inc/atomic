@@ -275,11 +275,15 @@ export async function handleRunControlCommand(
 					}
 					const run = store.runs().find((r) => r.id === resolved.runId);
 					const isPaused = run !== undefined && workflowHasPausedState(store, resolved.runId);
+					const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
 					const isResumableContinuation =
 						run !== undefined &&
 						!isPaused &&
 						run.exitReason !== "quit" &&
 						isWorkflowRunResumable(workflowRunResumeCandidate(run));
+					if (isDurableAuthorExit) {
+						return await handleDurableResume(resolved.runId, ctx, reporter, deps);
+					}
 					if (isResumableContinuation) {
 						await ensureWorkflowResourcesVisible();
 						const continuation = await deps
@@ -471,6 +475,7 @@ export async function handleRunControlCommand(
 		const hadPausedRunState = run?.status === "paused";
 		const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 		const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
+		const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
 		const isResumableContinuation =
 			run !== undefined &&
 			!isPaused &&
@@ -492,6 +497,9 @@ export async function handleRunControlCommand(
 				`Workflow ${stageRunId} is already running in this session. Attach with \`/workflow connect ${stageRunId}\` instead of resuming.`,
 			);
 			return true;
+		}
+		if (isDurableAuthorExit) {
+			return await handleDurableResume(stageRunId, ctx, reporter, deps);
 		}
 		if (isResumableContinuation) {
 			await ensureWorkflowResourcesVisible();

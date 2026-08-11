@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "vitest";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import {
 	createDurableStagePrimitive,
 	createDurableTaskPrimitive,
@@ -636,7 +637,10 @@ describe("run durable flush", () => {
 			description: "",
 			inputs: {},
 			outputs: {},
-			run: async (ctx) => ctx.exit({ status: "failed", reason: "definitive failure" }),
+			run: async (ctx) => {
+				await ctx.stage("before-exit").complete("prepared");
+				return ctx.exit({ status: "failed", reason: "definitive failure" });
+			},
 		});
 		const retryDef = workflow({
 			name: "failed-retry-wf",
@@ -645,28 +649,49 @@ describe("run durable flush", () => {
 			outputs: {},
 			run: async (ctx) => ctx.exit({ status: "failed", resumable: true, reason: "retryable failure" }),
 		});
-
 		const first = await run(
 			defaultDef,
 			{},
-			{ runId: "wf-exit-failed-default", store: createStore(), durableBackend: backend },
+			{
+				runId: "wf-exit-failed-default",
+				store: createStore(),
+				durableBackend: backend,
+				adapters: { complete: { complete: async (text) => text } },
+			},
 		);
 		const second = await run(
 			retryDef,
 			{},
 			{ runId: "wf-exit-failed-retry", store: createStore(), durableBackend: backend },
 		);
-
 		exAssert.equal(first.status, "failed");
 		exAssert.equal(first.exited, true);
 		exAssert.equal(second.status, "failed");
 		exAssert.equal(second.exited, true);
-		exAssert.equal(backend.getWorkflow("wf-exit-failed-default")?.status, "failed");
-		exAssert.equal(backend.getWorkflow("wf-exit-failed-default")?.resumable, false);
-		exAssert.equal(backend.getWorkflow("wf-exit-failed-retry")?.status, "failed");
-		exAssert.equal(backend.getWorkflow("wf-exit-failed-retry")?.resumable, true);
-		exAssert.equal(backend.getWorkflow("wf-exit-failed-default")?.error, "definitive failure");
-		exAssert.equal(backend.getWorkflow("wf-exit-failed-retry")?.error, "retryable failure");
+		const defaultHandle = backend.getWorkflow("wf-exit-failed-default");
+		exAssert.equal(defaultHandle?.status, "failed");
+		exAssert.equal(defaultHandle?.resumable, false);
+		exAssert.equal(defaultHandle?.exited, true);
+		exAssert.equal(defaultHandle?.exitReason, "definitive failure");
+		exAssert.equal(defaultHandle?.error, undefined);
+		const retryHandle = backend.getWorkflow("wf-exit-failed-retry");
+		exAssert.equal(retryHandle?.status, "failed");
+		exAssert.equal(retryHandle?.resumable, true);
+		exAssert.equal(retryHandle?.exited, true);
+		exAssert.equal(retryHandle?.exitReason, "retryable failure");
+		exAssert.equal(retryHandle?.error, undefined);
+
+		const completedEntry = backend
+			.listCompletedWorkflows()
+			.find((entry) => entry.workflowId === "wf-exit-failed-default");
+		exAssert.ok(completedEntry);
+		const hydratedRoot = completedWorkflowRunSnapshots(backend, completedEntry).find(
+			(runSnapshot) => runSnapshot.id === "wf-exit-failed-default",
+		);
+		exAssert.ok(hydratedRoot);
+		exAssert.equal(hydratedRoot.exited, defaultHandle?.exited);
+		exAssert.equal(hydratedRoot.exitReason, defaultHandle?.exitReason);
+		exAssert.equal(hydratedRoot.error, defaultHandle?.error);
 	});
 
 	exTest("replays an intentional failed child result without rerunning the child", async () => {

@@ -211,6 +211,50 @@ test("fresh DBOS completed catalog hides legacy child output without a reciproca
 	});
 	await assertHidden("missing-legacy-child", rootId, sdk);
 });
+test("fresh DBOS completed catalog rejects synthetic child reconstruction when scoped evidence remains", async () => {
+	const rootId = testRunId("round3-catalog-synthetic-evidence");
+	const childId = testRunId("round3-catalog-synthetic-child");
+	const sdk = completedSdk(rootId);
+	const key = "workflow:catalog-child:synthetic";
+	const boundaryId = "synthetic-boundary";
+	seedMockCheckpoint(sdk, rootId, {
+		kind: "stage",
+		workflowId: rootId,
+		checkpointId: `start:${key}`,
+		name: "workflow:catalog-child",
+		replayKey: key,
+		completedAt: 2,
+		topology: boundaryTopology({ rootId, childId, boundaryId, key, order: 0, event: "start" }),
+	});
+	seedMockCheckpoint(sdk, rootId, {
+		kind: "stage",
+		workflowId: rootId,
+		checkpointId: `terminal:${key}`,
+		name: "workflow:catalog-child",
+		replayKey: key,
+		completedAt: 3,
+		endedAt: 3,
+		output: {
+			workflow: "catalog-child",
+			runId: childId,
+			status: "blocked",
+			exited: true,
+			outputs: { attempted: 1 },
+		},
+		topology: boundaryTopology({ rootId, childId, boundaryId, key, order: 0, event: "terminal" }),
+	});
+	seedMockCheckpoint(sdk, rootId, {
+		kind: "ui",
+		workflowId: rootId,
+		checkpointId: `${key}:ui:orphan`,
+		promptKind: "input",
+		message: "orphaned child prompt",
+		promptHash: `${key}:ui:orphan`,
+		response: "stale",
+		completedAt: 4,
+	});
+	await assertHidden("synthetic-child-evidence", rootId, sdk);
+});
 
 test("fresh DBOS completed catalog rejects one prompt occurrence bound to different replay keys", async () => {
 	const rootId = testRunId("round3-catalog-prompt-occurrence-poison");

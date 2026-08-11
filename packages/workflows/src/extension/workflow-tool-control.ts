@@ -482,11 +482,13 @@ export async function workflowResumeAction(
 	const hadPausedRunState = run?.status === "paused";
 	const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 	const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
+	const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
 	const isResumableContinuation =
 		run !== undefined &&
 		!isPaused &&
 		run.exitReason !== "quit" &&
 		isWorkflowRunResumable(workflowRunResumeCandidate(run));
+	if (isDurableAuthorExit) return resumeDurableShadow(stageRunId, deps);
 	if (isResumableContinuation) {
 		try {
 			await deps.ensureWorkflowResourcesLoaded();

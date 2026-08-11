@@ -119,6 +119,7 @@ export function validateRunGroups(
 	grouped: Map<string, StageDraft[]>,
 	rootRunId: string,
 	tools: readonly DurableToolCheckpoint[],
+	checkpoints: readonly DurableCheckpoint[],
 ): boolean {
 	const toolsFor = (runId: string) =>
 		tools.filter((checkpoint) => (checkpoint.topology?.run?.runId ?? rootRunId) === runId);
@@ -130,7 +131,11 @@ export function validateRunGroups(
 			if (childRunId === undefined) continue;
 			if (childRunId === parentRunId || owners.has(childRunId)) return false;
 			if (!grouped.has(childRunId)) {
-				if (!isSyntheticExitedChild(draft, parentRunId, childRunId, rootRunId)) return false;
+				if (
+					!isSyntheticExitedChild(draft, parentRunId, childRunId, rootRunId) ||
+					childScopedEvidenceExists(checkpoints, draft.replayKey, childRunId)
+				)
+					return false;
 				syntheticChildIds.add(childRunId);
 				owners.set(childRunId, draft);
 				continue;
@@ -184,6 +189,28 @@ export function isSyntheticExitedChild(
 		boundary.child.parentStageId === draft.topology?.stageId &&
 		boundary.child.rootRunId === rootRunId
 	);
+}
+
+/** Raw scoped records disprove a zero-stage child reconstruction. */
+export function childScopedEvidenceExists(
+	checkpoints: readonly DurableCheckpoint[],
+	boundaryReplayKey: string,
+	childRunId: string,
+): boolean {
+	const prefix = `${boundaryReplayKey}:`;
+	return checkpoints.some((checkpoint) => {
+		const lookupIdentity =
+			checkpoint.kind === "tool"
+				? checkpoint.argsHash
+				: checkpoint.kind === "ui"
+					? checkpoint.promptHash
+					: checkpoint.replayKey;
+		return (
+			checkpoint.checkpointId.startsWith(prefix) ||
+			lookupIdentity.startsWith(prefix) ||
+			(checkpoint.kind !== "ui" && checkpoint.topology?.run?.runId === childRunId)
+		);
+	});
 }
 
 export function retainReachableRunGroups(grouped: Map<string, StageDraft[]>, rootRunId: string): void {
