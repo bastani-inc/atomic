@@ -247,6 +247,32 @@ test("cached child reconciliation preserves run order, prompts, and notices whil
 	assert.deepEqual(afterRun.stages[0]?.parentIds, ["parent-a", "parent-a"]);
 });
 
+test("cached child reconciliation accepts an intentionally failed child exit", () => {
+	const store = createStore();
+	store.recordRunStart(childRun({ status: "failed", result: { attempted: 2 } }));
+	const catalog = childRun({ status: "failed", result: { attempted: 2 } });
+	const currentBoundary = boundary();
+	currentBoundary.workflowChild = {
+		...currentBoundary.workflowChild!,
+		status: "failed",
+		exited: true,
+		exitReason: "child lost",
+		outputs: { attempted: 2 },
+	};
+
+	assert.equal(
+		reconcileCachedDirectChildParentStage({
+			store,
+			parentRun: parentRun(),
+			catalogRun: catalog,
+			checkpointChildRunId: CHILD_ID,
+			boundary: currentBoundary,
+		}),
+		true,
+	);
+	assert.equal(store.runs()[0]?.parentStageId, currentBoundary.id);
+});
+
 test("an already reconciled child cannot be stolen by a later corrupt boundary", () => {
 	const store = createStore();
 	store.recordRunStart(childRun());

@@ -127,7 +127,10 @@ export function createWorkflowExitManager(input: {
 			runWorkflowExitCleanups(selectedExit.reason);
 			throw selectedExit;
 		};
-		const rawOptions = options as Pick<WorkflowExitOptions, "status" | "reason" | "outputs"> | null | undefined;
+		const rawOptions = options as
+			| Pick<WorkflowExitOptions, "status" | "reason" | "resumable" | "outputs">
+			| null
+			| undefined;
 		let validationError: Error | undefined;
 		const captureValidationError = (error: Error): void => {
 			validationError ??= error;
@@ -141,7 +144,7 @@ export function createWorkflowExitManager(input: {
 		} else if (!isWorkflowExitStatus(rawStatus)) {
 			captureValidationError(
 				new TypeError(
-					`atomic-workflows: ctx.exit() status must be one of completed, skipped, cancelled, blocked; got ${describeWorkflowExitOptionValue(rawStatus)}`,
+					`atomic-workflows: ctx.exit() status must be one of completed, skipped, cancelled, blocked, failed; got ${describeWorkflowExitOptionValue(rawStatus)}`,
 				),
 			);
 		}
@@ -161,6 +164,20 @@ export function createWorkflowExitManager(input: {
 		}
 		const reason = typeof rawReason === "string" ? rawReason : undefined;
 
+		const resumableRead = readWorkflowExitOption(rawOptions, "resumable");
+		throwNestedSelectedExit();
+		const rawResumable = resumableRead.ok ? resumableRead.value : undefined;
+		if (!resumableRead.ok) {
+			captureValidationError(resumableRead.error);
+		} else if (rawResumable !== undefined && typeof rawResumable !== "boolean") {
+			captureValidationError(
+				new TypeError(
+					`atomic-workflows: ctx.exit() resumable must be a boolean when provided; got ${workflowSerializableTypeName(rawResumable)}`,
+				),
+			);
+		}
+		const resumable = status === "failed" && rawResumable === true;
+
 		const outputsRead = readWorkflowExitOption(rawOptions, "outputs");
 		throwNestedSelectedExit();
 		const outputSnapshot = !outputsRead.ok
@@ -175,6 +192,7 @@ export function createWorkflowExitManager(input: {
 				scope: input.exitScope,
 				status,
 				...(reason !== undefined ? { reason } : {}),
+				...(status === "failed" ? { resumable } : {}),
 				...(outputSnapshot !== undefined ? { outputSnapshot } : {}),
 				...(validationError !== undefined ? { validationError } : {}),
 			}),

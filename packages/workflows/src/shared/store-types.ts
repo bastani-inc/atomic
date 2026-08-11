@@ -5,7 +5,7 @@
 
 import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
 
-export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
+export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "killed";
 export type StageStatus =
 	| "pending"
 	| "running"

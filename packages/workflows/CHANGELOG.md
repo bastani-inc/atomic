@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Breaking Changes
 
 - Custom workflow UI components must return `true` when they consume input and `false` when they do not. In fullscreen mode, an unhandled result lets the transcript process matching viewport navigation keys instead of swallowing them.
+- Added `failed` to the `ctx.exit()` status union. Author-initiated failed exits persist their reason and partial declared outputs, return the discriminated `{ exited: true, status: "failed" }` child result instead of throwing, and default to non-resumable unless `resumable: true` is set. Downstream exhaustive switches over `WorkflowExitStatus` must handle the new failed-exit case ([#2242](https://github.com/bastani-inc/atomic/issues/2242)).
 
 ### Changed
 

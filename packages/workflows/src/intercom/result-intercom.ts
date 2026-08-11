@@ -104,6 +104,10 @@ export interface WorkflowControlIntercomPayload {
 	readonly mode: WorkflowDetails["mode"];
 	readonly status: WorkflowDetails["status"];
 	readonly message: string;
+	/** Terminal ctx.exit() discriminator and payload for parent sessions. */
+	readonly exited?: boolean;
+	readonly exitReason?: string;
+	readonly outputs?: WorkflowDetails["output"];
 	readonly parentSession?: string;
 	readonly createdAt: number;
 }
@@ -113,6 +117,10 @@ export interface WorkflowResultIntercomPayload {
 	readonly mode: WorkflowDetails["mode"];
 	readonly status: WorkflowDetails["status"];
 	readonly details: WorkflowDetails;
+	/** Duplicated for consumers that do not unpack details. */
+	readonly exited?: boolean;
+	readonly exitReason?: string;
+	readonly outputs?: WorkflowDetails["output"];
 	readonly parentSession?: string;
 	readonly createdAt: number;
 }
@@ -151,6 +159,9 @@ export function emitWorkflowControlIntercom(
 		mode: details.mode,
 		status: details.status,
 		message,
+		...(details.exited !== undefined ? { exited: details.exited } : {}),
+		...(details.exitReason !== undefined ? { exitReason: details.exitReason } : {}),
+		...(details.output !== undefined ? { outputs: details.output } : {}),
 		...(parentSession !== undefined ? { parentSession } : {}),
 		createdAt: Date.now(),
 	};
@@ -178,6 +189,9 @@ export function emitWorkflowResultIntercom(
 		mode: details.mode,
 		status: details.status,
 		details,
+		...(details.exited !== undefined ? { exited: details.exited } : {}),
+		...(details.exitReason !== undefined ? { exitReason: details.exitReason } : {}),
+		...(details.output !== undefined ? { outputs: details.output } : {}),
 		...(parentSession !== undefined ? { parentSession } : {}),
 		createdAt: Date.now(),
 	};

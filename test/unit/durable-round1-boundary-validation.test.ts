@@ -206,11 +206,11 @@ async function runSeededBoundary(caseName: string, options: SeededBoundaryOption
 test("WorkflowChildResult parser accepts only the exact completed/exited discriminated union", () => {
 	const identity = { workflow: "child", runId: "child-run", outputs: {} } as const;
 	assert.ok(parseWorkflowChildResult({ ...identity, status: "completed", exited: false }));
-	for (const status of ["completed", "skipped", "cancelled", "blocked"] as const) {
+	for (const status of ["completed", "skipped", "cancelled", "blocked", "failed"] as const) {
 		assert.ok(parseWorkflowChildResult({ ...identity, status, exited: true, exitReason: "reason" }), status);
 	}
 	for (const malformed of [
-		{ ...identity, status: "failed", exited: true },
+		{ ...identity, status: "failed", exited: false },
 		{ ...identity, status: "skipped", exited: false },
 		{ ...identity, status: "completed", exited: false, exitReason: "not-allowed" },
 	] as const)
@@ -234,7 +234,7 @@ test("malformed cached WorkflowChildResult records fail closed before attach or 
 	const malformed: readonly WorkflowSerializableValue[] = [
 		{ workflow: CHILD_NAME, runId: "ignored", status: "completed", outputs: { value: "bad" } },
 		{ workflow: CHILD_NAME, runId: "ignored", status: "failed", exited: false, outputs: { value: "bad" } },
-		{ workflow: CHILD_NAME, runId: "ignored", status: "failed", exited: true, outputs: { value: "bad" } },
+		{ workflow: CHILD_NAME, runId: "ignored", status: "failed", exited: true, outputs: null },
 		{ workflow: CHILD_NAME, runId: "ignored", status: "completed", exited: false, outputs: null },
 		{ workflow: CHILD_NAME, runId: "ignored", status: "completed", exited: false, outputs: [] },
 		{ workflow: CHILD_NAME, runId: "ignored", status: "completed", exited: true, outputs: {}, exitReason: 42 },

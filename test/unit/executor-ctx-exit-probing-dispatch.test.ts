@@ -368,6 +368,147 @@ describe("ctx.exit", () => {
 		assert.equal((boundaryEnd?.payload.workflowChild as { exited?: unknown } | undefined)?.exited, true);
 	});
 
+	test("returns an intentional failed ctx.exit with reason, partial outputs, and non-resumable metadata", async () => {
+		const store = createStore();
+		const entries: Array<{ type: string; payload: Record<string, unknown> }> = [];
+		const persistence = {
+			appendEntry(type: string, payload: Record<string, unknown>): string {
+				entries.push({ type, payload });
+				return `entry-${entries.length}`;
+			},
+		};
+		const def = workflow({
+			name: "exit-failed-partial",
+			description: "",
+			inputs: {},
+			outputs: {
+				attempted: Type.Number(),
+				note: Type.String(),
+			},
+			run: async (ctx) =>
+				ctx.exit({
+					status: "failed",
+					reason: "upstream rejected every candidate",
+					outputs: { attempted: 3 },
+				}),
+		});
+
+		const result = await run(def, {}, { store, persistence });
+
+		assert.equal(result.status, "failed");
+		assert.equal(result.exited, true);
+		assert.equal(result.error, undefined);
+		assert.equal(result.exitReason, "upstream rejected every candidate");
+		assert.deepEqual(result.result, { attempted: 3 });
+		const snapshot = store.runs().find((candidate) => candidate.id === result.runId);
+		assert.equal(snapshot?.exited, true);
+		assert.equal(snapshot?.resumable, false);
+		const end = entries.find((entry) => entry.type === "workflow.run.end");
+		assert.equal(end?.payload.status, "failed");
+		assert.equal(end?.payload.exited, true);
+		assert.equal(end?.payload.resumable, false);
+		assert.equal(end?.payload.exitReason, "upstream rejected every candidate");
+		assert.deepEqual(end?.payload.result, { attempted: 3 });
+	});
+
+	test("allows an intentional failed ctx.exit to opt into resumability", async () => {
+		const store = createStore();
+		const def = workflow({
+			name: "exit-failed-resumable",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => ctx.exit({ status: "failed", resumable: true, reason: "retry this attempt" }),
+		});
+
+		const result = await run(def, {}, { store });
+
+		assert.equal(result.status, "failed");
+		assert.equal(result.exited, true);
+		assert.equal(store.runs().find((candidate) => candidate.id === result.runId)?.resumable, true);
+	});
+
+	test("returns an intentional failed child result instead of throwing", async () => {
+		const store = createStore();
+		const child = workflow({
+			name: "exit-failed-child",
+			description: "",
+			inputs: {},
+			outputs: {
+				attempted: Type.Number(),
+				note: Type.String(),
+			},
+			run: async (ctx) =>
+				ctx.exit({
+					status: "failed",
+					reason: "child lost",
+					outputs: { attempted: 2 },
+				}),
+		});
+		const parent = workflow({
+			name: "exit-failed-parent",
+			description: "",
+			inputs: {},
+			outputs: {
+				childExited: Type.Boolean(),
+				childStatus: Type.String(),
+				attempted: Type.Number(),
+			},
+			run: async (ctx) => {
+				const childResult = await ctx.workflow(child);
+				return {
+					childExited: childResult.exited,
+					childStatus: childResult.status,
+					attempted: childResult.outputs.attempted ?? -1,
+				};
+			},
+		});
+
+		const result = await run(parent, {}, { store });
+
+		assert.equal(result.status, "completed");
+		assert.deepEqual(result.result, { childExited: true, childStatus: "failed", attempted: 2 });
+		const childSnapshot = store.runs().find((candidate) => candidate.name === "exit-failed-child");
+		assert.equal(childSnapshot?.status, "failed");
+		assert.equal(childSnapshot?.exited, true);
+		assert.equal(childSnapshot?.resumable, false);
+		assert.equal(childSnapshot?.exitReason, "child lost");
+		const boundary = result.stages.find((stage) => stage.name === "workflow:exit-failed-child");
+		assert.equal(boundary?.workflowChild?.status, "failed");
+		assert.equal(boundary?.workflowChild?.exited, true);
+		assert.equal(boundary?.workflowChild?.exitReason, "child lost");
+		assert.deepEqual(boundary?.workflowChild?.outputs, { attempted: 2 });
+	});
+
+	test("still throws through the parent boundary for an unintentional child failure", async () => {
+		const store = createStore();
+		const child = workflow({
+			name: "throwing-child",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async () => {
+				throw new Error("unexpected child failure");
+			},
+		});
+		const parent = workflow({
+			name: "throwing-child-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(child);
+				return {};
+			},
+		});
+
+		const result = await run(parent, {}, { store });
+
+		assert.equal(result.status, "failed");
+		assert.equal(result.exited, undefined);
+		assert.match(result.error ?? "", /child workflow "throwing-child".*failed with status failed/);
+	});
+
 	test("WorkflowChildResult narrows full outputs behind exited === false", () => {
 		type ChildOutputs = { readonly requiredNote: string; readonly optionalCount?: number };
 		const normal: WorkflowChildResult<ChildOutputs> = {

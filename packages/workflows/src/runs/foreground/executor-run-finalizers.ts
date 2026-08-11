@@ -81,8 +81,9 @@ export function createRunFinalizers(input: {
 			return finalizeWorkflowExitValidationFailure(err, signal.reason);
 		}
 
+		const resumable = signal.status === "failed" && signal.resumable === true;
 		const metadata = {
-			resumable: false,
+			resumable,
 			exited: true,
 			...(signal.reason !== undefined ? { exitReason: signal.reason } : {}),
 		} as const;
@@ -93,7 +94,7 @@ export function createRunFinalizers(input: {
 			result: outputs,
 			exited: true,
 			...(signal.reason !== undefined ? { exitReason: signal.reason } : {}),
-			resumable: false,
+			resumable,
 			ts: Date.now(),
 		});
 		return reconcileTerminalRunResult(

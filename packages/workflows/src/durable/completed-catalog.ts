@@ -8,6 +8,7 @@ import {
 	childRunIdFromDraft,
 	childRunStatus,
 	compareDraftSourceOrder,
+	isSyntheticExitedChild,
 	mergeStageDraft,
 	mergeStageGroup,
 	retainReachableRunGroups,
@@ -285,6 +286,22 @@ function runSnapshotsFromCheckpoints(
 	for (const group of grouped.values()) group.sort(compareDraftSourceOrder);
 	retainReachableRunGroups(grouped, rootRunId);
 	if (!validateRunGroups(grouped, rootRunId, toolCheckpoints)) return [];
+	const syntheticChildren: Array<{
+		readonly parentRunId: string;
+		readonly owner: StageDraft;
+		readonly child: NonNullable<StageSnapshot["workflowChild"]>;
+	}> = [];
+	for (const [parentRunId, runDrafts] of grouped) {
+		for (const draft of runDrafts) {
+			const child = workflowChildFromDraft(draft);
+			if (child?.exited !== true || grouped.has(child.runId)) continue;
+			if (!isSyntheticExitedChild(draft, parentRunId, child.runId, rootRunId)) {
+				if (strict) return [];
+				continue;
+			}
+			syntheticChildren.push({ parentRunId, owner: draft, child });
+		}
+	}
 
 	const idMaps = new Map<string, Map<string, string>>();
 	for (const [runId, runDrafts] of grouped) {
@@ -321,6 +338,7 @@ function runSnapshotsFromCheckpoints(
 	}
 
 	const runs: RunSnapshot[] = [];
+	const emittedRunIds = new Set<string>();
 	for (const [runId, runDrafts] of grouped) {
 		const ids = idMaps.get(runId)!;
 		const ownedTools = toolCheckpoints.filter(
@@ -361,6 +379,7 @@ function runSnapshotsFromCheckpoints(
 		const parentStageId =
 			declaredParentStageId ??
 			(boundarySourceId === undefined ? undefined : idMaps.get(parentRunId)?.get(boundarySourceId));
+		const ownerChild = owner === undefined ? undefined : workflowChildFromDraft(owner);
 		runs.push({
 			id: runId,
 			name: run?.runName ?? rootRunName,
@@ -374,6 +393,47 @@ function runSnapshotsFromCheckpoints(
 			...(run?.parentRunId !== undefined ? { parentRunId: run.parentRunId } : {}),
 			...(parentStageId !== undefined ? { parentStageId } : {}),
 			...(run?.rootRunId !== undefined ? { rootRunId: run.rootRunId } : {}),
+			...(ownerChild?.exited === true
+				? {
+						result: ownerChild.outputs,
+						exited: true,
+						...(ownerChild.exitReason !== undefined ? { exitReason: ownerChild.exitReason } : {}),
+					}
+				: {}),
+			resumable: false,
+		});
+		emittedRunIds.add(runId);
+	}
+	for (const { parentRunId, owner, child } of syntheticChildren) {
+		if (!emittedRunIds.has(parentRunId)) {
+			if (strict) return [];
+			continue;
+		}
+		const topology = owner.topology!;
+		const boundary = topology.boundary!;
+		const parentStageId = idMaps.get(parentRunId)?.get(topology.stageId);
+		if (parentStageId === undefined) {
+			if (strict) return [];
+			continue;
+		}
+		const startedAt = owner.startedAt ?? owner.firstCompletedAt;
+		const endedAt = owner.endedAt ?? owner.firstCompletedAt;
+		runs.push({
+			id: child.runId,
+			name: boundary.child.runName,
+			inputs: {},
+			status: child.status,
+			stages: [],
+			toolNodes: [],
+			startedAt,
+			endedAt,
+			durationMs: Math.max(0, endedAt - startedAt),
+			parentRunId,
+			parentStageId,
+			rootRunId: boundary.child.rootRunId,
+			result: child.outputs,
+			exited: true,
+			...(child.exitReason !== undefined ? { exitReason: child.exitReason } : {}),
 			resumable: false,
 		});
 	}

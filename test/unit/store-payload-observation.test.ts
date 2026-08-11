@@ -208,6 +208,48 @@ describe("payload-free store observation", () => {
 		);
 	});
 
+	test("preserves bounded intentional exit outputs without retaining source objects", () => {
+		const store = createStore();
+		const nested = { ready: true };
+		const outputs = { status: "failed", attempted: 3, nested };
+		store.recordRunStart({
+			id: "run-exited-output",
+			name: "exited-output",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		assert.equal(
+			store.recordRunEnd("run-exited-output", "failed", outputs, undefined, {
+				exited: true,
+				resumable: false,
+			}),
+			true,
+		);
+
+		const projected = store.graphSnapshot().runs[0]?.result;
+		assert.deepEqual(projected, outputs);
+		assert.notStrictEqual(projected?.nested, nested);
+	});
+
+	test("omits empty intentional exit outputs from the compact graph snapshot", () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-empty-exit-output",
+			name: "empty-exit-output",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+		assert.equal(
+			store.recordRunEnd("run-empty-exit-output", "failed", {}, undefined, { exited: true, resumable: false }),
+			true,
+		);
+		assert.equal(store.graphSnapshot().runs[0]?.result, undefined);
+	});
+
 	test("deep-freezes the shared graph snapshot", () => {
 		const store = createStore();
 		store.recordRunStart({

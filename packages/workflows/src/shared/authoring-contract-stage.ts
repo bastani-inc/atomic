@@ -31,8 +31,8 @@ export type WorkflowOutputMode = "inline" | "file-only";
 export type WorkflowContextMode = "fresh" | "fork";
 export type WorkflowThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type WorkflowExecutionMode = "interactive" | "non_interactive";
-export type WorkflowExitStatus = "completed" | "skipped" | "cancelled" | "blocked";
-export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
+export type WorkflowExitStatus = "completed" | "skipped" | "cancelled" | "blocked" | "failed";
+export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "killed";
 
 /**
  * Who performed a workflow lifecycle action. Mirrors the store-side union; the
@@ -40,7 +40,7 @@ export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | 
  */
 export type WorkflowActor = "user" | "agent";
 export type WorkflowDetailsMode = "named" | "inspection" | "control";
-export type WorkflowDetailsStatus = "accepted" | "running" | WorkflowExitStatus | "failed" | "killed" | "noop";
+export type WorkflowDetailsStatus = "accepted" | "running" | WorkflowExitStatus | "killed" | "noop";
 export type WorkflowAction = "list" | "get" | "inputs" | "run" | "status" | "interrupt" | "resume";
 
 type WorkflowExitOutputValues<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> = [keyof TOutputs] extends [
@@ -52,6 +52,8 @@ type WorkflowExitOutputValues<TOutputs extends WorkflowOutputValues = WorkflowOu
 export interface WorkflowExitOptions<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> {
 	readonly status?: WorkflowExitStatus;
 	readonly reason?: string;
+	/** Failed exits are non-resumable by default; set this only when retry is intended. */
+	readonly resumable?: boolean;
 	readonly outputs?: WorkflowExitOutputValues<TOutputs>;
 }
 

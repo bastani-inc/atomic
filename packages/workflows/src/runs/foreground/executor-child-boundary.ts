@@ -41,11 +41,12 @@ export interface WorkflowBoundaryStage {
 }
 
 function workflowChildResultFromReplay(snapshot: WorkflowChildReplaySnapshot): WorkflowChildResult {
+	const exited = snapshot.exited ?? snapshot.status !== "completed";
 	const candidate = {
 		workflow: snapshot.workflow,
 		runId: snapshot.runId,
 		status: snapshot.status,
-		exited: snapshot.exited,
+		exited,
 		outputs: cloneWorkflowChildValue(snapshot.outputs),
 		...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
 	} as WorkflowSerializableValue;

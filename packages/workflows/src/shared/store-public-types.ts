@@ -117,7 +117,7 @@ export interface Store {
 	 * Records the end of a run.
 	 * Returns `true` if state changed, `false` if the run was not found or
 	 * already in a terminal state (completed | failed | killed | skipped | cancelled | blocked).
-	 * `result` is applied for intentional success/exit statuses (completed | skipped | cancelled | blocked)
+	 * `result` is applied for intentional success/exit statuses (completed | skipped | cancelled | blocked | failed)
 	 * and for workflows that intentionally return a failed status with structured outputs.
 	 * `error` is applied for status "failed" | "killed" | "blocked".
 	 */

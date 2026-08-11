@@ -49,7 +49,9 @@ export function isWorkflowChildResult(
 }
 
 function isWorkflowExitStatus(value: WorkflowSerializableValue | undefined): value is WorkflowExitStatus {
-	return value === "completed" || value === "skipped" || value === "cancelled" || value === "blocked";
+	return (
+		value === "completed" || value === "skipped" || value === "cancelled" || value === "blocked" || value === "failed"
+	);
 }
 
 function isOrdinaryObject(

@@ -143,7 +143,7 @@ export function createChildWorkflowRunner(input: {
 			) {
 				throw new WorkflowGracefulQuitError(childRunId, `child workflow "${childName}" (${child.name})`);
 			}
-			if (!isWorkflowExitStatus(childRun.status)) {
+			if (!isWorkflowExitStatus(childRun.status) || (childRun.status === "failed" && childRun.exited !== true)) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
 				throw new Error(
 					`atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`,

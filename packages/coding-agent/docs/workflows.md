@@ -1198,7 +1198,7 @@ Stage completion never waits for producers that are still running; only traffic 
 
 ### Early exit with `ctx.exit()`
 
-Use `ctx.exit(options?)` when workflow code intentionally stops the current run from a helper, branch, loop, or precondition guard without classifying the run as failed. `ctx.exit()` throws an executor-owned control signal and is typed as `never`, so code after it is unreachable. In async `run` bodies, prefer `return ctx.exit(...)` when the exit is the only path so TypeScript can see the non-returning branch.
+Use `ctx.exit(options?)` when workflow code intentionally stops the current run from a helper, branch, loop, or precondition guard with a chosen terminal status. `ctx.exit()` throws an executor-owned control signal and is typed as `never`, so code after it is unreachable. In async `run` bodies, prefer `return ctx.exit(...)` when the exit is the only path so TypeScript can see the non-returning branch.
 
 ```ts
 export default workflow({
@@ -1224,13 +1224,15 @@ export default workflow({
 });
 ```
 
-`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked"`; it never accepts `"failed"` or `"killed"` because thrown errors and internal destructive cancellation keep those meanings. `status` defaults to `"completed"`. `reason` is persisted and shown in status surfaces, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable.
+`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked" | "failed"`; `status` defaults to `"completed"`. Choose `completed` when the objective was met and declared outputs are complete and trustworthy; `skipped` when a precondition made the run a valid no-op; `cancelled` when the work is no longer wanted, which is a decision rather than a defect; `blocked` when valid progress needs a changed condition or a later decision; and `failed` when required work was attempted and definitively could not complete. A bounded reviewer or repair loop that does not converge is `blocked`, not `failed`.
 
-Atomic allows missing required outputs only on the `ctx.exit(...)` path. Exited runs are terminal and not resumable; public `pause`, `interrupt`, and `quit`, plus internal destructive cancellation, keep their distinct existing behavior.
+`reason` is persisted and shown in status surfaces and lifecycle notices, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable. `failed` exits default to `resumable: false`; set `resumable: true` only when a later retry is intended. The other exit statuses keep their existing non-resumable author-exit behavior. Public `pause`, `interrupt`, and `quit`, plus internal destructive cancellation, keep their distinct existing behavior.
+
+An author-initiated failed exit returns to a parent as `{ exited: true, status: "failed" }` with its reason and partial outputs; it does not throw. An unintentional child failure still throws, so check `child.exited === true` before reading required child outputs and use the discriminator to branch. The lifecycle terminal notice uses the same steer/trigger-turn delivery path and references partial outputs so the launching agent does not need a separate status call.
 
 The first selected `ctx.exit({ outputs })` snapshots its output payload synchronously by value before JavaScript `finally` blocks or cleanup callbacks can mutate the caller-owned object. The snapshot preserves undeclared keys and invalid values until post-cleanup validation, so deleting an undeclared key or changing an invalid value after `ctx.exit(...)` does not change the terminal validation result.
 
-If reading `status`, `reason`, or `outputs` options, or enumerating/copying the output snapshot itself, throws, Atomic still selects the exit signal, runs workflow-exit cleanup when feasible, and then records a terminal non-resumable authoring failure (`resumable: false`) if no external terminal control won first.
+If reading `status`, `reason`, `resumable`, or `outputs`, or enumerating/copying the output snapshot itself, throws, Atomic still selects the exit signal, runs workflow-exit cleanup when feasible, and then records a terminal non-resumable authoring failure (`resumable: false`) if no external terminal control won first.
 
 After the first `ctx.exit(...)` wins, the executor treats that exit as a level-triggered gate. Later delayed calls to `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, `ctx.workflow`, or graph-backed `ctx.ui.*` prompts rethrow the selected exit signal before creating stages, prompt nodes, child runs, or control handles. Retained `StageContext` handles from before the exit also become inert: `prompt`, `complete`, steering/follow-up, model/thinking controls, tree navigation, compaction, abort, and attached-pane session-realization paths refuse to touch or create an `AgentSession` after the exit is selected.
 
@@ -1383,7 +1385,7 @@ Passing a definition directly to `ctx.workflow(...)` uses the child definition's
 |---|---|
 | `workflow` | Normalized child workflow name. |
 | `runId` | Nested child run id. |
-| `status` | `completed`, or `skipped` / `cancelled` / `blocked` when the child intentionally ended with `ctx.exit(...)`. Failed or internally cancelled children make the parent child call fail. |
+| `status` | `completed` for normal completion, or `skipped` / `cancelled` / `blocked` / `failed` when the child intentionally ended with `ctx.exit(...)`. An unintentional failed child still makes the parent child call throw. |
 | `exited` | `false` for normal child completion; `true` when the child used `ctx.exit(...)` (including `ctx.exit({ status: "completed" })`). |
 | `outputs` | Full declared child outputs when `exited === false`; partial declared child outputs when `exited === true`. |
 | `exitReason` | Optional child `ctx.exit({ reason })` text, present only on the `exited === true` branch. |
@@ -2218,13 +2220,14 @@ type WorkflowExitOutputValues<TOutputs extends WorkflowOutputValues> =
     ? Readonly<Record<string, never>>
     : Partial<TOutputs>;
 interface WorkflowExitOptions<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> {
-  readonly status?: "completed" | "skipped" | "cancelled" | "blocked";
+  readonly status?: "completed" | "skipped" | "cancelled" | "blocked" | "failed";
   readonly reason?: string;
+  readonly resumable?: boolean;
   readonly outputs?: WorkflowExitOutputValues<TOutputs>;
 }
 ```
 
-Intentionally ends the current run from any call depth. `status` defaults to `"completed"`; the runtime persists and displays `reason`, and `outputs` may provide only declared, schema-valid, serializable output keys.
+Intentionally ends the current run from any call depth. `status` defaults to `"completed"`; `failed` exits default to `resumable: false`, and `resumable: true` opts into a later retry. The runtime persists and displays `reason`, and `outputs` may provide only declared, schema-valid, serializable output keys.
 
 See [Early exit with `ctx.exit()`](#early-exit-with-ctxexit) for snapshotting, cleanup, replay, and race semantics.
 
@@ -2806,7 +2809,7 @@ interface WorkflowExitedChildResult<
 }
 ```
 
-Normal completion exposes the full declared output contract. A child that used `ctx.exit(...)`, including `status: "completed"`, exposes only a partial contract and optional exit reason; failed or internally cancelled children reject the parent call instead.
+Normal completion exposes the full declared output contract. A child that used `ctx.exit(...)`, including `status: "completed"` or `status: "failed"`, exposes only a partial contract and optional exit reason; an unintentional failed or internally cancelled child still rejects the parent call.
 
 ### `WorkflowStageResult`
 

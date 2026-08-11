@@ -437,6 +437,61 @@ describe("restoreOnSessionStart", () => {
 		assert.deepEqual(run.result, { note: "ok" });
 		assert.deepEqual(run.stages, []);
 	});
+	test("restores failed ctx.exit markers, reason, outputs, and resumability", () => {
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{ id: "e1", type: "workflow.run.start", payload: { runId: "r-failed-exit", name: "wf", inputs: {}, ts: 1 } },
+			{
+				id: "e2",
+				type: "workflow.run.end",
+				payload: {
+					runId: "r-failed-exit",
+					status: "failed",
+					exited: true,
+					exitReason: "all candidates rejected",
+					result: { attempted: 4 },
+					resumable: true,
+					ts: 2,
+				},
+			},
+		];
+
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const run = st.runs()[0]!;
+		assert.equal(run.status, "failed");
+		assert.equal(run.exited, true);
+		assert.equal(run.exitReason, "all candidates rejected");
+		assert.equal(run.resumable, true);
+		assert.deepEqual(run.result, { attempted: 4 });
+	});
+	test("does not infer an author exit from an ordinary failed run reason", () => {
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{
+				id: "e1",
+				type: "workflow.run.start",
+				payload: { runId: "r-ordinary-failed", name: "wf", inputs: {}, ts: 1 },
+			},
+			{
+				id: "e2",
+				type: "workflow.run.end",
+				payload: {
+					runId: "r-ordinary-failed",
+					status: "failed",
+					exitReason: "failure metadata reason",
+					error: "unexpected failure",
+					ts: 2,
+				},
+			},
+		];
+
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const run = st.runs()[0]!;
+		assert.equal(run.status, "failed");
+		assert.equal(run.exited, undefined);
+		assert.equal(run.exitReason, "failure metadata reason");
+		assert.equal(run.error, "unexpected failure");
+	});
 	test("skips completed terminal runs with incomplete stage end data", () => {
 		const st = createStore();
 		const entries: SessionEntry[] = [

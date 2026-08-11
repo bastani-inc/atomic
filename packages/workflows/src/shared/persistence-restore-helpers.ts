@@ -190,7 +190,13 @@ export function serializableObjectOrEmpty(value: unknown): WorkflowOutputValues 
 }
 
 function isWorkflowChildReplayStatus(status: unknown): status is WorkflowExitStatus {
-	return status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked";
+	return (
+		status === "completed" ||
+		status === "skipped" ||
+		status === "cancelled" ||
+		status === "blocked" ||
+		status === "failed"
+	);
 }
 
 function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnapshot, "workflowChild"> {
@@ -235,9 +241,7 @@ function workflowChildMetadata(payload: Record<string, unknown>): Pick<StageSnap
 			status,
 			...(typeof exited === "boolean"
 				? { exited }
-				: status !== "completed" || typeof exitReason === "string"
-					? { exited: true }
-					: {}),
+				: { exited: status !== "completed" || typeof exitReason === "string" }),
 			outputs: clonedOutputs,
 			...(typeof exitReason === "string" ? { exitReason } : {}),
 		},
@@ -388,8 +392,11 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 		const resumable = end.resumable;
 		const failedToolNodeId = end.failedToolNodeId;
 		const failedToolNode = restoreFailedToolNode(end.failedToolNode);
+		// Failed is both an author-exit status and the engine's ordinary failure
+		// status, so an exit reason alone cannot establish author intent.
 		const restoredAuthorExit =
-			isWorkflowExitTerminalStatus(status) && (exited === true || typeof exitReason === "string");
+			isWorkflowExitTerminalStatus(status) &&
+			(exited === true || (status !== "failed" && typeof exitReason === "string"));
 		if (status === "completed" && !restoredAuthorExit && stages.some((stage) => stage.status !== "completed"))
 			continue;
 		store.recordRunStart({
@@ -456,7 +463,13 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 }
 
 function isWorkflowExitTerminalStatus(status: RunStatus): status is WorkflowExitStatus {
-	return status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked";
+	return (
+		status === "completed" ||
+		status === "skipped" ||
+		status === "cancelled" ||
+		status === "blocked" ||
+		status === "failed"
+	);
 }
 
 function restoreTerminalRunStatus(status: unknown): RunStatus | undefined {

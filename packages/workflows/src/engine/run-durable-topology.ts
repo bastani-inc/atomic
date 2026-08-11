@@ -238,6 +238,7 @@ export function reconcileCachedDirectChildParentStage(input: {
 	readonly boundary: StageSnapshot;
 }): boolean {
 	const existingRun = input.store.runs().find((run) => run.id === input.checkpointChildRunId);
+	if (existingRun === undefined) return false;
 	const runById = new Map(input.store.runs().map((run) => [run.id, run]));
 	const storedParentRun = runById.get(input.parentRun.id);
 	if (
@@ -250,6 +251,13 @@ export function reconcileCachedDirectChildParentStage(input: {
 	const expectedRootRunId = reciprocalWorkflowRootRunId(runById, input.parentRun.id);
 	if (expectedRootRunId === undefined) return false;
 	const storedBoundary = storedParentRun?.stages.find((stage) => stage.id === input.boundary.id);
+	const cachedChildStatusMatches =
+		(existingRun?.status === "completed" && input.catalogRun.status === "completed") ||
+		(input.boundary.workflowChild?.exited === true &&
+			input.boundary.workflowChild.runId === input.checkpointChildRunId &&
+			existingRun?.status === input.catalogRun.status &&
+			input.boundary.workflowChild.status === input.catalogRun.status);
+
 	if (
 		!rootMatches(input.parentRun.rootRunId, expectedRootRunId) ||
 		!rootMatches(storedParentRun?.rootRunId, expectedRootRunId) ||
@@ -257,8 +265,7 @@ export function reconcileCachedDirectChildParentStage(input: {
 		(storedParentRun !== undefined &&
 			authoritativeWorkflowChildRunId(storedBoundary) !== input.checkpointChildRunId) ||
 		input.catalogRun.id !== input.checkpointChildRunId ||
-		existingRun?.status !== "completed" ||
-		input.catalogRun.status !== "completed" ||
+		!cachedChildStatusMatches ||
 		existingRun.parentRunId !== input.parentRun.id ||
 		input.catalogRun.parentRunId !== input.parentRun.id ||
 		input.catalogRun.parentStageId === undefined ||

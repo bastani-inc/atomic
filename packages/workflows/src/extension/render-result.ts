@@ -414,6 +414,7 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
 			}
 			if (
 				r.status === "completed" ||
+				r.status === "failed" ||
 				r.status === "skipped" ||
 				r.status === "cancelled" ||
 				r.status === "blocked" ||

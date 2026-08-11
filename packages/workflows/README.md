@@ -298,6 +298,44 @@ import openClaudeDesignWorkflow from "@bastani/workflows/builtin/open-claude-des
 
 Only `workflow({...})` definitions can be passed to `ctx.workflow(...)`; registry names, strings, and path objects are intentionally not supported for child workflow calls. Missing or invalid module imports fail when the workflow file itself is loaded. A parent receives the child's declared `outputs` from the child `run()` return object. Missing required outputs, schema type mismatches, returning an undeclared output, and non-JSON-serializable returned child values fail the child call before the parent continues.
 
+### Early exit with `ctx.exit()`
+
+Use `ctx.exit()` when the workflow intentionally ends before its normal `run()` return. It accepts `completed | skipped | cancelled | blocked | failed`, an optional reason, partial declared outputs, and `resumable` for an author-initiated failed outcome.
+
+```typescript
+if (allRejected) {
+  return ctx.exit({
+    status: "failed",
+    reason: "The upstream API rejected every candidate",
+    outputs: { attempted: candidates.length },
+    resumable: true, // failed exits default to false
+  });
+}
+```
+
+Choose the status by the outcome:
+
+- `completed` means the objective was met and declared outputs are complete and trustworthy.
+- `skipped` means a precondition made the run a valid no-op; no work was needed.
+- `cancelled` means the work is no longer wanted; it is a decision, not a defect.
+- `blocked` means valid progress needs a changed condition or a later decision. A bounded reviewer or repair loop that does not converge is blocked, not failed.
+- `failed` means required work was attempted and definitively could not complete. Do not use it for a non-converged reviewer loop. Failed exits are non-resumable by default; set `resumable: true` when a later retry is intended.
+
+`reason` is persisted and shown in status and lifecycle notices. `outputs` may be a partial subset of the declared `outputs` contract, but every provided key must be declared, schema-valid, and JSON-serializable. Missing required keys are allowed only on the exit path.
+
+When a child uses `ctx.exit()`, `ctx.workflow(child)` returns a discriminated result instead of throwing. Check `child.exited` before reading a required output:
+
+```typescript
+const child = await ctx.workflow(researchWorkflow);
+if (child.exited === true) {
+  // child.status includes failed; outputs may be partial.
+  return ctx.exit({ status: child.status, reason: child.exitReason ?? "research stopped early" });
+}
+return { report: child.outputs.report };
+```
+
+An author-initiated failed exit returns `{ exited: true, status: "failed" }` to its parent with its reason and partial outputs. An unintentional child failure still throws, so `exited` remains an intent discriminator.
+
 ### Reusable Git worktrees
 
 Use `gitWorktreeDir` when a workflow should run in a reusable Git worktree instead of the invoking checkout. The executor creates the worktree if it is missing, reuses it when it already exists as a same-repository worktree root, defaults workflow `ctx.cwd` to the matching path inside that worktree for `worktreeFromInputs`, and defaults stage/task `cwd` to that worktree path.

@@ -145,6 +145,36 @@ describe("installWorkflowLifecycleNotifications", () => {
 		assert.match(sent[0]?.content ?? "", /tool publish-api.*remote rejected/);
 	});
 
+	test("delivers an exited-failed notice with its reason and partial outputs", () => {
+		const { store, sent, options } = install();
+		store.recordRunStart({
+			id: "run-exited-failed",
+			name: "candidate-gate",
+			inputs: {},
+			status: "running",
+			stages: [],
+			startedAt: 1,
+		});
+
+		assert.equal(
+			store.recordRunEnd("run-exited-failed", "failed", { attempted: 3 }, undefined, {
+				exited: true,
+				exitReason: "upstream rejected every candidate",
+				resumable: false,
+			}),
+			true,
+		);
+
+		assert.equal(sent.length, 1);
+		assert.deepEqual(options, [{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true }]);
+		assert.equal(sent[0]?.details?.status, "failed");
+		assert.equal(sent[0]?.details?.error, "upstream rejected every candidate");
+		assert.equal(sent[0]?.details?.resumable, false);
+		assert.deepEqual(sent[0]?.details?.outputs, { attempted: 3 });
+		assert.match(sent[0]?.content ?? "", /upstream rejected every candidate/);
+		assert.match(sent[0]?.content ?? "", /Partial outputs: \{"attempted":3\}/);
+	});
+
 	test("async suppression stays active until the awaited operation settles", async () => {
 		const store = createStore();
 		const state = createWorkflowLifecycleNotificationState();

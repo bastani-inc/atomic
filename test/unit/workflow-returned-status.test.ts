@@ -42,6 +42,26 @@ describe("workflow returned status outputs", () => {
 		assert.equal(snapshot?.resumable, false);
 	});
 
+	test("author-exit status stays authoritative when partial outputs contain a status field", async () => {
+		const store = createStore();
+		const def = workflow({
+			name: "exit-status-output-field",
+			description: "",
+			inputs: {},
+			outputs: {
+				status: Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("blocked")]),
+			},
+			run: async (ctx) => ctx.exit({ status: "failed", outputs: { status: "completed" } }),
+		});
+
+		const result = await run(def, {}, { store });
+
+		assert.equal(result.status, "failed");
+		assert.equal(result.exited, true);
+		assert.deepEqual(result.result, { status: "completed" });
+		assert.equal(store.runs().find((candidate) => candidate.id === result.runId)?.status, "failed");
+	});
+
 	test("blocked result.status makes the run blocked instead of completing successfully", async () => {
 		const store = createStore();
 		const def = workflow({

@@ -230,6 +230,12 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 	}
 
 	if (effectiveRunStatus(run) === "failed" || effectiveRunStatus(run) === "killed") {
+		if (
+			run.exitReason !== undefined &&
+			run.exitReason.length > 0 &&
+			(run.exited === true || effectiveRunStatus(run) !== "killed")
+		)
+			parts.push(run.exitReason);
 		const failed = run.stages.find((s) => s.status === "failed");
 		if (failed && isChain) parts.push(`failed at ${failed.name}`);
 		else if (failed) parts.push(failed.name);

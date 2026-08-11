@@ -177,6 +177,9 @@ test("failed, skipped, and exited child lifecycle survives fresh DBOS catalog hy
 	assert.equal(exitedRun.parentRunId, completedRootId);
 	assert.equal(exitedRun.parentStageId, exitedBoundary.id);
 	assert.equal(exitedRun.rootRunId, completedRootId);
+	assert.equal(exitedRun.exited, true);
+	assert.equal(exitedRun.exitReason, "intentional child exit");
+	assert.deepEqual(exitedRun.result, { value: "partial" });
 	assert.equal(
 		reconstructed.some((candidate) => candidate.name === "round2-lifecycle-failing"),
 		false,

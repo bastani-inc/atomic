@@ -19,6 +19,7 @@ import type {
 	StoreSnapshot,
 	WorkflowActor,
 } from "../shared/store-types.js";
+import type { WorkflowOutputValues } from "../shared/types.js";
 import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
 import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workflow-notice-card.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
@@ -73,12 +74,14 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly promptKind?: PromptKind | StageInputKind;
 	readonly promptMessage?: string;
 	readonly error?: string;
+	/** Partial declared outputs carried by an author-initiated terminal exit. */
+	readonly outputs?: WorkflowOutputValues;
 	readonly failedStageId?: string;
 	readonly toolNodeId?: string;
 	readonly toolName?: string;
 	readonly durationMs?: number;
 	readonly active?: boolean;
-	/** Whether a quit run advertises itself as resumable. */
+	/** Whether a terminal author exit or quit run advertises itself as resumable. */
 	readonly resumable?: boolean;
 	/** Who performed this lifecycle action, when a control path attributed it. */
 	readonly actor?: WorkflowActor;
@@ -374,12 +377,16 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 		const tool = lifecycleToolOrigin(details);
 		const failureSite = stage ? `, stage ${stage}` : tool !== undefined ? `, tool ${tool}` : "";
 		const errorText = details.error ? `: ${details.error}` : "";
-		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}. Inspect: /workflow status ${details.runId}`;
+		const outputsText = formatLifecycleOutputs(details.outputs);
+		const outputSuffix = outputsText === undefined ? "" : ` Partial outputs: ${outputsText}`;
+		return `✗ Workflow "${workflowName}" failed (run ${details.runId}${failureSite})${origin}${errorText}${outputSuffix}. Inspect: /workflow status ${details.runId}`;
 	}
 	if (details.kind === "blocked") {
 		const errorText = details.error ? `: ${details.error}` : "";
 		const stateText = details.active === true ? "is blocked" : "ended blocked";
-		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}. Inspect: /workflow status ${details.runId}`;
+		const outputsText = formatLifecycleOutputs(details.outputs);
+		const outputSuffix = outputsText === undefined ? "" : ` Partial outputs: ${outputsText}`;
+		return `! Workflow "${workflowName}" ${stateText} (run ${details.runId})${origin}${errorText}${outputSuffix}. Inspect: /workflow status ${details.runId}`;
 	}
 	if (details.kind === "paused" || details.kind === "quit") {
 		const stopStage = details.stageName ?? details.stageId;
@@ -420,9 +427,12 @@ function makeTerminalNotice(
 	const failedToolNodeId = kind === "failed" && run.failedStageId === undefined ? run.failedToolNodeId : undefined;
 	const failedTool = (run.toolNodes ?? []).find((node) => node.id === failedToolNodeId);
 	const activeBlocked = kind === "blocked" && isActiveRecoverableBlockedRun(run);
+	const outputs = run.exited === true && run.result !== undefined ? run.result : undefined;
 	const error = activeBlocked
 		? (run.failureMessage ?? structuredRecoverableWorkflowFailureText(run) ?? run.error)
-		: (run.error ?? returnedNoticeError(run, kind) ?? (kind === "blocked" ? run.exitReason : undefined));
+		: (run.error ??
+			returnedNoticeError(run, kind) ??
+			(kind === "blocked" || kind === "failed" ? run.exitReason : undefined));
 	return {
 		kind,
 		scope: "run",
@@ -430,7 +440,9 @@ function makeTerminalNotice(
 		workflowName: run.name,
 		status: effectiveRunStatus(run),
 		...(activeBlocked ? { active: true } : {}),
+		...(run.exited === true && run.resumable !== undefined ? { resumable: run.resumable } : {}),
 		...(error ? { error: truncateSnippet(error) } : {}),
+		...(outputs !== undefined ? { outputs } : {}),
 		...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
 		...(failedStage ? { stageId: failedStage.id, stageName: failedStage.name } : {}),
 		...(failedToolNodeId !== undefined ? { toolNodeId: failedToolNodeId } : {}),
@@ -504,6 +516,7 @@ function lifecycleOccurrenceAt(run: RunSnapshot, kind: "completed" | "failed" | 
 }
 
 function returnedNoticeError(run: RunSnapshot, kind: "completed" | "failed" | "blocked"): string | undefined {
+	if (run.exited === true && (kind === "failed" || kind === "blocked")) return run.exitReason;
 	const structuredFailureText = structuredRecoverableWorkflowFailureText(run);
 	if (kind === "blocked" && structuredFailureText !== undefined) return structuredFailureText;
 	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
@@ -618,6 +631,18 @@ function truncateSnippet(value: string): string {
 	return `${normalized.slice(0, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
 }
 
+function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): string | undefined {
+	if (outputs === undefined) return undefined;
+	const outputKeys = outputs.__atomic_partial_output_keys;
+	if (typeof outputKeys === "string") return `declared keys: ${outputKeys}`;
+	try {
+		const serialized = JSON.stringify(outputs);
+		return serialized === undefined ? "available; inspect the run result" : truncateSnippet(serialized);
+	} catch {
+		return "available; inspect the run result";
+	}
+}
+
 function makeNoticeComponent(
 	details: WorkflowLifecycleNoticeDetails,
 	theme: GraphTheme | undefined,
@@ -660,6 +685,11 @@ function renderLifecycleNoticeCard(
 			{ label: "launched", value: details.origin, tone: "muted" },
 			{ label: "prompt", value: details.promptMessage, tone: "muted" },
 			{ label: "error", value: details.error, tone: "error" },
+			{
+				label: details.kind === "completed" ? "outputs" : "partial outputs",
+				value: formatLifecycleOutputs(details.outputs),
+				tone: "muted",
+			},
 			{ label: "resumable", value: resumableFieldValue(details), tone: "muted" },
 			{ label: "duration", value: formatDurationMs(details.durationMs), tone: "muted" },
 		],

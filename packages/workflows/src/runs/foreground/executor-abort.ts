@@ -7,6 +7,7 @@ const WORKFLOW_EXIT_STATUSES: ReadonlySet<WorkflowExitStatus> = new Set([
 	"skipped",
 	"cancelled",
 	"blocked",
+	"failed",
 ]);
 
 export type WorkflowExitOutputSnapshot =
@@ -24,6 +25,7 @@ export interface WorkflowExitSignal {
 	readonly scope: symbol;
 	readonly status: WorkflowExitStatus;
 	readonly reason?: string;
+	readonly resumable?: boolean;
 	readonly outputSnapshot?: WorkflowExitOutputSnapshot;
 	readonly validationError?: Error;
 }
@@ -32,6 +34,7 @@ export function makeWorkflowExitSignal(input: {
 	readonly scope: symbol;
 	readonly status: WorkflowExitStatus;
 	readonly reason?: string;
+	readonly resumable?: boolean;
 	readonly outputSnapshot?: WorkflowExitOutputSnapshot;
 	readonly validationError?: Error;
 }): WorkflowExitSignal {
@@ -40,6 +43,7 @@ export function makeWorkflowExitSignal(input: {
 		scope: input.scope,
 		status: input.status,
 		...(input.reason !== undefined ? { reason: input.reason } : {}),
+		...(input.resumable !== undefined ? { resumable: input.resumable } : {}),
 		...(input.outputSnapshot !== undefined ? { outputSnapshot: input.outputSnapshot } : {}),
 		...(input.validationError !== undefined ? { validationError: input.validationError } : {}),
 	};
@@ -81,13 +85,13 @@ function workflowExitSnapshotError(message: string, cause: unknown): Error {
 	return new Error(`${message}: ${unknownErrorMessage(cause)}`, { cause });
 }
 
-function workflowExitOptionReadError(key: "status" | "reason" | "outputs", cause: unknown): Error {
+function workflowExitOptionReadError(key: "status" | "reason" | "resumable" | "outputs", cause: unknown): Error {
 	return workflowExitSnapshotError(`atomic-workflows: ctx.exit() ${key} option could not be read`, cause);
 }
 
 export function readWorkflowExitOption(
-	options: Pick<WorkflowExitOptions, "status" | "reason" | "outputs"> | null | undefined,
-	key: "status" | "reason" | "outputs",
+	options: Pick<WorkflowExitOptions, "status" | "reason" | "resumable" | "outputs"> | null | undefined,
+	key: "status" | "reason" | "resumable" | "outputs",
 ): { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: Error } {
 	try {
 		return { ok: true, value: options?.[key] };
@@ -339,6 +343,9 @@ function readWorkflowExitSignalCandidate(value: object, scope: symbol): Workflow
 	const reason = safeGetProperty(value, "reason");
 	if (!reason.ok || (reason.value !== undefined && typeof reason.value !== "string")) return undefined;
 
+	const resumable = safeGetProperty(value, "resumable");
+	if (!resumable.ok || (resumable.value !== undefined && typeof resumable.value !== "boolean")) return undefined;
+
 	const outputSnapshotValue = safeGetProperty(value, "outputSnapshot");
 	if (!outputSnapshotValue.ok) return undefined;
 	const outputSnapshot = readWorkflowExitOutputSnapshot(outputSnapshotValue.value);
@@ -352,6 +359,7 @@ function readWorkflowExitSignalCandidate(value: object, scope: symbol): Workflow
 		scope,
 		status: status.value,
 		...(reason.value !== undefined ? { reason: reason.value } : {}),
+		...(resumable.value !== undefined ? { resumable: resumable.value } : {}),
 		...(outputSnapshot !== undefined ? { outputSnapshot } : {}),
 		...(validationError.value !== undefined ? { validationError: safeErrorValue(validationError.value) } : {}),
 	};

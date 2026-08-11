@@ -629,6 +629,107 @@ describe("run durable flush", () => {
 		exAssert.equal(backend.getWorkflow("wf-exit-blocked")?.status, "blocked");
 	});
 
+	exTest("ctx.exit failed status persists durable metadata and opt-in resumability", async () => {
+		const backend = new InMemoryDurableBackend();
+		const defaultDef = workflow({
+			name: "failed-default-wf",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => ctx.exit({ status: "failed", reason: "definitive failure" }),
+		});
+		const retryDef = workflow({
+			name: "failed-retry-wf",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => ctx.exit({ status: "failed", resumable: true, reason: "retryable failure" }),
+		});
+
+		const first = await run(
+			defaultDef,
+			{},
+			{ runId: "wf-exit-failed-default", store: createStore(), durableBackend: backend },
+		);
+		const second = await run(
+			retryDef,
+			{},
+			{ runId: "wf-exit-failed-retry", store: createStore(), durableBackend: backend },
+		);
+
+		exAssert.equal(first.status, "failed");
+		exAssert.equal(first.exited, true);
+		exAssert.equal(second.status, "failed");
+		exAssert.equal(second.exited, true);
+		exAssert.equal(backend.getWorkflow("wf-exit-failed-default")?.status, "failed");
+		exAssert.equal(backend.getWorkflow("wf-exit-failed-default")?.resumable, false);
+		exAssert.equal(backend.getWorkflow("wf-exit-failed-retry")?.status, "failed");
+		exAssert.equal(backend.getWorkflow("wf-exit-failed-retry")?.resumable, true);
+		exAssert.equal(backend.getWorkflow("wf-exit-failed-default")?.error, "definitive failure");
+		exAssert.equal(backend.getWorkflow("wf-exit-failed-retry")?.error, "retryable failure");
+	});
+
+	exTest("replays an intentional failed child result without rerunning the child", async () => {
+		const backend = new InMemoryDurableBackend();
+		let childRuns = 0;
+		const child = workflow({
+			name: "durable-failed-child",
+			description: "",
+			inputs: {},
+			outputs: { attempted: Type.Number(), note: Type.String() },
+			run: async (ctx) => {
+				childRuns += 1;
+				return ctx.exit({ status: "failed", reason: "child lost", outputs: { attempted: 2 } });
+			},
+		});
+		const parent = workflow({
+			name: "durable-failed-parent",
+			description: "",
+			inputs: {},
+			outputs: { childStatus: Type.String(), attempted: Type.Number() },
+			run: async (ctx) => {
+				const childResult = await ctx.workflow(child);
+				return {
+					childStatus: childResult.status,
+					attempted: childResult.outputs.attempted ?? -1,
+				};
+			},
+		});
+		const first = await run(
+			parent,
+			{},
+			{
+				runId: "wf-durable-failed-child",
+				store: createStore(),
+				durableBackend: backend,
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		exAssert.equal(first.status, "completed");
+		exAssert.deepEqual(first.result, { childStatus: "failed", attempted: 2 });
+		exAssert.equal(childRuns, 1);
+
+		const secondStore = createStore();
+		const second = await run(
+			parent,
+			{},
+			{
+				runId: "wf-durable-failed-child",
+				store: secondStore,
+				durableBackend: backend,
+				adapters: { complete: { complete: async (text) => text } },
+			},
+		);
+		exAssert.equal(second.status, "completed");
+		exAssert.deepEqual(second.result, first.result);
+		exAssert.equal(childRuns, 1);
+		exAssert.equal(secondStore.runs().filter((run) => run.name === "durable-failed-child").length, 1);
+		exAssert.equal(secondStore.runs().find((run) => run.name === "durable-failed-child")?.status, "failed");
+		const boundary = secondStore.runs()[0]?.stages.find((stage) => stage.name === "workflow:durable-failed-child");
+		exAssert.equal(boundary?.workflowChild?.status, "failed");
+		exAssert.equal(boundary?.workflowChild?.exited, true);
+	});
+
 	exTest("child workflow run propagates custom durableBackend", async () => {
 		class TrackingBackend extends InMemoryDurableBackend {
 			registered: string[] = [];
