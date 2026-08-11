@@ -1,7 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CredentialSynchronizationError, ModelRuntime } from "../src/core/model-runtime.ts";
 
+beforeEach(() => {
+	// saveCredential refreshes the provider catalog; this test only exercises
+	// local credential synchronization and must not depend on a live endpoint.
+	vi.stubEnv("ATOMIC_OFFLINE", "1");
+});
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
