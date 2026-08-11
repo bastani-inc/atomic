@@ -187,7 +187,7 @@ async function requestSlashRun(
 		const unsubUpdate = pi.events.on(SLASH_SUBAGENT_UPDATE_EVENT, onUpdate);
 
 		let unregisterSettlement: (() => void) | undefined;
-		let reportedStaleStop = false;
+		let reportedStop = false;
 		const finish = (next: () => void) => {
 			if (done) return;
 			done = true;
@@ -202,9 +202,13 @@ async function requestSlashRun(
 
 		unregisterSettlement = registerBridgeRequestSettlement("slash", requestId, {
 			reject: (error: unknown) => {
-				if (!reportedStaleStop) {
-					reportedStaleStop = true;
-					console.error("Subagent slash command stopped because its response runtime was replaced or reloaded.");
+				if (!reportedStop) {
+					reportedStop = true;
+					console.error(
+						isStaleExtensionContextError(error)
+							? "Subagent slash command stopped because its response runtime was replaced or reloaded."
+							: "Subagent slash command stopped before its response was delivered.",
+					);
 				}
 				finish(() => reject(error));
 			},

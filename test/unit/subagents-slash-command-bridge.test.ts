@@ -18,6 +18,7 @@ import { registerSlashCommands } from "../../packages/subagents/src/slash/slash-
 
 type EventHandler = (data: unknown) => void | Promise<void>;
 type CommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
+const STALE_RESPONSE_SETTLEMENT_TIMEOUT_MS = 5_000;
 
 class FakeEvents {
 	private readonly handlers = new Map<string, Set<EventHandler>>();
@@ -58,16 +59,22 @@ function writeAgent(cwd: string, name: string): void {
 		].join("\n"),
 	);
 }
+interface FakeContextOptions {
+	hasUI?: boolean;
+	onNotify?: (message: string, type?: "info" | "warning" | "error") => void;
+	onStatus?: (key: string, text: string | undefined) => void;
+}
 
-function makeContext(cwd: string): ExtensionCommandContext {
+function makeContext(cwd: string, options: FakeContextOptions = {}): ExtensionCommandContext {
 	return {
 		cwd,
 		mode: "tui",
-		hasUI: false,
+		hasUI: options.hasUI ?? false,
 		ui: {
-			notify: () => {},
+			notify: options.onNotify ?? (() => {}),
 			setToolsExpanded: () => {},
-			setStatus: () => {},
+			setStatus: options.onStatus ?? (() => {}),
+			onTerminalInput: () => () => {},
 		},
 		sessionManager: { getSessionFile: () => undefined },
 	} as unknown as ExtensionCommandContext;
@@ -207,7 +214,9 @@ describe("human subagent slash command bridge", () => {
 					() => ({ status: "resolved" as const }),
 					(error: unknown) => ({ status: "rejected" as const, error }),
 				),
-				new Promise<{ status: "timed-out" }>((resolve) => setTimeout(() => resolve({ status: "timed-out" }), 250)),
+				new Promise<{ status: "timed-out" }>((resolve) =>
+					setTimeout(() => resolve({ status: "timed-out" }), STALE_RESPONSE_SETTLEMENT_TIMEOUT_MS),
+				),
 			]);
 
 			assert.notEqual(bounded.status, "timed-out", "the slash command must settle after a stale response drop");
@@ -216,6 +225,76 @@ describe("human subagent slash command bridge", () => {
 			assert.match(diagnostics.join("\n"), /response runtime was replaced or reloaded/);
 		} finally {
 			console.error = originalConsoleError;
+			bridge.dispose();
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("a non-stale bridge cancellation renders a terminal failure result", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-stopped-slash-"));
+		writeAgent(cwd, "stopped-worker");
+		const events = new FakeEvents();
+		const commands = new Map<string, CommandOptions>();
+		const sent: unknown[] = [];
+		const statuses: Array<[string, string | undefined]> = [];
+		const notifications: Array<[string, "info" | "warning" | "error" | undefined]> = [];
+		const execution = Promise.withResolvers<{
+			content: Array<{ type: "text"; text: string }>;
+			details: { mode: "single"; results: [] };
+		}>();
+		const executionStarted = Promise.withResolvers<void>();
+		const ctx = makeContext(cwd, {
+			hasUI: true,
+			onNotify: (message, type) => notifications.push([message, type]),
+			onStatus: (key, text) => statuses.push([key, text]),
+		});
+		const pi = {
+			events,
+			registerCommand: (name: string, options: CommandOptions) => commands.set(name, options),
+			sendMessage: (message: unknown) => sent.push(message),
+		} as unknown as ExtensionAPI;
+		const bridge = registerSlashSubagentBridge({
+			events,
+			getContext: () => ctx,
+			execute: async () => {
+				executionStarted.resolve();
+				return execution.promise;
+			},
+		});
+		registerSlashCommands(pi, { baseCwd: cwd } as SubagentState);
+		const command = commands.get("run");
+		assert.ok(command);
+
+		try {
+			const pending = command.handler("stopped-worker wait", ctx);
+			await executionStarted.promise;
+			bridge.cancelAll();
+
+			const bounded = await Promise.race([
+				pending.then(
+					() => ({ status: "resolved" as const }),
+					(error: unknown) => ({ status: "rejected" as const, error }),
+				),
+				new Promise<{ status: "timed-out" }>((resolve) =>
+					setTimeout(() => resolve({ status: "timed-out" }), STALE_RESPONSE_SETTLEMENT_TIMEOUT_MS),
+				),
+			]);
+
+			assert.notEqual(bounded.status, "timed-out", "bridge cancellation must settle the slash command");
+			assert.equal(bounded.status, "resolved");
+			assert.equal(sent.length, 2, "the command must publish its initial and terminal results");
+			const failure = sent.at(-1) as { content?: unknown };
+			assert.match(String(failure.content), /response delivery stopped/);
+			assert.ok(statuses.some(([key, text]) => key === "subagent-slash" && text === undefined));
+			assert.deepEqual(notifications.at(-1), [
+				"Subagent response delivery stopped because its bridge was stopped before the response arrived (extension deactivation or replacement).",
+				"error",
+			]);
+		} finally {
+			execution.resolve({
+				content: [{ type: "text", text: "done" }],
+				details: { mode: "single", results: [] },
+			});
 			bridge.dispose();
 			rmSync(cwd, { recursive: true, force: true });
 		}

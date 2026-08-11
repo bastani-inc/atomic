@@ -1,4 +1,4 @@
-import { isStaleExtensionContextError, STALE_EXTENSION_CONTEXT_MARKER } from "@bastani/atomic";
+import { isStaleExtensionContextError } from "@bastani/atomic";
 
 export interface BridgeRequestSettlement {
 	reject(error: unknown): void;
@@ -43,23 +43,22 @@ export function readBridgeRequestSettlement(
 ): BridgeRequestSettlement | undefined {
 	if (!data || typeof data !== "object") return undefined;
 	const requestId = (data as { requestId?: unknown }).requestId;
-	if (typeof requestId === "string") {
-		const registered = bridgeSettlementRegistry().get(settlementKey(scope, requestId));
-		if (registered) return registered;
+	if (typeof requestId !== "string") return undefined;
+	return bridgeSettlementRegistry().get(settlementKey(scope, requestId));
+}
+
+/** A bridge was stopped before its caller received a terminal response. */
+export class BridgeRequestStoppedError extends Error {
+	constructor() {
+		super(
+			"Subagent response delivery stopped because its bridge was stopped before the response arrived (extension deactivation or replacement).",
+		);
+		this.name = "BridgeRequestStoppedError";
 	}
-	const settlement = (data as { settlement?: unknown }).settlement;
-	if (!settlement || typeof settlement !== "object") return undefined;
-	const reject = (settlement as { reject?: unknown }).reject;
-	if (typeof reject !== "function") return undefined;
-	return { reject: (error) => reject(error) };
 }
 
 export function rejectStoppedBridgeRequest(settlement: BridgeRequestSettlement | undefined): void {
-	settlement?.reject(
-		new Error(
-			`Subagent response delivery stopped because its ${STALE_EXTENSION_CONTEXT_MARKER} during reload or session replacement.`,
-		),
-	);
+	settlement?.reject(new BridgeRequestStoppedError());
 }
 
 /**
@@ -78,7 +77,11 @@ export function emitBridgeEvent(
 		return true;
 	} catch (error) {
 		if (!isStaleExtensionContextError(error)) throw error;
-		settlement?.reject(error);
+		if (settlement) {
+			settlement.reject(error);
+		} else {
+			console.error(`Subagent bridge dropped '${event}' because its extension runtime is stale.`, error);
+		}
 		return false;
 	}
 }
