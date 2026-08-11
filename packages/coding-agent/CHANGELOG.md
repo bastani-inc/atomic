@@ -21,6 +21,7 @@
 - Fullscreen mode now supports a draggable transcript scrollbar configured as `auto`, `always`, or `hidden` through `/settings`; themes can set `scrollbarThumb`, which falls back to `selectedBg` for existing custom themes.
 - Fullscreen transcript navigation now supports page, opt-in half-page, marked-message, and `home`/`end` shortcuts, while `ctrl+home`, `ctrl+end`, `ctrl+pageUp`, and `ctrl+pageDown` remain available to the editor. Matching viewport bindings pass through to focused fullscreen overlays and inline custom components, so host selectors and workflow stage-chat paging stay local. Prompt history can be enabled with explicit `tui.editor.historyPrevious`/`historyNext` bindings such as `ctrl+p`/`ctrl+n`; those bindings take precedence over ordinary application action handlers while the editor is focused.
 - Windows fullscreen sessions now paste system clipboard text on a secondary-button press, with focus checks and bracketed-paste framing preserved for host and engine-owned editors.
+- Added the bundled, default-on ADHD-friendly response mode. Its hidden rules message persists across turns, resumes, branches, and compaction; `/i-have-adhd on|off`, `--no-adhd`, `.i-have-adhd-off`, and the `stop adhd mode` / `normal mode` phrases control it.
 
 - Added `atomic auth check` to verify a provider or model's effective authentication before a session starts. It reports `ready`, `not_ready`, or `invalid`, supports JSON output and a no-refresh read-only mode, and does not emit credential material unless `--credentials` explicitly requests it.
 

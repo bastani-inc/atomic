@@ -19,6 +19,7 @@
         "verbatimModuleSyntax": true,
         "paths": {
             "@bastani/atomic": ["./packages/coding-agent/src/index.ts"],
+            "@bastani/i-have-adhd": ["./packages/i-have-adhd/index.ts"],
             "@bastani/workflows": ["./packages/workflows/src/index.ts"],
             "@bastani/workflows/builtin": ["./packages/workflows/builtin/index.ts"],
             "@bastani/workflows/builtin/*": ["./packages/workflows/builtin/*"],
@@ -38,6 +39,7 @@
     "include": [
         "packages/coding-agent/src/**/*.d.ts",
         "packages/workflows/**/*",
+        "packages/i-have-adhd/**/*",
         "test/**/*",
         "examples/**/*",
         ".atomic/workflows/**/*"

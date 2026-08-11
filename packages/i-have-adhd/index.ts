@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
+import { buildContextEntries, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
 
 const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_PATH = join(EXTENSION_DIR, "skills", "i-have-adhd", "SKILL.md");
@@ -71,7 +71,7 @@ function getSavedState(ctx: ExtensionContext): boolean | undefined {
 function rulesAreInContext(ctx: ExtensionContext): boolean {
 	let active = false;
 
-	for (const entry of ctx.sessionManager.buildContextEntries()) {
+	for (const entry of buildContextEntries(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId())) {
 		if (entry.type !== "custom_message") continue;
 
 		if (entry.customType === RULES_MESSAGE_TYPE) {
