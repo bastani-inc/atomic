@@ -365,6 +365,51 @@ test("delivers completions through a replacement API after invalidation", async 
 	assert.equal(registry.get(replacement.pi), undefined);
 });
 
+test("wraps a double failure in AggregateError with the registry already rolled back", () => {
+	// Greptile P2 on PR #2306: the both-cleanups-fail branch promised
+	// "preserve both errors if rollback also fails" and nothing entered it.
+	// The prior subscription's unsubscribe AND the new handler's rollback
+	// unsubscribe both throw non-stale errors here.
+	const listeners = new Map<string, Set<(data: unknown) => void>>();
+	let onCalls = 0;
+	const events = {
+		on(event: string, handler: (data: unknown) => void) {
+			onCalls += 1;
+			const set = listeners.get(event) ?? new Set();
+			set.add(handler);
+			listeners.set(event, set);
+			const subscriptionCall = onCalls;
+			return () => {
+				if (subscriptionCall === 1) throw new Error("injected replacement cleanup failure");
+				throw new Error("injected rollback failure");
+			};
+		},
+		emit(event: string, payload: unknown) {
+			for (const handler of listeners.get(event) ?? []) handler(payload);
+		},
+	};
+	const pi = { events, sendMessage: () => {} };
+	registerSubagentNotify(pi as never);
+	const registry = (globalThis as Record<string, unknown>).__piSubagentsNotifyRegistrations as WeakMap<
+		object,
+		{ unsubscribe: () => void }
+	>;
+	assert.ok(registry.get(pi), "the first subscription is registered");
+
+	let caught: unknown;
+	try {
+		registerSubagentNotify(pi as never);
+	} catch (error) {
+		caught = error;
+	}
+	assert.ok(caught instanceof AggregateError, "double failure surfaces as AggregateError");
+	assert.match(caught.message, /Failed to roll back notification registration/);
+	assert.equal(caught.errors.length, 2, "both errors are preserved");
+	assert.match(String(caught.errors[0]), /injected replacement cleanup failure/);
+	assert.match(String(caught.errors[1]), /injected rollback failure/);
+	assert.equal(registry.get(pi), undefined, "registry is rolled back before the AggregateError escapes");
+});
+
 test("rolls back a failed replacement before activation can expose a registry entry", () => {
 	const listeners = new Map<string, Set<(data: unknown) => void>>();
 	const activeHandlers = new Set<(data: unknown) => void>();

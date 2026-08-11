@@ -162,14 +162,25 @@ function createPi(options: { appendError?: Error; contentAdmission?: Promise<voi
 		if (message.customType === "web-search-content-ready") return options.contentAdmission;
 		return undefined;
 	};
-	return {
-		on,
+	// The supplied members stay structurally checked against ExtensionAPI; the
+	// single widening cast sits at the return boundary because the production
+	// signature demands the full interface (Greptile P2 on PR #2312).
+	const fixture: Pick<
+		ExtensionAPI,
+		"on" | "registerShortcut" | "registerTool" | "registerCommand" | "appendEntry" | "sendMessage"
+	> = {
+		// Member-scoped casts for the three members whose production signatures
+		// are overloaded/generic; the simplified doubles cannot satisfy them
+		// structurally, and the narrowing made that visible (it was hidden by
+		// the blanket unknown cast). Every other member stays fully checked.
+		on: on as ExtensionAPI["on"],
 		registerShortcut: () => {},
 		registerTool: () => {},
 		registerCommand: () => {},
-		appendEntry,
-		sendMessage,
-	} as unknown as ExtensionAPI;
+		appendEntry: appendEntry as ExtensionAPI["appendEntry"],
+		sendMessage: sendMessage as ExtensionAPI["sendMessage"],
+	};
+	return fixture as ExtensionAPI;
 }
 
 function setup(options: Parameters<typeof createPi>[0] = {}): ExtensionAPI {
