@@ -374,9 +374,7 @@ test("fullscreen keeps pi-tui selection active while a workflow overlay owns foc
 		const targetCol = lines[targetRow]!.indexOf("stage-0");
 		assert.ok(targetCol >= 0, "workflow overlay did not render selectable text");
 
-		terminal.input(sgrMouse(0, targetCol, targetRow));
-		await flush();
-		terminal.input(sgrMouse(32, targetCol + 4, targetRow));
+		terminal.input(sgrMouse(0, targetCol, targetRow) + sgrMouse(32, targetCol + 4, targetRow));
 		await flush();
 		terminal.input(sgrMouse(0, targetCol + 4, targetRow, "m"));
 		await flush();
@@ -402,6 +400,30 @@ test("fullscreen keeps pi-tui selection active while a workflow overlay owns foc
 		tui.stop();
 	}
 });
+test("fullscreen skips application selection for modified overlay clicks", async () => {
+	const { host, overlay, tui, terminal } = await makeFullscreenGraphFixture();
+	try {
+		const lines = host.render(terminal.columns).map((line) => stripTerminalSequences(line));
+		const targetRow = lines.findIndex((line) => line.includes("stage-0"));
+		assert.ok(targetRow >= 0, "workflow overlay did not render a selectable row");
+		const targetCol = lines[targetRow]!.indexOf("stage-0");
+		assert.ok(targetCol >= 0, "workflow overlay did not render selectable text");
+
+		for (const button of [4, 8, 16]) {
+			terminal.input(sgrMouse(button, targetCol, targetRow));
+			await flush();
+			assert.equal(
+				Reflect.get(tui, "selectionPressActive"),
+				false,
+				`modified left-button report ${button} entered pi-tui selection`,
+			);
+		}
+	} finally {
+		overlay.hide();
+		tui.stop();
+	}
+});
+
 test("fullscreen transcript wheel resumes after the workflow overlay closes", async () => {
 	const { transcript, overlay, tui, terminal } = await makeFullscreenGraphFixture();
 	try {
@@ -619,6 +641,12 @@ test("fullscreen workflow overlay Ctrl+T invokes the production host thinking ac
 		tui.stop();
 	}
 });
+test("fullscreen overlay fallback returns the default editor result", () => {
+	const thinking = makeProductionThinkingHandler(new KeybindingsManager());
+	thinking.mode.defaultEditor.handleInput = () => false;
+	assert.equal(thinking.handler("\x14"), false);
+});
+
 test("an unresponsive remote child falls back to the viewport and keeps later input routable", async () => {
 	const bridge = makeBridge({ fullscreen: true, stallInput: true });
 	const inputs: string[] = [];

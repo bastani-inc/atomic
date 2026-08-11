@@ -355,12 +355,24 @@ describe("TerminalModeController", () => {
 describe("isolated overlay autowrap bridge (source-path)", () => {
 	test("keeps remote autowrap quiet in fullscreen and reapplies it after a renderer switch", async () => {
 		const bridge = makeBridge({ fullscreen: true });
-		void bridge.child.custom(autowrapFactory(false), { overlay: true });
+		let done!: (result: unknown) => void;
+		void bridge.child.custom(
+			(tui, _t, _k, complete) => {
+				done = complete as (result: unknown) => void;
+				remoteTerm(tui).setAutowrap?.(false);
+				return { render: () => ["component"], handleInput: () => {}, invalidate: () => {} };
+			},
+			{ overlay: true },
+		);
 		await sleep(0);
 		assert.deepEqual(bridge.hostWrites, []);
 
 		bridge.replaceTuiMode(false);
 		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF]);
+
+		done(undefined);
+		await sleep(0);
+		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 		bridge.controller.dispose();
 	});
 
@@ -433,24 +445,6 @@ describe("isolated overlay autowrap bridge (source-path)", () => {
 			bridge.childCommands.slice(commandsBeforeDeath).map((command) => command.type),
 			[],
 		);
-		bridge.controller.dispose();
-	});
-	test("Windows autowrap can be enabled and restored through the child bridge", async () => {
-		const bridge = makeBridge();
-		let done!: (result: unknown) => void;
-		void bridge.child.custom(
-			(tui, _t, _k, complete) => {
-				done = complete as (result: unknown) => void;
-				remoteTerm(tui).setAutowrap?.(false);
-				return { render: () => ["component"], handleInput: () => {}, invalidate: () => {} };
-			},
-			{ overlay: true },
-		);
-		await sleep(0);
-		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF]);
-		done(undefined);
-		await sleep(0);
-		assert.deepEqual(bridge.hostWrites, [HOST_TERMINAL_AUTOWRAP_OFF, HOST_TERMINAL_AUTOWRAP_ON]);
 		bridge.controller.dispose();
 	});
 });

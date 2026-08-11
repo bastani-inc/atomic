@@ -63,6 +63,7 @@
 ### Fixed
 
 - Fixed fullscreen mouse routing for focused workflow graphs and stage chats. SGR/X10 wheel and click sequences now reach the focused overlay through the existing bounded custom-input reply path before the alternate-screen viewport, so graph scrolling and click-to-attach work without changing keyboard viewport fallback behavior ([#2303](https://github.com/bastani-inc/atomic/issues/2303)).
+- Fixed fullscreen overlay text selection when one input read contains multiple SGR mouse reports. Reports are replayed one at a time, while Shift/Option/Ctrl-modified clicks stay out of application selection; legacy X10 release remains excluded because pi-tui cannot identify it for selection.
 - Fixed `atomic auth check --no-refresh` resolving command-backed API keys as configured values rather than treating `!command` as a literal credential.
 
 - Fixed `atomic auth check --json` labelling an unresolved model as its provider. Invalid results now omit `provider` until a provider has actually resolved, and `print-api-key` consistently rejects `--min-expiry` before or after a `--` terminator.

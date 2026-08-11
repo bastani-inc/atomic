@@ -248,6 +248,31 @@ describe("WorkflowAttachPane", () => {
 		pane.dispose();
 	});
 
+	test("graph and switcher modes let Ctrl+T fall through to the host", () => {
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			onClose: () => {},
+		});
+		const graphView = (
+			pane as unknown as {
+				graphView: { _switcherOpen: boolean; _switcherState: { query: string } };
+			}
+		).graphView;
+
+		assert.equal(pane.handleInput("\x14"), false);
+
+		pane.handleInput(Key.slash);
+		assert.equal(graphView._switcherOpen, true);
+		assert.equal(pane.handleInput("\x14"), false);
+		assert.equal(graphView._switcherOpen, true);
+		assert.equal(graphView._switcherState.query, "");
+		pane.dispose();
+	});
+
 	test("stays in graph mode when a stage becomes awaiting-input until Enter attaches", () => {
 		const clock = makeClock();
 		const store = createStore();
