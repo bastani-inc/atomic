@@ -25,7 +25,7 @@ everywhere. Where the split differs from pi, the reason is written down.
 | Supply-chain gate | committed `.npmrc` | Byte-identical to pi's: `save-exact=true` and `min-release-age=2`. Binds every contributor's install, not just CI. `.github/dependabot.yml` carries the matching `cooldown` |
 | Build | `npm run build` | tsgo, not Bun; no behaviour change |
 | Lint / format | `biome check` (`npm run check`, `npm run format`) | pi's rule set exactly: recommended preset plus the same six overrides. Tab indent width 3, line width 120 |
-| Typecheck / check | `npm run check` (biome + `tsc --noEmit` + shrinkwrap check) | pi runs biome + tsgo here |
+| Typecheck / check | `npm run check` (biome + `tsc --noEmit` + the coding-agent package's `tsgo -p tsconfig.build.json --noEmit` + shrinkwrap check) | pi runs biome + tsgo here. The second typecheck pass covers `packages/coding-agent`, which the root tsconfig excludes, under its own stricter build config (including `erasableSyntaxOnly`) |
 | Root test suites | `vitest --run --project {unit,integration,ci}` | pi uses vitest for its workspace tests, with a shared `vitest.base.ts` setting only `resolve.alias` |
 | `packages/coding-agent` suite | `vitest --run` | already parity; it now runs under Node rather than `bun --bun`, SQLite selectors included |
 | Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |
@@ -51,7 +51,7 @@ a *toolchain* goal, not a CI-topology goal.
 
 - `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
 - `npm install <pkg>` — add a dependency; `.npmrc` applies the 3-day release-age gate and `save-exact`
-- `npm run check` — `tsc --noEmit` plus the published-shrinkwrap check. `npm run typecheck` is the typecheck alone
+- `npm run check` — `tsc --noEmit`, then the coding-agent package typecheck (`tsgo -p tsconfig.build.json --noEmit`), plus the published-shrinkwrap check. `npm run typecheck` runs both typecheck passes alone
 - `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
 - `npm run test --workspace=@bastani/atomic` — the coding-agent vitest suite, under Node
 - `npm run test:scripts` — `node --test scripts/*.test.mjs`

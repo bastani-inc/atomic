@@ -228,7 +228,10 @@ Run these from the workspace root:
 | `npm run hooks:install`     | Install `prek.toml` Git hooks using `default_install_hook_types` |
 | `npm run hooks:run`         | Run all `prek.toml` hooks across the repository                  |
 
-`check` runs `biome check --error-on-warnings`, then `tsc --noEmit`, then verifies
+`check` runs `biome check --error-on-warnings`, then `tsc --noEmit`, then the coding-agent
+package's own typecheck (`tsgo -p tsconfig.build.json --noEmit` — a second pass under a
+different compiler and a stricter config, including `erasableSyntaxOnly`, because the root
+tsconfig excludes `packages/coding-agent`), then verifies
 `packages/coding-agent/npm-shrinkwrap.json` is still derivable from `package-lock.json`; `lint`
 is an alias for `check`, and `npm run format` applies Biome's formatter. Biome is configured in
 [`biome.json`](./biome.json) with upstream pi's rule set.
