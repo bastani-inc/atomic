@@ -1,7 +1,35 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildContextEntries, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
+import {
+	buildContextEntries,
+	getAgentDir,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type InputEvent,
+	type InputEventResult,
+	type SessionCompactEvent,
+	type SessionStartEvent,
+	type SessionTreeEvent,
+} from "@bastani/atomic";
+
+export type IHaveAdhdExtensionContext = Pick<ExtensionContext, "hasUI" | "sessionManager"> & {
+	ui: Pick<ExtensionContext["ui"], "notify" | "setStatus"> & {
+		theme: Pick<ExtensionContext["ui"]["theme"], "fg">;
+	};
+};
+
+type IHaveAdhdHandler<E, R = undefined> = (event: E, ctx: IHaveAdhdExtensionContext) => Promise<R | void> | R | void;
+
+export type IHaveAdhdExtensionAPI = Pick<
+	ExtensionAPI,
+	"appendEntry" | "getFlag" | "registerCommand" | "registerFlag" | "sendMessage"
+> & {
+	on(event: "input", handler: IHaveAdhdHandler<InputEvent, InputEventResult>): void;
+	on(event: "session_compact", handler: IHaveAdhdHandler<SessionCompactEvent>): void;
+	on(event: "session_start", handler: IHaveAdhdHandler<SessionStartEvent>): void;
+	on(event: "session_tree", handler: IHaveAdhdHandler<SessionTreeEvent>): void;
+};
 
 const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_PATH = join(EXTENSION_DIR, "skills", "i-have-adhd", "SKILL.md");
@@ -44,7 +72,7 @@ function loadRules(): string {
 	return rules;
 }
 
-function getSavedState(ctx: ExtensionContext): boolean | undefined {
+function getSavedState(ctx: IHaveAdhdExtensionContext): boolean | undefined {
 	let savedState: boolean | undefined;
 
 	for (const entry of ctx.sessionManager.getBranch()) {
@@ -68,7 +96,7 @@ function getSavedState(ctx: ExtensionContext): boolean | undefined {
  * ruleset, and compaction drops summarized entries so the ruleset has to be
  * injected again.
  */
-function rulesAreInContext(ctx: ExtensionContext): boolean {
+function rulesAreInContext(ctx: IHaveAdhdExtensionContext): boolean {
 	let active = false;
 
 	for (const entry of buildContextEntries(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId())) {
@@ -84,12 +112,12 @@ function rulesAreInContext(ctx: ExtensionContext): boolean {
 	return active;
 }
 
-export default function iHaveAdhdExtension(pi: ExtensionAPI) {
+export default function iHaveAdhdExtension(pi: IHaveAdhdExtensionAPI) {
 	const rules = loadRules();
 	const disabledFlag = join(getAgentDir(), ".i-have-adhd-off");
 	let enabled = false;
 
-	const updateStatus = (ctx: ExtensionContext): void => {
+	const updateStatus = (ctx: IHaveAdhdExtensionContext): void => {
 		if (!enabled) {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 			return;
@@ -104,7 +132,7 @@ export default function iHaveAdhdExtension(pi: ExtensionAPI) {
 	 * Keep the conversation in sync with the current mode, the way the Claude Code
 	 * SessionStart hook does: inject the ruleset once, never per request.
 	 */
-	const syncContext = (ctx: ExtensionContext): void => {
+	const syncContext = (ctx: IHaveAdhdExtensionContext): void => {
 		const injected = rulesAreInContext(ctx);
 
 		if (enabled && !injected) {
@@ -131,7 +159,7 @@ export default function iHaveAdhdExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const restoreState = (ctx: ExtensionContext): void => {
+	const restoreState = (ctx: IHaveAdhdExtensionContext): void => {
 		const savedState = getSavedState(ctx);
 		const explicitlyDisabled = pi.getFlag("no-adhd") === true || existsSync(disabledFlag);
 
@@ -140,7 +168,7 @@ export default function iHaveAdhdExtension(pi: ExtensionAPI) {
 		syncContext(ctx);
 	};
 
-	const setEnabled = (nextEnabled: boolean, ctx: ExtensionContext): void => {
+	const setEnabled = (nextEnabled: boolean, ctx: IHaveAdhdExtensionContext): void => {
 		enabled = nextEnabled;
 		pi.appendEntry(STATE_ENTRY_TYPE, { enabled } satisfies AdhdModeState);
 		updateStatus(ctx);
