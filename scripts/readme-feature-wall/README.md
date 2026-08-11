@@ -1,9 +1,9 @@
 # README feature wall
 
-The 40-row capability wall in the root `README.md`: all 27 core lessons from the
+The 40-row capability wall in the root `README.md` covers all 27 core lessons from the
 [Atomic crash course](https://github.com/bastani-inc/atomic-crash-course), three distinct
-workflow-use paths, and all ten Extras A.1 through A.10. Every row has its own real
-recording of the installed product.
+workflow-use paths, and all ten Extras A.1 through A.10. The manifest presents them in a
+fixed product-impact order rather than course order. Every row has its own real recording.
 
 Nothing here is mocked. Every frame is the installed `atomic` binary driven by real
 keystrokes in a real terminal, answering with real model output. Clips are trimmed and
@@ -14,7 +14,7 @@ or model response is fabricated.
 
 | Path | What it is |
 |---|---|
-| `manifest.json` | The single source of truth: 40 exact row labels, capture-source paths, copy, links, interactions, media paths, render windows, and privacy notes |
+| `manifest.json` | The single source of truth: fixed product-impact order, 40 exact row labels, public Atomic docs and crash-course links, capture-source paths, copy, interactions, media paths, render windows, and privacy notes |
 | `tapes/<id>.tape` | The visible beats for one row, in VHS tape syntax |
 | `tapes/<id>.prepare.sh` | Optional off-camera setup for one row; it may seed lesson files but never visible output |
 | `lib/theme.tape` | Shared terminal size, font, and colours |
@@ -29,6 +29,23 @@ or model response is fabricated.
 Intermediates (raw 1080p captures, frames, sheets) live outside the repository, under
 `$FW_BUILD`, default `/private/tmp/atomic-feature-wall`. Only the final GIFs and posters
 are committed, under `assets/feature-wall/`.
+
+## Ordering and links
+
+The checked order leads with the highest-impact workflow, control, safety, parallelism,
+and durability features, then moves into the lower-level runtime and customization tools:
+
+```text
+W.1 → A.8 → A.10 → 6.6 → 5.2 → 6.2 → 6.5 → 6.4 → 5.4 → A.9
+→ A.5 → 5.3 → 5.5 → 5.1 → A.6 → 6.3 → 6.1 → W.2 → W.3 → 2.2
+→ 1.2 → 1.3 → A.2 → 3.2 → 3.3 → 4.3 → 3.1 → 3.4 → 4.2 → 4.1
+→ 2.1 → 2.3 → 1.1 → 1.4 → 5.6 → A.7 → A.4 → A.3 → A.1 → 3.5
+```
+
+Each manifest row owns a `docs.label` and full `docs.url`. `build-readme.mjs` renders that
+public link as `Atomic docs · <label>` above the row's crash-course link. `validate.mjs`
+keeps an independent copy of the exact order and docs mapping, so changing the manifest
+alone cannot redefine either contract.
 
 ## Running it
 
@@ -111,7 +128,8 @@ or create UI output.
 
 ## Adding or changing a row
 
-1. Edit the row entry in `manifest.json`.
+1. Edit the row entry in `manifest.json`, keeping its id, title, capture source, interactions,
+   media, crash-course anchor, and public Atomic docs mapping bound together.
 2. Write or adjust `tapes/<id>.tape` and any exact off-camera preparation script.
 3. `capture.sh <id>`, then `contact-sheet.sh raw <id>` to choose a trim window.
 4. Put that window, or ordered windows from the same recording, into the row's `render`
@@ -120,6 +138,6 @@ or create UI output.
    row flagged in `gif-holds.tsv` before updating `visual-review.md`.
 6. Run `build-readme.mjs`, then finish with the full default `validate.mjs` gate.
 
-The row set itself is fixed. `validate.mjs` carries its own copy of all 40 required ids and
-titles, so the manifest cannot quietly redefine the contract: 27 core rows, workflow-use
-rows W.1-W.3, and Extras A.1-A.10.
+The row set, product-impact order, and public docs mapping are fixed. `validate.mjs` carries
+its own copy of all 40 required ids, titles, positions, docs labels, and docs paths, so the
+manifest cannot quietly redefine the contract.

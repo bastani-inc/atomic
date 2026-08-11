@@ -4,9 +4,9 @@
 //   node scripts/readme-feature-wall/build-readme.mjs          write README.md
 //   node scripts/readme-feature-wall/build-readme.mjs --check  fail if stale
 //
-// The wall is a two-column HTML table: copy and lesson link on the left, the
-// product capture on the right as <picture> markup with the animated GIF as the
-// source and the JPG poster as the <img> fallback.
+// The wall is a two-column HTML table: copy, public Atomic docs, and lesson link
+// on the left, with the product capture on the right as <picture> markup. The
+// animated GIF is the source and the JPG poster is the <img> fallback.
 //
 // The generator owns the region between the two feature-wall markers and
 // nothing else, so the surrounding README structure and the opening evidence
@@ -27,16 +27,18 @@ const COURSE = MANIFEST.course.url;
 
 const rows = MANIFEST.lessons
 	.map((l) => {
-		const link = `${COURSE}${l.anchor}`;
+		const courseLink = `${COURSE}${l.anchor}`;
+		const docsLink = l.docs.url;
 		return [
 			"<tr>",
 			'<td width="42%" valign="top">',
 			`<h4>${l.title}</h4>`,
 			`<p>${l.blurb}</p>`,
-			`<p><a href="${link}"><sub>Crash course · ${l.lesson}</sub></a></p>`,
+			`<p><a href="${docsLink}"><sub>Atomic docs · ${l.docs.label}</sub></a></p>`,
+			`<p><a href="${courseLink}"><sub>Crash course · ${l.lesson}</sub></a></p>`,
 			"</td>",
 			'<td width="58%" valign="top">',
-			`<a href="${link}">`,
+			`<a href="${courseLink}">`,
 			"<picture>",
 			`<source srcset="${l.media.gif}" type="image/gif">`,
 			`<img src="${l.media.jpg}" alt="${l.alt}" width="100%">`,
@@ -52,7 +54,7 @@ const wall = [
 	START,
 	"",
 	"**Core capabilities** — every row is a real Atomic session, recorded from the",
-	"installed product. Each links to the crash-course lesson that walks you through it.",
+	"installed product. Open the Atomic docs for reference or follow the crash course step by step.",
 	"",
 	"<table>",
 	rows,
