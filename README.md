@@ -40,20 +40,615 @@
 - 🔀 ~95% merge rate on Atomic-generated PRs, with reduced follow-ups and a 0% revert rate
 - 🛡️ Production incidents caught that CI did not cover
 
-**Core capabilities:**
+<!-- feature-wall:start -->
 
-- **Workflows as versioned TypeScript** — stages, branches, parallelism, retries, and gates are code you review, not per-run model improvisation
-- **Verification built into the execution model** — stages declare outputs against schemas; the runtime validates them before the next stage starts
-- **Author/verifier separation** — fresh-context verifiers derive checks from requirements, not from the implementation's claims
-- **Evidence, not self-report** — builds, typechecks, tests, and browser checks run as tracked tool calls, checkpointed and auditable after the run
-- **Deterministic ship/repair decisions** — completion is decided by code from structured verifier output, with human approval gates where you put them
-- **Model-agnostic** — subscription login for Claude, Codex, Copilot, xAI, and more; swap providers without rewriting workflows
-- **Specialized subagents** — nine bundled agents with scoped context and tools; fan out research, keep implementation contexts small
-- **Agent Skills standard** — bring existing Claude Code or Codex skills without rewriting them
-- **MCP support** — connect Jira, GitHub, databases, and the rest of your stack as agent tools
-- **Durable, resumable runs** — attach to any running stage, watch, steer, pause, or resume; checkpoints survive interruption
-- **Author workflows in natural language** — Atomic knows its own runtime and writes the TypeScript definition; you refine it
-- **Open source (MIT)** — inspect, version, and own the workflow, the evidence, and the rules for completion
+**Core capabilities** — every row is a real Atomic session, recorded from the
+installed product. Each links to the crash-course lesson that walks you through it.
+
+<table>
+<tr>
+<td width="42%" valign="top">
+<h4>Your first session</h4>
+<p>One editor for prompts, <code>@</code> file references, and <code>!</code> shell commands, with steering you can type while the agent works.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#11-your-first-session"><sub>Crash course · 1.1 Your first session</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#11-your-first-session">
+<picture>
+<source srcset="assets/feature-wall/01-first-session.gif" type="image/gif">
+<img src="assets/feature-wall/01-first-session.jpg" alt="Atomic session answering a question about greeter.ts through an @ file reference, then running the file with an inline ! shell command" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Hashline edits</h4>
+<p>Edits are anchored to a 4-hex snapshot tag, so a file that changed behind the model's back fails loudly instead of being overwritten.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#12-hashline-edits"><sub>Crash course · 1.2 Hashline edits</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#12-hashline-edits">
+<picture>
+<source srcset="assets/feature-wall/02-hashline-edits.gif" type="image/gif">
+<img src="assets/feature-wall/02-hashline-edits.jpg" alt="Atomic applying a hashline edit anchored to a snapshot tag, showing the replace operation and the fresh tag it returns" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>The agent interviews you</h4>
+<p><code>ask_user_question</code> replaces the editor with a structured question UI mid-task, and your answers land in the transcript as data.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#13-the-agent-interviews-you"><sub>Crash course · 1.3 The agent interviews you</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#13-the-agent-interviews-you">
+<picture>
+<source srcset="assets/feature-wall/03-agent-interviews-you.gif" type="image/gif">
+<img src="assets/feature-wall/03-agent-interviews-you.jpg" alt="Atomic replacing the editor with a structured multiple-choice question UI that asks which config format to use" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>File-based todos</h4>
+<p>Plans are durable files under <code>.atomic/todos/</code>: plain text you can grep, review, and commit alongside the code.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#14-file-based-todos"><sub>Crash course · 1.4 File-based todos</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#14-file-based-todos">
+<picture>
+<source srcset="assets/feature-wall/04-file-based-todos.gif" type="image/gif">
+<img src="assets/feature-wall/04-file-based-todos.jpg" alt="Atomic creating todos with the todo tool and then listing the resulting plain-text files under .atomic/todos" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Branching with tree, fork, clone</h4>
+<p>Fork a session at any point and try a second approach without losing the first; <code>/tree</code> shows the whole shape.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#21-branching-with-tree-fork-clone"><sub>Crash course · 2.1 Branching with tree, fork, clone</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#21-branching-with-tree-fork-clone">
+<picture>
+<source srcset="assets/feature-wall/05-branching-tree-fork-clone.gif" type="image/gif">
+<img src="assets/feature-wall/05-branching-tree-fork-clone.jpg" alt="Atomic showing the session tree after a fork, with the branch points listed" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Verbatim compaction</h4>
+<p>Compaction deletes low-value transcript lines without rewriting what survives; <code>&lt;keepContext&gt;</code> pins exact text.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction"><sub>Crash course · 2.2 Verbatim compaction</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#22-verbatim-compaction">
+<picture>
+<source srcset="assets/feature-wall/06-verbatim-compaction.gif" type="image/gif">
+<img src="assets/feature-wall/06-verbatim-compaction.jpg" alt="Atomic answering after compaction by quoting the pinned keepContext repo rule back byte-exact" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Sessions are just JSONL</h4>
+<p>Every session is an append-only JSONL file on disk, so you can grep it, diff it, and script against it.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#23-sessions-are-just-jsonl"><sub>Crash course · 2.3 Sessions are just JSONL</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#23-sessions-are-just-jsonl">
+<picture>
+<source srcset="assets/feature-wall/07-sessions-are-jsonl.gif" type="image/gif">
+<img src="assets/feature-wall/07-sessions-are-jsonl.jpg" alt="Atomic walking its own session JSONL one event per line, showing each event's type, id, and parent id" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Build an extension</h4>
+<p>Drop a TypeScript file into <code>.atomic/extensions/</code> and the agent gains a new tool in the running session.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#31-build-an-extension"><sub>Crash course · 3.1 Build an extension</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#31-build-an-extension">
+<picture>
+<source srcset="assets/feature-wall/08-build-an-extension.gif" type="image/gif">
+<img src="assets/feature-wall/08-build-an-extension.jpg" alt="Atomic writing a project-local extension and then calling the new tool it registered" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Block a dangerous command</h4>
+<p>A tool-call hook inspects the arguments and rejects the call before it ever reaches your shell.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#32-block-a-dangerous-command"><sub>Crash course · 3.2 Block a dangerous command</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#32-block-a-dangerous-command">
+<picture>
+<source srcset="assets/feature-wall/09-block-a-dangerous-command.gif" type="image/gif">
+<img src="assets/feature-wall/09-block-a-dangerous-command.jpg" alt="Atomic refusing a destructive shell command because a project-local hook rejected the tool call" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Full-screen TUI tool</h4>
+<p>An extension can take over the whole screen with its own interactive component, then hand control back.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#33-full-screen-tui-tool"><sub>Crash course · 3.3 Full-screen TUI tool</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#33-full-screen-tui-tool">
+<picture>
+<source srcset="assets/feature-wall/10-full-screen-tui-tool.gif" type="image/gif">
+<img src="assets/feature-wall/10-full-screen-tui-tool.jpg" alt="A project-local extension taking over the Atomic screen with its own full-screen interactive component" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Write a skill</h4>
+<p>A <code>SKILL.md</code> file teaches the agent a procedure it loads on demand - the same format Claude Code and Codex use.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#34-write-a-skill"><sub>Crash course · 3.4 Write a skill</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#34-write-a-skill">
+<picture>
+<source srcset="assets/feature-wall/11-write-a-skill.gif" type="image/gif">
+<img src="assets/feature-wall/11-write-a-skill.jpg" alt="Atomic discovering a project-local SKILL.md and following the procedure it describes" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Custom theme</h4>
+<p>Theme the entire TUI from a project-local file and switch to it live with <code>/theme</code>.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#35-custom-theme"><sub>Crash course · 3.5 Custom theme</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#35-custom-theme">
+<picture>
+<source srcset="assets/feature-wall/12-custom-theme.gif" type="image/gif">
+<img src="assets/feature-wall/12-custom-theme.jpg" alt="Atomic displaying project-local theme JSON and offering my-theme in the live theme picker" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Headless print and JSON mode</h4>
+<p><code>-p</code> prints one answer and exits; <code>--mode json</code> streams structured events, so Atomic drops into scripts and CI.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#41-headless-print-and-json-mode"><sub>Crash course · 4.1 Headless print and JSON mode</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#41-headless-print-and-json-mode">
+<picture>
+<source srcset="assets/feature-wall/13-headless-print-and-json.gif" type="image/gif">
+<img src="assets/feature-wall/13-headless-print-and-json.jpg" alt="Atomic running headless with -p printing a single answer, then with --mode json streaming structured events" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Local models via models.json</h4>
+<p>Point Atomic at Ollama or any OpenAI-compatible endpoint by declaring it in <code>models.json</code>.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#42-local-models-via-modelsjson"><sub>Crash course · 4.2 Local models via models.json</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#42-local-models-via-modelsjson">
+<picture>
+<source srcset="assets/feature-wall/14-local-models.gif" type="image/gif">
+<img src="assets/feature-wall/14-local-models.jpg" alt="A models.json entry declaring a local OpenAI-compatible endpoint, and Atomic listing the model it adds" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Embed the agent with the SDK</h4>
+<p>Drive the same agent loop from your own TypeScript program, with your own tools and your own UI.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#43-embed-the-agent-with-the-sdk"><sub>Crash course · 4.3 Embed the agent with the SDK</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#43-embed-the-agent-with-the-sdk">
+<picture>
+<source srcset="assets/feature-wall/15-embed-with-the-sdk.gif" type="image/gif">
+<img src="assets/feature-wall/15-embed-with-the-sdk.jpg" alt="A TypeScript program using the Atomic SDK to run the agent loop and print its streamed output" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Delegating to bundled specialists</h4>
+<p>Fan work out to scoped subagents that do the reading, so the main context stays small.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#51-delegating-to-bundled-specialists"><sub>Crash course · 5.1 Delegating to bundled specialists</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#51-delegating-to-bundled-specialists">
+<picture>
+<source srcset="assets/feature-wall/16-bundled-specialists.gif" type="image/gif">
+<img src="assets/feature-wall/16-bundled-specialists.jpg" alt="Atomic delegating to bundled specialist subagents and collecting their findings" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Worktree-isolated parallel work</h4>
+<p>Parallel agents each get their own git worktree, so concurrent edits cannot collide.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#52-worktree-isolated-parallel-work"><sub>Crash course · 5.2 Worktree-isolated parallel work</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#52-worktree-isolated-parallel-work">
+<picture>
+<source srcset="assets/feature-wall/17-worktree-parallel-work.gif" type="image/gif">
+<img src="assets/feature-wall/17-worktree-parallel-work.jpg" alt="Atomic running parallel subagents in separate git worktrees and reporting a per-worktree diff" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Planner-worker intercom coordination</h4>
+<p>Separate sessions message each other over intercom to split a job and agree on the answer.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#53-plannerworker-intercom-coordination"><sub>Crash course · 5.3 Planner-worker intercom coordination</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#53-plannerworker-intercom-coordination">
+<picture>
+<source srcset="assets/feature-wall/18-planner-worker-intercom.gif" type="image/gif">
+<img src="assets/feature-wall/18-planner-worker-intercom.jpg" alt="Two Atomic sessions coordinating over intercom, one sending a question and the other replying" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Escalating to a human supervisor</h4>
+<p>A delegate that hits a real product decision stops, asks the human supervising the run, and waits for the answer.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#54-escalating-to-a-human-supervisor"><sub>Crash course · 5.4 Escalating to a human supervisor</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#54-escalating-to-a-human-supervisor">
+<picture>
+<source srcset="assets/feature-wall/19-escalate-to-supervisor.gif" type="image/gif">
+<img src="assets/feature-wall/19-escalate-to-supervisor.jpg" alt="One Atomic session escalating a null-email decision to its human supervisor over intercom, then applying the answer it receives" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Intercom context handoff</h4>
+<p>Hand a task to another session with the context attached, instead of pasting it by hand.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#55-intercom-context-handoff"><sub>Crash course · 5.5 Intercom context handoff</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#55-intercom-context-handoff">
+<picture>
+<source srcset="assets/feature-wall/20-intercom-context-handoff.gif" type="image/gif">
+<img src="assets/feature-wall/20-intercom-context-handoff.jpg" alt="One Atomic session handing a task to another over intercom with file and snippet attachments" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>A handoff command of your own</h4>
+<p>Package a repeatable handoff as a project-local slash command your whole team can run.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#56-a-handoff-command-of-your-own"><sub>Crash course · 5.6 A handoff command of your own</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#56-a-handoff-command-of-your-own">
+<picture>
+<source srcset="assets/feature-wall/21-your-own-handoff-command.gif" type="image/gif">
+<img src="assets/feature-wall/21-your-own-handoff-command.jpg" alt="A project-local slash command running a packaged intercom handoff from the Atomic editor" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Touring the builtins</h4>
+<p>Bundled workflows for research, planning, implementation, and review, ready before you write one.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · 6.1 Touring the builtins</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
+<picture>
+<source srcset="assets/feature-wall/22-touring-the-builtins.gif" type="image/gif">
+<img src="assets/feature-wall/22-touring-the-builtins.jpg" alt="The Atomic workflow picker listing the bundled workflows and their stages" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Steer and control a live run</h4>
+<p>Attach to a running stage, watch it stream, and steer, pause, or abort it mid-flight.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#62-steer-and-control-a-live-run"><sub>Crash course · 6.2 Steer and control a live run</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#62-steer-and-control-a-live-run">
+<picture>
+<source srcset="assets/feature-wall/23-steer-a-live-run.gif" type="image/gif">
+<img src="assets/feature-wall/23-steer-a-live-run.jpg" alt="The Atomic workflow graph with a live stage streaming, receiving a steering message from the operator" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Writing your own workflow</h4>
+<p>Stages, schemas, and gates are versioned TypeScript you review, not per-run improvisation.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#63-writing-your-own-workflow"><sub>Crash course · 6.3 Writing your own workflow</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#63-writing-your-own-workflow">
+<picture>
+<source srcset="assets/feature-wall/24-write-your-own-workflow.gif" type="image/gif">
+<img src="assets/feature-wall/24-write-your-own-workflow.jpg" alt="A project-local workflow defined in TypeScript with stages and an output schema, then run by Atomic" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Human-in-the-loop gates</h4>
+<p>Put an approval gate anywhere in the graph and the run waits for a person before it proceeds.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#64-human-in-the-loop-gates"><sub>Crash course · 6.4 Human-in-the-loop gates</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#64-human-in-the-loop-gates">
+<picture>
+<source srcset="assets/feature-wall/25-human-in-the-loop-gates.gif" type="image/gif">
+<img src="assets/feature-wall/25-human-in-the-loop-gates.jpg" alt="A workflow run pausing at a human approval gate and waiting for the operator's decision" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Durability and resume</h4>
+<p>Runs checkpoint as they go, so killing the process leaves them retained and resumable instead of lost.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#65-durability-and-resume"><sub>Crash course · 6.5 Durability and resume</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#65-durability-and-resume">
+<picture>
+<source srcset="assets/feature-wall/26-durability-and-resume.gif" type="image/gif">
+<img src="assets/feature-wall/26-durability-and-resume.jpg" alt="The Atomic resume picker after a killed run, listing retained workflow runs with their checkpoint counts" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Security review with a repair loop</h4>
+<p>Findings route into a bounded repair loop that keeps running until the gate actually passes.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop"><sub>Crash course · 6.6 Security review with a repair loop</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop">
+<picture>
+<source srcset="assets/feature-wall/27-security-review-repair-loop.gif" type="image/gif">
+<img src="assets/feature-wall/27-security-review-repair-loop.jpg" alt="An Atomic security-review workflow reporting findings and routing them into a bounded repair loop" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Launch a workflow in plain English</h4>
+<p>Ask in normal chat and Atomic routes the request through its workflow tool into a real registered run - no command syntax required.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#part-6--workflows"><sub>Crash course · W.1 Launch a workflow in plain English</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#part-6--workflows">
+<picture>
+<source srcset="assets/feature-wall/28-launch-workflow-plain-english.gif" type="image/gif">
+<img src="assets/feature-wall/28-launch-workflow-plain-english.jpg" alt="Atomic receiving a normal chat request and launching the registered plain-english-demo workflow through the real workflow tool" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Run a workflow with typed inputs</h4>
+<p>Use <code>/workflow &lt;name&gt; key=value</code> to validate static inputs against TypeBox before a run starts.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.2 Run a workflow with typed inputs</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
+<picture>
+<source srcset="assets/feature-wall/29-workflow-typed-inputs.gif" type="image/gif">
+<img src="assets/feature-wall/29-workflow-typed-inputs.jpg" alt="Atomic showing the typed-input-demo input contract, launching it with a string path and integer depth, and listing its live run status" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Inspect and control workflows</h4>
+<p>List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.3 Inspect and control workflows</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
+<picture>
+<source srcset="assets/feature-wall/30-inspect-control-workflows.gif" type="image/gif">
+<img src="assets/feature-wall/30-inspect-control-workflows.jpg" alt="Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Keybindings and hot reload</h4>
+<p>Every TUI action is remappable in global JSON; <code>/reload</code> applies the map without restarting the session.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a1-keybindings-and-hot-reload"><sub>Crash course · A.1 Keybindings and hot reload</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a1-keybindings-and-hot-reload">
+<picture>
+<source srcset="assets/feature-wall/31-keybindings-hot-reload.gif" type="image/gif">
+<img src="assets/feature-wall/31-keybindings-hot-reload.jpg" alt="Atomic listing hotkey action ids, reloading a global keybinding map, and showing Ctrl+J insert a newline in the editor" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Permission gate extension</h4>
+<p>A <code>tool_call</code> hook catches a risky shell call before execution and asks the operator to allow or block it.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a2-permission-gate-extension"><sub>Crash course · A.2 Permission gate extension</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a2-permission-gate-extension">
+<picture>
+<source srcset="assets/feature-wall/32-permission-gate-extension.gif" type="image/gif">
+<img src="assets/feature-wall/32-permission-gate-extension.jpg" alt="Atomic opening the permission-gate extension select dialog for sudo echo hi and blocking the bash tool call when No is chosen" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Runtime system-prompt mutation</h4>
+<p>A live command toggles extension state, and <code>before_agent_start</code> rewrites the system prompt on the next turn.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a3-runtime-system-prompt-mutation"><sub>Crash course · A.3 Runtime system-prompt mutation</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a3-runtime-system-prompt-mutation">
+<picture>
+<source srcset="assets/feature-wall/33-runtime-system-prompt.gif" type="image/gif">
+<img src="assets/feature-wall/33-runtime-system-prompt.jpg" alt="Atomic enabling the shipped pirate extension at runtime and answering the next TypeScript question with the mutated system prompt" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Prompt templates with arguments</h4>
+<p>Project Markdown becomes a slash command with autocomplete hints and positional argument expansion.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a4-prompt-templates-with-arguments"><sub>Crash course · A.4 Prompt templates with arguments</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a4-prompt-templates-with-arguments">
+<picture>
+<source srcset="assets/feature-wall/34-prompt-templates-arguments.gif" type="image/gif">
+<img src="assets/feature-wall/34-prompt-templates-arguments.jpg" alt="Atomic finding the project component prompt template and expanding Button, onClick handler, and disabled support into the submitted prompt" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Parallel review composition</h4>
+<p>One command fans a real diff out to fresh-context specialists, with independent roles and live parallel tool progress.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a5-parallel-review-composition"><sub>Crash course · A.5 Parallel review composition</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a5-parallel-review-composition">
+<picture>
+<source srcset="assets/feature-wall/35-parallel-review-composition.gif" type="image/gif">
+<img src="assets/feature-wall/35-parallel-review-composition.jpg" alt="Atomic composing three concurrent review specialists against a planted retry function diff with live independent progress" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Background subagent runs</h4>
+<p>Launch a detached specialist, keep chatting, and inspect its run status while work continues outside the parent turn.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a6-background-subagent-runs"><sub>Crash course · A.6 Background subagent runs</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a6-background-subagent-runs">
+<picture>
+<source srcset="assets/feature-wall/36-background-subagent-runs.gif" type="image/gif">
+<img src="assets/feature-wall/36-background-subagent-runs.jpg" alt="Atomic launching codebase-analyzer asynchronously with the subagent tool and then reporting the detached run status" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Intercom group isolation</h4>
+<p>Sessions in different groups cannot message each other; only an explicit read-only group peek crosses the boundary.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a7-intercom-group-isolation"><sub>Crash course · A.7 Intercom group isolation</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a7-intercom-group-isolation">
+<picture>
+<source srcset="assets/feature-wall/37-intercom-group-isolation.gif" type="image/gif">
+<img src="assets/feature-wall/37-intercom-group-isolation.jpg" alt="Two Atomic sessions in separate Intercom groups, with the default session peeking at redteam before its cross-group send is rejected" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Natural-language workflow authoring</h4>
+<p>Describe inputs, parallel stages, synthesis, and outputs in prose; Atomic writes and reloads the runnable TypeScript graph.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a8-natural-language-workflow-authoring"><sub>Crash course · A.8 Natural-language workflow authoring</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a8-natural-language-workflow-authoring">
+<picture>
+<source srcset="assets/feature-wall/38-natural-language-workflow-authoring.gif" type="image/gif">
+<img src="assets/feature-wall/38-natural-language-workflow-authoring.jpg" alt="Atomic turning a prose review-changes graph contract into a project workflow file and reloading it in the installed product" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Nesting builtin workflows</h4>
+<p>Compose imported workflow definitions with <code>ctx.workflow(...)</code>; child stages flatten into one inspectable parent graph.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a9-nesting-builtin-workflows"><sub>Crash course · A.9 Nesting builtin workflows</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a9-nesting-builtin-workflows">
+<picture>
+<source srcset="assets/feature-wall/39-nesting-builtin-workflows.gif" type="image/gif">
+<img src="assets/feature-wall/39-nesting-builtin-workflows.jpg" alt="Atomic showing nested fan-out builtin stages flattened into the live research-and-verify parent workflow graph" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+<tr>
+<td width="42%" valign="top">
+<h4>Autonomous implementation loops</h4>
+<p><code>ralph</code> refines, researches, implements, reviews, and repairs against a bounded loop contract.</p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a10-autonomous-implementation-loops"><sub>Crash course · A.10 Autonomous implementation loops</sub></a></p>
+</td>
+<td width="58%" valign="top">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a10-autonomous-implementation-loops">
+<picture>
+<source srcset="assets/feature-wall/40-autonomous-implementation-loops.gif" type="image/gif">
+<img src="assets/feature-wall/40-autonomous-implementation-loops.jpg" alt="Atomic inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph" width="100%">
+</picture>
+</a>
+</td>
+</tr>
+</table>
+
+<!-- feature-wall:end -->
 
 Build your process as workflows with scoped context, model choice, tools, handoffs, artifacts, retries, executable checks, review gates, and human approvals.
 

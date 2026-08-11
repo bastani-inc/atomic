@@ -130,3 +130,7 @@ packages/coding-agent/docs/images/exy.png filter=lfs diff=lfs merge=lfs -text
 packages/coding-agent/src/modes/interactive/assets/clankolas.png filter=lfs diff=lfs merge=lfs -text
 packages/coding-agent/test/fixtures/before-compaction.jsonl filter=lfs diff=lfs merge=lfs -text
 packages/coding-agent/test/fixtures/large-session.jsonl filter=lfs diff=lfs merge=lfs -text
+
+# Feature-wall media: animated captures are large binaries, tracked with Git LFS
+# alongside assets/atomic-promo.gif. Posters stay in-tree: they are small.
+assets/feature-wall/*.gif filter=lfs diff=lfs merge=lfs -text
