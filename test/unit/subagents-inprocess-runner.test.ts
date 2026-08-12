@@ -331,6 +331,112 @@ test("background continuation returns the child identity before the in-process s
 	}
 });
 
+test("launch metadata uses the session's effective thinking level", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-metadata-"));
+	const gate = Promise.withResolvers<void>();
+	try {
+		const control = new SubagentControlRuntime({ path: "thinking-parent", depth: 0 }, join(root, "sessions"));
+		control.registerAgents([sampleAgent()]);
+		const admitted = control.admitChildSession(
+			{
+				...sampleSpec(root),
+				testSession: {
+					promptGate: gate.promise,
+					sessionModel: "anthropic/non-reasoning-fixture",
+					sessionThinkingLevel: "off",
+				},
+			},
+			{ path: "thinking-parent", depth: 0 },
+		).admitted;
+		assert.ok(admitted);
+		const neverAbort = new AbortController().signal;
+		const running = control.startAttempt(
+			admitted,
+			{ modelId: "anthropic/non-reasoning-fixture", thinkingLevel: "xhigh" },
+			{ abort: neverAbort, interrupt: neverAbort },
+			{ fastModeForModel: () => false },
+		);
+
+		assert.equal(running.currentModel, "anthropic/non-reasoning-fixture");
+		assert.equal(running.currentThinking, "off");
+		assert.equal(running.currentFastMode, false);
+		assert.deepEqual(control.getChildMetadata(admitted.identity.path), {
+			model: "anthropic/non-reasoning-fixture",
+			thinking: "off",
+			fastMode: false,
+		});
+
+		gate.resolve();
+		assert.equal((await running.promise).status, "ok");
+	} finally {
+		gate.resolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("launch metadata does not invent a default thinking level", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-default-"));
+	const gate = Promise.withResolvers<void>();
+	try {
+		const control = new SubagentControlRuntime({ path: "thinking-default-parent", depth: 0 }, join(root, "sessions"));
+		control.registerAgents([sampleAgent()]);
+		const admitted = control.admitChildSession(
+			{ ...sampleSpec(root), testSession: { promptGate: gate.promise } },
+			{ path: "thinking-default-parent", depth: 0 },
+		).admitted;
+		assert.ok(admitted);
+		const neverAbort = new AbortController().signal;
+		const running = control.startAttempt(
+			admitted,
+			{ modelId: "anthropic/non-reasoning-fixture" },
+			{ abort: neverAbort, interrupt: neverAbort },
+			{ fastModeForModel: () => false },
+		);
+
+		assert.equal(running.currentThinking, undefined);
+		assert.equal(control.getChildMetadata(admitted.identity.path)?.thinking, undefined);
+		gate.resolve();
+		assert.equal((await running.promise).status, "ok");
+	} finally {
+		gate.resolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("launch metadata preserves configured thinking without a model", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-thinking-config-"));
+	const gate = Promise.withResolvers<void>();
+	try {
+		const control = new SubagentControlRuntime({ path: "thinking-config-parent", depth: 0 }, join(root, "sessions"));
+		control.registerAgents([sampleAgent()]);
+		const admitted = control.admitChildSession(
+			{
+				...sampleSpec(root),
+				agent: { ...sampleAgent(), thinking: "high" },
+				testSession: { promptGate: gate.promise },
+			},
+			{ path: "thinking-config-parent", depth: 0 },
+		).admitted;
+		assert.ok(admitted);
+		const neverAbort = new AbortController().signal;
+		const running = control.startAttempt(
+			admitted,
+			{},
+			{ abort: neverAbort, interrupt: neverAbort },
+			{ fastModeForModel: () => false },
+		);
+
+		assert.equal(running.currentModel, undefined);
+		assert.equal(running.currentThinking, "high");
+		assert.equal(control.getChildMetadata(admitted.identity.path)?.thinking, "high");
+		gate.resolve();
+		assert.equal((await running.promise).status, "ok");
+	} finally {
+		gate.resolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("parallel siblings share one control plane and persist distinct terminal artifacts", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-parallel-"));
 	const artifactsDir = join(root, "artifacts");

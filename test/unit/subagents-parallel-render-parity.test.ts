@@ -23,7 +23,13 @@ import { type AgentToolResult, type Details, theme } from "./subagents-render-st
 function parallelChild(
 	agent: string,
 	status: "ok" | "error" | "interrupted" | "continued" | "skipped",
-	extra: { interrupted?: boolean; detached?: boolean } = {},
+	extra: {
+		interrupted?: boolean;
+		detached?: boolean;
+		model?: string;
+		thinking?: string;
+		fastMode?: boolean;
+	} = {},
 ): Details["results"][number] {
 	return {
 		agent,
@@ -72,6 +78,23 @@ describe("top-level parallel status reduction", () => {
 		const rendered = renderParallel([parallelChild("alpha", "ok"), parallelChild("beta", "ok")]);
 		assert.match(rendered, /ok parallel · 2\/2 done/);
 	});
+});
+
+test("parallel result rows keep each child's model and thinking metadata", () => {
+	const rendered = renderParallel([
+		parallelChild("alpha", "ok", {
+			model: "openai/gpt-5.1-codex",
+			thinking: "high",
+			fastMode: true,
+		}),
+		parallelChild("beta", "ok", {
+			model: "anthropic/claude-sonnet-4",
+			thinking: "low",
+		}),
+	]);
+	assert.match(rendered, /alpha.*gpt-5\.1-codex · thinking high · fast/);
+	assert.match(rendered, /beta.*claude-sonnet-4 · thinking low/);
+	assert.doesNotMatch(rendered, /claude-sonnet-4 · thinking low · fast/);
 });
 
 describe("async parallel widget stats gate on active state, not mode", () => {

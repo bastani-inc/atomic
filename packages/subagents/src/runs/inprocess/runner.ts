@@ -9,6 +9,7 @@ import {
 	DefaultResourceLoader,
 	getAgentDir,
 	getBuiltinPackagePaths,
+	ModelRuntime,
 	type PackageSource,
 	SessionManager,
 	type SessionStats,
@@ -31,7 +32,7 @@ import {
 	resolveSubagentCodexFastModeScope,
 	resolveSubagentModelFastMode,
 } from "../../shared/fast-mode.ts";
-import { resolveEffectiveThinking } from "../../shared/model-info.ts";
+import { resolveEffectiveThinking, splitKnownThinkingSuffix } from "../../shared/model-info.ts";
 import {
 	type AgentProgress,
 	type ArtifactPaths,
@@ -67,6 +68,12 @@ export interface TestSessionOptions {
 	readonly abortResolvesPrompt?: boolean;
 	/** Emit a fallback event for tests that exercise live model metadata. */
 	readonly fallbackModel?: string;
+	/** Emit the effective thinking level applied to the fallback candidate. */
+	readonly fallbackThinkingLevel?: string;
+	/** Test-only session model exposed through the AgentSession accessors. */
+	readonly sessionModel?: string;
+	/** Test-only effective thinking level exposed through the AgentSession accessors. */
+	readonly sessionThinkingLevel?: string;
 }
 
 export interface ChildSpec {
@@ -130,30 +137,30 @@ function modelIdForCandidate(candidate: ModelCandidate, fallbackModel?: Model<Ap
 	);
 }
 
+function modelForCandidateId(runtime: ModelRuntime, modelId: string | undefined): Model<Api> | undefined {
+	if (!modelId) return undefined;
+	const { baseModel } = splitKnownThinkingSuffix(modelId);
+	const slash = baseModel.indexOf("/");
+	if (slash <= 0 || slash === baseModel.length - 1) return undefined;
+	return runtime.getModel(baseModel.slice(0, slash), baseModel.slice(slash + 1));
+}
+
 function modelIdForSession(session: AgentSession | undefined): string | undefined {
 	const model = session?.model;
 	return model ? `${model.provider}/${model.id}` : undefined;
 }
 
-function thinkingLevelForSession(session: AgentSession | undefined): string | undefined {
+function thinkingLevelForSession(session: AgentSession | undefined): CreateAgentSessionOptions["thinkingLevel"] {
 	const thinking = session?.thinkingLevel;
-	return typeof thinking === "string" ? thinking : undefined;
+	return typeof thinking === "string" ? (thinking as CreateAgentSessionOptions["thinkingLevel"]) : undefined;
 }
 
-function defaultThinkingLevelForCwd(cwd: string): string {
-	try {
-		return SettingsManager.create(cwd, getAgentDir()).getDefaultThinkingLevel() ?? "medium";
-	} catch {
-		return "medium";
-	}
-}
-
-function effectiveThinkingForAttempt(
+function initialThinkingForAttempt(
 	model: string | undefined,
 	configuredThinking: string | undefined,
-	defaultThinking: string,
-): string {
-	return resolveEffectiveThinking(model, configuredThinking) ?? configuredThinking ?? defaultThinking;
+): CreateAgentSessionOptions["thinkingLevel"] {
+	return (resolveEffectiveThinking(model, configuredThinking) ??
+		configuredThinking) as CreateAgentSessionOptions["thinkingLevel"];
 }
 function defaultFastModeForChild(
 	cwd: string,
@@ -359,6 +366,15 @@ export function inProcessChildResourceLoaderOptions(input: {
 function createTestSession(sessionManager: SessionManager, spec: ChildSpec): AgentSession {
 	const listeners = new Set<AgentSessionEventListener>();
 	const testOptions = typeof spec.testSession === "object" ? spec.testSession : {};
+	const sessionModel = (() => {
+		const fullId = testOptions.sessionModel;
+		if (!fullId) return undefined;
+		const slash = fullId.indexOf("/");
+		return {
+			provider: slash === -1 ? "" : fullId.slice(0, slash),
+			id: slash === -1 ? fullId : fullId.slice(slash + 1),
+		};
+	})();
 	let lastAssistantText = "";
 	let aborted = false;
 	let settlePromptAbort: (() => void) | undefined;
@@ -374,6 +390,8 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
 	return {
 		sessionFile: sessionManager.getSessionFile(),
+		model: sessionModel,
+		thinkingLevel: testOptions.sessionThinkingLevel,
 		abort: async () => {
 			aborted = true;
 			settlePromptAbort?.();
@@ -404,6 +422,12 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 						reason: "test fallback",
 						attempt: 1,
 					} as AgentSessionEvent);
+					if (testOptions.fallbackThinkingLevel) {
+						listener({
+							type: "thinking_level_changed",
+							level: testOptions.fallbackThinkingLevel,
+						} as AgentSessionEvent);
+					}
 					listener({
 						type: "tool_execution_start",
 						toolCallId: "test-fallback-tool",
@@ -723,14 +747,13 @@ export class SubagentControlRuntime {
 		admitted: AdmittedChild,
 		candidate: ModelCandidate,
 		signals: AttemptSignals,
-		onModelChange?: (model: string | undefined, thinking?: string, fastMode?: boolean) => void,
-		fastModeForModel: (model: string | undefined) => boolean = () => false,
+		onModelChange: ((model: string | undefined, thinking?: string, fastMode?: boolean) => void) | undefined,
+		fastModeForModel: (model: string | undefined) => boolean,
 	): Promise<AttemptOutcome> {
 		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
 		const configuredThinking = candidate.thinkingLevel ?? admitted.policy.thinkingLevel;
-		const defaultThinking = defaultThinkingLevelForCwd(admitted.policy.cwd);
 		let effectiveModelId = candidateModelId;
-		let effectiveThinking = effectiveThinkingForAttempt(candidateModelId, configuredThinking, defaultThinking);
+		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
 		let guard: NativeExecutionGuardResult;
 		let retryDelayMs = CAPACITY_RETRY_INITIAL_DELAY_MS;
@@ -835,13 +858,21 @@ export class SubagentControlRuntime {
 					}),
 				);
 				await resourceLoader.reload();
+				const modelRuntime = await ModelRuntime.create({
+					authPath: join(getAgentDir(), "auth.json"),
+					modelsPath: join(getAgentDir(), "models.json"),
+					refreshOnCreate: false,
+				});
+				const selectedModel =
+					candidate.model ?? modelForCandidateId(modelRuntime, candidateModelId) ?? admitted.policy.model;
+				const selectedThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
 				created = {
 					session: (
 						await createAgentSession({
 							cwd: admitted.policy.cwd,
-							model: candidate.model ?? admitted.policy.model,
-							thinkingLevel: candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
+							model: selectedModel,
+							thinkingLevel: selectedThinking,
 							...(admitted.spec.fallbackModels?.length
 								? { fallbackModels: [...admitted.spec.fallbackModels] }
 								: {}),
@@ -849,6 +880,7 @@ export class SubagentControlRuntime {
 							excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
 							customTools: admitted.policy.customTools,
 							resourceLoader,
+							modelRuntime,
 							sessionManager,
 							settingsManager,
 							orchestrationContext: admitted.spec.parent?.orchestrationContext,
@@ -865,9 +897,7 @@ export class SubagentControlRuntime {
 			const initialModelId = modelIdForSession(session) ?? candidateModelId;
 			effectiveModelId = initialModelId;
 			effectiveThinking =
-				resolveEffectiveThinking(candidateModelId, configuredThinking) ??
-				thinkingLevelForSession(session) ??
-				defaultThinking;
+				thinkingLevelForSession(session) ?? initialThinkingForAttempt(candidateModelId, configuredThinking);
 			attemptedModels = initialModelId ? [initialModelId] : [];
 			onModelChange?.(effectiveModelId, effectiveThinking, fastModeForModel(effectiveModelId));
 			const progressState: AgentProgress = {
@@ -932,14 +962,15 @@ export class SubagentControlRuntime {
 				if (event.type === "model_fallback_start") {
 					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
 					effectiveModelId = event.to;
-					effectiveThinking =
-						resolveEffectiveThinking(event.to, configuredThinking) ??
-						thinkingLevelForSession(session) ??
-						defaultThinking;
 					progressState.model = event.to;
-					progressState.thinking = effectiveThinking;
 					progressState.fastMode = fastModeForModel(event.to);
-					onModelChange?.(event.to, effectiveThinking, fastModeForModel(event.to));
+					onModelChange?.(effectiveModelId, effectiveThinking, progressState.fastMode);
+				} else if (event.type === "thinking_level_changed") {
+					effectiveThinking = event.level;
+					progressState.thinking = effectiveThinking;
+					const fastMode = fastModeForModel(effectiveModelId);
+					onModelChange?.(effectiveModelId, effectiveThinking, fastMode);
+					emitProgress(true);
 				}
 			});
 			if (signals.abort.aborted) await terminate("abort");
@@ -1044,10 +1075,9 @@ export class SubagentControlRuntime {
 		options: StartAttemptOptions = {},
 	): RunningAttempt {
 		const initialModel = modelIdForCandidate(candidate, admitted.policy.model);
-		const initialThinking = effectiveThinkingForAttempt(
+		const initialThinking = initialThinkingForAttempt(
 			initialModel,
 			candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
-			defaultThinkingLevelForCwd(admitted.policy.cwd),
 		);
 		const fastModeForModel =
 			options.fastModeForModel ??
@@ -1339,7 +1369,17 @@ export function run_child_attempt(
 	candidate: ModelCandidate,
 	signals: AttemptSignals,
 ): Promise<AttemptOutcome> {
-	return control.runChildAttempt(admitted, candidate, signals);
+	return control.runChildAttempt(
+		admitted,
+		candidate,
+		signals,
+		undefined,
+		defaultFastModeForChild(
+			admitted.policy.cwd,
+			admitted.spec.parent?.orchestrationContext,
+			admitted.spec.parent?.workflowStageSubagentGuard,
+		),
+	);
 }
 
 export function continue_in_background(

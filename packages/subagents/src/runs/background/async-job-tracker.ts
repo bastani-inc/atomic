@@ -114,11 +114,14 @@ function mergeRegistryJob(previous: AsyncJobState | undefined, next: AsyncJobSta
 		);
 		if (!previousStep) return step;
 		return {
-			...previousStep,
 			...step,
+			...previousStep,
 			index: step.index,
 			agent: step.agent,
 			status: step.status,
+			...(step.model !== undefined ? { model: step.model } : {}),
+			...(step.thinking !== undefined ? { thinking: step.thinking } : {}),
+			...(step.fastMode !== undefined ? { fastMode: step.fastMode } : {}),
 		};
 	});
 	return {

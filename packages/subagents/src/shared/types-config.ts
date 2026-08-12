@@ -122,6 +122,12 @@ export interface RunSyncOptions {
 				abortResolvesPrompt?: boolean;
 				/** Emit a fallback event for tests that exercise live model metadata. */
 				fallbackModel?: string;
+				/** Emit the effective thinking level applied to the fallback candidate. */
+				fallbackThinkingLevel?: string;
+				/** Test-only session model exposed through the AgentSession accessors. */
+				sessionModel?: string;
+				/** Test-only effective thinking level exposed through the AgentSession accessors. */
+				sessionThinkingLevel?: string;
 		  };
 }
 
