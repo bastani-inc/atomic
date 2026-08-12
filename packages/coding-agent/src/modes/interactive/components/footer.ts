@@ -249,7 +249,7 @@ export class FooterComponent implements Component {
 		if (statuses.length > 0) {
 			lines.push(
 				truncateToWidth(
-					statuses.map(([, text]) => sanitizeStatusText(text)).join(" "),
+					statuses.map(([, text]) => sanitizeStatusText(text)).join(` ${this.renderStyle.dim("•")} `),
 					width,
 					this.renderStyle.dim("..."),
 				),

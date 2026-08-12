@@ -71,7 +71,7 @@ test("activates i-have-adhd and injects one hidden rules message into context", 
 		assert.ok(firstRulesEntry);
 		if (firstRulesEntry.type !== "custom_message") assert.fail("expected a custom message entry");
 		assert.equal(firstRulesEntry.display, false);
-		assert.equal(statuses.at(-1)?.value, "● ADHD ON");
+		assert.equal(statuses.at(-1)?.value, "● ADHD Mode");
 
 		await sessionStart({ type: "session_start", reason: "startup" }, ctx);
 		contextEntries = buildContextEntries(sessionManager.getEntries(), sessionManager.getLeafId());

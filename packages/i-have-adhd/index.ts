@@ -124,7 +124,7 @@ export default function iHaveAdhdExtension(pi: IHaveAdhdExtensionAPI) {
 		}
 
 		const dot = ctx.ui.theme.fg("success", "●");
-		const label = ctx.ui.theme.fg("accent", "ADHD ON");
+		const label = ctx.ui.theme.fg("accent", "ADHD Mode");
 		ctx.ui.setStatus(STATUS_KEY, `${dot} ${label}`);
 	};
 

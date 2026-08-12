@@ -57,6 +57,7 @@
 
 ### Changed
 
+- Footer and workflow stage-chat extension statuses are now joined with a dim `•` separator instead of a bare space, so adjacent statuses read as distinct items.
 - Live tool-call argument previews no longer update while a tool call's arguments are still streaming. On the default interactive path the assistant message is now rebuilt from `message_update` deltas, and `toolcall_start`/`toolcall_delta` carry an unparsable fragment of JSON rather than a usable value, so the accumulator deliberately ignores them and installs the complete parsed call at `toolcall_end`. The tool card itself still appears as soon as the call starts — it is created by `tool_execution_start`, not by the argument stream — and the arguments it finally shows are correct and complete; what is gone is the partially-filled argument text that used to fill in progressively before the call was ready. This is a deliberate trade for correctness: the previous incremental preview was only possible because every streaming frame re-sent the entire message, which is exactly the quadratic amplification removed above.
 
 - Adopted the pi 0.84.1 coding-agent, agent, AI, client, protocol, telemetry, and TUI runtime surfaces. The TUI adoption supplies the renderer behavior described above; Atomic keeps its isolated interactive engine, provider, path, and legacy `PI_*`/`.pi` compatibility surfaces.
