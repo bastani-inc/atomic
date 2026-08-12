@@ -293,6 +293,15 @@ test(
 	"real child results report the session's clamped thinking level",
 	async () => {
 		const root = setupRoot();
+		writeFileSync(
+			join(root, ".atomic", "settings.json"),
+			JSON.stringify({
+				defaultProvider: "openai",
+				defaultModel: "non-reasoning-fixture",
+				codexFastMode: { chat: false, workflow: true },
+			}),
+			"utf8",
+		);
 		const agentDir = join(root, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(
@@ -494,20 +503,21 @@ test("async workflow fast metadata survives live registry hydration", async () =
 			thinking: "high",
 			fastMode: true,
 		});
+		const seededStartedAt = Date.now() - 5_000;
 		currentState.asyncJobs.set(runId, {
 			asyncId: runId,
 			asyncDir: join(root, "async", runId),
 			status: "running",
+			startedAt: seededStartedAt,
 			steps: [{ index: 0, agent: "worker", status: "running", currentTool: "live-tool" }],
 		});
-
 		tracker.hydrateActiveJobs();
 		const after = currentState.asyncJobs.get(runId);
 		assert.equal(after?.steps?.[0]?.currentTool, "live-tool");
 		assert.equal(after?.steps?.[0]?.model, CODEX_MODEL);
 		assert.equal(after?.steps?.[0]?.thinking, "high");
 		assert.equal(after?.steps?.[0]?.fastMode, true);
-		assert.ok(after?.startedAt !== undefined);
+		assert.equal(after?.startedAt, seededStartedAt);
 	} finally {
 		if (launched) {
 			gate.resolve();
@@ -531,19 +541,6 @@ test("async tracker completion metadata handles result and detached paths", () =
 	});
 	tracker.handleComplete({ id: "detached-run", status: "ok" });
 	assert.equal(state.asyncJobs.get("detached-run")?.steps?.[0]?.fastMode, true);
-
-	tracker.handleStarted({
-		id: "error-run",
-		agent: "worker",
-		model: CODEX_MODEL,
-		thinking: "high",
-		fastMode: true,
-	});
-	tracker.handleComplete({ id: "error-run", status: "error" });
-	const failedJob = state.asyncJobs.get("error-run");
-	assert.equal(failedJob?.status, "failed");
-	assert.equal(failedJob?.steps?.[0]?.status, "failed");
-	assert.equal(failedJob?.completedSteps, 0);
 
 	tracker.handleStarted({
 		id: "result-run",

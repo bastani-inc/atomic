@@ -29,7 +29,7 @@ export function formatModelThinking(model?: string, thinking?: string, fastMode?
 /**
  * Format usage statistics into a compact string
  */
-export function formatUsage(u: Usage, model?: string): string {
+export function formatUsage(u: Usage): string {
 	const parts: string[] = [];
 	if (u.turns) parts.push(`${u.turns} turn${u.turns > 1 ? "s" : ""}`);
 	if (u.input) parts.push(`in:${formatTokens(u.input)}`);
@@ -37,7 +37,6 @@ export function formatUsage(u: Usage, model?: string): string {
 	if (u.cacheRead) parts.push(`R${formatTokens(u.cacheRead)}`);
 	if (u.cacheWrite) parts.push(`W${formatTokens(u.cacheWrite)}`);
 	if (u.cost) parts.push(`$${u.cost.toFixed(4)}`);
-	if (model) parts.push(model);
 	return parts.join(" ");
 }
 
