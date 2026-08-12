@@ -20,7 +20,7 @@ import {
 } from "../../shared/types.ts";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
-import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {

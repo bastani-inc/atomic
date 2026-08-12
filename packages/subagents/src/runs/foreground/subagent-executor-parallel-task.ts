@@ -15,7 +15,7 @@ import type {
 } from "../../shared/types.ts";
 import { workflowSessionMetadataFromContext } from "../../shared/types-depth.ts";
 import { mapConcurrent } from "../../shared/utils.ts";
-import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.ts";
+import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.ts";
 import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../shared/single-output.ts";
 import type { WorktreeSetup } from "../shared/worktree.ts";

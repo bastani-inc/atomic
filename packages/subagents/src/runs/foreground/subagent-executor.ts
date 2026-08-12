@@ -27,7 +27,7 @@ import {
 	interruptInProcessChild,
 	resumeInProcessChild,
 } from "../inprocess/control-status.ts";
-import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
+import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { runAsyncPath } from "./subagent-executor-async.ts";

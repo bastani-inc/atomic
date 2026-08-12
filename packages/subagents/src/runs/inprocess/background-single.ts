@@ -11,7 +11,7 @@ import {
 } from "../../shared/types.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
 import { runSingleInProcess } from "../foreground/inprocess-run-sync.ts";
-import { resolveChildIntercomGroup } from "../shared/intercom-group.ts";
+import { resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { buildModelCandidates } from "../shared/model-fallback.ts";
 import {
