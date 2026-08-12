@@ -191,3 +191,19 @@ test("bridge ignores late data after body error", async () => {
 	await expect(reader.read()).rejects.toThrow("boom");
 	expect(() => body.emit("data", Buffer.from("late"))).not.toThrow();
 });
+
+test("bridge reports close without end as an error, not a clean EOF", async () => {
+	const body = new PassThrough();
+	const reader = createPinnedResponseBodyStream(body).getReader();
+
+	// A reset, aborted, or truncated connection destroys the body: `close`
+	// fires with no preceding `end`. That must reject the read rather than
+	// resolve it, or partial content is returned as a successful fetch.
+	body.destroy();
+
+	await expect(reader.read()).rejects.toThrow("response body closed before the stream ended");
+	expect(body.listenerCount("data")).toBe(0);
+	expect(body.listenerCount("end")).toBe(0);
+	expect(body.listenerCount("error")).toBe(0);
+	expect(body.listenerCount("close")).toBe(0);
+});

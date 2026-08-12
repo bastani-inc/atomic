@@ -240,6 +240,7 @@ function toReadableStreamError(error: unknown): Error {
 export function createPinnedResponseBodyStream(body: ResponseBodyStream): ReadableStream<Uint8Array> {
 	let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
 	let terminal = false;
+	let ended = false;
 	let cleanedUp = false;
 
 	const detachDataListeners = () => {
@@ -264,6 +265,7 @@ export function createPinnedResponseBodyStream(body: ResponseBodyStream): Readab
 		controller?.enqueue(new Uint8Array(chunk));
 	};
 	const onEnd = () => {
+		ended = true;
 		closeStream();
 	};
 	const onError = (error: unknown) => {
@@ -273,7 +275,16 @@ export function createPinnedResponseBodyStream(body: ResponseBodyStream): Readab
 		controller?.error(toReadableStreamError(error));
 	};
 	const onClose = () => {
-		closeStream();
+		// `close` without a preceding `end` is a premature termination (reset,
+		// abort, truncation). Reporting it as a clean EOF would hand partial
+		// response content to the consumer as a successful read.
+		if (!terminal && !ended) {
+			terminal = true;
+			detachDataListeners();
+			controller?.error(new Error("response body closed before the stream ended"));
+		} else {
+			closeStream();
+		}
 		cleanup();
 	};
 	return new ReadableStream<Uint8Array>({
