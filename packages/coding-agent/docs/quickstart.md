@@ -5,7 +5,7 @@ This page gets you from install to a useful first Atomic session. Atomic is the 
 ## Prerequisites
 
 - **Node.js 24 LTS or newer** — Atomic requires the latest Node LTS runtime. Check with `node --version`.
-- **A package manager** — use npm (included with Node), pnpm, Yarn, or Bun. Use Bun 1.3.14+ for Bun installs or workflow-authoring examples.
+- **A package manager** — use npm (included with Node), pnpm, Yarn, or Bun. Bun installs need Bun 1.3.14+.
 - **Model-provider access** — Use `/login` after startup. Supports provider subscriptions and APIs.
 
 ## Install
@@ -31,6 +31,10 @@ bun add -g @bastani/atomic
 ```
 
 Atomic does not require package install scripts. If you want to disable dependency lifecycle scripts during the Atomic install, you can add `--ignore-scripts` to the install command.
+
+### Which runtime runs your workflows
+
+How you install Atomic decides which runtime hosts it: a package-manager install runs under Node, while the standalone binaries are Bun-compiled and run under Bun. Authored workflows execute inside whichever host is active, so a workflow that reaches for a `Bun.*` global runs only under the standalone binary and fails with `Bun is not defined` under an npm install. Installing Bun separately does not change that — the npm install still runs on Node. Write workflow code against APIs both hosts provide, such as `node:child_process` and `node:fs`; see [Workflows](/workflows) for the rule and worked examples.
 
 ### Alpine and musl Linux archives
 

@@ -385,6 +385,7 @@ A natural-language request for a worktree does not configure runner isolation. I
 
 ```ts
 // .atomic/workflows/issue-to-pr.ts
+import { spawnSync } from "node:child_process";
 import { workflow } from "@bastani/workflows";
 import { Type, type Static } from "typebox";
 
@@ -396,12 +397,22 @@ const reviewDecision = Type.Object(
   { additionalProperties: false },
 );
 
+function spawnCommand(argv: readonly string[], cwd: string) {
+  const [command, ...args] = argv;
+  if (command === undefined) throw new Error("spawnCommand requires a command");
+  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  // A command that could not be spawned at all arrives on `error` with a null
+  // status, so it has to be raised here or it reads as an ordinary failure.
+  if (result.error) throw result.error;
+  return result;
+}
+
 function runCommand(argv: readonly string[], cwd: string): string {
-  const result = Bun.spawnSync([...argv], { cwd, stdout: "pipe", stderr: "pipe" });
-  const stdout = result.stdout.toString().trim();
-  const stderr = result.stderr.toString().trim();
-  if (result.exitCode !== 0) {
-    throw new Error(`${argv.join(" ")} failed (${result.exitCode})\n${stderr || stdout}`);
+  const result = spawnCommand(argv, cwd);
+  const stdout = (result.stdout ?? "").trim();
+  const stderr = (result.stderr ?? "").trim();
+  if (result.status !== 0) {
+    throw new Error(`${argv.join(" ")} failed (${result.status})\n${stderr || stdout}`);
   }
   return stdout;
 }
@@ -430,12 +441,12 @@ export default workflow({
     const baseRef = ctx.inputs.base_ref;
 
     await ctx.tool("select-feature-branch", { branch, base_ref: baseRef }, async () => {
-      const probe = Bun.spawnSync(
+      const probe = spawnCommand(
         ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-        { cwd, stdout: "pipe", stderr: "pipe" },
+        cwd,
       );
-      if (probe.exitCode === 0) return runCommand(["git", "switch", branch], cwd);
-      if (probe.exitCode !== 1) throw new Error(probe.stderr.toString().trim());
+      if (probe.status === 0) return runCommand(["git", "switch", branch], cwd);
+      if (probe.status !== 1) throw new Error((probe.stderr ?? "").trim());
       return runCommand(["git", "switch", "-c", branch, baseRef], cwd);
     });
 
@@ -848,6 +859,8 @@ Run open-claude-design to refresh the settings page hierarchy.
 If required inputs are missing or ambiguous, Atomic asks for them or opens the inline picker. Named runs execute in the background and return a full run id.
 
 ## Writing a Workflow
+
+**A workflow executes inside whichever host is running Atomic, so its code has to work on both.** Standalone binaries are Bun-compiled while npm installs run under Node, and the active host is what loads your workflow file — so a `Bun.*` global reaches a workflow only when Atomic itself is running under Bun, and fails with `Bun is not defined` otherwise. Installing Bun separately does not change this. Write workflow code against APIs both hosts provide: `node:child_process` instead of `Bun.spawn`/`Bun.spawnSync`, `node:fs` instead of `Bun.file`, `node:path` instead of Bun's path helpers. Every example on this page follows that rule; a snippet that deliberately requires one host is marked with a `host-specific:` comment naming it.
 
 Workflow files are TypeScript modules that export a workflow definition:
 
@@ -4678,17 +4691,28 @@ The parent should verify each child before creating the next boundary. If a gate
 The calls below are deliberately unrolled. Repeat the downstream shape for the planned slices, giving every call a fresh child boundary and distinct tracked nodes; do not reopen an ancestor or add a back-edge.
 
 ```ts
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import { workflow } from "@bastani/workflows";
 import { goal } from "@bastani/workflows/builtin";
 
+function spawnCommand(argv: readonly string[], cwd: string) {
+  const [command, ...args] = argv;
+  if (command === undefined) throw new Error("spawnCommand requires a command");
+  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  // A command that could not be spawned at all arrives on `error` with a null
+  // status, so it has to be raised here or it reads as an ordinary failure.
+  if (result.error) throw result.error;
+  return result;
+}
+
 function runCommand(argv: readonly string[], cwd: string): string {
-  const result = Bun.spawnSync([...argv], { cwd, stdout: "pipe", stderr: "pipe" });
-  const stdout = result.stdout.toString().trim();
-  const stderr = result.stderr.toString().trim();
-  if (result.exitCode !== 0) {
-    throw new Error(`${argv.join(" ")} failed (${result.exitCode})\n${stderr || stdout}`);
+  const result = spawnCommand(argv, cwd);
+  const stdout = (result.stdout ?? "").trim();
+  const stderr = (result.stderr ?? "").trim();
+  if (result.status !== 0) {
+    throw new Error(`${argv.join(" ")} failed (${result.status})\n${stderr || stdout}`);
   }
   return stdout;
 }
@@ -4719,28 +4743,28 @@ export default workflow({
         toolName,
         { branch, base_branch: baseBranch, git_worktree_dir: gitWorktreeDir },
         async () => {
-          const current = Bun.spawnSync(
+          const current = spawnCommand(
             ["git", "-C", worktreePath, "branch", "--show-current"],
-            { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+            repoRoot,
           );
-          if (current.exitCode === 0) {
-            const checkedOutBranch = current.stdout.toString().trim();
+          if (current.status === 0) {
+            const checkedOutBranch = (current.stdout ?? "").trim();
             if (checkedOutBranch !== branch) {
               throw new Error(`${worktreePath} is checked out on ${checkedOutBranch || "detached HEAD"}, expected ${branch}`);
             }
             return { branch, worktree: worktreePath };
           }
 
-          const branchProbe = Bun.spawnSync(
+          const branchProbe = spawnCommand(
             ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-            { cwd: repoRoot, stdout: "pipe", stderr: "pipe" },
+            repoRoot,
           );
-          if (branchProbe.exitCode === 0) {
+          if (branchProbe.status === 0) {
             runCommand(["git", "worktree", "add", worktreePath, branch], repoRoot);
-          } else if (branchProbe.exitCode === 1) {
+          } else if (branchProbe.status === 1) {
             runCommand(["git", "worktree", "add", "-b", branch, worktreePath, baseBranch], repoRoot);
           } else {
-            throw new Error(branchProbe.stderr.toString().trim() || `could not inspect branch ${branch}`);
+            throw new Error((branchProbe.stderr ?? "").trim() || `could not inspect branch ${branch}`);
           }
           return { branch, worktree: worktreePath };
         },
