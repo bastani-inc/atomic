@@ -547,14 +547,14 @@ describe("renderNodeCard — metadata line", () => {
 		}
 	});
 
-	test("stages show a visible fast marker without mutating model metadata", () => {
+	test("stages omit the fast mode marker from dependency metadata", () => {
 		const lines = renderNodeCard(makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }), {
 			theme,
 		});
 		const rendered = stripAnsi(lines.join("\n"));
 
-		assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex fast/);
-		assert.match(stripAnsi(lines[3]!), /root · fast/);
+		assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex/);
+		assert.equal(stripAnsi(lines[3]!).slice(1, -1).trim(), "root");
 	});
 });
 
