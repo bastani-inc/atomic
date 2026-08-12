@@ -136,7 +136,7 @@ Atomic chooses a complete execution shape, fills inputs from the request, and co
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. Commands and workflow-tool actions require the full displayed 36-character UUID to inspect, connect, pause, quit, or resume a run; short prefixes are not accepted.
+Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, connect, pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
 
 ```text
 /workflow status <run-id>         # inspect one run's progress
