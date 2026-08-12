@@ -37,7 +37,7 @@ export function renderSingleCompact(
 	]);
 	const c = new Container();
 	const width = getTermWidth() - 4;
-	const modelDisplay = modelThinkingBadge(theme, r.model, undefined, r.fastMode);
+	const modelDisplay = modelThinkingBadge(theme, r.model, r.thinking, r.fastMode);
 	c.addChild(
 		new Text(
 			truncLine(
@@ -163,7 +163,13 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 				| undefined;
 			if (runningProg) {
 				const runningStats = formatProgressStats(theme, runningProg, true, now);
-				const runningLine = `${theme.fg("accent", pulseGlyph(pulseFrame))} ${rowLabel}: ${themeBold(theme, agentName)}${runningStats ? ` ${theme.fg("dim", "·")} ${runningStats}` : ""}`;
+				const runningBadge = modelThinkingBadge(
+					theme,
+					runningProg.model,
+					runningProg.thinking,
+					runningProg.fastMode,
+				);
+				const runningLine = `${theme.fg("accent", pulseGlyph(pulseFrame))} ${rowLabel}: ${themeBold(theme, agentName)}${runningBadge}${runningStats ? ` ${theme.fg("dim", "·")} ${runningStats}` : ""}`;
 				c.addChild(new Text(truncLine(`  ${runningLine}`, width), 0, 0));
 				const activity = compactCurrentActivity(runningProg, now);
 				c.addChild(new Text(truncLine(theme.fg("dim", `    ⎿  ${activity}`), width), 0, 0));
@@ -191,10 +197,16 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 					? progressFromArray.index + 1
 					: i + 1;
 		const stepStats = formatProgressStats(theme, rProg, true, now);
+		const modelDisplay = modelThinkingBadge(
+			theme,
+			r.model ?? rProg?.model,
+			r.thinking ?? rProg?.thinking,
+			r.fastMode ?? rProg?.fastMode,
+		);
 		const glyph = rPending ? theme.fg("dim", "◦") : resultGlyph(r, output, theme, rRunning, pulseFrame);
 		const pendingLabel = rPending ? ` ${theme.fg("dim", "· pending")}` : "";
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
-		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;
+		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${modelDisplay}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;
 		c.addChild(new Text(truncLine(`  ${line}`, width), 0, 0));
 		if (rRunning && rProg && "status" in rProg) {
 			const activity = compactCurrentActivity(rProg, now);

@@ -191,6 +191,10 @@ export interface AgentProgress {
 	task: string;
 	/** Effective model for this live attempt, including fallback changes. */
 	model?: string;
+	/** Effective thinking level for this live attempt. */
+	thinking?: string;
+	/** Whether Codex fast mode applies to this attempt. */
+	fastMode?: boolean;
 	skills?: string[];
 	lastActivityAt?: number;
 	currentTool?: string;
@@ -247,6 +251,7 @@ export interface SingleResult {
 	messages?: Message[];
 	usage: Usage;
 	model?: string;
+	thinking?: string;
 	fastMode?: boolean;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];

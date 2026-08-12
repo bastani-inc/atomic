@@ -112,10 +112,15 @@ export function renderSubagentResult(
 
 		const w = getTermWidth() - 4;
 		const fit = (text: string) => (expanded ? text : truncLine(text, w));
+		const modelDisplay = modelThinkingBadge(theme, r.model, r.thinking, r.fastMode);
 		const toolCallLines = getToolCallLines(r, expanded);
 		const c = new Container();
 		c.addChild(
-			new Text(fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${contextBadge}${progressInfo}`), 0, 0),
+			new Text(
+				fit(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${progressInfo}`),
+				0,
+				0,
+			),
 		);
 		c.addChild(new Spacer(1));
 		const taskMaxLen = Math.max(20, w - 8);
@@ -279,10 +284,16 @@ export function renderSubagentResult(
 				| undefined;
 			if (runningProg) {
 				const runningStats = ` | ${runningProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(runningProg, options.now))}`;
+				const runningBadge = modelThinkingBadge(
+					theme,
+					runningProg.model,
+					runningProg.thinking,
+					runningProg.fastMode,
+				);
 				c.addChild(
 					new Text(
 						fit(
-							`${theme.fg("warning", "running")} ${rowLabel}: ${theme.bold(theme.fg("warning", agentName))}${runningStats}`,
+							`${theme.fg("warning", "running")} ${rowLabel}: ${theme.bold(theme.fg("warning", agentName))}${runningBadge}${runningStats}`,
 						),
 						0,
 						0,
@@ -324,7 +335,12 @@ export function renderSubagentResult(
 		const stats = rProg
 			? ` | ${rProg.toolCount} tools, ${formatDuration(displayProgressDurationMs(rProg, options.now))}`
 			: "";
-		const modelDisplay = modelThinkingBadge(theme, r.model, undefined, r.fastMode);
+		const modelDisplay = modelThinkingBadge(
+			theme,
+			r.model ?? rProg?.model,
+			r.thinking ?? rProg?.thinking,
+			r.fastMode ?? rProg?.fastMode,
+		);
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
 		const stepHeader = rRunning
 			? `${statusIcon} ${stepLabel}: ${theme.bold(theme.fg("warning", r.agent))}${modelDisplay}${stats}`

@@ -180,7 +180,7 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 			agent,
 			agents: [agent],
 			...(result.model !== undefined ? { model: result.model } : {}),
-			...(agentConfig.thinking !== undefined ? { thinking: agentConfig.thinking } : {}),
+			...(result.thinking !== undefined ? { thinking: result.thinking } : {}),
 			...(result.fastMode ? { fastMode: true } : {}),
 		});
 	} catch (error) {

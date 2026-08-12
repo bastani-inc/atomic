@@ -305,7 +305,7 @@ test("async workflow child launch and completion retain the scoped fast marker",
 		const launched = await executeAsyncSingle(runId, {
 			agent: "worker",
 			task: "async workflow task",
-			agentConfig: agent(),
+			agentConfig: { ...agent(), thinking: "high" },
 			ctx: {
 				pi: { events } as never,
 				cwd: root,
@@ -329,17 +329,21 @@ test("async workflow child launch and completion retain the scoped fast marker",
 		});
 
 		assert.equal(launched.details.results[0]?.model, CODEX_MODEL);
+		assert.equal(launched.details.results[0]?.thinking, "high");
 		assert.equal(launched.details.results[0]?.fastMode, true);
 		const startedEvent = (await withEventTimeout(started.promise, "async started event")) as {
 			model?: string;
+			thinking?: string;
 			fastMode?: boolean;
 		};
 		assert.equal(startedEvent.model, CODEX_MODEL);
+		assert.equal(startedEvent.thinking, "high");
 		assert.equal(startedEvent.fastMode, true);
 		const completionEvent = (await withEventTimeout(completed.promise, "async completion event")) as {
-			result?: { model?: string; fastMode?: boolean };
+			result?: { model?: string; thinking?: string; fastMode?: boolean };
 		};
 		assert.equal(completionEvent.result?.model, CODEX_MODEL);
+		assert.equal(completionEvent.result?.thinking, "high");
 		assert.equal(completionEvent.result?.fastMode, true);
 	} finally {
 		rmSync(join(ASYNC_DIR, runId), { recursive: true, force: true });
@@ -367,7 +371,7 @@ test("async workflow fast metadata survives live registry hydration", async () =
 		await executeAsyncSingle(runId, {
 			agent: "worker",
 			task: "async workflow hydration task",
-			agentConfig: agent(),
+			agentConfig: { ...agent(), thinking: "high" },
 			ctx: {
 				pi: { events } as never,
 				cwd: root,
@@ -393,6 +397,7 @@ test("async workflow fast metadata survives live registry hydration", async () =
 		await withEventTimeout(started.promise, "hydration async started event");
 		const before = currentState.asyncJobs.get(runId);
 		assert.equal(before?.steps?.[0]?.model, CODEX_MODEL);
+		assert.equal(before?.steps?.[0]?.thinking, "high");
 		assert.equal(before?.steps?.[0]?.fastMode, true);
 		const startedAt = before?.startedAt;
 		assert.ok(startedAt !== undefined);
@@ -400,6 +405,7 @@ test("async workflow fast metadata survives live registry hydration", async () =
 		tracker.hydrateActiveJobs();
 		const after = currentState.asyncJobs.get(runId);
 		assert.equal(after?.steps?.[0]?.model, CODEX_MODEL);
+		assert.equal(after?.steps?.[0]?.thinking, "high");
 		assert.equal(after?.steps?.[0]?.fastMode, true);
 		assert.equal(after?.startedAt, startedAt);
 	} finally {

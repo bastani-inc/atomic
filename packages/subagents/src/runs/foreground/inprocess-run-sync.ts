@@ -61,13 +61,22 @@ function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["o
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 	};
 }
-function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, startedAt: number): AgentProgress {
+function progressFor(
+	agent: AgentConfig,
+	task: string,
+	outcome: AttemptOutcome,
+	startedAt: number,
+	fastMode: boolean,
+): AgentProgress {
 	const status = outcome.status === "ok" ? "completed" : outcome.status === "interrupted" ? "failed" : "failed";
 	return {
 		index: 0,
 		agent: agent.name,
 		status,
 		task,
+		...(outcome.model === undefined ? {} : { model: outcome.model }),
+		...(outcome.thinking === undefined ? {} : { thinking: outcome.thinking }),
+		...(fastMode ? { fastMode: true } : {}),
 		recentTools: [],
 		recentOutput: outcome.envelope ? outcome.envelope.split("\n").slice(-10) : [],
 		toolCount: outcome.stats.toolCalls,
@@ -93,7 +102,8 @@ function resultFromOutcome(
 ): SingleResult {
 	const status = outcome.status;
 	const output = outcome.status === "ok" ? outcome.output : outcome.envelope;
-	const model = outcome.status === "ok" || outcome.status === "error" ? outcome.model : undefined;
+	const model = outcome.model;
+	const thinking = outcome.thinking;
 	const fastModeEnabled = resolveSubagentModelFastMode({
 		model,
 		cwd: fastMode.cwd,
@@ -112,6 +122,7 @@ function resultFromOutcome(
 		messages: [],
 		usage: usageFromStats(outcome.stats),
 		...(model === undefined ? {} : { model }),
+		...(thinking === undefined ? {} : { thinking }),
 		...(fastModeEnabled ? { fastMode: true } : {}),
 		...(outcome.status === "ok" || outcome.status === "error"
 			? outcome.attemptedModels?.length
@@ -120,7 +131,7 @@ function resultFromOutcome(
 			: {}),
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
-		progress: progressFor(agent, task, outcome, startedAt),
+		progress: progressFor(agent, task, outcome, startedAt, fastModeEnabled),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,
 			tokens: outcome.stats.tokens.total,
@@ -190,7 +201,9 @@ export async function runSingleInProcess(
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	const fastModeSettings = getSubagentCodexFastModeSettings(cwd);
 	const orchestrationContext = workflowOrchestrationContext(options);
-	const fastModeScope = resolveSubagentCodexFastModeScope(orchestrationContext?.kind === "workflow-stage");
+	const fastModeScope = resolveSubagentCodexFastModeScope(
+		options.workflowStageSubagentGuard ?? orchestrationContext?.kind === "workflow-stage",
+	);
 	const fastModeForModel = (model: string | undefined): boolean =>
 		resolveSubagentModelFastMode({
 			model,
@@ -202,6 +215,9 @@ export async function runSingleInProcess(
 		path: options.runId,
 		depth: options.parentDepth ?? 0,
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
+		...(options.workflowStageSubagentGuard === undefined
+			? {}
+			: { workflowStageSubagentGuard: options.workflowStageSubagentGuard }),
 		...(orchestrationContext ? { orchestrationContext } : {}),
 	};
 	const sessionRoot = options.sessionDir ?? join(options.artifactsDir ?? cwd, ".atomic", "subagents");
@@ -258,6 +274,7 @@ export async function runSingleInProcess(
 			? (progress) => {
 					const liveProgress = { ...progress, index: options.index ?? 0 };
 					const liveModel = liveProgress.model ?? candidate;
+					const liveThinking = liveProgress.thinking;
 					const liveFastMode = fastModeForModel(liveModel);
 					const liveResult: SingleResult = {
 						agent: agent.name,
@@ -266,6 +283,7 @@ export async function runSingleInProcess(
 						messages: [],
 						usage: emptyUsage(),
 						...(liveModel === undefined ? {} : { model: liveModel }),
+						...(liveThinking === undefined ? {} : { thinking: liveThinking }),
 						...(liveFastMode ? { fastMode: true } : {}),
 						progress: liveProgress,
 					};
@@ -292,7 +310,26 @@ export async function runSingleInProcess(
 			abort: options.signal ?? neverAbort,
 			interrupt: options.interruptSignal ?? neverAbort,
 		},
+		{ fastModeForModel },
 	);
+	if (options.onUpdate && !options.backgroundContinuation) {
+		const launchModel = running.currentModel ?? candidate;
+		spec.onProgress?.({
+			index: options.index ?? 0,
+			agent: agent.name,
+			status: "running",
+			task,
+			...(launchModel === undefined ? {} : { model: launchModel }),
+			...(running.currentThinking === undefined ? {} : { thinking: running.currentThinking }),
+			fastMode: running.currentFastMode ?? fastModeForModel(launchModel),
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 0,
+			tokens: 0,
+			durationMs: Math.max(0, Date.now() - startedAt),
+			lastActivityAt: Date.now(),
+		});
+	}
 	control.registerNestedAttempt(options.runId, running, { modelId: candidate, thinkingLevel: spec.thinkingLevel });
 	if (options.backgroundContinuation) {
 		control.continueInBackground(running, "async-requested");
@@ -311,6 +348,7 @@ export async function runSingleInProcess(
 						stats: backgroundOutcome.stats,
 						envelope: backgroundOutcome.envelope,
 						...(recovered.model === undefined ? {} : { model: recovered.model }),
+						...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
 						...(recovered.fastMode ? { fastMode: true } : {}),
 						sessionFile: backgroundOutcome.sessionFile,
 						timestamp: Date.now(),
@@ -329,6 +367,7 @@ export async function runSingleInProcess(
 		);
 		const continuedModel = running.currentModel ?? candidate;
 		const continuedFastMode = fastModeForModel(continuedModel);
+		const continuedThinking = running.currentThinking;
 		const continuedResult: SingleResult = {
 			agent: agent.name,
 			task,
@@ -340,12 +379,16 @@ export async function runSingleInProcess(
 			messages: [],
 			usage: emptyUsage(),
 			...(continuedModel === undefined ? {} : { model: continuedModel }),
+			...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
 			...(continuedFastMode ? { fastMode: true } : {}),
 			progress: {
 				index: options.index ?? 0,
 				agent: agent.name,
 				status: "running",
 				task,
+				...(continuedModel === undefined ? {} : { model: continuedModel }),
+				...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
+				...(continuedFastMode ? { fastMode: true } : {}),
 				recentTools: [],
 				recentOutput: [],
 				toolCount: 0,
@@ -393,6 +436,7 @@ export async function runSingleInProcess(
 					stats: backgroundOutcome.stats,
 					envelope: backgroundOutcome.envelope,
 					...(recovered.model === undefined ? {} : { model: recovered.model }),
+					...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
 					...(recovered.fastMode ? { fastMode: true } : {}),
 					sessionFile: backgroundOutcome.sessionFile,
 					timestamp: Date.now(),
@@ -409,6 +453,7 @@ export async function runSingleInProcess(
 		});
 		const continuedModel = running.currentModel ?? candidate;
 		const continuedFastMode = fastModeForModel(continuedModel);
+		const continuedThinking = running.currentThinking;
 		const continuedResult: SingleResult = {
 			agent: agent.name,
 			task,
@@ -420,12 +465,16 @@ export async function runSingleInProcess(
 			messages: [],
 			usage: emptyUsage(),
 			...(continuedModel === undefined ? {} : { model: continuedModel }),
+			...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
 			...(continuedFastMode ? { fastMode: true } : {}),
 			progress: {
 				index: options.index ?? 0,
 				agent: agent.name,
 				status: "running",
 				task,
+				...(continuedModel === undefined ? {} : { model: continuedModel }),
+				...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
+				fastMode: continuedFastMode,
 				recentTools: [],
 				recentOutput: [],
 				toolCount: 0,
@@ -457,6 +506,7 @@ export async function runSingleInProcess(
 			stats: outcome.stats,
 			envelope: outcome.envelope,
 			...(result.model === undefined ? {} : { model: result.model }),
+			...(result.thinking === undefined ? {} : { thinking: result.thinking }),
 			...(result.fastMode ? { fastMode: true } : {}),
 			sessionFile: outcome.sessionFile,
 			timestamp: Date.now(),

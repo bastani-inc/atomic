@@ -135,6 +135,8 @@ Inside workflow stages, completion delivery observes the stage generation bounda
 
 When a workflow graph overlay is open, Atomic also publishes the live async subagent summary into the shared status surface. The below-editor async widget remains available when the workflow overlay is hidden, and the overlay statusline keeps the run count/state visible while the graph fills the terminal.
 
+While a child is running, the jobs widget shows its resolved model, effective reasoning level, and applied Codex fast-mode marker for each step. The same badge appears in the completed result, including after a model fallback; parallel steps keep their metadata separate.
+
 ## Orchestrator model and group policy
 
 Atomic applies the same delegation policy to any parent chat or workflow stage that orchestrates subagents. A named agent uses the model and fallback sequence declared by its agent definition, so the orchestrator normally omits the subagent tool's explicit `model` argument. An override needs either the user's exact model request or a documented task-specific reason recorded before launch; model diversity alone is not enough.

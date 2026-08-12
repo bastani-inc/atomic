@@ -27,6 +27,12 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agent-types.ts";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.ts";
 import {
+	getSubagentCodexFastModeSettings,
+	resolveSubagentCodexFastModeScope,
+	resolveSubagentModelFastMode,
+} from "../../shared/fast-mode.ts";
+import { resolveEffectiveThinking } from "../../shared/model-info.ts";
+import {
 	type AgentProgress,
 	type ArtifactPaths,
 	DEFAULT_MAX_OUTPUT,
@@ -48,6 +54,7 @@ export interface ParentContext {
 	readonly depth: number;
 	readonly sessionId?: string;
 	readonly intercomGroup?: string;
+	readonly workflowStageSubagentGuard?: boolean;
 	readonly orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
 }
 
@@ -123,6 +130,41 @@ function modelIdForCandidate(candidate: ModelCandidate, fallbackModel?: Model<Ap
 	);
 }
 
+function modelIdForSession(session: AgentSession | undefined): string | undefined {
+	const model = session?.model;
+	return model ? `${model.provider}/${model.id}` : undefined;
+}
+
+function thinkingLevelForSession(session: AgentSession | undefined): string | undefined {
+	const thinking = session?.thinkingLevel;
+	return typeof thinking === "string" ? thinking : undefined;
+}
+
+function defaultThinkingLevelForCwd(cwd: string): string {
+	try {
+		return SettingsManager.create(cwd, getAgentDir()).getDefaultThinkingLevel() ?? "medium";
+	} catch {
+		return "medium";
+	}
+}
+
+function effectiveThinkingForAttempt(
+	model: string | undefined,
+	configuredThinking: string | undefined,
+	defaultThinking: string,
+): string {
+	return resolveEffectiveThinking(model, configuredThinking) ?? configuredThinking ?? defaultThinking;
+}
+function defaultFastModeForChild(
+	cwd: string,
+	context: ParentContext["orchestrationContext"],
+	workflowStageSubagentGuard?: boolean,
+): (model?: string) => boolean {
+	const settings = getSubagentCodexFastModeSettings(cwd);
+	const scope = resolveSubagentCodexFastModeScope(workflowStageSubagentGuard ?? context?.kind === "workflow-stage");
+	return (model) => resolveSubagentModelFastMode({ model, cwd, settings, scope });
+}
+
 export interface AttemptSignals {
 	readonly abort: AbortSignal;
 	readonly interrupt: AbortSignal;
@@ -139,6 +181,7 @@ export type AttemptOutcome =
 			readonly envelope: string;
 			readonly sessionFile?: string;
 			readonly model?: string;
+			readonly thinking?: string;
 			readonly attemptedModels?: readonly string[];
 	  }
 	| {
@@ -150,6 +193,7 @@ export type AttemptOutcome =
 			readonly sessionFile?: string;
 			readonly fallbackSignal?: string;
 			readonly model?: string;
+			readonly thinking?: string;
 			readonly attemptedModels?: readonly string[];
 	  }
 	| {
@@ -158,6 +202,8 @@ export type AttemptOutcome =
 			readonly path: string;
 			readonly envelope: string;
 			readonly sessionFile?: string;
+			readonly model?: string;
+			readonly thinking?: string;
 	  }
 	| {
 			readonly status: "continued";
@@ -166,6 +212,8 @@ export type AttemptOutcome =
 			readonly path: string;
 			readonly envelope: string;
 			readonly sessionFile?: string;
+			readonly model?: string;
+			readonly thinking?: string;
 	  };
 
 export interface ResultEnvelope {
@@ -175,6 +223,7 @@ export interface ResultEnvelope {
 	readonly stats: AttemptStats;
 	readonly envelope: string;
 	readonly model?: string;
+	readonly thinking?: string;
 	readonly fastMode?: boolean;
 	readonly modelAttempts?: readonly {
 		readonly model: string;
@@ -573,16 +622,28 @@ export class AdmittedChild {
 	}
 }
 
+export interface ChildRuntimeMetadata {
+	model?: string;
+	thinking?: string;
+	fastMode?: boolean;
+}
+
 export interface RunningAttempt {
 	readonly id: number;
 	readonly child: AdmittedChild;
 	readonly candidate: ModelCandidate;
 	readonly startedAt: number;
 	currentModel?: string;
+	currentThinking?: string;
+	currentFastMode?: boolean;
 	status: "running" | ChildStatus;
 	promise: Promise<AttemptOutcome>;
 	terminate?: (cause: TerminationCauseName) => Promise<void>;
 	attemptToken?: number;
+}
+
+export interface StartAttemptOptions {
+	readonly fastModeForModel?: (model: string | undefined) => boolean;
 }
 
 export class SubagentControlRuntime {
@@ -662,8 +723,15 @@ export class SubagentControlRuntime {
 		admitted: AdmittedChild,
 		candidate: ModelCandidate,
 		signals: AttemptSignals,
-		onModelChange?: (model: string) => void,
+		onModelChange?: (model: string | undefined, thinking?: string, fastMode?: boolean) => void,
+		fastModeForModel: (model: string | undefined) => boolean = () => false,
 	): Promise<AttemptOutcome> {
+		const candidateModelId = modelIdForCandidate(candidate, admitted.policy.model);
+		const configuredThinking = candidate.thinkingLevel ?? admitted.policy.thinkingLevel;
+		const defaultThinking = defaultThinkingLevelForCwd(admitted.policy.cwd);
+		let effectiveModelId = candidateModelId;
+		let effectiveThinking = effectiveThinkingForAttempt(candidateModelId, configuredThinking, defaultThinking);
+		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
 		let guard: NativeExecutionGuardResult;
 		let retryDelayMs = CAPACITY_RETRY_INITIAL_DELAY_MS;
 		for (;;) {
@@ -680,6 +748,8 @@ export class SubagentControlRuntime {
 							stats,
 							path: admitted.identity.path,
 							envelope: INTERRUPTED_ENVELOPE,
+							...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+							...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 						}
 					: {
 							status,
@@ -687,6 +757,8 @@ export class SubagentControlRuntime {
 							stats,
 							path: admitted.identity.path,
 							envelope: boundedEnvelope(waitResult),
+							...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+							...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 						};
 			}
 			retryDelayMs = Math.min(retryDelayMs * 2, CAPACITY_RETRY_MAX_DELAY_MS);
@@ -701,6 +773,8 @@ export class SubagentControlRuntime {
 				stats,
 				path: admitted.identity.path,
 				envelope: boundedEnvelope(reason),
+				...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+				...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 			};
 		}
 		const token = guard.token;
@@ -788,14 +862,21 @@ export class SubagentControlRuntime {
 			session = created.session;
 			if (session.sessionFile) this.sessionFiles.set(admitted.identity.path, session.sessionFile);
 			this.sessions.set(admitted.identity.path, session);
-			const initialModelId = modelIdForCandidate(candidate, admitted.policy.model);
-			let effectiveModelId = initialModelId;
-			const attemptedModels: string[] = initialModelId ? [initialModelId] : [];
+			const initialModelId = modelIdForSession(session) ?? candidateModelId;
+			effectiveModelId = initialModelId;
+			effectiveThinking =
+				resolveEffectiveThinking(candidateModelId, configuredThinking) ??
+				thinkingLevelForSession(session) ??
+				defaultThinking;
+			attemptedModels = initialModelId ? [initialModelId] : [];
+			onModelChange?.(effectiveModelId, effectiveThinking, fastModeForModel(effectiveModelId));
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,
 				status: "running",
 				...(initialModelId === undefined ? {} : { model: initialModelId }),
+				...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+				fastMode: fastModeForModel(initialModelId),
 				task: admitted.spec.task,
 				recentTools: [],
 				recentOutput: [],
@@ -851,8 +932,14 @@ export class SubagentControlRuntime {
 				if (event.type === "model_fallback_start") {
 					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
 					effectiveModelId = event.to;
+					effectiveThinking =
+						resolveEffectiveThinking(event.to, configuredThinking) ??
+						thinkingLevelForSession(session) ??
+						defaultThinking;
 					progressState.model = event.to;
-					onModelChange?.(event.to);
+					progressState.thinking = effectiveThinking;
+					progressState.fastMode = fastModeForModel(event.to);
+					onModelChange?.(event.to, effectiveThinking, fastModeForModel(event.to));
 				}
 			});
 			if (signals.abort.aborted) await terminate("abort");
@@ -879,6 +966,7 @@ export class SubagentControlRuntime {
 					envelope,
 					sessionFile,
 					...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+					...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
 				};
 			return {
@@ -888,7 +976,8 @@ export class SubagentControlRuntime {
 				path: admitted.identity.path,
 				envelope,
 				sessionFile,
-				...(status === "error" && effectiveModelId !== undefined ? { model: effectiveModelId } : {}),
+				...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+				...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 				...(status === "error" && attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
 			};
 		} catch (error) {
@@ -908,6 +997,8 @@ export class SubagentControlRuntime {
 						path: admitted.identity.path,
 						envelope: INTERRUPTED_ENVELOPE,
 						sessionFile: session?.sessionFile,
+						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 					}
 				: {
 						status,
@@ -916,6 +1007,9 @@ export class SubagentControlRuntime {
 						path: admitted.identity.path,
 						envelope: boundedEnvelope(cause),
 						sessionFile: session?.sessionFile,
+						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
+						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+						...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
 					};
 		} finally {
 			signals.abort.removeEventListener("abort", abortListener);
@@ -943,14 +1037,34 @@ export class SubagentControlRuntime {
 		}
 	}
 
-	startAttempt(admitted: AdmittedChild, candidate: ModelCandidate, signals: AttemptSignals): RunningAttempt {
+	startAttempt(
+		admitted: AdmittedChild,
+		candidate: ModelCandidate,
+		signals: AttemptSignals,
+		options: StartAttemptOptions = {},
+	): RunningAttempt {
+		const initialModel = modelIdForCandidate(candidate, admitted.policy.model);
+		const initialThinking = effectiveThinkingForAttempt(
+			initialModel,
+			candidate.thinkingLevel ?? admitted.policy.thinkingLevel,
+			defaultThinkingLevelForCwd(admitted.policy.cwd),
+		);
+		const fastModeForModel =
+			options.fastModeForModel ??
+			defaultFastModeForChild(
+				admitted.policy.cwd,
+				admitted.spec.parent?.orchestrationContext,
+				admitted.spec.parent?.workflowStageSubagentGuard,
+			);
 		const running: RunningAttempt = {
 			id: this.nextAttemptId++,
 			child: admitted,
 			candidate,
 			status: "running",
 			startedAt: Date.now(),
-			currentModel: modelIdForCandidate(candidate, admitted.policy.model),
+			...(initialModel === undefined ? {} : { currentModel: initialModel }),
+			currentThinking: initialThinking,
+			currentFastMode: fastModeForModel(initialModel),
 			promise: Promise.resolve({
 				status: "error",
 				cause: "uninitialized",
@@ -959,9 +1073,17 @@ export class SubagentControlRuntime {
 				envelope: "uninitialized",
 			}),
 		};
-		running.promise = this.runChildAttempt(admitted, candidate, signals, (model) => {
-			running.currentModel = model;
-		}).then((result) => {
+		running.promise = this.runChildAttempt(
+			admitted,
+			candidate,
+			signals,
+			(model, thinking, fastMode) => {
+				running.currentModel = model;
+				running.currentThinking = thinking;
+				running.currentFastMode = fastMode;
+			},
+			fastModeForModel,
+		).then((result) => {
 			running.status = result.status;
 			this.runningAttempts.delete(running.id);
 			return result;
@@ -1027,6 +1149,23 @@ export class SubagentControlRuntime {
 				sessionFile,
 				control: this,
 			}),
+		};
+	}
+
+	getChildMetadata(pathValue: string): ChildRuntimeMetadata | undefined {
+		const running = [...this.runningAttempts.values()].find(
+			(attempt) =>
+				attempt.child.identity.path === pathValue &&
+				(attempt.status === "running" || attempt.status === "continued"),
+		);
+		if (!running) return undefined;
+		const model = running.currentModel;
+		const thinking = running.currentThinking;
+		if (model === undefined && thinking === undefined && running.currentFastMode === undefined) return undefined;
+		return {
+			...(model === undefined ? {} : { model }),
+			...(thinking === undefined ? {} : { thinking }),
+			...(running.currentFastMode === undefined ? {} : { fastMode: running.currentFastMode }),
 		};
 	}
 

@@ -114,8 +114,8 @@ function mergeRegistryJob(previous: AsyncJobState | undefined, next: AsyncJobSta
 		);
 		if (!previousStep) return step;
 		return {
-			...step,
 			...previousStep,
+			...step,
 			index: step.index,
 			agent: step.agent,
 			status: step.status,
@@ -160,6 +160,7 @@ function hydrateRegistryJobs(
 							: child.status === "running" || child.status === "continued"
 								? ("running" as const)
 								: ("pending" as const),
+			...control.getChildMetadata(child.path),
 		}));
 		const status: AsyncJobState["status"] = steps.some(
 			(step) => step.status === "running" || step.status === "pending",
@@ -245,8 +246,12 @@ export function createAsyncJobTracker(
 		for (const [id, job] of next) state.asyncJobs.set(id, job);
 		rerender();
 	};
-	function terminalStepStatus(result: { success?: boolean; status?: string }): AsyncJobStep["status"] {
-		return result.status === "interrupted" ? "paused" : result.success === false ? "failed" : "complete";
+	function terminalStepStatus(result: { success?: boolean; status?: string }): "complete" | "failed" | "paused" {
+		return result.status === "interrupted"
+			? "paused"
+			: result.success === false || result.status === "error"
+				? "failed"
+				: "complete";
 	}
 	const handleStarted = (data: unknown) => {
 		const info = data as AsyncStartedEvent;
@@ -276,8 +281,8 @@ export function createAsyncJobTracker(
 		if (!result.id) return;
 		const job = state.asyncJobs.get(result.id);
 		if (job) {
-			job.status =
-				terminalStepStatus(result) === "paused" ? "paused" : result.success === false ? "failed" : "complete";
+			const stepStatus = terminalStepStatus(result);
+			job.status = stepStatus;
 			if (job.steps?.length) {
 				const completed = result.result;
 				job.steps = job.steps.map((step, index) =>
@@ -285,10 +290,10 @@ export function createAsyncJobTracker(
 						? step
 						: {
 								...step,
-								status: terminalStepStatus(result),
+								status: stepStatus,
 								...(completed?.model !== undefined ? { model: completed.model } : {}),
 								...(completed?.thinking !== undefined ? { thinking: completed.thinking } : {}),
-								...(completed?.fastMode !== undefined ? { fastMode: completed.fastMode } : {}),
+								...(completed ? { fastMode: completed.fastMode ?? false } : {}),
 							},
 				);
 				job.runningSteps = job.steps.filter((step) => step.status === "running").length;
