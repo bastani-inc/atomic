@@ -92,6 +92,31 @@ describe("workflow send — answering without naming a stage", () => {
 		assert.equal(result.message, "Stage id or name is required.");
 	});
 
+	test("a named promptId selects among several pending prompts", async () => {
+		const runId = runWithStages("prompt-id-selects", ["select", "approve-release"]);
+		assert.equal(store.recordStagePendingPrompt(runId, "stage-select", prompt("prompt-1")), true);
+		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve-release", prompt("prompt-2")), true);
+
+		// The id already identifies its stage, so this is not ambiguous even
+		// though two prompts are waiting.
+		const result = await workflowSendAction({ runId, promptId: "prompt-2", text: "ship it" });
+
+		assert.equal(result.status, "ok");
+		assert.equal(result.stageId, "stage-approve-release");
+		assert.equal(result.message, "Answered prompt prompt-2.");
+	});
+
+	test("an unknown promptId does not fall through to an unrelated stage", async () => {
+		const runId = runWithStages("prompt-id-unknown", ["review"]);
+		assert.equal(store.recordStagePendingPrompt(runId, "stage-review", prompt("prompt-1")), true);
+
+		const result = await workflowSendAction({ runId, promptId: "prompt-missing", text: "yes" });
+
+		assert.equal(result.status, "noop");
+		assert.equal(result.stageId, "");
+		assert.equal(result.message, `No pending prompt prompt-missing in run ${runId}.`);
+	});
+
 	test("an explicit stageId still selects among several pending prompts", async () => {
 		const runId = runWithStages("explicit-wins", ["select", "approve-release"]);
 		assert.equal(store.recordStagePendingPrompt(runId, "stage-select", prompt("prompt-1")), true);

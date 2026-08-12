@@ -67,38 +67,54 @@ function answersPendingPrompt(delivery: string, promptId: string | undefined): b
 }
 
 /**
- * Whether an `answer` delivery has something to resolve on this stage.
+ * Ids of the prompts an `answer` delivery could resolve on this stage.
  *
  * Covers the same three prompt kinds the delivery path dispatches on —
  * brokered, custom-footprint, and plain pending prompts — so a stage counted
  * here is one the send would actually act on rather than merely mention.
  */
-function hasAnswerablePrompt(stage: ExpandedWorkflowStage): boolean {
+function answerablePromptIds(stage: ExpandedWorkflowStage): string[] {
 	const target = stage.workflowGraphTarget;
-	if (stageUiBroker.peekStagePrompt(target.runId, target.stageId) !== undefined) return true;
-	if (stage.pendingPrompt !== undefined) return true;
-	return stage.status === "awaiting_input" && stage.promptFootprint?.kind === "custom";
+	const ids: string[] = [];
+	const brokered = stageUiBroker.peekStagePrompt(target.runId, target.stageId);
+	if (brokered !== undefined) ids.push(brokered.id);
+	if (stage.pendingPrompt !== undefined) ids.push(stage.pendingPrompt.id);
+	if (stage.status === "awaiting_input" && stage.promptFootprint?.kind === "custom") {
+		ids.push(stage.promptFootprint.id);
+	}
+	return ids;
 }
 
 /**
  * Resolve the stage an answer is for when the caller named a prompt but no stage.
+ *
+ * A named `promptId` already identifies its stage, so it narrows the candidates
+ * before uniqueness is decided — otherwise naming one of two pending prompts
+ * would be rejected as ambiguous, and naming an unknown one would target the
+ * unrelated stage that happened to be the only one waiting.
  *
  * Returns the target unchanged when nothing is pending, so a run with no prompt
  * still reports that a stage is required rather than inventing a destination.
  */
 function inferPromptStageTarget(runId: string, delivery: string, promptId: string | undefined): ToolStageTarget {
 	if (!answersPendingPrompt(delivery, promptId)) return { ok: true, runId };
-	const pending = expandWorkflowGraph(readGraphStoreSnapshot(store), runId).stages.filter(hasAnswerablePrompt);
+	const pending = expandWorkflowGraph(readGraphStoreSnapshot(store), runId).stages.filter((stage) => {
+		const ids = answerablePromptIds(stage);
+		return promptId === undefined ? ids.length > 0 : ids.includes(promptId);
+	});
 	const only = pending[0];
-	if (pending.length !== 1 || only === undefined) {
-		return pending.length === 0
-			? { ok: true, runId }
-			: {
-					ok: false,
-					message: `${pending.length} prompts pending; pass stageId: ${pending.map(expandedStageLabel).join(", ")}`,
-				};
+	if (pending.length === 1 && only !== undefined) {
+		return { ok: true, runId: only.workflowGraphTarget.runId, stageId: only.workflowGraphTarget.stageId };
 	}
-	return { ok: true, runId: only.workflowGraphTarget.runId, stageId: only.workflowGraphTarget.stageId };
+	if (pending.length === 0) {
+		return promptId === undefined
+			? { ok: true, runId }
+			: { ok: false, message: `No pending prompt ${promptId} in run ${runId}.` };
+	}
+	return {
+		ok: false,
+		message: `${pending.length} prompts pending; pass stageId: ${pending.map(expandedStageLabel).join(", ")}`,
+	};
 }
 
 type WorkflowSendToolResult = Extract<WorkflowToolResult, { action: "send" }>;
