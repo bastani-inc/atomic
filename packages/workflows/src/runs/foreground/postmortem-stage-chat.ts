@@ -136,7 +136,7 @@ export function acquirePostMortemStageHandle(
  */
 export function createPostMortemStageHandle(
 	runId: string,
-	stage: Pick<StageSnapshot, "id" | "name" | "sessionId">,
+	stage: Pick<StageSnapshot, "id" | "name" | "sessionId" | "sessionAdapter">,
 	sessionFile: string,
 	adapters: StageAdapters,
 	cwd: string | undefined,
@@ -149,6 +149,7 @@ export function createPostMortemStageHandle(
 		adapters,
 		stageOptions: {
 			resumeFromSessionFile: sessionFile,
+			...(stage.sessionAdapter !== undefined ? { sessionAdapter: stage.sessionAdapter } : {}),
 			...(cwd !== undefined ? { cwd } : {}),
 		},
 		...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),

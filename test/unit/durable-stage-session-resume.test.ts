@@ -80,12 +80,18 @@ describe("durable stage session resume", () => {
 	}
 
 	test("records in-progress stage session metadata", async () => {
-		const stage = makeStage({ replayKey: "stage:analyze:1", sessionId: "sid-1", sessionFile: "/tmp/stage.jsonl" });
+		const stage = makeStage({
+			replayKey: "stage:analyze:1",
+			sessionId: "sid-1",
+			sessionFile: "/tmp/stage.jsonl",
+			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
+		});
 		assert.equal(await recordStageSessionCheckpoint(deps(), stage), true);
 		assert.equal(backend.getStageOutput(WORKFLOW_ID, "stage:analyze:1"), undefined);
 		assert.deepEqual(backend.getStageSession(WORKFLOW_ID, "stage:analyze:1"), {
 			sessionId: "sid-1",
 			sessionFile: "/tmp/stage.jsonl",
+			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 			startedAt: 1000,
 			durationMs: 1000,
 		});
@@ -143,8 +149,16 @@ describe("durable stage session resume", () => {
 
 	test("reopens prior session file when output is not completed", async () => {
 		const replayKey = "stage:analyze:1";
-		await recordStageSessionCheckpoint(deps(), makeStage({ replayKey, sessionFile: "/tmp/prior.jsonl" }));
+		await recordStageSessionCheckpoint(
+			deps(),
+			makeStage({
+				replayKey,
+				sessionFile: "/tmp/prior.jsonl",
+				sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
+			}),
+		);
 		let observed: string | undefined;
+		let observedAdapter: StageSnapshot["sessionAdapter"];
 		let observedPrompt: string | undefined;
 		const stage = createDurableStagePrimitive({
 			workflowId: WORKFLOW_ID,
@@ -152,6 +166,7 @@ describe("durable stage session resume", () => {
 			nextReplayKey: () => replayKey,
 			stage: (_name, options) => {
 				observed = options?.resumeFromSessionFile;
+				observedAdapter = options?.sessionAdapter;
 				return Object.assign(fakeStageContext("resumed") as object, {
 					prompt: async (text: string) => {
 						observedPrompt = text;
@@ -163,6 +178,7 @@ describe("durable stage session resume", () => {
 
 		assert.equal(await stage("analyze").prompt("continue"), "resumed");
 		assert.equal(observed, "/tmp/prior.jsonl");
+		assert.deepEqual(observedAdapter, { name: "remote-pi", config: { profile: "example-profile" } });
 		assert.equal(observedPrompt, RESUME_CONTINUATION_PROMPT);
 	});
 

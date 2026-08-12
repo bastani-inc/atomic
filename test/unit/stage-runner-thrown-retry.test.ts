@@ -47,6 +47,25 @@ function modelFor(options: StageSessionCreateOptions): string {
 }
 
 describe("createStageContext — thrown model failure retry", () => {
+	test("an adapter can require explicit workflow resume instead of transport retry", async () => {
+		let promptCalls = 0;
+		const agentSession: AgentSessionAdapter = {
+			retryPolicy: "never",
+			async create() {
+				return sessionWithSettings(retrySettings(), async () => {
+					promptCalls += 1;
+					throw new Error("503 remote SSH transport unavailable");
+				});
+			},
+		};
+		const ctx = createStageContext(
+			makeOpts({ adapters: { agentSession }, stageOptions: { model: "anthropic/primary" } }),
+		) as InternalStageContext;
+
+		await assert.rejects(ctx.prompt("go"), /remote SSH transport unavailable/);
+		assert.equal(promptCalls, 1);
+	});
+
 	test("retries a transient thrown failure on the same session before succeeding", async () => {
 		let promptCalls = 0;
 		let created = 0;

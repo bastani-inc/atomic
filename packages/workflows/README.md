@@ -388,6 +388,24 @@ await ctx.parallel([
 });
 ```
 
+Stages use Atomic's local session runtime by default. An extension may register a named `AgentSessionAdapter`; select it with serializable stage configuration:
+
+```ts
+const remote = ctx.stage("remote-review", {
+  sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
+});
+```
+
+Adapter extensions should answer `SESSION_ADAPTER_DISCOVER_EVENT` and emit a
+`SESSION_ADAPTER_REGISTER_EVENT` with a stable `source` identity. Atomic sends
+the discovery event again when a selected name is not yet present, so an
+extension loaded after the workflow extension can still register before the
+stage starts.
+
+The selector is retained with workflow snapshots and durable checkpoints, so completed-stage attachment and follow-up reopen through the same adapter. Atomic rejects an unknown name before provider work starts. Parallelism remains a workflow concern: put the selector on each `ctx.parallel` item and control fan-out with the normal parallel concurrency option.
+
+An adapter that owns an external transport may set `retryPolicy: "never"`. Atomic then surfaces creation and prompt failures without same-model retry or model-fallback session replacement; an explicit workflow resume remains the recovery boundary.
+
 Worktree semantics:
 
 - `gitWorktreeDir` must be used from inside a Git repository. Relative paths resolve from the logical invoking repository root; absolute paths are used as-is.

@@ -207,6 +207,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	durableParentIds?: readonly string[];
 }
 
+export type SessionAdapterSelector = Mutable<AuthoringContract.SessionAdapterSelector>;
+
 // ---------------------------------------------------------------------------
 // Stage execution metadata — threaded from executor into adapter calls
 // ---------------------------------------------------------------------------
@@ -232,6 +234,8 @@ export interface StageExecutionMeta {
 	executionMode?: WorkflowExecutionMode;
 	/** Internal stage-generation context reused across model-fallback sessions. */
 	orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
+	/** Serializable selector for the named adapter owning this stage. */
+	sessionAdapter?: SessionAdapterSelector;
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {

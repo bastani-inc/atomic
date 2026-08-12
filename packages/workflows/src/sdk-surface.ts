@@ -44,6 +44,13 @@ export { cancellationRegistry, createCancellationRegistry } from "./runs/backgro
 export type { ResolvedInputs, RunOpts, RunResult } from "./runs/foreground/executor.js";
 
 export { resolveInputs, run } from "./runs/foreground/executor.js";
+export type { SessionAdapterRegistration } from "./runs/foreground/session-adapter-registry.js";
+export {
+	SESSION_ADAPTER_DISCOVER_EVENT,
+	SESSION_ADAPTER_PROTOCOL_VERSION,
+	SESSION_ADAPTER_REGISTER_EVENT,
+	SessionAdapterRegistry,
+} from "./runs/foreground/session-adapter-registry.js";
 export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage-runner.js";
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";
 export { setupGitWorktree } from "./runs/shared/worktree.js";

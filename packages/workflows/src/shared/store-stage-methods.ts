@@ -104,6 +104,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			existing.error = stage.error;
 			if (stage.sessionId !== undefined) existing.sessionId = stage.sessionId;
 			if (stage.sessionFile !== undefined) existing.sessionFile = stage.sessionFile;
+			if (stage.sessionAdapter !== undefined) existing.sessionAdapter = structuredClone(stage.sessionAdapter);
 			existing.failureKind = stage.failureKind;
 			existing.failureCode = stage.failureCode;
 			existing.failureRecoverability = stage.failureRecoverability;

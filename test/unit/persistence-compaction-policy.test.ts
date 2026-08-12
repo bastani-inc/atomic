@@ -124,6 +124,7 @@ describe("installCompactionHook", () => {
 					parentIds: [],
 					toolEvents: [],
 					startedAt: 1050,
+					sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 					// no endedAt → in-flight
 				},
 				{
@@ -155,6 +156,10 @@ describe("installCompactionHook", () => {
 		const stageStarts = appended.filter((e) => e.type === "workflow.stage.start");
 		assert.equal(stageStarts.length, 1);
 		assert.equal(stageStarts[0]!.payload.stageId, "s1");
+		assert.deepEqual(stageStarts[0]!.payload.sessionAdapter, {
+			name: "remote-pi",
+			config: { profile: "example-profile" },
+		});
 	});
 
 	test("on compact: multiple active runs all re-appended", () => {

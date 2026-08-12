@@ -23,6 +23,7 @@ export type {
 	ResolvedInputs,
 	RunResult,
 	RunStatus,
+	SessionAdapterSelector,
 	StageAdapters,
 	StageContext,
 	StageExecutionMeta,

@@ -21,6 +21,10 @@ import {
 	ensurePostMortemStageHandle,
 	isPostMortemEligibleStage,
 } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
+import {
+	SESSION_ADAPTER_PROTOCOL_VERSION,
+	SessionAdapterRegistry,
+} from "../../packages/workflows/src/runs/foreground/session-adapter-registry.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -81,6 +85,47 @@ function adaptersRecording(session: StageSessionRuntime, counter: { creates: num
 }
 
 describe("ensurePostMortemStageHandle", () => {
+	test("reopens through the adapter selection retained by the completed stage", async () => {
+		const registry = createStageControlRegistry();
+		const named = new SessionAdapterRegistry();
+		const sessionFile = retainedSession("named-adapter");
+		let localCreates = 0;
+		let remoteCreates = 0;
+		const session: StageSessionRuntime = { ...mockSession(), sessionFile };
+		named.register({
+			version: SESSION_ADAPTER_PROTOCOL_VERSION,
+			name: "remote-pi",
+			adapter: {
+				async create() {
+					remoteCreates += 1;
+					return session;
+				},
+			},
+		});
+		const stage = completedStage({
+			sessionFile,
+			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
+		});
+		const result = ensurePostMortemStageHandle("run-1", stage, {
+			registry,
+			adapters: {
+				agentSession: {
+					async create() {
+						localCreates += 1;
+						return session;
+					},
+				},
+				sessionAdapters: named,
+			},
+			cwd: tempDir,
+		});
+		assert.equal(result.ok, true);
+		if (!result.ok) return;
+		await result.handle.ensureAttached();
+		assert.equal(remoteCreates, 1);
+		assert.equal(localCreates, 0);
+	});
+
 	test("revives a detached interactive handle and appends follow-up without mutating status", async () => {
 		const registry = createStageControlRegistry();
 		const sessionFile = retainedSession("revive");

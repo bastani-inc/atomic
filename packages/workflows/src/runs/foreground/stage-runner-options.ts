@@ -58,6 +58,7 @@ export function stripWorkflowOnlyOptions(
 		gitWorktreeDir: _gitWorktreeDir,
 		baseBranch: _baseBranch,
 		group: _group,
+		sessionAdapter: _sessionAdapter,
 		...sessionOptions
 	} = options;
 	if (sessionOptions.sessionManager === undefined) {
