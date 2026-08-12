@@ -138,7 +138,7 @@ Every row is a real Atomic session recorded from the installed product. Open the
 <a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop">
 <picture>
 <source srcset="assets/feature-wall/27-security-review-repair-loop.gif" type="image/gif">
-<img src="assets/feature-wall/27-security-review-repair-loop.jpg" alt="Atomic security-review workflow showing audit findings, a human repair approval, bounded repair, and the final four-of-four graph" width="100%">
+<img src="assets/feature-wall/27-security-review-repair-loop.jpg" alt="Atomic security-review workflow graph with the hardcoded API key audit finding, repair-1 running, and the header reaching four-of-four complete" width="100%">
 </picture>
 </a>
 </td>

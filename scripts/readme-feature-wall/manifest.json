@@ -238,25 +238,25 @@
       "anchor": "#66-security-review-with-a-repair-loop",
       "title": "Security review with a repair loop",
       "blurb": "Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes.",
-      "alt": "Atomic security-review workflow showing audit findings, a human repair approval, bounded repair, and the final four-of-four graph",
+      "alt": "Atomic security-review workflow graph with the hardcoded API key audit finding, repair-1 running, and the header reaching four-of-four complete",
       "interactions": [
         "reload and start the project-local security-review-demo workflow",
         "attach through tmux to the live graph and approve its human repair gate",
         "watch audit, repair-1, and verify-2 run as real tracked nodes"
       ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The planted demo secret is fictional seed data from the crash course and is never shown in the selected window.",
+      "privacy_notes": "Graph-only window with no statusline, so the band pass is skipped like A.9; the OCR pass and finished-media gate still run. The planted demo secret is fictional seed data from the crash course; the selected window shows only the graph view, not the finding detail or prompt text.",
       "media": {
         "gif": "assets/feature-wall/27-security-review-repair-loop.gif",
         "jpg": "assets/feature-wall/27-security-review-repair-loop.jpg"
       },
       "render": {
-        "start": 2,
-        "end": 28,
-        "speed": 2.167,
+        "start": 7.5,
+        "end": 22.5,
+        "speed": 1.25,
         "fps": 12,
         "quality": 80,
-        "poster_at": 24,
-        "mask": true
+        "poster_at": 21.5,
+        "mask": false
       },
       "docs": {
         "label": "Workflows",

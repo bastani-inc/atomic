@@ -361,7 +361,7 @@ const has = (bin) => {
 				fail("lessons", "6.6 must describe executable checks, fresh reviewers, evidence, and bounded repair");
 			if (
 				l.alt !==
-				"Atomic security-review workflow showing audit findings, a human repair approval, bounded repair, and the final four-of-four graph"
+				"Atomic security-review workflow graph with the hardcoded API key audit finding, repair-1 running, and the header reaching four-of-four complete"
 			)
 				fail("lessons", "6.6 must carry the exact alt tied to the real security-review/repair capture");
 			if (
