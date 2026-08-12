@@ -11,7 +11,7 @@ import {
 	wrapForkTask,
 } from "../../shared/types.ts";
 import { formatAsyncStartedMessage } from "../inprocess/background.ts";
-import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
+import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { runParallelPath } from "./subagent-executor-parallel.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 import { buildParallelModeError, buildParallelWorktreeTaskCwdError } from "./subagent-executor-worktree.ts";

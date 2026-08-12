@@ -7,7 +7,7 @@ import {
 	resolveHomeGroup,
 	validateRuntimeGroup,
 } from "../../packages/intercom/group.js";
-import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "../../packages/intercom/runtime-group.ts";
+import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "../../packages/intercom/runtime-group.js";
 
 const ENV_KEYS = ["ATOMIC_INTERCOM_GROUP", "PI_INTERCOM_GROUP"] as const;
 const RUNTIME_SESSION_KEYS = ["session-a", "session-b", "session-1", "session-2"] as const;

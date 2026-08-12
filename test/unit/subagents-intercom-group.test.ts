@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { runtimeIntercomGroupEnvKey } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { resolveHomeGroup } from "../../packages/intercom/group.js";
-import { inheritedIntercomGroup } from "../../packages/subagents/src/runs/shared/intercom-group.ts";
+import { inheritedIntercomGroup } from "../../packages/subagents/src/runs/shared/intercom-group.js";
 
 const sessionId = "workflow stage/session";
 const runtimeKey = runtimeIntercomGroupEnvKey(sessionId);
