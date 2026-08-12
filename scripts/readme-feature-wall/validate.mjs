@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Authoritative gate for the README feature wall.
+// Authoritative gate for the README feature tables.
 //
 //   node scripts/readme-feature-wall/validate.mjs
 //
@@ -9,7 +9,7 @@
 //
 // Checks, in order:
 //   1  required set, count, fixed product-impact order, and public docs mapping
-//   2  README hierarchy and table shape: one wall, 40 rows, order, links, picture markup, alt
+//   2  README hierarchy and table shape: 6 featured + 34 remaining, exact placement, links, media, alt
 //   3  media exist for all 80 files named by the manifest
 //   4  dimensions: every GIF and poster is exactly 960x540 (16:9)
 //   5  GIF duration bounds, declared frame rate bounds, and maximum held-frame duration
@@ -31,28 +31,30 @@ const REPO = resolve(HERE, "..", "..");
 const MANIFEST = JSON.parse(readFileSync(join(HERE, "manifest.json"), "utf8"));
 const README = readFileSync(join(REPO, "README.md"), "utf8");
 
-// The complete 40-row contract, written out rather than derived from the
-// manifest so the manifest cannot quietly redefine the required coverage.
-const REQUIRED = [
+// The exact 6+34 contract, written out rather than derived from the manifest
+// so the manifest cannot quietly redefine the required split or coverage.
+const FEATURED_REQUIRED = [
 	["W.1", "Launch a workflow in plain English", "Workflows", "/workflows"],
+	["6.2", "Steer and control a live run", "Workflows", "/workflows"],
+	["6.5", "Durability and resume", "Workflows", "/workflows"],
+	["6.4", "Human-in-the-loop gates", "Workflows", "/workflows"],
+	["5.3", "Planner-worker intercom coordination", "Intercom", "/intercom"],
+	["W.3", "Inspect and control workflows", "Workflows", "/workflows"],
+];
+const REMAINING_REQUIRED = [
 	["A.8", "Natural-language workflow authoring", "Workflows", "/workflows"],
 	["A.10", "Autonomous implementation loops", "Workflows", "/workflows"],
 	["6.6", "Security review with a repair loop", "Workflows", "/workflows"],
 	["5.2", "Worktree-isolated parallel work", "Subagents", "/subagents"],
-	["6.2", "Steer and control a live run", "Workflows", "/workflows"],
-	["6.5", "Durability and resume", "Workflows", "/workflows"],
-	["6.4", "Human-in-the-loop gates", "Workflows", "/workflows"],
 	["5.4", "Escalating to a human supervisor", "Intercom", "/intercom"],
 	["A.9", "Nesting builtin workflows", "Workflows", "/workflows"],
 	["A.5", "Parallel review composition", "Subagents", "/subagents"],
-	["5.3", "Planner-worker intercom coordination", "Intercom", "/intercom"],
 	["5.5", "Intercom context handoff", "Intercom", "/intercom"],
 	["5.1", "Delegating to bundled specialists", "Subagents", "/subagents"],
 	["A.6", "Background subagent runs", "Subagents", "/subagents"],
 	["6.3", "Writing your own workflow", "Workflows", "/workflows"],
 	["6.1", "Touring the builtins", "Workflows", "/workflows"],
 	["W.2", "Run a workflow with typed inputs", "Workflows", "/workflows"],
-	["W.3", "Inspect and control workflows", "Workflows", "/workflows"],
 	["2.2", "Verbatim compaction", "Compaction", "/compaction"],
 	["1.2", "Hashline edits", "Built-in tools", "/tools"],
 	["1.3", "The agent interviews you", "Built-in tools", "/tools"],
@@ -75,10 +77,15 @@ const REQUIRED = [
 	["A.1", "Keybindings and hot reload", "Keybindings", "/keybindings"],
 	["3.5", "Custom theme", "Themes", "/themes"],
 ];
+const REQUIRED = [...FEATURED_REQUIRED, ...REMAINING_REQUIRED];
 
 const COURSE_URL = "https://github.com/bastani-inc/atomic-crash-course";
 const DOCS_URL = "https://docs.bastani.ai";
-const WALL_START = "<!-- feature-wall:start -->";
+const FEATURED_START = "<!-- feature-wall:featured:start -->";
+const FEATURED_END = "<!-- feature-wall:featured:end -->";
+const MORE_START = "<!-- feature-wall:more:start -->";
+const MORE_END = "<!-- feature-wall:more:end -->";
+const MORE_ANCHOR_LINK = '<a href="#more-atomic-capabilities">';
 const STACK_BADGES = [
 	["GitHub", "https://github.com/"],
 	["GitLab", "https://gitlab.com/"],
@@ -100,7 +107,6 @@ const STACK_BADGES = [
 	["MCP", "https://docs.bastani.ai/extensions"],
 	["Any%20CLI%20or%20API", "https://docs.bastani.ai/extensions"],
 ];
-const WALL_END = "<!-- feature-wall:end -->";
 
 const failures = [];
 const notes = [];
@@ -199,51 +205,125 @@ const has = (bin) => {
 		}
 	});
 	if (!failures.some((f) => f.startsWith("lessons")))
-		ok("lessons", "40 rows in the fixed product-impact order, with unique capture and media mappings");
+		ok("lessons", "40 rows in the exact 6+34 order, with unique capture and media mappings");
 	if (!failures.some((f) => f.startsWith("docs")))
 		ok("docs", "all 40 rows carry the exact public Atomic docs label and URL mapping");
 	if (!failures.some((f) => f.startsWith("interactions")))
 		ok("interactions", "every command the manifest claims for a lesson appears in that lesson's capture script");
 }
 
-// ------------------------------------------------------------- 2. README wall
+// ----------------------------------------------------------- 2. README tables
 {
-	const startCount = README.split(WALL_START).length - 1;
-	const endCount = README.split(WALL_END).length - 1;
-	if (startCount !== 1 || endCount !== 1) {
-		fail("readme", `expected exactly one feature wall, found ${startCount} start / ${endCount} end markers`);
+	const occurrences = (text, needle) => text.split(needle).length - 1;
+	const markers = [FEATURED_START, FEATURED_END, MORE_START, MORE_END];
+	const badMarkers = markers.filter((marker) => occurrences(README, marker) !== 1);
+	if (badMarkers.length > 0) {
+		fail("readme", `each feature-table marker must appear once; invalid: ${badMarkers.join(", ")}`);
 	} else {
-		const wall = README.slice(README.indexOf(WALL_START), README.indexOf(WALL_END));
+		const featuredStartAt = README.indexOf(FEATURED_START);
+		const featuredEndAt = README.indexOf(FEATURED_END);
+		const moreStartAt = README.indexOf(MORE_START);
+		const moreEndAt = README.indexOf(MORE_END);
+		const featuredRegion = README.slice(featuredStartAt, featuredEndAt + FEATURED_END.length);
+		const moreRegion = README.slice(moreStartAt, moreEndAt + MORE_END.length);
 
-		if (/^\s*-\s+\*\*Workflows as versioned TypeScript\*\*/m.test(README)) {
-			fail("readme", "the old Core capabilities bullet list is still present; the wall must replace it");
-		}
-		if ((README.match(/\*\*Core capabilities:\*\*/g) ?? []).length > 0) {
-			fail("readme", "the 'Core capabilities:' bullet heading is still present");
-		}
+		if (README.includes("<!-- feature-wall:start -->") || README.includes("<!-- feature-wall:end -->"))
+			fail("readme", "legacy single-wall markers remain");
+		if (/^\s*-\s+\*\*Workflows as versioned TypeScript\*\*/m.test(README))
+			fail("readme", "the old Core capabilities bullet list is still present");
+		if (README.includes("**Core capabilities")) fail("readme", "the old Core capabilities heading is still present");
 
 		const metricsAt = README.indexOf("**Users are reporting:**");
 		const getStartedAt = README.indexOf("## Get started");
-		const wallStartAt = README.indexOf(WALL_START);
-		const wallEndAt = README.indexOf(WALL_END);
-		const stackAt = README.indexOf("### Works with your engineering stack");
-		const installAt = README.indexOf("## Install and configure");
 		const quickstart =
 			"<p><code>npm install -g @bastani/atomic</code> → <code>atomic</code> → <code>/login</code></p>";
 		const quickstartAt = README.indexOf(quickstart);
-		const separatorAt = README.indexOf("\n---\n", stackAt);
+		const stackAt = README.indexOf("### Works with your engineering stack");
+		const topSeparatorAt = README.indexOf("\n---\n", stackAt);
+		const installAt = README.indexOf("## Install and configure");
+		const prerequisitesAt = README.indexOf("### Prerequisites", installAt);
+		const installStepsAt = README.indexOf("### Install", prerequisitesAt);
+		const authenticateAt = README.indexOf("### Authenticate and run", installStepsAt);
+		const skillsAt = README.indexOf("### Bring your skill stack", authenticateAt);
+		const migrateAt = README.indexOf("### Migrating from another coding agent", skillsAt);
+		const moreHeadingAt = README.indexOf("## More Atomic capabilities");
+		const lowerSeparatorAt = README.indexOf("\n---\n", moreEndAt);
+		const howAt = README.indexOf("## How Atomic works");
+
 		if ((README.match(/^## Get started$/gm) ?? []).length !== 1)
 			fail("readme", "expected exactly one top-level Get started heading");
-		if (!(metricsAt < getStartedAt && getStartedAt < quickstartAt && quickstartAt < wallStartAt))
-			fail("readme", "Get started and the compact npm → atomic → /login line must sit between metrics and the wall");
-		if (!(wallEndAt < stackAt && stackAt < separatorAt && separatorAt < installAt))
-			fail("readme", "the stack badge bar must end Get started before Install and configure");
+		if (occurrences(README, quickstart) !== 1)
+			fail("readme", "expected exactly one compact npm → atomic → /login quickstart line");
+		if (!(metricsAt < getStartedAt && getStartedAt < quickstartAt && quickstartAt < featuredStartAt))
+			fail("readme", "metrics, Get started, quickstart, and the featured table are out of order");
+		if (
+			(README.match(/^### Atomic in action$/gm) ?? []).length !== 1 ||
+			!featuredRegion.includes("### Atomic in action")
+		)
+			fail("readme", "the featured region must contain one Atomic in action heading");
+
+		const positioningCopy = [
+			"Build your process as workflows with scoped context, model choice, tools, handoffs, artifacts, retries, executable checks, review gates, and human approvals.",
+			"Atomic’s primitives are built for the software engineering lifecycle. Verification is built into the execution model.",
+			"Atomic is open so you can inspect and adapt it. You own the workflow, the evidence, and the rules for completion.",
+			"Own your intelligence. Build in the open. Question the defaults. Keep control of the process. ☠︎",
+		];
+		for (const copy of positioningCopy) {
+			const at = README.indexOf(copy);
+			if (!(featuredEndAt < at && at < stackAt))
+				fail("readme", `positioning copy must remain between the featured table and stack bar: ${copy}`);
+		}
+		if (!(featuredEndAt < stackAt && stackAt < topSeparatorAt && topSeparatorAt < installAt))
+			fail("readme", "the positioning copy and stack badge bar must remain above Install and configure");
+
+		const setupOrder = [
+			installAt,
+			prerequisitesAt,
+			installStepsAt,
+			authenticateAt,
+			skillsAt,
+			migrateAt,
+			moreStartAt,
+			moreHeadingAt,
+			moreEndAt,
+			lowerSeparatorAt,
+			howAt,
+		];
+		if (setupOrder.some((position, index) => position < 0 || (index > 0 && position <= setupOrder[index - 1])))
+			fail(
+				"readme",
+				"the complete Install and configure section, lower table, separator, and How Atomic works are out of order",
+			);
+		const setup = README.slice(installAt, moreStartAt);
+		for (const snippet of [
+			"npm install -g @bastani/atomic",
+			"pnpm add -g @bastani/atomic",
+			"bun add -g @bastani/atomic",
+			"Atomic stores provider credentials in `~/.atomic/agent/auth.json`",
+			"<summary><b>Devcontainer, terminal, and SDK references</b></summary>",
+			"Inspect the existing skill `<skill-name-or-path>`",
+			"Install and set up Atomic by following https://docs.bastani.ai/llms.txt.",
+		]) {
+			if (!setup.includes(snippet))
+				fail("readme", `Install and configure is missing detailed setup copy: ${snippet}`);
+		}
+
+		if ((README.match(/^## More Atomic capabilities$/gm) ?? []).length !== 1)
+			fail("readme", "expected exactly one More Atomic capabilities heading");
+		if (occurrences(README, MORE_ANCHOR_LINK) !== 1)
+			fail("readme", "the featured table must contain one link to #more-atomic-capabilities");
+		if (!featuredRegion.includes(`${MORE_ANCHOR_LINK}<strong>Explore 34 more Atomic capabilities ↓</strong></a>`))
+			fail("readme", "the featured-to-more link must state that 34 more capabilities follow");
+		if ((README.match(/<table>/gi) ?? []).length !== 2)
+			fail("readme", "README must contain exactly the two generated feature tables");
+		if ((featuredRegion.match(/<table>/gi) ?? []).length !== 1 || (moreRegion.match(/<table>/gi) ?? []).length !== 1)
+			fail("readme", "each generated region must contain exactly one table");
+
 		if (README.includes("## Connect your engineering stack"))
 			fail("readme", "the old lower engineering-stack section is still present");
 		if (README.includes("| Need                   | Examples"))
 			fail("readme", "the old engineering-stack table is still present");
-
-		const stack = README.slice(stackAt, separatorAt);
+		const stack = README.slice(stackAt, topSeparatorAt);
 		const stackImages = stack.match(/<img\b[^>]*>/g) ?? [];
 		if (stackImages.length !== STACK_BADGES.length)
 			fail("readme", `expected ${STACK_BADGES.length} stack badges, found ${stackImages.length}`);
@@ -260,37 +340,75 @@ const has = (bin) => {
 		)
 			fail("readme", "stack bar is missing the credential-and-permission connection note");
 
-		const rows = wall.split(/<tr>/i).slice(1);
-		if (rows.length !== 40) fail("readme", `expected 40 <tr> rows in the wall, found ${rows.length}`);
+		const featuredRows = featuredRegion.match(/<tr>[\s\S]*?<\/tr>/gi) ?? [];
+		const moreRows = moreRegion.match(/<tr>[\s\S]*?<\/tr>/gi) ?? [];
+		if (featuredRows.length !== FEATURED_REQUIRED.length)
+			fail("readme", `expected 6 featured rows, found ${featuredRows.length}`);
+		if (moreRows.length !== REMAINING_REQUIRED.length)
+			fail("readme", `expected 34 remaining rows, found ${moreRows.length}`);
 
-		const cellCounts = rows.map((r) => (r.match(/<td/gi) ?? []).length);
-		if (cellCounts.some((c) => c !== 2)) {
-			fail("readme", `every row must be two columns; found row widths ${[...new Set(cellCounts)].join(", ")}`);
+		const seen = [];
+		const validateRows = (rows, expected, regionName) => {
+			rows.forEach((row, index) => {
+				const expectedId = expected[index]?.[0];
+				const candidates = MANIFEST.lessons.filter((lesson) =>
+					row.includes(`<sub>Crash course · ${lesson.lesson}</sub>`),
+				);
+				if (candidates.length !== 1) {
+					fail("readme", `${regionName} row ${index + 1} maps to ${candidates.length} manifest records`);
+					return;
+				}
+				const lesson = candidates[0];
+				seen.push(lesson.id);
+				if (lesson.id !== expectedId)
+					fail("readme", `${regionName} row ${index + 1}: expected ${expectedId}, found ${lesson.id}`);
+				if ((row.match(/<td/gi) ?? []).length !== 2)
+					fail("readme", `${lesson.id}: every row must have exactly two cells`);
+				const courseLink = `${COURSE_URL}${lesson.anchor}`;
+				const docsMarkup = `<p><a href="${lesson.docs.url}"><sub>Atomic docs · ${lesson.docs.label}</sub></a></p>`;
+				const courseMarkup = `<p><a href="${courseLink}"><sub>Crash course · ${lesson.lesson}</sub></a></p>`;
+				if (!row.includes(docsMarkup))
+					fail("readme", `${lesson.id}: row is missing its exact public Atomic docs link`);
+				if (!row.includes(courseMarkup)) fail("readme", `${lesson.id}: row is missing its exact crash-course link`);
+				if (!row.includes(`<p>${lesson.blurb}</p>`))
+					fail("readme", `${lesson.id}: row is missing its exact feature copy`);
+				if (occurrences(row, courseLink) !== 2)
+					fail("readme", `${lesson.id}: crash-course URL must appear once in copy and once around media`);
+				if (row.indexOf(docsMarkup) > row.indexOf(courseMarkup))
+					fail("readme", `${lesson.id}: Atomic docs link must render above its crash-course link`);
+				if ((row.match(/https:\/\/docs\.bastani\.ai\//g) ?? []).length !== 1)
+					fail("readme", `${lesson.id}: row must contain exactly one public Atomic docs link`);
+				if (!row.includes(lesson.media.gif)) fail("readme", `${lesson.id}: row is missing GIF ${lesson.media.gif}`);
+				if (!row.includes(lesson.media.jpg))
+					fail("readme", `${lesson.id}: row is missing poster ${lesson.media.jpg}`);
+				if (!/<picture>/i.test(row)) fail("readme", `${lesson.id}: row must use <picture> markup`);
+				if (!row.includes(`alt="${lesson.alt}"`)) fail("readme", `${lesson.id}: row is missing its exact alt text`);
+				if (!row.includes(`<h4>${lesson.title}</h4>`))
+					fail("readme", `${lesson.id}: row is missing its exact feature title`);
+			});
+		};
+		validateRows(featuredRows, FEATURED_REQUIRED, "featured");
+		validateRows(moreRows, REMAINING_REQUIRED, "remaining");
+
+		const allRegions = `${featuredRegion}\n${moreRegion}`;
+		for (const lesson of MANIFEST.lessons) {
+			const rowLabel = `<sub>Crash course · ${lesson.lesson}</sub>`;
+			if (occurrences(allRegions, rowLabel) !== 1)
+				fail("readme", `${lesson.id}: feature row must appear exactly once across both tables`);
+			if (occurrences(README, lesson.media.gif) !== 1 || occurrences(README, lesson.media.jpg) !== 1)
+				fail("readme", `${lesson.id}: GIF and poster must each appear exactly once in README`);
 		}
+		const duplicateIds = [...new Set(seen.filter((id, index) => seen.indexOf(id) !== index))];
+		if (seen.length !== REQUIRED.length || new Set(seen).size !== REQUIRED.length)
+			fail(
+				"readme",
+				`the two tables must cover all 40 records once; duplicate ids: ${duplicateIds.join(", ") || "none"}`,
+			);
 
-		MANIFEST.lessons.forEach((l, i) => {
-			const row = rows[i];
-			if (!row) return;
-			const courseLink = `${COURSE_URL}${l.anchor}`;
-			const docsMarkup = `<p><a href="${l.docs.url}"><sub>Atomic docs · ${l.docs.label}</sub></a></p>`;
-			const courseMarkup = `<p><a href="${courseLink}"><sub>Crash course · ${l.lesson}</sub></a></p>`;
-			if (!row.includes(courseLink)) fail("readme", `${l.id}: row is missing its crash-course link ${courseLink}`);
-			if (!row.includes(docsMarkup)) fail("readme", `${l.id}: row is missing its exact public Atomic docs link`);
-			if (row.indexOf(docsMarkup) > row.indexOf(courseMarkup))
-				fail("readme", `${l.id}: Atomic docs link must render above its crash-course link`);
-			if ((row.match(/https:\/\/docs\.bastani\.ai\//g) ?? []).length !== 1)
-				fail("readme", `${l.id}: row must contain exactly one public Atomic docs link`);
-			if (!row.includes(l.media.gif)) fail("readme", `${l.id}: row is missing GIF ${l.media.gif}`);
-			if (!row.includes(l.media.jpg)) fail("readme", `${l.id}: row is missing JPG poster ${l.media.jpg}`);
-			if (!/<picture>/i.test(row)) fail("readme", `${l.id}: row must use <picture> markup`);
-			const alt = row.match(/alt="([^"]*)"/);
-			if (!alt || alt[1].trim().length < 25) fail("readme", `${l.id}: row needs semantic alt text`);
-			if (!row.includes(l.title)) fail("readme", `${l.id}: row is missing its feature title "${l.title}"`);
-		});
-		if (!failures.some((f) => f.startsWith("readme"))) {
+		if (!failures.some((failure) => failure.startsWith("readme"))) {
 			ok(
 				"readme",
-				"first-screen quickstart, 40 ordered rows with docs above course links, stack badges, and detailed install hierarchy",
+				"6 featured + 34 remaining rows once each; exact hierarchy, cross-link, docs-first links, stack bar, and setup copy",
 			);
 		}
 	}
@@ -653,7 +771,7 @@ const gifPaths = [];
 }
 
 // ------------------------------------------------------------------- 12. report
-console.log("feature wall gate");
+console.log("README feature tables gate");
 for (const n of notes) console.log(n);
 if (failures.length) {
 	console.log("");

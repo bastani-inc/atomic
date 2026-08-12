@@ -1,5 +1,5 @@
 {
-  "$comment": "Authoritative map for the 40-row README feature wall in fixed product-impact order: all 27 core crash-course lessons, three distinct workflow-use paths, and Extras A.1 through A.10. Each row binds its public Atomic docs link, crash-course link, capture source, interactions, and media. validate.mjs checks README.md, capture sources, assets/feature-wall/, and .gitattributes against this file.",
+  "$comment": "Authoritative map for two generated README feature tables in one fixed 6+34 order: six featured rows above Install and configure, then the other 34 rows after that complete section. Together they cover all 27 core crash-course lessons, three distinct workflow-use paths, and Extras A.1 through A.10. Each row binds its public Atomic docs link, crash-course link, capture source, interactions, and media. validate.mjs checks README.md, capture sources, assets/feature-wall/, and .gitattributes against this file.",
   "course": {
     "name": "Atomic crash course",
     "url": "https://github.com/bastani-inc/atomic-crash-course",
@@ -88,8 +88,186 @@
       }
     },
     {
-      "id": "A.8",
+      "id": "6.2",
       "order": 2,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.2.tape",
+      "slug": "23-steer-a-live-run",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.2 Steer and control a live run",
+      "anchor": "#62-steer-and-control-a-live-run",
+      "title": "Steer and control a live run",
+      "blurb": "Attach to a running stage, watch it stream, and steer, pause, or abort it mid-flight.",
+      "alt": "The Atomic workflow graph with a live stage streaming, receiving a steering message from the operator",
+      "interactions": [
+        "launch fan-out-and-synthesize with two live branches",
+        "list the running branch stages",
+        "send an exact <keepContext> steering message to each live stage"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "media": {
+        "gif": "assets/feature-wall/23-steer-a-live-run.gif",
+        "jpg": "assets/feature-wall/23-steer-a-live-run.jpg"
+      },
+      "render": {
+        "start": 38,
+        "end": 64,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 60,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "6.5",
+      "order": 3,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.5.tape",
+      "slug": "26-durability-and-resume",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.5 Durability and resume",
+      "anchor": "#65-durability-and-resume",
+      "title": "Durability and resume",
+      "blurb": "Runs checkpoint as they go, so killing the process leaves them retained and resumable instead of lost.",
+      "alt": "The Atomic resume picker after a killed run, listing retained workflow runs with their checkpoint counts",
+      "interactions": [
+        "/workflow research-codebase",
+        "kill the Atomic process mid-run",
+        "atomic",
+        "/workflow resume"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. Retained run names from this machine are shown by the picker and are allowed by the repository owner's narrowed privacy scope.",
+      "media": {
+        "gif": "assets/feature-wall/26-durability-and-resume.gif",
+        "jpg": "assets/feature-wall/26-durability-and-resume.jpg"
+      },
+      "render": {
+        "start": 6,
+        "end": 42,
+        "speed": 3,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 34,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "6.4",
+      "order": 4,
+      "capture_source": "scripts/readme-feature-wall/tapes/6.4.tape",
+      "slug": "25-human-in-the-loop-gates",
+      "part": "Part 6 - Workflows",
+      "lesson": "6.4 Human-in-the-loop gates",
+      "anchor": "#64-human-in-the-loop-gates",
+      "title": "Human-in-the-loop gates",
+      "blurb": "Put an approval gate anywhere in the graph and the run waits for a person before it proceeds.",
+      "alt": "A workflow run pausing at a human approval gate and waiting for the operator's decision",
+      "interactions": [
+        "start the project-local release-gate-demo workflow",
+        "connect to its live graph and open the awaiting ctx.ui.select node",
+        "leave the real risk-choice gate waiting for the operator"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "media": {
+        "gif": "assets/feature-wall/25-human-in-the-loop-gates.gif",
+        "jpg": "assets/feature-wall/25-human-in-the-loop-gates.jpg"
+      },
+      "render": {
+        "start": 1,
+        "end": 27,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 14,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "5.3",
+      "order": 5,
+      "capture_source": "scripts/readme-feature-wall/tapes/5.3.tape",
+      "slug": "18-planner-worker-intercom",
+      "part": "Part 5 - Subagents and intercom",
+      "lesson": "5.3 Planner-worker intercom coordination",
+      "anchor": "#53-plannerworker-intercom-coordination",
+      "title": "Planner-worker intercom coordination",
+      "blurb": "Separate sessions message each other over intercom to split a job and agree on the answer.",
+      "alt": "Two Atomic sessions coordinating over intercom, one sending a question and the other replying",
+      "interactions": [
+        "intercom status",
+        "intercom list",
+        "intercom send/ask between two named sessions"
+      ],
+      "privacy_notes": "Statusline model segment masked. Session names are demo names.",
+      "media": {
+        "gif": "assets/feature-wall/18-planner-worker-intercom.gif",
+        "jpg": "assets/feature-wall/18-planner-worker-intercom.jpg"
+      },
+      "render": {
+        "start": 29.25,
+        "end": 55.25,
+        "speed": 2.167,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 48.75,
+        "mask": true
+      },
+      "docs": {
+        "label": "Intercom",
+        "url": "https://docs.bastani.ai/intercom"
+      }
+    },
+    {
+      "id": "W.3",
+      "order": 6,
+      "capture_source": "scripts/readme-feature-wall/tapes/W.3.tape",
+      "slug": "30-inspect-control-workflows",
+      "part": "Part 6 - Workflows",
+      "lesson": "W.3 Inspect and control workflows",
+      "anchor": "#61-touring-the-builtins",
+      "title": "Inspect and control workflows",
+      "blurb": "List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.",
+      "alt": "Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph",
+      "interactions": [
+        "/workflow list",
+        "/workflow inputs control-demo",
+        "/workflow control-demo subject=src-client.ts",
+        "/workflow status",
+        "/workflow connect"
+      ],
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The connect picker contains only the throwaway lesson runs.",
+      "media": {
+        "gif": "assets/feature-wall/30-inspect-control-workflows.gif",
+        "jpg": "assets/feature-wall/30-inspect-control-workflows.jpg"
+      },
+      "render": {
+        "start": 15,
+        "end": 57,
+        "speed": 3.5,
+        "fps": 12,
+        "quality": 80,
+        "poster_at": 50,
+        "mask": true
+      },
+      "docs": {
+        "label": "Workflows",
+        "url": "https://docs.bastani.ai/workflows"
+      }
+    },
+    {
+      "id": "A.8",
+      "order": 7,
       "capture_source": "scripts/readme-feature-wall/tapes/A.8.tape",
       "slug": "38-natural-language-workflow-authoring",
       "part": "Extras",
@@ -133,7 +311,7 @@
     },
     {
       "id": "A.10",
-      "order": 3,
+      "order": 8,
       "capture_source": "scripts/readme-feature-wall/tapes/A.10.tape",
       "slug": "40-autonomous-implementation-loops",
       "part": "Extras",
@@ -168,7 +346,7 @@
     },
     {
       "id": "6.6",
-      "order": 4,
+      "order": 9,
       "capture_source": "scripts/readme-feature-wall/tapes/6.6.tape",
       "slug": "27-security-review-repair-loop",
       "part": "Part 6 - Workflows",
@@ -203,7 +381,7 @@
     },
     {
       "id": "5.2",
-      "order": 5,
+      "order": 10,
       "capture_source": "scripts/readme-feature-wall/tapes/5.2.tape",
       "slug": "17-worktree-parallel-work",
       "part": "Part 5 - Subagents and intercom",
@@ -236,114 +414,8 @@
       }
     },
     {
-      "id": "6.2",
-      "order": 6,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.2.tape",
-      "slug": "23-steer-a-live-run",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.2 Steer and control a live run",
-      "anchor": "#62-steer-and-control-a-live-run",
-      "title": "Steer and control a live run",
-      "blurb": "Attach to a running stage, watch it stream, and steer, pause, or abort it mid-flight.",
-      "alt": "The Atomic workflow graph with a live stage streaming, receiving a steering message from the operator",
-      "interactions": [
-        "launch fan-out-and-synthesize with two live branches",
-        "list the running branch stages",
-        "send an exact <keepContext> steering message to each live stage"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
-      "media": {
-        "gif": "assets/feature-wall/23-steer-a-live-run.gif",
-        "jpg": "assets/feature-wall/23-steer-a-live-run.jpg"
-      },
-      "render": {
-        "start": 38,
-        "end": 64,
-        "speed": 2.167,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 60,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "6.5",
-      "order": 7,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.5.tape",
-      "slug": "26-durability-and-resume",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.5 Durability and resume",
-      "anchor": "#65-durability-and-resume",
-      "title": "Durability and resume",
-      "blurb": "Runs checkpoint as they go, so killing the process leaves them retained and resumable instead of lost.",
-      "alt": "The Atomic resume picker after a killed run, listing retained workflow runs with their checkpoint counts",
-      "interactions": [
-        "/workflow research-codebase",
-        "kill the Atomic process mid-run",
-        "atomic",
-        "/workflow resume"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. Retained run names from this machine are shown by the picker and are allowed by the repository owner's narrowed privacy scope.",
-      "media": {
-        "gif": "assets/feature-wall/26-durability-and-resume.gif",
-        "jpg": "assets/feature-wall/26-durability-and-resume.jpg"
-      },
-      "render": {
-        "start": 6,
-        "end": 42,
-        "speed": 3,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 34,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "6.4",
-      "order": 8,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.4.tape",
-      "slug": "25-human-in-the-loop-gates",
-      "part": "Part 6 - Workflows",
-      "lesson": "6.4 Human-in-the-loop gates",
-      "anchor": "#64-human-in-the-loop-gates",
-      "title": "Human-in-the-loop gates",
-      "blurb": "Put an approval gate anywhere in the graph and the run waits for a person before it proceeds.",
-      "alt": "A workflow run pausing at a human approval gate and waiting for the operator's decision",
-      "interactions": [
-        "start the project-local release-gate-demo workflow",
-        "connect to its live graph and open the awaiting ctx.ui.select node",
-        "leave the real risk-choice gate waiting for the operator"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
-      "media": {
-        "gif": "assets/feature-wall/25-human-in-the-loop-gates.gif",
-        "jpg": "assets/feature-wall/25-human-in-the-loop-gates.jpg"
-      },
-      "render": {
-        "start": 1,
-        "end": 27,
-        "speed": 2.167,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 14,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
       "id": "5.4",
-      "order": 9,
+      "order": 11,
       "capture_source": "scripts/readme-feature-wall/tapes/5.4.tape",
       "slug": "19-escalate-to-supervisor",
       "part": "Part 5 - Subagents and intercom",
@@ -380,7 +452,7 @@
     },
     {
       "id": "A.9",
-      "order": 10,
+      "order": 12,
       "capture_source": "scripts/readme-feature-wall/tapes/A.9.tape",
       "slug": "39-nesting-builtin-workflows",
       "part": "Extras",
@@ -416,7 +488,7 @@
     },
     {
       "id": "A.5",
-      "order": 11,
+      "order": 13,
       "capture_source": "scripts/readme-feature-wall/tapes/A.5.tape",
       "slug": "35-parallel-review-composition",
       "part": "Extras",
@@ -449,43 +521,8 @@
       }
     },
     {
-      "id": "5.3",
-      "order": 12,
-      "capture_source": "scripts/readme-feature-wall/tapes/5.3.tape",
-      "slug": "18-planner-worker-intercom",
-      "part": "Part 5 - Subagents and intercom",
-      "lesson": "5.3 Planner-worker intercom coordination",
-      "anchor": "#53-plannerworker-intercom-coordination",
-      "title": "Planner-worker intercom coordination",
-      "blurb": "Separate sessions message each other over intercom to split a job and agree on the answer.",
-      "alt": "Two Atomic sessions coordinating over intercom, one sending a question and the other replying",
-      "interactions": [
-        "intercom status",
-        "intercom list",
-        "intercom send/ask between two named sessions"
-      ],
-      "privacy_notes": "Statusline model segment masked. Session names are demo names.",
-      "media": {
-        "gif": "assets/feature-wall/18-planner-worker-intercom.gif",
-        "jpg": "assets/feature-wall/18-planner-worker-intercom.jpg"
-      },
-      "render": {
-        "start": 29.25,
-        "end": 55.25,
-        "speed": 2.167,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 48.75,
-        "mask": true
-      },
-      "docs": {
-        "label": "Intercom",
-        "url": "https://docs.bastani.ai/intercom"
-      }
-    },
-    {
       "id": "5.5",
-      "order": 13,
+      "order": 14,
       "capture_source": "scripts/readme-feature-wall/tapes/5.5.tape",
       "slug": "20-intercom-context-handoff",
       "part": "Part 5 - Subagents and intercom",
@@ -520,7 +557,7 @@
     },
     {
       "id": "5.1",
-      "order": 14,
+      "order": 15,
       "capture_source": "scripts/readme-feature-wall/tapes/5.1.tape",
       "slug": "16-bundled-specialists",
       "part": "Part 5 - Subagents and intercom",
@@ -554,7 +591,7 @@
     },
     {
       "id": "A.6",
-      "order": 15,
+      "order": 16,
       "capture_source": "scripts/readme-feature-wall/tapes/A.6.tape",
       "slug": "36-background-subagent-runs",
       "part": "Extras",
@@ -588,7 +625,7 @@
     },
     {
       "id": "6.3",
-      "order": 16,
+      "order": 17,
       "capture_source": "scripts/readme-feature-wall/tapes/6.3.tape",
       "slug": "24-write-your-own-workflow",
       "part": "Part 6 - Workflows",
@@ -623,7 +660,7 @@
     },
     {
       "id": "6.1",
-      "order": 17,
+      "order": 18,
       "capture_source": "scripts/readme-feature-wall/tapes/6.1.tape",
       "slug": "22-touring-the-builtins",
       "part": "Part 6 - Workflows",
@@ -657,7 +694,7 @@
     },
     {
       "id": "W.2",
-      "order": 18,
+      "order": 19,
       "capture_source": "scripts/readme-feature-wall/tapes/W.2.tape",
       "slug": "29-workflow-typed-inputs",
       "part": "Part 6 - Workflows",
@@ -683,43 +720,6 @@
         "fps": 12,
         "quality": 80,
         "poster_at": 34,
-        "mask": true
-      },
-      "docs": {
-        "label": "Workflows",
-        "url": "https://docs.bastani.ai/workflows"
-      }
-    },
-    {
-      "id": "W.3",
-      "order": 19,
-      "capture_source": "scripts/readme-feature-wall/tapes/W.3.tape",
-      "slug": "30-inspect-control-workflows",
-      "part": "Part 6 - Workflows",
-      "lesson": "W.3 Inspect and control workflows",
-      "anchor": "#61-touring-the-builtins",
-      "title": "Inspect and control workflows",
-      "blurb": "List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.",
-      "alt": "Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph",
-      "interactions": [
-        "/workflow list",
-        "/workflow inputs control-demo",
-        "/workflow control-demo subject=src-client.ts",
-        "/workflow status",
-        "/workflow connect"
-      ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The connect picker contains only the throwaway lesson runs.",
-      "media": {
-        "gif": "assets/feature-wall/30-inspect-control-workflows.gif",
-        "jpg": "assets/feature-wall/30-inspect-control-workflows.jpg"
-      },
-      "render": {
-        "start": 15,
-        "end": 57,
-        "speed": 3.5,
-        "fps": 12,
-        "quality": 80,
-        "poster_at": 50,
         "mask": true
       },
       "docs": {
