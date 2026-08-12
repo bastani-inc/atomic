@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed how `adversarial-verification` combines its verifiers: a round is now decided by the mean verifier score against a 0.75 pass threshold instead of requiring every verifier to pass, so the same inputs can produce a different approval outcome. Reports that fail the runner's type guard are dropped from the denominator rather than counted as objections, a round in which fewer than half the dispatched reports parse is retried once under fresh node and artifact names without charging a repair and then rejected with a verification-infrastructure rationale, a new `veto_findings` field lets one verifier block a round unconditionally for safety blockers, a per-criterion floor of 0.5 stops one failing criterion from being averaged away, and the round mean is exposed as the new `verification_score` output. The default `verifier_count` of 3 still requires 3 of 3; raising it now improves the decision instead of tightening it ([#2255](https://github.com/bastani-inc/atomic/issues/2255)).
+
 ## [0.9.13-alpha.2] - 2026-08-12
 
 ### Breaking Changes

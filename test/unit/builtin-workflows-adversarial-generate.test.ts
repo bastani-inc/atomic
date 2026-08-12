@@ -49,6 +49,7 @@ test("adversarial-verification declares bounded composable contracts", () => {
 		verifier_artifact_paths: "array",
 		artifact_dir: "text",
 		remaining_work: "array",
+		verification_score: "number",
 	});
 });
 
@@ -60,7 +61,12 @@ test("adversarial-verification uses fresh evidence verifiers and accepts only th
 				{
 					task: (name) =>
 						name.startsWith("verifier-")
-							? JSON.stringify({ verdict: "pass", evidence: ["checked"], blocking_findings: [] })
+							? JSON.stringify({
+									verdict: "pass",
+									evidence: ["checked"],
+									blocking_findings: [],
+									veto_findings: [],
+								})
 							: name.startsWith("reducer-")
 								? JSON.stringify({ decision: "accept", rationale: "all evidence passed", remaining_work: [] })
 								: undefined,
@@ -71,7 +77,7 @@ test("adversarial-verification uses fresh evidence verifiers and accepts only th
 		const result = await adversarialVerification.run(ctx);
 		assert.equal(result.approved, true);
 		assert.equal(result.repairs_completed, 0);
-		assert.deepEqual(ctx.calls.parallel, [["verifier-0-1", "verifier-0-2"]]);
+		assert.deepEqual(ctx.calls.parallel, [["verifier-0-0-1", "verifier-0-0-2"]]);
 		for (const name of ctx.calls.parallel[0]!) {
 			const options = ctx.calls.taskOptions[name]?.[0];
 			assert.equal(options?.context, "fresh");
@@ -79,7 +85,7 @@ test("adversarial-verification uses fresh evidence verifiers and accepts only th
 			assert.ok(readPaths(options).some((path) => path.endsWith("rubric.md")));
 			assert.notEqual(options?.schema, undefined);
 		}
-		assert.ok(readPaths(ctx.calls.taskOptions["reducer-0"]?.[0]).some((path) => path.includes("verification-0-1")));
+		assert.ok(readPaths(ctx.calls.taskOptions["reducer-0"]?.[0]).some((path) => path.includes("verification-0-0-1")));
 	});
 });
 
@@ -91,7 +97,12 @@ test("adversarial-verification bounds repair and returns inspectable rejection",
 				{
 					task: (name) =>
 						name.startsWith("verifier-")
-							? JSON.stringify({ verdict: "fail", evidence: [], blocking_findings: ["missing test"] })
+							? JSON.stringify({
+									verdict: "fail",
+									evidence: [],
+									blocking_findings: ["missing test"],
+									veto_findings: [],
+								})
 							: name.startsWith("reducer-")
 								? JSON.stringify({
 										decision: "repair",
@@ -106,7 +117,7 @@ test("adversarial-verification bounds repair and returns inspectable rejection",
 		const result = await adversarialVerification.run(ctx);
 		assert.equal(result.approved, false);
 		assert.equal(result.repairs_completed, 1);
-		assert.deepEqual(ctx.calls.parallel, [["verifier-0-1"], ["verifier-1-1"]]);
+		assert.deepEqual(ctx.calls.parallel, [["verifier-0-0-1"], ["verifier-1-0-1"]]);
 		assert.ok(ctx.calls.task.includes("repair-1"));
 		assert.deepEqual(result.remaining_work, ["missing test"]);
 	});

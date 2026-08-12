@@ -720,7 +720,7 @@ Atomic bundles nine workflows: six reusable control-flow patterns, two autonomou
 |---|---|---|
 | `classify-and-act` | Structured classifier → deterministic category action; low confidence can fall back to human selection. | Route mixed requests to isolated category-specific work. |
 | `fan-out-and-synthesize` | Structured partition → bounded parallel artifact branches → synthesis barrier. | Split independent slices, including repository research, and merge evidence. |
-| `adversarial-verification` | Worker → fresh rubric verifiers → reducer → bounded repair loop. | Independently prove or reject a candidate. |
+| `adversarial-verification` | Worker → fresh rubric verifiers → reducer → aggregated round score with veto → bounded repair loop. | Independently prove or reject a candidate. |
 | `generate-and-filter` | Candidate fan-out → rubric dedupe/filter → optional judge → shortlist. | Explore more options than needed and keep the strongest distinct few. |
 | `tournament` | Whole-task attempts → balanced pairwise judges → bracket reducer. | Compare subjective or approach-sensitive solutions. |
 | `loop-until-done` | Durable ledger → iteration/evaluator loop → success or inspectable bound exhaustion. | Continue until explicit evidence proves completion. |
@@ -738,10 +738,23 @@ The six common patterns are full definitions exported from `@bastani/workflows/b
 |---|---|---|---|
 | `classify-and-act` | `prompt` | `categories` (1–8), `confidence_threshold` (0.5–0.99) | `result`, category, confidence, classification/action paths |
 | `fan-out-and-synthesize` | `prompt` | `max_branches` (1–12), `max_concurrency` (1–12) | `result`, partitions, branch paths, synthesis/manifest paths |
-| `adversarial-verification` | `task` | `verifier_count` (1–5), `max_repairs` (0–5) | `result`, approval, repairs, candidate/review/verifier paths |
+| `adversarial-verification` | `task` | `verifier_count` (1–5), `max_repairs` (0–5) | `result`, approval, repairs, `verification_score`, candidate/review/verifier paths |
 | `generate-and-filter` | `prompt` | `num_candidates` (2–20), `shortlist_size` (1–10), `use_judge`, `max_concurrency` | `result`, shortlist, candidate/filter/judge/final/manifest paths |
 | `tournament` | `prompt` | `num_attempts` (2–8), `max_concurrency` (1–8) | `result`, winner, attempt/judge/bracket paths |
 | `loop-until-done` | `prompt` | `max_iterations` (1–20) | `result`, `status`, ledger, iteration/evaluation paths, remaining work |
+
+#### How `adversarial-verification` combines its verifiers
+
+Each round's verifiers are aggregated into one score rather than combined with a logical AND. A round passes when the mean verifier score reaches the **pass threshold of 0.75**, and the mean is reported as the `verification_score` output so the decision is observable without opening artifacts.
+
+Four rules decide a round, evaluated in this order:
+
+1. **Parse quorum (0.5).** Reports that fail the runner's type guard are dropped, and the score divides by the number of reports that actually parsed — never by the number dispatched. A verifier lost to a transport or serialization failure therefore contributes nothing instead of counting as an objection. If fewer than half the dispatched reports parse, the round is *indeterminate*: the verifiers are re-run once under fresh node and artifact names, no repair is charged, and if the retry also falls short the run rejects with a rationale that names verification infrastructure rather than candidate quality.
+2. **Veto.** A verifier may return `veto_findings`, which blocks the round on its own regardless of the mean or of every other verifier's verdict. It is reserved for unconditional safety blockers — data loss, credential exposure, a destructive or irreversible action, a security regression — and vetoed findings are named first in `remaining_work`. Ordinary quality objections belong in `blocking_findings`, where they can be outvoted.
+3. **Per-criterion floor (0.5).** A criterion whose own mean falls below the floor blocks the round even when the flat mean clears the threshold, so one catastrophic criterion cannot be averaged away by several healthy ones.
+4. **Flat mean against the threshold.** Otherwise the round passes when the mean reaches 0.75.
+
+The practical consequence is that raising `verifier_count` now improves the decision instead of tightening it. Under the old unanimity rule every added verifier was another chance to block a good candidate; under averaging, added verifiers reduce the variance of the estimate. At the default `verifier_count` of 3 the behavior is unchanged — 2 ÷ 3 is below 0.75, so 3 of 3 must still pass — while 4 verifiers tolerate one dissent (3 ÷ 4 = 0.75) and 5 tolerate one (4 ÷ 5 = 0.8). The trade is deliberate: a candidate can now be accepted over a single ordinary objection, and the veto path plus the criterion floor are what keep the dangerous cases unanimous. The threshold, floor, and quorum are module constants in `verification-aggregate.ts` rather than workflow inputs, so there is no way to configure the gate into uselessness per run.
 
 ```ts
 import {

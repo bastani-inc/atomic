@@ -20,6 +20,7 @@ export default workflow({
     verifier_artifact_paths: Type.Array(Type.String(), { description: "Paths to final-round verifier reports." }),
     artifact_dir: Type.String({ description: "Directory containing run artifacts." }),
     remaining_work: Type.Array(Type.String(), { description: "Unresolved blocking findings when not approved." }),
+    verification_score: Type.Number({ description: "Mean verifier score for the final round, or 0 when that round was indeterminate." }),
   },
   run: async (ctx) => await runAdversarialVerification(withSteeringPropagationContext(ctx)),
 });

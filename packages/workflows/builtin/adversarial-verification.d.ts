@@ -5,6 +5,7 @@ export type AdversarialVerificationOutputs = WorkflowOutputValues & {
   readonly result: string; readonly approved: boolean; readonly repairs_completed: number;
   readonly candidate_path: string; readonly review_report_path: string;
   readonly verifier_artifact_paths: string[]; readonly artifact_dir: string; readonly remaining_work: string[];
+  readonly verification_score: number;
 };
 export type AdversarialVerificationDefinition = WorkflowDefinition<AdversarialVerificationInputs, AdversarialVerificationOutputs, AdversarialVerificationRunInputs>;
 declare const workflow: AdversarialVerificationDefinition;
