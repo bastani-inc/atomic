@@ -153,6 +153,9 @@ export function createDurableStagePrimitive(input: {
 			...(isMidSessionResume
 				? {
 						resumeFromSessionFile: session.sessionFile,
+						...(session.sessionAdapter !== undefined
+							? { sessionAdapter: structuredClone(session.sessionAdapter) }
+							: {}),
 						durableAccumulatedDurationMs: session.durationMs ?? 0,
 					}
 				: {}),
@@ -210,6 +213,9 @@ export function createDurableTaskPrimitive(input: {
 			...(session?.sessionFile !== undefined
 				? {
 						resumeFromSessionFile: session.sessionFile,
+						...(session.sessionAdapter !== undefined
+							? { sessionAdapter: structuredClone(session.sessionAdapter) }
+							: {}),
 						durableAccumulatedDurationMs: session.durationMs ?? 0,
 					}
 				: {}),
@@ -477,6 +483,9 @@ export function recordCachedStageIntoStore(
 		...(workflowChild !== undefined ? { workflowChild } : {}),
 		...(checkpoint?.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}),
 		...(checkpoint?.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),
+		...(checkpoint?.sessionAdapter !== undefined
+			? { sessionAdapter: structuredClone(checkpoint.sessionAdapter) }
+			: {}),
 		...(checkpoint?.model !== undefined ? { model: checkpoint.model } : {}),
 		...(checkpoint?.fastMode !== undefined ? { fastMode: checkpoint.fastMode } : {}),
 		...(checkpoint?.attemptedModels !== undefined ? { attemptedModels: checkpoint.attemptedModels } : {}),

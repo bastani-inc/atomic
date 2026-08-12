@@ -5,6 +5,7 @@ import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-wo
 import type { TSchema } from "typebox";
 import type {
 	RunStatus,
+	SessionAdapterSelector,
 	StageAdapters,
 	StageContext,
 	StageOptions,
@@ -376,6 +377,7 @@ export interface StageSnapshot extends WorkflowSerializableObject {
 	readonly status: StageStatus;
 	readonly result?: WorkflowSerializableValue;
 	readonly error?: string;
+	readonly sessionAdapter?: SessionAdapterSelector;
 }
 
 export interface ToolNodeSnapshot extends WorkflowSerializableObject {

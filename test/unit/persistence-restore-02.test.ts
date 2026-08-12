@@ -140,6 +140,7 @@ describe("restoreOnSessionStart", () => {
 					status: "failed",
 					sessionId: "session-1",
 					sessionFile: "/tmp/session-1.jsonl",
+					sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
 				},
 			},
 		];
@@ -147,6 +148,7 @@ describe("restoreOnSessionStart", () => {
 		const stage = st.runs()[0]?.stages[0];
 		assert.equal(stage?.sessionId, "session-1");
 		assert.equal(stage?.sessionFile, "/tmp/session-1.jsonl");
+		assert.deepEqual(stage?.sessionAdapter, { name: "remote-pi", config: { profile: "example-profile" } });
 	});
 	test("stage snapshots are rebuilt from session entries", () => {
 		const st = createStore();

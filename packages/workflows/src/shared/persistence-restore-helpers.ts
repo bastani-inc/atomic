@@ -55,6 +55,7 @@ export function _buildStageSnapshots(
 			const name = entry.payload.name;
 			const parentIds = entry.payload.parentIds;
 			const ts = entry.payload.ts;
+			const sessionAdapter = restoredSessionAdapter(entry.payload.sessionAdapter);
 			if (typeof stageId !== "string" || typeof name !== "string") continue;
 			if (!stageMap.has(stageId)) {
 				stageMap.set(stageId, {
@@ -63,6 +64,7 @@ export function _buildStageSnapshots(
 					status: "running",
 					parentIds: Array.isArray(parentIds) ? (parentIds as string[]) : [],
 					startedAt: typeof ts === "number" ? ts : undefined,
+					...(sessionAdapter !== undefined ? { sessionAdapter } : {}),
 					...replayMetadata(entry.payload),
 					toolEvents: [],
 				});
@@ -85,6 +87,7 @@ export function _buildStageSnapshots(
 			const sessionId = entry.payload.sessionId;
 			const sessionFile = entry.payload.sessionFile;
 			const modelAttempts = entry.payload.modelAttempts;
+			const sessionAdapter = restoredSessionAdapter(entry.payload.sessionAdapter);
 			if (typeof stageId !== "string") continue;
 			endedStages.add(stageId);
 			const snap = stageMap.get(stageId);
@@ -105,6 +108,7 @@ export function _buildStageSnapshots(
 				if (typeof sessionId === "string") snap.sessionId = sessionId;
 				if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
 				if (isModelAttempts(modelAttempts)) snap.modelAttempts = modelAttempts as StageSnapshot["modelAttempts"];
+				if (sessionAdapter !== undefined) snap.sessionAdapter = sessionAdapter;
 				Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
 			}
 		}
@@ -122,6 +126,15 @@ export function _buildStageSnapshots(
 	}
 
 	return [...stageMap.values()];
+}
+
+function restoredSessionAdapter(value: unknown): StageSnapshot["sessionAdapter"] | undefined {
+	if (!Value.Check(workflowSerializableObjectSchema, value)) return undefined;
+	const candidate = value as { readonly name?: unknown; readonly config?: unknown };
+	if (typeof candidate.name !== "string" || candidate.name.length === 0) return undefined;
+	if (candidate.config !== undefined && !Value.Check(workflowSerializableObjectSchema, candidate.config))
+		return undefined;
+	return structuredClone(value) as StageSnapshot["sessionAdapter"];
 }
 
 function hasRestoredAncestor(

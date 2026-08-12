@@ -26,6 +26,7 @@ import {
 	type DefaultResourceLoaderInheritanceSnapshot,
 	isStaleExtensionContextError,
 } from "@bastani/atomic";
+import { installSessionAdapterDiscovery } from "../runs/foreground/session-adapter-registry.js";
 import type { StageAdapters, StageSessionCreateResult, StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
@@ -118,7 +119,10 @@ export interface RuntimeWiringSurface {
 	createAgentSession?: (options?: CreateAgentSessionOptions) => Promise<StageSessionCreateResult>;
 	sendMessage?: StageLateMessageRouter["routeMessage"];
 	sendMessages?: StageLateMessageRouter["routeMessages"];
-	events?: { emit?: (channel: string, data: Record<string, unknown>) => void };
+	events?: {
+		emit?: (channel: string, data: Record<string, unknown>) => void;
+		on?: (channel: string, handler: (data: unknown) => void) => unknown;
+	};
 }
 
 export interface RuntimeAdapterBuildOptions {
@@ -266,6 +270,7 @@ function stripWorkflowOnlyOptions(
 		mcp: _mcp,
 		fallbackModels: _fallbackModels,
 		group: _group,
+		sessionAdapter: _sessionAdapter,
 		...sessionOptions
 	} = maybeWorkflowOptions;
 	return sessionOptions as CreateAgentSessionOptions;
@@ -456,7 +461,16 @@ export function buildRuntimeAdapters(
 						resourceLoaderInheritanceSnapshot: pi.getResourceLoaderInheritanceSnapshot?.(),
 					}));
 	const broker = options.stageUiBroker ?? stageUiBroker;
+	const namedAdapters = installSessionAdapterDiscovery(
+		typeof pi.events?.emit === "function" && typeof pi.events?.on === "function"
+			? {
+					emit: (channel, data) => pi.events!.emit!(channel, data),
+					on: (channel, handler) => pi.events!.on!(channel, handler),
+				}
+			: undefined,
+	).registry;
 	const adapters: StageAdapters = {
+		sessionAdapters: namedAdapters,
 		agentSession: {
 			async create(
 				stageOptions: CreateAgentSessionOptions & Pick<StageOptions, "mcp" | "fallbackModels">,

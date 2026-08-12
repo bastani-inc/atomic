@@ -16,7 +16,7 @@ import type {
 	WorkflowFailureKind,
 	WorkflowFailureRecoverability,
 } from "../shared/store-types.js";
-import type { WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
+import type { SessionAdapterSelector, WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
@@ -234,6 +234,7 @@ export interface DurableStageCheckpoint {
 	/** Resumable Atomic/Pi session metadata for in-progress LM stages. */
 	readonly sessionId?: string;
 	readonly sessionFile?: string;
+	readonly sessionAdapter?: SessionAdapterSelector;
 	readonly completedAt: number;
 	/** Original stage start timestamp, when available. */
 	readonly startedAt?: number;

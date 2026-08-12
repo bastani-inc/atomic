@@ -2186,6 +2186,45 @@ ctx.stage<TSchemaDef extends TSchema>(
 ctx.stage(name: string, options?: StageOptions): StageContext;
 ```
 
+By default, a stage uses Atomic's in-process session adapter. Extensions can register named external session runtimes and workflows can select one with a serializable selector:
+
+```ts
+const stage = ctx.stage("remote-review", {
+  sessionAdapter: {
+    name: "remote-pi",
+    config: { profile: "example-profile" },
+  },
+});
+```
+
+An adapter extension answers the shared discovery event and publishes its
+implementation. Keep `source` stable across extension reloads so a fresh
+adapter object replaces the previous registration without being treated as a
+name conflict:
+
+```ts
+import {
+  SESSION_ADAPTER_DISCOVER_EVENT,
+  SESSION_ADAPTER_PROTOCOL_VERSION,
+  SESSION_ADAPTER_REGISTER_EVENT,
+} from "@bastani/workflows";
+
+pi.events.on(SESSION_ADAPTER_DISCOVER_EVENT, () => {
+  pi.events.emit(SESSION_ADAPTER_REGISTER_EVENT, {
+    version: SESSION_ADAPTER_PROTOCOL_VERSION,
+    name: "remote-pi",
+    source: "my-remote-session-extension",
+    adapter: remotePiAdapter,
+  });
+});
+```
+
+Atomic retains `sessionAdapter` in live snapshots, session-entry restore, durable stage checkpoints, completed-run inspection, and post-mortem stage handles. Reopening a completed stage therefore uses the same adapter and configuration rather than silently falling back to the local runtime. A missing adapter fails clearly and lists registered names; duplicate registration of the same adapter is harmless, while another adapter claiming an existing name is rejected. Stages without `sessionAdapter` are unchanged.
+
+The adapter owns one stage session only. Use `ctx.parallel` and its `concurrency` option for fan-out; do not make one adapter instance multiplex workflow items internally.
+
+External transports that must not reconnect implicitly can declare `retryPolicy: "never"` on their `AgentSessionAdapter`. Atomic surfaces a thrown creation or prompt failure immediately instead of applying same-model retry or replacing the session through `fallbackModels`; recovery then happens only through an explicit workflow resume.
+
 Creates and registers a named stage synchronously; work starts when you call a method such as `prompt()` or `complete()`. Use it when `ctx.task` is too coarse and direct session control is required.
 
 ### `ctx.ui`

@@ -101,6 +101,7 @@ export function createWorkflowStageFactory(input: {
 			status: shouldReplay ? "completed" : "pending",
 			parentIds: Object.freeze(parentIds),
 			toolEvents: [],
+			...(options?.sessionAdapter !== undefined ? { sessionAdapter: structuredClone(options.sessionAdapter) } : {}),
 			...(shouldReplay
 				? {
 						startedAt: Date.now(),
@@ -109,6 +110,9 @@ export function createWorkflowStageFactory(input: {
 						...(replaySource.result !== undefined ? { result: replaySource.result } : {}),
 						...(replaySource.sessionId !== undefined ? { sessionId: replaySource.sessionId } : {}),
 						...(replaySource.sessionFile !== undefined ? { sessionFile: replaySource.sessionFile } : {}),
+						...(replaySource.sessionAdapter !== undefined
+							? { sessionAdapter: structuredClone(replaySource.sessionAdapter) }
+							: {}),
 						replayedFromStageId: replaySource.id,
 						replayed: true,
 					}
@@ -300,6 +304,7 @@ export function createWorkflowStageFactory(input: {
 				stageId,
 				name,
 				parentIds: stageSnapshot.parentIds,
+				...(stageSnapshot.sessionAdapter !== undefined ? { sessionAdapter: stageSnapshot.sessionAdapter } : {}),
 				...stageReplayFields(stageSnapshot),
 				ts: stageSnapshot.startedAt ?? Date.now(),
 			});
@@ -358,6 +363,7 @@ export function createWorkflowStageFactory(input: {
 					...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
 					...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
 					...(stageSnapshot.modelAttempts !== undefined ? { modelAttempts: stageSnapshot.modelAttempts } : {}),
+					...(stageSnapshot.sessionAdapter !== undefined ? { sessionAdapter: stageSnapshot.sessionAdapter } : {}),
 					...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed"
 						? { summary: stageSnapshot.result }
 						: {}),

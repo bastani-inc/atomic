@@ -37,6 +37,9 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		signal,
 		stageOptions: effectiveStageOptions,
 		executionMode,
+		...(effectiveStageOptions?.sessionAdapter === undefined
+			? {}
+			: { sessionAdapter: effectiveStageOptions.sessionAdapter }),
 	};
 	const controller = new StageSessionController(opts, meta, effectiveStageOptions, structuredOutputCapture);
 	let lastAssistantText: string | undefined;

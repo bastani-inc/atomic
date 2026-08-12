@@ -277,6 +277,8 @@ export interface StageSnapshot {
 	 */
 	sessionId?: string;
 	sessionFile?: string;
+	/** Named session adapter selection retained for replay and post-mortem attachment. */
+	sessionAdapter?: import("./types.js").SessionAdapterSelector;
 	/** Effective model id selected for this stage after fallback resolution. */
 	model?: string;
 	/** True when Codex fast mode applied to this workflow stage. */

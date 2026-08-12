@@ -19,6 +19,7 @@ export interface StageDraft {
 	readonly result?: string;
 	readonly sessionId?: string;
 	readonly sessionFile?: string;
+	readonly sessionAdapter?: DurableStageCheckpoint["sessionAdapter"];
 	readonly startedAt?: number;
 	readonly endedAt?: number;
 	readonly durationMs?: number;
@@ -334,6 +335,7 @@ export function mergeStageDraft(
 		...valueOrExisting("result", checkpoint, existing),
 		...valueOrExisting("sessionId", checkpoint, existing),
 		...valueOrExisting("sessionFile", checkpoint, existing),
+		...valueOrExisting("sessionAdapter", checkpoint, existing),
 		...valueOrExisting("startedAt", checkpoint, existing),
 		...valueOrExisting("endedAt", checkpoint, existing),
 		...valueOrExisting("durationMs", checkpoint, existing),
