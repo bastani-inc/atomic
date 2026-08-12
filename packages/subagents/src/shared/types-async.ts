@@ -92,6 +92,9 @@ export interface AsyncStartedEvent {
 	mode?: SubagentRunMode;
 	agent?: string;
 	agents?: string[];
+	model?: string;
+	thinking?: string;
+	fastMode?: boolean;
 	nestedRoute?: NestedRouteInfo;
 }
 

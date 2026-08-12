@@ -3908,7 +3908,7 @@ Workflow stages can use faster, higher-priority inference on supported providers
 
 Use `/fast` to manage Codex fast mode separately for normal chat and workflow-stage sessions. The settings are `codexFastMode.chat` and `codexFastMode.workflow`; workflow stages use the workflow scope, not the chat scope.
 
-Fast mode is eligible only for supported `openai/*` and `openai-codex/*` providers. It does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or custom OpenAI-compatible providers. When Atomic applies fast mode, workflow stage model labels keep the raw model id and append a separate `fast` marker; graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
+Fast mode is eligible only for supported `openai/*` and `openai-codex/*` providers. It does not apply to `github-copilot/*`, Azure OpenAI, OpenRouter, or custom OpenAI-compatible providers. When Atomic applies fast mode, workflow stage model labels and stage-launched subagent result labels keep the raw model id and append a separate `fast` marker; graph node cards keep their dependency metadata focused on topology and do not repeat that marker.
 
 Enable workflow fast mode deliberately for broad workflows: parallel fan-out and fallback attempts can multiply priority-tier requests and cost.
 

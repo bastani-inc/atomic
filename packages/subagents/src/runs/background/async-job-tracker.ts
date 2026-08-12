@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import type { AsyncJobState, AsyncStartedEvent, AsyncStatus, SubagentState } from "../../shared/types.ts";
+import type { AsyncJobState, AsyncJobStep, AsyncStartedEvent, AsyncStatus, SubagentState } from "../../shared/types.ts";
 import { renderWidget } from "../../tui/render.ts";
 import { listSubagentControls } from "../inprocess/control-registry.ts";
 
@@ -91,6 +91,17 @@ function readActiveFileJobs(
 		jobs.set(status.runId || entry, stateFromStatus({ ...status, runId: status.runId || entry }, asyncDir));
 	}
 	return jobs;
+}
+function stepFromStartedEvent(info: AsyncStartedEvent): AsyncJobStep | undefined {
+	if (!info.agent) return undefined;
+	return {
+		index: 0,
+		agent: info.agent,
+		status: "running",
+		...(info.model !== undefined ? { model: info.model } : {}),
+		...(info.thinking !== undefined ? { thinking: info.thinking } : {}),
+		...(info.fastMode !== undefined ? { fastMode: info.fastMode } : {}),
+	};
 }
 
 function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | null): Map<string, AsyncJobState> {
@@ -193,10 +204,14 @@ export function createAsyncJobTracker(
 		for (const [id, job] of next) state.asyncJobs.set(id, job);
 		rerender();
 	};
+	function terminalStepStatus(result: { success?: boolean; status?: string }): AsyncJobStep["status"] {
+		return result.status === "interrupted" ? "paused" : result.success === false ? "failed" : "complete";
+	}
 	const handleStarted = (data: unknown) => {
 		const info = data as AsyncStartedEvent;
 		if (!info.id) return;
 		const now = Date.now();
+		const step = stepFromStartedEvent(info);
 		state.asyncJobs.set(info.id, {
 			asyncId: info.id,
 			asyncDir: info.asyncDir ?? path.join(asyncDirRoot, info.id),
@@ -204,17 +219,40 @@ export function createAsyncJobTracker(
 			sessionId: info.sessionId,
 			mode: info.mode ?? (info.agents && info.agents.length > 1 ? "parallel" : "single"),
 			agents: info.agents ?? (info.agent ? [info.agent] : undefined),
+			...(step ? { steps: [step], stepsTotal: 1, runningSteps: 1, completedSteps: 0 } : {}),
 			startedAt: now,
 			updatedAt: now,
 		});
 		rerender();
 	};
 	const handleComplete = (data: unknown) => {
-		const result = data as { id?: string; success?: boolean; status?: string };
+		const result = data as {
+			id?: string;
+			success?: boolean;
+			status?: string;
+			result?: { model?: string; thinking?: string; fastMode?: boolean };
+		};
 		if (!result.id) return;
 		const job = state.asyncJobs.get(result.id);
 		if (job) {
-			job.status = result.status === "interrupted" ? "paused" : result.success === false ? "failed" : "complete";
+			job.status =
+				terminalStepStatus(result) === "paused" ? "paused" : result.success === false ? "failed" : "complete";
+			if (job.steps?.length) {
+				const completed = result.result;
+				job.steps = job.steps.map((step, index) =>
+					index !== 0
+						? step
+						: {
+								...step,
+								status: terminalStepStatus(result),
+								...(completed?.model !== undefined ? { model: completed.model } : {}),
+								...(completed?.thinking !== undefined ? { thinking: completed.thinking } : {}),
+								...(completed?.fastMode !== undefined ? { fastMode: completed.fastMode } : {}),
+							},
+				);
+				job.runningSteps = job.steps.filter((step) => step.status === "running").length;
+				job.completedSteps = job.steps.filter((step) => step.status === "complete").length;
+			}
 			job.updatedAt = Date.now();
 			scheduleCleanup(result.id);
 		}

@@ -165,6 +165,7 @@ export interface ResultEnvelope {
 	readonly stats: AttemptStats;
 	readonly envelope: string;
 	readonly model?: string;
+	readonly fastMode?: boolean;
 	readonly modelAttempts?: readonly {
 		readonly model: string;
 		readonly status: TerminalStatus;

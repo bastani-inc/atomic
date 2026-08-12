@@ -179,6 +179,9 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 			mode: "single",
 			agent,
 			agents: [agent],
+			...(result.model !== undefined ? { model: result.model } : {}),
+			...(agentConfig.thinking !== undefined ? { thinking: agentConfig.thinking } : {}),
+			...(result.fastMode ? { fastMode: true } : {}),
 		});
 	} catch (error) {
 		if (!isStaleExtensionContextError(error)) throw error;
