@@ -149,7 +149,7 @@ Name sessions with `/name` so they can target each other (for example `/name pla
 
 | Action | Behavior |
 |--------|----------|
-| `join` | Moves the session into a trimmed named group and creates it if needed. `default` is the shared group; `true` and `auto` are reserved for subagent auto-groups. |
+| `join` | Moves the session into a trimmed named group and creates it if needed. The action waits for broker acknowledgement before changing local inheritance state. `default` is the shared group; `true` and `auto` are reserved for subagent auto-groups. |
 | `leave` | Returns the session to its resolved home group from startup. It takes no `group` parameter. |
 | `list` | Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed short ID is a valid target. |
 | `send` | Fire-and-forget delivery. Requires `to` and `message`; returns delivery confirmation or the delivery-failure reason. Cannot message the current session. |
@@ -164,7 +164,7 @@ To put two plain chat sessions in a private named group, have both call:
 intercom({ action: "join", group: "api-review" })
 ```
 
-The broker updates presence in place and sends a `session_left` event to the old group and a `session_joined` event to the new one. Session IDs do not change. A session that stays in `default` cannot list, resolve, or message the joined peers. Use `intercom({ action: "leave" })` to return to the home group resolved at startup. Joining a group does not widen isolation; `contact_supervisor` remains the only capability-based cross-group path.
+The broker updates presence in place and sends a `session_left` event to the old group and a `session_joined` event to the new one. Session IDs do not change. A session that stays in `default` cannot list, resolve, or message the joined peers. Use `intercom({ action: "leave" })` to return to the home group resolved at startup; rejected or unacknowledged changes leave the local membership state unchanged. Joining a group does not widen isolation; `contact_supervisor` remains the only capability-based cross-group path.
 
 Sent and received messages are recorded in session history as `intercom_sent` / `intercom_received` entries.
 

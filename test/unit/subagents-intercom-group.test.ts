@@ -1,34 +1,35 @@
 import assert from "node:assert/strict";
+import { runtimeIntercomGroupEnvKey } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
+import { resolveHomeGroup } from "../../packages/intercom/group.js";
 import { inheritedIntercomGroup } from "../../packages/subagents/src/runs/shared/intercom-group.ts";
 
-const RUNTIME_GROUP_ENV = "ATOMIC_INTERCOM_RUNTIME_GROUP";
-const runtimeKey = (sessionId: string): string => `${RUNTIME_GROUP_ENV}_${encodeURIComponent(sessionId)}`;
-const previousRuntimeGroup = process.env[runtimeKey("workflow-stage-session")];
+const sessionId = "workflow stage/session";
+const runtimeKey = runtimeIntercomGroupEnvKey(sessionId);
+const previousRuntimeGroup = process.env[runtimeKey];
 
 afterEach(() => {
-	if (previousRuntimeGroup === undefined) delete process.env[runtimeKey("workflow-stage-session")];
-	else process.env[runtimeKey("workflow-stage-session")] = previousRuntimeGroup;
+	if (previousRuntimeGroup === undefined) delete process.env[runtimeKey];
+	else process.env[runtimeKey] = previousRuntimeGroup;
 });
 
-test("inheritedIntercomGroup prefers a live joined group over the static context group", () => {
-	process.env[runtimeKey("workflow-stage-session")] = "joined-group";
-	assert.equal(
-		inheritedIntercomGroup({
-			sessionManager: { getSessionId: () => "workflow-stage-session" },
-			orchestrationContext: { intercomGroup: "workflow-group" },
-		}),
-		"joined-group",
-	);
+test("runtime group inheritance uses the shared key and outranks static policy/context", () => {
+	process.env[runtimeKey] = "joined-group";
+	const context = {
+		sessionManager: { getSessionId: () => sessionId },
+		subagentPolicy: { intercomGroup: "policy-group" },
+		orchestrationContext: { intercomGroup: "workflow-group" },
+	};
+	assert.equal(inheritedIntercomGroup(context), "joined-group");
+	assert.equal(resolveHomeGroup({ group: "config-group" }, context), "policy-group");
 });
 
 test("inheritedIntercomGroup keeps the static context group without a live join", () => {
-	delete process.env[runtimeKey("workflow-stage-session")];
-	assert.equal(
-		inheritedIntercomGroup({
-			sessionManager: { getSessionId: () => "workflow-stage-session" },
-			orchestrationContext: { intercomGroup: "workflow-group" },
-		}),
-		"workflow-group",
-	);
+	delete process.env[runtimeKey];
+	const context = {
+		sessionManager: { getSessionId: () => sessionId },
+		orchestrationContext: { intercomGroup: "workflow-group" },
+	};
+	assert.equal(inheritedIntercomGroup(context), "workflow-group");
+	assert.equal(resolveHomeGroup({ group: "config-group" }, context), "workflow-group");
 });

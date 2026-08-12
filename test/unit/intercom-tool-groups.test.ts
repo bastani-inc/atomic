@@ -53,6 +53,10 @@ function fixture(homeGroup = "default") {
 			}
 			return true;
 		},
+		async updatePresenceAcked(updates: { group?: string }): Promise<string> {
+			if (!client.updatePresence(updates)) throw new Error("connection is not writable");
+			return current.group ?? "default";
+		},
 		async send() {
 			return { id: "message-id", delivered: true };
 		},

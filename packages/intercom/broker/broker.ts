@@ -10,7 +10,8 @@ import type { SessionInfo, BrokerMessage, SupervisorRegistration } from "../type
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
-import { normalizeGroup, validateRuntimeGroup } from "../group.js";
+import { normalizeGroup } from "../group.js";
+import { handleBrokerPresence } from "./presence-handler.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -252,48 +253,13 @@ class IntercomBroker {
       }
 
       case "presence": {
-        const session = this.sessions.get(currentId);
-        if (session) {
-          const previousGroup = normalizeGroup(session.info.group);
-          let nextGroup = previousGroup;
-          if (clientMessage.group !== undefined) {
-            if (typeof clientMessage.group !== "string") {
-              throw new Error("Invalid presence group");
-            }
-            try {
-              nextGroup = validateRuntimeGroup(clientMessage.group);
-            } catch (error) {
-              const reason = error instanceof Error ? error.message : String(error);
-              throw new Error(`Invalid presence group: ${reason}`);
-            }
-          }
-          if (clientMessage.name !== undefined) {
-            if (typeof clientMessage.name !== "string") {
-              throw new Error("Invalid presence name");
-            }
-            session.info.name = clientMessage.name;
-          }
-          if (clientMessage.status !== undefined) {
-            if (typeof clientMessage.status !== "string") {
-              throw new Error("Invalid presence status");
-            }
-            session.info.status = clientMessage.status;
-          }
-          if (clientMessage.model !== undefined) {
-            if (typeof clientMessage.model !== "string") {
-              throw new Error("Invalid presence model");
-            }
-            session.info.model = clientMessage.model;
-          }
-          session.info.group = nextGroup;
-          session.info.lastActivity = Date.now();
-          if (nextGroup !== previousGroup) {
-            this.broadcastToGroup({ type: "session_left", sessionId: currentId }, previousGroup, currentId);
-            this.broadcastToGroup({ type: "session_joined", session: session.info }, nextGroup, currentId);
-          } else {
-            this.broadcastToGroup({ type: "presence_update", session: session.info }, nextGroup, currentId);
-          }
-        }
+        handleBrokerPresence(
+          socket,
+          clientMessage,
+          currentId,
+          this.sessions,
+          (target, message) => writeMessage(target, message),
+        );
         break;
       }
 

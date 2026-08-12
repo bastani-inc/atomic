@@ -134,13 +134,9 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             };
           }
           try {
-            const changed = connectedClient.updatePresence({ group: targetGroup });
-            if (!changed) {
-              return {
-                content: [{ type: "text", text: "Intercom group change could not be sent because the connection is not writable." }],
-                isError: true,
-                details: { error: true },
-              };
+            const acknowledgedGroup = await connectedClient.updatePresenceAcked({ group: targetGroup });
+            if (acknowledgedGroup !== targetGroup) {
+              throw new Error(`Broker acknowledged group "${acknowledgedGroup}" instead of "${targetGroup}"`);
             }
             deps.setJoinedGroup(targetGroup);
             return {
@@ -176,13 +172,9 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
             };
           }
           try {
-            const changed = connectedClient.updatePresence({ group: targetGroup });
-            if (!changed) {
-              return {
-                content: [{ type: "text", text: "Intercom group change could not be sent because the connection is not writable." }],
-                isError: true,
-                details: { error: true },
-              };
+            const acknowledgedGroup = await connectedClient.updatePresenceAcked({ group: targetGroup });
+            if (acknowledgedGroup !== targetGroup) {
+              throw new Error(`Broker acknowledged group "${acknowledgedGroup}" instead of "${targetGroup}"`);
             }
             deps.clearJoinedGroup();
             return {

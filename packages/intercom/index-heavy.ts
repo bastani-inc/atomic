@@ -28,7 +28,8 @@ import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
-import { clearRuntimeIntercomGroup, resolveHomeGroup, setRuntimeIntercomGroup } from "./group.js";
+import { resolveHomeGroup } from "./group.js";
+import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
@@ -429,7 +430,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         client = nextClient;
         if (nextClient.sessionId) {
           process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
-          sessionHomeGroup = resolveHomeGroup(config, runtimeContext);
         }
         reconnectAttempt = 0;
         return nextClient;

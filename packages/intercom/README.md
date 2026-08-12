@@ -181,7 +181,7 @@ intercom({
 // Worker continues implementing with the answer, same turn, full context.
 ```
 
-To coordinate two plain chat sessions without changing their startup config, have each one call `intercom({ action: "join", group: "NAME" })`. Joining updates broker presence in place, so the broker broadcasts a leave to the old group and a join to `NAME` without changing the session ID. Calls to `list`, `status`, `send`, and `ask` then use `NAME`; sessions that stay in `default` cannot discover or message the joined peers. Call `intercom({ action: "leave" })` to return to the original resolved home group. `contact_supervisor` keeps its dedicated capability-based cross-group behavior.
+To coordinate two plain chat sessions without changing their startup config, have each one call `intercom({ action: "join", group: "NAME" })`. Joining updates broker presence in place, so the broker broadcasts a leave to the old group and a join to `NAME` without changing the session ID; the tool reports success only after the broker acknowledges the new group. Calls to `list`, `status`, `send`, and `ask` then use `NAME`; sessions that stay in `default` cannot discover or message the joined peers. Call `intercom({ action: "leave" })` to return to the original resolved home group. `contact_supervisor` keeps its dedicated capability-based cross-group behavior.
 
 **Worker finds something unexpected — escalates and waits:**
 ```typescript

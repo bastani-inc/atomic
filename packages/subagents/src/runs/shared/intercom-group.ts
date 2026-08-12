@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readRuntimeIntercomGroup } from "@bastani/atomic";
 
 /** Normalize agent-serialized auto-group sentinels without changing real group names. */
 export function normalizeAutoGroupSentinel(group: string | true | undefined): string | true | undefined {
@@ -7,13 +8,9 @@ export function normalizeAutoGroupSentinel(group: string | true | undefined): st
 	return sentinel === "true" || sentinel === "auto" ? true : group;
 }
 
-const RUNTIME_GROUP_ENV = "ATOMIC_INTERCOM_RUNTIME_GROUP";
-
+/** Runtime joins are intentionally inherited before static child policy and stage context. */
 function runtimeIntercomGroup(sessionId: string | undefined): string | undefined {
-	if (!sessionId) return undefined;
-	const encodedSessionId = encodeURIComponent(sessionId);
-	const group = process.env[`${RUNTIME_GROUP_ENV}_${encodedSessionId}`];
-	return typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
+	return readRuntimeIntercomGroup(sessionId);
 }
 
 interface OrchestrationCarrier {
@@ -22,7 +19,11 @@ interface OrchestrationCarrier {
 	sessionManager?: { getSessionId(): string } | undefined;
 }
 
-/** Read the joined group before the admitted child or static stage group. */
+/**
+ * Read the live joined group before the admitted child or static stage group. The runtime env
+ * entry is a deliberate exception to the no-process-env rule for admission capabilities: it
+ * carries only the current group so children launched after `join` follow their parent.
+ */
 export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
 	const runtimeGroup = runtimeIntercomGroup(ctx?.sessionManager?.getSessionId());
 	if (runtimeGroup !== undefined) return runtimeGroup;
