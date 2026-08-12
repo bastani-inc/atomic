@@ -137,6 +137,10 @@ export function createTrackedStageCaller(input: {
 
 		const trackStageLifecycle = !runtime.state.stageFinalized;
 		let applyTerminalStageState: (() => void) | undefined;
+		// Set only alongside the successful "completed" terminal state, so a failed
+		// final durable checkpoint can replace it without touching a real
+		// failure/skip classification recorded by the catch block.
+		let terminalStateIsSuccess = false;
 		try {
 			let refreshedParentIds: readonly string[] | undefined;
 			if (
@@ -275,6 +279,7 @@ export function createTrackedStageCaller(input: {
 			if (trackStageLifecycle && runtime.state.stageFinalized) throw runtime.parallelFailFastError();
 			if (trackStageLifecycle) {
 				const assistantText = runtime.innerCtx.__getLastAssistantText();
+				terminalStateIsSuccess = true;
 				applyTerminalStageState = () => {
 					runtime.stageSnapshot.status = "completed";
 					if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
@@ -303,19 +308,35 @@ export function createTrackedStageCaller(input: {
 			// so the concurrency semaphore is not leaked.
 			// cross-ref: issue #1498 — durable finalization failures must not leak the stage limiter.
 			let finalizationError: { readonly thrown: true; readonly error: unknown } | undefined;
+			// Tracked separately from `finalizationError`: only a failed final durable
+			// checkpoint may rewrite an otherwise-successful terminal stage state.
+			let durableCheckpointError: { readonly thrown: true; readonly error: unknown } | undefined;
 			try {
 				runtime.mcpScope.clear();
 			} catch (err) {
 				finalizationError = { thrown: true, error: err };
 			}
-			runtime.stopStageSessionHeartbeat();
+			try {
+				// Drain rather than stop: a checkpoint still in flight must be awaited
+				// here, or its late rejection is discarded with the cancelled timer.
+				await runtime.drainStageSessionHeartbeat();
+			} catch (err) {
+				durableCheckpointError = { thrown: true, error: err };
+			}
 			try {
 				await runtime.innerCtx.__closeGeneration();
 				await runtime.captureStageSessionMeta({ awaitDurable: true });
 			} catch (err) {
-				finalizationError ??= { thrown: true, error: err };
+				durableCheckpointError ??= { thrown: true, error: err };
 			}
+			finalizationError ??= durableCheckpointError;
 			if (trackStageLifecycle) {
+				// A stage whose final durability checkpoint failed must never be
+				// persisted as `completed` while its caller receives that rejection.
+				if (durableCheckpointError !== undefined && terminalStateIsSuccess) {
+					const failure = runtime.classifyExecutorFailure(durableCheckpointError.error);
+					applyTerminalStageState = () => applyFailureToStage(runtime.stageSnapshot, failure);
+				}
 				if (!runtime.state.stageFinalized) applyTerminalStageState?.();
 				// `finalizeStageSnapshot` calls the version-bumping `recordStageEnd`
 				// before its first yield, so the live write cannot outpace the cache.

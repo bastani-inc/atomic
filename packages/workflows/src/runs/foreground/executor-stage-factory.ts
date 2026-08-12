@@ -390,7 +390,7 @@ export function createWorkflowStageFactory(input: {
 			unregisterWorkflowExitCleanup: () => {},
 			captureStageSessionMeta,
 			startStageSessionHeartbeat: stageSessionHeartbeat.start,
-			stopStageSessionHeartbeat: stageSessionHeartbeat.stop,
+			drainStageSessionHeartbeat: stageSessionHeartbeat.drain,
 			raceStageSessionHeartbeat: stageSessionHeartbeat.race,
 			applyModelFallbackMeta,
 			appendStageStartOnce,

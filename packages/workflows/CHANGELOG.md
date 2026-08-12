@@ -6,16 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Changed
 
 - Workflow model fallback attempt metadata now includes per-attempt input/output tokens, cache reads/writes, provider-reported total cost, and meaningful assistant-turn counts when usage is available ([#2197](https://github.com/bastani-inc/atomic/issues/2197)).
-=======
+
 ### Fixed
 
 - Fixed exact workflow inspection returning `Run not found` after process loss even when DBOS retained a stale running, resumable root. `workflow` status/stages/stage/transcript actions with an explicit full run id and `/workflow status <id>` now hydrate only that DBOS root on a local miss, reconstruct its authoritative checkpoint DAG as read-only state, report stale owners as `crashed` with explicit resume guidance, protect fresh foreign owners, distinguish absent/deleted/malformed records, and reject cyclic or nonreciprocal topology without claiming, transitioning, dispatching, or auto-resuming the run. Status without an id remains current-session-only.
-- Fixed long model turns losing their active stage session identity and root liveness when the process died between turn boundaries. Atomic now records stage start before the first session checkpoint, waits for that identity to persist before the first model use, and runs serialized, unref'd 30-second checkpoints for root and nested scoped stages. Heartbeats stop on every exit, refresh root metadata without status transitions, and surface persistent storage or MCP cleanup faults instead of dropping them in detached promise handlers; explicit resume still replays completed effects exactly once.
->>>>>>> 915d6a8ed (fix(workflows): inspect crashed durable runs after process loss)
+- Fixed long model turns losing their active stage session identity and root liveness when the process died between turn boundaries. Atomic now records stage start before the first session checkpoint, waits for that identity to persist before the first model use, and runs serialized, unref'd 30-second checkpoints for root and nested scoped stages. Heartbeats stop on every exit, refresh root metadata without status transitions, and surface persistent storage or MCP cleanup faults instead of dropping them in detached promise handlers. A checkpoint still in flight when the stage shuts down is drained rather than abandoned, so a late durability failure is never silently discarded, and a stage whose final durability checkpoint fails is recorded as failed instead of completed while its caller still receives the error and its concurrency slot is still released; explicit resume still replays completed effects exactly once.
 
 ## [0.9.13-alpha.2] - 2026-08-12
 

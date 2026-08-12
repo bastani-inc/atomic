@@ -48,6 +48,47 @@ test("uses fixed heartbeat deadlines without overlap and unreferences each timer
 	assert.equal(vi.getTimerCount(), 0);
 });
 
+test("drains an in-flight checkpoint at shutdown and surfaces its late rejection", async () => {
+	vi.useFakeTimers();
+	vi.setSystemTime(0);
+	const unhandled: unknown[] = [];
+	const captureUnhandled = (reason: unknown): void => {
+		unhandled.push(reason);
+	};
+	process.on("unhandledRejection", captureUnhandled);
+	try {
+		const checkpointStarted = Promise.withResolvers<void>();
+		const releaseCheckpoint = Promise.withResolvers<void>();
+		let checkpoints = 0;
+		const heartbeat = createStageSessionHeartbeat(async () => {
+			checkpoints += 1;
+			checkpointStarted.resolve();
+			await releaseCheckpoint.promise;
+			throw new Error("late checkpoint failure");
+		}, 50);
+
+		heartbeat.start();
+		await vi.advanceTimersByTimeAsync(50);
+		await checkpointStarted.promise;
+		// Model work wins the race while that checkpoint is still in flight.
+		assert.equal(await heartbeat.race(Promise.resolve("model-result")), "model-result");
+
+		const drained = heartbeat.drain();
+		releaseCheckpoint.resolve();
+		await assert.rejects(drained, /late checkpoint failure/);
+		// The recorded failure keeps surfacing rather than being dropped once drained.
+		await assert.rejects(heartbeat.drain(), /late checkpoint failure/);
+		assert.equal(checkpoints, 1);
+		assert.equal(vi.getTimerCount(), 0);
+
+		vi.useRealTimers();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.deepEqual(unhandled, []);
+	} finally {
+		process.off("unhandledRejection", captureUnhandled);
+	}
+});
+
 describe("active workflow stage session durability", () => {
 	test("persists identity after stage start, refreshes every 30 seconds, and stops on completion", async () => {
 		vi.useFakeTimers();
@@ -600,6 +641,159 @@ describe("active workflow stage session durability", () => {
 
 		assert.equal(result.status, "failed");
 		assert.match(result.error ?? "", /durable heartbeat write failed/);
+		assert.equal(vi.getTimerCount(), 0);
+	});
+
+	test("records a failed terminal stage when the final durable checkpoint rejects", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(4_000_000);
+		const store = createStore();
+		const runId = testRunId("final-checkpoint-failure");
+		let turnResolved = false;
+		let durableCapturesAfterTurn = 0;
+		let secondPromptCalled = false;
+		const definition = workflow({
+			name: "final-checkpoint-failure",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await assert.rejects(ctx.stage("first").prompt("first"), /final durable checkpoint failed/);
+				await Promise.race([
+					ctx.stage("second").prompt("second"),
+					new Promise<never>((_resolve, reject) =>
+						setTimeout(() => reject(new Error("stage limiter was not released")), 100),
+					),
+				]);
+				return {};
+			},
+		});
+		const execution = run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				durableBackend: new InMemoryDurableBackend(),
+				config: SERIAL_CONFIG,
+				onStageSession(_stageRunId, snapshot, options) {
+					if (snapshot.name !== "first" || options?.awaitDurable !== true || !turnResolved) return;
+					// The capture that follows the turn succeeds; the finalization one fails.
+					durableCapturesAfterTurn += 1;
+					if (durableCapturesAfterTurn > 1) throw new Error("final durable checkpoint failed");
+				},
+				adapters: {
+					agentSession: {
+						create: async (_options, meta) => ({
+							...mockSession(),
+							sessionFile: `/tmp/retained-${meta?.stageName}.jsonl`,
+							async prompt() {
+								if (meta?.stageName === "second") {
+									secondPromptCalled = true;
+									return;
+								}
+								turnResolved = true;
+							},
+						}),
+					},
+				},
+			},
+		);
+		await vi.runAllTimersAsync();
+		const result = await execution;
+
+		assert.equal(result.status, "completed");
+		assert.equal(secondPromptCalled, true);
+		assert.equal(durableCapturesAfterTurn, 2);
+		const first = store
+			.runs()
+			.find((candidate) => candidate.id === runId)
+			?.stages.find((stage) => stage.name === "first");
+		assert.notEqual(first?.status, "completed");
+		assert.equal(first?.status, "failed");
+		assert.match(first?.error ?? "", /final durable checkpoint failed/);
+		assert.equal(vi.getTimerCount(), 0);
+	});
+
+	test("fails a stage when an in-flight heartbeat checkpoint rejects after the turn resolves", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(5_000_000);
+		const store = createStore();
+		const runId = testRunId("heartbeat-drain-failure");
+		const checkpointStarted = Promise.withResolvers<void>();
+		const releaseCheckpoint = Promise.withResolvers<void>();
+		const turn = Promise.withResolvers<void>();
+		let armHeartbeatFailure = false;
+		let secondPromptCalled = false;
+		const definition = workflow({
+			name: "heartbeat-drain-failure",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await assert.rejects(ctx.stage("long-turn").prompt("work"), /late heartbeat checkpoint failed/);
+				await Promise.race([
+					ctx.stage("second").prompt("second"),
+					new Promise<never>((_resolve, reject) =>
+						setTimeout(() => reject(new Error("stage limiter was not released")), 100),
+					),
+				]);
+				return {};
+			},
+		});
+		const execution = run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				durableBackend: new InMemoryDurableBackend(),
+				config: SERIAL_CONFIG,
+				async onStageSession(_stageRunId, snapshot, options) {
+					if (snapshot.name !== "long-turn" || options?.awaitDurable !== true || !armHeartbeatFailure) return;
+					armHeartbeatFailure = false;
+					checkpointStarted.resolve();
+					await releaseCheckpoint.promise;
+					throw new Error("late heartbeat checkpoint failed");
+				},
+				adapters: {
+					agentSession: {
+						create: async (_options, meta) => ({
+							...mockSession(),
+							sessionFile: `/tmp/retained-${meta?.stageName}.jsonl`,
+							async prompt() {
+								if (meta?.stageName === "second") {
+									secondPromptCalled = true;
+									return;
+								}
+								await turn.promise;
+							},
+						}),
+					},
+				},
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		// Arm the next heartbeat tick, then park that checkpoint in flight.
+		armHeartbeatFailure = true;
+		await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+		await checkpointStarted.promise;
+		// The model turn wins the race while the checkpoint is still in flight.
+		turn.resolve();
+		await vi.advanceTimersByTimeAsync(0);
+		releaseCheckpoint.resolve();
+		await vi.runAllTimersAsync();
+		const result = await execution;
+
+		assert.equal(result.status, "completed");
+		assert.equal(secondPromptCalled, true);
+		const longTurn = store
+			.runs()
+			.find((candidate) => candidate.id === runId)
+			?.stages.find((stage) => stage.name === "long-turn");
+		assert.notEqual(longTurn?.status, "completed");
+		assert.equal(longTurn?.status, "failed");
+		assert.match(longTurn?.error ?? "", /late heartbeat checkpoint failed/);
 		assert.equal(vi.getTimerCount(), 0);
 	});
 });
