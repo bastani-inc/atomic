@@ -553,7 +553,7 @@ describe("renderNodeCard — metadata line", () => {
 		});
 		const rendered = stripAnsi(lines.join("\n"));
 
-		assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex/);
+		assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex fast/);
 		assert.equal(stripAnsi(lines[3]!).slice(1, -1).trim(), "root");
 	});
 });

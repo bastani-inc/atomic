@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 - Fixed completed `ctx.exit()` runs losing the reserved returned-status convention, legacy child replay records losing their exit discriminator, and failed author-exit resume surfaces falling back to snapshot inspection instead of durable retry.
+- Fixed workflow graph node cards appending the Codex `fast` marker to dependency metadata; cards now show only topology details such as `root`, `1 dep`, or `<n> deps` while fast-mode state remains available to the stage and its model label ([#2337](https://github.com/bastani-inc/atomic/issues/2337)).
 
 - Fixed fullscreen workflow graph and stage-chat mouse routing. Focused workflow overlays now receive SGR/X10 wheel and click press/release sequences through the host's bounded custom-input reply channel before pi-tui's alternate-screen viewport, restoring graph scrolling and click-to-attach without a workflow-owned TTY-tracking seam; the fullscreen route also mirrors consumed left-button events into pi-tui's application-owned selection path ([#2303](https://github.com/bastani-inc/atomic/issues/2303)).
 - Fixed graph overlay rendering to keep its live vertical position in pi-tui's `ScrollView` and preserve OSC-8 hyperlink terminators when normalizing layout rows.
