@@ -5,15 +5,20 @@ import {
 import type { DetachedStageHandleLease, StageControlHandle } from "../runs/foreground/stage-control-registry.js";
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
+import {
+	type ExpandedWorkflowStage,
+	expandedStageLabel,
+	expandWorkflowGraph,
+} from "../shared/expanded-workflow-graph.js";
 import { coerceStageInputAnswer, hasStageInputAnswerContent, type StageInputAnswer } from "../shared/stage-prompt.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
-import { subscribeStoreInvalidation } from "../shared/store-observation.js";
+import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
-import { resolveToolRunTarget, resolveToolStageTarget } from "./workflow-targets.js";
+import { resolveToolRunTarget, resolveToolStageTarget, type ToolStageTarget } from "./workflow-targets.js";
 
 /**
  * Optional dependencies enabling `workflow send` to revive an eligible
@@ -47,6 +52,53 @@ function brokerAnswerFromArgs(args: WorkflowToolArgs): StageInputAnswer {
 	}
 	const text = textPayloadFromArgs(args);
 	return text !== undefined ? { text } : {};
+}
+
+/**
+ * Whether this delivery is one whose destination a pending prompt determines.
+ *
+ * `answer` and `auto` are both documented as answering pending prompts first,
+ * and an explicit `promptId` names a prompt without naming its stage. Steering
+ * deliveries are excluded: a live stage is a destination in its own right, so
+ * there is nothing for a prompt to disambiguate.
+ */
+function answersPendingPrompt(delivery: string, promptId: string | undefined): boolean {
+	return delivery === "answer" || delivery === "auto" || promptId !== undefined;
+}
+
+/**
+ * Whether an `answer` delivery has something to resolve on this stage.
+ *
+ * Covers the same three prompt kinds the delivery path dispatches on —
+ * brokered, custom-footprint, and plain pending prompts — so a stage counted
+ * here is one the send would actually act on rather than merely mention.
+ */
+function hasAnswerablePrompt(stage: ExpandedWorkflowStage): boolean {
+	const target = stage.workflowGraphTarget;
+	if (stageUiBroker.peekStagePrompt(target.runId, target.stageId) !== undefined) return true;
+	if (stage.pendingPrompt !== undefined) return true;
+	return stage.status === "awaiting_input" && stage.promptFootprint?.kind === "custom";
+}
+
+/**
+ * Resolve the stage an answer is for when the caller named a prompt but no stage.
+ *
+ * Returns the target unchanged when nothing is pending, so a run with no prompt
+ * still reports that a stage is required rather than inventing a destination.
+ */
+function inferPromptStageTarget(runId: string, delivery: string, promptId: string | undefined): ToolStageTarget {
+	if (!answersPendingPrompt(delivery, promptId)) return { ok: true, runId };
+	const pending = expandWorkflowGraph(readGraphStoreSnapshot(store), runId).stages.filter(hasAnswerablePrompt);
+	const only = pending[0];
+	if (pending.length !== 1 || only === undefined) {
+		return pending.length === 0
+			? { ok: true, runId }
+			: {
+					ok: false,
+					message: `${pending.length} prompts pending; pass stageId: ${pending.map(expandedStageLabel).join(", ")}`,
+				};
+	}
+	return { ok: true, runId: only.workflowGraphTarget.runId, stageId: only.workflowGraphTarget.stageId };
 }
 
 type WorkflowSendToolResult = Extract<WorkflowToolResult, { action: "send" }>;
@@ -131,7 +183,11 @@ export async function workflowSendAction(
 	if (rootRun !== undefined && isTerminalRunStatus(rootRun.status)) {
 		return terminalWorkflowSendResult(rootRun.id, args.stageId?.trim() ?? "", rootRun.status);
 	}
-	const stage = resolveToolStageTarget(target.runId, args.stageId);
+	const requested = resolveToolStageTarget(target.runId, args.stageId);
+	const stage =
+		requested.ok && requested.stageId === undefined
+			? inferPromptStageTarget(target.runId, requestedDelivery, args.promptId)
+			: requested;
 	if (!stage.ok || stage.stageId === undefined) {
 		return workflowSendResult(
 			target.runId,
