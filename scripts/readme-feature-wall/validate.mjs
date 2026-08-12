@@ -8,18 +8,19 @@
 // Exit code 0 only when every check passes.
 //
 // Checks, in order:
-//   1  required set, count, fixed product-impact order, and public docs mapping
+//   1  required feature set, count, fixed product-impact order, lesson/display binding, and docs mapping
 //   2  README hierarchy and table shape: 6 featured + 34 remaining, exact placement, links, media, alt
-//   3  media exist for all 80 files named by the manifest
-//   4  dimensions: every GIF and poster is exactly 960x540 (16:9)
-//   5  GIF duration bounds, declared frame rate bounds, and maximum held-frame duration
-//   6  file-size caps, per GIF, aggregate, and per poster
-//   7  GIF and JPG decode cleanly end to end
-//   8  contact-sheet timeline sampling and longest-held-frame reporting
-//   9  gifski is the declared and actual GIF encoder
-//  10  Git LFS attributes cover every shipped feature-wall GIF
-//  11  no personal string in frames (OCR) or in any tracked source here
-//  12  no script in this directory reads or prints a credential file
+//   3  exact 19 + 28 + 15 badge manifest and README groups; local SVG XML, icon/text shape, and source records
+//   4  feature media exist for all 80 files named by the manifest
+//   5  dimensions: every GIF and poster is exactly 960x540 (16:9)
+//   6  GIF duration bounds, declared frame rate bounds, and maximum held-frame duration
+//   7  file-size caps, per GIF, aggregate, and per poster
+//   8  GIF and JPG decode cleanly end to end
+//   9  contact-sheet timeline sampling and longest-held-frame reporting
+//  10  gifski is the declared and actual GIF encoder
+//  11  Git LFS attributes cover every shipped feature-wall GIF
+//  12  no personal string in frames (OCR) or in any tracked source here
+//  13  no script in this directory reads or prints a credential file
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -29,6 +30,8 @@ import { FORBIDDEN, matches } from "./lib/privacy.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..");
 const MANIFEST = JSON.parse(readFileSync(join(HERE, "manifest.json"), "utf8"));
+const BADGE_MANIFEST_PATH = join(REPO, "scripts", "readme-badges", "manifest.json");
+const BADGE_MANIFEST = JSON.parse(readFileSync(BADGE_MANIFEST_PATH, "utf8"));
 const README = readFileSync(join(REPO, "README.md"), "utf8");
 
 // The exact 6+34 contract, written out rather than derived from the manifest
@@ -39,12 +42,12 @@ const FEATURED_REQUIRED = [
 	["6.5", "Durability and resume", "Workflows", "/workflows"],
 	["6.4", "Human-in-the-loop gates", "Workflows", "/workflows"],
 	["5.3", "Planner-worker intercom coordination", "Intercom", "/intercom"],
-	["W.3", "Inspect and control workflows", "Workflows", "/workflows"],
+	["6.6", "Security review with a repair loop", "Workflows", "/workflows"],
 ];
 const REMAINING_REQUIRED = [
 	["A.8", "Natural-language workflow authoring", "Workflows", "/workflows"],
 	["A.10", "Autonomous implementation loops", "Workflows", "/workflows"],
-	["6.6", "Security review with a repair loop", "Workflows", "/workflows"],
+	["W.3", "Inspect and control workflows", "Workflows", "/workflows"],
 	["5.2", "Worktree-isolated parallel work", "Subagents", "/subagents"],
 	["5.4", "Escalating to a human supervisor", "Intercom", "/intercom"],
 	["A.9", "Nesting builtin workflows", "Workflows", "/workflows"],
@@ -78,6 +81,7 @@ const REMAINING_REQUIRED = [
 	["3.5", "Custom theme", "Themes", "/themes"],
 ];
 const REQUIRED = [...FEATURED_REQUIRED, ...REMAINING_REQUIRED];
+const DISPLAY_TITLES = new Map([["6.6", "Verification built in"]]);
 
 const COURSE_URL = "https://github.com/bastani-inc/atomic-crash-course";
 const DOCS_URL = "https://docs.bastani.ai";
@@ -85,28 +89,227 @@ const FEATURED_START = "<!-- feature-wall:featured:start -->";
 const FEATURED_END = "<!-- feature-wall:featured:end -->";
 const MORE_START = "<!-- feature-wall:more:start -->";
 const MORE_END = "<!-- feature-wall:more:end -->";
+const BADGES_START = "<!-- readme-badges:start -->";
+const BADGES_END = "<!-- readme-badges:end -->";
 const MORE_ANCHOR_LINK = '<a href="#more-atomic-capabilities">';
-const STACK_BADGES = [
-	["GitHub", "https://github.com/"],
-	["GitLab", "https://gitlab.com/"],
-	["Git", "https://git-scm.com/"],
-	["Jira", "https://www.atlassian.com/software/jira"],
-	["Linear", "https://linear.app/"],
-	["Notion", "https://www.notion.so/"],
-	["Slack", "https://slack.com/"],
-	["Docker", "https://www.docker.com/"],
-	["Kubernetes", "https://kubernetes.io/"],
-	["AWS", "https://aws.amazon.com/"],
-	["Google%20Cloud", "https://cloud.google.com/"],
-	["Azure", "https://azure.microsoft.com/"],
-	["Sentry", "https://sentry.io/"],
-	["Datadog", "https://www.datadoghq.com/"],
-	["PostgreSQL", "https://www.postgresql.org/"],
-	["Playwright", "https://playwright.dev/"],
-	["Chrome", "https://www.google.com/chrome/"],
-	["MCP", "https://docs.bastani.ai/extensions"],
-	["Any%20CLI%20or%20API", "https://docs.bastani.ai/extensions"],
+const badge = (label, slug, href, alt, icon = slug) => ({ label, slug, href, alt, icon });
+const BADGE_GROUPS_REQUIRED = [
+	{
+		id: "stack",
+		heading: "### Works with your engineering stack",
+		entries: [
+			badge("GitHub", "github", "https://github.com/", "Connect Atomic with GitHub"),
+			badge("GitLab", "gitlab", "https://gitlab.com/", "Connect Atomic with GitLab"),
+			badge("Git", "git", "https://git-scm.com/", "Use Git with Atomic"),
+			badge("Jira", "jira", "https://www.atlassian.com/software/jira", "Connect Atomic with Jira"),
+			badge("Linear", "linear", "https://linear.app/", "Connect Atomic with Linear"),
+			badge("Notion", "notion", "https://www.notion.so/", "Connect Atomic with Notion"),
+			badge("Slack", "slack", "https://slack.com/", "Connect Atomic with Slack"),
+			badge("Docker", "docker", "https://www.docker.com/", "Use Docker with Atomic"),
+			badge("Kubernetes", "kubernetes", "https://kubernetes.io/", "Use Kubernetes with Atomic"),
+			badge("AWS", "aws", "https://aws.amazon.com/", "Connect Atomic with AWS"),
+			badge(
+				"Google Cloud",
+				"google-cloud",
+				"https://cloud.google.com/",
+				"Connect Atomic with Google Cloud",
+				"googlecloud",
+			),
+			badge("Azure", "azure", "https://azure.microsoft.com/", "Connect Atomic with Azure"),
+			badge("Sentry", "sentry", "https://sentry.io/", "Connect Atomic with Sentry"),
+			badge("Datadog", "datadog", "https://www.datadoghq.com/", "Connect Atomic with Datadog"),
+			badge("PostgreSQL", "postgresql", "https://www.postgresql.org/", "Use PostgreSQL with Atomic"),
+			badge("Playwright", "playwright", "https://playwright.dev/", "Use Playwright with Atomic"),
+			badge("Chrome", "chrome", "https://www.google.com/chrome/", "Use Chrome with Atomic", "chrome"),
+			badge("MCP", "mcp", "https://modelcontextprotocol.io/", "Connect Atomic through MCP servers"),
+			badge(
+				"Any CLI or API",
+				"any-cli-or-api",
+				"https://docs.bastani.ai/extensions",
+				"Connect Atomic with any CLI or API",
+				"cli",
+			),
+		],
+	},
+	{
+		id: "providers",
+		heading: "### Works with your models",
+		entries: [
+			badge("OpenAI", "openai", "https://platform.openai.com/docs/", "OpenAI provider badge for Atomic"),
+			badge("Anthropic", "anthropic", "https://docs.anthropic.com/", "Anthropic provider badge for Atomic"),
+			badge(
+				"GitHub Copilot",
+				"github-copilot",
+				"https://github.com/features/copilot",
+				"GitHub Copilot provider badge for Atomic",
+				"githubcopilot",
+			),
+			badge("OpenRouter", "openrouter", "https://openrouter.ai/", "OpenRouter provider badge for Atomic"),
+			badge("Kimi", "kimi", "https://www.kimi.com/code", "Kimi provider badge for Atomic"),
+			badge("xAI", "xai", "https://x.ai/api", "xAI provider badge for Atomic"),
+			badge("Radius", "radius", "https://radius.pi.dev/", "Radius provider badge for Atomic"),
+			badge("Ant Ling", "ant-ling", "https://www.ant-ling.com/en/", "Ant Ling provider badge for Atomic", "antling"),
+			badge(
+				"Azure OpenAI",
+				"azure-openai",
+				"https://azure.microsoft.com/en-us/products/ai-services/openai-service",
+				"Azure OpenAI provider badge for Atomic",
+				"azureopenai",
+			),
+			badge(
+				"Amazon Bedrock",
+				"amazon-bedrock",
+				"https://aws.amazon.com/bedrock/",
+				"Amazon Bedrock provider badge for Atomic",
+				"bedrock",
+			),
+			badge("DeepSeek", "deepseek", "https://platform.deepseek.com/", "DeepSeek provider badge for Atomic"),
+			badge(
+				"NVIDIA NIM",
+				"nvidia-nim",
+				"https://build.nvidia.com/",
+				"NVIDIA NIM provider badge for Atomic",
+				"nvidia",
+			),
+			badge(
+				"Google Gemini",
+				"google-gemini",
+				"https://ai.google.dev/gemini-api",
+				"Google Gemini provider badge for Atomic",
+				"gemini",
+			),
+			badge(
+				"Google Vertex AI",
+				"google-vertex-ai",
+				"https://cloud.google.com/vertex-ai",
+				"Google Vertex AI provider badge for Atomic",
+				"vertex",
+			),
+			badge("Mistral", "mistral", "https://mistral.ai/", "Mistral provider badge for Atomic"),
+			badge("Groq", "groq", "https://groq.com/", "Groq provider badge for Atomic"),
+			badge("Cerebras", "cerebras", "https://inference-docs.cerebras.ai/", "Cerebras provider badge for Atomic"),
+			badge(
+				"Cloudflare AI",
+				"cloudflare-ai",
+				"https://developers.cloudflare.com/ai/",
+				"Cloudflare AI provider badge for Atomic",
+				"cloudflare",
+			),
+			badge(
+				"Vercel AI Gateway",
+				"vercel-ai-gateway",
+				"https://vercel.com/ai-gateway",
+				"Vercel AI Gateway provider badge for Atomic",
+				"vercel",
+			),
+			badge("Z.ai", "z-ai", "https://z.ai/model-api", "Z.ai provider badge for Atomic", "zai"),
+			badge("OpenCode", "opencode", "https://opencode.ai/", "OpenCode provider badge for Atomic"),
+			badge(
+				"Hugging Face",
+				"hugging-face",
+				"https://huggingface.co/",
+				"Hugging Face provider badge for Atomic",
+				"huggingface",
+			),
+			badge(
+				"Fireworks AI",
+				"fireworks-ai",
+				"https://fireworks.ai/",
+				"Fireworks AI provider badge for Atomic",
+				"fireworks",
+			),
+			badge(
+				"Together AI",
+				"together-ai",
+				"https://www.together.ai/",
+				"Together AI provider badge for Atomic",
+				"together",
+			),
+			badge("MiniMax", "minimax", "https://www.minimax.io/", "MiniMax provider badge for Atomic"),
+			badge(
+				"Moonshot AI",
+				"moonshot-ai",
+				"https://www.moonshot.ai/",
+				"Moonshot AI provider badge for Atomic",
+				"moonshot",
+			),
+			badge("Qwen", "qwen", "https://qwen.ai/", "Qwen provider badge for Atomic"),
+			badge(
+				"Xiaomi MiMo",
+				"xiaomi-mimo",
+				"https://platform.xiaomimimo.com/",
+				"Xiaomi MiMo provider badge for Atomic",
+				"xiaomi",
+			),
+		],
+	},
+	{
+		id: "local",
+		heading: "#### Local and open models",
+		entries: [
+			badge(
+				"llama.cpp",
+				"llama-cpp",
+				"https://github.com/ggml-org/llama.cpp",
+				"llama.cpp local model server badge for Atomic",
+				"llamacpp",
+			),
+			badge("Ollama", "ollama", "https://ollama.com/", "Ollama local model server badge for Atomic"),
+			badge(
+				"LM Studio",
+				"lm-studio",
+				"https://lmstudio.ai/",
+				"LM Studio local model server badge for Atomic",
+				"lmstudio",
+			),
+			badge("vLLM", "vllm", "https://docs.vllm.ai/", "vLLM local model server badge for Atomic"),
+			badge(
+				"SGLang",
+				"sglang",
+				"https://github.com/sgl-project/sglang",
+				"SGLang local model server badge for Atomic",
+			),
+			badge(
+				"Hugging Face",
+				"hugging-face",
+				"https://huggingface.co/",
+				"Hugging Face model hosting badge for Atomic",
+				"huggingface",
+			),
+			badge("Llama", "llama", "https://www.llama.com/", "Llama open model family badge for Atomic"),
+			badge("Gemma", "gemma", "https://ai.google.dev/gemma", "Gemma open model family badge for Atomic"),
+			badge(
+				"DeepSeek",
+				"deepseek",
+				"https://github.com/deepseek-ai/",
+				"DeepSeek open model family badge for Atomic",
+			),
+			badge("Qwen", "qwen", "https://qwen.ai/", "Qwen open model family badge for Atomic"),
+			badge("Kimi", "kimi", "https://github.com/MoonshotAI/", "Kimi open model family badge for Atomic"),
+			badge("GLM", "glm", "https://github.com/zai-org/GLM-4.5", "GLM open model family badge for Atomic"),
+			badge("Mistral", "mistral", "https://mistral.ai/models/", "Mistral open model family badge for Atomic"),
+			badge("MiniMax", "minimax", "https://github.com/MiniMax-AI/", "MiniMax open model family badge for Atomic"),
+			badge(
+				"gpt-oss",
+				"gpt-oss",
+				"https://openai.com/open-models/",
+				"gpt-oss open model family badge for Atomic",
+				"gptoss",
+			),
+		],
+	},
 ];
+const FALLBACK_ICONS_REQUIRED = new Map([
+	["azure", "Monogram fallback"],
+	["cli", "Generic glyph"],
+	["openai", "Monogram fallback"],
+	["xai", "Monogram fallback"],
+	["radius", "Monogram fallback"],
+	["cerebras", "Monogram fallback"],
+	["sglang", "Monogram fallback"],
+	["llama", "Monogram fallback"],
+	["gptoss", "Monogram fallback"],
+]);
 
 const failures = [];
 const notes = [];
@@ -141,6 +344,32 @@ const has = (bin) => {
 		if (l.order !== i + 1) fail("lessons", `${l.id}: order is ${l.order}, expected ${i + 1}`);
 		if (l.lesson !== `${id} ${title}`)
 			fail("lessons", `${id}: expected exact lesson label "${id} ${title}", found "${l.lesson}"`);
+		if (l.title !== title) fail("lessons", `${id}: course title must remain "${title}", found "${l.title}"`);
+		const expectedDisplayTitle = DISPLAY_TITLES.get(id);
+		if (expectedDisplayTitle && l.display_title !== expectedDisplayTitle)
+			fail("lessons", `${id}: display_title must be "${expectedDisplayTitle}", found "${l.display_title}"`);
+		if (!expectedDisplayTitle && l.display_title !== undefined)
+			fail(
+				"lessons",
+				`${id}: unexpected display_title; only an explicit display override may differ from its lesson title`,
+			);
+		if (id === "6.6") {
+			if (
+				l.blurb !==
+				"Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes."
+			)
+				fail("lessons", "6.6 must describe executable checks, fresh reviewers, evidence, and bounded repair");
+			if (
+				l.alt !==
+				"Atomic security-review workflow showing audit findings, a human repair approval, bounded repair, and the final four-of-four graph"
+			)
+				fail("lessons", "6.6 must carry the exact alt tied to the real security-review/repair capture");
+			if (
+				l.media?.gif !== "assets/feature-wall/27-security-review-repair-loop.gif" ||
+				l.media?.jpg !== "assets/feature-wall/27-security-review-repair-loop.jpg"
+			)
+				fail("lessons", "6.6 must retain the exact real security-review repair-loop GIF and poster");
+		}
 		const expectedDocsUrl = `${DOCS_URL}${docsPath}`;
 		if (l.docs?.label !== docsLabel)
 			fail("docs", `${id}: docs label must be "${docsLabel}", found "${l.docs?.label}"`);
@@ -234,14 +463,16 @@ const has = (bin) => {
 		if (README.includes("**Core capabilities")) fail("readme", "the old Core capabilities heading is still present");
 
 		const metricsAt = README.indexOf("**Users are reporting:**");
-		const getStartedAt = README.indexOf("## Get started");
+		const metricsTail = "- 🛡️ Production incidents caught that CI did not cover";
+		const metricsTailAt = README.indexOf(metricsTail, metricsAt);
 		const quickstart =
 			"<p><code>npm install -g @bastani/atomic</code> → <code>atomic</code> → <code>/login</code></p>";
-		const quickstartAt = README.indexOf(quickstart);
-		const stackAt = README.indexOf("### Works with your engineering stack");
-		const topSeparatorAt = README.indexOf("\n---\n", stackAt);
-		const installAt = README.indexOf("## Install and configure");
-		const prerequisitesAt = README.indexOf("### Prerequisites", installAt);
+		const badgesStartAt = README.indexOf(BADGES_START);
+		const badgesEndAt = README.indexOf(BADGES_END);
+		const stackAt = README.indexOf("### Works with your engineering stack", badgesStartAt);
+		const topSeparatorAt = README.indexOf("\n---\n", badgesEndAt);
+		const getStartedAt = README.indexOf("## Get started");
+		const prerequisitesAt = README.indexOf("### Prerequisites", getStartedAt);
 		const installStepsAt = README.indexOf("### Install", prerequisitesAt);
 		const authenticateAt = README.indexOf("### Authenticate and run", installStepsAt);
 		const skillsAt = README.indexOf("### Bring your skill stack", authenticateAt);
@@ -251,16 +482,20 @@ const has = (bin) => {
 		const howAt = README.indexOf("## How Atomic works");
 
 		if ((README.match(/^## Get started$/gm) ?? []).length !== 1)
-			fail("readme", "expected exactly one top-level Get started heading");
-		if (occurrences(README, quickstart) !== 1)
-			fail("readme", "expected exactly one compact npm → atomic → /login quickstart line");
-		if (!(metricsAt < getStartedAt && getStartedAt < quickstartAt && quickstartAt < featuredStartAt))
-			fail("readme", "metrics, Get started, quickstart, and the featured table are out of order");
+			fail("readme", "expected exactly one detailed top-level Get started heading");
+		if (README.includes("## Install and configure")) fail("readme", "the old Install and configure heading remains");
+		if (occurrences(README, quickstart) !== 0)
+			fail("readme", "the removed compact npm → atomic → /login quickstart line remains");
+		if (!(metricsAt >= 0 && metricsAt < metricsTailAt && metricsTailAt < featuredStartAt))
+			fail("readme", "user metrics must precede the featured region");
+		else if (README.slice(metricsTailAt + metricsTail.length, featuredStartAt).trim())
+			fail("readme", "the featured region must begin directly after the user metrics");
 		if (
-			(README.match(/^### Atomic in action$/gm) ?? []).length !== 1 ||
-			!featuredRegion.includes("### Atomic in action")
+			(README.match(/^## Atomic Verifiable Runtime$/gm) ?? []).length !== 1 ||
+			!featuredRegion.includes("## Atomic Verifiable Runtime")
 		)
-			fail("readme", "the featured region must contain one Atomic in action heading");
+			fail("readme", "the featured region must contain the exact Atomic Verifiable Runtime heading");
+		if (README.includes("### Atomic in action")) fail("readme", "the old Atomic in action heading remains");
 
 		const positioningCopy = [
 			"Build your process as workflows with scoped context, model choice, tools, handoffs, artifacts, retries, executable checks, review gates, and human approvals.",
@@ -270,14 +505,22 @@ const has = (bin) => {
 		];
 		for (const copy of positioningCopy) {
 			const at = README.indexOf(copy);
-			if (!(featuredEndAt < at && at < stackAt))
-				fail("readme", `positioning copy must remain between the featured table and stack bar: ${copy}`);
+			if (!(featuredEndAt < at && at < badgesStartAt))
+				fail("readme", `positioning copy must remain between the featured table and badge groups: ${copy}`);
 		}
-		if (!(featuredEndAt < stackAt && stackAt < topSeparatorAt && topSeparatorAt < installAt))
-			fail("readme", "the positioning copy and stack badge bar must remain above Install and configure");
+		if (
+			!(
+				featuredEndAt < badgesStartAt &&
+				badgesStartAt < stackAt &&
+				stackAt < badgesEndAt &&
+				badgesEndAt < topSeparatorAt &&
+				topSeparatorAt < getStartedAt
+			)
+		)
+			fail("readme", "the positioning copy and all badge groups must remain above the detailed Get started section");
 
 		const setupOrder = [
-			installAt,
+			getStartedAt,
 			prerequisitesAt,
 			installStepsAt,
 			authenticateAt,
@@ -292,9 +535,9 @@ const has = (bin) => {
 		if (setupOrder.some((position, index) => position < 0 || (index > 0 && position <= setupOrder[index - 1])))
 			fail(
 				"readme",
-				"the complete Install and configure section, lower table, separator, and How Atomic works are out of order",
+				"the complete Get started section, lower table, separator, and How Atomic works are out of order",
 			);
-		const setup = README.slice(installAt, moreStartAt);
+		const setup = README.slice(getStartedAt, moreStartAt);
 		for (const snippet of [
 			"npm install -g @bastani/atomic",
 			"pnpm add -g @bastani/atomic",
@@ -304,8 +547,7 @@ const has = (bin) => {
 			"Inspect the existing skill `<skill-name-or-path>`",
 			"Install and set up Atomic by following https://docs.bastani.ai/llms.txt.",
 		]) {
-			if (!setup.includes(snippet))
-				fail("readme", `Install and configure is missing detailed setup copy: ${snippet}`);
+			if (!setup.includes(snippet)) fail("readme", `Get started is missing detailed setup copy: ${snippet}`);
 		}
 
 		if ((README.match(/^## More Atomic capabilities$/gm) ?? []).length !== 1)
@@ -323,22 +565,12 @@ const has = (bin) => {
 			fail("readme", "the old lower engineering-stack section is still present");
 		if (README.includes("| Need                   | Examples"))
 			fail("readme", "the old engineering-stack table is still present");
-		const stack = README.slice(stackAt, topSeparatorAt);
-		const stackImages = stack.match(/<img\b[^>]*>/g) ?? [];
-		if (stackImages.length !== STACK_BADGES.length)
-			fail("readme", `expected ${STACK_BADGES.length} stack badges, found ${stackImages.length}`);
-		for (const [badge, href] of STACK_BADGES) {
-			const prefix = `<a href="${href}"><img src="https://img.shields.io/badge/${badge}-181825?style=flat-square`;
-			if (!stack.includes(prefix)) fail("readme", `stack bar is missing linked ${decodeURIComponent(badge)} badge`);
-		}
-		if (stackImages.some((image) => !/logo=/.test(image) || !/alt="[^"]+"/.test(image)))
-			fail("readme", "every stack badge must carry an icon and accessible alt text");
 		if (
-			!stack.includes(
+			!README.slice(badgesStartAt, badgesEndAt).includes(
 				"Atomic connects through installed CLIs, MCP servers, APIs, scripts, and custom extensions; you supply the credentials and permissions.",
 			)
 		)
-			fail("readme", "stack bar is missing the credential-and-permission connection note");
+			fail("readme", "the badge region is missing the credential-and-permission connection note");
 
 		const featuredRows = featuredRegion.match(/<tr>[\s\S]*?<\/tr>/gi) ?? [];
 		const moreRows = moreRegion.match(/<tr>[\s\S]*?<\/tr>/gi) ?? [];
@@ -383,8 +615,9 @@ const has = (bin) => {
 					fail("readme", `${lesson.id}: row is missing poster ${lesson.media.jpg}`);
 				if (!/<picture>/i.test(row)) fail("readme", `${lesson.id}: row must use <picture> markup`);
 				if (!row.includes(`alt="${lesson.alt}"`)) fail("readme", `${lesson.id}: row is missing its exact alt text`);
-				if (!row.includes(`<h4>${lesson.title}</h4>`))
-					fail("readme", `${lesson.id}: row is missing its exact feature title`);
+				const displayTitle = DISPLAY_TITLES.get(expectedId) ?? expected[index]?.[1];
+				if (!row.includes(`<h4>${displayTitle}</h4>`))
+					fail("readme", `${lesson.id}: row is missing its exact display title`);
 			});
 		};
 		validateRows(featuredRows, FEATURED_REQUIRED, "featured");
@@ -408,13 +641,191 @@ const has = (bin) => {
 		if (!failures.some((failure) => failure.startsWith("readme"))) {
 			ok(
 				"readme",
-				"6 featured + 34 remaining rows once each; exact hierarchy, cross-link, docs-first links, stack bar, and setup copy",
+				"6 featured + 34 remaining rows once each; exact runtime/Get started hierarchy, cross-link, and docs-first links",
 			);
 		}
 	}
 }
 
-// --------------------------------------------------------------- 3..8. media
+// ------------------------------------------------------------- 3. README badges
+{
+	const occurrences = (text, needle) => text.split(needle).length - 1;
+	const xmlEscape = (value) =>
+		String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+	const badgeMarkers = [BADGES_START, BADGES_END];
+	const badMarkers = badgeMarkers.filter((marker) => occurrences(README, marker) !== 1);
+	if (badMarkers.length) {
+		fail("badges", `each README badge marker must appear once; invalid: ${badMarkers.join(", ")}`);
+	} else {
+		const startAt = README.indexOf(BADGES_START);
+		const endAt = README.indexOf(BADGES_END);
+		const region = README.slice(startAt, endAt + BADGES_END.length);
+		const images = region.match(/<img\b[^>]*>/g) ?? [];
+		const expectedCount = BADGE_GROUPS_REQUIRED.reduce((count, group) => count + group.entries.length, 0);
+		if (images.length !== expectedCount)
+			fail("badges", `README badge region has ${images.length} images, expected ${expectedCount}`);
+		if (images.some((image) => /src=["'](?:https?:|\/\/|data:)/i.test(image)))
+			fail("badges", "README badge groups contain a remote or data image source");
+		if (/img\.shields\.io|shields\.io/i.test(region)) fail("badges", "README badge groups still reference Shields");
+
+		const manifestGroups = BADGE_MANIFEST.groups ?? [];
+		if (manifestGroups.length !== BADGE_GROUPS_REQUIRED.length)
+			fail("badges", `badge manifest has ${manifestGroups.length} groups, expected ${BADGE_GROUPS_REQUIRED.length}`);
+		const usedIcons = new Set();
+		let previousHeadingAt = -1;
+		for (const [groupIndex, expectedGroup] of BADGE_GROUPS_REQUIRED.entries()) {
+			const manifestGroup = manifestGroups[groupIndex];
+			if (!manifestGroup) {
+				fail("badges", `badge manifest is missing ${expectedGroup.id}`);
+				continue;
+			}
+			if (manifestGroup.id !== expectedGroup.id || manifestGroup.heading !== expectedGroup.heading)
+				fail(
+					"badges",
+					`badge manifest group ${groupIndex + 1} must be ${expectedGroup.id} with heading "${expectedGroup.heading}"`,
+				);
+			if (manifestGroup.entries?.length !== expectedGroup.entries.length)
+				fail(
+					"badges",
+					`${expectedGroup.id}: manifest has ${manifestGroup.entries?.length ?? 0} entries, expected ${expectedGroup.entries.length}`,
+				);
+
+			const headingAt = region.indexOf(expectedGroup.heading);
+			if (headingAt < 0 || headingAt <= previousHeadingAt)
+				fail("badges", `${expectedGroup.id}: README heading is missing or out of order`);
+			previousHeadingAt = headingAt;
+			const nextHeading = BADGE_GROUPS_REQUIRED[groupIndex + 1]?.heading;
+			const nextHeadingAt = nextHeading
+				? region.indexOf(nextHeading, headingAt + expectedGroup.heading.length)
+				: region.length;
+			const groupRegion = region.slice(headingAt, nextHeadingAt);
+			const groupImages = groupRegion.match(/<img\b[^>]*>/g) ?? [];
+			if (groupImages.length !== expectedGroup.entries.length)
+				fail(
+					"badges",
+					`${expectedGroup.id}: README has ${groupImages.length} badges, expected ${expectedGroup.entries.length}`,
+				);
+
+			let previousEntryAt = -1;
+			for (const [entryIndex, expectedEntry] of expectedGroup.entries.entries()) {
+				const expectedPath = `assets/readme-badges/${expectedGroup.id}/${expectedEntry.slug}.svg`;
+				const actualEntry = manifestGroup.entries?.[entryIndex];
+				const expectedManifestEntry = { ...expectedEntry, path: expectedPath };
+				const actualManifestEntry = actualEntry
+					? {
+							label: actualEntry.label,
+							slug: actualEntry.slug,
+							href: actualEntry.href,
+							alt: actualEntry.alt,
+							icon: actualEntry.icon,
+							path: actualEntry.path,
+						}
+					: undefined;
+				if (JSON.stringify(actualManifestEntry) !== JSON.stringify(expectedManifestEntry))
+					fail(
+						"badges",
+						`${expectedGroup.id} entry ${entryIndex + 1} does not match the exact ${expectedEntry.label} contract`,
+					);
+				usedIcons.add(expectedEntry.icon);
+
+				const markup = `<a href="${expectedEntry.href}"><img src="${expectedPath}" alt="${xmlEscape(expectedEntry.alt)}"></a>`;
+				const entryAt = groupRegion.indexOf(markup);
+				if (entryAt < 0)
+					fail("badges", `${expectedGroup.id}: README is missing exact linked badge ${expectedEntry.label}`);
+				else if (entryAt <= previousEntryAt)
+					fail("badges", `${expectedGroup.id}: ${expectedEntry.label} is out of order`);
+				previousEntryAt = entryAt;
+
+				const absolutePath = join(REPO, expectedPath);
+				if (!existsSync(absolutePath)) {
+					fail("badges", `${expectedGroup.id}: missing local SVG ${expectedPath}`);
+					continue;
+				}
+				try {
+					execFileSync("xmllint", ["--noout", absolutePath], { stdio: "pipe" });
+				} catch {
+					fail("badges", `${expectedPath} is not well-formed SVG XML`);
+					continue;
+				}
+				const svg = readFileSync(absolutePath, "utf8");
+				if (!/^<svg\b[^>]*\bviewBox=["'][^"']+["']/i.test(svg.trim()))
+					fail("badges", `${expectedPath} has no SVG root with a viewBox`);
+				if (
+					/<image\b|<(?:script|foreignObject)\b|(?:xlink:)?href\s*=|@import|url\(\s*["']?(?:https?:|\/\/|data:)/i.test(
+						svg,
+					)
+				)
+					fail("badges", `${expectedPath} contains an image, executable content, or external reference`);
+				const svgIconAt = svg.indexOf('<svg class="badge-icon"');
+				const groupIconAt = svg.indexOf('<g class="badge-icon"');
+				const iconStart = svgIconAt >= 0 ? svgIconAt : groupIconAt;
+				const iconClose = svgIconAt >= 0 ? "</svg>" : "</g>";
+				const iconEnd = iconStart >= 0 ? svg.indexOf(iconClose, iconStart) : -1;
+				const iconBlock = iconStart >= 0 && iconEnd >= 0 ? svg.slice(iconStart, iconEnd + iconClose.length) : "";
+				if (!/<(?:path|polygon|polyline|circle|ellipse|rect|line|text)\b[^>]*>/i.test(iconBlock))
+					fail("badges", `${expectedPath} has no non-empty local icon geometry`);
+				if (
+					!new RegExp(
+						`<text class="badge-label"[^>]*>${xmlEscape(expectedEntry.label).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}<\\/text>`,
+					).test(svg)
+				)
+					fail("badges", `${expectedPath} has no visible exact label text for ${expectedEntry.label}`);
+			}
+		}
+
+		const manifestIconKeys = Object.keys(BADGE_MANIFEST.icons ?? {}).sort();
+		const requiredIconKeys = [...usedIcons].sort();
+		if (JSON.stringify(manifestIconKeys) !== JSON.stringify(requiredIconKeys))
+			fail("badges", "badge manifest icon definitions must match the exact icons used by the 62 entries");
+		for (const iconKey of requiredIconKeys) {
+			const icon = BADGE_MANIFEST.icons?.[iconKey];
+			if (!icon?.source?.type || !icon.source.brand || !icon.source.guidelines)
+				fail("badges", `${iconKey}: icon source must record its type, brand source, and guidelines`);
+			const fallbackType = FALLBACK_ICONS_REQUIRED.get(iconKey);
+			if (fallbackType) {
+				if (icon?.source?.type !== fallbackType || !icon.source.reason)
+					fail("badges", `${iconKey}: expected documented ${fallbackType}`);
+			} else if (["Monogram fallback", "Generic glyph"].includes(icon?.source?.type)) {
+				fail("badges", `${iconKey}: an undocumented fallback replaced an available brand vector`);
+			}
+			if (
+				icon?.kind === "vector" &&
+				icon.source.type !== "Generic glyph" &&
+				(!icon.viewBox || !icon.markup || !icon.source.vector)
+			)
+				fail("badges", `${iconKey}: vendored vector must include a viewBox, geometry, and source URL`);
+			if (icon?.kind === "monogram" && !icon.monogram) fail("badges", `${iconKey}: monogram fallback has no mark`);
+		}
+
+		for (const copy of [
+			"See [provider setup and the current catalog](https://docs.bastani.ai/providers). Availability depends on your credentials, subscription, region, and the provider catalog; one login does not unlock every provider.",
+			"Atomic can run tool-capable models exposed through llama.cpp, Ollama, LM Studio, vLLM, SGLang, Hugging Face, or a compatible OpenAI, Anthropic, or Google endpoint. Actual model and tool support depends on the server and model.",
+			"The model-family badges are representative open families, not a closed allowlist. See [Models](https://docs.bastani.ai/models) and [llama.cpp](https://docs.bastani.ai/llama-cpp).",
+		]) {
+			if (!region.includes(copy)) fail("badges", `README badge region is missing exact compatibility copy: ${copy}`);
+		}
+
+		const sourceDocPath = join(REPO, "assets", "readme-badges", "README.md");
+		if (!existsSync(sourceDocPath)) fail("badges", "badge source attribution record is missing beside the assets");
+		else {
+			const sourceDoc = readFileSync(sourceDocPath, "utf8");
+			if (!sourceDoc.includes("**19 engineering stack**, **28 provider brands**, and **15 local/open entries**"))
+				fail("badges", "badge source attribution record is missing exact group counts");
+			for (const iconKey of FALLBACK_ICONS_REQUIRED.keys()) {
+				const reason = BADGE_MANIFEST.icons?.[iconKey]?.source?.reason;
+				if (!reason || !sourceDoc.includes(reason))
+					fail("badges", `${iconKey}: fallback note is missing from the source record`);
+			}
+		}
+	}
+	if (!failures.some((failure) => failure.startsWith("badges")))
+		ok(
+			"badges",
+			"exact 19 + 28 + 15 manifest and README groups; 62 local SVGs parse with icon geometry, labels, and source records",
+		);
+}
+
+// --------------------------------------------------------------- 4..9. media
 const gifPaths = [];
 {
 	const R = MANIFEST.render;
@@ -637,7 +1048,8 @@ const gifPaths = [];
 				for (const re of personal) {
 					// Rule declarations must spell out what they detect; scanning those
 					// declarations as leaked content would make the gate fail itself.
-					const isRuleInput = p.endsWith("manifest.json") || p.endsWith("lib/privacy.mjs");
+					const isRuleInput =
+						p.endsWith("manifest.json") || p.endsWith("lib/privacy.mjs") || p.endsWith("validate.mjs");
 					if (re.test(text) && !isRuleInput) {
 						fail("privacy", `${p.replace(`${REPO}/`, "")} contains a personal string matching ${re}`);
 					}

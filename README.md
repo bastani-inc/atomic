@@ -40,13 +40,9 @@
 - 🔀 ~95% merge rate on Atomic-generated PRs, with reduced follow-ups and a 0% revert rate
 - 🛡️ Production incidents caught that CI did not cover
 
-## Get started
-
-<p><code>npm install -g @bastani/atomic</code> → <code>atomic</code> → <code>/login</code></p>
-
 <!-- feature-wall:featured:start -->
 
-### Atomic in action
+## Atomic Verifiable Runtime
 
 Every row is a real Atomic session recorded from the installed product. Open the Atomic docs for reference or follow the crash course step by step.
 
@@ -133,16 +129,16 @@ Every row is a real Atomic session recorded from the installed product. Open the
 </tr>
 <tr>
 <td width="42%" valign="top">
-<h4>Inspect and control workflows</h4>
-<p>List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.</p>
+<h4>Verification built in</h4>
+<p>Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes.</p>
 <p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.3 Inspect and control workflows</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop"><sub>Crash course · 6.6 Security review with a repair loop</sub></a></p>
 </td>
 <td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
+<a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop">
 <picture>
-<source srcset="assets/feature-wall/30-inspect-control-workflows.gif" type="image/gif">
-<img src="assets/feature-wall/30-inspect-control-workflows.jpg" alt="Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph" width="100%">
+<source srcset="assets/feature-wall/27-security-review-repair-loop.gif" type="image/gif">
+<img src="assets/feature-wall/27-security-review-repair-loop.jpg" alt="Atomic security-review workflow showing audit findings, a human repair approval, bounded repair, and the final four-of-four graph" width="100%">
 </picture>
 </a>
 </td>
@@ -161,38 +157,97 @@ Atomic is open so you can inspect and adapt it. You own the workflow, the eviden
 
 Own your intelligence. Build in the open. Question the defaults. Keep control of the process. ☠︎
 
+<!-- readme-badges:start -->
+
 ### Works with your engineering stack
 
 <p align="center">
-  <a href="https://github.com/"><img src="https://img.shields.io/badge/GitHub-181825?style=flat-square&amp;logo=github&amp;logoColor=white" alt="Connect Atomic with GitHub"></a>
-  <a href="https://gitlab.com/"><img src="https://img.shields.io/badge/GitLab-181825?style=flat-square&amp;logo=gitlab&amp;logoColor=white" alt="Connect Atomic with GitLab"></a>
-  <a href="https://git-scm.com/"><img src="https://img.shields.io/badge/Git-181825?style=flat-square&amp;logo=git&amp;logoColor=white" alt="Use Git with Atomic"></a>
-  <a href="https://www.atlassian.com/software/jira"><img src="https://img.shields.io/badge/Jira-181825?style=flat-square&amp;logo=jira&amp;logoColor=white" alt="Connect Atomic with Jira"></a>
-  <a href="https://linear.app/"><img src="https://img.shields.io/badge/Linear-181825?style=flat-square&amp;logo=linear&amp;logoColor=white" alt="Connect Atomic with Linear"></a>
-  <a href="https://www.notion.so/"><img src="https://img.shields.io/badge/Notion-181825?style=flat-square&amp;logo=notion&amp;logoColor=white" alt="Connect Atomic with Notion"></a>
-  <a href="https://slack.com/"><img src="https://img.shields.io/badge/Slack-181825?style=flat-square&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyBmaWxsPSJ3aGl0ZSIgcm9sZT0iaW1nIiB2aWV3Qm94PSIwIDAgMjQgMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI%2BPHBhdGggZD0iTTUuMDQyIDE1LjE2NWEyLjUyOCAyLjUyOCAwIDAgMS0yLjUyIDIuNTIzQTIuNTI4IDIuNTI4IDAgMCAxIDAgMTUuMTY1YTIuNTI3IDIuNTI3IDAgMCAxIDIuNTIyLTIuNTJoMi41MnYyLjUyek02LjMxMyAxNS4xNjVhMi41MjcgMi41MjcgMCAwIDEgMi41MjEtMi41MiAyLjUyNyAyLjUyNyAwIDAgMSAyLjUyMSAyLjUydjYuMzEzQTIuNTI4IDIuNTI4IDAgMCAxIDguODM0IDI0YTIuNTI4IDIuNTI4IDAgMCAxLTIuNTIxLTIuNTIydi02LjMxM3pNOC44MzQgNS4wNDJhMi41MjggMi41MjggMCAwIDEtMi41MjEtMi41MkEyLjUyOCAyLjUyOCAwIDAgMSA4LjgzNCAwYTIuNTI4IDIuNTI4IDAgMCAxIDIuNTIxIDIuNTIydjIuNTJIOC44MzR6TTguODM0IDYuMzEzYTIuNTI4IDIuNTI4IDAgMCAxIDIuNTIxIDIuNTIxIDIuNTI4IDIuNTI4IDAgMCAxLTIuNTIxIDIuNTIxSDIuNTIyQTIuNTI4IDIuNTI4IDAgMCAxIDAgOC44MzRhMi41MjggMi41MjggMCAwIDEgMi41MjItMi41MjFoNi4zMTJ6TTE4Ljk1NiA4LjgzNGEyLjUyOCAyLjUyOCAwIDAgMSAyLjUyMi0yLjUyMUEyLjUyOCAyLjUyOCAwIDAgMSAyNCA4LjgzNGEyLjUyOCAyLjUyOCAwIDAgMS0yLjUyMiAyLjUyMWgtMi41MjJWOC44MzR6TTE3LjY4OCA4LjgzNGEyLjUyOCAyLjUyOCAwIDAgMS0yLjUyMyAyLjUyMSAyLjUyNyAyLjUyNyAwIDAgMS0yLjUyLTIuNTIxVjIuNTIyQTIuNTI3IDIuNTI3IDAgMCAxIDE1LjE2NSAwYTIuNTI4IDIuNTI4IDAgMCAxIDIuNTIzIDIuNTIydjYuMzEyek0xNS4xNjUgMTguOTU2YTIuNTI4IDIuNTI4IDAgMCAxIDIuNTIzIDIuNTIyQTIuNTI4IDIuNTI4IDAgMCAxIDE1LjE2NSAyNGEyLjUyNyAyLjUyNyAwIDAgMS0yLjUyLTIuNTIydi0yLjUyMmgyLjUyek0xNS4xNjUgMTcuNjg4YTIuNTI3IDIuNTI3IDAgMCAxLTIuNTItMi41MjMgMi41MjYgMi41MjYgMCAwIDEgMi41Mi0yLjUyaDYuMzEzQTIuNTI3IDIuNTI3IDAgMCAxIDI0IDE1LjE2NWEyLjUyOCAyLjUyOCAwIDAgMS0yLjUyMiAyLjUyM2gtNi4zMTN6Ii8%2BPC9zdmc%2B" alt="Connect Atomic with Slack"></a>
-  <br>
-  <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-181825?style=flat-square&amp;logo=docker&amp;logoColor=white" alt="Use Docker with Atomic"></a>
-  <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-181825?style=flat-square&amp;logo=kubernetes&amp;logoColor=white" alt="Use Kubernetes with Atomic"></a>
-  <a href="https://aws.amazon.com/"><img src="https://img.shields.io/badge/AWS-181825?style=flat-square&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyBmaWxsPSJ3aGl0ZSIgcm9sZT0iaW1nIiB2aWV3Qm94PSIwIDAgMjQgMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI%2BPHBhdGggZD0iTTYuNzYzIDEwLjAzNmMwIC4yOTYuMDMyLjUzNS4wODguNzEuMDY0LjE3Ni4xNDQuMzY4LjI1Ni41NzYuMDQuMDYzLjA1Ni4xMjcuMDU2LjE4MyAwIC4wOC0uMDQ4LjE2LS4xNTIuMjRsLS41MDMuMzM1YS4zODMuMzgzIDAgMCAxLS4yMDguMDcyYy0uMDggMC0uMTYtLjA0LS4yMzktLjExMmEyLjQ3IDIuNDcgMCAwIDEtLjI4Ny0uMzc1IDYuMTggNi4xOCAwIDAgMS0uMjQ4LS40NzFjLS42MjIuNzM0LTEuNDA1IDEuMTAxLTIuMzQ3IDEuMTAxLS42NyAwLTEuMjA1LS4xOTEtMS41OTYtLjU3NC0uMzkxLS4zODQtLjU5LS44OTQtLjU5LTEuNTMzIDAtLjY3OC4yMzktMS4yMy43MjYtMS42NDQuNDg3LS40MTUgMS4xMzMtLjYyMyAxLjk1NS0uNjIzLjI3MiAwIC41NTEuMDI0Ljg0Ni4wNjQuMjk2LjA0LjYuMTA0LjkxOC4xNzZ2LS41ODNjMC0uNjA3LS4xMjctMS4wMy0uMzc1LTEuMjc3LS4yNTUtLjI0OC0uNjg2LS4zNjctMS4zLS4zNjctLjI4IDAtLjU2OC4wMzEtLjg2My4xMDMtLjI5NS4wNzItLjU4My4xNi0uODYyLjI3MmEyLjI4NyAyLjI4NyAwIDAgMS0uMjguMTA0LjQ4OC40ODggMCAwIDEtLjEyNy4wMjNjLS4xMTIgMC0uMTY4LS4wOC0uMTY4LS4yNDd2LS4zOTFjMC0uMTI4LjAxNi0uMjI0LjA1Ni0uMjhhLjU5Ny41OTcgMCAwIDEgLjIyNC0uMTY3Yy4yNzktLjE0NC42MTQtLjI2NCAxLjAwNS0uMzZhNC44NCA0Ljg0IDAgMCAxIDEuMjQ2LS4xNTFjLjk1IDAgMS42NDQuMjE2IDIuMDkxLjY0Ny40MzkuNDMuNjYyIDEuMDg1LjY2MiAxLjk2M3YyLjU4NnptLTMuMjQgMS4yMTRjLjI2MyAwIC41MzQtLjA0OC44MjItLjE0NC4yODctLjA5Ni41NDMtLjI3MS43NTgtLjUxLjEyOC0uMTUyLjIyNC0uMzIuMjcyLS41MTIuMDQ3LS4xOTEuMDgtLjQyMy4wOC0uNjk0di0uMzM1YTYuNjYgNi42NiAwIDAgMC0uNzM1LS4xMzYgNi4wMiA2LjAyIDAgMCAwLS43NS0uMDQ4Yy0uNTM1IDAtLjkyNi4xMDQtMS4xOS4zMi0uMjYzLjIxNS0uMzkuNTE4LS4zOS45MTcgMCAuMzc1LjA5NS42NTUuMjk1Ljg0Ni4xOTEuMi40Ny4yOTYuODM4LjI5NnptNi40MS44NjJjLS4xNDQgMC0uMjQtLjAyNC0uMzA0LS4wOC0uMDY0LS4wNDgtLjEyLS4xNi0uMTY4LS4zMTFMNy41ODYgNS41NWExLjM5OCAxLjM5OCAwIDAgMS0uMDcyLS4zMmMwLS4xMjguMDY0LS4yLjE5MS0uMmguNzgzYy4xNTEgMCAuMjU1LjAyNS4zMS4wOC4wNjUuMDQ4LjExMy4xNi4xNi4zMTJsMS4zNDIgNS4yODQgMS4yNDUtNS4yODRjLjA0LS4xNi4wODgtLjI2NC4xNTEtLjMxMmEuNTQ5LjU0OSAwIDAgMSAuMzItLjA4aC42MzhjLjE1MiAwIC4yNTYuMDI1LjMyLjA4LjA2My4wNDguMTIuMTYuMTUxLjMxMmwxLjI2MSA1LjM0OCAxLjM4MS01LjM0OGMuMDQ4LS4xNi4xMDQtLjI2NC4xNi0uMzEyYS41Mi41MiAwIDAgMSAuMzExLS4wOGguNzQzYy4xMjcgMCAuMi4wNjUuMi4yIDAgLjA0LS4wMDkuMDgtLjAxNy4xMjhhMS4xMzcgMS4xMzcgMCAwIDEtLjA1Ni4ybC0xLjkyMyA2LjE3Yy0uMDQ4LjE2LS4xMDQuMjYzLS4xNjguMzExYS41MS41MSAwIDAgMS0uMzAzLjA4aC0uNjg3Yy0uMTUxIDAtLjI1NS0uMDI0LS4zMi0uMDgtLjA2My0uMDU2LS4xMTktLjE2LS4xNS0uMzJsLTEuMjM4LTUuMTQ4LTEuMjMgNS4xNGMtLjA0LjE2LS4wODcuMjY0LS4xNS4zMi0uMDY1LjA1Ni0uMTc3LjA4LS4zMi4wOHptMTAuMjU2LjIxNWMtLjQxNSAwLS44My0uMDQ4LTEuMjI5LS4xNDMtLjM5OS0uMDk2LS43MS0uMi0uOTE4LS4zMi0uMTI4LS4wNzEtLjIxNS0uMTUxLS4yNDctLjIyM2EuNTYzLjU2MyAwIDAgMS0uMDQ4LS4yMjR2LS40MDdjMC0uMTY3LjA2NC0uMjQ3LjE4My0uMjQ3LjA0OCAwIC4wOTYuMDA4LjE0NC4wMjQuMDQ4LjAxNi4xMi4wNDguMi4wOC4yNzEuMTIuNTY2LjIxNS44NzguMjc5LjMxOS4wNjQuNjMuMDk2Ljk1LjA5Ni41MDIgMCAuODk0LS4wODggMS4xNjUtLjI2NGEuODYuODYgMCAwIDAgLjQxNS0uNzU4Ljc3Ny43NzcgMCAwIDAtLjIxNS0uNTU5Yy0uMTQ0LS4xNTEtLjQxNi0uMjg3LS44MDctLjQxNWwtMS4xNTctLjM2Yy0uNTgzLS4xODMtMS4wMTQtLjQ1NC0xLjI3Ny0uODEzYTEuOTAyIDEuOTAyIDAgMCAxLS40LTEuMTU4YzAtLjMzNS4wNzMtLjYzLjIxNi0uODg2LjE0NC0uMjU1LjMzNS0uNDc5LjU3NS0uNjU0LjI0LS4xODQuNTEtLjMyLjgzLS40MTUuMzItLjA5Ni42NTUtLjEzNiAxLjAwNi0uMTM2LjE3NSAwIC4zNTkuMDA4LjUzNS4wMzIuMTgzLjAyNC4zNS4wNTYuNTE4LjA4OC4xNi4wNC4zMTIuMDguNDU1LjEyNy4xNDQuMDQ4LjI1Ni4wOTYuMzM2LjE0NGEuNjkuNjkgMCAwIDEgLjI0LjIuNDMuNDMgMCAwIDEgLjA3MS4yNjN2LjM3NWMwIC4xNjgtLjA2NC4yNTYtLjE4NC4yNTZhLjgzLjgzIDAgMCAxLS4zMDMtLjA5NiAzLjY1MiAzLjY1MiAwIDAgMC0xLjUzMi0uMzExYy0uNDU1IDAtLjgxNS4wNzEtMS4wNjIuMjIzLS4yNDguMTUyLS4zNzUuMzgzLS4zNzUuNzEgMCAuMjI0LjA4LjQxNi4yNC41NjcuMTU5LjE1Mi40NTQuMzA0Ljg3Ny40NGwxLjEzNC4zNThjLjU3NC4xODQuOTkuNDQgMS4yMzcuNzY3LjI0Ny4zMjcuMzY3LjcwMi4zNjcgMS4xMTcgMCAuMzQzLS4wNzIuNjU1LS4yMDcuOTI2LS4xNDQuMjcyLS4zMzYuNTExLS41ODMuNzAzLS4yNDguMi0uNTQzLjM0My0uODg2LjQ0Ny0uMzYuMTExLS43MzQuMTY3LTEuMTQyLjE2N3pNMjEuNjk4IDE2LjIwN2MtMi42MjYgMS45NC02LjQ0MiAyLjk2OS05LjcyMiAyLjk2OS00LjU5OCAwLTguNzQtMS43LTExLjg3LTQuNTI2LS4yNDctLjIyMy0uMDI0LS41MjcuMjcyLS4zNTEgMy4zODQgMS45NjMgNy41NTkgMy4xNTMgMTEuODc3IDMuMTUzIDIuOTE0IDAgNi4xMTQtLjYwNyA5LjA2LTEuODUyLjQzOS0uMi44MTQuMjg3LjM4My42MDd6TTIyLjc5MiAxNC45NjFjLS4zMzYtLjQzLTIuMjItLjIwNy0zLjA3NC0uMTAzLS4yNTUuMDMyLS4yOTUtLjE5Mi0uMDYzLS4zNiAxLjUtMS4wNTMgMy45NjctLjc1IDQuMjU0LS4zOTkuMjg3LjM2LS4wOCAyLjgyNi0xLjQ4NSA0LjAwNy0uMjE1LjE4NC0uNDIzLjA4OC0uMzI3LS4xNTEuMzItLjc5IDEuMDMtMi41Ny42OTUtMi45OTR6Ii8%2BPC9zdmc%2B" alt="Connect Atomic with AWS"></a>
-  <a href="https://cloud.google.com/"><img src="https://img.shields.io/badge/Google%20Cloud-181825?style=flat-square&amp;logo=googlecloud&amp;logoColor=white" alt="Connect Atomic with Google Cloud"></a>
-  <a href="https://azure.microsoft.com/"><img src="https://img.shields.io/badge/Azure-181825?style=flat-square&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyBmaWxsPSJ3aGl0ZSIgcm9sZT0iaW1nIiB2aWV3Qm94PSIwIDAgMjQgMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI%2BPHBhdGggZD0iTTIyLjM3OSAyMy4zNDNhMS42MiAxLjYyIDAgMCAwIDEuNTM2LTIuMTR2LjAwMkwxNy4zNSAxLjc2QTEuNjIgMS42MiAwIDAgMCAxNS44MTYuNjU3SDguMTg0QTEuNjIgMS42MiAwIDAgMCA2LjY1IDEuNzZMLjA4NiAyMS4yMDRhMS42MiAxLjYyIDAgMCAwIDEuNTM2IDIuMTM5aDQuNzQxYTEuNjIgMS42MiAwIDAgMCAxLjUzNS0xLjEwM2wuOTc3LTIuODkyIDQuOTQ3IDMuNjc1Yy4yOC4yMDguNjE4LjMyLjk2Ni4zMm0tMy4wODQtMTIuNTMxIDMuNjI0IDEwLjczOWEuNTQuNTQgMCAwIDEtLjUxLjcxM3YtLjAwMWgtLjAzYS41NC41NCAwIDAgMS0uMzIyLS4xMDZsLTkuMjg3LTYuOWg0Ljg1M202LjMxMyA3LjAwNmMuMTE2LS4zMjYuMTMtLjY5NC4wMDctMS4wNThMOS43OSAxLjc2YTEuNzIyIDEuNzIyIDAgMCAwLS4wMDctLjAyaDYuMDM0YS41NC41NCAwIDAgMSAuNTEyLjM2Nmw2LjU2MiAxOS40NDVhLjU0LjU0IDAgMCAxLS4zMzguNjg0Ii8%2BPC9zdmc%2B" alt="Connect Atomic with Azure"></a>
-  <br>
-  <a href="https://sentry.io/"><img src="https://img.shields.io/badge/Sentry-181825?style=flat-square&amp;logo=sentry&amp;logoColor=white" alt="Connect Atomic with Sentry"></a>
-  <a href="https://www.datadoghq.com/"><img src="https://img.shields.io/badge/Datadog-181825?style=flat-square&amp;logo=datadog&amp;logoColor=white" alt="Connect Atomic with Datadog"></a>
-  <a href="https://www.postgresql.org/"><img src="https://img.shields.io/badge/PostgreSQL-181825?style=flat-square&amp;logo=postgresql&amp;logoColor=white" alt="Use PostgreSQL with Atomic"></a>
-  <a href="https://playwright.dev/"><img src="https://img.shields.io/badge/Playwright-181825?style=flat-square&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgdmlld0JveD0iMCAwIDQwMCA0MDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI%2BPHBhdGggZD0iTTEzNi40NDQgMjIxLjU1NkMxMjMuNTU4IDIyNS4yMTMgMTE1LjEwNCAyMzEuNjI1IDEwOS41MzUgMjM4LjAzMkMxMTQuODY5IDIzMy4zNjQgMTIyLjAxNCAyMjkuMDggMTMxLjY1MiAyMjYuMzQ4QzE0MS41MSAyMjMuNTU0IDE0OS45MiAyMjMuNTc0IDE1Ni44NjkgMjI0LjkxNVYyMTkuNDgxQzE1MC45NDEgMjE4LjkzOSAxNDQuMTQ1IDIxOS4zNzEgMTM2LjQ0NCAyMjEuNTU2Wk0xMDguOTQ2IDE3NS44NzZMNjEuMDg5NSAxODguNDg0QzYxLjA4OTUgMTg4LjQ4NCA2MS45NjE3IDE4OS43MTYgNjMuNTc2NyAxOTEuMzZMMTA0LjE1MyAxODAuNjY4QzEwNC4xNTMgMTgwLjY2OCAxMDMuNTc4IDE4OC4wNzcgOTguNTg0NyAxOTQuNzA1QzEwOC4wMyAxODcuNTU5IDEwOC45NDYgMTc1Ljg3NiAxMDguOTQ2IDE3NS44NzZaTTE0OS4wMDUgMjg4LjM0N0M4MS42NTgyIDMwNi40ODYgNDYuMDI3MiAyMjguNDM4IDM1LjIzOTYgMTg3LjkyOEMzMC4yNTU2IDE2OS4yMjkgMjguMDc5OSAxNTUuMDY3IDI3LjUgMTQ1LjkyOEMyNy40Mzc3IDE0NC45NzkgMjcuNDY2NSAxNDQuMTc5IDI3LjUzMzYgMTQzLjQ0NkMyNC4wNCAxNDMuNjU3IDIyLjM2NzQgMTQ1LjQ3MyAyMi43MDc3IDE1MC43MjFDMjMuMjg3NiAxNTkuODU1IDI1LjQ2MzMgMTc0LjAxNiAzMC40NDczIDE5Mi43MjFDNDEuMjMwMSAyMzMuMjI1IDc2Ljg2NTkgMzExLjI3MyAxNDQuMjEzIDI5My4xMzRDMTU4Ljg3MiAyODkuMTg1IDE2OS44ODUgMjgxLjk5MiAxNzguMTUyIDI3Mi44MUMxNzAuNTMyIDI3OS42OTIgMTYwLjk5NSAyODUuMTEyIDE0OS4wMDUgMjg4LjM0N1pNMTYxLjY2MSAxMjguMTFWMTMyLjkwM0gxODguMDc3QzE4Ny41MzUgMTMxLjIwNiAxODYuOTg5IDEyOS42NzcgMTg2LjQ0NyAxMjguMTFIMTYxLjY2MVoiIGZpbGw9IiMyRDQ1NTIiLz48cGF0aCBkPSJNMTkzLjk4MSAxNjcuNTg0QzIwNS44NjEgMTcwLjk1OCAyMTIuMTQ0IDE3OS4yODcgMjE1LjQ2NSAxODYuNjU4TDIyOC43MTEgMTkwLjQyQzIyOC43MTEgMTkwLjQyIDIyNi45MDQgMTY0LjYyMyAyMDMuNTcgMTU3Ljk5NUMxODEuNzQxIDE1MS43OTMgMTY4LjMwOCAxNzAuMTI0IDE2Ni42NzQgMTcyLjQ5NkMxNzMuMDI0IDE2Ny45NzIgMTgyLjI5NyAxNjQuMjY4IDE5My45ODEgMTY3LjU4NFpNMjk5LjQyMiAxODYuNzc3QzI3Ny41NzMgMTgwLjU0NyAyNjQuMTQ1IDE5OC45MTYgMjYyLjUzNSAyMDEuMjU1QzI2OC44OSAxOTYuNzM2IDI3OC4xNTggMTkzLjAzMSAyODkuODM3IDE5Ni4zNjJDMzAxLjY5OCAxOTkuNzQxIDMwNy45NzYgMjA4LjA2IDMxMS4zMDcgMjE1LjQzNkwzMjQuNTcyIDIxOS4yMTJDMzI0LjU3MiAyMTkuMjEyIDMyMi43MzYgMTkzLjQxIDI5OS40MjIgMTg2Ljc3N1pNMjg2LjI2MiAyNTQuNzk1TDE3Ni4wNzIgMjIzLjk5QzE3Ni4wNzIgMjIzLjk5IDE3Ny4yNjUgMjMwLjAzOCAxODEuODQyIDIzNy44NjlMMjc0LjYxNyAyNjMuODA1QzI4Mi4yNTUgMjU5LjM4NiAyODYuMjYyIDI1NC43OTUgMjg2LjI2MiAyNTQuNzk1Wk0yMDkuODY3IDMyMS4xMDJDMTIyLjYxOCAyOTcuNzEgMTMzLjE2NiAxODYuNTQzIDE0Ny4yODQgMTMzLjg2NUMxNTMuMDk3IDExMi4xNTYgMTU5LjA3MyA5Ni4wMjAzIDE2NC4wMjkgODUuMjA0QzE2MS4wNzIgODQuNTk1MyAxNTguNjIzIDg2LjE1MjkgMTU2LjIwMyA5MS4wNzQ2QzE1MC45NDEgMTAxLjc0NyAxNDQuMjEyIDExOS4xMjQgMTM3LjcgMTQzLjQ1QzEyMy41ODYgMTk2LjEyNyAxMTMuMDM4IDMwNy4yOSAyMDAuMjgzIDMzMC42ODJDMjQxLjQwNiAzNDEuNjk5IDI3My40NDIgMzI0Ljk1NSAyOTcuMzIzIDI5OC42NTlDMjc0LjY1NSAzMTkuMTkgMjQ1LjcxNCAzMzAuNzAxIDIwOS44NjcgMzIxLjEwMloiIGZpbGw9IiMyRDQ1NTIiLz48cGF0aCBkPSJNMTYxLjY2MSAyNjIuMjk2VjIzOS44NjNMOTkuMzMyNCAyNTcuNTM3Qzk5LjMzMjQgMjU3LjUzNyAxMDMuOTM4IDIzMC43NzcgMTM2LjQ0NCAyMjEuNTU2QzE0Ni4zMDIgMjE4Ljc2MiAxNTQuNzEzIDIxOC43ODEgMTYxLjY2MSAyMjAuMTIzVjEyOC4xMUgxOTIuODY5QzE4OS40NzEgMTE3LjYxIDE4Ni4xODQgMTA5LjUyNiAxODMuNDIzIDEwMy45MDlDMTc4Ljg1NiA5NC42MTIgMTc0LjE3NCAxMDAuNzc1IDE2My41NDUgMTA5LjY2NUMxNTYuMDU5IDExNS45MTkgMTM3LjEzOSAxMjkuMjYxIDEwOC42NjggMTM2LjkzM0M4MC4xOTY2IDE0NC42MSA1Ny4xNzkgMTQyLjU3NCA0Ny41NzUyIDE0MC45MTFDMzMuOTYwMSAxMzguNTYyIDI2LjgzODcgMTM1LjU3MiAyNy41MDQ5IDE0NS45MjhDMjguMDg0NyAxNTUuMDYyIDMwLjI2MDUgMTY5LjIyNCAzNS4yNDQ1IDE4Ny45MjhDNDYuMDI3MiAyMjguNDMzIDgxLjY2MyAzMDYuNDgxIDE0OS4wMSAyODguMzQyQzE2Ni42MDIgMjgzLjYwMiAxNzkuMDE5IDI3NC4yMzMgMTg3LjYyNiAyNjIuMjkxSDE2MS42NjFWMjYyLjI5NlpNNjEuMDg0OCAxODguNDg0TDEwOC45NDYgMTc1Ljg3NkMxMDguOTQ2IDE3NS44NzYgMTA3LjU1MSAxOTQuMjg4IDg5LjYwODcgMTk5LjAxOEM3MS42NjE0IDIwMy43NDMgNjEuMDg0OCAxODguNDg0IDYxLjA4NDggMTg4LjQ4NFoiIGZpbGw9IiNFMjU3NEMiLz48cGF0aCBkPSJNMzQxLjc4NiAxMjkuMTc0QzMyOS4zNDUgMTMxLjM1NSAyOTkuNDk4IDEzNC4wNzIgMjYyLjYxMiAxMjQuMTg1QzIyNS43MTYgMTE0LjMwNCAyMDEuMjM2IDk3LjAyMjQgMTkxLjUzNyA4OC44OTk0QzE3Ny43ODggNzcuMzgzNCAxNzEuNzQgNjkuMzgwMiAxNjUuNzg4IDgxLjQ4NTdDMTYwLjUyNiA5Mi4xNjMgMTUzLjc5NyAxMDkuNTQgMTQ3LjI4NCAxMzMuODY2QzEzMy4xNzEgMTg2LjU0MyAxMjIuNjIzIDI5Ny43MDYgMjA5Ljg2NyAzMjEuMDk4QzI5Ny4wOTMgMzQ0LjQ3IDM0My41MyAyNDIuOTIgMzU3LjY0NCAxOTAuMjM4QzM2NC4xNTcgMTY1LjkxNyAzNjcuMDEzIDE0Ny41IDM2Ny43OTkgMTM1LjYyNUMzNjguNjk1IDEyMi4xNzMgMzU5LjQ1NSAxMjYuMDc4IDM0MS43ODYgMTI5LjE3NFpNMTY2LjQ5NyAxNzIuNzU2QzE2Ni40OTcgMTcyLjc1NiAxODAuMjQ2IDE1MS4zNzIgMjAzLjU2NSAxNThDMjI2Ljg5OSAxNjQuNjI4IDIyOC43MDYgMTkwLjQyNSAyMjguNzA2IDE5MC40MjVMMTY2LjQ5NyAxNzIuNzU2Wk0yMjMuNDIgMjY4LjcxM0MxODIuNDAzIDI1Ni42OTggMTc2LjA3NyAyMjMuOTkgMTc2LjA3NyAyMjMuOTlMMjg2LjI2MiAyNTQuNzk2QzI4Ni4yNjIgMjU0Ljc5MSAyNjQuMDIxIDI4MC41NzggMjIzLjQyIDI2OC43MTNaTTI2Mi4zNzcgMjAxLjQ5NUMyNjIuMzc3IDIwMS40OTUgMjc2LjEwNyAxODAuMTI2IDI5OS40MjIgMTg2Ljc3M0MzMjIuNzM2IDE5My40MTEgMzI0LjU3MiAyMTkuMjA4IDMyNC41NzIgMjE5LjIwOEwyNjIuMzc3IDIwMS40OTVaIiBmaWxsPSIjMkVBRDMzIi8%2BPHBhdGggZD0iTTEzOS44OCAyNDYuMDRMOTkuMzMyNCAyNTcuNTMyQzk5LjMzMjQgMjU3LjUzMiAxMDMuNzM3IDIzMi40NCAxMzMuNjA3IDIyMi40OTZMMTEwLjY0NyAxMzYuMzNMMTA4LjY2MyAxMzYuOTMzQzgwLjE5MTggMTQ0LjYxMSA1Ny4xNzQyIDE0Mi41NzQgNDcuNTcwNCAxNDAuOTExQzMzLjk1NTQgMTM4LjU2MyAyNi44MzQgMTM1LjU3MiAyNy41MDAxIDE0NS45MjlDMjguMDggMTU1LjA2MyAzMC4yNTU3IDE2OS4yMjQgMzUuMjM5NyAxODcuOTI5QzQ2LjAyMjUgMjI4LjQzMyA4MS42NTgzIDMwNi40ODEgMTQ5LjAwNSAyODguMzQyTDE1MC45ODkgMjg3LjcxOUwxMzkuODggMjQ2LjA0Wk02MS4wODQ4IDE4OC40ODVMMTA4Ljk0NiAxNzUuODc2QzEwOC45NDYgMTc1Ljg3NiAxMDcuNTUxIDE5NC4yODggODkuNjA4NyAxOTkuMDE4QzcxLjY2MTUgMjAzLjc0MyA2MS4wODQ4IDE4OC40ODUgNjEuMDg0OCAxODguNDg1WiIgZmlsbD0iI0Q2NTM0OCIvPjxwYXRoIGQ9Ik0yMjUuMjcgMjY5LjE2M0wyMjMuNDE1IDI2OC43MTJDMTgyLjM5OCAyNTYuNjk4IDE3Ni4wNzIgMjIzLjk5IDE3Ni4wNzIgMjIzLjk5TDIzMi44OSAyMzkuODcyTDI2Mi45NzEgMTI0LjI4MUwyNjIuNjA3IDEyNC4xODVDMjI1LjcxMSAxMTQuMzA0IDIwMS4yMzIgOTcuMDIyNCAxOTEuNTMyIDg4Ljg5OTRDMTc3Ljc4MyA3Ny4zODM0IDE3MS43MzUgNjkuMzgwMiAxNjUuNzgzIDgxLjQ4NTdDMTYwLjUyNiA5Mi4xNjMgMTUzLjc5NyAxMDkuNTQgMTQ3LjI4NCAxMzMuODY2QzEzMy4xNzEgMTg2LjU0MyAxMjIuNjIzIDI5Ny43MDYgMjA5Ljg2NyAzMjEuMDk3TDIxMS42NTUgMzIxLjVMMjI1LjI3IDI2OS4xNjNaTTE2Ni40OTcgMTcyLjc1NkMxNjYuNDk3IDE3Mi43NTYgMTgwLjI0NiAxNTEuMzcyIDIwMy41NjUgMTU4QzIyNi44OTkgMTY0LjYyOCAyMjguNzA2IDE5MC40MjUgMjI4LjcwNiAxOTAuNDI1TDE2Ni40OTcgMTcyLjc1NloiIGZpbGw9IiMxRDhEMjIiLz48cGF0aCBkPSJNMTQxLjk0NiAyNDUuNDUxTDEzMS4wNzIgMjQ4LjUzN0MxMzMuNjQxIDI2My4wMTkgMTM4LjE2OSAyNzYuOTE3IDE0NS4yNzYgMjg5LjE5NUMxNDYuNTEzIDI4OC45MjIgMTQ3Ljc0IDI4OC42ODcgMTQ5IDI4OC4zNDJDMTUyLjMwMiAyODcuNDUxIDE1NS4zNjQgMjg2LjM0OCAxNTguMzEyIDI4NS4xNDVDMTUwLjM3MSAyNzMuMzYxIDE0NS4xMTggMjU5Ljc4OSAxNDEuOTQ2IDI0NS40NTFaTTEzNy43IDE0My40NTFDMTMyLjExMiAxNjQuMzA3IDEyNy4xMTMgMTk0LjMyNiAxMjguNDg5IDIyNC40MzZDMTMwLjk1MiAyMjMuMzY3IDEzMy41NTQgMjIyLjM3MSAxMzYuNDQ0IDIyMS41NTFMMTM4LjQ1NyAyMjEuMTAxQzEzNi4wMDMgMTg4LjkzOSAxNDEuMzA4IDE1Ni4xNjUgMTQ3LjI4NCAxMzMuODY2QzE0OC43OTkgMTI4LjIyNSAxNTAuMzE4IDEyMi45NzggMTUxLjgzMiAxMTguMDg1QzE0OS4zOTMgMTE5LjYzNyAxNDYuNzY3IDEyMS4yMjggMTQzLjc3NiAxMjIuODY3QzE0MS43NTkgMTI5LjA5MyAxMzkuNzIyIDEzNS44OTggMTM3LjcgMTQzLjQ1MVoiIGZpbGw9IiNDMDRCNDEiLz48L3N2Zz4%3D" alt="Use Playwright with Atomic"></a>
-  <a href="https://www.google.com/chrome/"><img src="https://img.shields.io/badge/Chrome-181825?style=flat-square&amp;logo=googlechrome&amp;logoColor=white" alt="Use Chrome with Atomic"></a>
-  <br>
-  <a href="https://docs.bastani.ai/extensions"><img src="https://img.shields.io/badge/MCP-181825?style=flat-square&amp;logo=modelcontextprotocol&amp;logoColor=white" alt="Connect Atomic through MCP servers"></a>
-  <a href="https://docs.bastani.ai/extensions"><img src="https://img.shields.io/badge/Any%20CLI%20or%20API-181825?style=flat-square&amp;logo=gnubash&amp;logoColor=white" alt="Connect Atomic with any CLI or API"></a>
+  <a href="https://github.com/"><img src="assets/readme-badges/stack/github.svg" alt="Connect Atomic with GitHub"></a>
+  <a href="https://gitlab.com/"><img src="assets/readme-badges/stack/gitlab.svg" alt="Connect Atomic with GitLab"></a>
+  <a href="https://git-scm.com/"><img src="assets/readme-badges/stack/git.svg" alt="Use Git with Atomic"></a>
+  <a href="https://www.atlassian.com/software/jira"><img src="assets/readme-badges/stack/jira.svg" alt="Connect Atomic with Jira"></a>
+  <a href="https://linear.app/"><img src="assets/readme-badges/stack/linear.svg" alt="Connect Atomic with Linear"></a>
+  <a href="https://www.notion.so/"><img src="assets/readme-badges/stack/notion.svg" alt="Connect Atomic with Notion"></a>
+  <a href="https://slack.com/"><img src="assets/readme-badges/stack/slack.svg" alt="Connect Atomic with Slack"></a>
+  <a href="https://www.docker.com/"><img src="assets/readme-badges/stack/docker.svg" alt="Use Docker with Atomic"></a>
+  <a href="https://kubernetes.io/"><img src="assets/readme-badges/stack/kubernetes.svg" alt="Use Kubernetes with Atomic"></a>
+  <a href="https://aws.amazon.com/"><img src="assets/readme-badges/stack/aws.svg" alt="Connect Atomic with AWS"></a>
+  <a href="https://cloud.google.com/"><img src="assets/readme-badges/stack/google-cloud.svg" alt="Connect Atomic with Google Cloud"></a>
+  <a href="https://azure.microsoft.com/"><img src="assets/readme-badges/stack/azure.svg" alt="Connect Atomic with Azure"></a>
+  <a href="https://sentry.io/"><img src="assets/readme-badges/stack/sentry.svg" alt="Connect Atomic with Sentry"></a>
+  <a href="https://www.datadoghq.com/"><img src="assets/readme-badges/stack/datadog.svg" alt="Connect Atomic with Datadog"></a>
+  <a href="https://www.postgresql.org/"><img src="assets/readme-badges/stack/postgresql.svg" alt="Use PostgreSQL with Atomic"></a>
+  <a href="https://playwright.dev/"><img src="assets/readme-badges/stack/playwright.svg" alt="Use Playwright with Atomic"></a>
+  <a href="https://www.google.com/chrome/"><img src="assets/readme-badges/stack/chrome.svg" alt="Use Chrome with Atomic"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="assets/readme-badges/stack/mcp.svg" alt="Connect Atomic through MCP servers"></a>
+  <a href="https://docs.bastani.ai/extensions"><img src="assets/readme-badges/stack/any-cli-or-api.svg" alt="Connect Atomic with any CLI or API"></a>
 </p>
 
 Atomic connects through installed CLIs, MCP servers, APIs, scripts, and custom extensions; you supply the credentials and permissions.
 
+### Works with your models
+
+<p align="center">
+  <a href="https://platform.openai.com/docs/"><img src="assets/readme-badges/providers/openai.svg" alt="OpenAI provider badge for Atomic"></a>
+  <a href="https://docs.anthropic.com/"><img src="assets/readme-badges/providers/anthropic.svg" alt="Anthropic provider badge for Atomic"></a>
+  <a href="https://github.com/features/copilot"><img src="assets/readme-badges/providers/github-copilot.svg" alt="GitHub Copilot provider badge for Atomic"></a>
+  <a href="https://openrouter.ai/"><img src="assets/readme-badges/providers/openrouter.svg" alt="OpenRouter provider badge for Atomic"></a>
+  <a href="https://www.kimi.com/code"><img src="assets/readme-badges/providers/kimi.svg" alt="Kimi provider badge for Atomic"></a>
+  <a href="https://x.ai/api"><img src="assets/readme-badges/providers/xai.svg" alt="xAI provider badge for Atomic"></a>
+  <a href="https://radius.pi.dev/"><img src="assets/readme-badges/providers/radius.svg" alt="Radius provider badge for Atomic"></a>
+  <a href="https://www.ant-ling.com/en/"><img src="assets/readme-badges/providers/ant-ling.svg" alt="Ant Ling provider badge for Atomic"></a>
+  <a href="https://azure.microsoft.com/en-us/products/ai-services/openai-service"><img src="assets/readme-badges/providers/azure-openai.svg" alt="Azure OpenAI provider badge for Atomic"></a>
+  <a href="https://aws.amazon.com/bedrock/"><img src="assets/readme-badges/providers/amazon-bedrock.svg" alt="Amazon Bedrock provider badge for Atomic"></a>
+  <a href="https://platform.deepseek.com/"><img src="assets/readme-badges/providers/deepseek.svg" alt="DeepSeek provider badge for Atomic"></a>
+  <a href="https://build.nvidia.com/"><img src="assets/readme-badges/providers/nvidia-nim.svg" alt="NVIDIA NIM provider badge for Atomic"></a>
+  <a href="https://ai.google.dev/gemini-api"><img src="assets/readme-badges/providers/google-gemini.svg" alt="Google Gemini provider badge for Atomic"></a>
+  <a href="https://cloud.google.com/vertex-ai"><img src="assets/readme-badges/providers/google-vertex-ai.svg" alt="Google Vertex AI provider badge for Atomic"></a>
+  <a href="https://mistral.ai/"><img src="assets/readme-badges/providers/mistral.svg" alt="Mistral provider badge for Atomic"></a>
+  <a href="https://groq.com/"><img src="assets/readme-badges/providers/groq.svg" alt="Groq provider badge for Atomic"></a>
+  <a href="https://inference-docs.cerebras.ai/"><img src="assets/readme-badges/providers/cerebras.svg" alt="Cerebras provider badge for Atomic"></a>
+  <a href="https://developers.cloudflare.com/ai/"><img src="assets/readme-badges/providers/cloudflare-ai.svg" alt="Cloudflare AI provider badge for Atomic"></a>
+  <a href="https://vercel.com/ai-gateway"><img src="assets/readme-badges/providers/vercel-ai-gateway.svg" alt="Vercel AI Gateway provider badge for Atomic"></a>
+  <a href="https://z.ai/model-api"><img src="assets/readme-badges/providers/z-ai.svg" alt="Z.ai provider badge for Atomic"></a>
+  <a href="https://opencode.ai/"><img src="assets/readme-badges/providers/opencode.svg" alt="OpenCode provider badge for Atomic"></a>
+  <a href="https://huggingface.co/"><img src="assets/readme-badges/providers/hugging-face.svg" alt="Hugging Face provider badge for Atomic"></a>
+  <a href="https://fireworks.ai/"><img src="assets/readme-badges/providers/fireworks-ai.svg" alt="Fireworks AI provider badge for Atomic"></a>
+  <a href="https://www.together.ai/"><img src="assets/readme-badges/providers/together-ai.svg" alt="Together AI provider badge for Atomic"></a>
+  <a href="https://www.minimax.io/"><img src="assets/readme-badges/providers/minimax.svg" alt="MiniMax provider badge for Atomic"></a>
+  <a href="https://www.moonshot.ai/"><img src="assets/readme-badges/providers/moonshot-ai.svg" alt="Moonshot AI provider badge for Atomic"></a>
+  <a href="https://qwen.ai/"><img src="assets/readme-badges/providers/qwen.svg" alt="Qwen provider badge for Atomic"></a>
+  <a href="https://platform.xiaomimimo.com/"><img src="assets/readme-badges/providers/xiaomi-mimo.svg" alt="Xiaomi MiMo provider badge for Atomic"></a>
+</p>
+
+See [provider setup and the current catalog](https://docs.bastani.ai/providers). Availability depends on your credentials, subscription, region, and the provider catalog; one login does not unlock every provider.
+
+#### Local and open models
+
+<p align="center">
+  <a href="https://github.com/ggml-org/llama.cpp"><img src="assets/readme-badges/local/llama-cpp.svg" alt="llama.cpp local model server badge for Atomic"></a>
+  <a href="https://ollama.com/"><img src="assets/readme-badges/local/ollama.svg" alt="Ollama local model server badge for Atomic"></a>
+  <a href="https://lmstudio.ai/"><img src="assets/readme-badges/local/lm-studio.svg" alt="LM Studio local model server badge for Atomic"></a>
+  <a href="https://docs.vllm.ai/"><img src="assets/readme-badges/local/vllm.svg" alt="vLLM local model server badge for Atomic"></a>
+  <a href="https://github.com/sgl-project/sglang"><img src="assets/readme-badges/local/sglang.svg" alt="SGLang local model server badge for Atomic"></a>
+  <a href="https://huggingface.co/"><img src="assets/readme-badges/local/hugging-face.svg" alt="Hugging Face model hosting badge for Atomic"></a>
+  <a href="https://www.llama.com/"><img src="assets/readme-badges/local/llama.svg" alt="Llama open model family badge for Atomic"></a>
+  <a href="https://ai.google.dev/gemma"><img src="assets/readme-badges/local/gemma.svg" alt="Gemma open model family badge for Atomic"></a>
+  <a href="https://github.com/deepseek-ai/"><img src="assets/readme-badges/local/deepseek.svg" alt="DeepSeek open model family badge for Atomic"></a>
+  <a href="https://qwen.ai/"><img src="assets/readme-badges/local/qwen.svg" alt="Qwen open model family badge for Atomic"></a>
+  <a href="https://github.com/MoonshotAI/"><img src="assets/readme-badges/local/kimi.svg" alt="Kimi open model family badge for Atomic"></a>
+  <a href="https://github.com/zai-org/GLM-4.5"><img src="assets/readme-badges/local/glm.svg" alt="GLM open model family badge for Atomic"></a>
+  <a href="https://mistral.ai/models/"><img src="assets/readme-badges/local/mistral.svg" alt="Mistral open model family badge for Atomic"></a>
+  <a href="https://github.com/MiniMax-AI/"><img src="assets/readme-badges/local/minimax.svg" alt="MiniMax open model family badge for Atomic"></a>
+  <a href="https://openai.com/open-models/"><img src="assets/readme-badges/local/gpt-oss.svg" alt="gpt-oss open model family badge for Atomic"></a>
+</p>
+
+Atomic can run tool-capable models exposed through llama.cpp, Ollama, LM Studio, vLLM, SGLang, Hugging Face, or a compatible OpenAI, Anthropic, or Google endpoint. Actual model and tool support depends on the server and model.
+
+The model-family badges are representative open families, not a closed allowlist. See [Models](https://docs.bastani.ai/models) and [llama.cpp](https://docs.bastani.ai/llama-cpp).
+
+<!-- readme-badges:end -->
 ---
 
-## Install and configure
+## Get started
 
 ### Prerequisites
 
@@ -319,16 +374,16 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 </tr>
 <tr>
 <td width="42%" valign="top">
-<h4>Security review with a repair loop</h4>
-<p>Findings route into a bounded repair loop that keeps running until the gate actually passes.</p>
+<h4>Inspect and control workflows</h4>
+<p>List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.</p>
 <p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop"><sub>Crash course · 6.6 Security review with a repair loop</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.3 Inspect and control workflows</sub></a></p>
 </td>
 <td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#66-security-review-with-a-repair-loop">
+<a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
 <picture>
-<source srcset="assets/feature-wall/27-security-review-repair-loop.gif" type="image/gif">
-<img src="assets/feature-wall/27-security-review-repair-loop.jpg" alt="An Atomic security-review workflow reporting findings and routing them into a bounded repair loop" width="100%">
+<source srcset="assets/feature-wall/30-inspect-control-workflows.gif" type="image/gif">
+<img src="assets/feature-wall/30-inspect-control-workflows.jpg" alt="Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph" width="100%">
 </picture>
 </a>
 </td>

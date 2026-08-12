@@ -9,8 +9,8 @@
 // The animated GIF is the source and the JPG poster is the <img> fallback.
 //
 // The generator owns only the two explicit marked regions. The first six
-// manifest rows form the fast showcase; the other 34 follow the complete
-// Install and configure section.
+// manifest rows form the verifiable-runtime showcase; the other 34 follow the
+// complete Get started section.
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +36,7 @@ const renderRows = (lessons) =>
 			return [
 				"<tr>",
 				'<td width="42%" valign="top">',
-				`<h4>${lesson.title}</h4>`,
+				`<h4>${lesson.display_title ?? lesson.title}</h4>`,
 				`<p>${lesson.blurb}</p>`,
 				`<p><a href="${lesson.docs.url}"><sub>Atomic docs · ${lesson.docs.label}</sub></a></p>`,
 				`<p><a href="${courseLink}"><sub>Crash course · ${lesson.lesson}</sub></a></p>`,
@@ -60,7 +60,7 @@ const remainingLessons = MANIFEST.lessons.slice(FEATURED_COUNT);
 const featuredRegion = [
 	FEATURED_START,
 	"",
-	"### Atomic in action",
+	"## Atomic Verifiable Runtime",
 	"",
 	"Every row is a real Atomic session recorded from the installed product. Open the Atomic docs for reference or follow the crash course step by step.",
 	"",

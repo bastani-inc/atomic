@@ -1,5 +1,5 @@
 {
-  "$comment": "Authoritative map for two generated README feature tables in one fixed 6+34 order: six featured rows above Install and configure, then the other 34 rows after that complete section. Together they cover all 27 core crash-course lessons, three distinct workflow-use paths, and Extras A.1 through A.10. Each row binds its public Atomic docs link, crash-course link, capture source, interactions, and media. validate.mjs checks README.md, capture sources, assets/feature-wall/, and .gitattributes against this file.",
+  "$comment": "Authoritative map for two generated README feature tables in one fixed 6+34 order: six featured rows under Atomic Verifiable Runtime, then the other 34 after the complete Get started section. Together they cover all 27 core crash-course lessons, three distinct workflow-use paths, and Extras A.1 through A.10. Each row binds its public Atomic docs link, crash-course link and lesson title, capture source, interactions, and media; display_title may override only the visible README title. validate.mjs checks README.md, capture sources, assets/feature-wall/, and .gitattributes against this file.",
   "course": {
     "name": "Atomic crash course",
     "url": "https://github.com/bastani-inc/atomic-crash-course",
@@ -229,41 +229,40 @@
       }
     },
     {
-      "id": "W.3",
+      "id": "6.6",
       "order": 6,
-      "capture_source": "scripts/readme-feature-wall/tapes/W.3.tape",
-      "slug": "30-inspect-control-workflows",
+      "capture_source": "scripts/readme-feature-wall/tapes/6.6.tape",
+      "slug": "27-security-review-repair-loop",
       "part": "Part 6 - Workflows",
-      "lesson": "W.3 Inspect and control workflows",
-      "anchor": "#61-touring-the-builtins",
-      "title": "Inspect and control workflows",
-      "blurb": "List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.",
-      "alt": "Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph",
+      "lesson": "6.6 Security review with a repair loop",
+      "anchor": "#66-security-review-with-a-repair-loop",
+      "title": "Security review with a repair loop",
+      "blurb": "Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes.",
+      "alt": "Atomic security-review workflow showing audit findings, a human repair approval, bounded repair, and the final four-of-four graph",
       "interactions": [
-        "/workflow list",
-        "/workflow inputs control-demo",
-        "/workflow control-demo subject=src-client.ts",
-        "/workflow status",
-        "/workflow connect"
+        "reload and start the project-local security-review-demo workflow",
+        "attach through tmux to the live graph and approve its human repair gate",
+        "watch audit, repair-1, and verify-2 run as real tracked nodes"
       ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The connect picker contains only the throwaway lesson runs.",
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The planted demo secret is fictional seed data from the crash course and is never shown in the selected window.",
       "media": {
-        "gif": "assets/feature-wall/30-inspect-control-workflows.gif",
-        "jpg": "assets/feature-wall/30-inspect-control-workflows.jpg"
+        "gif": "assets/feature-wall/27-security-review-repair-loop.gif",
+        "jpg": "assets/feature-wall/27-security-review-repair-loop.jpg"
       },
       "render": {
-        "start": 15,
-        "end": 57,
-        "speed": 3.5,
+        "start": 2,
+        "end": 28,
+        "speed": 2.167,
         "fps": 12,
         "quality": 80,
-        "poster_at": 50,
+        "poster_at": 24,
         "mask": true
       },
       "docs": {
         "label": "Workflows",
         "url": "https://docs.bastani.ai/workflows"
-      }
+      },
+      "display_title": "Verification built in"
     },
     {
       "id": "A.8",
@@ -345,33 +344,35 @@
       }
     },
     {
-      "id": "6.6",
+      "id": "W.3",
       "order": 9,
-      "capture_source": "scripts/readme-feature-wall/tapes/6.6.tape",
-      "slug": "27-security-review-repair-loop",
+      "capture_source": "scripts/readme-feature-wall/tapes/W.3.tape",
+      "slug": "30-inspect-control-workflows",
       "part": "Part 6 - Workflows",
-      "lesson": "6.6 Security review with a repair loop",
-      "anchor": "#66-security-review-with-a-repair-loop",
-      "title": "Security review with a repair loop",
-      "blurb": "Findings route into a bounded repair loop that keeps running until the gate actually passes.",
-      "alt": "An Atomic security-review workflow reporting findings and routing them into a bounded repair loop",
+      "lesson": "W.3 Inspect and control workflows",
+      "anchor": "#61-touring-the-builtins",
+      "title": "Inspect and control workflows",
+      "blurb": "List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.",
+      "alt": "Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph",
       "interactions": [
-        "reload and start the project-local security-review-demo workflow",
-        "attach through tmux to the live graph and approve its human repair gate",
-        "watch audit, repair-1, and verify-2 run as real tracked nodes"
+        "/workflow list",
+        "/workflow inputs control-demo",
+        "/workflow control-demo subject=src-client.ts",
+        "/workflow status",
+        "/workflow connect"
       ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The planted demo secret is fictional seed data from the crash course and is never shown in the selected window.",
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The connect picker contains only the throwaway lesson runs.",
       "media": {
-        "gif": "assets/feature-wall/27-security-review-repair-loop.gif",
-        "jpg": "assets/feature-wall/27-security-review-repair-loop.jpg"
+        "gif": "assets/feature-wall/30-inspect-control-workflows.gif",
+        "jpg": "assets/feature-wall/30-inspect-control-workflows.jpg"
       },
       "render": {
-        "start": 2,
-        "end": 28,
-        "speed": 2.167,
+        "start": 15,
+        "end": 57,
+        "speed": 3.5,
         "fps": 12,
         "quality": 80,
-        "poster_at": 24,
+        "poster_at": 50,
         "mask": true
       },
       "docs": {
