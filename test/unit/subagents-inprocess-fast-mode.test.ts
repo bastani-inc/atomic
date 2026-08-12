@@ -561,5 +561,12 @@ test("async tracker completion metadata handles result and detached paths", () =
 	assert.equal(job?.steps?.[0]?.thinking, "high");
 	assert.equal(job?.steps?.[0]?.fastMode, false);
 	assert.equal(job?.completedSteps, 1);
+
+	tracker.handleStarted({ id: "error-run", agent: "worker" });
+	tracker.handleComplete({ id: "error-run", status: "error" });
+	const errorJob = state.asyncJobs.get("error-run");
+	assert.equal(errorJob?.status, "failed");
+	assert.equal(errorJob?.steps?.[0]?.status, "failed");
+	assert.equal(errorJob?.completedSteps, 0);
 	tracker.resetJobs();
 });

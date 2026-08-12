@@ -250,7 +250,11 @@ export function createAsyncJobTracker(
 		rerender();
 	};
 	function terminalStepStatus(result: { success?: boolean; status?: string }): "complete" | "failed" | "paused" {
-		return result.status === "interrupted" ? "paused" : result.success === false ? "failed" : "complete";
+		return result.status === "interrupted"
+			? "paused"
+			: result.status === "error" || result.status === "skipped" || result.success === false
+				? "failed"
+				: "complete";
 	}
 	const handleStarted = (data: unknown) => {
 		const info = data as AsyncStartedEvent;
