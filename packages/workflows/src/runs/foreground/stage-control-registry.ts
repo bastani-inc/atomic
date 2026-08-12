@@ -26,6 +26,7 @@
  */
 
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
@@ -455,4 +456,21 @@ export function createStageControlRegistry(): StageControlRegistry {
  * explicit instance via `RunOpts.stageControlRegistry`; the singleton
  * is the default consumer surface used by the extension factory.
  */
-export const stageControlRegistry: StageControlRegistry = createStageControlRegistry();
+const stageControlSingleton = createSessionScopedSingleton<StageControlRegistry>(
+	"atomic-workflows/stage-control-registry@1",
+	createStageControlRegistry,
+);
+
+/**
+ * Process-wide registry. Tests and embedders SHOULD prefer passing an
+ * explicit instance via `RunOpts.stageControlRegistry`; the singleton
+ * is the default consumer surface used by the extension factory. A
+ * session-scoped facade, so live stage handles registered before `/reload`
+ * re-evaluated this module stay controllable afterwards.
+ */
+export const stageControlRegistry: StageControlRegistry = stageControlSingleton.facade;
+
+/** Re-bind the singleton registry to the host session scope (`pi.events`). */
+export function adoptStageControlRegistry(scope: object): void {
+	stageControlSingleton.adopt(scope);
+}

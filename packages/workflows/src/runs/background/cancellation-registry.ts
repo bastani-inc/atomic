@@ -13,6 +13,8 @@
  * cross-ref: spec §8.1 Phase D (kill-runtime-wiring downstream)
  */
 
+import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -123,4 +125,20 @@ export function createCancellationRegistry(): CancellationRegistry {
  * Singleton registry for the default runtime. Consumers needing isolation
  * should call createCancellationRegistry() instead.
  */
-export const cancellationRegistry: CancellationRegistry = createCancellationRegistry();
+const cancellationSingleton = createSessionScopedSingleton<CancellationRegistry>(
+	"atomic-workflows/cancellation-registry@1",
+	createCancellationRegistry,
+);
+
+/**
+ * Singleton registry for the default runtime. Consumers needing isolation
+ * should call createCancellationRegistry() instead. A session-scoped facade,
+ * so controllers registered before `/reload` re-evaluated this module remain
+ * abortable afterwards.
+ */
+export const cancellationRegistry: CancellationRegistry = cancellationSingleton.facade;
+
+/** Re-bind the singleton registry to the host session scope (`pi.events`). */
+export function adoptCancellationRegistry(scope: object): void {
+	cancellationSingleton.adopt(scope);
+}

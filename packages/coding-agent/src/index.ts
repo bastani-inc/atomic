@@ -117,6 +117,7 @@ export {
 } from "./core/compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
+export { sessionScopedExtensionState } from "./core/extension-session-state.ts";
 export {
 	parseFlattenedKeyPath,
 	reconstructFlattenedKeys,

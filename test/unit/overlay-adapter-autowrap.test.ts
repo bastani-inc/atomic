@@ -48,6 +48,9 @@ async function registerIsolatedTests(): Promise<void> {
 		keyHint: (key: string) => key,
 		keyText: (key: string) => key,
 		rawKeyHint: (key: string) => key,
+		// Imported by the workflows run-state singletons; overlay tests never
+		// adopt a host session scope, so the local instance is the right answer.
+		sessionScopedExtensionState: <T extends object>(_scope: object, _key: string, create: () => T): T => create(),
 	}));
 
 	const [{ buildGraphOverlayAdapter }, { createStore }] = await Promise.all([

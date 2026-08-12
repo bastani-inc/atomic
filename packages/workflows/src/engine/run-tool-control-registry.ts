@@ -13,6 +13,7 @@
  * cross-ref: issue #2078; src/runs/foreground/stage-control-registry.ts
  */
 
+import { createSessionScopedSingleton } from "../shared/session-scoped-singleton.js";
 import type { WorkflowToolNodeIdentity } from "../shared/types.js";
 import type { ToolAdmissionBoundary } from "./run-tool-admission-boundary.js";
 import { WorkflowToolAbortError, type WorkflowToolAbortScope } from "./workflow-tool-abort.js";
@@ -130,7 +131,24 @@ export function createToolControlRegistry(): ToolControlRegistry {
  * through `RunOpts.toolControlRegistry`; the singleton is the default consumer
  * surface used by the extension factory.
  */
-export const toolControlRegistry: ToolControlRegistry = createToolControlRegistry();
+const toolControlSingleton = createSessionScopedSingleton<ToolControlRegistry>(
+	"atomic-workflows/tool-control-registry@1",
+	createToolControlRegistry,
+);
+
+/**
+ * Process-wide registry. Tests and embedders SHOULD prefer an explicit instance
+ * through `RunOpts.toolControlRegistry`; the singleton is the default consumer
+ * surface used by the extension factory. A session-scoped facade, so admitted
+ * tool handles registered before `/reload` re-evaluated this module can still
+ * be quit or paused afterwards.
+ */
+export const toolControlRegistry: ToolControlRegistry = toolControlSingleton.facade;
+
+/** Re-bind the singleton registry to the host session scope (`pi.events`). */
+export function adoptToolControlRegistry(scope: object): void {
+	toolControlSingleton.adopt(scope);
+}
 
 /**
  * Await settlement of aborted tool handles up to `timeoutMs` and report the
