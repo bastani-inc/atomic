@@ -211,13 +211,15 @@ export class TempDirRefusedError extends Error {
  *
  * Windows has no uid or POSIX mode, so the proof comes from the security
  * descriptor instead: the owner SID must be a trusted principal and the DACL
- * must grant access to trusted principals only (see
- * `windows-directory-security.ts`). Node exposes neither — `lstatSync` reports
- * uid/gid 0 on Windows — so the read goes through a PowerShell `Get-Acl`
- * subprocess, with successful verifications cached per path per process to
- * keep the subprocess off the spill hot path. Domain-qualifying the principal
- * (see `windowsPrincipal`) stops two accounts *colliding* by accident, which
- * is a different problem and is not a substitute for this verification.
+ * must grant access to trusted principals only
+ * (see `windows-directory-security.ts`). Node exposes neither — `lstatSync`
+ * reports uid/gid 0 on Windows — so the read goes through a PowerShell
+ * `Get-Acl` subprocess. Successful verifications are cached per path per
+ * process, keyed to the directory's metadata identity so a swapped directory
+ * or an in-place DACL edit forces a fresh read. Domain-qualifying the
+ * principal (see `windowsPrincipal`) stops two accounts *colliding* by
+ * accident, which is a different problem and is not a substitute for this
+ * verification.
  */
 function verifyOwnedDirectory(path: string, known?: Stats): void {
 	let stat = known ?? lstatSync(path);

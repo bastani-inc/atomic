@@ -11,8 +11,10 @@
  *
  * A subprocess per directory creation would sit on the spill hot path, so a
  * successful verification is cached per canonical path per process, keyed to
- * the directory's creation time so a directory swapped underneath the path is
- * re-verified rather than trusted from a stale check (see
+ * the directory's metadata identity — creation time, NTFS change time, and
+ * last-write time. A directory swapped underneath the path carries a fresh
+ * creation time, and an in-place DACL edit bumps the change time, so either
+ * forces a fresh descriptor read rather than trust from a stale check (see
  * `verifyWindowsDirectorySecurity`). Failures are not cached: a refusal means
  * "no spill file this time", and a transient read failure must not disable
  * persistence for the rest of the process.
@@ -222,31 +224,53 @@ type SecurityReader = (path: string) => WindowsDirectorySecurity | undefined;
 
 let securityReader: SecurityReader = readWindowsDirectorySecurity;
 
-/** Verified paths mapped to the creation time (`birthtimeMs`) observed when
- * the descriptor was read. A directory recreated underneath the path carries
- * a fresh creation time, so a matching value proves the verified directory
- * is still the one at the path. (Creation time is stable across spill-file
- * writes, unlike the NTFS change time, keeping the cache effective.) */
-const verifiedPaths = new Map<string, number>();
+/** The metadata identity a successful verification is bound to. */
+interface VerifiedDirectoryIdentity {
+	/** Creation time: a directory recreated at the path carries a fresh one. */
+	birthtimeMs: number;
+	/** NTFS change time: bumped by an in-place DACL edit (and by entry
+	 * creation/removal inside the directory, which forces a harmless
+	 * re-read). */
+	ctimeMs: number;
+	/** Last-write time: redundant with the change time on NTFS, kept so the
+	 * cache never outlives any observable metadata change. */
+	mtimeMs: number;
+}
+
+/** Verified paths mapped to the metadata identity observed *before* the
+ * descriptor was read. Snapshotting before the read means any mutation that
+ * races the read still changes the identity relative to the cache entry, so
+ * the next call re-verifies rather than trusting the racing state. */
+const verifiedPaths = new Map<string, VerifiedDirectoryIdentity>();
 
 /**
  * Verify `path` as adoptable, returning the refusal reason when it is not.
  *
  * The subprocess read sits on the spill path, so a successful verification
- * is cached for the life of the process while the same directory (by
- * creation time) sits at the path; a swapped directory forces a fresh read.
- * The symlink/directory checks in `session-temp-dir.ts` still run on every
- * use. A failure is never cached, so a transient read error does not
- * permanently disable spills.
+ * is cached for the life of the process while the directory's metadata
+ * identity (creation, change, and last-write times) is unchanged. A swapped
+ * directory or an in-place DACL edit changes that identity and forces a
+ * fresh read; so does creating a file inside the directory, which trades one
+ * bounded subprocess per spill for never trusting a stale descriptor. The
+ * symlink/directory checks in `session-temp-dir.ts` still run on every use.
+ * A failure is never cached, so a transient read error does not permanently
+ * disable spills.
  */
 export function verifyWindowsDirectorySecurity(path: string): string | undefined {
-	let birthTime: number;
+	let identity: VerifiedDirectoryIdentity;
 	try {
-		birthTime = statSync(path).birthtimeMs;
+		const stat = statSync(path);
+		identity = { birthtimeMs: stat.birthtimeMs, ctimeMs: stat.ctimeMs, mtimeMs: stat.mtimeMs };
 	} catch {
 		return "its ownership could not be verified";
 	}
-	if (verifiedPaths.get(path) === birthTime) {
+	const cached = verifiedPaths.get(path);
+	if (
+		cached !== undefined &&
+		cached.birthtimeMs === identity.birthtimeMs &&
+		cached.ctimeMs === identity.ctimeMs &&
+		cached.mtimeMs === identity.mtimeMs
+	) {
 		return undefined;
 	}
 	const security = securityReader(path);
@@ -258,7 +282,7 @@ export function verifyWindowsDirectorySecurity(path: string): string | undefined
 		verifiedPaths.delete(path);
 		return refusal;
 	}
-	verifiedPaths.set(path, birthTime);
+	verifiedPaths.set(path, identity);
 	return undefined;
 }
 

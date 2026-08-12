@@ -5,7 +5,7 @@
  * only; anything unverifiable is refused rather than trusted.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
@@ -20,7 +20,9 @@ import {
 	evaluateWindowsDirectorySecurity,
 	getLastWindowsSecurityReadFailureForTesting,
 	readWindowsDirectorySecurity,
+	resetWindowsDirectorySecurityStateForTesting,
 	setWindowsDirectorySecurityReaderForTesting,
+	verifyWindowsDirectorySecurity,
 	type WindowsDirectorySecurity,
 } from "../src/core/tools/windows-directory-security.ts";
 
@@ -148,6 +150,61 @@ describe("windows directory security decision", () => {
 	});
 });
 
+describe("windows directory security cache", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		resetWindowsDirectorySecurityStateForTesting();
+		dir = mkdtempSync(join(tmpdir(), "atomic-win-acl-cache-"));
+	});
+
+	afterEach(() => {
+		resetWindowsDirectorySecurityStateForTesting();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("serves an unchanged directory from the cache", () => {
+		let reads = 0;
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			reads += 1;
+			return security();
+		});
+		assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
+		assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
+		assert.equal(reads, 1, "an unchanged directory is not re-read");
+	});
+
+	it("re-reads the descriptor after an in-place metadata change and refuses a broadened DACL", () => {
+		let reads = 0;
+		let descriptor = security();
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			reads += 1;
+			return descriptor;
+		});
+		assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
+		assert.equal(reads, 1);
+
+		// An in-place DACL edit changes the directory's metadata identity
+		// (the NTFS change time) without recreating it or changing its
+		// creation time; model that by bumping the directory's timestamps and
+		// swapping in a descriptor that now grants a foreign SID.
+		descriptor = security({
+			dacl: `D:(A;OICI;FA;;;${FOREIGN_SID})(A;;FA;;;${CURRENT_SID})`,
+			accessRules: [
+				{ allow: true, sid: FOREIGN_SID },
+				{ allow: true, sid: CURRENT_SID },
+			],
+		});
+		utimesSync(dir, new Date("2020-01-01T00:00:00Z"), new Date("2020-01-01T00:00:00Z"));
+
+		assert.equal(verifyWindowsDirectorySecurity(dir), "it grants access to another account");
+		assert.equal(reads, 2, "a changed metadata identity forces a fresh descriptor read");
+		// Failures are never cached: the next call reads again.
+		assert.equal(verifyWindowsDirectorySecurity(dir), "it grants access to another account");
+		assert.equal(reads, 3);
+	});
+});
+
 describe("windows session temp root verification", () => {
 	const envKeys = ["TMPDIR", "TEMP", "TMP"] as const;
 	const savedEnv = new Map<string, string | undefined>();
@@ -236,7 +293,7 @@ describe("windows session temp root verification", () => {
 		);
 	});
 
-	it.skipIf(!isWindows)("verifies each component once per process, keeping the subprocess off the spill path", () => {
+	it.skipIf(!isWindows)("verifies unchanged components once, keeping the subprocess off the spill path", () => {
 		const reads: string[] = [];
 		setWindowsDirectorySecurityReaderForTesting((path) => {
 			reads.push(path);
@@ -244,16 +301,24 @@ describe("windows session temp root verification", () => {
 		});
 
 		const dir = getSessionTempDir("hot-path");
-		const firstReads = reads.length;
-		assert.ok(firstReads >= 1, "the first creation verifies through the reader");
+		assert.ok(reads.length >= 1, "the first creation verifies through the reader");
+		// Creating the session leaf changed the owner root's metadata once, so
+		// the next call re-verifies the root; after that, nothing changes.
+		assert.equal(getSessionTempDir("hot-path"), dir);
+		const settledReads = reads.length;
 		for (let spill = 0; spill < 25; spill++) {
 			assert.equal(getSessionTempDir("hot-path"), dir);
 		}
-		assert.equal(reads.length, firstReads, "repeat spill-path creations must not re-run the subprocess");
+		assert.equal(
+			reads.length,
+			settledReads,
+			"repeat creations of unchanged directories must not re-run the subprocess",
+		);
 	});
 
 	it.skipIf(!isWindows)("re-verifies a directory swapped underneath a verified path", () => {
 		const dir = getSessionTempDir("swap-detect");
+		getSessionTempDir("swap-detect"); // settle the root's post-leaf-creation metadata
 		const reads: string[] = [];
 		setWindowsDirectorySecurityReaderForTesting((path) => {
 			reads.push(path);
@@ -266,6 +331,21 @@ describe("windows session temp root verification", () => {
 		mkdirSync(dir, { recursive: true });
 		getSessionTempDir("swap-detect");
 		assert.ok(reads.includes(dir), "a recreated directory must be re-verified");
+	});
+
+	it.skipIf(!isWindows)("refuses a previously verified root after its DACL is broadened in place", () => {
+		const dir = getSessionTempDir("acl-mutation");
+		writeFileSync(join(dir, "spill.log"), "before");
+
+		const granted = spawnSyncCollect(["icacls", dir, "/grant", "*S-1-1-0:(OI)(CI)F"]);
+		assert.equal(granted.exitCode, 0, granted.stderr.toString());
+
+		assert.throws(
+			() => getSessionTempDir("acl-mutation"),
+			(error: unknown) =>
+				error instanceof TempDirRefusedError && error.message.includes("it grants access to another account"),
+			"an in-place DACL broadening must be re-verified and refused",
+		);
 	});
 
 	it.skipIf(isWindows)("never consults the Windows reader on POSIX", () => {
