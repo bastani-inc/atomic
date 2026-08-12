@@ -55,37 +55,49 @@
   },
   "lessons": [
     {
-      "id": "W.1",
+      "id": "A.8",
       "order": 1,
-      "capture_source": "scripts/readme-feature-wall/tapes/W.1.tape",
-      "slug": "28-launch-workflow-plain-english",
-      "part": "Part 6 - Workflows",
-      "lesson": "W.1 Launch a workflow in plain English",
-      "anchor": "#part-6--workflows",
-      "title": "Launch a workflow in plain English",
-      "blurb": "Ask in normal chat and Atomic routes the request through its workflow tool into a real registered run - no command syntax required.",
-      "alt": "Atomic receiving a normal chat request and launching the registered plain-english-demo workflow through the real workflow tool",
+      "capture_source": "scripts/readme-feature-wall/tapes/A.8.tape",
+      "slug": "38-natural-language-workflow-authoring",
+      "part": "Extras",
+      "lesson": "A.8 Natural-language workflow authoring",
+      "anchor": "#a8-natural-language-workflow-authoring",
+      "title": "Natural-language workflow authoring",
+      "blurb": "Describe inputs, parallel stages, synthesis, and outputs in prose; Atomic writes and reloads the runnable TypeScript graph.",
+      "alt": "Atomic turning a prose review-changes graph contract into a project workflow file and reloading it in the installed product",
       "interactions": [
-        "Launch the registered plain-english-demo workflow in the background with topic set to src-client.ts. Use the workflow tool now, then tell me the run status."
+        "Create a reusable Atomic workflow called review-changes.",
+        "!!sed -n '1,160p' .atomic/workflows/review-changes.ts"
       ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The project workflow is seeded off camera, then discovered and launched by the installed product.",
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The generated source is shown only after the real agent writes it.",
       "media": {
-        "gif": "assets/feature-wall/28-launch-workflow-plain-english.gif",
-        "jpg": "assets/feature-wall/28-launch-workflow-plain-english.jpg"
+        "gif": "assets/feature-wall/38-natural-language-workflow-authoring.gif",
+        "jpg": "assets/feature-wall/38-natural-language-workflow-authoring.jpg"
       },
       "render": {
-        "start": 14,
-        "end": 40,
-        "speed": 2.167,
+        "start": 22,
+        "end": 173.3,
+        "segments": [
+          {
+            "start": 22,
+            "end": 31
+          },
+          {
+            "start": 171.6,
+            "end": 173.3
+          }
+        ],
+        "speed": 1.2,
         "fps": 12,
         "quality": 80,
-        "poster_at": 32,
+        "poster_at": 173,
         "mask": true
       },
       "docs": {
         "label": "Workflows",
         "url": "https://docs.bastani.ai/workflows"
-      }
+      },
+      "display_title": "Create a workflow in plain English"
     },
     {
       "id": "6.2",
@@ -174,19 +186,19 @@
         "connect to its live graph and open the awaiting ctx.ui.select node",
         "leave the real risk-choice gate waiting for the operator"
       ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked.",
+      "privacy_notes": "Graph- and stage-view-only window with no statusline, so the band pass is skipped like A.9; the OCR pass and finished-media gate still run.",
       "media": {
         "gif": "assets/feature-wall/25-human-in-the-loop-gates.gif",
         "jpg": "assets/feature-wall/25-human-in-the-loop-gates.jpg"
       },
       "render": {
-        "start": 1,
+        "start": 1.7,
         "end": 27,
-        "speed": 2.167,
+        "speed": 2.11,
         "fps": 12,
         "quality": 80,
         "poster_at": 14,
-        "mask": true
+        "mask": false
       },
       "docs": {
         "label": "Workflows",
@@ -265,42 +277,31 @@
       "display_title": "Verification built in"
     },
     {
-      "id": "A.8",
+      "id": "W.1",
       "order": 7,
-      "capture_source": "scripts/readme-feature-wall/tapes/A.8.tape",
-      "slug": "38-natural-language-workflow-authoring",
-      "part": "Extras",
-      "lesson": "A.8 Natural-language workflow authoring",
-      "anchor": "#a8-natural-language-workflow-authoring",
-      "title": "Natural-language workflow authoring",
-      "blurb": "Describe inputs, parallel stages, synthesis, and outputs in prose; Atomic writes and reloads the runnable TypeScript graph.",
-      "alt": "Atomic turning a prose review-changes graph contract into a project workflow file and reloading it in the installed product",
+      "capture_source": "scripts/readme-feature-wall/tapes/W.1.tape",
+      "slug": "28-launch-workflow-plain-english",
+      "part": "Part 6 - Workflows",
+      "lesson": "W.1 Launch a workflow in plain English",
+      "anchor": "#part-6--workflows",
+      "title": "Launch a workflow in plain English",
+      "blurb": "Ask in normal chat and Atomic routes the request through its workflow tool into a real registered run - no command syntax required.",
+      "alt": "Atomic receiving a normal chat request and launching the registered plain-english-demo workflow through the real workflow tool",
       "interactions": [
-        "Create a reusable Atomic workflow called review-changes.",
-        "!!sed -n '1,160p' .atomic/workflows/review-changes.ts"
+        "Launch the registered plain-english-demo workflow in the background with topic set to src-client.ts. Use the workflow tool now, then tell me the run status."
       ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The generated source is shown only after the real agent writes it.",
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The project workflow is seeded off camera, then discovered and launched by the installed product.",
       "media": {
-        "gif": "assets/feature-wall/38-natural-language-workflow-authoring.gif",
-        "jpg": "assets/feature-wall/38-natural-language-workflow-authoring.jpg"
+        "gif": "assets/feature-wall/28-launch-workflow-plain-english.gif",
+        "jpg": "assets/feature-wall/28-launch-workflow-plain-english.jpg"
       },
       "render": {
-        "start": 22,
-        "end": 173.3,
-        "segments": [
-          {
-            "start": 22,
-            "end": 31
-          },
-          {
-            "start": 171.6,
-            "end": 173.3
-          }
-        ],
-        "speed": 1.2,
+        "start": 14,
+        "end": 40,
+        "speed": 2.167,
         "fps": 12,
         "quality": 80,
-        "poster_at": 173,
+        "poster_at": 32,
         "mask": true
       },
       "docs": {

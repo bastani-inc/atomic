@@ -38,18 +38,20 @@ The first generated region begins directly after the user metrics under the exac
 `## Atomic Verifiable Runtime`. Its order is:
 
 ```text
-W.1 → 6.2 → 6.5 → 6.4 → 5.3 → 6.6
+A.8 → 6.2 → 6.5 → 6.4 → 5.3 → 6.6
 ```
 
 6.6 keeps the crash-course identity `6.6 Security review with a repair loop`, its Workflows
-docs link, and the real `27-security-review-repair-loop` media. Only its visible README title
-uses `display_title: "Verification built in"`.
+docs link, and the real `27-security-review-repair-loop` media; its visible README title uses
+`display_title: "Verification built in"`. A.8 keeps the crash-course identity
+`A.8 Natural-language workflow authoring` and the real `38-natural-language-workflow-authoring`
+media; its visible README title uses `display_title: "Create a workflow in plain English"`.
 
 The featured region links to `#more-atomic-capabilities`. The second generated region follows
 the complete `## Get started` section and contains every other row in this exact order:
 
 ```text
-A.8 → A.10 → W.3 → 5.2 → 5.4 → A.9 → A.5 → 5.5 → 5.1 → A.6
+W.1 → A.10 → W.3 → 5.2 → 5.4 → A.9 → A.5 → 5.5 → 5.1 → A.6
 → 6.3 → 6.1 → W.2 → 2.2 → 1.2 → 1.3 → A.2 → 3.2 → 3.3 → 4.3
 → 3.1 → 3.4 → 4.2 → 4.1 → 2.1 → 2.3 → 1.1 → 1.4 → 5.6 → A.7
 → A.4 → A.3 → A.1 → 3.5

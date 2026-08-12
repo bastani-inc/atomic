@@ -49,16 +49,16 @@ Every row is a real Atomic session recorded from the installed product. Open the
 <table>
 <tr>
 <td width="42%" valign="top">
-<h4>Launch a workflow in plain English</h4>
-<p>Ask in normal chat and Atomic routes the request through its workflow tool into a real registered run - no command syntax required.</p>
+<h4>Create a workflow in plain English</h4>
+<p>Describe inputs, parallel stages, synthesis, and outputs in prose; Atomic writes and reloads the runnable TypeScript graph.</p>
 <p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#part-6--workflows"><sub>Crash course · W.1 Launch a workflow in plain English</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#a8-natural-language-workflow-authoring"><sub>Crash course · A.8 Natural-language workflow authoring</sub></a></p>
 </td>
 <td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#part-6--workflows">
+<a href="https://github.com/bastani-inc/atomic-crash-course#a8-natural-language-workflow-authoring">
 <picture>
-<source srcset="assets/feature-wall/28-launch-workflow-plain-english.gif" type="image/gif">
-<img src="assets/feature-wall/28-launch-workflow-plain-english.jpg" alt="Atomic receiving a normal chat request and launching the registered plain-english-demo workflow through the real workflow tool" width="100%">
+<source srcset="assets/feature-wall/38-natural-language-workflow-authoring.gif" type="image/gif">
+<img src="assets/feature-wall/38-natural-language-workflow-authoring.jpg" alt="Atomic turning a prose review-changes graph contract into a project workflow file and reloading it in the installed product" width="100%">
 </picture>
 </a>
 </td>
@@ -342,16 +342,16 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <table>
 <tr>
 <td width="42%" valign="top">
-<h4>Natural-language workflow authoring</h4>
-<p>Describe inputs, parallel stages, synthesis, and outputs in prose; Atomic writes and reloads the runnable TypeScript graph.</p>
+<h4>Launch a workflow in plain English</h4>
+<p>Ask in normal chat and Atomic routes the request through its workflow tool into a real registered run - no command syntax required.</p>
 <p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#a8-natural-language-workflow-authoring"><sub>Crash course · A.8 Natural-language workflow authoring</sub></a></p>
+<p><a href="https://github.com/bastani-inc/atomic-crash-course#part-6--workflows"><sub>Crash course · W.1 Launch a workflow in plain English</sub></a></p>
 </td>
 <td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#a8-natural-language-workflow-authoring">
+<a href="https://github.com/bastani-inc/atomic-crash-course#part-6--workflows">
 <picture>
-<source srcset="assets/feature-wall/38-natural-language-workflow-authoring.gif" type="image/gif">
-<img src="assets/feature-wall/38-natural-language-workflow-authoring.jpg" alt="Atomic turning a prose review-changes graph contract into a project workflow file and reloading it in the installed product" width="100%">
+<source srcset="assets/feature-wall/28-launch-workflow-plain-english.gif" type="image/gif">
+<img src="assets/feature-wall/28-launch-workflow-plain-english.jpg" alt="Atomic receiving a normal chat request and launching the registered plain-english-demo workflow through the real workflow tool" width="100%">
 </picture>
 </a>
 </td>
@@ -1006,27 +1006,6 @@ Subagents are purpose-built agents with scoped context, tools, and termination c
 
 Large, mixed, or growing contexts can make attention harder. Specialized agents reduce that risk through isolation, focus, tool scoping, and deliberate handoffs. Independent tasks can also run in parallel.
 
-
----
-
-## What Atomic is / what Atomic is not
-
-### Atomic is
-
-- A coding agent runtime and terminal application.
-- A context-engineering system for scoped sessions, tools, handoffs, and verifier passes.
-- A TypeScript workflow SDK for explicit execution graphs, checks, artifacts, and gates.
-- A model-agnostic harness for providers, MCP, subagents, skills, and extensions.
-- Infrastructure that developers can inspect, version, change, and own.
-
-### Atomic is not
-
-- A promise that more agents improve engineering.
-- A black-box swarm.
-- A claim that model output is deterministic or correct by default.
-- A checklist that a model may choose to follow.
-- A wrapper around Claude Code, Codex, OpenCode, or Copilot CLI.
-- A replacement for engineering judgment.
 
 ---
 

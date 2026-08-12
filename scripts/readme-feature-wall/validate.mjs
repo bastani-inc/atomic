@@ -37,7 +37,7 @@ const README = readFileSync(join(REPO, "README.md"), "utf8");
 // The exact 6+34 contract, written out rather than derived from the manifest
 // so the manifest cannot quietly redefine the required split or coverage.
 const FEATURED_REQUIRED = [
-	["W.1", "Launch a workflow in plain English", "Workflows", "/workflows"],
+	["A.8", "Natural-language workflow authoring", "Workflows", "/workflows"],
 	["6.2", "Steer and control a live run", "Workflows", "/workflows"],
 	["6.5", "Durability and resume", "Workflows", "/workflows"],
 	["6.4", "Human-in-the-loop gates", "Workflows", "/workflows"],
@@ -45,7 +45,7 @@ const FEATURED_REQUIRED = [
 	["6.6", "Security review with a repair loop", "Workflows", "/workflows"],
 ];
 const REMAINING_REQUIRED = [
-	["A.8", "Natural-language workflow authoring", "Workflows", "/workflows"],
+	["W.1", "Launch a workflow in plain English", "Workflows", "/workflows"],
 	["A.10", "Autonomous implementation loops", "Workflows", "/workflows"],
 	["W.3", "Inspect and control workflows", "Workflows", "/workflows"],
 	["5.2", "Worktree-isolated parallel work", "Subagents", "/subagents"],
@@ -81,7 +81,10 @@ const REMAINING_REQUIRED = [
 	["3.5", "Custom theme", "Themes", "/themes"],
 ];
 const REQUIRED = [...FEATURED_REQUIRED, ...REMAINING_REQUIRED];
-const DISPLAY_TITLES = new Map([["6.6", "Verification built in"]]);
+const DISPLAY_TITLES = new Map([
+	["6.6", "Verification built in"],
+	["A.8", "Create a workflow in plain English"],
+]);
 
 const COURSE_URL = "https://github.com/bastani-inc/atomic-crash-course";
 const DOCS_URL = "https://docs.bastani.ai";
