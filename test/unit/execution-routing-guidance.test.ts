@@ -160,6 +160,98 @@ describe("workflow-first execution routing", () => {
 		}
 	});
 
+	test("allocates mixed-role thinking effort by failure cost instead of blanket max", async () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		const modelSelection = await readRepositoryFile("packages/coding-agent/docs/models/model-selection.md");
+
+		for (const phrase of [
+			"role, failure cost, primary model, thinking level, and fallback policy",
+			"reserve `max` for high-cost-of-error roles",
+			"use `high` for demanding codebase mapping",
+			"use `medium` for user-impact review and final reporting",
+			"deterministic checks as tool nodes with no model call",
+			"For a mixed workflow, mapping may be `high`, approval `max`, reporting `medium`, and tests tool-only",
+			"never assign `max` to every model stage without a stage-specific reason",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+
+		for (const phrase of [
+			"measurement configuration used for that benchmark result",
+			"not a universal workflow default",
+			"| Security, identity, adversarial challenge, final approval | `max`",
+			"| Codebase mapping, lifecycle analysis, compatibility, planning, synthesis, triage, repair | `high`",
+			"| User-impact review and final reporting | `medium`",
+			"| Deterministic checks | No model call",
+		]) {
+			expect(modelSelection).toContain(phrase);
+		}
+
+		for (const blanketDefault of [
+			"gpt-5.6-luna [max]` as the workhorse",
+			"gpt-5.6-terra [max]` as a balanced default",
+		]) {
+			expect(modelSelection).not.toContain(blanketDefault);
+		}
+	});
+
+	test("lets explicit thinking requests override role defaults and applies the policy to fallbacks", async () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		const modelSelection = await readRepositoryFile("packages/coding-agent/docs/models/model-selection.md");
+
+		for (const phrase of [
+			"An explicit user request for a thinking level always wins over these defaults",
+			"Apply the same role/risk policy to every fallback attempt rather than inheriting `max` mechanically",
+			"apply the stage role and failure-cost policy independently to the primary and every fallback",
+			"An explicit user request for a level overrides the role default",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+
+		for (const phrase of [
+			"Reserve `max` for a high-cost-of-error role or an explicit user request",
+			"For each primary and fallback, choose a level for the same stage role independently",
+			"A fallback is not a reason to inherit `max` mechanically",
+		]) {
+			expect(modelSelection).toContain(phrase);
+		}
+	});
+
+	test("rejects invented thinking levels and requires the compact assignment before launch", () => {
+		const authoringGuidance = workflowGuidance.join("\n");
+		for (const phrase of [
+			"Print a compact `Stage | Model | Thinking | Role` assignment before launch",
+			"short cost/quality rationale",
+			"choose each primary and fallback level from the configured catalog",
+			"if no selected catalog model supports the role's level, leave the stage unpinned rather than inventing an unsupported level",
+			"append a thinking suffix only when that exact level appears in the entry's `availableThinkingLevels`",
+			"treat an absent or empty `availableThinkingLevels` as no suffix support",
+			"never fabricate an unsupported catalog level",
+		]) {
+			expect(authoringGuidance).toContain(phrase);
+		}
+	});
+
+	test("mirrors the stage assignment policy in workflow authoring docs", async () => {
+		for (const path of ["packages/coding-agent/docs/workflows.md", "packages/workflows/README.md"]) {
+			const documentation = await readRepositoryFile(path);
+			for (const phrase of [
+				"failure cost",
+				"primary model",
+				"thinking level",
+				"fallback policy",
+				"Stage | Model | Thinking | Role",
+				"high-cost-of-error roles",
+				"deterministic checks as tool nodes with no model call",
+				"fallback",
+				"availableThinkingLevels",
+				"leave the stage unpinned rather than inventing",
+			]) {
+				expect(documentation, path).toContain(phrase);
+			}
+		}
+	});
+
 	test("teaches documented starter patterns and concrete dynamic examples", () => {
 		for (const phrase of [
 			"Classify-and-act",
