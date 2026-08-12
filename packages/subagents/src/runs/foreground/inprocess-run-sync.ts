@@ -46,15 +46,8 @@ function usageFromStats(stats: AttemptOutcome["stats"]): Usage {
 	};
 }
 
-function workflowOrchestrationContext(
-	options: RunSyncOptions,
-	agentName: string,
-): ParentContext["orchestrationContext"] | undefined {
-	const workflow =
-		options.workflowSessionMetadata ??
-		(options.workflowStageSubagentGuard
-			? { runId: options.runId, stageId: options.runId, stageName: agentName }
-			: undefined);
+function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["orchestrationContext"] | undefined {
+	const workflow = options.workflowSessionMetadata;
 	if (!workflow) return undefined;
 	return {
 		kind: "workflow-stage",
@@ -68,7 +61,6 @@ function workflowOrchestrationContext(
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 	};
 }
-
 function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, startedAt: number): AgentProgress {
 	const status = outcome.status === "ok" ? "completed" : outcome.status === "interrupted" ? "failed" : "failed";
 	return {
@@ -197,16 +189,15 @@ export async function runSingleInProcess(
 	const candidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	const fastModeSettings = getSubagentCodexFastModeSettings(cwd);
-	const fastModeScope = resolveSubagentCodexFastModeScope(
-		options.workflowStageSubagentGuard === true || options.workflowSessionMetadata !== undefined,
-	);
-	const fastModeForCandidate = resolveSubagentModelFastMode({
-		model: candidate,
-		cwd,
-		settings: fastModeSettings,
-		scope: fastModeScope,
-	});
-	const orchestrationContext = workflowOrchestrationContext(options, agent.name);
+	const orchestrationContext = workflowOrchestrationContext(options);
+	const fastModeScope = resolveSubagentCodexFastModeScope(orchestrationContext?.kind === "workflow-stage");
+	const fastModeForModel = (model: string | undefined): boolean =>
+		resolveSubagentModelFastMode({
+			model,
+			cwd,
+			settings: fastModeSettings,
+			scope: fastModeScope,
+		});
 	const parent: ParentContext = {
 		path: options.runId,
 		depth: options.parentDepth ?? 0,
@@ -266,14 +257,16 @@ export async function runSingleInProcess(
 		onProgress: options.onUpdate
 			? (progress) => {
 					const liveProgress = { ...progress, index: options.index ?? 0 };
+					const liveModel = liveProgress.model ?? candidate;
+					const liveFastMode = fastModeForModel(liveModel);
 					const liveResult: SingleResult = {
 						agent: agent.name,
 						task,
 						status: "continued",
 						messages: [],
 						usage: emptyUsage(),
-						...(candidate === undefined ? {} : { model: candidate }),
-						...(fastModeForCandidate ? { fastMode: true } : {}),
+						...(liveModel === undefined ? {} : { model: liveModel }),
+						...(liveFastMode ? { fastMode: true } : {}),
 						progress: liveProgress,
 					};
 					options.onUpdate?.({
@@ -334,6 +327,8 @@ export async function runSingleInProcess(
 			},
 			() => undefined,
 		);
+		const continuedModel = running.currentModel ?? candidate;
+		const continuedFastMode = fastModeForModel(continuedModel);
 		const continuedResult: SingleResult = {
 			agent: agent.name,
 			task,
@@ -344,8 +339,8 @@ export async function runSingleInProcess(
 			detachedReason: "async-requested",
 			messages: [],
 			usage: emptyUsage(),
-			...(candidate === undefined ? {} : { model: candidate }),
-			...(fastModeForCandidate ? { fastMode: true } : {}),
+			...(continuedModel === undefined ? {} : { model: continuedModel }),
+			...(continuedFastMode ? { fastMode: true } : {}),
 			progress: {
 				index: options.index ?? 0,
 				agent: agent.name,
@@ -412,6 +407,8 @@ export async function runSingleInProcess(
 			}
 			options.onDetachedExit?.(recovered);
 		});
+		const continuedModel = running.currentModel ?? candidate;
+		const continuedFastMode = fastModeForModel(continuedModel);
 		const continuedResult: SingleResult = {
 			agent: agent.name,
 			task,
@@ -422,8 +419,8 @@ export async function runSingleInProcess(
 			detachedReason: "intercom-coordination",
 			messages: [],
 			usage: emptyUsage(),
-			...(candidate === undefined ? {} : { model: candidate }),
-			...(fastModeForCandidate ? { fastMode: true } : {}),
+			...(continuedModel === undefined ? {} : { model: continuedModel }),
+			...(continuedFastMode ? { fastMode: true } : {}),
 			progress: {
 				index: options.index ?? 0,
 				agent: agent.name,

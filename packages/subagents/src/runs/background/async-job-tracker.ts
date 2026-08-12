@@ -104,7 +104,45 @@ function stepFromStartedEvent(info: AsyncStartedEvent): AsyncJobStep | undefined
 	};
 }
 
-function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | null): Map<string, AsyncJobState> {
+function mergeRegistryJob(previous: AsyncJobState | undefined, next: AsyncJobState): AsyncJobState {
+	if (!previous) return next;
+	const previousSteps = previous.steps ?? [];
+	const steps = next.steps?.map((step, index) => {
+		const previousStep = previousSteps.find(
+			(candidate, candidateIndex) =>
+				(candidate.index ?? candidateIndex) === (step.index ?? index) && candidate.agent === step.agent,
+		);
+		if (!previousStep) return step;
+		return {
+			...step,
+			...previousStep,
+			index: step.index,
+			agent: step.agent,
+			status: step.status,
+		};
+	});
+	return {
+		...next,
+		asyncDir: previous.asyncDir,
+		...(previous.sessionId !== undefined ? { sessionId: previous.sessionId } : {}),
+		...(previous.mode !== undefined ? { mode: previous.mode } : {}),
+		...(previous.agents !== undefined ? { agents: [...previous.agents] } : {}),
+		...(previous.startedAt !== undefined ? { startedAt: previous.startedAt } : {}),
+		...(previous.sessionDir !== undefined ? { sessionDir: previous.sessionDir } : {}),
+		...(previous.outputFile !== undefined ? { outputFile: previous.outputFile } : {}),
+		...(previous.sessionFile !== undefined ? { sessionFile: previous.sessionFile } : {}),
+		...(previous.updatedAt !== undefined
+			? { updatedAt: Math.max(previous.updatedAt, next.updatedAt ?? previous.updatedAt) }
+			: {}),
+		...(steps ? { steps } : {}),
+	};
+}
+
+function hydrateRegistryJobs(
+	state: SubagentState,
+	currentSessionId: string | null,
+	fileJobs?: Map<string, AsyncJobState>,
+): Map<string, AsyncJobState> {
 	const jobs = new Map<string, AsyncJobState>();
 	for (const control of listSubagentControls()) {
 		const children = control.listChildren();
@@ -133,7 +171,7 @@ function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | n
 					? "paused"
 					: "complete";
 		if (status !== "running") continue;
-		jobs.set(control.parent.path, {
+		const next: AsyncJobState = {
 			asyncId: control.parent.path,
 			asyncDir: control.parent.path,
 			status,
@@ -147,7 +185,9 @@ function hydrateRegistryJobs(_state: SubagentState, currentSessionId: string | n
 			activeParallelGroup: steps.some((step) => step.status === "running"),
 			startedAt: Date.now(),
 			updatedAt: Date.now(),
-		});
+		};
+		const previous = state.asyncJobs.get(control.parent.path) ?? fileJobs?.get(control.parent.path);
+		jobs.set(control.parent.path, mergeRegistryJob(previous, next));
 	}
 	return jobs;
 }
@@ -198,9 +238,10 @@ export function createAsyncJobTracker(
 		if (ctxHasUI(ctx)) state.lastUiContext = ctx!;
 		const currentCwd = cwdOverride ?? safeCtxCwd(ctx) ?? state.baseCwd;
 		const fileJobs = readActiveFileJobs(asyncDirRoot, state.currentSessionId, currentCwd);
-		const registryJobs = hydrateRegistryJobs(state, state.currentSessionId);
+		const registryJobs = hydrateRegistryJobs(state, state.currentSessionId, fileJobs);
 		const next = new Map([...fileJobs, ...registryJobs]);
-		for (const id of state.asyncJobs.keys()) if (!next.has(id)) state.asyncJobs.delete(id);
+		for (const id of state.asyncJobs.keys())
+			if (!next.has(id) && !state.cleanupTimers.has(id)) state.asyncJobs.delete(id);
 		for (const [id, job] of next) state.asyncJobs.set(id, job);
 		rerender();
 	};

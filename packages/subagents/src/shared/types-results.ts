@@ -189,6 +189,8 @@ export interface AgentProgress {
 	status: "pending" | "running" | "completed" | "failed" | "detached";
 	activityState?: ActivityState;
 	task: string;
+	/** Effective model for this live attempt, including fallback changes. */
+	model?: string;
 	skills?: string[];
 	lastActivityAt?: number;
 	currentTool?: string;

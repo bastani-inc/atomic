@@ -58,6 +58,8 @@ export interface TestSessionOptions {
 	readonly promptGate?: Promise<void>;
 	/** Match AgentSession.abort() settling an active prompt without throwing. */
 	readonly abortResolvesPrompt?: boolean;
+	/** Emit a fallback event for tests that exercise live model metadata. */
+	readonly fallbackModel?: string;
 }
 
 export interface ChildSpec {
@@ -111,6 +113,14 @@ export interface ModelCandidate {
 	readonly model?: Model<Api>;
 	readonly modelId?: string;
 	readonly thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
+}
+
+function modelIdForCandidate(candidate: ModelCandidate, fallbackModel?: Model<Api>): string | undefined {
+	return (
+		candidate.modelId ??
+		(candidate.model ? `${candidate.model.provider}/${candidate.model.id}` : undefined) ??
+		(fallbackModel ? `${fallbackModel.provider}/${fallbackModel.id}` : undefined)
+	);
 }
 
 export interface AttemptSignals {
@@ -336,6 +346,23 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 				]);
 				if (gateResult === "aborted") return "";
 			}
+			if (testOptions.fallbackModel) {
+				for (const listener of listeners) {
+					listener({
+						type: "model_fallback_start",
+						from: "openai/gpt-5.1-codex",
+						to: testOptions.fallbackModel,
+						reason: "test fallback",
+						attempt: 1,
+					} as AgentSessionEvent);
+					listener({
+						type: "tool_execution_start",
+						toolCallId: "test-fallback-tool",
+						toolName: "test-fallback-tool",
+						args: {},
+					} as AgentSessionEvent);
+				}
+			}
 			lastAssistantText = testOptions.output ?? "done";
 			sessionManager.appendMessage({
 				role: "assistant",
@@ -551,6 +578,7 @@ export interface RunningAttempt {
 	readonly child: AdmittedChild;
 	readonly candidate: ModelCandidate;
 	readonly startedAt: number;
+	currentModel?: string;
 	status: "running" | ChildStatus;
 	promise: Promise<AttemptOutcome>;
 	terminate?: (cause: TerminationCauseName) => Promise<void>;
@@ -634,6 +662,7 @@ export class SubagentControlRuntime {
 		admitted: AdmittedChild,
 		candidate: ModelCandidate,
 		signals: AttemptSignals,
+		onModelChange?: (model: string) => void,
 	): Promise<AttemptOutcome> {
 		let guard: NativeExecutionGuardResult;
 		let retryDelayMs = CAPACITY_RETRY_INITIAL_DELAY_MS;
@@ -759,16 +788,14 @@ export class SubagentControlRuntime {
 			session = created.session;
 			if (session.sessionFile) this.sessionFiles.set(admitted.identity.path, session.sessionFile);
 			this.sessions.set(admitted.identity.path, session);
-			const initialModelId =
-				candidate.modelId ??
-				(candidate.model ? `${candidate.model.provider}/${candidate.model.id}` : undefined) ??
-				(admitted.policy.model ? `${admitted.policy.model.provider}/${admitted.policy.model.id}` : undefined);
+			const initialModelId = modelIdForCandidate(candidate, admitted.policy.model);
 			let effectiveModelId = initialModelId;
 			const attemptedModels: string[] = initialModelId ? [initialModelId] : [];
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,
 				status: "running",
+				...(initialModelId === undefined ? {} : { model: initialModelId }),
 				task: admitted.spec.task,
 				recentTools: [],
 				recentOutput: [],
@@ -824,6 +851,8 @@ export class SubagentControlRuntime {
 				if (event.type === "model_fallback_start") {
 					if (!attemptedModels.includes(event.to)) attemptedModels.push(event.to);
 					effectiveModelId = event.to;
+					progressState.model = event.to;
+					onModelChange?.(event.to);
 				}
 			});
 			if (signals.abort.aborted) await terminate("abort");
@@ -921,6 +950,7 @@ export class SubagentControlRuntime {
 			candidate,
 			status: "running",
 			startedAt: Date.now(),
+			currentModel: modelIdForCandidate(candidate, admitted.policy.model),
 			promise: Promise.resolve({
 				status: "error",
 				cause: "uninitialized",
@@ -929,7 +959,9 @@ export class SubagentControlRuntime {
 				envelope: "uninitialized",
 			}),
 		};
-		running.promise = this.runChildAttempt(admitted, candidate, signals).then((result) => {
+		running.promise = this.runChildAttempt(admitted, candidate, signals, (model) => {
+			running.currentModel = model;
+		}).then((result) => {
 			running.status = result.status;
 			this.runningAttempts.delete(running.id);
 			return result;
