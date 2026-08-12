@@ -255,6 +255,8 @@ async function recordExtensionGraph<T>(
  * transformed re-evaluation, which re-records the manifest.
  */
 const retainedTransformedLoads = new Map<string, { factory: ExtensionFactory; manifest: ExtensionGraphManifest }>();
+/** Native extension factories are safe to reuse across cached cwd changes. */
+const retainedNativeLoads = new Map<string, ExtensionFactory>();
 
 function manifestFilesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
 	const aEntries = Object.entries(a);
@@ -335,16 +337,21 @@ export interface ExtensionCacheToken {
 	generation: number;
 }
 
-export function clearExtensionCache(): void {
+function resetExtensionCache(clearRetainedNative: boolean): void {
 	extensionCache.clear();
 	extensionCacheCwd = undefined;
 	extensionCacheGeneration++;
+	if (clearRetainedNative) retainedNativeLoads.clear();
+}
+
+export function clearExtensionCache(): void {
+	resetExtensionCache(true);
 }
 
 export function useExtensionCacheCwd(cwd: string): ExtensionCacheToken {
 	const resolvedCwd = resolvePath(cwd);
 	if (extensionCacheCwd !== undefined && extensionCacheCwd !== resolvedCwd) {
-		clearExtensionCache();
+		resetExtensionCache(false);
 	}
 	extensionCacheCwd = resolvedCwd;
 	return { cwd: resolvedCwd, generation: extensionCacheGeneration };
@@ -501,11 +508,12 @@ async function importExtensionModule(
 	} else {
 		module = await jiti.import(specifier, { default: true });
 	}
-	if (isWindows && !forceTransformedImports) {
-		nativelyImportedPaths.add(extensionPath);
-	}
 	let factory = module as ExtensionFactory;
 	if (typeof factory !== "function") return undefined;
+	if (isWindows && !forceTransformedImports) {
+		nativelyImportedPaths.add(extensionPath);
+		retainedNativeLoads.set(extensionPath, factory);
+	}
 	if (recordedManifest) {
 		factory = withDeferredGraphRecording(extensionPath, factory);
 		retainedTransformedLoads.set(extensionPath, { factory, manifest: recordedManifest });
@@ -552,6 +560,13 @@ export async function loadExtensionModule(
 	}
 
 	const isWindows = process.platform === "win32";
+	if (cacheToken && isWindows && nativelyImportedPaths.has(extensionPath)) {
+		const retainedNative = retainedNativeLoads.get(extensionPath);
+		if (retainedNative) {
+			extensionCache.set(extensionPath, retainedNative);
+			return retainedNative;
+		}
+	}
 	// Single-file builds (compiled binary or dev bundle) cannot alias host
 	// package specifiers to files on disk: extensions must share the live
 	// module instances baked into the build, so virtualModules is used instead
