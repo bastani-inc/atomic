@@ -4443,9 +4443,9 @@ Summarize root cause, proposed fix, files involved, validation plan, and remaini
 
 For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
 
-The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** and **Stacked implementation slices** are authoring starter patterns rather than builtins; compose scope guard's [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives, and use stacked slices to unroll dependent implementation children through existing `ctx.workflow(...)` boundaries.
+The first six patterns below have runnable builtins. For example, a migration workflow can nest [**fan-out-and-synthesize**](#six-composable-pattern-builtins) for call-site fixes, [**adversarial-verification**](#six-composable-pattern-builtins) per patch, and [**loop-until-done**](#six-composable-pattern-builtins) while tests still fail. Import and compose the builtin definitions instead of copying their prompts/graphs. **Scope guard** and **Stacked implementation slices** are authoring starter patterns rather than builtins; compose scope guard's [boundary-task, retained-stage, or live-parallel form](#scope-guard-starter-pattern) from current primitives, and use stacked slices to unroll dependent implementation children through existing `ctx.workflow(...)` boundaries. **Constructive quorum** is an accepted reviewer-coordination pattern used by `goal` and `ralph`; it is prompt guidance rather than a standalone builtin.
 
-These graph patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run. Stacked implementation slices split one objective inside that lifecycle; queue triage splits separate whole items.
+These patterns organize work **inside one root lifecycle**. They do not replace the [task-queue rule](#task-queues-and-software-factories): independent whole implementation items normally get separate top-level runs and failure boundaries, while real dependency clusters may use these patterns inside each cluster run. Constructive quorum shapes bounded deliberation inside parallel reviewer stages; stacked implementation slices split one objective inside that lifecycle; queue triage splits separate whole items.
 
 | Pattern | Use it when | Atomic shape |
 |---|---|---|
@@ -4455,8 +4455,11 @@ These graph patterns organize work **inside one root lifecycle**. They do not re
 | **Generate-and-filter** | You need many candidate ideas, plans, names, fixes, or hypotheses before selecting the best few. | Generator fan-out → dedupe/filter stage → optional verifier/judge → final shortlist. |
 | **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → pairwise judges compare results → bracket reducer returns winners. |
 | **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
+| **Constructive quorum** | Several fresh-context verifiers judge the same artifact and a tallied vote could mask a defect one verifier found or block on one verifier's misreading. | Parallel verifiers form independent preliminary verdicts → exactly one bounded Intercom evidence-exchange round (share and challenge evidence) → each emits its own final structured verdict → deterministic reducer counts votes. |
 | **Scope guard** | A worker or repair stage may turn valid adjacent findings into unplanned work. | Immutable contract artifact → fresh boundary or live scope checker → bounded decision artifact → forked worker continuation; correctness review stays separate. |
 | **Stacked implementation slices** | One dependent implementation objective is too broad for one verified diff but can be divided into ordered, independently verifiable concerns. | Pre-launch slice plan → sequential child `ctx.workflow(...)` boundaries (`goal`, `ralph`, or a task-specific child) → each slice's gates → next slice based on the previous verified branch and worktree, or stop/report at the first failure. |
+
+Constructive quorum relies on existing Intercom mechanics: every workflow invocation gets its own stable Intercom group, and parallel stages and delegated subagents inherit it when they can use Intercom. Reviewers can therefore reach siblings without authoring group plumbing; keep the evidence exchange bounded and leave quorum counting to the deterministic reducer.
 
 #### Pattern diagrams
 
@@ -4619,6 +4622,37 @@ Best practices:
 - Bound loops by iterations, budget, or convergence criteria so exhausting a bound produces an inspectable failure instead of letting the loop continue indefinitely.
 - Materialize every iteration as distinct tracked work with stable iteration identity and call order. Never represent repetition by a self-edge, a back-edge to an ancestor, or reopening an ancestor below its downstream work.
 
+##### 7. Constructive quorum
+
+This prompt-level reviewer pattern is used by the `goal` and `ralph` builtins; it does not add a reducer or quorum mechanism.
+
+```text
+┌─ 7  Constructive quorum ──────────────────────────────────┐
+│                                                          │
+│  ┌──────────────┐   ┌──────────────┐                    │
+│  │reviewer A    │   │reviewer B    │   independent       │
+│  │preliminary   │   │preliminary   │   assessments        │
+│  │verdict       │   │verdict       │                    │
+│  └──────┬───────┘   └──────┬───────┘                    │
+│         ╰──── Intercom: one evidence round ────╮        │
+│                share · challenge · correct     │        │
+│                         ┌──────────────────────┘        │
+│                         ▾                               │
+│              ┌──────────────────┐   ┌───────────────┐   │
+│              │final structured  │──▸│deterministic  │   │
+│              │verdicts + change │   │reducer counts │   │
+│              │evidence          │   │votes          │   │
+│              └──────────────────┘   └───────────────┘   │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+Best practices:
+- Give every reviewer an independent preliminary assessment before it reads sibling findings or verdicts.
+- Run exactly one bounded evidence-exchange round. Share concrete findings and evidence, challenge blocking claims, and stop rather than opening a second round.
+- Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether deliberation changed it and which evidence caused the change.
+- Let the existing deterministic reducer count the final votes; deliberation shapes votes but does not replace quorum counts or the `stop_review_loop` contract.
+
 ##### Stacked implementation slices starter pattern
 
 Use this authoring pattern when one implementation objective should land as a stack of small, independently verified changes. It is not a queue dispatcher: the slices belong to one dependency chain, so slice N+1 starts only after slice N is verified.
@@ -4760,6 +4794,7 @@ Use `ralph` or a task-specific child in the same positions when its input contra
 - Pick **generate-and-filter** when output quality depends on exploring a large option space.
 - Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
 - Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
+- Pick **constructive quorum** when several fresh-context verifiers judge one artifact and a simple tally could hide a defect or preserve one verifier's misreading; use one bounded evidence exchange before each verifier emits its own final vote.
 - Pick **scope guard** when valid adjacent findings could expand a worker or repair stage beyond its immutable contract; choose a boundary task by default and live parallel steering only when timing requires it.
 - Pick **stacked implementation slices** when one dependent implementation objective needs ordered, independently verified layers. Keep the 100–500 line range as a default with atomic-change escapes; create or check out each named branch before its child, create each next branch from the previous verified branch, pass that previous branch as `base_branch`, use a distinct `git_worktree_dir`, and stop at the first failed gate.
 

@@ -117,10 +117,13 @@ export const CONTRACT_FIDELITY_AUDIT = [
 ].join("\n");
 
 export const REVIEWER_INTERCOM_COORDINATION_PROTOCOL = [
-  "Concurrent reviewer coordination:",
+  "Concurrent reviewer coordination (constructive quorum):",
   "- At review start, use Intercom to discover sibling reviewers and share validation plans and check ownership.",
   "- Claim, serialize, announce, and release expensive or conflicting shared-checkout/environment work such as suites, builds, package operations, browser/E2E sessions, migrations, and generated-artifact steps; share reusable command evidence.",
-  "- Coordination is operational only: inspect independently and return your own verdict rather than copying or deferring to sibling conclusions.",
+  "- First, inspect independently and form a preliminary assessment before reading or relying on sibling findings or verdicts. After the exchange, inspect independently and return your own verdict rather than copying or deferring to sibling conclusions.",
+  "- Then run exactly one bounded evidence-exchange round over Intercom: share your preliminary verdict, concise findings, and evidence; challenge blocking findings, surface defects a sibling missed, and correct objective/acceptance-criteria misreadings. Do not start a second round or continue substantive discussion.",
+  "- Verdicts change only through concrete evidence, never through deference to a sibling's approval or rejection; inspect shared evidence yourself before deciding.",
+  "- In `overall_explanation`, record whether deliberation changed your preliminary verdict and, if it did, which concrete evidence caused the change. If it did not, say so; return your own structured decision even when dissent remains.",
 ].join("\n");
 
 export const REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT = [

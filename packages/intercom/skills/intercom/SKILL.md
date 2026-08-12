@@ -196,6 +196,17 @@ metadata get the `contact_supervisor` tool. Normal sessions use the regular
 `intercom` tool. If you see the formatted supervisor decision/progress update
 message, treat it as a `contact_supervisor` escalation.
 
+### Pattern 7: Constructive Quorum
+
+Use constructive quorum when several fresh-context reviewers judge the same artifact and a tally could hide a defect one reviewer found or preserve another reviewer's misreading.
+
+1. Each reviewer inspects independently and records a preliminary verdict before reading sibling findings or verdicts.
+2. Run exactly one bounded evidence-exchange round: share concrete findings and evidence, challenge blocking claims, surface missed defects, and correct objective/acceptance-criteria misreadings. Do not continue into a second round.
+3. Change a verdict only through evidence, never deference. Each reviewer emits its own final structured verdict and records whether the round changed it and which evidence caused the change.
+4. Let the deterministic reducer count final votes; this pattern does not change quorum counts or the `stop_review_loop` contract.
+
+In Atomic workflows, each invocation has its own Intercom group, and parallel stages and delegated subagents inherit it when Intercom is available. Sibling reviewers can therefore coordinate without custom group wiring. See the [constructive quorum workflow pattern](../../../coding-agent/docs/workflows.md#common-workflow-patterns).
+
 ## Key Differences
 
 | Action | Behavior | Use When |
