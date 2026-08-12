@@ -104,6 +104,8 @@ export interface SubagentChildPolicy {
 	readonly mcpDirectTools?: readonly string[];
 	/** Admission-issued identity/capability; never inherited through process environment. */
 	readonly intercom?: SubagentIntercomIdentity;
+	/** Resolved intercom group for this admitted child, when one was assigned. */
+	readonly intercomGroup?: string;
 }
 // Union alias kept for forward-compatible orchestration context variants.
 export type OrchestrationContext = WorkflowStageOrchestrationContext;

@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
-import { DEFAULT_GROUP, normalizeGroup, resolveHomeGroup } from "../../packages/intercom/group.js";
+import {
+	clearRuntimeIntercomGroup,
+	DEFAULT_GROUP,
+	normalizeGroup,
+	resolveHomeGroup,
+	runtimeIntercomGroupEnvKey,
+	setRuntimeIntercomGroup,
+	validateRuntimeGroup,
+} from "../../packages/intercom/group.js";
 
 const ENV_KEYS = ["ATOMIC_INTERCOM_GROUP", "PI_INTERCOM_GROUP"] as const;
+const RUNTIME_SESSION_KEYS = ["session-a", "session-b", "session-1", "session-2"] as const;
 const saved: Record<string, string | undefined> = {};
 
 afterEach(() => {
@@ -11,6 +20,7 @@ afterEach(() => {
 		else process.env[key] = saved[key];
 		delete saved[key];
 	}
+	for (const sessionId of RUNTIME_SESSION_KEYS) delete process.env[runtimeIntercomGroupEnvKey(sessionId)];
 });
 
 function setEnv(key: string, value: string | undefined): void {
@@ -24,8 +34,44 @@ test("normalizeGroup collapses empty/whitespace/undefined to default and trims n
 	assert.equal(normalizeGroup(null), DEFAULT_GROUP);
 	assert.equal(normalizeGroup(""), DEFAULT_GROUP);
 	assert.equal(normalizeGroup("   "), DEFAULT_GROUP);
-	assert.equal(normalizeGroup("default"), "default");
+	assert.equal(normalizeGroup("default"), DEFAULT_GROUP);
 	assert.equal(normalizeGroup("  teamA  "), "teamA");
+});
+
+test("validateRuntimeGroup trims named groups and permits explicit default", () => {
+	assert.equal(validateRuntimeGroup("  teamA  "), "teamA");
+	assert.equal(validateRuntimeGroup("default"), DEFAULT_GROUP);
+	assert.throws(() => validateRuntimeGroup(""), /non-empty/);
+	assert.throws(() => validateRuntimeGroup("   "), /non-empty/);
+	assert.throws(() => validateRuntimeGroup("true"), /reserved/);
+	assert.throws(() => validateRuntimeGroup(" AUTO "), /reserved/);
+});
+
+test("runtime group entries stay isolated per session and clean up independently", () => {
+	setRuntimeIntercomGroup("session-a", "group-a");
+	setRuntimeIntercomGroup("session-b", "group-b");
+	assert.equal(resolveHomeGroup({}, { sessionManager: { getSessionId: () => "session-a" } }), "group-a");
+	assert.equal(resolveHomeGroup({}, { sessionManager: { getSessionId: () => "session-b" } }), "group-b");
+
+	clearRuntimeIntercomGroup("session-a");
+	assert.equal(resolveHomeGroup({}, { sessionManager: { getSessionId: () => "session-a" } }), DEFAULT_GROUP);
+	assert.equal(resolveHomeGroup({}, { sessionManager: { getSessionId: () => "session-b" } }), "group-b");
+	clearRuntimeIntercomGroup("session-b");
+});
+
+test("runtime group overrides static env/config but not explicit context or child policy", () => {
+	setEnv("ATOMIC_INTERCOM_GROUP", "envGroup");
+	setRuntimeIntercomGroup("session-1", "runtimeGroup");
+	const sessionContext = { sessionManager: { getSessionId: () => "session-1" } };
+	assert.equal(resolveHomeGroup({ group: "configGroup" }, sessionContext), "runtimeGroup");
+	assert.equal(
+		resolveHomeGroup({ group: "configGroup" }, { subagentPolicy: { intercomGroup: "childGroup" } }),
+		"childGroup",
+	);
+	assert.equal(
+		resolveHomeGroup({ group: "configGroup" }, { orchestrationContext: { intercomGroup: "contextGroup" } }),
+		"contextGroup",
+	);
 });
 
 test("resolveHomeGroup precedence: orchestrationContext > env > config > default", () => {

@@ -11,12 +11,13 @@ Atomic bundles `@bastani/intercom`, a first-party extension for direct 1:1 messa
 
 **Key capabilities:**
 - **Session messaging** - `send`, `ask` (blocking, 10-minute timeout), `reply`, `pending`, `list`, and `status` via the `intercom` tool
+- **Runtime groups** - `join` or `leave` named groups without restarting; joined sessions keep their broker IDs and subagents inherit the joined group
 - **Session discovery** - List connected sessions with name, short ID, working directory, model, and live status
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
 - **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
 - **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
 - **Run notifications** - Workflows and subagents deliver async results and control notices to a parent session over Intercom
-- **Bundled skill** - `/skill:intercom` provides planner-worker and escalation-handling patterns
+- **Bundled skill** - `/skill:intercom` provides planner-worker, group, and escalation-handling patterns
 
 **Example use cases:**
 - Planner–worker splits across two terminals
@@ -137,23 +138,33 @@ Name sessions with `/name` so they can target each other (for example `/name pla
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action` | string | `"list"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
+| `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
 | `to` | string | Exact session name, exact full ID, or unique ID prefix (for send/ask, or to disambiguate reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
-| `group` | string | Read-only group filter for `list`/`status` (peek who is in a named group). Ignored/locked for `send`/`ask` — those always use your own group and error on a different group. |
+| `group` | string | Group name for `join`; read-only group filter for `list`/`status`. `send`/`ask` stay locked to the current group. |
 
 ### Actions
 
 | Action | Behavior |
 |--------|----------|
+| `join` | Moves the session into a trimmed named group and creates it if needed. `default` is the shared group; `true` and `auto` are reserved for subagent auto-groups. |
+| `leave` | Returns the session to its resolved home group from startup. It takes no `group` parameter. |
 | `list` | Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed short ID is a valid target. |
 | `send` | Fire-and-forget delivery. Requires `to` and `message`; returns delivery confirmation or the delivery-failure reason. Cannot message the current session. |
 | `ask` | Sends a message and blocks until the recipient replies (10-minute timeout). The reply is returned as the tool result, so the agent continues in the same turn. |
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
 | `pending` | Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. |
-| `status` | Shows connection status, session ID, and the total count of active sessions. |
+| `status` | Shows connection status, session ID, current group, and the count of active sessions in that group. A `group` filter remains a read-only peek. |
+
+To put two plain chat sessions in a private named group, have both call:
+
+```typescript
+intercom({ action: "join", group: "api-review" })
+```
+
+The broker updates presence in place and sends a `session_left` event to the old group and a `session_joined` event to the new one. Session IDs do not change. A session that stays in `default` cannot list, resolve, or message the joined peers. Use `intercom({ action: "leave" })` to return to the home group resolved at startup. Joining a group does not widen isolation; `contact_supervisor` remains the only capability-based cross-group path.
 
 Sent and received messages are recorded in session history as `intercom_sent` / `intercom_received` entries.
 

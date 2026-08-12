@@ -1,9 +1,5 @@
 import { randomUUID } from "node:crypto";
 
-interface OrchestrationCarrier {
-	orchestrationContext?: { intercomGroup?: string } | undefined;
-}
-
 /** Normalize agent-serialized auto-group sentinels without changing real group names. */
 export function normalizeAutoGroupSentinel(group: string | true | undefined): string | true | undefined {
 	if (group === undefined || group === true) return group;
@@ -11,8 +7,27 @@ export function normalizeAutoGroupSentinel(group: string | true | undefined): st
 	return sentinel === "true" || sentinel === "auto" ? true : group;
 }
 
-/** Read the inherited stage/session intercom group from the extension context (never from process.env). */
+const RUNTIME_GROUP_ENV = "ATOMIC_INTERCOM_RUNTIME_GROUP";
+
+function runtimeIntercomGroup(sessionId: string | undefined): string | undefined {
+	if (!sessionId) return undefined;
+	const encodedSessionId = encodeURIComponent(sessionId);
+	const group = process.env[`${RUNTIME_GROUP_ENV}_${encodedSessionId}`];
+	return typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
+}
+
+interface OrchestrationCarrier {
+	orchestrationContext?: { intercomGroup?: string } | undefined;
+	subagentPolicy?: { intercomGroup?: string } | undefined;
+	sessionManager?: { getSessionId(): string } | undefined;
+}
+
+/** Read the joined group before the admitted child or static stage group. */
 export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
+	const runtimeGroup = runtimeIntercomGroup(ctx?.sessionManager?.getSessionId());
+	if (runtimeGroup !== undefined) return runtimeGroup;
+	const policyGroup = ctx?.subagentPolicy?.intercomGroup;
+	if (typeof policyGroup === "string" && policyGroup.trim().length > 0) return policyGroup.trim();
 	const group = ctx?.orchestrationContext?.intercomGroup;
 	return typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
 }

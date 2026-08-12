@@ -10,7 +10,7 @@ import type { SessionInfo, BrokerMessage, SupervisorRegistration } from "../type
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { handleBrokerSend, type BrokerConnectedSession } from "./send-handler.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
-import { normalizeGroup } from "../group.js";
+import { normalizeGroup, validateRuntimeGroup } from "../group.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
@@ -254,6 +254,19 @@ class IntercomBroker {
       case "presence": {
         const session = this.sessions.get(currentId);
         if (session) {
+          const previousGroup = normalizeGroup(session.info.group);
+          let nextGroup = previousGroup;
+          if (clientMessage.group !== undefined) {
+            if (typeof clientMessage.group !== "string") {
+              throw new Error("Invalid presence group");
+            }
+            try {
+              nextGroup = validateRuntimeGroup(clientMessage.group);
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : String(error);
+              throw new Error(`Invalid presence group: ${reason}`);
+            }
+          }
           if (clientMessage.name !== undefined) {
             if (typeof clientMessage.name !== "string") {
               throw new Error("Invalid presence name");
@@ -272,8 +285,14 @@ class IntercomBroker {
             }
             session.info.model = clientMessage.model;
           }
+          session.info.group = nextGroup;
           session.info.lastActivity = Date.now();
-          this.broadcastToGroup({ type: "presence_update", session: session.info }, session.info.group, currentId);
+          if (nextGroup !== previousGroup) {
+            this.broadcastToGroup({ type: "session_left", sessionId: currentId }, previousGroup, currentId);
+            this.broadcastToGroup({ type: "session_joined", session: session.info }, nextGroup, currentId);
+          } else {
+            this.broadcastToGroup({ type: "presence_update", session: session.info }, nextGroup, currentId);
+          }
         }
         break;
       }

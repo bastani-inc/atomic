@@ -82,6 +82,14 @@ intercom({ action: "list" })
 // → **Other sessions:**
 // → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
 
+// Join a named group (it is created if no session is there yet)
+intercom({ action: "join", group: "api-review" })
+// → Joined intercom group "api-review".
+
+// Return to the group's home resolved at session start
+intercom({ action: "leave" })
+// → Returned to home intercom group "default".
+
 // Send a message
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
 // → Message sent to research
@@ -168,9 +176,12 @@ intercom({
   to: "planner",
   message: "Should retry apply to all endpoints or just idempotent ones? Also, max retry count and backoff strategy?"
 })
+
 // → Reply from planner: Only GET/PUT/DELETE — never POST. Max 3 retries, exponential backoff starting at 100ms.
 // Worker continues implementing with the answer, same turn, full context.
 ```
+
+To coordinate two plain chat sessions without changing their startup config, have each one call `intercom({ action: "join", group: "NAME" })`. Joining updates broker presence in place, so the broker broadcasts a leave to the old group and a join to `NAME` without changing the session ID. Calls to `list`, `status`, `send`, and `ask` then use `NAME`; sessions that stay in `default` cannot discover or message the joined peers. Call `intercom({ action: "leave" })` to return to the original resolved home group. `contact_supervisor` keeps its dedicated capability-based cross-group behavior.
 
 **Worker finds something unexpected — escalates and waits:**
 ```typescript
@@ -322,11 +333,12 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action` | string | `"list"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
+| `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
 | `to` | string | Exact session name, exact full ID, or unique ID prefix (for send/ask, or to disambiguate reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
+| `group` | string | Group name for `join`; read-only group filter for `list`/`status`. `send`/`ask` stay locked to the current group. |
 
 ### contact_supervisor
 
@@ -346,7 +358,11 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ### intercom actions
 
-**`list`** — Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. Every displayed short ID can be passed directly to `send`, `ask`, or targeted `reply`. Status is derived automatically from Pi lifecycle events: `idle`, `thinking`, or `tool:<name>`.
+**`join`** — Moves this session into the trimmed named group and creates that group when no peer is there yet. `default` is the shared default group. The names `true` and `auto` are reserved for subagent auto-groups and are rejected. Subagents launched after the join inherit the joined group.
+
+**`leave`** — Moves this session back to the resolved home group from session startup. It takes no `group` parameter.
+
+**`list`** — Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. Every displayed short ID can be passed directly to `send`, `ask`, or targeted `reply`.
 
 Target lookup preserves exact full IDs and exact case-insensitive names, then accepts a unique session-ID prefix. If a prefix matches multiple sessions, Intercom reports every match and asks for a longer ID or exact name instead of guessing. Resolving a prefix to the current session still triggers the normal self-target rejection.
 
@@ -358,7 +374,7 @@ Target lookup preserves exact full IDs and exact case-insensitive names, then ac
 
 **`pending`** — Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. Useful when replying after the original triggered turn.
 
-**`status`** — Shows connection status, session ID, and total count of active sessions (including the current session).
+**`status`** — Shows connection status, session ID, current group, and the total count of active sessions in that group. A `group` filter remains a read-only peek.
 
 ## Keyboard Shortcuts
 

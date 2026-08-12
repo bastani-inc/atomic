@@ -11,6 +11,7 @@ import {
 	wrapForkTask,
 } from "../../shared/types.ts";
 import { formatAsyncStartedMessage } from "../inprocess/background.ts";
+import { inheritedIntercomGroup } from "../shared/intercom-group.ts";
 import { runParallelPath } from "./subagent-executor-parallel.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 import { buildParallelModeError, buildParallelWorktreeTaskCwdError } from "./subagent-executor-worktree.ts";
@@ -117,7 +118,7 @@ export async function runAsyncPath(
 				currentSessionId: deps.state.currentSessionId ?? data.ctx.sessionManager.getSessionId(),
 				currentModelProvider: data.ctx.model?.provider,
 				currentModel,
-				intercomGroup: data.ctx.orchestrationContext?.intercomGroup,
+				intercomGroup: inheritedIntercomGroup(data.ctx),
 				workflowSessionMetadata: workflowSessionMetadataFromContext(data.ctx),
 			},
 			cwd: effectiveCwd,

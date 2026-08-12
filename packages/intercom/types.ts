@@ -48,7 +48,7 @@ export type ClientMessage =
   | { type: "list"; requestId: string; group?: string }
   | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
   | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
-  | { type: "presence"; name?: string; status?: string; model?: string };
+  | { type: "presence"; name?: string; status?: string; model?: string; group?: string };
 
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; supervisorSessionId?: string }

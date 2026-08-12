@@ -482,14 +482,15 @@ export class IntercomClient extends EventEmitter {
     }
     return acquired.attempt.promise;
   }
-  updatePresence(updates: { name?: string; status?: string; model?: string }): void {
+  updatePresence(updates: { name?: string; status?: string; model?: string; group?: string }): boolean {
     if (this.disconnecting) {
-      return;
+      return false;
     }
     const socket = this.socket;
     if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) {
-      return;
+      return false;
     }
     writeMessage(socket, { type: "presence", ...updates });
+    return true;
   }
 }
