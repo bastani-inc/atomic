@@ -28,7 +28,13 @@ let previousAgentDirEnv: Record<string, string | undefined> = {};
 const tempRoots: string[] = [];
 const CODEX_MODEL = "openai/gpt-5.1-codex";
 const REAL_SUBAGENT_EVENT_TIMEOUT_MS = 15_000;
-const REAL_SUBAGENT_REQUEST_TIMEOUT_MS = 60_000;
+// Structural cost (AGENTS.md per-test timeout policy): the real-session test
+// below (`testSession: false`) bootstraps a full builtin-package loader load
+// for the in-process child. On Windows CI the child's cwd differs from the
+// cached loader cwd, forcing a transformed re-import of the whole builtin
+// extension graph (~15 ms/file x ~620 files, measured ~58 s cold). That cost
+// is the loader's documented correctness cost, not a slow test nobody fixed.
+const REAL_CHILD_BUILTIN_LOADER_TIMEOUT_MS = 180_000;
 
 function agent(): AgentConfig {
 	return {
@@ -286,7 +292,7 @@ test(
 		assert.ok(payloads.length > 0);
 		for (const payload of payloads) assert.equal(payload.service_tier, undefined);
 	},
-	REAL_SUBAGENT_REQUEST_TIMEOUT_MS,
+	REAL_CHILD_BUILTIN_LOADER_TIMEOUT_MS,
 );
 
 test(
@@ -349,7 +355,7 @@ test(
 		assert.equal(result.thinking, "off");
 		assert.equal(result.progress?.thinking, "off");
 	},
-	REAL_SUBAGENT_REQUEST_TIMEOUT_MS,
+	REAL_CHILD_BUILTIN_LOADER_TIMEOUT_MS,
 );
 
 test("live and detached results follow the effective fallback model's fast-mode scope", async () => {
