@@ -12,7 +12,7 @@ Atomic bundles `@bastani/intercom`, a first-party extension for direct 1:1 messa
 **Key capabilities:**
 - **Session messaging** - `send`, `ask` (blocking, 10-minute timeout), `reply`, `pending`, `list`, and `status` via the `intercom` tool
 - **Runtime groups** - `join` or `leave` named groups without restarting; joined sessions keep their broker IDs and subagents inherit the joined group
-- **Session discovery** - List connected sessions with name, short ID, working directory, model, and live status
+- **Session discovery** - List connected sessions with name, full session ID, working directory, model, and live status
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
 - **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
 - **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
@@ -74,20 +74,20 @@ The agent can list sessions and send messages using the `intercom` tool. Tool ca
 // List active sessions
 intercom({ action: "list" })
 // → **Current session:**
-// → • executor (20d43841) — ~/projects/api (claude-sonnet-4) [self, idle]
+// → • executor (20d43841-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [self, idle]
 // → **Other sessions:**
-// → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
+// → • research (6332faab-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
 
 // Send a message
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
 // → Message sent to research
 
-// The short ID printed by list is also a valid target
-intercom({ action: "ask", to: "6332faab", message: "Which validation path should I use?" })
+// The full session ID printed by list is also a valid target
+intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which validation path should I use?" })
 
 // Check connection status
 intercom({ action: "status" })
-// → Connected: Yes, Session ID: abc123, Active sessions: 3
+// → Connected: Yes, Session ID: abc12345-1111-4222-8333-123456789abc, Active sessions: 3
 
 // Send with attachments (code snippets, files, or context)
 intercom({
@@ -131,14 +131,14 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Atomic process on the machine.
 
-Name sessions with `/name` so they can target each other (for example `/name planner` and `/name worker`). If a session is unnamed, Intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers keep showing the transcript snippet instead of a generic name.
+Name sessions with `/name` so they can target each other (for example `/name planner` and `/name worker`). If a session is unnamed, Intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d-1111-4222-8333-123456789abc` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers keep showing the transcript snippet instead of a generic name.
 
 ## The intercom Tool
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `to` | string | Exact session name, exact full ID, or unique ID prefix (for send/ask, or to disambiguate reply) |
+| `to` | string | Exact session name or exact full session ID (for send/ask, or targeted reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
@@ -150,7 +150,7 @@ Name sessions with `/name` so they can target each other (for example `/name pla
 |--------|----------|
 | `join` | Moves the session into a trimmed named group and creates it if needed. The action waits for broker acknowledgement before changing local inheritance state. `default` is the shared group; `true` and `auto` are reserved for subagent auto-groups. |
 | `leave` | Returns the session to its resolved home group from startup. It takes no `group` parameter. |
-| `list` | Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed short ID is a valid target. |
+| `list` | Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status (`idle`, `thinking`, or `tool:<name>`, derived from lifecycle events). Every displayed full session ID is a valid target. |
 | `send` | Fire-and-forget delivery. Requires `to` and `message`; returns delivery confirmation or the delivery-failure reason. Cannot message the current session. |
 | `ask` | Sends a message and blocks until the recipient replies (10-minute timeout). The reply is returned as the tool result, so the agent continues in the same turn. |
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
@@ -169,7 +169,7 @@ Sent and received messages are recorded in session history as `intercom_sent` / 
 
 ### Targeting Sessions
 
-Target lookup resolves an exact full ID first, then an exact case-insensitive name, then a unique session-ID prefix. If a prefix matches multiple sessions, Intercom reports every match and asks for a longer ID or exact name instead of guessing. Resolving a prefix to the current session triggers the normal self-target rejection ("Cannot message the current session"). Targeting is also **group-scoped** — see [Groups](#groups) below.
+Target lookup accepts only an exact full session ID or an exact case-insensitive session name. Targeting is also **group-scoped** — see [Groups](#groups) below.
 
 ### Groups
 

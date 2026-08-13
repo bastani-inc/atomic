@@ -71,7 +71,7 @@ does not grant cross-group access: contact_supervisor is the only cross-group pa
         description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')",
+        description: "Exact session name or exact full session ID (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",

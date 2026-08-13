@@ -46,17 +46,12 @@ function middleTruncate(text: string, maxWidth: number): string {
 
   return truncateToWidth(`${left}…${right}`, maxWidth, "");
 }
-
-function shortSessionId(sessionId: string): string {
-  return sessionId.slice(0, 8);
-}
-
 function sessionTitle(session: SessionInfo, options?: { self?: boolean; sameCwd?: boolean }): string {
   const name = session.name || "Unnamed session";
   const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
-  return `${name} (${shortSessionId(session.id)})${suffix}`;
+  return `${name} (${session.id})${suffix}`;
 }
 
 export class SessionListOverlay implements Component {

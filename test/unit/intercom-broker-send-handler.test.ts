@@ -166,8 +166,7 @@ test("broker wire send keeps absent attemptId compatibility but rejects malforme
 		"malformed attemptId must not downgrade and forward",
 	);
 });
-
-test("broker routes the session ID exactly as displayed by intercom list", () => {
+test("broker routes the exact full session ID", () => {
 	const sender = {} as net.Socket;
 	const recipient = {} as net.Socket;
 	const recipientId = "aa56071e-1111-4222-8333-123456789abc";
@@ -179,7 +178,7 @@ test("broker routes the session ID exactly as displayed by intercom list", () =>
 
 	handleBrokerSend(
 		sender,
-		{ type: "send", to: recipientId.slice(0, 8), message: message("displayed-id") },
+		{ type: "send", to: recipientId, message: message("full-id") },
 		"sender",
 		sessions,
 		new DeliveredMessageCache(),
@@ -196,7 +195,35 @@ test("broker routes the session ID exactly as displayed by intercom list", () =>
 	);
 });
 
-test("broker never routes a short session ID back to its sender", () => {
+test("broker rejects an 8-character session ID prefix", () => {
+	const sender = {} as net.Socket;
+	const recipient = {} as net.Socket;
+	const recipientId = "aa56071e-1111-4222-8333-123456789abc";
+	const sessions = new Map<string, BrokerConnectedSession>([
+		["sender", session("sender", "sender", sender)],
+		[recipientId, session(recipientId, "recipient", recipient)],
+	]);
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+
+	handleBrokerSend(
+		sender,
+		{ type: "send", to: recipientId.slice(0, 8), message: message("prefix") },
+		"sender",
+		sessions,
+		new DeliveredMessageCache(),
+		(socket, value) => writes.push({ socket, message: value }),
+	);
+
+	assert.equal(
+		writes.some((entry) => entry.message.type === "message"),
+		false,
+	);
+	const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
+	assert.equal(failure?.type, "delivery_failed");
+	assert.match(failure?.reason ?? "", /Session not found/);
+});
+
+test("broker rejects an exact self session ID", () => {
 	const sender = {} as net.Socket;
 	const senderId = "aa56071e-1111-4222-8333-123456789abc";
 	const sessions = new Map<string, BrokerConnectedSession>([[senderId, session(senderId, "sender", sender)]]);
@@ -204,7 +231,7 @@ test("broker never routes a short session ID back to its sender", () => {
 
 	handleBrokerSend(
 		sender,
-		{ type: "send", to: senderId.slice(0, 8), message: message("self-target") },
+		{ type: "send", to: senderId, message: message("self-target") },
 		senderId,
 		sessions,
 		new DeliveredMessageCache(),
@@ -218,4 +245,28 @@ test("broker never routes a short session ID back to its sender", () => {
 	const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
 	assert.equal(failure?.type, "delivery_failed");
 	assert.match(failure?.reason ?? "", /current session/i);
+});
+
+test("broker rejects an 8-character self ID prefix as not found", () => {
+	const sender = {} as net.Socket;
+	const senderId = "aa56071e-1111-4222-8333-123456789abc";
+	const sessions = new Map<string, BrokerConnectedSession>([[senderId, session(senderId, "sender", sender)]]);
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+
+	handleBrokerSend(
+		sender,
+		{ type: "send", to: senderId.slice(0, 8), message: message("self-prefix") },
+		senderId,
+		sessions,
+		new DeliveredMessageCache(),
+		(socket, value) => writes.push({ socket, message: value }),
+	);
+
+	assert.equal(
+		writes.some((entry) => entry.message.type === "message"),
+		false,
+	);
+	const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
+	assert.equal(failure?.type, "delivery_failed");
+	assert.match(failure?.reason ?? "", /Session not found/);
 });

@@ -67,15 +67,15 @@ intercom({
 
 ### Pattern 2: Quick Status Check
 
-Before sending, verify who's connected. The short ID printed by `list` is directly usable by `send`, `ask`, and targeted `reply`:
+Before sending, verify who's connected. The full session ID printed by `list` is directly usable by `send`, `ask`, and targeted `reply`:
 
 ```typescript
 intercom({ action: "list" })
-// → • planner (6332faab) — /workspace (model) [idle]
-intercom({ action: "ask", to: "6332faab", message: "Which option should I use?" })
+// → • planner (6332faab-1111-4222-8333-123456789abc) — /workspace (model) [idle]
+intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
-Intercom resolves exact full IDs first, exact case-insensitive names second, and unique ID prefixes last. A colliding prefix returns an ambiguity error; use a longer displayed ID or an exact name rather than guessing.
+Intercom accepts only an exact full session ID or an exact case-insensitive session name. Use the full ID printed by `list` or the session's exact name.
 
 ### Runtime named groups
 
@@ -230,9 +230,9 @@ In Atomic workflows, each invocation has its own Intercom group, and parallel st
 | `leave` | Returns to the resolved home group | Restore the session's startup group |
 | `send` | Fire-and-forget | You don't need a response |
 | `ask` | Blocks until reply (10 min timeout) | You need an answer to continue |
-| `reply` | Responds to the active or pending inbound ask; `to` accepts a displayed short ID | You were asked something and need to answer naturally |
+| `reply` | Responds to the active or pending inbound ask; `to` accepts an exact full session ID or exact session name | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
-| `list` | Returns all sessions in the current group with actionable short IDs and live status | You need to discover targets or choose an idle peer |
+| `list` | Returns all sessions in the current group with full session IDs and live status | You need to discover targets or choose an idle peer |
 | `status` | Returns your connection state and current group | Troubleshooting |
 
 Inside workflows, `ask` may target a sibling stage that has already completed. If that stage retains a valid conversation, Atomic automatically schedules a post-mortem turn there and preserves the exact child-to-child reply thread; do not send a separate workflow follow-up. Missing, deleted, non-resumable, or failed-to-reopen completed targets return an actionable error. A parent or unrelated session cannot satisfy the pending ask.

@@ -4,6 +4,14 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed unique-ID-prefix targeting. `send`, `ask`, and `reply` now accept only an exact full session ID or an exact case-insensitive session name.
+
+### Changed
+
+- Intercom now displays full session and message IDs everywhere: list rows, the session-list overlay, inbound message headers, reply-to lines, message-id result badges, and unnamed-session `subagent-chat-<id>` aliases.
+
 ## [0.9.13-alpha.2] - 2026-08-12
 
 ### Changed

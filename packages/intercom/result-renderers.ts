@@ -55,7 +55,7 @@ export const renderIntercomResult: ToolResultRenderer = (result, { isPartial }, 
 	let text = failed ? theme.fg("error", "✗ ") : theme.fg("success", "✓ ");
 	text += theme.fg(failed ? "error" : "text", firstTextContent(result));
 	if (details?.messageId && !context.expanded) {
-		text += theme.fg("dim", ` (${details.messageId.slice(0, 8)})`);
+		text += theme.fg("dim", ` (${details.messageId})`);
 	}
 	if (details?.reason && context.expanded) {
 		text += "\n" + theme.fg("dim", `Reason: ${details.reason}`);

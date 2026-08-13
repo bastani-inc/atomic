@@ -58,7 +58,7 @@ A session becomes intercom-connected when all of these are true:
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
-If a session is unnamed, intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers can keep showing the transcript snippet instead of a generic `session-...` name.
+If a session is unnamed, intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d-1111-4222-8333-123456789abc` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers can keep showing the transcript snippet instead of a generic `session-...` name.
 
 ## Quick Start
 
@@ -78,9 +78,9 @@ The agent can list sessions and send messages using the `intercom` tool. Tool ca
 // List active sessions
 intercom({ action: "list" })
 // → **Current session:**
-// → • executor (20d43841) — ~/projects/api (claude-sonnet-4) [self, idle]
+// → • executor (20d43841-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [self, idle]
 // → **Other sessions:**
-// → • research (6332faab) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
+// → • research (6332faab-1111-4222-8333-123456789abc) — ~/projects/api (claude-sonnet-4) [same cwd, thinking]
 
 // Join a named group (it is created if no session is there yet)
 intercom({ action: "join", group: "api-review" })
@@ -94,12 +94,12 @@ intercom({ action: "leave" })
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
 // → Message sent to research
 
-// The short ID printed by list is also a valid target
-intercom({ action: "ask", to: "6332faab", message: "Which validation path should I use?" })
+// The full session ID printed by list is also a valid target
+intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which validation path should I use?" })
 
 // Check connection status
 intercom({ action: "status" })
-// → Connected: Yes, Session ID: abc123, Active sessions: 3
+// → Connected: Yes, Session ID: abc12345-1111-4222-8333-123456789abc, Active sessions: 3
 
 // Send with attachments (code snippets, files, or context)
 intercom({
@@ -334,7 +334,7 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `action` | string | `"list"`, `"join"`, `"leave"`, `"send"`, `"ask"`, `"reply"`, `"pending"`, or `"status"` |
-| `to` | string | Exact session name, exact full ID, or unique ID prefix (for send/ask, or to disambiguate reply) |
+| `to` | string | Exact session name or exact full session ID (for send/ask, or targeted reply) |
 | `message` | string | Message text (for send/ask/reply) |
 | `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
@@ -362,15 +362,15 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 **`leave`** — Moves this session back to the resolved home group from session startup. It takes no `group` parameter.
 
-**`list`** — Returns the current session plus other active intercom-connected sessions with name, short ID, working directory, model, and live status. Every displayed short ID can be passed directly to `send`, `ask`, or targeted `reply`.
+**`list`** — Returns the current session plus other active intercom-connected sessions with name, full session ID, working directory, model, and live status. Every displayed full session ID can be passed directly to `send`, `ask`, or targeted `reply`.
 
-Target lookup preserves exact full IDs and exact case-insensitive names, then accepts a unique session-ID prefix. If a prefix matches multiple sessions, Intercom reports every match and asks for a longer ID or exact name instead of guessing. Resolving a prefix to the current session still triggers the normal self-target rejection.
+Target lookup accepts only an exact full session ID or an exact case-insensitive session name. Targeting is also **group-scoped** — see [Groups](#groups) below.
 
 **`send`** — Sends a message to the specified session. By default it sends immediately, including in interactive sessions. Set `confirmSend: true` in config if you want a confirmation dialog for non-reply sends. Replies that include `replyTo` skip confirmation. Returns delivery confirmation.
 
 **`ask`** — Sends a message and waits for the recipient to reply (10-minute timeout). The reply is returned as the tool result. No confirmation dialog. Only one pending `ask` is allowed per session at a time; if several blocking requests race (parallel `ask` calls, or `ask` alongside `contact_supervisor`), one wins the reservation and each other call returns a normal "Already waiting for a reply" tool error without disturbing the pending ask. Use this when the agent needs the answer to continue working.
 
-**`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass an exact name, exact full ID, or unique ID prefix in `to`, or inspect them with `pending` first. Under the hood this is still a normal `send` with the exact `replyTo` value.
+**`reply`** — Replies to the current intercom-triggered message if there is one. Otherwise it falls back to the single unresolved inbound ask. If multiple asks are pending, pass an exact name or exact full session ID in `to`, or inspect them with `pending` first. Under the hood this is still a normal `send` with the exact `replyTo` value.
 
 **`pending`** — Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview. Useful when replying after the original triggered turn.
 

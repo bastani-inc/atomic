@@ -17,6 +17,20 @@ test("prefers the connected Intercom session id over a duplicate-prone display n
 		else process.env[SESSION_ID_ENV] = previous;
 	}
 });
+test("uses the full session ID for an unnamed Intercom alias", () => {
+	const previous = process.env[SESSION_ID_ENV];
+	delete process.env[SESSION_ID_ENV];
+	try {
+		const sessionId = "session-019f0000-aaaa-7bbb-8ccc-dddddddddddd";
+		assert.equal(
+			resolveIntercomSessionTarget(undefined, sessionId),
+			"subagent-chat-019f0000-aaaa-7bbb-8ccc-dddddddddddd",
+		);
+	} finally {
+		if (previous === undefined) delete process.env[SESSION_ID_ENV];
+		else process.env[SESSION_ID_ENV] = previous;
+	}
+});
 
 test("detects Atomic's bundled Intercom extension in a source checkout", () => {
 	const diagnostic = diagnoseIntercomBridge({

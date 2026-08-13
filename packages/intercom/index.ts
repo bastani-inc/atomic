@@ -424,7 +424,7 @@ Usage:
 		promptSnippet: "Use to coordinate with other local agent sessions in your intercom group: list peers, send updates, ask for help, or check intercom connectivity. Groups are isolated; you can only message sessions in your own group.",
 		parameters: Type.Object({
 			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'" }),
-			to: Type.Optional(Type.String({ description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')" })),
+			to: Type.Optional(Type.String({ description: "Exact session name or exact full session ID (for 'send', 'ask', or targeted 'reply')" })),
 			message: Type.Optional(Type.String({ description: "Message to send (for 'send', 'ask', or 'reply' action)" })),
 			attachments: Type.Optional(Type.Array(Type.Object({
 				type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),
