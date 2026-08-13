@@ -48,6 +48,7 @@ import { runSinglePath } from "./subagent-executor-single.ts";
 import {
 	foregroundStatusResult,
 	getForegroundControl,
+	notifyDetachedForegroundChildExit,
 	replaceForegroundRunChild,
 	retainedForegroundStatusResult,
 } from "./subagent-executor-status.ts";
@@ -121,7 +122,7 @@ async function resumeRetainedForegroundChild(
 			sessionDir: child.sessionFile ? path.dirname(child.sessionFile) : undefined,
 			sessionFile: child.sessionFile,
 			share: params.share === true,
-			artifactsDir,
+			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 			artifactConfig,
 			maxOutput: params.maxOutput,
 			maxSubagentDepth:
@@ -146,6 +147,19 @@ async function resumeRetainedForegroundChild(
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
 			preferredModelProvider: ctx.model?.provider,
 			currentModel: currentModelFullId(ctx.model),
+			onDetachedExit: (detachedResult) => {
+				cleanupProgress();
+				if (detachedResult) {
+					replaceForegroundRunChild(deps.state, run.runId, child.index, detachedResult);
+					notifyDetachedForegroundChildExit({
+						pi: deps.pi,
+						runId: run.runId,
+						mode: "single",
+						index: child.index,
+						result: detachedResult,
+					});
+				}
+			},
 		});
 	} catch (error) {
 		cleanupProgress();

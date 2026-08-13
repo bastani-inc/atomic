@@ -3,7 +3,8 @@
  *
  * A live session must keep its temp tree and `tool-results` directory out of the
  * sweeper's reach; a session that is gone must stop doing so, or the startup GC
- * Claims are refcounted so multiple live sessions can share storage safely.
+ * can never collect the tree it exists to collect. Claims are refcounted so
+ * multiple live sessions can share storage safely.
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";

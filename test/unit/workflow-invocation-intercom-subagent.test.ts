@@ -9,6 +9,7 @@ import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-
 import { type BrokerConnectedSession, handleBrokerSend } from "../../packages/intercom/broker/send-handler.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
 import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
+import { runSync as runInProcessSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type {
 	ExecutorDeps,
@@ -202,4 +203,35 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 		writes.some((write) => write.socket === childSocket && write.message.type === "delivery_failed"),
 		true,
 	);
+});
+
+test("in-process child resolves intercom group through typed admission without an env bridge", async () => {
+	const previousGroup = process.env.ATOMIC_INTERCOM_GROUP;
+	process.env.ATOMIC_INTERCOM_GROUP = "ambient-group";
+	const dir = mkdtempSync(join(tmpdir(), "atomic-workflow-group-inprocess-"));
+	try {
+		const agent = {
+			name: "worker",
+			description: "test worker",
+			systemPromptMode: "replace" as const,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			systemPrompt: "work",
+			source: "project" as const,
+			filePath: join(dir, "worker.md"),
+		};
+		const result = await runInProcessSync(dir, [agent], "worker", "work", {
+			cwd: dir,
+			runId: "inprocess-group",
+			intercomGroup: "workflow:root",
+			testSession: { output: "done" },
+		});
+		assert.equal(result.status, "ok");
+		assert.equal(result.finalOutput, "done");
+		assert.equal(process.env.ATOMIC_INTERCOM_GROUP, "ambient-group");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		if (previousGroup === undefined) delete process.env.ATOMIC_INTERCOM_GROUP;
+		else process.env.ATOMIC_INTERCOM_GROUP = previousGroup;
+	}
 });

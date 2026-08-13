@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
@@ -11,6 +11,7 @@ import type {
 	ExecutorDeps,
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import { getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
 import type { SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
 
 const usage: Usage = {
@@ -163,6 +164,140 @@ describe("subagent async-removal regressions", () => {
 			assert.equal(options.length, 2);
 			assert.equal(options[0]?.allowIntercomDetach, true);
 			assert.equal(options[1]?.allowIntercomDetach, false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("resuming a detached child wires completion delivery and progress cleanup", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-detach-regression-"));
+		const runId = "run-detached-completion";
+		const emittedEvents: string[] = [];
+		try {
+			const bridged = agent("bridged", `${INTERCOM_BRIDGE_MARKER}\nCoordinate with the supervisor.`);
+			const options: Array<Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]> = [];
+			const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (
+				_parentCwd,
+				_agents,
+				agentName,
+				_task,
+				runOptions,
+			) => {
+				options.push(runOptions);
+				return retainedResult(agentName);
+			};
+			const state = stateFor(cwd, [{ runId, agent: bridged }]);
+			const deps: ExecutorDeps = {
+				pi: {
+					events: {
+						on: () => () => {},
+						emit: (event: string) => {
+							emittedEvents.push(event);
+						},
+					},
+					getSessionName: () => "parent-session",
+				} as unknown as ExecutorDeps["pi"],
+				state,
+				config: { parallel: { concurrency: 2, maxTasks: 10 } },
+				tempArtifactsDir: join(cwd, "artifacts"),
+				getSubagentSessionRoot: () => join(cwd, "sessions"),
+				expandTilde: (value) => value,
+				discoverAgents: () => ({ agents: [bridged] }),
+				runtime: { runSync },
+			};
+			const executor = createSubagentExecutor(deps);
+			const ctx = context(cwd);
+
+			await executor.execute(
+				"resume-detached",
+				{ action: "resume", id: runId, message: "Continue through Intercom.", artifacts: false, progress: true },
+				ctx.signal!,
+				undefined,
+				ctx,
+			);
+
+			const progressDir = join(getArtifactsDir(null), "progress", runId);
+			assert.equal(typeof options[0]?.onDetachedExit, "function");
+			assert.equal(existsSync(progressDir), true, "detached children retain progress storage until completion");
+
+			const completed: SingleResult = {
+				agent: "bridged",
+				task: "resumed task",
+				status: "ok",
+				usage,
+				finalOutput: "completed output",
+			};
+			options[0]?.onDetachedExit?.(completed);
+
+			const child = state.foregroundRuns?.get(runId)?.children[0];
+			assert.equal(child?.result?.status, "ok");
+			assert.equal(child?.result?.finalOutput, "completed output");
+			assert.equal(existsSync(progressDir), false, "completion callback cleans detached progress storage");
+			assert.ok(emittedEvents.includes("subagent:complete"));
+		} finally {
+			rmSync(join(getArtifactsDir(null), "progress", runId), { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("resuming gates the artifact directory by the artifact setting", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-artifacts-regression-"));
+		try {
+			const plain = agent("plain", "Work independently.");
+			const options: Array<Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]> = [];
+			const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (
+				_parentCwd,
+				_agents,
+				agentName,
+				task,
+				runOptions,
+			) => {
+				options.push(runOptions);
+				return { agent: agentName, task, status: "ok", usage, finalOutput: "resumed output" };
+			};
+			const state = stateFor(cwd, [
+				{ runId: "run-artifacts-disabled", agent: plain },
+				{ runId: "run-artifacts-enabled", agent: plain },
+			]);
+			const deps: ExecutorDeps = {
+				pi: {
+					events: { on: () => () => {}, emit: () => {} },
+					getSessionName: () => "parent-session",
+				} as unknown as ExecutorDeps["pi"],
+				state,
+				config: { parallel: { concurrency: 2, maxTasks: 10 } },
+				tempArtifactsDir: join(cwd, "artifacts"),
+				getSubagentSessionRoot: () => join(cwd, "sessions"),
+				expandTilde: (value) => value,
+				discoverAgents: () => ({ agents: [plain] }),
+				runtime: { runSync },
+			};
+			const executor = createSubagentExecutor(deps);
+			const ctx = context(cwd);
+
+			await executor.execute(
+				"resume-artifacts-disabled",
+				{
+					action: "resume",
+					id: "run-artifacts-disabled",
+					message: "Continue without artifacts.",
+					artifacts: false,
+				},
+				ctx.signal!,
+				undefined,
+				ctx,
+			);
+			await executor.execute(
+				"resume-artifacts-enabled",
+				{ action: "resume", id: "run-artifacts-enabled", message: "Continue with artifacts.", artifacts: true },
+				ctx.signal!,
+				undefined,
+				ctx,
+			);
+
+			assert.equal(options.length, 2);
+			assert.equal(options[0]?.artifactsDir, undefined);
+			assert.equal(options[1]?.artifactsDir, getArtifactsDir(null));
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
