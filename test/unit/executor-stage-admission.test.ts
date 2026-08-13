@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import type { AgentSession } from "@bastani/atomic";
+import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { test } from "vitest";
 import {
 	closeWorkflowStageGeneration,
@@ -6,8 +9,38 @@ import {
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { admitWorkflowStageInbound } from "../../packages/intercom/workflow-stage-admission.js";
 import type { StageSessionCreateOptions } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { sleep } from "../helpers/runtime.js";
-import { assert, createStore, mockSession, run, type StageSessionRuntime, Type, workflow } from "./executor-shared.js";
+import { workflowArtifactRunPath } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import { makeTempDirectory, readText, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import {
+	assert,
+	createStore,
+	join,
+	mockSession,
+	run,
+	type StageSessionRuntime,
+	Type,
+	workflow,
+} from "./executor-shared.js";
+
+function assistantMessageWithContent(content: AssistantMessage["content"]): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: "test",
+		provider: "test",
+		model: "test",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
+}
 
 test("admitted queued delivery drains before stage finalization while preserving the stage's own result", async () => {
 	const store = createStore();
@@ -160,6 +193,126 @@ test("Intercom received inside structured_output remains admitted but does not r
 	drain.resolve();
 	assert.equal((await execution).status, "completed");
 	assert.equal(store.runs()[0]?.stages[0]?.result, '{\n  "approved": true\n}');
+});
+
+test("a real late admitted assistant turn cannot replace the successful structured artifact pairing", async () => {
+	const outputDirectory = makeTempDirectory("structured-admission-output-");
+	const outputPath = join(outputDirectory, "review.md");
+	const runId = randomUUID();
+	const store = createStore();
+	const drain = Promise.withResolvers<void>();
+	const closeStarted = Promise.withResolvers<void>();
+	let createOptions: StageSessionCreateOptions | undefined;
+	let lastAssistantText = "# Review\n\nReady to merge.";
+	const queued: string[] = [];
+	const messages = [] as AgentSession["messages"];
+	const surface = {
+		_workflowStageAdmission: new WorkflowStageAdmissionBoundary(async () => {
+			closeStarted.resolve();
+			await drain.promise;
+			lastAssistantText = "late admitted acknowledgement";
+			messages.push(assistantMessageWithContent([{ type: "text", text: lastAssistantText }]));
+		}),
+		_orchestrationContext: undefined as StageSessionCreateOptions["orchestrationContext"],
+		isStreaming: true,
+		_pendingNextTurnMessages: [],
+		_queueAgentMessage(message: { content: string | object[] }) {
+			if (typeof message.content === "string") queued.push(message.content);
+		},
+		_appendCustomMessage() {},
+		async _enqueueInterruptCustomMessage() {},
+		async _runAgentPrompt() {},
+	};
+	const pi = {
+		sendMessage(
+			message: { customType: string; content: string; display: boolean; details: object | undefined },
+			options?: { triggerTurn?: boolean; stageAdmissionKey?: string },
+		) {
+			return sendCustomMessage.call(surface as never, message, options);
+		},
+	};
+	const session: StageSessionRuntime = {
+		...mockSession(),
+		messages,
+		async prompt() {
+			const tool = createOptions?.customTools?.find((candidate) => candidate.name === "structured_output");
+			assert.ok(tool);
+			messages.push(
+				assistantMessageWithContent([
+					{ type: "text", text: "# Review" },
+					{ type: "text", text: "\n\nReady to merge." },
+					{
+						type: "toolCall",
+						id: "structured-call-admitted",
+						name: "structured_output",
+						arguments: { approved: true },
+					},
+				]),
+			);
+			await tool.execute("structured-call-admitted", { approved: true }, undefined, undefined, undefined as never);
+			const orchestrationContext = createOptions?.orchestrationContext;
+			assert.ok(orchestrationContext);
+			surface._orchestrationContext = orchestrationContext;
+			const admitted = admitWorkflowStageInbound({ orchestrationContext }, () => {
+				void pi.sendMessage(
+					{ customType: "intercom_message", content: "reviewer arrived", display: true, details: undefined },
+					{ triggerTurn: true, stageAdmissionKey: "intercom:structured-artifact" },
+				);
+			});
+			assert.ok(admitted);
+			await admitted;
+		},
+		getLastAssistantText: () => lastAssistantText,
+		async closeWorkflowStageGeneration() {
+			await closeWorkflowStageGeneration.call(surface as never);
+		},
+	};
+	const definition = workflow({
+		name: "structured-artifact-admission",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx
+				.stage("structured", {
+					schema: Type.Object({ approved: Type.Boolean() }, { additionalProperties: false }),
+				})
+				.prompt("review and call structured_output", { output: outputPath, outputMode: "file-only" });
+			return {};
+		},
+	});
+
+	try {
+		const execution = run(
+			definition,
+			{},
+			{
+				runId,
+				store,
+				adapters: {
+					agentSession: {
+						async create(options) {
+							createOptions = options;
+							return session;
+						},
+					},
+				},
+			},
+		);
+
+		await closeStarted.promise;
+		assert.deepEqual(queued, ["reviewer arrived"]);
+		drain.resolve();
+		assert.equal((await execution).status, "completed");
+		assert.equal(await readText(outputPath), "# Review\n\nReady to merge.");
+		const stageResult = store.runs()[0]?.stages[0]?.result;
+		assert.ok(stageResult);
+		assert.match(stageResult, /Output saved to:/);
+		assert.doesNotMatch(stageResult, /late admitted acknowledgement/);
+	} finally {
+		removeTempDirectory(outputDirectory);
+		removeTempDirectory(workflowArtifactRunPath(runId));
+	}
 });
 
 test("stage close waits for a busy Intercom admission barrier before draining its queued message", async () => {

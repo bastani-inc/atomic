@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Separated schema-backed workflow result data from runner-owned output artifacts. When a stage configures both `schema` and `output`, the successful `structured_output` arguments now remain the typed machine-readable result while ordered ordinary text blocks from that exact tool-call message become the human-readable artifact. The runner snapshots both against the successful tool-call id so correction attempts and late admitted turns cannot replace either result; missing prose is written empty with an explicit warning instead of silently persisting JSON ([#2198](https://github.com/bastani-inc/atomic/issues/2198)).
+
 ## [0.9.14-alpha.1] - 2026-08-14
 
 ### Added
@@ -74,7 +78,6 @@ Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.4` prereleases. The
 
 - Fixed the stage-chat jump-to-bottom follow indicator remaining hidden in paused and read-only archive chats, while keeping their callout and instruction rows intact in tight overlays.
 - Fixed clicking the stage-chat jump-to-bottom indicator so its OSC-8 activation returns that stage chat to the live end instead of scrolling the host transcript ([#2370](https://github.com/bastani-inc/atomic/issues/2370)).
-
 ## [0.9.13-alpha.3] - 2026-08-13
 
 ### Changed

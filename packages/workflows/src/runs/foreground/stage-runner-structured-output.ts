@@ -8,6 +8,15 @@ export const STRUCTURED_OUTPUT_MISSING_ERROR =
 
 const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 
+export interface StructuredOutputExecutionSnapshot {
+	readonly toolCallId: string;
+	readonly value: unknown;
+}
+
+export interface StructuredOutputExecutionCapture {
+	snapshot?: StructuredOutputExecutionSnapshot;
+}
+
 type ToolResultContentBlock = {
 	readonly type?: unknown;
 	readonly text?: unknown;
@@ -36,7 +45,11 @@ export function structuredOutputToolErrorFromEvent(event: unknown): string | und
 	return toolResultText(resultRecord?.content) ?? "structured_output tool call failed schema validation.";
 }
 
-export function formatStructuredOutputCorrectionPrompt(error: string, attempt: number): string {
+export function formatStructuredOutputCorrectionPrompt(
+	error: string,
+	attempt: number,
+	needsArtifactText = false,
+): string {
 	return [
 		"The previous response failed this stage's structured-output contract.",
 		"",
@@ -46,7 +59,9 @@ export function formatStructuredOutputCorrectionPrompt(error: string, attempt: n
 		error,
 		"",
 		"You must finish by calling the `structured_output` tool exactly once with arguments matching the registered schema.",
-		"Do not answer with plain JSON text, Markdown, or prose. If you attempted `structured_output` and validation failed, correct the tool arguments and call `structured_output` again.",
+		needsArtifactText
+			? "In the same final assistant message, include the complete human-readable artifact as ordinary text before calling `structured_output`; the tool arguments are the separate machine-readable result. Do not put prose after the tool call."
+			: "Do not answer with plain JSON text, Markdown, or prose. If you attempted `structured_output` and validation failed, correct the tool arguments and call `structured_output` again.",
 	].join("\n");
 }
 
@@ -63,8 +78,27 @@ export function stringifyStructuredOutputValue(value: unknown): string {
 export function stageOptionsWithStructuredOutput(
 	options: StageOptions | undefined,
 	capture: StructuredOutputCapture<unknown> | undefined,
+	executionCapture?: StructuredOutputExecutionCapture,
 ): StageOptions | undefined {
 	if (!options?.schema || !capture) return options;
+	const structuredOutputTool = createStructuredOutputTool({
+		schema: options.schema as TSchema,
+		capture: capture as StructuredOutputCapture<Static<TSchema>>,
+	});
+	const executeStructuredOutput = structuredOutputTool.execute;
+	const capturedStructuredOutputTool = {
+		...structuredOutputTool,
+		async execute(...args: Parameters<typeof executeStructuredOutput>) {
+			const result = await executeStructuredOutput(...args);
+			if (executionCapture !== undefined && executionCapture.snapshot === undefined && capture.called) {
+				executionCapture.snapshot = {
+					toolCallId: args[0],
+					value: capture.value,
+				};
+			}
+			return result;
+		},
+	};
 	const tools =
 		options.tools === undefined
 			? options.noTools === "all"
@@ -76,12 +110,6 @@ export function stageOptionsWithStructuredOutput(
 		...options,
 		...(tools !== undefined ? { tools } : {}),
 		...(excludedTools !== undefined ? { excludedTools } : {}),
-		customTools: [
-			...(options.customTools ?? []),
-			createStructuredOutputTool({
-				schema: options.schema as TSchema,
-				capture: capture as StructuredOutputCapture<Static<TSchema>>,
-			}),
-		],
+		customTools: [...(options.customTools ?? []), capturedStructuredOutputTool],
 	};
 }
