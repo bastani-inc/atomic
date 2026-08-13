@@ -12,7 +12,12 @@ import type {
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
-import type { SingleResult, SubagentToolResult, Usage } from "../../packages/subagents/src/shared/types.js";
+import type {
+	SingleResult,
+	SubagentResultStatus,
+	SubagentToolResult,
+	Usage,
+} from "../../packages/subagents/src/shared/types.js";
 
 const usage: Usage = {
 	input: 0,
@@ -36,14 +41,43 @@ function agent(name: string, systemPrompt: string): AgentConfig {
 	};
 }
 
-function retainedResult(agentName: string): SingleResult {
+function retainedResult(agentName: string, status: SubagentResultStatus = "detached"): SingleResult {
+	if (status === "detached") {
+		return {
+			agent: agentName,
+			task: "initial task",
+			status: "continued",
+			usage,
+			finalOutput: "initial output",
+			detached: true,
+		};
+	}
+	if (status === "paused") {
+		return {
+			agent: agentName,
+			task: "initial task",
+			status: "interrupted",
+			usage,
+			finalOutput: "initial output",
+			interrupted: true,
+		};
+	}
+	if (status === "completed") {
+		return {
+			agent: agentName,
+			task: "initial task",
+			status: "ok",
+			usage,
+			finalOutput: "initial output",
+		};
+	}
 	return {
 		agent: agentName,
 		task: "initial task",
-		status: "continued",
+		status: "error",
 		usage,
 		finalOutput: "initial output",
-		detached: true,
+		error: "initial error",
 	};
 }
 
@@ -73,12 +107,15 @@ function context(cwd: string): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-function stateFor(cwd: string, runs: Array<{ runId: string; agent: AgentConfig }>): ExecutorDeps["state"] {
+function stateFor(
+	cwd: string,
+	runs: Array<{ runId: string; agent: AgentConfig; status?: SubagentResultStatus }>,
+): ExecutorDeps["state"] {
 	return {
 		baseCwd: cwd,
 		currentSessionId: null,
 		foregroundRuns: new Map(
-			runs.map(({ runId, agent: childAgent }) => [
+			runs.map(({ runId, agent: childAgent, status = "detached" }) => [
 				runId,
 				{
 					runId,
@@ -89,8 +126,8 @@ function stateFor(cwd: string, runs: Array<{ runId: string; agent: AgentConfig }
 						{
 							agent: childAgent.name,
 							index: 0,
-							status: "detached",
-							result: retainedResult(childAgent.name),
+							status,
+							result: retainedResult(childAgent.name, status),
 						},
 					],
 				},
@@ -383,6 +420,99 @@ describe("subagent async-removal regressions", () => {
 			assert.equal(control?.currentAgent, "plain");
 			assert.equal(control?.currentIndex, 0);
 			assert.equal(control?.tokens, 2);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+	test("resuming retained children refreshes non-detached records without weakening late detach protection", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-retained-record-regression-"));
+		try {
+			const plain = agent("plain", "Work independently.");
+			const fixtures = [
+				{ runId: "run-paused", status: "paused" as const },
+				{ runId: "run-completed", status: "completed" as const },
+				{ runId: "run-detached", status: "detached" as const },
+			];
+			const options: Array<Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]> = [];
+			const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (
+				_parentCwd,
+				_agents,
+				agentName,
+				task,
+				runOptions,
+			) => {
+				options.push(runOptions);
+				const detached = runOptions.runId === "run-detached";
+				return {
+					agent: agentName,
+					task,
+					status: detached ? "continued" : "ok",
+					usage,
+					finalOutput: `fresh output for ${runOptions.runId}`,
+					...(detached ? { detached: true } : {}),
+				};
+			};
+			const state = stateFor(
+				cwd,
+				fixtures.map((fixture) => ({ ...fixture, agent: plain })),
+			);
+			const deps: ExecutorDeps = {
+				pi: {
+					events: { on: () => () => {}, emit: () => {} },
+					getSessionName: () => "parent-session",
+				} as unknown as ExecutorDeps["pi"],
+				state,
+				config: { parallel: { concurrency: 2, maxTasks: 10 } },
+				tempArtifactsDir: join(cwd, "artifacts"),
+				getSubagentSessionRoot: () => join(cwd, "sessions"),
+				expandTilde: (value) => value,
+				discoverAgents: () => ({ agents: [plain] }),
+				runtime: { runSync },
+			};
+			const executor = createSubagentExecutor(deps);
+			const ctx = context(cwd);
+
+			for (const [index, fixture] of fixtures.entries()) {
+				await executor.execute(
+					`resume-${fixture.runId}`,
+					{ action: "resume", id: fixture.runId, message: "Continue with fresh output." },
+					ctx.signal!,
+					undefined,
+					ctx,
+				);
+
+				const expectedStatus = fixture.status === "detached" ? "detached" : "completed";
+				const child = state.foregroundRuns?.get(fixture.runId)?.children[0];
+				assert.equal(child?.status, expectedStatus);
+				assert.equal(child?.result?.finalOutput, `fresh output for ${fixture.runId}`);
+
+				const status = await executor.execute(
+					`status-${fixture.runId}`,
+					{ action: "status", id: fixture.runId },
+					ctx.signal!,
+					undefined,
+					ctx,
+				);
+				const statusText = status.content[0]?.type === "text" ? status.content[0].text : "";
+				assert.match(statusText, new RegExp(`State: ${expectedStatus}`));
+				assert.match(statusText, new RegExp(`fresh output for ${fixture.runId}`));
+				assert.doesNotMatch(statusText, /initial output/);
+
+				if (fixture.status !== "detached") {
+					assert.equal(typeof options[index]?.onDetachedExit, "function");
+					options[index]?.onDetachedExit?.({
+						agent: "plain",
+						task: "late detached exit",
+						status: "continued",
+						usage,
+						finalOutput: "late detached overwrite",
+						detached: true,
+					});
+					const settledChild = state.foregroundRuns?.get(fixture.runId)?.children[0];
+					assert.equal(settledChild?.status, "completed");
+					assert.equal(settledChild?.result?.finalOutput, `fresh output for ${fixture.runId}`);
+				}
+			}
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

@@ -168,6 +168,40 @@ test("foreground launch updates carry step metadata before the prompt settles", 
 	}
 });
 
+test("foreground results and live progress follow the effective fallback model's fast-mode scope", async () => {
+	const root = setupRoot();
+	const fallbackModel = "anthropic/claude-sonnet-4";
+	const liveResults: Array<{ model?: string; thinking?: string; fastMode?: boolean }> = [];
+	const fallbackAgent: AgentConfig = {
+		...agent(),
+		thinking: "low",
+		fallbackModels: [`${fallbackModel}:high`],
+	};
+
+	const result = await runSingleInProcess(root, fallbackAgent, "fallback task", {
+		cwd: root,
+		runId: "foreground-fallback-metadata",
+		modelOverride: CODEX_MODEL,
+		workflowSessionMetadata: { runId: "workflow-run", stageId: "stage-1", stageName: "Stage 1" },
+		testSession: { output: "fallback result", fallbackModel, fallbackThinkingLevel: "high" },
+		onUpdate: (update) => {
+			const liveResult = update.details?.results[0];
+			if (liveResult) liveResults.push(liveResult);
+		},
+	});
+
+	assert.equal(result.model, fallbackModel);
+	assert.equal(result.thinking, "high");
+	assert.equal(result.fastMode, undefined);
+	assert.ok(
+		liveResults.some(
+			(liveResult) =>
+				liveResult.model === fallbackModel && liveResult.thinking === "high" && liveResult.fastMode === undefined,
+		),
+		"live progress should use the fallback model's effective thinking and fast-mode scope",
+	);
+});
+
 test(
 	"stage-launched in-process children carry workflow priority tier to the provider request",
 	async () => {

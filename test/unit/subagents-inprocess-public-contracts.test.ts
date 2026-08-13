@@ -6,6 +6,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, test } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
+import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type {
 	ExecutorDeps,
@@ -254,4 +255,73 @@ test("public parallel worktree mode gives each task an isolated checkout", async
 		.split("\n")
 		.filter((line) => line.startsWith("worktree "));
 	assert.equal(remainingWorktrees.length, 1);
+});
+test("public interrupt and resume actions accept both bare run ids and canonical child paths", async () => {
+	for (const form of ["bare", "canonical"] as const) {
+		const cwd = makeRoot();
+		const gate = Promise.withResolvers<void>();
+		const promptLogPath = join(cwd, `prompt-${form}.log`);
+		const { execute } = executor(cwd, new TestEvents(), {
+			runSync: async (parentCwd, agents, agentName, task, options) =>
+				runSync(parentCwd, agents, agentName, task, {
+					...options,
+					testSession: {
+						output: "resumed ok",
+						promptGate: gate.promise,
+						promptLogPath,
+						abortResolvesPrompt: true,
+					},
+				}),
+		});
+		const ctx = context(cwd);
+		const running = execute.execute(
+			`foreground-${form}`,
+			{ agent: "qa-echo", task: `wait for ${form} management`, artifacts: false },
+			new AbortController().signal,
+			undefined,
+			ctx,
+		);
+
+		for (let attempt = 0; attempt < 200 && !existsSync(promptLogPath); attempt++) await sleep(5);
+		assert.equal(existsSync(promptLogPath), true, "foreground child prompt should start before management actions");
+
+		const status = await execute.execute(
+			`status-${form}`,
+			{ action: "status" },
+			new AbortController().signal,
+			undefined,
+			ctx,
+		);
+		const statusText = text(status);
+		const liveStatus = /^Parent: (\S+)\n(\S+\/\S+) — running \(loaded\)$/m.exec(statusText);
+		const runId = liveStatus?.[1];
+		const childPath = liveStatus?.[2];
+		assert.ok(runId, statusText);
+		assert.ok(childPath, statusText);
+		assert.match(childPath, new RegExp(`^${runId}/qa-echo_1$`));
+		const id = form === "bare" ? runId : childPath;
+
+		const interrupted = await execute.execute(
+			`interrupt-${form}`,
+			{ action: "interrupt", id },
+			new AbortController().signal,
+			undefined,
+			ctx,
+		);
+		assert.equal(interrupted.isError, undefined, text(interrupted));
+		assert.match(text(interrupted), /Interrupt requested/);
+		const paused = await running;
+		assert.match(text(paused), /Run paused after interrupt/);
+
+		gate.resolve();
+		const resumed = await execute.execute(
+			`resume-${form}`,
+			{ action: "resume", id, message: `continue ${form}` },
+			new AbortController().signal,
+			undefined,
+			ctx,
+		);
+		assert.equal(resumed.isError, undefined, text(resumed));
+		assert.match(text(resumed), /resumed ok/);
+	}
 });

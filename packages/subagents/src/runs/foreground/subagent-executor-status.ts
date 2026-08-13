@@ -171,6 +171,7 @@ export function replaceForegroundRunChild(
 	runId: string,
 	index: number,
 	result: SingleResult,
+	options: { onlyWhenDetached?: boolean } = {},
 ): void {
 	const retainedResult = compactForegroundResult(result);
 	const run = state.foregroundRuns?.get(runId);
@@ -199,7 +200,7 @@ export function replaceForegroundRunChild(
 		return;
 	}
 	const child = run.children.find((entry) => entry.index === index);
-	if (child?.status !== "detached") return;
+	if (!child || (options.onlyWhenDetached !== false && child.status !== "detached")) return;
 	child.status = resolveSubagentResultStatus({
 		status: retainedResult.status,
 		interrupted: retainedResult.interrupted,

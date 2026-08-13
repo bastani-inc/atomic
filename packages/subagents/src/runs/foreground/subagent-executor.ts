@@ -174,7 +174,7 @@ async function resumeRetainedForegroundChild(
 		throw error;
 	}
 	if (!result.detached) cleanupProgress();
-	replaceForegroundRunChild(deps.state, run.runId, child.index, result);
+	replaceForegroundRunChild(deps.state, run.runId, child.index, result, { onlyWhenDetached: false });
 	return {
 		content: [{ type: "text", text: result.finalOutput ?? result.envelope ?? result.error ?? "" }],
 		details: { mode: "single", runId: run.runId, results: [result] },
