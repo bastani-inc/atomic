@@ -266,6 +266,34 @@ export async function _runAgentContinue(this: AgentSession): Promise<void> {
 	await this._continueQueuedAgentMessages();
 }
 
+/**
+ * Resume a persisted user-tail turn without adding another user message.
+ * Replaying this after an assistant result is safe and does no model work.
+ */
+export async function resumeUnfinishedTurn(this: AgentSession): Promise<{ resumed: boolean; completed: boolean }> {
+	if (this.isStreaming) throw new Error("Cannot resume an unfinished turn while the agent is streaming");
+	const lastMessage = this.messages.at(-1);
+	if (lastMessage?.role === "assistant") {
+		if (lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted") {
+			throw new Error("Cannot resume unfinished turn: the session has an incomplete assistant tail");
+		}
+		return { resumed: false, completed: true };
+	}
+	if (lastMessage?.role !== "user" && lastMessage?.role !== "toolResult") {
+		throw new Error("Cannot resume unfinished turn: the session has no accepted user tail");
+	}
+	try {
+		await this._runAgentContinue();
+		return { resumed: true, completed: true };
+	} finally {
+		await this._agentEventQueue;
+		if (typeof this._extensionRunner?.emit === "function") {
+			await this._extensionRunner.emit({ type: "agent_settled" });
+		}
+		this._emit?.({ type: "agent_settled" });
+	}
+}
+
 export async function _continueQueuedAgentMessages(this: AgentSession): Promise<void> {
 	await this._agentEventQueue;
 
@@ -557,6 +585,7 @@ export const agentSessionPromptMethods = {
 	prompt,
 	_runAgentPrompt,
 	_runAgentContinue,
+	resumeUnfinishedTurn,
 	_continueQueuedAgentMessages,
 	_tryExecuteBuiltinSlashCommand,
 	_tryExecuteExtensionCommand,

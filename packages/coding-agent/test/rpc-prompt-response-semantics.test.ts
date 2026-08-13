@@ -114,6 +114,7 @@ async function createRuntimeHost(options: {
 		throw new Error("Test model not found");
 	}
 
+	let modelTurns = 0;
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: {
@@ -122,6 +123,7 @@ async function createRuntimeHost(options: {
 			tools: [],
 		},
 		streamFn: (_model, _context, _options) => {
+			modelTurns += 1;
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
 				stream.push({ type: "start", partial: createAssistantMessage("") });
@@ -182,6 +184,7 @@ async function createRuntimeHost(options: {
 		}),
 	} as unknown as AgentSessionRuntime;
 
+	Object.defineProperty(runtimeHost, "modelTurns", { get: () => modelTurns });
 	return {
 		runtimeHost,
 		cleanup: async () => {
@@ -384,6 +387,47 @@ describe("RPC prompt response semantics", () => {
 					]),
 				);
 			}
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("resumes an accepted user tail once and makes completed replay a no-op", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+		const session = runtimeHost.session;
+		session.agent.state.messages.push({
+			role: "user",
+			content: [{ type: "text", text: "accepted before disconnect" }],
+			timestamp: Date.now(),
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "resume-1", type: "resume_unfinished_turn" }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines)).toContainEqual(
+					expect.objectContaining({
+						id: "resume-1",
+						command: "resume_unfinished_turn",
+						success: true,
+						data: { resumed: true, completed: false },
+					}),
+				);
+			});
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines).some((record) => record.type === "agent_settled")).toBe(true);
+			});
+			expect((runtimeHost as AgentSessionRuntime & { modelTurns: number }).modelTurns).toBe(1);
+
+			lineHandler(JSON.stringify({ id: "resume-2", type: "resume_unfinished_turn" }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines)).toContainEqual(
+					expect.objectContaining({
+						id: "resume-2",
+						data: { resumed: false, completed: true },
+					}),
+				);
+			});
+			expect((runtimeHost as AgentSessionRuntime & { modelTurns: number }).modelTurns).toBe(1);
 		} finally {
 			await cleanup();
 		}

@@ -262,6 +262,12 @@ export type StageSessionEvent =
 
 export interface StageSessionRuntime {
 	prompt(text: string, options?: PromptOptions): Promise<string | undefined>;
+	/**
+	 * True when prompt() does not resolve until queued steer/follow-up work has
+	 * been consumed and the session is fully settled. Atomic then skips its
+	 * otherwise-required synthetic continuation after an in-flight delivery.
+	 */
+	readonly settlesQueuedMessages?: boolean;
 	sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
 	steer(text: string): Promise<void>;
 	followUp(text: string): Promise<void>;

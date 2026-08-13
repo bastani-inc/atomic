@@ -14,6 +14,75 @@ import {
 } from "./executor-shared.js";
 
 describe("executor.run", () => {
+	test("continuation maps fresh tool ids when a completed stage depends on a tool", async () => {
+		const st = createStore();
+		let toolCalls = 0;
+		const def = workflow({
+			name: "resume-tool-parent-wf",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const prepared = await ctx.tool("prepare", { runId: ctx.runId ?? "unknown" }, async () => {
+					toolCalls += 1;
+					return "prepared";
+				});
+				const first = await ctx.stage("first").prompt(`first:${prepared}`);
+				await ctx.stage("second").prompt(`second:${first}`);
+				return {};
+			},
+		});
+
+		const firstRun = await run(
+			def,
+			{},
+			{
+				store: st,
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							if (text.startsWith("second:")) throw new Error("continuation test failure");
+							return "first-result";
+						},
+					},
+				},
+			},
+		);
+		assert.equal(firstRun.status, "failed");
+		const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+		const failedStageId = source.failedStageId!;
+		const sourceTool = source.toolNodes?.find((node) => node.name === "prepare");
+		assert.ok(sourceTool);
+
+		const continuationCalls: string[] = [];
+		const continued = await run(
+			def,
+			{},
+			{
+				store: st,
+				continuation: { source, resumeFromStageId: failedStageId },
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							continuationCalls.push(text);
+							return "second-result";
+						},
+					},
+				},
+			},
+		);
+
+		assert.equal(continued.status, "completed");
+		assert.equal(toolCalls, 2, "the fresh continuation executes its new tool call once");
+		assert.deepEqual(continuationCalls, ["second:first-result"]);
+		const replayedFirst = continued.stages.find((stage) => stage.name === "first")!;
+		const continuationTool = continued.toolNodes?.find((node) => node.name === "prepare");
+		assert.ok(continuationTool);
+		assert.equal(replayedFirst.replayed, true);
+		assert.notEqual(continuationTool.id, sourceTool.id, "run-scoped tool args produce a fresh tool id");
+		assert.deepEqual(replayedFirst.parentIds, [continuationTool.id]);
+	});
+
 	test("continuation replays multiple completed parallel siblings without topology drift", async () => {
 		const st = createStore();
 		const def = workflow({

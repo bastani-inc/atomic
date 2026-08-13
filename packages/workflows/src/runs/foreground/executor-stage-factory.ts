@@ -239,7 +239,7 @@ export function createWorkflowStageFactory(input: {
 		});
 		const unsubscribeQueuedUserMessageWatcher = innerCtx.subscribe(
 			createQueuedUserMessageConsumptionWatcher(() => {
-				if (!state.suppressQueuedUserMessageContinuation) {
+				if (!state.suppressQueuedUserMessageContinuation && !innerCtx.__settlesQueuedMessages()) {
 					state.resumeContinuationPending = "queued-user-message";
 				}
 			}),

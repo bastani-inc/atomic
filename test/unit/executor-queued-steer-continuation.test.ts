@@ -117,6 +117,25 @@ describe("executor — queued steer/follow-up resume continuation", () => {
 		assert.deepEqual(recorder.promptCalls, ["go", RESUME_CONTINUATION_PROMPT]);
 	});
 
+	test("a session that settles queued work does not receive a redundant continuation prompt", async () => {
+		const recorder = newRecorder();
+		const session = streamingTurnSession(recorder);
+		Object.defineProperty(session, "settlesQueuedMessages", { value: true });
+		const { runPromise, handle } = await runStreamingStage({
+			workflowName: "settled-queue-continuation-wf",
+			session,
+			recorder,
+		});
+
+		await handle.steer("finish this turn with the correction");
+		session.finishTurn();
+
+		const result = await runPromise;
+		assert.equal(result.status, "completed");
+		assert.deepEqual(recorder.steerCalls, ["finish this turn with the correction"]);
+		assert.deepEqual(recorder.promptCalls, ["go"]);
+	});
+
 	test("no queued message means no continuation prompt", async () => {
 		const recorder = newRecorder();
 		const session = streamingTurnSession(recorder);

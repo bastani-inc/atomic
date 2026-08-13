@@ -619,6 +619,9 @@ export class StageSessionController {
 	pendingMessageCount(): number {
 		return typeof this.session?.pendingMessageCount === "number" ? this.session.pendingMessageCount : 0;
 	}
+	settlesQueuedMessages(): boolean {
+		return this.session?.settlesQueuedMessages === true;
+	}
 
 	private bindAbortSignal(): void {
 		const { signal } = this.opts;

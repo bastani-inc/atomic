@@ -80,6 +80,29 @@ export function createRpcCommandHandler({
 				return undefined;
 			}
 
+			case "resume_unfinished_turn": {
+				const lastMessage = session.messages.at(-1);
+				if (lastMessage?.role === "assistant") {
+					if (lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted") {
+						return createRpcErrorResponse(
+							id,
+							"resume_unfinished_turn",
+							"Cannot resume unfinished turn: the session has an incomplete assistant tail",
+						);
+					}
+					return createRpcSuccessResponse(id, "resume_unfinished_turn", { resumed: false, completed: true });
+				}
+				if (lastMessage?.role !== "user" && lastMessage?.role !== "toolResult") {
+					return createRpcErrorResponse(
+						id,
+						"resume_unfinished_turn",
+						"Cannot resume unfinished turn: the session has no accepted user tail",
+					);
+				}
+				void session.resumeUnfinishedTurn().catch(() => {});
+				return createRpcSuccessResponse(id, "resume_unfinished_turn", { resumed: true, completed: false });
+			}
+
 			case "steer": {
 				await session.steer(command.message, command.images);
 				return createRpcSuccessResponse(id, "steer");

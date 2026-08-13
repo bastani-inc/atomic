@@ -1,4 +1,4 @@
-import { getDurableBackend } from "../durable/factory.js";
+import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
@@ -318,6 +318,10 @@ export async function handleRunControlCommand(
 			if (picked.kind !== (action === "attach" ? "connect" : action)) return true;
 			runId = picked.runId;
 		} else if (action === "resume") {
+			// Explicit resume is valid in a fresh Atomic process, before any workflow
+			// launch has lazily initialized durability. The local-shadow checks below
+			// synchronously inspect the backend, so establish it before that first read.
+			await initializeDurableBackend();
 			const backend = getDurableBackend();
 			const localResolution = resolveRunId(target);
 			const localBeforePreparation =

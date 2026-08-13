@@ -419,9 +419,9 @@ the discovery event again when a selected name is not yet present, so an
 extension loaded after the workflow extension can still register before the
 stage starts.
 
-The selector is retained with workflow snapshots and durable checkpoints, so completed-stage attachment and follow-up reopen through the same adapter. Atomic rejects an unknown name before provider work starts. Parallelism remains a workflow concern: put the selector on each `ctx.parallel` item and control fan-out with the normal parallel concurrency option.
+The selector is retained with workflow snapshots and durable checkpoints, so completed-stage attachment and follow-up reopen through the same adapter. A remote adapter may expose a checksum-verified local transcript mirror while it reopens the transport session by its own stable identity. Atomic rejects an unknown name before provider work starts. Parallelism remains a workflow concern: put the selector on each `ctx.parallel` item and control fan-out with the normal parallel concurrency option.
 
-An adapter that owns an external transport may set `retryPolicy: "never"`. Atomic then surfaces creation and prompt failures without same-model retry or model-fallback session replacement; an explicit workflow resume remains the recovery boundary.
+An adapter that owns an external transport may set `retryPolicy: "never"`. Atomic then avoids same-model retry and model-fallback session replacement. The adapter may reconnect the same owned session to reconcile a lost reply, but it must prove prompt acceptance from durable state before deciding whether to submit or resume; it must not create another stage attempt.
 
 Worktree semantics:
 

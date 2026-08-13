@@ -166,6 +166,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	prompt(text: string, options?: PromptOptions): Promise<void>;
 	_runAgentPrompt(messages: AgentMessage | AgentMessage[], promptStarted?: () => void): Promise<void>;
 	_runAgentContinue(): Promise<void>;
+	resumeUnfinishedTurn(): Promise<{ resumed: boolean; completed: boolean }>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteBuiltinSlashCommand(text: string): Promise<boolean>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;
@@ -353,6 +354,7 @@ export interface AgentSessionPublicSurface
 		| "setActiveToolsByName"
 		| "setScopedModels"
 		| "prompt"
+		| "resumeUnfinishedTurn"
 		| "steer"
 		| "followUp"
 		| "sendCustomMessage"
