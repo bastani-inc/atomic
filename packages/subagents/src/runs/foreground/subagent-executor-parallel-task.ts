@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import type { ModelInfo } from "../../shared/model-info.ts";
+import type { CandidateModelResolver } from "../../shared/model-resolution.ts";
 import { buildTaskInstructions, type ResolvedStepBehavior } from "../../shared/settings.ts";
 import type {
 	AgentProgress,
@@ -42,6 +43,7 @@ interface ForegroundParallelRunInput {
 	workflowStageSubagentGuard?: boolean;
 	availableModels: ModelInfo[];
 	knownModelProviders: string[];
+	resolveCandidateModel: CandidateModelResolver;
 	modelOverrides: (string | undefined)[];
 	behaviors: ResolvedStepBehavior[];
 	firstProgressIndex: number;
@@ -144,6 +146,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				modelOverride: input.modelOverrides[index],
 				availableModels: input.availableModels,
 				knownModelProviders: input.knownModelProviders,
+				resolveCandidateModel: input.resolveCandidateModel,
 				preferredModelProvider: input.ctx.model?.provider,
 				currentModel: currentModelFullId(input.ctx.model),
 				skills: effectiveSkills === false ? [] : effectiveSkills,

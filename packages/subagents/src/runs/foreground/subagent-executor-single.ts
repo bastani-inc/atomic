@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { INTERCOM_BRIDGE_MARKER, resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.ts";
+import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
 import {
 	injectSingleProgressInstruction,
 	resolveSingleProgress,
@@ -217,6 +218,7 @@ export async function runSinglePath(
 			modelOverride,
 			availableModels,
 			knownModelProviders,
+			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),
 			preferredModelProvider: currentProvider,
 			currentModel: currentModelFullId(ctx.model),
 			skills: effectiveSkills,

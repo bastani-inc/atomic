@@ -2,6 +2,7 @@ import type { ExtensionAPI, SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agents.ts";
 import type { SupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import type { ModelInfo } from "../../shared/model-info.ts";
+import type { CandidateModelResolver } from "../../shared/model-resolution.ts";
 import type { RunSyncOptions } from "../../shared/types.ts";
 
 export interface AsyncExecutionContext {
@@ -41,6 +42,7 @@ export interface AsyncSingleParams {
 	modelOverride?: string;
 	availableModels?: ModelInfo[];
 	knownModelProviders?: string[];
+	resolveCandidateModel?: CandidateModelResolver;
 	maxSubagentDepth: number;
 	parentDepth?: number;
 	workflowStageSubagentGuard?: boolean;

@@ -2,6 +2,7 @@ import { APP_NAME } from "@bastani/atomic";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.ts";
+import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
 import type { SingleResult, SubagentToolResult } from "../../shared/types.ts";
 import {
 	resolveChildMaxSubagentDepth,
@@ -135,6 +136,7 @@ export async function runAsyncPath(
 			modelOverride,
 			availableModels,
 			knownModelProviders,
+			resolveCandidateModel: createCandidateModelResolver(data.ctx.modelRegistry, data.ctx.model?.provider),
 			maxSubagentDepth: resolveChildMaxSubagentDepth(depthPolicy.maxSubagentDepth, agent.maxSubagentDepth),
 			parentDepth: data.parentDepth,
 			workflowStageSubagentGuard: depthPolicy.workflowStageSubagentGuard,

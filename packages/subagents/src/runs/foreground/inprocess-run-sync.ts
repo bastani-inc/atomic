@@ -199,6 +199,11 @@ export async function runSingleInProcess(
 		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
 	const candidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
+	// The candidate is only a string. `createAgentSession` selects a model from a
+	// `Model<Api>` object and otherwise restores the model persisted in the
+	// session file — which, for a fork-context child, is the parent's model.
+	// Resolving the candidate here is what makes the agent's configured model win.
+	const resolvedCandidate = candidate ? options.resolveCandidateModel?.(candidate) : undefined;
 	const fastModeSettings = getSubagentCodexFastModeSettings(cwd);
 	const orchestrationContext = workflowOrchestrationContext(options);
 	const fastModeScope = resolveSubagentCodexFastModeScope(
@@ -248,8 +253,8 @@ export async function runSingleInProcess(
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,
-		model: undefined,
-		thinkingLevel: agent.thinking as ChildSpec["thinkingLevel"],
+		model: resolvedCandidate?.model,
+		thinkingLevel: (resolvedCandidate?.thinkingLevel ?? agent.thinking) as ChildSpec["thinkingLevel"],
 		parent,
 		intercom: options.orchestratorIntercomTarget
 			? {
@@ -305,7 +310,7 @@ export async function runSingleInProcess(
 	const neverAbort = new AbortController().signal;
 	const running = control.startAttempt(
 		admission.admitted,
-		{ modelId: candidate, thinkingLevel: spec.thinkingLevel },
+		{ model: resolvedCandidate?.model, modelId: candidate, thinkingLevel: spec.thinkingLevel },
 		{
 			abort: options.signal ?? neverAbort,
 			interrupt: options.interruptSignal ?? neverAbort,
@@ -330,7 +335,11 @@ export async function runSingleInProcess(
 			lastActivityAt: Date.now(),
 		});
 	}
-	control.registerNestedAttempt(options.runId, running, { modelId: candidate, thinkingLevel: spec.thinkingLevel });
+	control.registerNestedAttempt(options.runId, running, {
+		model: resolvedCandidate?.model,
+		modelId: candidate,
+		thinkingLevel: spec.thinkingLevel,
+	});
 	if (options.backgroundContinuation) {
 		control.continueInBackground(running, "async-requested");
 		void running.promise.then(

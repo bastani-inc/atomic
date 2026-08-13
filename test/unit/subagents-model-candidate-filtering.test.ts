@@ -106,6 +106,7 @@ describe("subagent pre-spawn model candidate filtering", () => {
 				maxSubagentDepths: [0],
 				availableModels: [{ provider: "provider-b", id: "working", fullId: "provider-b/working" }],
 				knownModelProviders,
+				resolveCandidateModel: () => undefined,
 				modelOverrides: ["provider-a/stalled"],
 				behaviors: [{ output: false, outputMode: "inline", reads: false, progress: false, skills: false }],
 				firstProgressIndex: -1,
@@ -172,6 +173,7 @@ describe("subagent pre-spawn model candidate filtering", () => {
 				maxSubagentDepths: [0, 0],
 				availableModels: [],
 				knownModelProviders: [],
+				resolveCandidateModel: () => undefined,
 				modelOverrides,
 				behaviors: [
 					{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },

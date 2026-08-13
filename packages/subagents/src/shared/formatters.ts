@@ -14,13 +14,11 @@ export function formatTokens(n: number): string {
 
 export function formatModelThinking(model?: string, thinking?: string, fastMode?: boolean): string {
 	const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
-	let displayModel = parsed?.baseModel ?? model;
+	// Keep the full `provider/model` id so subagent lines read exactly like the
+	// main chat's model display; only a known thinking suffix is split off.
+	const displayModel = parsed?.baseModel ?? model;
 	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
 	const displayThinking = parsed?.thinkingSuffix ? parsed.thinkingSuffix.slice(1) : explicitThinking;
-	if (displayModel) {
-		const slashIdx = displayModel.lastIndexOf("/");
-		if (slashIdx !== -1) displayModel = displayModel.slice(slashIdx + 1);
-	}
 	const parts = [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined].filter(Boolean);
 	if (fastMode && parts.length > 0) parts.push("fast");
 	return parts.join(" · ");

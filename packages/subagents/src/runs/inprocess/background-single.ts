@@ -136,6 +136,7 @@ export async function executeAsyncSingle(id: string, params: AsyncSingleParams):
 		modelOverride: filteredCandidates.candidates[0] ?? params.modelOverride ?? agentConfig.model,
 		availableModels,
 		knownModelProviders,
+		resolveCandidateModel: params.resolveCandidateModel,
 		preferredModelProvider: ctx.currentModelProvider,
 		currentModel: ctx.currentModel,
 		skills: resolvedSkills.map((skill) => skill.name),

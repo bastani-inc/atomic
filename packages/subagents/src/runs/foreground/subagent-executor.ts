@@ -11,6 +11,7 @@ import {
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import { toModelInfo } from "../../shared/model-info.ts";
+import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
 import { resolveSingleProgress } from "../../shared/settings.ts";
 import {
 	DEFAULT_ARTIFACT_CONFIG,
@@ -105,6 +106,7 @@ async function resumeRetainedForegroundChild(
 		progress: resolveSingleProgress(agentConfig, params.progress, message),
 		modelOverride: params.model,
 		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
+		resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
 		// The child's own effective limit, recorded when the run was retained. An
 		// older record without one falls back to narrowing the current limit by the
 		// agent definition, so a resume never widens a child's delegation budget.

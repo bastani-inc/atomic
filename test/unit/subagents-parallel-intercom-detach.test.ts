@@ -63,6 +63,7 @@ test("one parallel child's supervisor detach releases every active foreground si
 		maxSubagentDepths: [0, 0, 0],
 		availableModels: [],
 		knownModelProviders: [],
+		resolveCandidateModel: () => undefined,
 		modelOverrides: [undefined, undefined, undefined],
 		behaviors: [
 			{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },

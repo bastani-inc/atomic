@@ -4,6 +4,7 @@
 
 import type { SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { CandidateModelResolver } from "./model-resolution.ts";
 import type { NestedRouteInfo } from "./types-async.ts";
 import type {
 	ArtifactConfig,
@@ -104,6 +105,13 @@ export interface RunSyncOptions {
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
 	/** Providers known to the registry before auth filtering */
 	knownModelProviders?: string[];
+	/**
+	 * Resolve the selected `provider/model[:thinking]` candidate to a concrete
+	 * registry model. Without it the child session receives no model and a
+	 * fork-context child silently runs on the model restored from the parent's
+	 * session file.
+	 */
+	resolveCandidateModel?: CandidateModelResolver;
 	/** Current parent-session provider to prefer for ambiguous bare model ids */
 	preferredModelProvider?: string;
 	/** Current parent-session model to try after configured fallback models */
