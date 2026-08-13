@@ -1,0 +1,40 @@
+
+ We question,
+ we break away from what is accepted.
+ Engineering matters.
+
+RESOURCES context ready · 19 skills · 14 prompts
+
+────────────────────────────────────────────────────────────────────────────────
+ Atomic is a verifiable coding agent runtime for building and running
+ agent workflows you can feel confident in.
+ Use it to implement tickets, research a codebase, design a UI,
+ or build and run your own loops.
+╭────────────────────────────────────────────────────────────────────────────╮
+│ Current Session                                                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  worker (c910cfd2-7798-4b3e-bed2-b3d1082bdd18) [self]                      │
+│  /Users/tonystark/Documents/projects/atomic-intercom-width-aware • unknown │
+│                                                                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Other Sessions                                                             │
+│                                                                            │
+│→ planner (ab3514fa-360b-42b2-a1a1-827740c259fa) [same cwd]                 │
+│  /Users/tonystark/Documents/projects/atomic-intercom-width-aware • unknown │
+│                                                                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Enter: Message • Escape/CTRL+C: Close                                      │
+╰────────────────────────────────────────────────────────────────────────────╯
+ g-agent/docs/models.md
+
+ Session name set: worker
+
+ ∀ Working...
+
+                                                                   0.0%/0 (auto)
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+unknown • ~/Documents/projects/atomic-intercom-width-aware (fix/intercom-sess...
+● ADHD Mode • MCP: 0/1 servers
