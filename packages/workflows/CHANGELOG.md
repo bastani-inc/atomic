@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow model fallback attempt metadata now includes per-attempt input/output tokens, cache reads/writes, provider-reported total cost, and meaningful assistant-turn counts when usage is available ([#2197](https://github.com/bastani-inc/atomic/issues/2197)).
+
 ## [0.9.13-alpha.2] - 2026-08-12
 
 ### Breaking Changes
@@ -24,8 +28,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Retired the legacy terminal-row callback thread from graph and stage-chat views. The two fullscreen-frame consumers still read `terminal.rows` directly: GraphView uses it for the overlay frame, and StageChatView uses it for the chat line count, falling back to the unhosted `VIEW_LINE_COUNT = 32` frame when no host is present. `PiCustomComponent.render` supplies only a width, so the #2223 viewport-row criterion remains partial at those call paths ([#2223](https://github.com/bastani-inc/atomic/issues/2223)).
 
 - Workflow command, worktree Git/setup-hook, and Playwright CLI subprocesses now receive `AI_AGENT=atomic` for generic child-process attribution without mutating caller-supplied environment objects.
-
-- Workflow model fallback attempt metadata now includes per-attempt input/output tokens, cache reads/writes, provider-reported total cost, and meaningful assistant-turn counts when usage is available ([#2197](https://github.com/bastani-inc/atomic/issues/2197)).
 
 ### Fixed
 - Fixed completed `ctx.exit()` runs losing the reserved returned-status convention, legacy child replay records losing their exit discriminator, and failed author-exit resume surfaces falling back to snapshot inspection instead of durable retry.
