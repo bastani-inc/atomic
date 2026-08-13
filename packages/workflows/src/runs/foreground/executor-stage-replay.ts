@@ -143,6 +143,7 @@ export function createReplayStageContext(input: {
 		__closeGeneration: async () => {},
 		__sessionMeta: () => ({ sessionId: replaySource.sessionId, sessionFile: replaySource.sessionFile }),
 		__agentSession: () => undefined,
+		__sessionStats: () => undefined,
 		__pendingMessageCount: () => 0,
 		__settlesQueuedMessages: () => false,
 		__modelFallbackMeta: () => ({

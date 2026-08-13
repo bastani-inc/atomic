@@ -409,7 +409,7 @@ describe("RPC prompt response semantics", () => {
 						id: "resume-1",
 						command: "resume_unfinished_turn",
 						success: true,
-						data: { resumed: true, completed: false },
+						data: { resumed: true, completed: true },
 					}),
 				);
 			});
@@ -428,6 +428,32 @@ describe("RPC prompt response semantics", () => {
 				);
 			});
 			expect((runtimeHost as AgentSessionRuntime & { modelTurns: number }).modelTurns).toBe(1);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("reports continuation failures instead of claiming a resume succeeded", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+		runtimeHost.session.agent.state.messages.push({
+			role: "user",
+			content: [{ type: "text", text: "accepted before disconnect" }],
+			timestamp: Date.now(),
+		});
+		vi.spyOn(runtimeHost.session, "resumeUnfinishedTurn").mockRejectedValueOnce(new Error("continuation failed"));
+
+		try {
+			lineHandler(JSON.stringify({ id: "resume-failed", type: "resume_unfinished_turn" }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines)).toContainEqual(
+					expect.objectContaining({
+						id: "resume-failed",
+						command: "resume_unfinished_turn",
+						success: false,
+						error: "continuation failed",
+					}),
+				);
+			});
 		} finally {
 			await cleanup();
 		}

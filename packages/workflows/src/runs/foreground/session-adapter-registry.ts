@@ -95,7 +95,14 @@ export function installSessionAdapterDiscovery(
 	return { registry, dispose: typeof unsubscribe === "function" ? () => unsubscribe() : () => undefined };
 }
 
-export function resolveSessionAdapter(
+/**
+ * Resolve the effective adapter without turning a missing named registration
+ * into an exception. Post-mortem inspection uses this boundary so a stale
+ * persisted selector leaves the transcript read-only instead of breaking the
+ * inspection surface; live stage creation uses `resolveSessionAdapter` below
+ * when an unknown selector should remain an explicit failure.
+ */
+export function findSessionAdapter(
 	adapters: StageAdapters,
 	selector: SessionAdapterSelector | undefined,
 ): AgentSessionAdapter | undefined {
@@ -106,7 +113,17 @@ export function resolveSessionAdapter(
 		namedAdapters?.discover?.();
 		adapter = namedAdapters?.get(selector.name);
 	}
+	return adapter;
+}
+
+export function resolveSessionAdapter(
+	adapters: StageAdapters,
+	selector: SessionAdapterSelector | undefined,
+): AgentSessionAdapter | undefined {
+	const adapter = findSessionAdapter(adapters, selector);
 	if (adapter !== undefined) return adapter;
+	if (selector === undefined) return undefined;
+	const namedAdapters = adapters.sessionAdapters;
 	const available = namedAdapters?.names() ?? [];
 	const suffix =
 		available.length > 0 ? ` Available adapters: ${available.join(", ")}.` : " No named adapters are registered.";

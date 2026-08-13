@@ -7,6 +7,13 @@ import { isTerminalStageChatState } from "./stage-chat-view-status.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
 
 export function applyStageChatLiveHandleEvent(ctx: StageChatViewContext, event: AgentSessionEvent): void {
+	// Adapter-only telemetry has no transcript/lifecycle state to apply. The
+	// runtime getter now points at the refreshed snapshot; repaint the usage
+	// ribbon and leave the ordinary AgentSession event reducer untouched.
+	if (String((event as { type?: unknown }).type ?? "") === "session_stats") {
+		ctx.requestRender?.();
+		return;
+	}
 	const staleTerminalStart = isStaleTerminalLifecycleStart(ctx, event);
 	ctx.chatHost.applyAgentEvent(event);
 	if (staleTerminalStart) {

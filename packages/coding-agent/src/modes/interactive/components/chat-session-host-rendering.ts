@@ -94,8 +94,10 @@ export function renderChatSessionUsage<TExtraEntry extends ChatTranscriptEntryLi
 	width: number,
 ): string[] {
 	const agentSession = state.getAgentSession?.();
-	if (!agentSession) return [];
-	return new UsageMeterComponent(agentSession).render(width);
+	if (agentSession) return new UsageMeterComponent(agentSession).render(width);
+	const sessionStats = state.getSessionStats?.();
+	if (sessionStats) return new UsageMeterComponent(sessionStats).render(width);
+	return [];
 }
 
 export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryLike>(

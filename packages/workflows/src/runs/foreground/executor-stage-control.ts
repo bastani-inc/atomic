@@ -65,6 +65,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		get agentSession() {
 			return runtime.innerCtx.__agentSession();
 		},
+		get sessionStats() {
+			return runtime.innerCtx.__sessionStats();
+		},
 		pendingToolExecutionEvents() {
 			return toolExecutions.replayEvents();
 		},

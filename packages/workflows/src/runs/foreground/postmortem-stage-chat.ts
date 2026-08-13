@@ -28,6 +28,7 @@
 
 import { isReopenableSessionTranscript } from "../../shared/session-transcript.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
+import { findSessionAdapter } from "./session-adapter-registry.js";
 import type {
 	AgentSessionEventListener,
 	DetachedStageHandleLease,
@@ -92,12 +93,14 @@ export function ensurePostMortemStageHandle(
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return { ok: true, handle: existing };
 	}
-	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
+	const adapters = deps.adapters;
+	if (adapters === undefined || findSessionAdapter(adapters, stage.sessionAdapter) === undefined) {
+		return { ok: false, reason: "no_adapter" };
+	}
 	const sessionFile = stage.sessionFile;
 	if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
 	if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
 
-	const adapters = deps.adapters;
 	const handle = deps.registry.getOrCreateDetached(runId, stage.id, () =>
 		createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
 	);
@@ -118,11 +121,13 @@ export function acquirePostMortemStageHandle(
 			lease: deps.registry.acquireDetached(runId, stage.id, () => existing),
 		};
 	}
-	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
+	const adapters = deps.adapters;
+	if (adapters === undefined || findSessionAdapter(adapters, stage.sessionAdapter) === undefined) {
+		return { ok: false, reason: "no_adapter" };
+	}
 	const sessionFile = stage.sessionFile;
 	if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
 	if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };
-	const adapters = deps.adapters;
 	const lease = deps.registry.acquireDetached(runId, stage.id, () =>
 		createPostMortemStageHandle(runId, stage, sessionFile, adapters, deps.cwd, deps.defaultSessionDir),
 	);
@@ -195,6 +200,9 @@ export function createPostMortemStageHandle(
 		},
 		get agentSession() {
 			return context.__agentSession();
+		},
+		get sessionStats() {
+			return context.__sessionStats();
 		},
 		queuedUserMessages() {
 			return queuedUserMessages.snapshot();

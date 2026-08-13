@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { AgentSession } from "../../../core/agent-session.ts";
+import type { AgentSession, SessionStats } from "../../../core/agent-session.ts";
 import { formatCodexFastModeModelLabel, shouldApplyCodexFastMode } from "../../../core/codex-fast-mode.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -53,39 +53,55 @@ function rightAlign(line: string, width: number): string {
 	return `${" ".repeat(width - lineWidth)}${line}`;
 }
 
-function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width: number): string {
-	const state = session.state;
+function getUsageLine(source: AgentSession | SessionStats, autoCompactEnabled: boolean, width: number): string {
+	const isStats = "tokens" in source;
+	const state = isStats ? undefined : source.state;
 
-	// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
-	const totals = createUsageTotals();
+	// Local sessions derive cumulative totals from the complete transcript. An
+	// adapter-backed stage receives the same cumulative values from get_session_stats.
+	const totals = isStats
+		? {
+				input: source.tokens.input,
+				output: source.tokens.output,
+				cacheRead: source.tokens.cacheRead,
+				cacheWrite: source.tokens.cacheWrite,
+				cost: source.cost,
+			}
+		: createUsageTotals();
 	let latestCacheHitRate: number | undefined;
 
-	for (const entry of session.sessionManager.getEntries()) {
-		if (entry.type === "message" && entry.message.role === "assistant") {
-			addUsageToTotals(totals, entry.message.usage);
-
-			const latestPromptTokens =
-				entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
-			latestCacheHitRate =
-				latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
-		} else if ((entry.type === "branch_summary" || entry.type === "session_summary") && entry.usage) {
-			addUsageToTotals(totals, entry.usage);
-		} else if (
-			entry.type === "message" &&
-			entry.message.role === "toolResult" &&
-			"usage" in entry.message &&
-			entry.message.usage
-		) {
-			addUsageToTotals(totals, entry.message.usage);
+	if (isStats) {
+		const latestPromptTokens = source.tokens.input + source.tokens.cacheRead + source.tokens.cacheWrite;
+		latestCacheHitRate =
+			latestPromptTokens > 0 ? (source.tokens.cacheRead / latestPromptTokens) * 100 : undefined;
+	} else {
+		for (const entry of source.sessionManager.getEntries()) {
+			if (entry.type === "message" && entry.message.role === "assistant") {
+				addUsageToTotals(totals, entry.message.usage);
+				const latestPromptTokens =
+					entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
+				latestCacheHitRate =
+					latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
+			} else if ((entry.type === "branch_summary" || entry.type === "session_summary") && entry.usage) {
+				addUsageToTotals(totals, entry.usage);
+			} else if (
+				entry.type === "message" &&
+				entry.message.role === "toolResult" &&
+				"usage" in entry.message &&
+				entry.message.usage
+			) {
+				addUsageToTotals(totals, entry.message.usage);
+			}
 		}
 	}
 
-	// Calculate context usage from session (handles compaction correctly).
+	// Calculate context usage from the session (or the adapter's RPC snapshot).
 	// After compaction, tokens are unknown until the next LLM response.
-	const contextUsage = session.getContextUsage();
-	const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
-	const contextPercentValue = contextUsage?.percent ?? 0;
-	const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
+	const contextUsage = isStats ? source.contextUsage : source.getContextUsage();
+	const contextWindow = contextUsage?.contextWindow ?? state?.model?.contextWindow ?? 0;
+	const rawContextPercent = contextUsage?.percent;
+	const contextPercentValue = typeof rawContextPercent === "number" ? rawContextPercent : 0;
+	const contextPercent = typeof rawContextPercent === "number" ? rawContextPercent.toFixed(1) : "?";
 
 	const usageParts = [];
 	if (totals.input) usageParts.push(`${theme.fg("dim", "↑")}${theme.fg("muted", formatTokens(totals.input))}`);
@@ -98,8 +114,8 @@ function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width:
 	}
 
 	// Kimi Coding is subscription-backed despite using API-key authentication.
-	const usingSubscription = state.model
-		? state.model.provider === "kimi-coding" || session.modelRuntime.isUsingOAuth(state.model.provider)
+	const usingSubscription = !isStats && source.state.model
+		? source.state.model.provider === "kimi-coding" || source.modelRuntime.isUsingOAuth(source.state.model.provider)
 		: false;
 	if (totals.cost || usingSubscription) {
 		usageParts.push(
@@ -148,13 +164,13 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 export class UsageMeterComponent implements Component {
 	private autoCompactEnabled = true;
 
-	private declare session: AgentSession;
+	private declare session: AgentSession | SessionStats;
 
-	constructor(session: AgentSession) {
+	constructor(session: AgentSession | SessionStats) {
 		this.session = session;
 	}
 
-	setSession(session: AgentSession): void {
+	setSession(session: AgentSession | SessionStats): void {
 		this.session = session;
 	}
 

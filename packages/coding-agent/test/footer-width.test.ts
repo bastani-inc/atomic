@@ -1,7 +1,7 @@
 import { sep } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.ts";
+import type { AgentSession, SessionStats } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
 import {
 	FooterComponent,
@@ -158,6 +158,27 @@ describe("UsageMeterComponent context color", () => {
 		const [line] = usageMeter.render(120);
 		expect(line).toContain(theme.fg("error", "101.2%/200k"));
 		expect(line).not.toContain(theme.fg("warning", "101.2%/200k"));
+	});
+
+	it("renders RPC session stats for adapter-backed stages", () => {
+		const stats: SessionStats = {
+			sessionFile: "/tmp/remote-session.jsonl",
+			sessionId: "remote-session",
+			userMessages: 2,
+			assistantMessages: 2,
+			toolCalls: 1,
+			toolResults: 1,
+			totalMessages: 6,
+			tokens: { input: 12_000, output: 3_000, cacheRead: 8_000, cacheWrite: 500, total: 23_500 },
+			cost: 0.012,
+			contextUsage: { tokens: 95_000, contextWindow: 131_072, percent: 72.5 },
+		};
+
+		const line = stripAnsi(new UsageMeterComponent(stats).render(120)[0]);
+		expect(line).toContain("↑12k");
+		expect(line).toContain("↓3.0k");
+		expect(line).toContain("CH39.0%");
+		expect(line).toContain("72.5%/131k (auto)");
 	});
 });
 describe("FooterComponent width handling", () => {
