@@ -12,6 +12,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 - Intercom now displays full session and message IDs everywhere: list rows, the session-list overlay, inbound message headers, reply-to lines, message-id result badges, and unnamed-session `subagent-chat-<id>` aliases.
 
+### Fixed
+
+- Fixed the session-list overlay clipping full session IDs at narrow terminal widths by wrapping IDs onto dim rows and marking unavoidable truncation with a visible ellipsis; inline sender and reply-to IDs now also signal overflow.
+
 ## [0.9.13-alpha.2] - 2026-08-12
 
 ### Changed

@@ -30,7 +30,8 @@ export class InlineMessageComponent implements Component {
 
     const senderName = this.from.name || this.from.id;
     const header = ` 📨 From: ${senderName} (${this.from.cwd}) `;
-    const headerText = truncateToWidth(header, bodyWidth, "");
+    // An empty ellipsis silently clips full sender IDs; keep header overflow visible.
+    const headerText = truncateToWidth(header, bodyWidth, "…");
     const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));
     lines.push(this.theme.fg("accent", `╭${headerText}${borderChar.repeat(headerPadding)}╮`));
 
@@ -63,8 +64,9 @@ export class InlineMessageComponent implements Component {
 
     if (this.message.replyTo && !this.message.expectsReply) {
       lines.push(this.theme.fg("accent", `│${" ".repeat(bodyWidth)}│`));
+      // An empty ellipsis silently clips full reply-to IDs; keep overflow visible.
       const reply = this.theme.fg("dim", ` ↳ Reply to ${this.message.replyTo}`);
-      const text = truncateToWidth(reply, bodyWidth, "");
+      const text = truncateToWidth(reply, bodyWidth, "…");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));
       lines.push(this.theme.fg("accent", `│${text}${" ".repeat(padding)}│`));
     }
