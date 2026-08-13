@@ -13,10 +13,11 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
 	ensurePostMortemStageHandle,
 	isPostMortemEligibleStage,
@@ -56,6 +57,21 @@ function retainedSession(name: string): string {
 				parentId: null,
 				timestamp: new Date().toISOString(),
 				message: { role: "user", content: "Original stage request" },
+			}),
+			JSON.stringify({
+				type: "message",
+				id: `${name}-assistant`,
+				parentId: `${name}-message`,
+				timestamp: new Date().toISOString(),
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Mirrored remote Pi answer" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
 			}),
 		].join("\n")}\n`,
 	);
@@ -124,6 +140,73 @@ describe("ensurePostMortemStageHandle", () => {
 		await result.handle.ensureAttached();
 		assert.equal(remoteCreates, 1);
 		assert.equal(localCreates, 0);
+	});
+
+	test("opens a mirrored Pi transcript by stable ID before remote-pi post-mortem follow-up", async () => {
+		const registry = createStageControlRegistry();
+		const named = new SessionAdapterRegistry();
+		const sessionFile = retainedSession("stable-remote");
+		const remoteSessionId = "stable-remote-session";
+		const ownedSessionDir = join(tempDir, "owned-remote-session");
+		const events: string[] = [];
+		mkdirSync(ownedSessionDir, { recursive: true });
+
+		named.register({
+			version: SESSION_ADAPTER_PROTOCOL_VERSION,
+			name: "remote-pi",
+			adapter: {
+				async create() {
+					const restoredPath = join(ownedSessionDir, "resume.jsonl");
+					copyFileSync(sessionFile, restoredPath);
+					const match = (await SessionManager.list(tempDir, ownedSessionDir)).find(
+						(candidate) => candidate.id === remoteSessionId,
+					);
+					assert.ok(match, "stable --session-id must resolve the restored mirror in --session-dir");
+					const reopened = SessionManager.open(match.path, ownedSessionDir, tempDir);
+					const priorMessages = reopened.buildSessionContext().messages;
+					assert.deepEqual(
+						priorMessages.map((message) => message.role),
+						["user", "assistant"],
+					);
+					const priorAssistant = priorMessages[1];
+					assert.equal(
+						priorAssistant?.role === "assistant"
+							? priorAssistant.content.find((part) => part.type === "text")?.text
+							: undefined,
+						"Mirrored remote Pi answer",
+					);
+					events.push("mirror-opened");
+					return {
+						...mockSession(),
+						sessionFile,
+						async prompt(text: string) {
+							events.push(`follow-up:${text}`);
+						},
+					};
+				},
+			},
+		});
+
+		const stage = completedStage({
+			sessionFile,
+			sessionAdapter: { name: "remote-pi", config: { profile: "example-profile" } },
+		});
+		const result = ensurePostMortemStageHandle("run-1", stage, {
+			registry,
+			adapters: {
+				agentSession: {
+					async create() {
+						return mockSession();
+					},
+				},
+				sessionAdapters: named,
+			},
+			cwd: tempDir,
+		});
+		assert.equal(result.ok, true);
+		if (!result.ok) return;
+		await result.handle.prompt("Continue from the mirror");
+		assert.deepEqual(events, ["mirror-opened", "follow-up:Continue from the mirror"]);
 	});
 
 	test("revives a detached interactive handle and appends follow-up without mutating status", async () => {

@@ -1,6 +1,7 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { type CreateToolPrimitiveInput, createToolPrimitive } from "../durable/tool-primitive.js";
 import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
+import type { ContinuationReplayIndex } from "../runs/foreground/executor-continuation.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowToolPrimitive } from "../shared/types.js";
@@ -21,6 +22,7 @@ export function createToolNodeLifecycle(input: {
 	readonly store: Store;
 	readonly tracker: GraphFrontierTracker;
 	readonly run: RunSnapshot;
+	readonly replayIndex: ContinuationReplayIndex;
 	readonly sourceToReplayedNodeIds: Map<string, string>;
 }): ToolNodeLifecycle {
 	const { store, tracker, run, sourceToReplayedNodeIds } = input;
@@ -35,6 +37,8 @@ export function createToolNodeLifecycle(input: {
 	const ownsCurrentRun = (): boolean => store.runs().some((candidate) => candidate === run);
 	return {
 		onNodeStart: (node) => {
+			const sourceToolId = input.replayIndex.registerToolNode(node);
+			if (sourceToolId !== undefined) input.sourceToReplayedNodeIds.set(sourceToolId, node.id);
 			const inferredParents = tracker.onSpawn(node.id, node.name);
 			const sourceParents =
 				node.replayed === true && node.topologyState !== "unavailable" ? node.parentIds : undefined;
@@ -68,6 +72,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly store: Store;
 	readonly tracker: GraphFrontierTracker;
 	readonly run: RunSnapshot;
+	readonly replayIndex: ContinuationReplayIndex;
 	readonly sourceToReplayedNodeIds: Map<string, string>;
 	readonly toolControls: ToolControlRegistry;
 	readonly toolAdmission: ToolAdmissionBoundary;

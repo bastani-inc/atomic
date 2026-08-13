@@ -419,6 +419,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		store: activeStore,
 		tracker,
 		run: runSnapshot,
+		replayIndex,
 		sourceToReplayedNodeIds,
 		toolControls,
 		toolAdmission,

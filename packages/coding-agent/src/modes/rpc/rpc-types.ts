@@ -62,6 +62,7 @@ export type RpcOAuthLoginProviderResult =
 export type RpcCommand =
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
+	| { id?: string; type: "resume_unfinished_turn" }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
@@ -201,6 +202,13 @@ export interface RpcLogoutProviderResult {
 export type RpcResponse =
 	// Prompting (async - events follow)
 	| { id?: string; type: "response"; command: "prompt"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "resume_unfinished_turn";
+			success: true;
+			data: { resumed: boolean; completed: boolean };
+	  }
 	| { id?: string; type: "response"; command: "steer"; success: true }
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
 	| { id?: string; type: "response"; command: "abort"; success: true }

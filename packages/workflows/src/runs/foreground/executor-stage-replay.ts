@@ -144,6 +144,7 @@ export function createReplayStageContext(input: {
 		__sessionMeta: () => ({ sessionId: replaySource.sessionId, sessionFile: replaySource.sessionFile }),
 		__agentSession: () => undefined,
 		__pendingMessageCount: () => 0,
+		__settlesQueuedMessages: () => false,
 		__modelFallbackMeta: () => ({
 			...(replaySource.model !== undefined ? { model: replaySource.model } : {}),
 			...(replaySource.fastMode === true ? { fastMode: replaySource.fastMode } : {}),

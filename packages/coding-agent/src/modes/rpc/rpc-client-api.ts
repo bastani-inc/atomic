@@ -38,6 +38,9 @@ export abstract class RpcClientApi {
 	async prompt(message: string, images?: ImageContent[], streamingBehavior?: "steer" | "followUp"): Promise<void> {
 		await this.request({ type: "prompt", message, images, streamingBehavior });
 	}
+	async resumeUnfinishedTurn(): Promise<{ resumed: boolean; completed: boolean }> {
+		return this.data(await this.request({ type: "resume_unfinished_turn" }));
+	}
 	async steer(message: string, images?: ImageContent[]): Promise<void> {
 		await this.request({ type: "steer", message, images });
 	}

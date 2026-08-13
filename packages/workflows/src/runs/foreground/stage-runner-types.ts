@@ -42,6 +42,8 @@ export interface StageUserMessageDeliveryHooks {
 
 export interface StageSessionRuntime {
 	prompt(text: string, options?: PromptOptions): Promise<string | undefined>;
+	/** True when prompt() resolves only after queued steer/follow-up work settles. */
+	readonly settlesQueuedMessages?: boolean;
 	sendUserMessage?(
 		content: StageUserMessageContent,
 		options?: StageSendUserMessageOptions & { readonly __workflowDelivery?: StageUserMessageDeliveryHooks },
@@ -199,6 +201,8 @@ export interface InternalStageContext extends StageContext {
 	__agentSession(): AgentSession | undefined;
 	/** Internal: SDK queued steering/follow-up message count, when available. */
 	__pendingMessageCount(): number;
+	/** Internal: whether the session drains queued work before prompt() resolves. */
+	__settlesQueuedMessages(): boolean;
 	/** Internal: selected/effective model and fallback attempt metadata. */
 	__modelFallbackMeta(): StageModelFallbackMeta;
 	/** Internal: register a controlled-pause request. */

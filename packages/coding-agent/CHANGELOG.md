@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the idempotent RPC `resume_unfinished_turn` command. It continues an accepted user-tail turn without appending the prompt again and returns a no-op result when an assistant result already completed the turn, enabling safe same-session transport recovery.
+
 ## [0.9.13] - 2026-08-13
 
 Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.4` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

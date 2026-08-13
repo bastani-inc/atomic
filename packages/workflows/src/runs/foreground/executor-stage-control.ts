@@ -30,6 +30,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		await runtime.innerCtx.__ensureSessionFromFile(sessionFile);
 		await runtime.captureStageSessionMeta({ awaitDurable: true });
 	};
+	const shouldArmQueuedMessageContinuation = (): boolean => !runtime.innerCtx.__settlesQueuedMessages();
 	const toolExecutions = new StageToolExecutionBuffer();
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
 	// One lifetime subscription feeds both runtime projections, so the queue stays
@@ -86,7 +87,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			};
 			try {
 				const action = await runtime.innerCtx.__sendUserMessage(text, options, admitDelivery, preparation);
-				if (action === "steer" || action === "followUp") {
+				if ((action === "steer" || action === "followUp") && shouldArmQueuedMessageContinuation()) {
 					runtime.state.resumeContinuationPending = "queued-user-message";
 				}
 				return action;
@@ -122,7 +123,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
 			try {
 				await runtime.innerCtx.steer(text);
-				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
+				if (queuedIntoInFlightTurn && shouldArmQueuedMessageContinuation()) {
+					runtime.state.resumeContinuationPending = "queued-user-message";
+				}
 			} finally {
 				void runtime.captureStageSessionMeta();
 			}
@@ -135,7 +138,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
 			try {
 				await runtime.innerCtx.followUp(text);
-				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
+				if (queuedIntoInFlightTurn && shouldArmQueuedMessageContinuation()) {
+					runtime.state.resumeContinuationPending = "queued-user-message";
+				}
 			} finally {
 				void runtime.captureStageSessionMeta();
 			}

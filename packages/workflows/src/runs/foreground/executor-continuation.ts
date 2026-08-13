@@ -1,4 +1,4 @@
-import type { StageSnapshot } from "../../shared/store-types.js";
+import type { StageSnapshot, ToolNodeSnapshot } from "../../shared/store-types.js";
 import type { RunContinuationOpts } from "./executor-types.js";
 
 export type PromptAnswerReplaySafety = "allowed" | "unavailable" | "ambiguous";
@@ -38,6 +38,16 @@ interface ContinuationReplayInput {
 
 export interface ContinuationReplayIndex {
 	decide(input: ContinuationReplayInput): ContinuationReplayDecision;
+	/**
+	 * Register a tool materialized by the continuation and return the source
+	 * tool it corresponds to, when the logical call can be identified.
+	 *
+	 * Failed/blocked continuations run under a fresh id. Their tool node ids can
+	 * therefore differ even when the workflow still has the same tool call. The
+	 * graph replay layer needs this mapping before it validates a stage whose
+	 * parent is that tool node.
+	 */
+	registerToolNode(node: Pick<ToolNodeSnapshot, "id" | "name" | "argsHash" | "ordinal">): string | undefined;
 	markPromptAnswerReplayed(stageId: string): void;
 }
 
@@ -59,6 +69,7 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 				parentIds: input.parentIds,
 				answerReplay: "unavailable",
 			}),
+			registerToolNode: () => undefined,
 			markPromptAnswerReplayed: () => {},
 		};
 	}
@@ -90,8 +101,17 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 	}
 
 	const consumedSourceStageIds = new Set<string>();
+	const consumedSourceToolIds = new Set<string>();
 	const continuationStageIdBySourceStageId = new Map<string, string>();
+	const continuationToolIdBySourceToolId = new Map<string, string>();
 	const replayablePromptContinuationStageIds = new Set<string>();
+
+	const sourceToolsByName = new Map<string, ToolNodeSnapshot[]>();
+	for (const tool of continuation.source.toolNodes ?? []) {
+		const tools = sourceToolsByName.get(tool.name);
+		if (tools === undefined) sourceToolsByName.set(tool.name, [tool]);
+		else tools.push(tool);
+	}
 
 	const failTopology = (displayName: string, replayKey: string, reason: "mismatch" | "ambiguous"): never => {
 		throw new Error(
@@ -102,7 +122,9 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 	const translateSourceParents = (source: StageSnapshot): string[] | undefined => {
 		const parentIds: string[] = [];
 		for (const sourceParentId of source.parentIds) {
-			const continuationParentId = continuationStageIdBySourceStageId.get(sourceParentId);
+			const continuationParentId =
+				continuationStageIdBySourceStageId.get(sourceParentId) ??
+				continuationToolIdBySourceToolId.get(sourceParentId);
 			if (continuationParentId === undefined) return undefined;
 			parentIds.push(continuationParentId);
 		}
@@ -132,6 +154,35 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
 	};
 
 	return {
+		registerToolNode(node): string | undefined {
+			const candidates =
+				sourceToolsByName.get(node.name)?.filter((tool) => !consumedSourceToolIds.has(tool.id)) ?? [];
+			if (candidates.length === 0) return undefined;
+
+			// Prefer the strongest durable identity first. A fresh continuation may
+			// intentionally carry a new run id in its tool args, so fall back to the
+			// unique logical tool name/ordinal when the hash differs.
+			const exact = candidates.filter((tool) => tool.argsHash === node.argsHash && tool.ordinal === node.ordinal);
+			const sameArgs = candidates.filter((tool) => tool.argsHash === node.argsHash);
+			const sameOrdinal = candidates.filter((tool) => tool.ordinal === node.ordinal);
+			const matches =
+				exact.length === 1
+					? exact
+					: sameArgs.length === 1
+						? sameArgs
+						: sameOrdinal.length === 1
+							? sameOrdinal
+							: candidates.length === 1
+								? candidates
+								: [];
+			if (matches.length !== 1) return undefined;
+
+			const sourceTool = matches[0]!;
+			consumedSourceToolIds.add(sourceTool.id);
+			continuationToolIdBySourceToolId.set(sourceTool.id, node.id);
+			return sourceTool.id;
+		},
+
 		markPromptAnswerReplayed(stageId: string): void {
 			replayablePromptContinuationStageIds.add(stageId);
 		},

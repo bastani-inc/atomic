@@ -279,6 +279,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			return controller.pendingMessageCount();
 		},
 
+		__settlesQueuedMessages() {
+			return controller.settlesQueuedMessages();
+		},
+
 		__modelFallbackMeta() {
 			return controller.currentModelFallbackMeta();
 		},
