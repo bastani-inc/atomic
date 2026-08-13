@@ -67,11 +67,7 @@ describe("createStageContext — reasoning suffix retry behavior", () => {
 				{ model: "openai/fallback", reasoningLevel: "low", success: true },
 			],
 		);
-		// The live session's active thinking level is surfaced on the meta so
-		// background-run widgets can show the same model + thinking identity as
-		// the main session footer.
 		assert.equal(result.meta.thinkingLevel, "medium");
-		// The fallback model — not the failed primary — is surfaced to graph UIs.
 		assert.equal(result.meta.model, "openai/fallback");
 	});
 

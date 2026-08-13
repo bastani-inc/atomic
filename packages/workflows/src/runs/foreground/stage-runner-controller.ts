@@ -520,9 +520,6 @@ export class StageSessionController {
 		const attemptedModels = this.modelAttempts.map((attempt) => attempt.model);
 		const model = this.selectedModel ?? workflowModelId(this.session?.model);
 		const fastMode = this.isWorkflowFastModeEnabled();
-		// Prefer the live session's active level; fall back to a pending level set
-		// before the session was created. Kept in step with `model` so background
-		// surfaces can show the same model + thinking identity as the main footer.
 		const thinkingLevel = this.session?.thinkingLevel ?? this.pendingThinkingLevel;
 		return {
 			...(model !== undefined ? { model } : {}),

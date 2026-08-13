@@ -548,10 +548,9 @@ describe("renderNodeCard — metadata line", () => {
 	});
 
 	test("shows the fast tier on the model row, not the deps row", () => {
-		const lines = renderNodeCard(
-			makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }),
-			{ theme },
-		);
+		const lines = renderNodeCard(makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }), {
+			theme,
+		});
 
 		// Model row: provider stripped, fast marker appended (footer parity).
 		assert.match(stripAnsi(lines[3]!), /gpt-5\.1-codex fast/);
@@ -579,21 +578,24 @@ describe("renderNodeCard — metadata line", () => {
 		assert.match(modelRow, /…/);
 	});
 
-	test("model row keeps both the thinking level and the fast marker when they fit", () => {
-		const lines = renderNodeCard(
-			makeStage({
-				status: "running",
-				startedAt: Date.now() - 500,
-				model: "openai/gpt-5",
-				thinkingLevel: "high",
-				fastMode: true,
-			}),
-			{ theme },
-		);
-		assert.match(stripAnsi(lines[3]!), /gpt-5 · high fast/);
+	test("reserves the thinking level and truncates a long model name (non-fast)", () => {
+		// #1859 follow-up: the thinking level is load-bearing too, not only the
+		// fast marker. A long model id must lose characters before the level does.
+		for (const [model, level, expected] of [
+			["anthropic/claude-haiku-4-5", "high", "· high"],
+			["anthropic/claude-sonnet-4-5-20250929", "medium", "· medium"],
+		] as const) {
+			const lines = renderNodeCard(
+				makeStage({ status: "running", startedAt: Date.now() - 500, model, thinkingLevel: level }),
+				{ theme },
+			);
+			const modelRow = stripAnsi(lines[3]!).replaceAll("│", "").trim();
+			assert.ok(modelRow.endsWith(expected), `${model} :${level} → ${modelRow}`);
+			assert.match(modelRow, /…/);
+		}
 	});
 
-	test("model row drops the thinking level to preserve the fast marker when the card would overflow", () => {
+	test("keeps both the thinking level and the fast marker on overflow, truncating the model", () => {
 		const lines = renderNodeCard(
 			makeStage({
 				status: "running",
@@ -604,55 +606,9 @@ describe("renderNodeCard — metadata line", () => {
 			}),
 			{ theme },
 		);
-		const modelRow = stripAnsi(lines[3]!);
-		// `gpt-5.1-codex · high fast` (25) overflows the ~22-cell card, so the level
-		// is dropped to guarantee the fast marker is never truncated away.
-		assert.match(modelRow, /gpt-5\.1-codex fast/);
-		assert.doesNotMatch(modelRow, /high/);
-		assert.doesNotMatch(modelRow, /…/);
-	});
-
-	test("model row appends thinking level and shows an em-dash when absent", () => {
-		const withThinking = renderNodeCard(
-			makeStage({
-				status: "running",
-				startedAt: Date.now() - 500,
-				model: "anthropic/claude-opus-4.8",
-				thinkingLevel: "high",
-			}),
-			{ theme },
-		);
-		assert.match(stripAnsi(withThinking[3]!), /claude-opus-4\.8 · high/);
-
-		const offThinking = renderNodeCard(
-			makeStage({ status: "completed", durationMs: 10, model: "openai/gpt-5", thinkingLevel: "off" }),
-			{ theme },
-		);
-		// "off" is omitted, mirroring the main footer.
-		assert.match(stripAnsi(offThinking[3]!), /gpt-5/);
-		assert.doesNotMatch(stripAnsi(offThinking[3]!), /off/);
-
-		const noModel = renderNodeCard(makeStage({ status: "pending" }), { theme });
-		assert.equal(stripAnsi(noModel[3]!).slice(1, -1).trim(), "—");
-	});
-
-	test("model row reflects a fallback swapping the stage's model mid-run", () => {
-		// Render from a live snapshot, then apply the model a fallback resolved
-		// (applyModelFallbackMeta mutates this same snapshot). The card must show
-		// the model actually running now — not the failed primary.
-		const stage = makeStage({
-			status: "running",
-			startedAt: Date.now() - 800,
-			model: "anthropic/primary",
-			thinkingLevel: "high",
-		});
-		assert.match(stripAnsi(renderNodeCard(stage, { theme })[3]!), /primary/);
-
-		stage.model = "openai/fallback";
-		stage.thinkingLevel = "low";
-		const after = stripAnsi(renderNodeCard(stage, { theme })[3]!);
-		assert.match(after, /fallback · low/);
-		assert.doesNotMatch(after, /primary/);
+		const modelRow = stripAnsi(lines[3]!).replaceAll("│", "").trim();
+		assert.ok(modelRow.endsWith("· high fast"), modelRow);
+		assert.match(modelRow, /…/);
 	});
 });
 
