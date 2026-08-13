@@ -134,11 +134,12 @@ function metaText(stage: StageSnapshot): string {
 }
 
 /**
- * Compact model label for the card's dedicated model row (~22 cells): provider
- * prefix dropped, thinking level appended when set (omitted when off), and the
- * Codex fast tier appended via the shared footer helper. On overflow the
- * thinking level is dropped first and then the model name is truncated, so the
- * whole ` fast` marker always survives. `—` when no model is resolved yet.
+ * Compact model label for the card's dedicated model row (~22 cells): the
+ * provider prefix is dropped, the thinking level is appended when set (omitted
+ * when off), and the Codex fast tier is appended via the shared footer helper.
+ * The thinking level and the ` fast` marker are load-bearing, so on overflow
+ * the model name is truncated first and both suffixes are always kept whole.
+ * `—` when no model is resolved yet.
  */
 function modelText(stage: StageSnapshot, innerWidth: number): string {
 	const model = stage.model;
@@ -147,17 +148,12 @@ function modelText(stage: StageSnapshot, innerWidth: number): string {
 	const short = slash >= 0 ? model.slice(slash + 1) : model;
 	const level = stage.thinkingLevel;
 	const showLevel = level !== undefined && level !== "" && level !== "off";
-	const fast = stage.fastMode === true;
-	const withLevel = showLevel ? `${short} · ${level}` : short;
-	const full = codexFastModeLabel(withLevel, fast);
-	if (!fast || visibleWidth(full) <= innerWidth) return full;
-	// Fast overflows: drop the thinking level first.
-	const withoutLevel = codexFastModeLabel(short, true);
-	if (visibleWidth(withoutLevel) <= innerWidth) return withoutLevel;
-	// Still too wide: truncate the model name but keep the whole ` fast` marker.
-	const marker = codexFastModeLabel("", true);
-	const room = Math.max(1, innerWidth - visibleWidth(marker));
-	return `${truncateToWidth(short, room, "…")}${marker}`;
+	const suffix = codexFastModeLabel(showLevel ? ` · ${level}` : "", stage.fastMode === true);
+	const full = `${short}${suffix}`;
+	if (visibleWidth(full) <= innerWidth) return full;
+	// Truncate the model name first so the thinking level and fast marker survive.
+	const room = Math.max(1, innerWidth - visibleWidth(suffix));
+	return `${truncateToWidth(short, room, "…")}${suffix}`;
 }
 
 function workflowChildRunRows(stage: StageSnapshot, width: number): string[] {

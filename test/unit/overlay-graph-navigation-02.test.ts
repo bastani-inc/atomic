@@ -158,7 +158,7 @@ describe("GraphView keyboard navigation", () => {
 		const stages = [makeStage("A"), makeStage("B", ["A"])] as const;
 		const view = makeView([...stages]);
 		const lines = view.render(96);
-		assert.equal(lines.length, 21);
+		assert.equal(lines.length, 23);
 		assert.ok(lines.length < 32, "a short graph must not use the old fixed rectangle");
 		view.dispose();
 	});
@@ -179,7 +179,7 @@ describe("GraphView keyboard navigation", () => {
 		const view = makeView([...stages]);
 		const lines = view.render(96);
 		assert.equal(lines[0], " ".repeat(96));
-		assert.equal(lines.length, 21);
+		assert.equal(lines.length, 23);
 		assert.equal(lines.at(-1), " ".repeat(96));
 		assert.match(visibleText(lines.slice(1, 4)), /ORCHESTRATOR/);
 		assert.match(visibleText(lines.slice(-4, -1)), /GRAPH/);
