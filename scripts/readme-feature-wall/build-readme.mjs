@@ -9,7 +9,7 @@
 // The animated GIF is the source and the JPG poster is the <img> fallback.
 //
 // The generator owns only the two explicit marked regions. The first six
-// manifest rows form the verifiable-runtime showcase; the other 34 follow the
+// manifest rows form the verifiable-runtime showcase; the other 33 follow the
 // complete Get started section.
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

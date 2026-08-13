@@ -124,7 +124,7 @@ Status, interrupt, list, and resume use the Rust registry and status watch for l
 
 Inside workflow stages, completion delivery observes the stage generation boundary. A completion received before the boundary closes is queued through the stage AgentSession and processed before the stage publishes its terminal snapshot. A completion that arrives after close is routed once to the parent/main chat and cannot reopen or append to the completed stage transcript. Explicit post-mortem stage chat is still available separately.
 
-While a child is running, the jobs widget shows its resolved model, effective reasoning level, and applied Codex fast-mode marker for each step. The same badge appears in the completed result, including after a model fallback; parallel steps keep their metadata separate.
+Live progress and completed results show each step's resolved model, effective reasoning level, and applied Codex fast-mode marker, including after a model fallback; parallel steps keep their metadata separate.
 
 ## Orchestrator model and group policy
 

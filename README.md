@@ -145,7 +145,7 @@ Every row is a real Atomic session recorded from the installed product. Open the
 </tr>
 </table>
 
-<p><a href="#more-atomic-capabilities"><strong>Explore 34 more Atomic capabilities ↓</strong></a></p>
+<p><a href="#more-atomic-capabilities"><strong>Explore 33 more Atomic capabilities ↓</strong></a></p>
 
 <!-- feature-wall:featured:end -->
 
@@ -480,22 +480,6 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <picture>
 <source srcset="assets/feature-wall/16-bundled-specialists.gif" type="image/gif">
 <img src="assets/feature-wall/16-bundled-specialists.jpg" alt="Atomic delegating to bundled specialist subagents and collecting their findings" width="100%">
-</picture>
-</a>
-</td>
-</tr>
-<tr>
-<td width="42%" valign="top">
-<h4>Background subagent runs</h4>
-<p>Launch a detached specialist, keep chatting, and inspect its run status while work continues outside the parent turn.</p>
-<p><a href="https://docs.bastani.ai/subagents"><sub>Atomic docs · Subagents</sub></a></p>
-<p><a href="https://github.com/bastani-inc/atomic-crash-course#a6-background-subagent-runs"><sub>Crash course · A.6 Background subagent runs</sub></a></p>
-</td>
-<td width="58%" valign="top">
-<a href="https://github.com/bastani-inc/atomic-crash-course#a6-background-subagent-runs">
-<picture>
-<source srcset="assets/feature-wall/36-background-subagent-runs.gif" type="image/gif">
-<img src="assets/feature-wall/36-background-subagent-runs.jpg" alt="Atomic launching codebase-analyzer asynchronously with the subagent tool and then reporting the detached run status" width="100%">
 </picture>
 </a>
 </td>
@@ -978,7 +962,7 @@ Skills are reusable expert instructions and process modules. Atomic can select o
 | ------------------- | -------------------------------------------------------------------------------------------- |
 | `research-codebase` | Analyze a focused area and write a dated research document.                                  |
 | `create-spec`       | Produce a technical execution spec grounded in research and engineer feedback.               |
-| `subagent`          | Delegate work through single agents, parallel groups, async runs, or forked context.         |
+| `subagent`          | Delegate work through single agents, parallel groups, or forked context.                     |
 | `intercom`          | Coordinate parent, child, and peer sessions on the same machine.                             |
 | `prompt-engineer`   | Refine prompts, research questions, and workflow inputs.                                     |
 | `skill-creator`     | Create, improve, and evaluate reusable skills.                                               |

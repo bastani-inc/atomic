@@ -18,14 +18,6 @@ export function progressRenderKey(progress: Partial<AgentProgress> | undefined):
 	].join(":");
 }
 
-export function isRunningSubagentResult(result: AgentToolResult<Details>): boolean {
-	return (
-		result.details?.progress?.some((entry) => entry.status === "running") ||
-		result.details?.results.some((entry) => entry.progress?.status === "running") ||
-		false
-	);
-}
-
 export function subagentResultRenderKey(
 	result: AgentToolResult<Details>,
 	options: { expanded: boolean; isPartial: boolean },

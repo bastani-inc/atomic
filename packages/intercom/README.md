@@ -244,7 +244,7 @@ This workflow uses Atomic's in-process subagent admission. When the runtime admi
 
 `contact_supervisor` is registered from the typed admission record. The record binds the supervisor target, canonical child identity, child index, session name, and broker-issued capability to the child session; these values are not inherited from environment variables. If the parent does not grant supervisor coordination, the session falls back to the regular `intercom` tool.
 
-The child identity remains stable across foreground continuation, interruption, and cold resume. Intercom detach uses the same in-process continuation as foreground coordination, so the jobs widget and terminal envelope retain one canonical path.
+The child identity remains stable across foreground continuation, interruption, and cold resume. Intercom detach uses the same in-process continuation as foreground coordination, so the terminal envelope retains one canonical path.
 
 ### Three Reasons
 

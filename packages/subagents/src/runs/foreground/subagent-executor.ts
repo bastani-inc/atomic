@@ -6,13 +6,14 @@ import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
 import {
+	INTERCOM_BRIDGE_MARKER,
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 	resolveSubagentIntercomTarget,
 } from "../../intercom/intercom-bridge.ts";
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
-import { toModelInfo } from "../../shared/model-info.ts";
+import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.ts";
 import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
 import {
 	injectSingleProgressInstruction,
@@ -36,6 +37,7 @@ import {
 	resumeInProcessChild,
 } from "../inprocess/control-status.ts";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
+import { currentModelFullId } from "../shared/model-fallback.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
 import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.ts";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.ts";
@@ -98,12 +100,21 @@ async function resumeRetainedForegroundChild(
 		writeInitialProgressFile(progressDir);
 		message = injectSingleProgressInstruction(message, progressDir);
 	}
+	const cleanupProgress = (): void => {
+		if (!progressDir || artifactConfig.enabled) return;
+		try {
+			fs.rmSync(progressDir, { recursive: true, force: true });
+		} catch {
+			// Scratch cleanup must never replace the child run's result or original error.
+		}
+	};
 	let result: SingleResult;
 	try {
 		result = await deps.runtime.runSync(run.cwd, agents, child.agent, message, {
 			cwd: run.cwd,
 			signal: ctx.signal,
 			interruptSignal: ctx.signal,
+			allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 			intercomEvents: deps.pi.events,
 			runId: run.runId,
 			index: child.index,
@@ -131,11 +142,16 @@ async function resumeRetainedForegroundChild(
 			supervisorAuthorization,
 			modelOverride: params.model,
 			availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
+			knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
+			preferredModelProvider: ctx.model?.provider,
+			currentModel: currentModelFullId(ctx.model),
 		});
-	} finally {
-		if (progressDir && !artifactConfig.enabled) fs.rmSync(progressDir, { recursive: true, force: true });
+	} catch (error) {
+		cleanupProgress();
+		throw error;
 	}
+	if (!result.detached) cleanupProgress();
 	replaceForegroundRunChild(deps.state, run.runId, child.index, result);
 	return {
 		content: [{ type: "text", text: result.finalOutput ?? result.envelope ?? result.error ?? "" }],

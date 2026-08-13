@@ -254,7 +254,7 @@ When Atomic's [subagent runtime](/subagents) admits a delegated child, the child
 
 `contact_supervisor` is registered from the typed admission record. The record binds the supervisor target, canonical child identity, child index, session name, and any broker-issued capability to that in-process child session; none of those values are inherited from environment variables. If the parent did not grant supervisor coordination, the session receives only the regular `intercom` tool.
 
-The child identity remains stable across foreground continuation, interruption, and cold resume. Intercom detach uses the same in-process continuation as foreground coordination, so the jobs widget and terminal envelope retain one canonical path.
+The child identity remains stable across foreground continuation, interruption, and cold resume. Intercom detach uses the same in-process continuation as foreground coordination, so the terminal envelope retains one canonical path.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

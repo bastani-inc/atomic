@@ -38,7 +38,7 @@ The unrelated oversized-read error and its long hold are no longer in the GIF. I
 now shows the creation/reload result.
 
 `contact-sheet.sh` now decodes GIF timing before sampling instead of using input-side seek.
-It generated all 40 sheets again and reported every longest hold. `validate.mjs` rejects any
+It generated all 39 sheets again and reported every longest hold. `validate.mjs` rejects any
 decoded frame held over 7.5 seconds. Its OCR pass now expands each GIF onto the same
 declared timeline but writes only the frames it will inspect, deletes each clip's sampled
 PNGs at once, and removes the temporary root even on failure. This keeps the gate
@@ -46,11 +46,11 @@ disk-bounded without changing its first, last, evenly spaced, poster, or dual-PS
 
 ## Held-frame audit
 
-Eleven unchanged clips triggered the three-second review flag: 1.1, 2.2, 2.3, 3.1, 3.2,
-3.5, 4.2, 4.3, 6.1, A.3, and A.6. The corrected sheets show that each hold stays on its
+Ten unchanged clips triggered the three-second review flag: 1.1, 2.2, 2.3, 3.1, 3.2,
+3.5, 4.2, 4.3, 6.1, and A.3. The corrected sheets show that each hold stays on its
 named feature: the first-session explanation, compaction result, session record, greet
-result, blocked command, theme source, model JSON, SDK source, builtin list, pirate-mode
-answer, or async status. None holds an unrelated or failed screen. A.8's longest decoded
+result, blocked command, theme source, model JSON, SDK source, builtin list, or pirate-mode
+answer. None holds an unrelated or failed screen. A.8's longest decoded
 hold is 0.41 seconds.
 
 ## Results
@@ -92,13 +92,12 @@ hold is 0.41 seconds.
 | A.3 | `/pirate` reports `Arrr! Pirate mode enabled!`; the next answer starts `Arrr!` and explains TypeScript generics correctly. | Toggle notice, prompt, and mutated two-sentence answer are readable; private statusline fields are painted. | Pass |
 | A.4 | Slash autocomplete includes the project `component` template, whose arguments expand into `Create a React component named Button with features: onClick handler disabled support`. | Autocomplete motion and the expanded prompt are legible; later tool work is real agent follow-through. | Pass |
 | A.5 | One plain-English review request opens a real `subagent parallel (3)` panel with `codebase-analyzer`, `debugger`, and `codebase-pattern-finder` advancing independently. | Agent roles, live tool counts, token counts, and elapsed motion remain readable; no edit is made. | Pass |
-| A.6 | Atomic acknowledges an async `codebase-analyzer` launch, accepts another chat turn, and reports the detached run as `running (loaded)`. | Launch id, async badge, parent id, and status result are clear; private statusline fields are painted. | Pass |
 | A.7 | Default and `redteam` sessions appear side by side; the default session can list `redworker` through a read-only peek, but its send is not delivered across groups. | Both group labels, synthetic session names, failed send, and isolation explanation are legible; OCR finds no private provider/model label. | Pass |
 | A.8 | The first eight sampled frames show the complete prose contract for `review-changes` and Atomic starting the authoring task; the last shows `Created and reloaded successfully`, `.atomic/workflows/review-changes.ts`, and a real smoke-run id. | The request and result are readable, the poster is the creation result, and the prior oversized-read error is absent; longest hold is 0.41 seconds. | Pass |
 | A.9 | The `research-and-verify` orchestrator shows a completed artifact root and partition followed by two concurrently running branch stages from the nested fan-out builtin. | The selected window stays inside the real graph viewer; parent name, child stages, timers, edges, and controls are clear without a chat statusline. | Pass |
 | A.10 | `/workflow inputs ralph` leads into a one-loop run; the graph shows prompt refinement complete and `research-1` running beneath it. | Contract, bounded launch, run id, and live research-first graph are readable; `create_pr` remains false. | Pass |
 
-**Result: 40/40 passed.** No clip is only a title card, unrelated screen, reused capture, or misleading substitute. The corrected timeline review found no hidden padded error screen.
+**Result: 39/39 passed.** No clip is only a title card, unrelated screen, reused capture, or misleading substitute. The corrected timeline review found no hidden padded error screen.
 
 ## Limits worth stating
 

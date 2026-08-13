@@ -745,7 +745,7 @@ Foreground runs persist their session and user-facing artifacts beside the paren
   run-history.jsonl
 ```
 
-The Rust registry and status watch power the widget and `subagent({ action: "status" })` output. Terminal delivery is an in-memory bounded envelope persisted once with typed `status`, `cause`, and `stats`; there is no `status.json`, `events.jsonl`, PID reconciler, result watcher, or claim pipeline.
+The Rust registry and status watch power `subagent({ action: "status" })` output. Terminal delivery is an in-memory bounded envelope persisted once with typed `status`, `cause`, and `stats`; there is no `status.json`, `events.jsonl`, PID reconciler, result watcher, or claim pipeline.
 
 ## Completion and output
 

@@ -83,9 +83,13 @@ const parseAgentToken = (token: string): { name: string; config: InlineConfig } 
 const extractExecutionFlags = (rawArgs: string): { args: string; fork: boolean } => {
 	let args = rawArgs.trim();
 	let fork = false;
-	if (args.endsWith(" --fork") || args === "--fork") {
-		fork = true;
-		args = args === "--fork" ? "" : args.slice(0, -7).trim();
+	while (true) {
+		if (args.endsWith(" --fork") || args === "--fork") {
+			fork = true;
+			args = args === "--fork" ? "" : args.slice(0, -7).trim();
+			continue;
+		}
+		break;
 	}
 	return { args, fork };
 };

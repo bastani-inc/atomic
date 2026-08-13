@@ -171,6 +171,15 @@ describe("human subagent slash command bridge", () => {
 		});
 	});
 
+	test("/run strips repeated trailing --fork flags", async () => {
+		await withSlashHarness(async ({ invoke }) => {
+			const params = await invoke("run", "slash-alpha finish the task --fork --fork");
+
+			assert.equal(params.task, "finish the task");
+			assert.equal(params.context, "fork");
+		});
+	});
+
 	test("a stale response emit rejects the slash command instead of leaving it pending", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-stale-slash-"));
 		writeAgent(cwd, "stale-worker");
