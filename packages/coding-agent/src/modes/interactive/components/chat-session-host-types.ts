@@ -1,5 +1,5 @@
 import type { Component, EditorComponent, EditorTheme, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
-import type { AgentSession } from "../../../core/agent-session.ts";
+import type { AgentSession, SessionStats } from "../../../core/agent-session.ts";
 import type { BashResult } from "../../../core/bash-executor.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
@@ -59,6 +59,8 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	commands?: ChatSessionHostCommands;
 	requestRender?: () => void;
 	getAgentSession?: () => AgentSession | undefined;
+	/** Usage telemetry for adapter-backed sessions without a local AgentSession. */
+	getSessionStats?: () => SessionStats | undefined;
 	isStreaming?: () => boolean;
 	isPaused?: () => boolean;
 	isDisabled?: () => boolean;

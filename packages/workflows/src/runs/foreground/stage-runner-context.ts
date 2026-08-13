@@ -306,6 +306,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			return controller.agentSession();
 		},
 
+		__sessionStats() {
+			return controller.sessionStats();
+		},
+
 		__pendingMessageCount() {
 			return controller.pendingMessageCount();
 		},

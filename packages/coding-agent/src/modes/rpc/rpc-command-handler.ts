@@ -99,8 +99,17 @@ export function createRpcCommandHandler({
 						"Cannot resume unfinished turn: the session has no accepted user tail",
 					);
 				}
-				void session.resumeUnfinishedTurn().catch(() => {});
-				return createRpcSuccessResponse(id, "resume_unfinished_turn", { resumed: true, completed: false });
+				try {
+					const result = await session.resumeUnfinishedTurn();
+					return createRpcSuccessResponse(id, "resume_unfinished_turn", result);
+				} catch (resumeError) {
+					return createRpcErrorResponse(
+						id,
+						"resume_unfinished_turn",
+						formatRpcErrorMessage(resumeError),
+						resumeError,
+					);
+				}
 			}
 
 			case "steer": {

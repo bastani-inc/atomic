@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
+	acquirePostMortemStageHandle,
 	ensurePostMortemStageHandle,
 	isPostMortemEligibleStage,
 } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
@@ -105,7 +106,6 @@ describe("ensurePostMortemStageHandle", () => {
 		const registry = createStageControlRegistry();
 		const named = new SessionAdapterRegistry();
 		const sessionFile = retainedSession("named-adapter");
-		let localCreates = 0;
 		let remoteCreates = 0;
 		const session: StageSessionRuntime = { ...mockSession(), sessionFile };
 		named.register({
@@ -125,12 +125,6 @@ describe("ensurePostMortemStageHandle", () => {
 		const result = ensurePostMortemStageHandle("run-1", stage, {
 			registry,
 			adapters: {
-				agentSession: {
-					async create() {
-						localCreates += 1;
-						return session;
-					},
-				},
 				sessionAdapters: named,
 			},
 			cwd: tempDir,
@@ -139,7 +133,59 @@ describe("ensurePostMortemStageHandle", () => {
 		if (!result.ok) return;
 		await result.handle.ensureAttached();
 		assert.equal(remoteCreates, 1);
-		assert.equal(localCreates, 0);
+	});
+
+	test("acquires a named-only adapter without a default adapter", async () => {
+		const registry = createStageControlRegistry();
+		const named = new SessionAdapterRegistry();
+		const sessionFile = retainedSession("named-only-acquire");
+		let creates = 0;
+		const session: StageSessionRuntime = { ...mockSession(), sessionFile };
+		named.register({
+			version: SESSION_ADAPTER_PROTOCOL_VERSION,
+			name: "named-only",
+			adapter: {
+				async create() {
+					creates += 1;
+					return session;
+				},
+			},
+		});
+		const result = acquirePostMortemStageHandle(
+			"run-1",
+			completedStage({
+				sessionFile,
+				sessionAdapter: { name: "named-only" },
+			}),
+			{
+				registry,
+				adapters: { sessionAdapters: named },
+				cwd: tempDir,
+			},
+		);
+		assert.equal(result.ok, true);
+		if (!result.ok) return;
+		await result.lease.handle.ensureAttached();
+		assert.equal(creates, 1);
+		await result.lease.release();
+	});
+
+	test("keeps the transcript read-only when a persisted named adapter is unavailable", () => {
+		const sessionFile = retainedSession("missing-named-adapter");
+		const stage = completedStage({ sessionFile, sessionAdapter: { name: "no-longer-loaded" } });
+		const adapters = { sessionAdapters: new SessionAdapterRegistry() };
+
+		const ensured = ensurePostMortemStageHandle("run-1", stage, {
+			registry: createStageControlRegistry(),
+			adapters,
+		});
+		assert.deepEqual(ensured, { ok: false, reason: "no_adapter" });
+
+		const acquired = acquirePostMortemStageHandle("run-1", stage, {
+			registry: createStageControlRegistry(),
+			adapters,
+		});
+		assert.deepEqual(acquired, { ok: false, reason: "no_adapter" });
 	});
 
 	test("opens a mirrored Pi transcript by stable ID before remote-pi post-mortem follow-up", async () => {

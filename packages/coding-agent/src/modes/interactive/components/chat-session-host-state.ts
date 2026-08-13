@@ -1,5 +1,5 @@
 import type { Component, EditorComponent, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
-import type { AgentSession } from "../../../core/agent-session.ts";
+import type { AgentSession, SessionStats } from "../../../core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { LiveChatEntriesController } from "./chat-message-renderer.ts";
 import type {
@@ -28,6 +28,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly commands: ChatSessionHostCommands;
 	readonly requestRender: (() => void) | undefined;
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
+	readonly getSessionStats: (() => SessionStats | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
 	readonly isPaused: (() => boolean) | undefined;
 	readonly isDisabled: (() => boolean) | undefined;
@@ -90,6 +91,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.commands = opts.commands ?? {};
 		this.requestRender = opts.requestRender;
 		this.getAgentSession = opts.getAgentSession;
+		this.getSessionStats = opts.getSessionStats;
 		this.isStreamingOverride = opts.isStreaming;
 		this.workingLifecycleActive = opts.isStreaming?.() === true;
 		this.isPaused = opts.isPaused;

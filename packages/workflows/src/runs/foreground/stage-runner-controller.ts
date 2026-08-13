@@ -3,6 +3,7 @@ import {
 	type CreateAgentSessionOptions,
 	convertToLlm,
 	type PromptOptions,
+	type SessionStats,
 	type StructuredOutputCapture,
 	shouldApplyCodexFastModeForScope,
 } from "@bastani/atomic";
@@ -615,6 +616,12 @@ export class StageSessionController {
 	}
 	agentSession(): AgentSession | undefined {
 		return asAgentSession(this.session);
+	}
+	sessionStats(): SessionStats | undefined {
+		const session = this.session;
+		if (!session) return undefined;
+		if (session.sessionStats !== undefined) return session.sessionStats;
+		return this.agentSession()?.getSessionStats();
 	}
 	pendingMessageCount(): number {
 		return typeof this.session?.pendingMessageCount === "number" ? this.session.pendingMessageCount : 0;

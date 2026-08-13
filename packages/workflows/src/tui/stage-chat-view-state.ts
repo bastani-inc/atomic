@@ -265,6 +265,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		isBashRunning: () => liveHandle(ctx)?.agentSession?.isBashRunning === true,
 		requestRender: opts.requestRender,
 		getAgentSession: () => liveHandle(ctx)?.agentSession,
+		getSessionStats: () => liveHandle(ctx)?.sessionStats,
 		isStreaming: () => isLiveHandleStreaming(ctx),
 		isPaused: () => isPaused(ctx),
 		isDisabled: () => isBlocked(ctx) || !liveHandle(ctx),

@@ -1,4 +1,4 @@
-import type { AgentSession, CreateAgentSessionOptions, PromptOptions, SettingsManager } from "@bastani/atomic";
+import type { AgentSession, CreateAgentSessionOptions, PromptOptions, SessionStats, SettingsManager } from "@bastani/atomic";
 import type {
 	CompleteStageOpts,
 	StageContext,
@@ -70,6 +70,8 @@ export interface StageSessionRuntime {
 	readonly model: AgentSession["model"];
 	readonly thinkingLevel: AgentSession["thinkingLevel"];
 	readonly messages: AgentSession["messages"];
+	/** Cached RPC/session usage for adapters that cannot expose a local AgentSession. */
+	readonly sessionStats?: SessionStats;
 	readonly isStreaming: AgentSession["isStreaming"];
 	/** Number of SDK-level queued steering/follow-up messages, when supported. */
 	readonly pendingMessageCount?: number;
@@ -199,6 +201,8 @@ export interface InternalStageContext extends StageContext {
 	__sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined };
 	/** Internal: live coding-agent session when the adapter returned one. */
 	__agentSession(): AgentSession | undefined;
+	/** Internal: usage telemetry from a local or adapter-backed stage session. */
+	__sessionStats(): SessionStats | undefined;
 	/** Internal: SDK queued steering/follow-up message count, when available. */
 	__pendingMessageCount(): number;
 	/** Internal: whether the session drains queued work before prompt() resolves. */

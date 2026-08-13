@@ -25,7 +25,7 @@
  *   - pi docs/sdk.md (AgentSession.prompt/steer/followUp/abort)
  */
 
-import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, SessionStats } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
@@ -63,6 +63,8 @@ export interface StageControlHandle {
 	readonly messages: AgentSession["messages"];
 	/** Live coding-agent session when available, used by embedded chat/footer UI. */
 	readonly agentSession?: AgentSession;
+	/** Session usage for adapters (such as remote-pi) without a local AgentSession. */
+	readonly sessionStats?: SessionStats;
 	/** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
 	pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
 	/**

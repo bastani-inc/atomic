@@ -243,6 +243,11 @@ Cumulative release of the `0.9.14-alpha.1` – `0.9.14-alpha.6` prereleases. The
   The cadence-anchor record is now written at the durability boundary itself, so it is durable before the checkpoint that made the run resumable is acknowledged. The scheduler's own write is guarded against runs with no durable progress and can therefore only be issued after resumability already exists; a process that exited inside that window left a resumable run carrying no record of what it launched with, and the next process then took both a freshly minted start time and whatever cadence the definition declared by then, shifting the phase and the cadence of a run already in flight ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
 - Every bundled builtin workflow now states its heartbeat cadence rather than inheriting it. `adversarial-verification`, `classify-and-act`, `fan-out-and-synthesize`, `generate-and-filter`, `goal`, `loop-until-done`, `ralph`, and `tournament` declare the `15`-minute default explicitly, so these long autonomous runs report to the parent chat on a known cadence and a future change to the global default cannot silently re-cadence them. `open-claude-design` sets `0` and runs quiet: it is driven by the user reviewing generated HTML turn by turn, so the parent chat is already holding it to its goal and a periodic alignment steer would interrupt that review rather than inform it. Behaviour is unchanged for the eight that were already resolving to the default; only `open-claude-design` changes ([#1975](https://github.com/bastani-inc/atomic/issues/1975)).
 
+### Fixed
+
+- Fixed post-mortem chat and programmatic workflow sends for completed stages that persist a named session adapter. They now resolve the persisted adapter selector instead of requiring the default local adapter, so named-only remote sessions can be reopened after a restart.
+- Fixed post-mortem inspection falling out of its read-only archive when a persisted named adapter is no longer registered. Missing selectors now report `no_adapter` without throwing, for both interactive attach and programmatic message admission.
+
 ## [0.9.13] - 2026-08-13
 
 Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.4` prereleases. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease sections below.

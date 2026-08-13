@@ -39,6 +39,10 @@
 
 - Added the idempotent RPC `resume_unfinished_turn` command. It continues an accepted user-tail turn without appending the prompt again and returns a no-op result when an assistant result already completed the turn, enabling safe same-session transport recovery.
 
+### Fixed
+
+- Fixed RPC `resume_unfinished_turn` reporting a successful scheduled resume before the continuation completed. The response now reflects the completed continuation and returns an error when it fails.
+
 ## [0.9.15] - 2026-08-21
 
 Cumulative release of the `0.9.15-alpha.1` prerelease. The summary below covers the user-visible outcome of that work; the per-change detail remains in the prerelease section below.
@@ -245,6 +249,9 @@ Cumulative release of the `0.9.14-alpha.1` – `0.9.14-alpha.5` prereleases. The
 
 - `ctx.ui.custom()` accepts `reserveTranscriptRows` for bottom-anchored overlay mounts. A blocking dialog sets it to be height-bounded against the terminal and to have its covered transcript-bottom suffix added to the scroll extent. Numeric and percentage `maxHeight` limits are applied before active-row windowing, so the focused control is not removed by a second fixed-head crop. Top and bottom margins are included in the overlay geometry, and concurrent overlays share the connected covered suffix instead of adding duplicate padding. Mount and resize height changes settle through one automatic repaint. A hidden overlay reserves nothing, and the reserve returns when it becomes visible again; handle-based, closed, or raw host removal releases the exact registration. Reserving overlays require a bottom anchor and reject `row` or a nonzero `offsetY`; leave the option unset for an overlay meant to take the screen, such as the workflow graph.
 - `OVERLAY_ACTIVE_ROW_MARKER` is exported for components mounted that way. Embed it in the line you most need kept — the selected row of a list — and the bound places what it keeps around that row instead of taking a fixed head. It is a zero-width APC sequence the host strips before painting, so it never reaches the terminal.
+### Fixed
+
+- Fixed RPC `resume_unfinished_turn` reporting a successful scheduled resume before the continuation completed. The response now reflects the completed continuation and returns an error when it fails.
 
 ## [0.9.13] - 2026-08-13
 
