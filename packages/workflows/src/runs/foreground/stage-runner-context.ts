@@ -1,7 +1,8 @@
 import { createStructuredOutputCapture, runCallback } from "@bastani/atomic";
+import type { Static, TSchema } from "typebox";
 import type { StageExecutionMeta } from "../../shared/types.js";
 import { StageSessionController } from "./stage-runner-controller.js";
-import { assistantMessage } from "./stage-runner-messages.js";
+import { assistantMessage, assistantTextSnapshotForToolCallIdFromMessages } from "./stage-runner-messages.js";
 import {
 	finalizePromptOutput,
 	splitPromptOptions,
@@ -12,6 +13,7 @@ import {
 	formatStructuredOutputCorrectionPrompt,
 	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
 	STRUCTURED_OUTPUT_MISSING_ERROR,
+	type StructuredOutputExecutionCapture,
 	stageOptionsWithStructuredOutput,
 	stringifyStructuredOutputValue,
 } from "./stage-runner-structured-output.js";
@@ -19,8 +21,14 @@ import type { InternalStageContext, StageRunnerOpts } from "./stage-runner-types
 
 export function createStageContext(opts: StageRunnerOpts): InternalStageContext {
 	const { stageId, stageName, adapters, runId, workflowIntercomGroup, signal, stageOptions, executionMode } = opts;
-	const structuredOutputCapture = stageOptions?.schema ? createStructuredOutputCapture<unknown>() : undefined;
-	const effectiveStageOptions = stageOptionsWithStructuredOutput(stageOptions, structuredOutputCapture);
+	const structuredOutputCapture = stageOptions?.schema ? createStructuredOutputCapture<Static<TSchema>>() : undefined;
+	const structuredOutputExecutionCapture: StructuredOutputExecutionCapture<Static<TSchema>> | undefined =
+		stageOptions?.schema ? {} : undefined;
+	const effectiveStageOptions = stageOptionsWithStructuredOutput(
+		stageOptions,
+		structuredOutputCapture,
+		structuredOutputExecutionCapture,
+	);
 	const meta: StageExecutionMeta = {
 		runId,
 		stageId,
@@ -34,6 +42,7 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 	let lastAssistantText: string | undefined;
 	let lastFinalizedOutput: string | undefined;
 	let lastFinalizedMessageCount: number | undefined;
+	let structuredOutputFinalized = false;
 	let adapterMessages = [] as InternalStageContext["messages"];
 
 	function runtimeCwd(): string {
@@ -43,7 +52,8 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 	function finalizedOutputIsCurrent(): boolean {
 		return (
 			lastFinalizedOutput !== undefined &&
-			(lastFinalizedMessageCount === undefined ||
+			(structuredOutputFinalized ||
+				lastFinalizedMessageCount === undefined ||
 				controller.currentSession?.messages.length === lastFinalizedMessageCount)
 		);
 	}
@@ -54,9 +64,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 		async prompt(text, options) {
 			const { sdkOptions, outputOptions } = splitPromptOptions(options);
 			validatePromptOutputOptions(outputOptions);
+			const hasOutputArtifact = typeof outputOptions.output === "string" && outputOptions.output.length > 0;
 			// The runtime owns the artifact write, so it states that contract itself
 			// rather than relying on every workflow definition to describe it.
-			const promptText = `${text}${stageOutputInstruction(outputOptions)}`;
+			const promptText = `${text}${stageOutputInstruction(outputOptions, structuredOutputCapture !== undefined)}`;
 			if (structuredOutputCapture?.called) {
 				throw new Error(
 					"atomic-workflows: stage schema supports one prompt() call per stage context because structured_output may be called exactly once. Create a new ctx.stage(...) for each additional schema-backed prompt.",
@@ -97,19 +108,41 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 						throw new Error(structuredOutputError);
 					}
 					correctiveAttempts += 1;
-					nextPrompt = formatStructuredOutputCorrectionPrompt(structuredOutputError, correctiveAttempts);
+					nextPrompt = formatStructuredOutputCorrectionPrompt(
+						structuredOutputError,
+						correctiveAttempts,
+						hasOutputArtifact,
+					);
 				}
-				const rawStructuredText = stringifyStructuredOutputValue(structuredOutputCapture.value);
+				const sessionMessages = controller.currentSession?.messages;
+				const executionSnapshot = structuredOutputExecutionCapture?.snapshot;
+				if (executionSnapshot === undefined) {
+					throw new Error(
+						"atomic-workflows: structured_output completed without an execution snapshot; the successful tool call could not be paired with its result.",
+					);
+				}
+				const assistantSnapshot = hasOutputArtifact
+					? assistantTextSnapshotForToolCallIdFromMessages(sessionMessages ?? [], executionSnapshot.toolCallId)
+					: undefined;
+				if (hasOutputArtifact && assistantSnapshot === undefined) {
+					throw new Error(
+						`atomic-workflows: could not find the assistant message for successful structured_output tool call ${executionSnapshot.toolCallId}.`,
+					);
+				}
+				const rawOutputText = hasOutputArtifact
+					? (assistantSnapshot?.text ?? "")
+					: stringifyStructuredOutputValue(executionSnapshot.value);
 				lastAssistantText = await finalizePromptOutput(
-					rawStructuredText,
+					rawOutputText,
 					outputOptions,
 					runtimeCwd(),
 					runId,
-					controller.currentSession?.messages,
+					sessionMessages,
 				);
 				lastFinalizedOutput = lastAssistantText;
 				lastFinalizedMessageCount = controller.currentSession?.messages.length;
-				return structuredOutputCapture.value as never;
+				structuredOutputFinalized = true;
+				return executionSnapshot.value as never;
 			}
 			await controller.promptWithFallback(promptText, sdkOptions);
 			const rawText = controller.lastAssistantText(lastAssistantText) ?? "";

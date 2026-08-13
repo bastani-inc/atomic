@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Hardened the synced Impeccable executables against shell-based browser launch, remote browser URLs, project-root and symlink escapes, unsafe persisted roots and injection journals, non-atomic generated writes, untrusted live instructions, read failures reported as clean, and unbounded or malformed live protocol values. The `open-claude-design` loop now handles 4.1.1 mount failures, preserves the full event payload, replies with the required event id and status, and fails on helper process errors ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
 - Fixed `workflow send` answers for primitive human-in-the-loop prompts. Confirm answers now preserve booleans and accept the documented yes/no labels, select answers resolve case-insensitive labels or 1-based indexes instead of silently choosing the first option, and unusable answers remain pending with a helpful no-op response ([#2417](https://github.com/bastani-inc/atomic/pull/2417) by [@makgunay](https://github.com/makgunay)).
+- Separated schema-backed workflow result data from runner-owned output artifacts. When a stage configures both `schema` and `output`, the successful `structured_output` arguments now remain the typed machine-readable result while ordered ordinary text blocks from that exact tool-call message become the human-readable artifact. The runner snapshots both against the successful tool-call id so correction attempts and late admitted turns cannot replace either result; missing prose is written empty with an explicit warning instead of silently persisting JSON ([#2198](https://github.com/bastani-inc/atomic/issues/2198)).
 
 ### Removed
 
@@ -100,7 +101,6 @@ Cumulative release of the `0.9.13-alpha.1` – `0.9.13-alpha.4` prereleases. The
 
 - Fixed the stage-chat jump-to-bottom follow indicator remaining hidden in paused and read-only archive chats, while keeping their callout and instruction rows intact in tight overlays.
 - Fixed clicking the stage-chat jump-to-bottom indicator so its OSC-8 activation returns that stage chat to the live end instead of scrolling the host transcript ([#2370](https://github.com/bastani-inc/atomic/issues/2370)).
-
 ## [0.9.13-alpha.3] - 2026-08-13
 
 ### Changed

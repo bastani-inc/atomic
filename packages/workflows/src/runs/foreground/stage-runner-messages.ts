@@ -5,6 +5,7 @@ import type { StageSessionRuntime } from "./stage-runner-types.js";
 type TextLikeContent = {
 	readonly type?: string;
 	readonly text?: string;
+	readonly id?: string;
 };
 
 type MessageWithTextContent = {
@@ -29,6 +30,25 @@ export function lastAssistantTextFromMessages(messages: AgentSession["messages"]
 		if (message?.role !== "assistant") continue;
 		const text = extractMessageText(message).trim();
 		if (text) return text;
+	}
+	return undefined;
+}
+
+interface AssistantToolCallTextSnapshot {
+	readonly text?: string;
+}
+
+export function assistantTextSnapshotForToolCallIdFromMessages(
+	messages: AgentSession["messages"],
+	toolCallId: string,
+): AssistantToolCallTextSnapshot | undefined {
+	for (const message of messages) {
+		if (message?.role !== "assistant") continue;
+		const { content } = message as MessageWithTextContent;
+		if (!Array.isArray(content)) continue;
+		if (!content.some((block) => block.type === "toolCall" && block.id === toolCallId)) continue;
+		const text = extractMessageText(message);
+		return text.trim().length > 0 ? { text } : {};
 	}
 	return undefined;
 }

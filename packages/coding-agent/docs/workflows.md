@@ -2448,6 +2448,8 @@ Enables a schema-specific, single-use final-answer tool for that item. `ctx.stag
 
 A schema-backed `StageContext` supports one `prompt()` call, so create another stage for another structured prompt. Missing or invalid `structured_output` calls receive up to three corrective follow-ups quoting the contract error and reminding the model to call `structured_output` instead of replying with plain JSON. An explicit tool allowlist automatically receives the final-answer tool, while items without `schema` do not.
 
+When `schema` and `output` are both configured, the successful `structured_output` turn carries two separate results. All ordinary assistant text blocks from that exact message, in order, are written to the artifact; the successful tool arguments become the typed schema-backed workflow value. The runtime snapshots both sides against the exact successful tool-call id rather than searching by tool name, so corrective attempts and later admitted turns cannot replace either result. The runtime never serializes the tool arguments into the artifact. If the successful message contains no ordinary assistant text, the artifact is empty and its receipt includes the standard empty-artifact warning.
+
 ### `output` / `outputMode`
 
 ```typescript
@@ -2457,7 +2459,7 @@ readonly outputMode?: "inline" | "file-only";
 
 Writes stage/task output to a path or disables output persistence with `false`. `outputMode` defaults to `inline`; `file-only` keeps the parent result compact by returning an artifact reference instead of full text and requires an output path.
 
-The runner writes the stage's **final assistant message** to `output` after the stage ends, so that path belongs to the runner. A stage that declares `output:` also automatically gets a full, rendered, line-oriented transcript of its session, and one appended instruction telling the model that its final message becomes the artifact — the workflow definition does not need to describe any of this.
+The runner writes the stage's **final assistant message** to `output` after the stage ends, so that path belongs to the runner. For a schema-backed stage, this means the ordinary text in the assistant message that calls `structured_output`, not the structured tool arguments. A stage that declares `output:` also automatically gets a full, rendered, line-oriented transcript of its session, and one appended instruction telling the model that its final message becomes the artifact — the workflow definition does not need to describe any of this.
 
 An admitted external turn (for example, a subagent completion) can arrive while the stage is still running and remains visible both to the model and in the companion transcript. The runner does not try to work out which turn was "really" the deliverable: that is an inference about intent, and an earlier revision that scored candidates by byte size got it wrong in both directions. If a late turn displaces the intended content, the transcript still holds it.
 

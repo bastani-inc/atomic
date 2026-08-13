@@ -101,3 +101,10 @@ test("the runtime states the artifact contract so prompts do not have to", () =>
 	assert.equal(stageOutputInstruction({}), "");
 	assert.equal(stageOutputInstruction({ output: "" }), "");
 });
+
+test("the runtime requests prose before structured_output when both output channels are configured", () => {
+	const instruction = stageOutputInstruction({ output: "/tmp/report.md" }, true);
+	assert.match(instruction, /ordinary assistant text/);
+	assert.match(instruction, /before calling structured_output/);
+	assert.match(instruction, /tool arguments are the machine-readable result/);
+});
