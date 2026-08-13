@@ -1,17 +1,7 @@
 /**
- * Top-level PARALLEL rendering must be byte-identical to its pre-removal
- * behaviour. Removing the sequential execution mode deleted the workflow-graph
- * snapshot that fed two renderer predicates, and a reduction that replaces
- * those predicates with newly-derived ones silently changes what a parallel run
- * displays. These tests pin the two places that regressed.
- *
- * Historical behaviour both cases reproduce:
- *   - `renderSubagentResult` derived `failed`/`paused` only from the workflow
- *     graph, which a top-level parallel run never populated. A parallel run with
- *     one errored child therefore read `failed`, never `paused`.
- *   - `widgetStats` gated running/done counts on `activeParallelGroup` — an
- *     active-state signal — not on the run's mode. A launched-but-not-yet-running
- *     parallel job therefore read `steps N`.
+ * Top-level PARALLEL rendering preserves result status labels and per-child
+ * model/thinking metadata across the foreground rendering paths. These tests
+ * cover errored, interrupted, and detached child statuses plus result rows.
  */
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";

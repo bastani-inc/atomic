@@ -12,7 +12,7 @@ import type {
 	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
-import type { SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
+import type { SingleResult, SubagentToolResult, Usage } from "../../packages/subagents/src/shared/types.js";
 
 const usage: Usage = {
 	input: 0,
@@ -298,6 +298,91 @@ describe("subagent async-removal regressions", () => {
 			assert.equal(options.length, 2);
 			assert.equal(options[0]?.artifactsDir, undefined);
 			assert.equal(options[1]?.artifactsDir, getArtifactsDir(null));
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("resuming forwards live progress updates through the tool callback", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-updates-regression-"));
+		const runId = "run-progress-update";
+		try {
+			const plain = agent("plain", "Work independently.");
+			const options: Array<Parameters<SubagentExecutorRuntimeDeps["runSync"]>[4]> = [];
+			const forwarded: SubagentToolResult[] = [];
+			const progressUpdate: SubagentToolResult = {
+				content: [{ type: "text", text: "running" }],
+				details: {
+					mode: "single",
+					runId,
+					results: [],
+					progress: [
+						{
+							index: 0,
+							agent: "plain",
+							status: "running",
+							task: "resumed task",
+							recentTools: [],
+							recentOutput: [],
+							toolCount: 1,
+							tokens: 2,
+							durationMs: 3,
+						},
+					],
+				},
+			};
+			const runSync: SubagentExecutorRuntimeDeps["runSync"] = async (
+				_parentCwd,
+				_agents,
+				agentName,
+				task,
+				runOptions,
+			) => {
+				options.push(runOptions);
+				runOptions.onUpdate?.(progressUpdate);
+				return { agent: agentName, task, status: "ok", usage, finalOutput: "resumed output" };
+			};
+			const state = stateFor(cwd, [{ runId, agent: plain }]);
+			state.foregroundControls.set(runId, {
+				runId,
+				mode: "single",
+				startedAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			const deps: ExecutorDeps = {
+				pi: {
+					events: { on: () => () => {}, emit: () => {} },
+					getSessionName: () => "parent-session",
+				} as unknown as ExecutorDeps["pi"],
+				state,
+				config: { parallel: { concurrency: 2, maxTasks: 10 } },
+				tempArtifactsDir: join(cwd, "artifacts"),
+				getSubagentSessionRoot: () => join(cwd, "sessions"),
+				expandTilde: (value) => value,
+				discoverAgents: () => ({ agents: [plain] }),
+				runtime: { runSync },
+			};
+			const executor = createSubagentExecutor(deps);
+			const ctx = context(cwd);
+			const onUpdate = (update: SubagentToolResult): void => {
+				forwarded.push(update);
+			};
+
+			await executor.execute(
+				"resume-progress-update",
+				{ action: "resume", id: runId, message: "Continue with progress." },
+				ctx.signal!,
+				onUpdate,
+				ctx,
+			);
+
+			assert.equal(typeof options[0]?.onUpdate, "function");
+			assert.equal(forwarded.length, 1);
+			assert.strictEqual(forwarded[0], progressUpdate);
+			const control = state.foregroundControls.get(runId);
+			assert.equal(control?.currentAgent, "plain");
+			assert.equal(control?.currentIndex, 0);
+			assert.equal(control?.tokens, 2);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

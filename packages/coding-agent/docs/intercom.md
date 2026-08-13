@@ -24,7 +24,6 @@ Atomic bundles `@bastani/intercom`, a first-party extension for direct 1:1 messa
 - Research → implementation context handoffs
 - Supervisor decisions and structured interviews for delegated subagents
 - Pair debugging between sessions
-- Pair debugging between sessions
 
 ## Table of Contents
 
@@ -348,7 +347,6 @@ Programmatic `workflow()` calls accept an `intercom` option that controls how as
 workflow({
   tasks: [{ agent: "worker", task: "..." }],
   intercom: { delivery: "result" },
-  intercom: { delivery: "result" },
 })
 ```
 
@@ -371,9 +369,13 @@ The `subagent` tool's `control` options select which control events notify the p
 - **`notifyChannels`** — defaults to `["event", "intercom"]` (all that are available)
 
 Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `subagent({ action: "doctor" })` reports Intercom bridge availability and whether Intercom is enabled in config.
+
 If live child-to-parent coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first `contact_supervisor` or `intercom` call. Fresh child sessions receive the bundled Intercom wrapper through normal package discovery unless an explicit `extensions` allowlist excludes it.
+
 ### Delivery Ordering
+
 During a foreground subagent run, Atomic probes for the exact live foreground owner before delivery: the matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before messages enter the parent's model-visible steering queue. A commit accepted by one member of a foreground parallel group releases supervision for all active siblings while retaining their in-process session ownership, allowing the aggregate tool call to return. If the owner disappears between probe and commit, a still-current receiver uses its ordinary fallback route rather than dropping the broker-delivered message. Blocking calls stay alive until the exact threaded reply; generation cancellation or replacement invalidates stale handshakes.
+
 For delegated children, queued messages and terminal lifecycle notices are ordered per child: pre-terminal messages are admitted FIFO and atomically together with the paused, completed, or failed notice, exact terminal-identity deduplication prevents double admission, failed dispatches remain retryable, and correlated ask replies bypass unrelated queued sends. See [Subagents](/subagents) for the full coordination contract.
 
 ## Configuration

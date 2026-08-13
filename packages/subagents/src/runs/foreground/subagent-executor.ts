@@ -44,7 +44,7 @@ import { toExecutionErrorResult, withForkContext } from "./subagent-executor-inp
 import { runParallelPath } from "./subagent-executor-parallel.ts";
 import { resolveRequestedCwd } from "./subagent-executor-resume.ts";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.ts";
-import { runSinglePath } from "./subagent-executor-single.ts";
+import { createForwardSingleUpdate, runSinglePath } from "./subagent-executor-single.ts";
 import {
 	foregroundStatusResult,
 	getForegroundControl,
@@ -64,6 +64,7 @@ async function resumeRetainedForegroundChild(
 	message: string,
 	ctx: ExtensionContext,
 	deps: ResolvedExecutorDeps,
+	onUpdate: ((r: SubagentToolResult) => void) | undefined,
 ): Promise<SubagentToolResult | undefined> {
 	const requested = params.id ?? params.runId;
 	if (!requested) return undefined;
@@ -109,6 +110,12 @@ async function resumeRetainedForegroundChild(
 			// Scratch cleanup must never replace the child run's result or original error.
 		}
 	};
+	const forwardSingleUpdate = createForwardSingleUpdate(
+		onUpdate,
+		getForegroundControl(deps.state, run.runId),
+		child.agent,
+		child.index,
+	);
 	let result: SingleResult;
 	try {
 		result = await deps.runtime.runSync(run.cwd, agents, child.agent, message, {
@@ -147,6 +154,7 @@ async function resumeRetainedForegroundChild(
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
 			preferredModelProvider: ctx.model?.provider,
 			currentModel: currentModelFullId(ctx.model),
+			onUpdate: forwardSingleUpdate,
 			onDetachedExit: (detachedResult) => {
 				cleanupProgress();
 				if (detachedResult) {
@@ -190,8 +198,9 @@ async function handleManagementRequest(input: {
 	requestCwd: string;
 	ctx: ExtensionContext;
 	deps: ResolvedExecutorDeps;
+	onUpdate?: (r: SubagentToolResult) => void;
 }): Promise<SubagentToolResult> {
-	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps } = input;
+	const { params, paramsWithResolvedCwd, requestCwd, ctx, deps, onUpdate } = input;
 	const action = params.action;
 	if (!action) {
 		return {
@@ -292,7 +301,7 @@ async function handleManagementRequest(input: {
 		}
 		const inProcess = await resumeInProcessChild(targetRunId, message, { model: ctx.model });
 		if (inProcess) return inProcess;
-		const retained = await resumeRetainedForegroundChild(paramsWithResolvedCwd, message, ctx, deps);
+		const retained = await resumeRetainedForegroundChild(paramsWithResolvedCwd, message, ctx, deps, onUpdate);
 		if (retained) return retained;
 		return {
 			content: [{ type: "text", text: `No in-process child found for '${targetRunId}'.` }],
@@ -364,7 +373,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
-			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps });
+			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps, onUpdate });
 		}
 		// Fanout authorization gates delegation and every management action that can
 		// start or continue agent execution. Only `list`, `get`, `status`, and

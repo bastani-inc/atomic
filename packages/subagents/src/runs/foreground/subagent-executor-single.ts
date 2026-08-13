@@ -38,7 +38,7 @@ import {
 	rememberForegroundRun,
 	replaceForegroundRunChild,
 } from "./subagent-executor-status.ts";
-import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
+import type { ExecutionContextData, ForegroundControl, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
 	const error = result.error || "Failed";
@@ -60,6 +60,32 @@ function cleanupTransientProgress(progressDir: string | undefined, artifactsEnab
 	} catch {
 		// Scratch cleanup must never replace the child run's result or original error.
 	}
+}
+
+export function createForwardSingleUpdate(
+	onUpdate: ((r: SubagentToolResult) => void) | undefined,
+	foregroundControl: ForegroundControl | undefined,
+	agent: string,
+	index: number,
+): ((r: SubagentToolResult) => void) | undefined {
+	if (!onUpdate) return undefined;
+	return (update: SubagentToolResult) => {
+		if (foregroundControl) {
+			const firstProgress = update.details?.progress?.[0];
+			foregroundControl.currentAgent = agent;
+			foregroundControl.currentIndex = firstProgress?.index ?? index;
+			foregroundControl.currentActivityState = firstProgress?.activityState;
+			foregroundControl.lastActivityAt = firstProgress?.lastActivityAt;
+			foregroundControl.currentTool = firstProgress?.currentTool;
+			foregroundControl.currentToolStartedAt = firstProgress?.currentToolStartedAt;
+			foregroundControl.currentPath = firstProgress?.currentPath;
+			foregroundControl.turnCount = firstProgress?.turnCount;
+			foregroundControl.tokens = firstProgress?.tokens;
+			foregroundControl.toolCount = firstProgress?.toolCount;
+			foregroundControl.updatedAt = Date.now();
+		}
+		onUpdate(update);
+	};
 }
 
 export async function runSinglePath(
@@ -159,25 +185,7 @@ export async function runSinglePath(
 		};
 	}
 
-	const forwardSingleUpdate = onUpdate
-		? (update: SubagentToolResult) => {
-				if (foregroundControl) {
-					const firstProgress = update.details?.progress?.[0];
-					foregroundControl.currentAgent = params.agent;
-					foregroundControl.currentIndex = firstProgress?.index ?? 0;
-					foregroundControl.currentActivityState = firstProgress?.activityState;
-					foregroundControl.lastActivityAt = firstProgress?.lastActivityAt;
-					foregroundControl.currentTool = firstProgress?.currentTool;
-					foregroundControl.currentToolStartedAt = firstProgress?.currentToolStartedAt;
-					foregroundControl.currentPath = firstProgress?.currentPath;
-					foregroundControl.turnCount = firstProgress?.turnCount;
-					foregroundControl.tokens = firstProgress?.tokens;
-					foregroundControl.toolCount = firstProgress?.toolCount;
-					foregroundControl.updatedAt = Date.now();
-				}
-				onUpdate(update);
-			}
-		: undefined;
+	const forwardSingleUpdate = createForwardSingleUpdate(onUpdate, foregroundControl, params.agent!, 0);
 
 	let r: SingleResult;
 	try {
