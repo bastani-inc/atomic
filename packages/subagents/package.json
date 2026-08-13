@@ -1,6 +1,6 @@
 {
   "name": "@bastani/subagents",
-  "version": "0.0.0",
+  "version": "0.9.13-alpha.3",
   "private": true,
   "description": "Atomic extension for delegating tasks to subagents with parallel execution. Fork of: https://github.com/nicobailon/pi-subagents",
   "contributors": [
