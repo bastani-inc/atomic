@@ -1,0 +1,60 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (unknown) unknown
+     ██████▙              ▟██████░░    ~/Documents/projects/atomic-intercom-full-ids
+      ██████▙            ▟██████░░
+       ████████████████████████░░      We question,
+        ██████▛░░░░░░░░▜██████░░       we break away from what is accepted.
+         ██████▛      ▜██████░░        Engineering matters.
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 19 skills · 14 prompts
+
+
+ Warning: No models available. Use /login to log into a provider via OAuth or API key. See:
+   /Users/tonystark/Documents/projects/atomic-intercom-full-ids/packages/coding-agent/docs/providers.md
+   /Users/tonystark/Documents/projects/atomic-intercom-full-ids/packages/coding-agent/docs/models.md
+
+ Session name set: worker
+
+ Message sent to pl╭────────────────────────────────────────────────────────────────────────────╮
+                   │ Current Session                                                            │
+                   ├────────────────────────────────────────────────────────────────────────────┤
+                   │                                                                            │
+                   │  worker (737986a2-62da-4c43-92d3-8f343da5fddf) [self]                      │
+                   │  /Users/tonystark/Documents/projects/atomic-intercom-full-ids • unknown    │
+                   │                                                                            │
+                   ├────────────────────────────────────────────────────────────────────────────┤
+                   │ Other Sessions                                                             │
+                   │                                                                            │
+                   │→ planner (f996d39d-5efd-41f7-8b01-22769b77873f) [same cwd]                 │
+                   │  /Users/tonystark/Documents/projects/atomic-intercom-full-ids • unknown    │
+                   │                                                                            │
+                   ├────────────────────────────────────────────────────────────────────────────┤
+                   │ Enter: Message • Escape/CTRL+C: Close                                      │
+                   ╰────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ∀ Working...
+
+                                                                                                          0.0%/0 (auto)
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+unknown • ~/Documents/projects/atomic-intercom-full-ids (detached)
+● ADHD Mode • MCP: 0/1 servers
