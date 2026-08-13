@@ -26,7 +26,7 @@ Provider keys include `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_K
 
 ## Bash session environment
 
-Every built-in, factory-created, direct, foreground/background, workflow-stage, and isolated bash execution receives one execution-time snapshot:
+Every built-in, factory-created, direct, workflow-stage, and isolated bash execution receives one execution-time snapshot:
 
 | Atomic variable | Exact Pi alias | Value |
 |---|---|---|

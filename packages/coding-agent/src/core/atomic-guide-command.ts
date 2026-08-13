@@ -28,7 +28,7 @@ Atomic turns non-trivial work into executable, inspectable workflows. Default to
 | On-call / broken behavior | Use a focused workflow to reproduce, diagnose, repair, and validate; direct debugger/subagent calls remain useful as stages or for tiny deterministic diagnosis |
 | Research → spec → implementation | Use \`/skill:research-codebase\`, then \`/skill:create-spec\`, then a named or custom implementation workflow with explicit validation and review |
 | Testing / regression hardening | Use a workflow for test/fix loops so retries, evidence, and the passing stop condition are tracked |
-| Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns" --bg\`, or use repository-focused \`fan-out-and-synthesize\` branches plus a synthesis barrier |
+| Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns"\`, or use repository-focused \`fan-out-and-synthesize\` branches plus a synthesis barrier |
 | UI / product polish | Run \`/skill:impeccable\` for interface critique and refinement, or \`/workflow open-claude-design\` for generation + refinement loops |
 
 ## Built-in workflows
@@ -71,7 +71,7 @@ Subagents are focused child Atomic sessions you can point at one job inside the 
 
 How the direct commands map to repo work:
 - \`/run\` = one specialist on one job, for example \`/run codebase-locator "Map the webhook retry flow"\`
-- \`/parallel\` = several independent specialists at once, for example \`/parallel codebase-locator "map retry files" -> codebase-pattern-finder "find existing retry/backoff patterns" -> codebase-online-researcher "research current retry guidance" --bg\`
+- \`/parallel\` = several independent specialists at once, for example \`/parallel codebase-locator "map retry files" -> codebase-pattern-finder "find existing retry/backoff patterns" -> codebase-online-researcher "research current retry guidance"\`
 
 ─────────────────────────────────────────────────────────────────
 

@@ -12,9 +12,9 @@ import {
 	SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT,
 } from "../../packages/intercom/terminal-ordering-barrier.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
-import { deliverLocalCompletionNotification } from "../../packages/subagents/src/runs/background/completion-notification.js";
-import registerSubagentNotify from "../../packages/subagents/src/runs/background/notify.js";
-import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
+import { deliverLocalCompletionNotification } from "../../packages/subagents/src/runs/foreground/completion-notification.js";
+import registerSubagentNotify from "../../packages/subagents/src/runs/foreground/notify.js";
+import { SUBAGENT_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
 
 function source(id: string, name: string): SessionInfo {
@@ -72,7 +72,7 @@ describe("per-child terminal ordering barrier", () => {
 		});
 		registerSubagentNotify(harness.pi as never);
 
-		harness.pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+		harness.pi.events.emit(SUBAGENT_COMPLETE_EVENT, {
 			id: "run-1802",
 			runId: "run-1802",
 			agent: "worker",
@@ -89,7 +89,7 @@ describe("per-child terminal ordering barrier", () => {
 		assert.deepEqual(barrier, {
 			runId: "run-1802",
 			terminalAt: 200,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [pausedChild.name],
 		});
 		assert.deepEqual(
@@ -114,7 +114,7 @@ describe("per-child terminal ordering barrier", () => {
 			const target = `subagent-worker-${runId}-1`;
 			queue.enqueue(entry(source(`session-${runId}`, target), `${runId}-first`, 10));
 			queue.enqueue(entry(source(`session-${runId}`, target), `${runId}-second`, 11));
-			harness.pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			harness.pi.events.emit(SUBAGENT_COMPLETE_EVENT, {
 				id: runId,
 				runId,
 				agent: "worker",
@@ -151,7 +151,7 @@ describe("per-child terminal ordering barrier", () => {
 		});
 		registerSubagentNotify(harness.pi as never);
 
-		harness.pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+		harness.pi.events.emit(SUBAGENT_COMPLETE_EVENT, {
 			id: "fallback-run",
 			agent: "worker",
 			success: true,
@@ -180,7 +180,7 @@ describe("per-child terminal ordering barrier", () => {
 		harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, {
 			runId: "wanted-run",
 			terminalAt: 3,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [alias],
 		});
 
@@ -209,7 +209,7 @@ describe("per-child terminal ordering barrier", () => {
 			runId: "empty-run",
 			terminalId: "empty-terminal",
 			terminalAt: 1,
-			source: "background-notify" as const,
+			source: "detached-notify" as const,
 			sourceSessionTargets: ["empty-target"],
 			dispatch(prefix: unknown[]) {
 				assert.deepEqual(prefix, []);
@@ -279,7 +279,7 @@ describe("per-child terminal ordering barrier", () => {
 				runId: "resumed-empty-run",
 				terminalId,
 				terminalAt: terminalId === "pause" ? 1 : 2,
-				source: "background-notify",
+				source: "detached-notify",
 				sourceSessionTargets: ["resumed-empty-target"],
 				dispatch: () => dispatched.push(terminalId),
 			});
@@ -314,7 +314,7 @@ describe("per-child terminal ordering barrier", () => {
 		queue.enqueue(entry(child, "post-terminal", 4));
 		harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, {
 			...relayBarrier,
-			source: "background-notify",
+			source: "detached-notify",
 		});
 
 		assert.deepEqual(harness.deliveries, ["one", "two"]);
@@ -345,7 +345,7 @@ describe("per-child terminal ordering barrier", () => {
 		queue.enqueue(entry(child, "after-terminal", 11));
 		harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, {
 			...barrier,
-			source: "background-notify",
+			source: "detached-notify",
 		});
 
 		assert.deepEqual(harness.deliveries, ["accepted-before-terminal"]);
@@ -369,7 +369,7 @@ describe("per-child terminal ordering barrier", () => {
 			runId: "resumed-run",
 			terminalId: "pause-event",
 			terminalAt: 2,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [child.name],
 		});
 		queue.enqueue(entry(child, "almost-done", 10));
@@ -377,7 +377,7 @@ describe("per-child terminal ordering barrier", () => {
 			runId: "resumed-run",
 			terminalId: "completion-event",
 			terminalAt: 20,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [child.name],
 		});
 
@@ -440,7 +440,7 @@ describe("per-child terminal ordering barrier", () => {
 				harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, {
 					runId: "retry-run",
 					terminalAt: 4,
-					source: "background-notify",
+					source: "detached-notify",
 					sourceSessionTargets: [child.name],
 				}),
 			/injected send failure/,
@@ -471,7 +471,7 @@ describe("per-child terminal ordering barrier", () => {
 			runId: "async-retry-run",
 			terminalId: "complete",
 			terminalAt: 2,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [child.name],
 			dispatch: async () => {
 				throw new Error("async dispatch failure");
@@ -548,7 +548,7 @@ describe("per-child terminal ordering barrier", () => {
 		harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, {
 			runId: "probe-run",
 			terminalAt: 2,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [child.name],
 		});
 		if (queue.remove(accepted)) harness.deliveries.push("foreground-surface");
@@ -570,7 +570,7 @@ describe("per-child terminal ordering barrier", () => {
 		harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, {
 			runId: "prelude-run",
 			terminalAt: 2,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [child.name],
 		});
 
@@ -590,7 +590,7 @@ describe("per-child terminal ordering barrier", () => {
 		harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, {
 			runId: "noninteractive-run",
 			terminalAt: 2,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [child.name],
 		});
 		assert.deepEqual(harness.deliveries, ["busy child update"]);
@@ -612,7 +612,7 @@ describe("per-child terminal ordering barrier", () => {
 		harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, {
 			runId: "asking-run",
 			terminalAt: 3,
-			source: "background-notify",
+			source: "detached-notify",
 			sourceSessionTargets: [child.name],
 		});
 

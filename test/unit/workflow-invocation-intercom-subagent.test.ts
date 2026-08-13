@@ -22,17 +22,11 @@ function makeState(): ExecutorDeps["state"] {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
-		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
+		pendingForegroundControlNotices: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 }
 
@@ -118,7 +112,6 @@ test("a real foreground subagent inherits its workflow group and stays outside d
 			pi: pi as ExecutorDeps["pi"],
 			state: makeState(),
 			config: { maxSubagentDepth: 2, parallel: { concurrency: 2, maxTasks: 10 } },
-			asyncByDefault: false,
 			tempArtifactsDir: join(root, "artifacts"),
 			getSubagentSessionRoot: () => join(root, "sessions"),
 			expandTilde: (path) => path,

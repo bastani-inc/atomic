@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { buildWidgetLines, renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
-import {
-	type AgentToolResult,
-	type AsyncJobState,
-	type Details,
-	theme,
-	withMockedNow,
-} from "./subagents-render-stability-helpers.js";
+import { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
+import { type AgentToolResult, type Details, theme } from "./subagents-render-stability-helpers.js";
 
 describe("subagent fast-mode UI labels (issue #1153)", () => {
 	test("foreground compact result renders fast after thinking", () => {
@@ -74,31 +68,6 @@ describe("subagent fast-mode UI labels (issue #1153)", () => {
 
 		assert.match(text, /gpt-5\.1-codex · thinking medium/);
 		assert.doesNotMatch(text, / · fast/);
-	});
-
-	test("async widget step renders fast after thinking", () => {
-		const job: AsyncJobState = {
-			asyncId: "fast-run",
-			asyncDir: "/tmp/fast-run",
-			status: "running",
-			mode: "single",
-			agents: ["worker"],
-			updatedAt: 10_000,
-			steps: [
-				{
-					index: 0,
-					agent: "worker",
-					status: "running",
-					model: "openai/gpt-5.1-codex",
-					thinking: "medium",
-					fastMode: true,
-				},
-			],
-		};
-
-		const text = withMockedNow(10_000, () => buildWidgetLines([job], theme, 120).join("\n"));
-
-		assert.match(text, /gpt-5\.1-codex · thinking medium · fast/);
 	});
 
 	test("running multi-result rows render thinking and fast metadata", () => {

@@ -17,12 +17,8 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
-import type { AsyncJobManager } from "../async/job-manager.js";
-import type { AsyncJobDeliveryMessage } from "../async/types.js";
 import type { BashResult } from "../bash-executor.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { startAsyncBashCommand } from "./bash-async-execution.js";
-import { abortManagedBashJob, getManagedBashJob } from "./bash-async-jobs.js";
 import {
 	type BashInterceptorRule,
 	checkBashInterceptionCandidates,
@@ -54,10 +50,7 @@ const bashBaseSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-const bashSchema = Type.Object(
-	{ ...bashBaseSchema.properties, async: Type.Optional(Type.Boolean({ description: "Run as a background job." })) },
-	{ additionalProperties: false },
-);
+const bashSchema = bashBaseSchema;
 export const bashToolSystemPromptContribution = Object.freeze({
 	snippet: "Execute a shell command.",
 	guidelines: Object.freeze([
@@ -69,13 +62,6 @@ export interface BashToolDetails {
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
 	exitCode?: number | null;
-	async?: {
-		jobId: string;
-		type: "bash";
-		state: "running" | "completed" | "failed";
-		command?: string;
-		status?: "running" | "completed" | "failed";
-	};
 	timeoutSeconds?: number;
 	requestedTimeoutSeconds?: number;
 	wallTimeMs?: number;
@@ -218,11 +204,6 @@ export interface BashToolOptions {
 	interceptorEnabled?: boolean | (() => boolean);
 	availableTools?: string[];
 	interceptorRules?: BashInterceptorRule[];
-	/** Enable background bash jobs and session-managed async result delivery. */
-	asyncEnabled?: boolean;
-	asyncJobManager?: AsyncJobManager;
-	asyncJobDeliveryHandler?: (message: AsyncJobDeliveryMessage) => void | Promise<void>;
-	asyncJobSessionId?: symbol;
 	/**
 	 * Session-scoped directory for overflow logs, resolved per execution so a
 	 * session switch (fork, branch, resume) follows the live transcript session.
@@ -370,74 +351,19 @@ export function createBashToolDefinition(
 			: (options?.interceptorEnabled ?? !!interceptor);
 	const availableTools = options?.availableTools ?? ["read", "search", "find", "edit", "write"];
 	const interceptorRules = options?.interceptorRules ?? DEFAULT_BASH_INTERCEPTOR_RULES;
-	const asyncEnabled = options?.asyncEnabled ?? false;
-	const asyncJobManager = options?.asyncJobManager,
-		asyncJobDeliveryHandler = options?.asyncJobDeliveryHandler,
-		asyncJobSessionId = options?.asyncJobSessionId;
 	const sessionTempDirOption = options?.sessionTempDir;
 	const resolveSessionTempDir = (): string | undefined =>
 		typeof sessionTempDirOption === "function" ? sessionTempDirOption() : sessionTempDirOption;
 	return {
 		name: "bash",
 		label: "bash",
-		description: "Execute a shell command in the session workspace, with optional PTY or background-job handling.",
+		description: "Execute a shell command in the session workspace, with optional PTY handling.",
 		promptSnippet: bashToolSystemPromptContribution.snippet,
 		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
-		parameters: asyncEnabled ? bashSchema : (bashBaseSchema as typeof bashSchema),
+		parameters: bashSchema,
 		maxResultSizeChars: Infinity,
 		async execute(_toolCallId, bashCommand: BashToolInput, signal?: AbortSignal, onUpdate?, _ctx?) {
 			const { command } = bashCommand;
-			const jobStatusMatch = command.match(/^__atomic_bash_job\s+(\S+)$/);
-			if (jobStatusMatch) {
-				const job = getManagedBashJob(jobStatusMatch[1]!);
-				if (!job) throw new Error(`Unknown bash async job: ${jobStatusMatch[1]}`);
-				if (job.status !== "running") asyncJobManager?.acknowledgeDeliveries([job.jobId]);
-				const text = [
-					`Job ${job.jobId}: ${job.status}`,
-					`Command: ${job.command}`,
-					job.error ? `Error: ${job.error}` : undefined,
-					job.output,
-				]
-					.filter(Boolean)
-					.join("\n");
-				return {
-					content: [{ type: "text", text }],
-					details: {
-						async: {
-							jobId: job.jobId,
-							type: "bash",
-							state: job.status,
-							command: job.command,
-							status: job.status,
-						},
-						exitCode: job.exitCode,
-						timeoutSeconds: job.timeoutSeconds,
-						...(job.requestedTimeoutSeconds !== undefined
-							? { requestedTimeoutSeconds: job.requestedTimeoutSeconds }
-							: {}),
-						...(job.fullOutputPath ? { fullOutputPath: job.fullOutputPath } : {}),
-						wallTimeMs: (job.endedAt ?? Date.now()) - job.startedAt,
-					},
-				};
-			}
-			const jobCancelMatch = command.match(/^__atomic_bash_job_cancel\s+(\S+)$/);
-			if (jobCancelMatch) {
-				const job = abortManagedBashJob(jobCancelMatch[1]!);
-				if (!job) throw new Error(`Unknown bash async job: ${jobCancelMatch[1]}`);
-				asyncJobManager?.acknowledgeDeliveries([job.jobId]);
-				return {
-					content: [{ type: "text", text: `Cancellation requested for bash job ${job.jobId}` }],
-					details: {
-						async: {
-							jobId: job.jobId,
-							type: "bash",
-							state: job.status,
-							command: job.command,
-							status: job.status,
-						},
-					},
-				};
-			}
 			const timeout = normalizeTimeoutSeconds(bashCommand.timeout);
 			const sessionEnvironment = snapshotBashSessionEnvironment(_ctx, exposeSessionEnvironment);
 			const resourceCtx = _ctx as InternalResourceContext | undefined;
@@ -497,26 +423,6 @@ export function createBashToolDefinition(
 			if (intercepted?.result) return bashResultToToolResult(intercepted.result);
 			const ops = intercepted?.operations ?? defaultOps;
 			const executionContext = primaryInterception ? spawnContext : (strippedCdContext ?? spawnContext);
-			if (bashCommand.async) {
-				if (!asyncEnabled) throw new Error("bash async execution is disabled");
-				return startAsyncBashCommand({
-					command: executionContext.command,
-					cwd: executionContext.cwd,
-					env: executionContext.env,
-					pty: bashCommand.pty,
-					timeoutSeconds: timeout,
-					requestedTimeoutSeconds:
-						bashCommand.timeout !== undefined && bashCommand.timeout !== timeout
-							? bashCommand.timeout
-							: undefined,
-					signal,
-					operations: ops,
-					manager: asyncJobManager,
-					deliveryHandler: asyncJobDeliveryHandler,
-					sessionId: asyncJobSessionId,
-					sessionTempDir: resolveSessionTempDir(),
-				});
-			}
 			const output = new OutputAccumulator({
 				tempFilePrefix: `${APP_NAME}-bash`,
 				tempDir: resolveSessionTempDir(),

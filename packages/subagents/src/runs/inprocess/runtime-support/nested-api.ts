@@ -25,9 +25,7 @@ export {
 	MAX_NESTED_STEPS,
 	MAX_PROCESSED_NESTED_EVENTS,
 	NESTED_EVENTS_DIR,
-	NESTED_RUNS_DIR,
 	resolveInheritedNestedRouteFromEnv,
-	resolveNestedAsyncDir,
 	resolveNestedParentAddressFromEnv,
 	resolveNestedRouteFromEnv,
 	validateNestedRouteShape,
@@ -41,11 +39,6 @@ export {
 export {
 	attachRootChildrenToSteps,
 	hasLiveNestedDescendants,
-	isTopLevelAsyncDir,
-	nestedArtifactEnv,
-	nestedResultsPath,
-	nestedSummaryFromAsyncStatus,
-	updateAsyncJobNestedProjection,
 	updateForegroundNestedProjection,
 } from "./nested-projection.ts";
 export type { NestedRunMatch, NestedRunResolutionScope } from "./nested-registry.ts";

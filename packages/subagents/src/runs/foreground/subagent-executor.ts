@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { handleManagementAction } from "../../agents/agent-management.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
@@ -12,13 +14,18 @@ import { requestSupervisorAuthorization } from "../../intercom/supervisor-author
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import { toModelInfo } from "../../shared/model-info.ts";
 import { createCandidateModelResolver } from "../../shared/model-resolution.ts";
-import { resolveSingleProgress } from "../../shared/settings.ts";
+import {
+	injectSingleProgressInstruction,
+	resolveSingleProgress,
+	writeInitialProgressFile,
+} from "../../shared/settings.ts";
 import {
 	DEFAULT_ARTIFACT_CONFIG,
 	getCurrentSubagentDepth,
 	isWorkflowStageOrchestrationContext,
 	resolveChildMaxSubagentDepth,
 	resolveWorkflowStageMaxSubagentDepth,
+	type SingleResult,
 	SUBAGENT_ACTIONS,
 	type SubagentToolResult,
 	workflowSessionMetadataFromContext,
@@ -29,9 +36,7 @@ import {
 	resumeInProcessChild,
 } from "../inprocess/control-status.ts";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
-import { currentModelFullId } from "../shared/model-fallback.ts";
 import { resolveControlConfig } from "../shared/subagent-control.ts";
-import { runAsyncPath } from "./subagent-executor-async.ts";
 import { checkDepthForExecution, prepareExecutionContext } from "./subagent-executor-context.ts";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.ts";
 import { runParallelPath } from "./subagent-executor-parallel.ts";
@@ -41,6 +46,7 @@ import { runSinglePath } from "./subagent-executor-single.ts";
 import {
 	foregroundStatusResult,
 	getForegroundControl,
+	replaceForegroundRunChild,
 	retainedForegroundStatusResult,
 } from "./subagent-executor-status.ts";
 import {
@@ -83,48 +89,59 @@ async function resumeRetainedForegroundChild(
 		? resolveSubagentIntercomTarget(run.runId, child.agent, child.index)
 		: undefined;
 	const supervisorAuthorization = await requestSupervisorAuthorization(deps.pi.events, supervisedTarget);
-	return deps.runtime.executeAsyncSingle(run.runId, {
-		agent: child.agent,
-		agentConfig,
-		task: message,
-		ctx: {
-			pi: deps.pi,
+	const artifactConfig = { ...DEFAULT_ARTIFACT_CONFIG, enabled: params.artifacts !== false };
+	const artifactsDir = getArtifactsDir(parentSessionFile);
+	const progressDir = resolveSingleProgress(agentConfig, params.progress, message)
+		? path.join(artifactsDir, "progress", run.runId)
+		: undefined;
+	if (progressDir) {
+		writeInitialProgressFile(progressDir);
+		message = injectSingleProgressInstruction(message, progressDir);
+	}
+	let result: SingleResult;
+	try {
+		result = await deps.runtime.runSync(run.cwd, agents, child.agent, message, {
 			cwd: run.cwd,
-			currentSessionId: ctx.sessionManager.getSessionId(),
-			currentModelProvider: ctx.model?.provider,
-			currentModel: currentModelFullId(ctx.model),
-			intercomGroup: inheritedIntercomGroup(ctx),
+			signal: ctx.signal,
+			interruptSignal: ctx.signal,
+			intercomEvents: deps.pi.events,
+			runId: run.runId,
+			index: child.index,
+			sessionDir: child.sessionFile ? path.dirname(child.sessionFile) : undefined,
+			sessionFile: child.sessionFile,
+			share: params.share === true,
+			artifactsDir,
+			artifactConfig,
+			maxOutput: params.maxOutput,
+			maxSubagentDepth:
+				child.maxSubagentDepth ??
+				resolveChildMaxSubagentDepth(
+					resolveWorkflowStageMaxSubagentDepth(ctx, deps.config.maxSubagentDepth),
+					agentConfig.maxSubagentDepth,
+				),
+			parentDepth: getCurrentSubagentDepth(ctx),
+			workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
 			workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
-		},
-		cwd: run.cwd,
-		maxOutput: params.maxOutput,
-		artifactsDir: getArtifactsDir(parentSessionFile),
-		artifactConfig: { ...DEFAULT_ARTIFACT_CONFIG, enabled: params.artifacts !== false },
-		shareEnabled: params.share === true,
-		sessionRoot: deps.getSubagentSessionRoot(parentSessionFile),
-		sessionFile: child.sessionFile,
-		progress: resolveSingleProgress(agentConfig, params.progress, message),
-		modelOverride: params.model,
-		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
-		resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
-		// The child's own effective limit, recorded when the run was retained. An
-		// older record without one falls back to narrowing the current limit by the
-		// agent definition, so a resume never widens a child's delegation budget.
-		maxSubagentDepth:
-			child.maxSubagentDepth ??
-			resolveChildMaxSubagentDepth(
-				resolveWorkflowStageMaxSubagentDepth(ctx, deps.config.maxSubagentDepth),
-				agentConfig.maxSubagentDepth,
-			),
-		parentDepth: getCurrentSubagentDepth(ctx),
-		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
-		controlConfig: resolveControlConfig(deps.config.control, params.control),
-		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
-		childIntercomTarget: intercomBridge.active
-			? (agent, index) => resolveSubagentIntercomTarget(run.runId, agent, index)
-			: undefined,
-		supervisorAuthorization,
-	});
+			controlConfig: resolveControlConfig(deps.config.control, params.control),
+			intercomSessionName: intercomBridge.active
+				? resolveSubagentIntercomTarget(run.runId, child.agent, child.index)
+				: undefined,
+			orchestratorIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
+			intercomGroup: inheritedIntercomGroup(ctx),
+			supervisorAuthorization,
+			modelOverride: params.model,
+			availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
+			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, ctx.model?.provider),
+		});
+	} finally {
+		if (progressDir && !artifactConfig.enabled) fs.rmSync(progressDir, { recursive: true, force: true });
+	}
+	replaceForegroundRunChild(deps.state, run.runId, child.index, result);
+	return {
+		content: [{ type: "text", text: result.finalOutput ?? result.envelope ?? result.error ?? "" }],
+		details: { mode: "single", runId: run.runId, results: [result] },
+		...(result.status === "error" ? { isError: true } : {}),
+	};
 }
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 /**
@@ -339,8 +356,6 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const prepared = built.prepared!;
 		let nestedForegroundStarted = false;
 		try {
-			const asyncResult = await runAsyncPath(prepared.execData, deps);
-			if (asyncResult) return withForkContext(asyncResult, prepared.effectiveParams.context);
 			if (prepared.foregroundControl) {
 				prepared.writeNestedForegroundEvent("subagent.nested.started");
 				nestedForegroundStarted = true;

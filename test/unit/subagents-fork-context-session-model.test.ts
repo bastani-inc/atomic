@@ -78,7 +78,7 @@ vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () =>
 			return { status: "running", promise: Promise.resolve(outcome as AttemptOutcome) };
 		},
 		registerNestedAttempt: () => undefined,
-		continueInBackground: () => undefined,
+		continueDetached: () => undefined,
 		deliverChildResult: async () => undefined,
 		getDeliveredResult: () => undefined,
 	};

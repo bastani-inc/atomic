@@ -377,7 +377,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_NO_PTY` | Set to `1` to disable PTY use for bash commands (`PI_NO_PTY` is a legacy alias) |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
 
-Every foreground or background bash execution receives one execution-time snapshot of the active session:
+Every bash execution runs in the foreground and receives one execution-time snapshot of the active session:
 
 | Atomic variable | Exact compatibility alias | Value |
 |-----------------|---------------------------|-------|

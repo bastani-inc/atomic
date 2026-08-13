@@ -5,7 +5,6 @@ EXECUTION (use exactly ONE mode):
 • SINGLE: { agent, task?, progress? } - one focused task; progress:true maintains a run-scoped progress.md under isolated artifact storage without writing it into the child cwd (separate from includeProgress, which only returns runtime telemetry); omit task for self-contained agents
 • PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - independent concurrent tasks (worktree: isolate each task in a git worktree)
 • Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })
-• async:true is selective for genuinely long-running/background work; foreground is appropriate when the parent needs the result before proceeding
 • group (string | true) sets the intercom group for spawned children so same-group subagents can intercom each other but stay isolated from other groups. Boolean true or the trimmed, case-insensitive string sentinel "true"/"auto" auto-generates one shared UUID group per parallel set; those names are reserved and cannot be literal group names. Defaults to the current session/stage's group (subagents inherit their launching stage's group). Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.
 MANAGEMENT (use action field, omit agent/task/tasks):
 • { action: "list" } - discover executable agents
@@ -14,8 +13,8 @@ MANAGEMENT (use action field, omit agent/task/tasks):
 • { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", ... } } - merge
 • { action: "delete", agent: "code-analysis.custom-agent" }
 CONTROL:
-• { action: "status", id: "..." } - inspect an async/background run by id or prefix
+• { action: "status", id: "..." } - inspect an in-process run by id or prefix
 • { action: "interrupt", id?: "..." } - soft-interrupt the current child turn and leave the run paused
-• { action: "resume", id: "...", message: "...", index?: 0 } - follow up with a live async child or revive a completed async/foreground child from its session
+• { action: "resume", id: "...", message: "...", index?: 0 } - follow up with a live child or revive a retained foreground child
 DIAGNOSTICS:
 • { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`;

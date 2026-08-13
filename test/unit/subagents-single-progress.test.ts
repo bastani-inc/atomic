@@ -65,26 +65,18 @@ function makeContext(cwd: string): ExtensionContext {
 function makeExecutor(
 	cwd: string,
 	runtime: Partial<SubagentExecutorRuntimeDeps>,
-	asyncByDefault = false,
 	defaultProgress?: boolean,
 	authorizeSupervisor?: (childName: string) => { capability: string; supervisorSessionId: string; childName: string },
-) {
+): ReturnType<typeof createSubagentExecutor> {
 	const state: ExecutorDeps["state"] = {
 		baseCwd: "",
 		currentSessionId: null,
-		asyncJobs: new Map(),
 		subagentInProgress: false,
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 	return createSubagentExecutor({
 		pi: {
@@ -99,8 +91,7 @@ function makeExecutor(
 			getSessionName: () => "parent",
 		} as unknown as ExecutorDeps["pi"],
 		state,
-		config: { asyncByDefault, maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
-		asyncByDefault,
+		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
@@ -165,7 +156,6 @@ test("single progress false overrides default and omission inherits it", async (
 					return makeResult(task);
 				},
 			},
-			false,
 			true,
 		);
 		const context = makeContext(cwd);
@@ -379,7 +369,6 @@ test("foreground read-only task suppresses inherited defaultProgress", async () 
 					return makeResult(task);
 				},
 			},
-			false,
 			true,
 		);
 
@@ -406,20 +395,15 @@ test("resume inherits single-agent defaultProgress", async () => {
 	try {
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
-		let resumedProgress: boolean | undefined;
+		let resumedTask = "";
 		const executor = makeExecutor(
 			cwd,
 			{
-				runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
-				executeAsyncSingle: (_id, params) => {
-					resumedProgress = params.progress;
-					return {
-						content: [{ type: "text", text: "launched" }],
-						details: { mode: "single", results: [], asyncId: "revived" },
-					};
+				runSync: async (_cwd, _agents, _agent, task) => {
+					resumedTask = task;
+					return { ...makeResult(task), sessionFile };
 				},
 			},
-			false,
 			true,
 		);
 		const context = makeContext(cwd);
@@ -434,18 +418,14 @@ test("resume inherits single-agent defaultProgress", async () => {
 
 		const resumed = await executor.execute(
 			"resume",
-			{
-				action: "resume",
-				id: initial.details.runId,
-				message: "continue implementation",
-			},
+			{ action: "resume", id: initial.details.runId, message: "continue implementation" },
 			new AbortController().signal,
 			undefined,
 			context,
 		);
 
 		assert.equal(resumed.isError, undefined);
-		assert.equal(resumedProgress, true);
+		assert.match(resumedTask, /Create and maintain progress/);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
@@ -461,16 +441,11 @@ test("resume requests and forwards a fresh supervisor authorization", async () =
 		const executor = makeExecutor(
 			cwd,
 			{
-				runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
-				executeAsyncSingle: (_id, params) => {
-					capturedAuthorization = params.supervisorAuthorization;
-					return {
-						content: [{ type: "text", text: "launched" }],
-						details: { mode: "single", results: [], asyncId: "revived" },
-					};
+				runSync: async (_cwd, _agents, _agent, task, options) => {
+					capturedAuthorization = options.supervisorAuthorization;
+					return { ...makeResult(task), sessionFile };
 				},
 			},
-			false,
 			true,
 			(childName) => {
 				authorizedChildren.push(childName);
@@ -489,11 +464,7 @@ test("resume requests and forwards a fresh supervisor authorization", async () =
 
 		const resumed = await executor.execute(
 			"resume",
-			{
-				action: "resume",
-				id: initial.details.runId,
-				message: "continue implementation",
-			},
+			{ action: "resume", id: initial.details.runId, message: "continue implementation" },
 			new AbortController().signal,
 			undefined,
 			context,
@@ -514,20 +485,15 @@ test("resume suppresses inherited defaultProgress for a read-only follow-up", as
 	try {
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
-		let resumedProgress: boolean | undefined;
+		let resumedTask = "";
 		const executor = makeExecutor(
 			cwd,
 			{
-				runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
-				executeAsyncSingle: (_id, params) => {
-					resumedProgress = params.progress;
-					return {
-						content: [{ type: "text", text: "launched" }],
-						details: { mode: "single", results: [], asyncId: "revived" },
-					};
+				runSync: async (_cwd, _agents, _agent, task) => {
+					resumedTask = task;
+					return { ...makeResult(task), sessionFile };
 				},
 			},
-			false,
 			true,
 		);
 		const context = makeContext(cwd);
@@ -542,17 +508,13 @@ test("resume suppresses inherited defaultProgress for a read-only follow-up", as
 
 		await executor.execute(
 			"resume",
-			{
-				action: "resume",
-				id: initial.details.runId,
-				message: "Review only; do not edit files.",
-			},
+			{ action: "resume", id: initial.details.runId, message: "Review only; do not edit files." },
 			new AbortController().signal,
 			undefined,
 			context,
 		);
 
-		assert.equal(resumedProgress, false);
+		assert.doesNotMatch(resumedTask, /Create and maintain progress/);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
@@ -563,20 +525,15 @@ test("resume explicit progress overrides read-only suppression", async () => {
 	try {
 		const sessionFile = join(cwd, "worker.jsonl");
 		writeFileSync(sessionFile, "");
-		let resumedProgress: boolean | undefined;
+		let resumedTask = "";
 		const executor = makeExecutor(
 			cwd,
 			{
-				runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
-				executeAsyncSingle: (_id, params) => {
-					resumedProgress = params.progress;
-					return {
-						content: [{ type: "text", text: "launched" }],
-						details: { mode: "single", results: [], asyncId: "revived" },
-					};
+				runSync: async (_cwd, _agents, _agent, task) => {
+					resumedTask = task;
+					return { ...makeResult(task), sessionFile };
 				},
 			},
-			false,
 			true,
 		);
 		const context = makeContext(cwd);
@@ -602,7 +559,7 @@ test("resume explicit progress overrides read-only suppression", async () => {
 			context,
 		);
 
-		assert.equal(resumedProgress, true);
+		assert.match(resumedTask, /Create and maintain progress/);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

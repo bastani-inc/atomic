@@ -1,5 +1,5 @@
 import type { IntercomEventBus } from "../../shared/types.ts";
-import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
+import { SUBAGENT_COMPLETE_EVENT } from "../../shared/types.ts";
 
 export interface CompletionNotificationEnvelope extends Record<string, unknown> {
 	notificationId: string;
@@ -26,7 +26,7 @@ export function deliverLocalCompletionNotification(
 			reject(error);
 		};
 		try {
-			events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			events.emit(SUBAGENT_COMPLETE_EVENT, {
 				...payload,
 				notificationId,
 				defer: () => {

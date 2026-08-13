@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -10,8 +10,6 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { type BashOperations, createBashTool } from "../src/core/tools/bash.ts";
 
 const roots: string[] = [];
-const ASYNC_JOB_WAIT_TIMEOUT_MS = 10_000,
-	ASYNC_JOB_POLL_INTERVAL_MS = 5;
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 const switchedModel = getModel("openai", "gpt-4o")!;
 
@@ -62,8 +60,6 @@ async function createSession(options: { persisted?: boolean; stage?: string } = 
 }
 
 afterEach(() => {
-	// Windows locks a directory while a spawned shell still has it as its cwd, so a
-	// detached async job can outlive its test and make cleanup fail with EBUSY.
 	// Retry, then give up: reclaiming an OS temp dir is never the assertion.
 	for (const root of roots.splice(0)) {
 		if (!existsSync(root)) continue;
@@ -214,59 +210,6 @@ describe("session-aware bash environment", () => {
 		});
 		expect(hookCaptures[0]).toMatchObject({ ATOMIC_SESSION_ID: session.sessionId, PI_SESSION_ID: session.sessionId });
 		session.dispose();
-	});
-
-	it("propagates the same snapshot into detached async jobs", async () => {
-		const { session, cwd } = await createSession({ persisted: false });
-		const bash = session.agent.state.tools.find((tool) => tool.name === "bash")!;
-		const outputName = "async-session-env.txt";
-		const outputPath = join(cwd, outputName);
-		const releaseName = ".async-session-env.release";
-		const releasePath = join(cwd, releaseName);
-		try {
-			const started = await bash.execute("async-metadata", {
-				command: `{ while [ ! -f '${releaseName}' ]; do sleep 0.01; done; printf '%s:%s' "$ATOMIC_SESSION_ID" "$PI_SESSION_ID"; } > '${outputName}'`,
-				async: true,
-			});
-			const jobId = started.details?.async?.jobId;
-			if (!jobId) throw new Error("Detached bash command did not return a job ID");
-			try {
-				const creationDeadline = Date.now() + ASYNC_JOB_WAIT_TIMEOUT_MS;
-				while (!existsSync(outputPath)) {
-					if (Date.now() >= creationDeadline) {
-						throw new Error(
-							`Timed out after ${ASYNC_JOB_WAIT_TIMEOUT_MS}ms waiting for async job ${jobId} to create ${outputPath}`,
-						);
-					}
-					await new Promise((resolve) => setTimeout(resolve, ASYNC_JOB_POLL_INTERVAL_MS));
-				}
-				expect(readFileSync(outputPath, "utf8")).toBe("");
-			} finally {
-				writeFileSync(releasePath, "");
-			}
-
-			const completionDeadline = Date.now() + ASYNC_JOB_WAIT_TIMEOUT_MS;
-			while (true) {
-				const polled = await bash.execute("async-metadata-poll", {
-					command: `__atomic_bash_job ${jobId}`,
-				});
-				const observedState = polled.details?.async?.state;
-				const observedOutput = text(polled);
-				if (observedState === "completed") break;
-				if (observedState === "failed") {
-					throw new Error(`Async bash job ${jobId} failed: ${observedOutput}`);
-				}
-				if (Date.now() >= completionDeadline) {
-					throw new Error(
-						`Timed out after ${ASYNC_JOB_WAIT_TIMEOUT_MS}ms waiting for async job ${jobId} to complete; observed state: ${String(observedState)}; observed output: ${JSON.stringify(observedOutput)}`,
-					);
-				}
-				await new Promise((resolve) => setTimeout(resolve, ASYNC_JOB_POLL_INTERVAL_MS));
-			}
-			expect(readFileSync(outputPath, "utf8")).toBe(`${session.sessionId}:${session.sessionId}`);
-		} finally {
-			session.dispose();
-		}
 	});
 
 	it("rejects retained tools after their session closes instead of using stale metadata", async () => {

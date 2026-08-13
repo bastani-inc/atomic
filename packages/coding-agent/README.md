@@ -483,7 +483,7 @@ Atomic is aggressively extensible so it does not have to dictate your workflow. 
 
 **Composable planning and task tracking.** Use the bundled workflow/subagent/todo capabilities, write plans to files, or install a package that matches your team's process.
 
-**No hidden background bash.** Use tmux or explicit extensions for background work. Full observability, direct interaction.
+**Foreground bash only.** Use tmux or explicit extensions for background work. Full observability, direct interaction.
 
 Upstream Pi's minimal-core rationale is documented in the [original blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/); Atomic preserves the extensibility model while also bundling first-party capabilities for common workflows.
 

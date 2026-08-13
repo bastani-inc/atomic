@@ -8,7 +8,7 @@ import {
 	renderSubagentResult,
 	stopResultAnimations,
 } from "../../packages/subagents/src/tui/render.js";
-import { widgetStepGlyph } from "../../packages/subagents/src/tui/render-event-formatting.js";
+import { runningGlyph } from "../../packages/subagents/src/tui/render-layout.js";
 import {
 	type AgentToolResult,
 	type Details,
@@ -136,7 +136,7 @@ describe("subagent running pulse (foreground flicker fix)", () => {
 	});
 
 	test("foreground placeholder rows keep their existing running glyph", () => {
-		const glyph = withMockedNow(10_000, () => widgetStepGlyph("running", theme));
+		const glyph = withMockedNow(10_000, () => runningGlyph());
 
 		assert.ok(firstSpinnerChar(glyph), "foreground placeholder helper keeps the preexisting running spinner glyph");
 		assert.notEqual(

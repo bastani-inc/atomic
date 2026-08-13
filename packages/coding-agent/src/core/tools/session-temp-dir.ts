@@ -2,8 +2,8 @@
  * Owner- and session-scoped temp storage for tool output files.
  *
  * Every file a tool spills to the system temp directory (bash overflow logs,
- * async bash logs, `OutputAccumulator` spill files, and the in-memory-session
- * tool-result fallback) lands under:
+ * `OutputAccumulator` spill files, and the in-memory-session tool-result fallback)
+ * lands under:
  *
  * ```text
  * <tmpdir>/<APP_NAME>-<owner>/<sanitized-session-id>/
@@ -375,11 +375,10 @@ let activeSessionId: string | undefined;
  * Refcounted protection for directories the sweeper must not reap.
  *
  * A count rather than a set, because protection has more than one holder and
- * more than one lifetime: a session protects its own tree, an async spill writer
- * outlives the session object it started under, and one session can be replaced
- * by another wrapping the same paths. Releasing one holder must not unprotect a
- * directory another is still writing to, and a session that is gone must stop
- * protecting a tree the startup sweep exists to collect.
+ * more than one lifetime: a session protects its own tree, and one session can
+ * be replaced by another wrapping the same paths. Releasing one holder must not
+ * unprotect a directory another is still using, and a session that is gone must
+ * stop protecting a tree the startup sweep exists to collect.
  */
 const protectedPathCounts = new Map<string, number>();
 

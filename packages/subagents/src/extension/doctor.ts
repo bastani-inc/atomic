@@ -3,17 +3,13 @@ import * as path from "node:path";
 import { type AgentSource, discoverAgentsAll } from "../agents/agents.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
-import { isAsyncAvailable } from "../runs/inprocess/background.ts";
-import { ASYNC_DIR, type ExtensionConfig, RESULTS_DIR, type SubagentState, TEMP_ROOT_DIR } from "../shared/types.ts";
+import { type ExtensionConfig, type SubagentState, TEMP_ROOT_DIR } from "../shared/types.ts";
 
 interface DoctorPaths {
 	tempRootDir: string;
-	asyncDir: string;
-	resultsDir: string;
 }
 
 interface DoctorDeps {
-	isAsyncAvailable: () => boolean;
 	discoverAgentsAll: typeof discoverAgentsAll;
 	discoverAvailableSkills: typeof discoverAvailableSkills;
 	diagnoseIntercomBridge: typeof diagnoseIntercomBridge;
@@ -34,14 +30,9 @@ interface DoctorReportInput {
 	deps?: Partial<DoctorDeps>;
 }
 
-const DEFAULT_PATHS: DoctorPaths = {
-	tempRootDir: TEMP_ROOT_DIR,
-	asyncDir: ASYNC_DIR,
-	resultsDir: RESULTS_DIR,
-};
+const DEFAULT_PATHS: DoctorPaths = { tempRootDir: TEMP_ROOT_DIR };
 
 const DEFAULT_DEPS: DoctorDeps = {
-	isAsyncAvailable,
 	discoverAgentsAll,
 	discoverAvailableSkills,
 	diagnoseIntercomBridge,
@@ -162,13 +153,10 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Runtime",
 		`- cwd: ${input.cwd}`,
-		lineFromCheck("async support", () => `- async support: ${deps.isAsyncAvailable() ? "available" : "unavailable"}`),
 		...formatSessionLines(input),
 		"",
 		"Filesystem",
 		formatExistingDirectory("temp root", paths.tempRootDir),
-		formatExistingDirectory("async runs", paths.asyncDir),
-		formatExistingDirectory("results", paths.resultsDir),
 		"",
 		"Discovery",
 		...formatDiscovery(input, deps),

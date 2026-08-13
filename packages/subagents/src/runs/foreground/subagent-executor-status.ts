@@ -20,7 +20,6 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.ts";
 import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.ts";
-import { deliverLocalCompletionNotification } from "../background/completion-notification.ts";
 import { updateForegroundNestedProjection } from "../inprocess/runtime-support/nested-api.ts";
 import { formatNestedRunStatusLines } from "../inprocess/runtime-support/nested-rendering.ts";
 import {
@@ -28,6 +27,7 @@ import {
 	formatControlNoticeMessage,
 	shouldNotifyControlEvent,
 } from "../shared/subagent-control.ts";
+import { deliverLocalCompletionNotification } from "./completion-notification.ts";
 import type { ExecutionContextData, ExecutorDeps, ForegroundControl } from "./subagent-executor-types.ts";
 
 export function getForegroundControl(state: SubagentState, runId: string | undefined): ForegroundControl | undefined {
@@ -280,7 +280,7 @@ function resultSummaryForIntercom(result: SingleResult): string {
  * normally return their results inline in the tool result, but a detached
  * child outlives that tool call, so without this the parent never learns the
  * child finished (see run history: detached parallel runs completed silently).
- * Reuses the async completion pipeline (dedupe, ordering barrier, triggerTurn).
+ * Reuses the detached completion pipeline (dedupe, ordering barrier, triggerTurn).
  */
 export function notifyDetachedForegroundChildExit(input: {
 	pi: ExtensionAPI;
@@ -349,7 +349,6 @@ async function emitForegroundResultIntercom(input: {
 		to: input.intercomBridge.orchestratorTarget,
 		runId: input.runId,
 		mode: input.mode,
-		source: "foreground",
 		children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
 	});
 	const delivered = await deliverSubagentResultIntercomEvent(input.pi.events, payload);

@@ -45,7 +45,7 @@ import { type InProcessNestedResumeOutcome, registerInProcessNestedAttempt } fro
 import { createInProcessChildPromptBehavior } from "./prompt-behavior.ts";
 
 export type ChildStatus = NativeAgentStatus;
-export type ContinuationReason = "async-requested" | "intercom-coordination";
+export type ContinuationReason = "intercom-coordination";
 export type TerminationCauseName = NativeTerminationCause;
 export type TerminalStatus = "ok" | "error" | "skipped" | "interrupted" | "continued";
 
@@ -1105,8 +1105,8 @@ export class SubagentControlRuntime {
 		return running;
 	}
 
-	continueInBackground(running: RunningAttempt, _reason: ContinuationReason): string {
-		if (running.status !== "running") throw new Error("continue_in_background requires a running attempt");
+	continueDetached(running: RunningAttempt, _reason: ContinuationReason): string {
+		if (running.status !== "running") throw new Error("continue_detached requires a running attempt");
 		this.native.publishChildStatus(running.child.identity.path, nativeStatus("continued"));
 		running.status = "continued";
 		running.promise.catch(() => undefined);
@@ -1363,12 +1363,12 @@ export function run_child_attempt(
 	);
 }
 
-export function continue_in_background(
+export function continue_detached(
 	control: SubagentControlRuntime,
 	running: RunningAttempt,
 	reason: ContinuationReason,
 ): string {
-	return control.continueInBackground(running, reason);
+	return control.continueDetached(running, reason);
 }
 
 export function reload_cold_child(control: SubagentControlRuntime, pathValue: string, message: string): AdmittedResult {

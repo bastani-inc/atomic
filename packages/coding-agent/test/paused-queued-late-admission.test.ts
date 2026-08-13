@@ -1,7 +1,6 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
-import { createSessionAsyncDeliveryHandler } from "../src/core/async/session-manager.ts";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
 
 function relevantDelivery(message: AgentSession["messages"][number]): string | undefined {
@@ -10,7 +9,7 @@ function relevantDelivery(message: AgentSession["messages"][number]): string | u
 		return text === "explicit resume driver" || text.includes("late raw") ? `user:${text}` : undefined;
 	}
 	if (message.role !== "custom") return undefined;
-	return ["late-trigger", "late-batch", "late-interrupt", "async-job-result"].includes(message.customType)
+	return ["late-trigger", "late-batch", "late-interrupt", "late-result"].includes(message.customType)
 		? `custom:${message.customType}:${String(message.details && "id" in message.details ? message.details.id : "")}`
 		: undefined;
 }
@@ -22,7 +21,7 @@ describe("paused queue late admission gate", () => {
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
 
-	test("late custom, batch, interrupt, async, user, and prompt deliveries wait for explicit resume", async () => {
+	test("late custom, batch, interrupt, result, user, and prompt deliveries wait for explicit resume", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const started = Promise.withResolvers<void>();
@@ -72,13 +71,15 @@ describe("paused queue late admission gate", () => {
 			},
 			{ triggerTurn: true, deliverAs: "interrupt" },
 		);
-		const deliverAsync = createSessionAsyncDeliveryHandler(harness.session);
-		await deliverAsync({
-			customType: "async-job-result",
-			content: "late raw async result",
-			display: true,
-			details: { jobId: "job-paused", type: "bash", status: "completed", command: "printf raw" },
-		});
+		await harness.session.sendCustomMessage(
+			{
+				customType: "late-result",
+				content: "late raw result",
+				display: true,
+				details: { id: 4 },
+			},
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
 		await harness.session.sendUserMessage("late raw user", { deliverAs: "followUp" });
 		await harness.session.prompt("\tlate raw prompt  \n");
 		await harness.session.sendCustomMessage(
@@ -107,7 +108,7 @@ describe("paused queue late admission gate", () => {
 			"user:\tlate raw prompt  \n",
 			"custom:late-batch:1",
 			"custom:late-batch:2",
-			"custom:async-job-result:",
+			"custom:late-result:4",
 			"user:late raw user",
 		]);
 		const deliveredCustom = harness.session.messages.filter((message) => message.role === "custom");
@@ -121,11 +122,7 @@ describe("paused queue late admission gate", () => {
 		expect(
 			deliveredCustom.filter((message) => message.customType === "late-batch").map((message) => message.details),
 		).toEqual([{ id: 1 }, { id: 2 }]);
-		expect(deliveredCustom.find((message) => message.customType === "async-job-result")?.details).toMatchObject({
-			jobId: "job-paused",
-			status: "completed",
-			command: "printf raw",
-		});
+		expect(deliveredCustom.find((message) => message.customType === "late-result")?.details).toMatchObject({ id: 4 });
 	});
 
 	test("an admitted interrupt that interleaves with pause joins the hold and resume does not hang", async () => {

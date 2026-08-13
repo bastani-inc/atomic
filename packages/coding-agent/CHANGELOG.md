@@ -5,6 +5,13 @@
 ### Added
 
 - Added generated session summaries to the resume picker, so `/resume` and `atomic -r` show what a conversation was about in a dedicated summary column beside the session name or first message. Atomic writes a one-line summary once the agent goes idle, reusing the session's existing model, credentials, stream function, and retry policy with a dedicated one-line prompt and no reasoning request; the stored line has its whitespace collapsed and length clamped so a long response cannot break picker layout. Each summary is persisted as a `session_summary` session entry anchored to the last user/assistant message it describes, and the picker shows it only while that message is still the newest one — a later message, or a later branch summary, retires it and the summary column shows "No summary available." instead, exactly as it does when a summary has not been generated, has failed, or is still in flight; the session name and first message are never displaced. Summaries are matched by picker search, and their token usage is counted toward session usage totals and the footer. Generation is best-effort and invisible: it is skipped for very short sessions, workflow stage sessions, and `--print`/JSON modes, it never blocks or delays a turn, it is cancelled when the next prompt starts or the session shuts down, and a slow request that outlives the conversation discards its own result rather than persisting a stale summary. Set `sessionSummary.enabled` to `false` to disable it ([#1033](https://github.com/bastani-inc/atomic/issues/1033)).
+### Breaking Changes
+
+- The `bash` tool no longer accepts its `async` parameter, and the `__atomic_bash_job` and `__atomic_bash_job_cancel` polling and cancellation commands have been removed. Drop `async` from bash calls; run long-lived commands in a separate shell or process manager instead.
+
+### Removed
+
+- Removed background bash jobs and the `async` parameter from the `bash` tool. Bash commands now always run in the foreground; use a separate shell or process manager when a command must outlive the tool call. Polling and cancellation commands and automatic completion follow-ups are no longer available.
 
 ## [0.9.13-alpha.2] - 2026-08-12
 

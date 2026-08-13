@@ -1,4 +1,4 @@
-/** Subagent Tool: sync/async orchestration extension. */
+/** Subagent Tool: foreground orchestration extension. */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -21,8 +21,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
-import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
-import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
+import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
@@ -43,7 +42,6 @@ import {
 	renderSubagentResult,
 	type SubagentResultRenderState,
 	stopResultAnimations,
-	stopWidgetAnimation,
 } from "../tui/render.ts";
 import { loadConfig } from "./config.ts";
 import { parseSubagentNotifyContent } from "./notification-content.ts";
@@ -62,12 +60,9 @@ export {
 export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
 
 import {
-	ASYNC_DIR,
 	DEFAULT_ARTIFACT_CONFIG,
 	type Details,
 	SLASH_RESULT_TYPE,
-	SUBAGENT_ASYNC_COMPLETE_EVENT,
-	SUBAGENT_ASYNC_STARTED_EVENT,
 	SUBAGENT_CONTROL_EVENT,
 	type SubagentState,
 } from "../shared/types.ts";
@@ -218,40 +213,26 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	let runtimeCleanupInstalled = false;
 	try {
 		const config = loadConfig();
-		const asyncByDefault = config.asyncByDefault === true;
 		const tempArtifactsDir = getArtifactsDir(null);
 		const state: SubagentState = {
 			baseCwd: "",
 			currentSessionId: null,
-			asyncJobs: new Map(),
 			subagentInProgress: false,
 			foregroundRuns: new Map(),
 			foregroundControls: new Map(),
 			lastForegroundControlId: null,
 			pendingForegroundControlNotices: new Map(),
-			cleanupTimers: new Map(),
 			lastUiContext: null,
-			poller: null,
-			completionSeen: new Map(),
-			watcher: null,
-			watcherRestartTimer: null,
-			resultFileCoalescer: {
-				schedule: () => false,
-				clear: () => {},
-			},
 		};
 		const maintenance = createSubagentStartupMaintenance(state, {
 			artifactCleanupDays: DEFAULT_ARTIFACT_CONFIG.cleanupDays,
 		});
 		maintenance.scheduleStartupCleanup();
 		registrationFailureCleanups.push(() => maintenance.stop());
-		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobsDeferred } =
-			createAsyncJobTracker(pi, state, ASYNC_DIR);
 		const executorDeps = {
 			pi,
 			state,
 			config,
-			asyncByDefault,
 			tempArtifactsDir,
 			getSubagentSessionRoot,
 			expandTilde,
@@ -320,13 +301,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				if (request.tasks && request.tasks.length > 0) {
 					return executeSubagentCollapsed(
 						requestId,
-						{
-							tasks: request.tasks,
-							context: request.context,
-							cwd: request.cwd,
-							worktree: request.worktree,
-							async: false,
-						},
+						{ tasks: request.tasks, context: request.context, cwd: request.cwd, worktree: request.worktree },
 						signal,
 						onUpdate,
 						ctx,
@@ -340,7 +315,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 						context: request.context,
 						cwd: request.cwd,
 						model: request.model,
-						async: false,
 					},
 					signal,
 					onUpdate,
@@ -381,15 +355,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				}
 				const isParallel = (args.tasks?.length ?? 0) > 0;
 				const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
-				const asyncLabel = args.async === true ? theme.fg("warning", " [async]") : "";
-				if (isParallel)
-					return new Text(
-						`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})${asyncLabel}`,
-						0,
-						0,
-					);
 				return new Text(
-					`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent || "?")}${asyncLabel}`,
+					isParallel
+						? `${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})`
+						: `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent || "?")}`,
 					0,
 					0,
 				);
@@ -403,12 +372,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const notifyCleanup = registerSubagentNotify(pi);
 		registrationFailureCleanups.push(notifyCleanup);
 		const visibleControlNotices = getApiScopedSet(pi, "__piSubagentVisibleControlNoticesByApi");
-		const startedEventHandler = (payload: unknown) => {
-			if (lifecycle.isCurrent()) handleStarted(payload);
-		};
-		const completeEventHandler = (payload: unknown) => {
-			if (lifecycle.isCurrent()) handleComplete(payload);
-		};
 		const controlEventHandler = (payload: unknown) => {
 			if (!lifecycle.isCurrent()) return;
 			handleSubagentControlNotice({
@@ -419,15 +382,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			});
 		};
 		const eventUnsubscribes: Array<() => void> = [];
-		for (const [event, handler] of [
-			[SUBAGENT_ASYNC_STARTED_EVENT, startedEventHandler],
-			[SUBAGENT_ASYNC_COMPLETE_EVENT, completeEventHandler],
-			[SUBAGENT_CONTROL_EVENT, controlEventHandler],
-		] as const) {
-			const unsubscribe = pi.events.on(event, handler);
-			eventUnsubscribes.push(unsubscribe);
-			registrationFailureCleanups.push(unsubscribe);
-		}
+		const unsubscribeControl = pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler);
+		eventUnsubscribes.push(unsubscribeControl);
+		registrationFailureCleanups.push(unsubscribeControl);
 		let cleaned = false;
 		const runtimeCleanup = () => {
 			if (cleaned) return;
@@ -436,16 +393,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				...eventUnsubscribes,
 				notifyCleanup,
 				() => maintenance.stop(),
-				() => stopWidgetAnimation(undefined, pi),
 				() => stopResultAnimations(),
-				() => {
-					if (state.poller) clearInterval(state.poller);
-					state.poller = null;
-				},
 				() => clearPendingForegroundControlNotices(state),
-				...Array.from(state.cleanupTimers.values(), (timer) => () => clearTimeout(timer)),
-				() => state.cleanupTimers.clear(),
-				() => state.asyncJobs.clear(),
 				() => childExecutors.clear(),
 				() => clearSlashSnapshots(pi),
 				() => slashBridge.cancelAll(),
@@ -463,13 +412,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		};
 		lifecycle.setCleanup(runtimeCleanup);
 		runtimeCleanupInstalled = true;
-		pi.on("tool_result", (event, ctx) => {
-			if (!lifecycle.isCurrent() || event.toolName !== "subagent") return;
-			if (!ctx.hasUI) return;
-			state.lastUiContext = ctx;
-			hydrateActiveJobsDeferred(ctx);
-			if (state.asyncJobs.size > 0) ensurePoller();
-		});
 		const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
 			maintenance.cleanupSessionArtifactsDeferred(ctx);
 		};
@@ -479,9 +421,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			state.lastUiContext = ctx;
 			cleanupSessionArtifacts(ctx);
 			clearPendingForegroundControlNotices(state);
-			resetJobs(ctx);
-			hydrateActiveJobsDeferred(ctx);
-			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 		};
 		pi.on("session_start", (_event, ctx) => {

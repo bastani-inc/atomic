@@ -4,9 +4,9 @@
 
 # @bastani/subagents
 
-`@bastani/subagents` lets Atomic delegate work to focused child agents. It is Atomic's bundled adaptation of upstream `pi-subagents`; use it for code review, scouting, implementation, parallel audits, background jobs, and anything else that benefits from a second or third set of model eyes.
+`@bastani/subagents` lets Atomic delegate work to focused child agents. It is Atomic's bundled adaptation of upstream `pi-subagents`; use it for code review, scouting, implementation, parallel audits, and anything else that benefits from a second or third set of model eyes.
 
-Use subagents selectively for bounded specialist delegation while the parent remains in control: one focused agent or parallel independent tasks. Keep interactive, exploratory, conceptual, and conversation-led work inline. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow. For a clearly delegated, well-defined autonomous job that is likely long-running/background-oriented or materially needs durable stages, checkpoints, resumability, HIL, gates, retries, or bounded loops, use an appropriate workflow instead. Choose async subagents only when background execution is genuinely useful; foreground is appropriate when the parent needs the result before proceeding.
+Use subagents selectively for bounded specialist delegation while the parent remains in control: one focused agent or parallel independent tasks. Keep interactive, exploratory, conceptual, and conversation-led work inline. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow. For clearly delegated autonomous jobs that need durable stages, checkpoints, resumability, HIL, gates, retries, or bounded loops, use an appropriate workflow instead. Subagent calls always run in the foreground and return their results to the parent.
 
 https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
@@ -48,9 +48,9 @@ That is enough to start.
 
 Pi is the parent session. A subagent is a focused child Pi session with its own job.
 
-When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground runs stream in the conversation. Background runs keep working and can be checked later.
+When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Single and parallel runs stream progress in the conversation and return their results before the call completes.
 
-Installing the extension does not start an automatic review in the background. It gives Pi a delegation tool. If you want every implementation reviewed, say that in your prompt or put it in your project instructions:
+Installing the extension does not start an automatic review. It gives Pi a delegation tool. If you want every implementation reviewed, say that in your prompt or put it in your project instructions:
 
 ```text
 When you finish implementing, run codebase-analyzer over the diff before summarizing.
@@ -100,9 +100,9 @@ Those are ordinary Pi requests. Pi decides whether to call `subagent`, which age
 | Execute a plan carefully | “Have worker implement this approved plan, then run reviewers and apply the feedback.” |
 | Diagnose a failure | “Use debugger to reproduce this test failure and fix it.” |
 | Simplify after it lands | “Use code-simplifier to clean up the change.” |
-| Run in the background | “Run this in the background.” |
+| Run a delegated task | “Have worker implement this plan and return the result.” |
 | Browse agents | “Show me the available subagents.” |
-| See running work | “Show active async runs.” |
+| See current status | “Show the current subagent status.” |
 | Check setup | “Check whether subagents are configured correctly.” |
 
 The extension ships with builtin agents you can use immediately.
@@ -157,20 +157,16 @@ Any parent chat or workflow stage that orchestrates subagents should omit the ex
 
 When an agent declares no model or fallback policy, consult `packages/coding-agent/docs/models/model-selection.md`, then call `workflow({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or has no recommended model for the role, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
 
-Workflow invocations receive a stable, non-`default` Intercom group automatically. Their stages and delegated children inherit it across single, parallel, async, and follow-up calls, so omit `group` unless you intend to create a different coordination subgroup. Outside a workflow, children inherit the launching session's group. `contact_supervisor` remains available across group boundaries.
+Workflow invocations receive a stable, non-`default` Intercom group automatically. Their stages and delegated children inherit it across single, parallel, and follow-up calls, so omit `group` unless you intend to create a different coordination subgroup. Outside a workflow, children inherit the launching session's group. `contact_supervisor` remains available across group boundaries.
 
 ## Where running subagents show up
 
-Foreground runs stream progress in the conversation while they run.
+Foreground runs stream progress in the conversation while they run. Parallel calls keep their grouped task shape in progress and results, and status/control actions can inspect or interrupt retained foreground children.
 
-`async: true` means **do not wait**. Atomic admits an in-process child, returns its canonical child path immediately, and tracks the live child through the jobs widget. **Async work does not survive parent exit:** the live child is owned by the parent process and ends when Atomic quits; only its canonical identity and session file remain for a later cold resume.
-
-The jobs widget shows the live status-watch state and sends one terminal completion notification. Parallel background runs show per-agent progress and retain their grouped task shape in progress and results. There is no detached runner process or PID polling loop.
-
-You can also ask naturally:
+You can ask naturally:
 
 ```text
-Show me the current async runs.
+Show me the current subagent status.
 ```
 
 If something feels misconfigured, run:
@@ -228,7 +224,7 @@ Most users do not call `intercom` directly. When the intercom companion is avail
 Use it for work where the child might need a decision instead of guessing:
 
 ```text
-Run this implementation in the background. If the worker gets blocked or needs a product decision, have it ask me through intercom.
+Run this implementation. If the worker gets blocked or needs a product decision, have it ask me through intercom.
 ```
 
 ```text
@@ -239,10 +235,10 @@ The child can use one dedicated coordination tool:
 
 - `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for blocking decisions or clarification, and `reason: "progress_update"` for short non-blocking updates when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
 
-Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side Atomic sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async terminal result. Intercom-confirmed foreground delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child intercom targets and full child summaries.
-When the companion is enabled and available, the bridge gives eligible children deterministic Intercom identities and coordination tools without connecting them automatically. Parent and child connections remain tool-driven: if a child may need live coordination, the parent model should invoke `intercom({ action: "status" })` before launch, and the child connects when it invokes `contact_supervisor` or `intercom`. Foreground/background launch and management-only actions do not force Intercom loading or broker startup.
+Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side Atomic sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per detached child completion. Intercom-confirmed delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child intercom targets and full child summaries.
+When the companion is enabled and available, the bridge gives eligible children deterministic Intercom identities and coordination tools without connecting them automatically. Parent and child connections remain tool-driven: if a child may need live coordination, the parent model should invoke `intercom({ action: "status" })` before launch, and the child connects when it invokes `contact_supervisor` or `intercom`. Foreground launches and management-only actions do not force Intercom loading or broker startup.
 
-For foreground runs, Intercom uses a targeted probe/reservation before delivery: only the exact live child can claim its message. Atomic then commits detach for that child and waits for its acknowledgement before placing claimed asks, sends, decisions, interviews, and progress updates in the parent's model-visible steering queue, so cancellation between phases cannot surface an orphaned request. Blocking calls remain alive for an exact threaded reply and then resume; fire-and-forget calls create no waiter. The retained child later replaces its detached status and artifacts with the real result. Cancellation/replacement invalidates stale handshakes, duplicate delivery cannot recommit, and background or unmatched messages retain queued-until-idle behavior.
+For foreground runs, Intercom uses a targeted probe/reservation before delivery: only the exact live child can claim its message. Atomic then commits detach for that child and waits for its acknowledgement before placing claimed asks, sends, decisions, interviews, and progress updates in the parent's model-visible steering queue, so cancellation between phases cannot surface an orphaned request. Blocking calls remain alive for an exact threaded reply and then resume; fire-and-forget calls create no waiter. The retained child later replaces its detached status and artifacts with the real result. Cancellation/replacement invalidates stale handshakes, duplicate delivery cannot recommit, and unmatched messages retain queued-until-idle behavior.
 
 If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
 
@@ -297,21 +293,14 @@ Append `[key=value,...]` to an agent name to override defaults for that step:
 |-----|---------|-------------|
 | `output` | `output=context.md` | Write results to a file. For `/parallel`, relative paths resolve against the child working directory; for `/run`, relative paths resolve against cwd. |
 | `outputMode` | `outputMode=file-only` | Return only a concise file reference for saved output instead of the full saved content. Requires `output`; default is `inline`. |
-| `reads` | `reads=a.md+b.md` | Read files before executing. `+` separates multiple paths. `/run` forwards these through the same resolver as tool-based foreground and background launches, so relative paths use the effective child working directory. |
+| `reads` | `reads=a.md+b.md` | Read files before executing. `+` separates multiple paths. `/run` forwards these through the same resolver as tool-based foreground launches, so relative paths use the effective child working directory. |
 | `model` | `model=anthropic/claude-sonnet-4` | Override model for this step. |
 | `skills` | `skills=planning+review` | Override injected skills. `+` separates multiple skills. |
 | `progress` | `progress` | Enable progress tracking. |
 
 Set `output=false`, `reads=false`, or `skills=false` to disable that behavior explicitly. Do not use `output=false` for file-only returns; use `outputMode=file-only` with an `output` path.
 
-### Background and forked runs
-
-Add `--bg` to run in the background:
-
-```text
-/run codebase-locator "audit the codebase" --bg
-/parallel codebase-locator "scan frontend" -> codebase-locator "scan backend" --bg
-```
+### Forked runs
 
 Add `--fork` to start each child from a real branched session created from the parent’s current leaf:
 
@@ -320,22 +309,11 @@ Add `--fork` to start each child from a real branched session created from the p
 /parallel codebase-locator "audit frontend" -> codebase-analyzer "audit backend" --fork
 ```
 
-You can combine them in either order:
-
-```text
-/run codebase-analyzer "review this diff" --fork --bg
-/run codebase-analyzer "review this diff" --bg --fork
-```
-
-Background runs use the same in-process continuation as foreground detach. A successful acknowledgement means the canonical child path was returned and completion is pending; the live child remains owned by the parent process and the jobs widget tracks it. **`async: true` does not survive parent exit.** If the parent exits, the in-flight run ends; its persisted identity/session can be listed and resumed later.
-
 `worker` is designed for an explicit decision loop. A typical pattern is to ask a read-only specialist such as `codebase-analyzer` or `debugger` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
 ## Non-interactive execution
 
-Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, foreground, background, fanout, prompt-template, and human-entered `/run` and `/parallel` execution. Gather any needed context and ask the user questions in the parent conversation before launching.
-
-The human slash commands remain on their separate parsing and event-bridge path, including background and fork flags.
+Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, forked, fanout, prompt-template, and human-entered `/run` and `/parallel` execution. Gather any needed context and ask the user questions in the parent conversation before launching.
 
 ## Agents
 
@@ -517,7 +495,7 @@ Missing skills do not fail execution. The result summary shows a warning.
 The package bundles a `subagent` skill that is automatically available to the parent agent when the extension is installed. It is for the orchestrating parent only: it is stripped from every child prompt, including fanout-authorized children, and child context is filtered to strip parent-only orchestration instructions. A child may still have the `subagent` tool registered; typed admission policy, not the skill, decides which of its actions are allowed.
 
 What the bundled skill covers:
-- **Delegation patterns**: when to launch which agent, whether to use single, parallel, or async mode, and whether to use fresh or forked context
+- **Delegation patterns**: when to launch which agent, whether to use single or parallel mode, and whether to use fresh or forked context
 - **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
 - **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for researchers
 - **Safety boundaries**: child agents must not run subagents, must not invent intercom targets, and must escalate unapproved decisions
@@ -615,7 +593,6 @@ Agent definitions are not loaded into context by default. Management actions let
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `worker` defaults to `fork`; every other builtin runs fresh. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
-| `async` | boolean | false | Background execution. Programmatic calls start without prompting in either foreground or background mode. |
 | `cwd` | string | runtime cwd | Override working directory. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
 | `artifacts` | boolean | true | Write debug artifacts. |
@@ -639,7 +616,7 @@ subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for c
 subagent({ action: "doctor" })
 ```
 
-`resume` sends the follow-up directly when a child is still reachable. After completion or eviction, it cold-reloads the same canonical child identity from the stored session file. Multi-child async runs and remembered foreground single or parallel runs can be revived by passing `index` to choose the child; no new OS process is created.
+`resume` sends the follow-up directly when a child is still reachable. After completion or eviction, it cold-reloads the same canonical child identity from the stored session file. Remembered foreground single or parallel runs can be revived by passing `index` to choose the child; no new OS process is created.
 
 ## Worktree isolation
 
@@ -669,21 +646,7 @@ After a worktree parallel step completes, per-agent diff stats are appended to t
 
 Atomic subagents read optional JSON config from `~/.atomic/agent/extensions/subagent/config.json` and still check the legacy `~/.pi/agent/extensions/subagent/config.json` path for compatibility.
 
-### `asyncByDefault`
-
-```json
-{ "asyncByDefault": true }
-```
-
-Makes top-level calls use background execution when the request does not explicitly set `async`. Callers can still force foreground with `async: false` unless `forceTopLevelAsync` is enabled.
-
-### `forceTopLevelAsync`
-
-```json
-{ "forceTopLevelAsync": true }
-```
-
-Forces depth-0 single and parallel runs into background mode. Calls remain non-interactive in both foreground and background mode; nested calls keep their own inherited settings.
+Subagent configuration controls discovery, parallel limits, session storage, depth, control notices, and intercom delivery. There are no execution-mode toggles; every execution request is foreground.
 
 ### `parallel`
 
@@ -769,9 +732,9 @@ Metadata records timing, usage, typed status, termination cause, final model, at
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from the parent’s current leaf through the session manager; this is a real session fork, not an injected summary.
 
-Async completions notify only the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications.
+Foreground completions notify the originating session. The in-process status watch emits live lifecycle updates, and the extension consumes the terminal event to render completion notifications.
 
-Async runs persist their durable session and user-facing artifacts beside the parent session:
+Foreground runs persist their session and user-facing artifacts beside the parent session:
 
 ```text
 {parent-session-dir}/subagent-artifacts/
@@ -800,7 +763,7 @@ For existing subagent integrations and agent definitions:
 
 Foreground runs show compact live progress for single and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and artifact paths when available.
 
-File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it in foreground or background mode without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
+File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
 
 Press `CTRL+O` to expand the full streaming view with complete output per step.
 
@@ -828,19 +791,13 @@ Configure a lower or equal limit with:
 
 The depth policy is typed admission state and is not inherited through an environment variable.
 
-## Events
+Completion and intercom events:
 
-Async events:
-
-- `subagent:async-started`
-- `subagent:async-complete`
-
-Intercom delivery events:
-
+- `subagent:complete`
 - `subagent:control-intercom`
 - `subagent:result-intercom`
 
-The in-process status watch emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices, and typed terminal records carry the canonical path, status, cause, and session statistics. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
+Foreground status/control events are surfaced as visible parent notices, and typed terminal records carry the canonical path, status, cause, and session statistics. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
 
 ## Prompt-template integration
 
@@ -889,9 +846,8 @@ The main runtime files are:
 | `src/agents/agents.ts` | Agent discovery and frontmatter parsing. |
 | `src/runs/foreground/subagent-executor.ts` | Main execution routing for single, parallel, management, status, interrupt, and doctor actions. |
 | `src/runs/foreground/execution.ts` | Core foreground `runSync` handling. |
-| `src/runs/background/subagent-runner.ts` | Detached async runner. |
-| `src/runs/background/async-execution.ts` | Background launch support. |
-| `src/runs/background/async-status.ts` | Status discovery and formatting for async runs. |
+| `src/runs/foreground/notify.ts` | Completion-notification delivery for a detached Intercom child. |
+| `src/runs/foreground/completion-notification.ts` | Local completion acknowledgement and ordering barrier for detached children. |
 | `src/shared/settings.ts` | Shared task behavior, instructions, and config helpers. |
 | `src/runs/shared/worktree.ts` | Git worktree isolation. |
 | `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions and diagnostics. |

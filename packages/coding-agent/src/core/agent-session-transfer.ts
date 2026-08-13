@@ -5,7 +5,6 @@ import {
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { transferProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { composePauseAbortBoundaries } from "./agent-session-queue-pause.ts";
-import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
 
 /** Atomically retire one stage session and prepend all of its delivery ownership to the replacement. */
 export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: object): void {
@@ -64,9 +63,4 @@ export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: ob
 	}
 	source._emitQueueUpdate();
 	next._emitQueueUpdate();
-	source._asyncJobManager.transferSessionDeliveries(
-		source._asyncJobManagerSessionId,
-		next._asyncJobManagerSessionId,
-		createSessionAsyncDeliveryHandler(next, next._asyncJobManager, next._asyncJobManagerSessionId),
-	);
 }

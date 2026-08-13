@@ -672,7 +672,7 @@ describe("workflow-first execution routing", () => {
 			"Do not inspect credentials",
 			"Workflow stages automatically receive their invocation-scoped Intercom group",
 			"inherit the launching session's group",
-			"single, parallel, async, and follow-up work",
+			"single, parallel, and follow-up work",
 			"Do not create or propagate group identifiers",
 			"explicit group only for an intentional topology override",
 			"contact_supervisor available for cross-group escalation",

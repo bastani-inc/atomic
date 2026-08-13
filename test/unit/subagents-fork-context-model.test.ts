@@ -80,7 +80,7 @@ vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () =>
 		registerNestedAttempt: (_runId: string, _running: unknown, candidate: unknown) => {
 			harness.nested.push(candidate);
 		},
-		continueInBackground: () => undefined,
+		continueDetached: () => undefined,
 		deliverChildResult: async () => undefined,
 		getDeliveredResult: () => undefined,
 	};

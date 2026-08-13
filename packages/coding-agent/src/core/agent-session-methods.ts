@@ -22,7 +22,6 @@ import type {
 	SessionStats,
 	ToolDefinitionEntry,
 } from "./agent-session-types.ts";
-import type { AsyncJobManager } from "./async/job-manager.js";
 import type { BashResult } from "./bash-executor.ts";
 import type {
 	CompactionUrgency,
@@ -484,8 +483,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_systemPromptTransform?: (prompt: string) => string;
 	_systemPromptOverride?: string;
 	_lastAssistantMessage: AssistantMessage | undefined;
-	_asyncJobManager: AsyncJobManager;
-	_asyncJobManagerSessionId: symbol;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
 	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 }

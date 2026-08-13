@@ -7,7 +7,7 @@ import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
 import { renderSubagentNotification } from "../../packages/subagents/src/extension/index.ts";
 import registerSubagentNotify, {
 	type SubagentNotifyDetails,
-} from "../../packages/subagents/src/runs/background/notify.js";
+} from "../../packages/subagents/src/runs/foreground/notify.js";
 import { notifyDetachedForegroundChildExit } from "../../packages/subagents/src/runs/foreground/subagent-executor-status.js";
 import type { SingleResult } from "../../packages/subagents/src/shared/types.js";
 
@@ -113,8 +113,8 @@ test("detached foreground completion notices render like background notification
 				result,
 			});
 			const detached = harness.sent[0]!;
-			harness.pi.events.emit("subagent:async-complete", {
-				id: `background-render-${status}`,
+			harness.pi.events.emit("subagent:complete", {
+				id: `detached-render-${status}`,
 				agent: result.agent,
 				status: result.status,
 				summary,
@@ -125,11 +125,11 @@ test("detached foreground completion notices render like background notification
 				taskIndex: 1,
 				totalTasks: 4,
 			});
-			const background = harness.sent[1]!;
+			const standard = harness.sent[1]!;
 			const detachedRendered = renderNotification(detached);
-			const backgroundRendered = renderNotification(background);
+			const standardRendered = renderNotification(standard);
 
-			assert.equal(detachedRendered, backgroundRendered, `${status} detached output uses the standard renderer`);
+			assert.equal(detachedRendered, standardRendered, `${status} detached output uses the standard renderer`);
 			assert.notEqual(
 				detachedRendered,
 				detached.content,
@@ -191,17 +191,17 @@ test("failed and interrupted detached children report failed/paused status", () 
 	unregister();
 });
 
-test("async background notifications keep their original heading", () => {
+test("completion notifications keep their original heading", () => {
 	const harness = createHarness();
 	const unregister = registerSubagentNotify(harness.pi as never);
-	harness.pi.events.emit("subagent:async-complete", {
-		id: "async-run",
+	harness.pi.events.emit("subagent:complete", {
+		id: "detached-run",
 		agent: "worker",
 		status: "ok",
 		summary: "done",
 		timestamp: Date.now(),
 	});
 	assert.equal(harness.sent.length, 1);
-	assert.match(harness.sent[0]!.content, /^Background task completed: \*\*worker\*\*/);
+	assert.match(harness.sent[0]!.content, /^Subagent task completed: \*\*worker\*\*/);
 	unregister();
 });

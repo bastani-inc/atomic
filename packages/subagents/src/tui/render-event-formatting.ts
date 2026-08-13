@@ -1,151 +1,17 @@
 import { formatNestedAggregate } from "../runs/inprocess/runtime-support/nested-rendering.ts";
 import { formatDuration, formatModelThinking, shortenPath } from "../shared/formatters.ts";
-import { formatAgentRunningLabel } from "../shared/status-format.ts";
-import {
-	type AsyncJobState,
-	type AsyncJobStep,
-	MAX_SUBAGENT_NESTING_DEPTH,
-	type NestedRunSummary,
-	type NestedStepSummary,
-} from "../shared/types.ts";
-import { runningGlyph, runningPulseGlyph, type Theme, truncLine } from "./render-layout.ts";
-import {
-	buildLiveStatusLine,
-	formatCurrentToolLine,
-	formatTokenStat,
-	formatToolUseStat,
-	statJoin,
-} from "./render-status-progress.ts";
-
-export function formatWidgetAgents(agents: string[]): string {
-	const distinct = [...new Set(agents)];
-	if (distinct.length === 1 && agents.length > 1) return `${distinct[0]} ×${agents.length}`;
-	if (agents.length > 3) return `${agents.slice(0, 2).join(", ")} +${agents.length - 2} more`;
-	return agents.join(", ");
-}
-
-export function widgetJobName(job: AsyncJobState): string {
-	if (job.mode === "parallel") return "parallel";
-	if (job.mode === "single" && job.agents?.length === 1) return job.agents[0]!;
-	if (job.agents?.length) return formatWidgetAgents(job.agents);
-	return job.mode ?? "subagent";
-}
-
-export function widgetActivity(job: AsyncJobState): string {
-	const facts: string[] = [];
-	if (job.currentTool && job.currentToolStartedAt !== undefined && job.updatedAt !== undefined)
-		facts.push(`${job.currentTool} ${formatDuration(Math.max(0, job.updatedAt - job.currentToolStartedAt))}`);
-	else if (job.currentTool) facts.push(job.currentTool);
-	if (job.currentPath) facts.push(shortenPath(job.currentPath));
-	if (job.turnCount !== undefined) facts.push(`${job.turnCount} turns`);
-	if (job.toolCount !== undefined) facts.push(`${job.toolCount} tools`);
-	const activity = buildLiveStatusLine(job, job.updatedAt);
-	if (activity && facts.length) return `${activity} · ${facts.join(" · ")}`;
-	if (activity) return activity;
-	if (facts.length) return facts.join(" · ");
-	if (job.status === "running") return "thinking…";
-	if (job.status === "queued") return "queued…";
-	if (job.status === "paused") return "Paused";
-	if (job.status === "failed") return "Failed";
-	return "Done";
-}
-
-export function widgetStatusGlyph(job: AsyncJobState, theme: Theme, pulseFrame?: number): string {
-	if (job.status === "running") return theme.fg("accent", runningPulseGlyph(pulseFrame));
-	if (job.status === "queued") return theme.fg("muted", "◦");
-	if (job.status === "complete") return theme.fg("success", "✓");
-	if (job.status === "paused") return theme.fg("warning", "■");
-	return theme.fg("error", "✗");
-}
-
-export function widgetStepGlyph(status: AsyncJobStep["status"], theme: Theme, seed?: number, now?: number): string {
-	if (status === "running") return theme.fg("accent", runningGlyph(seed, now));
-	if (status === "complete" || status === "completed") return theme.fg("success", "✓");
-	if (status === "failed") return theme.fg("error", "✗");
-	if (status === "paused") return theme.fg("warning", "■");
-	return theme.fg("muted", "◦");
-}
-
-export function widgetStepPulseGlyph(status: AsyncJobStep["status"], theme: Theme, pulseFrame?: number): string {
-	if (status === "running") return theme.fg("accent", runningPulseGlyph(pulseFrame));
-	if (status === "complete" || status === "completed") return theme.fg("success", "✓");
-	if (status === "failed") return theme.fg("error", "✗");
-	if (status === "paused") return theme.fg("warning", "■");
-	return theme.fg("muted", "◦");
-}
-
-export function widgetStepStatus(status: AsyncJobStep["status"], theme: Theme): string {
-	if (status === "running") return theme.fg("accent", "running");
-	if (status === "complete" || status === "completed") return theme.fg("success", "complete");
-	if (status === "failed") return theme.fg("error", "failed");
-	if (status === "paused") return theme.fg("warning", "paused");
-	return theme.fg("dim", status);
-}
-
-export function widgetStepActivity(step: NonNullable<AsyncJobState["steps"]>[number], snapshotNow?: number): string {
-	const facts: string[] = [];
-	if (step.currentTool && step.currentToolStartedAt !== undefined && snapshotNow !== undefined)
-		facts.push(`${step.currentTool} ${formatDuration(Math.max(0, snapshotNow - step.currentToolStartedAt))}`);
-	else if (step.currentTool) facts.push(step.currentTool);
-	if (step.currentPath) facts.push(shortenPath(step.currentPath));
-	if (step.turnCount !== undefined) facts.push(`${step.turnCount} turns`);
-	if (step.toolCount !== undefined) facts.push(`${step.toolCount} tools`);
-	if (step.tokens?.total) facts.push(formatTokenStat(step.tokens.total));
-	const activity = buildLiveStatusLine(step, snapshotNow);
-	if (activity && facts.length) return `${activity} · ${facts.join(" · ")}`;
-	if (activity) return activity;
-	return facts.join(" · ");
-}
-
-export function widgetStats(job: AsyncJobState, theme: Theme): string {
-	const parts: string[] = [];
-	const stepsTotal = job.stepsTotal ?? job.agents?.length ?? 1;
-	if (job.activeParallelGroup) {
-		const running = job.runningSteps ?? (job.status === "running" ? 1 : 0);
-		const done = job.completedSteps ?? (job.status === "complete" ? stepsTotal : 0);
-		if (job.status === "running" && running > 0) parts.push(formatAgentRunningLabel(running));
-		if (stepsTotal > 0) parts.push(`${done}/${stepsTotal} done`);
-	} else if (stepsTotal > 1) {
-		parts.push(`steps ${stepsTotal}`);
-	}
-	if (job.toolCount !== undefined) parts.push(formatToolUseStat(job.toolCount));
-	if (job.totalTokens?.total) parts.push(formatTokenStat(job.totalTokens.total));
-	if (job.startedAt !== undefined && job.updatedAt !== undefined)
-		parts.push(formatDuration(Math.max(0, job.updatedAt - job.startedAt)));
-	return statJoin(theme, parts);
-}
-
-export function widgetStepStats(theme: Theme, step: NonNullable<AsyncJobState["steps"]>[number]): string {
-	return statJoin(theme, [
-		step.turnCount !== undefined ? `${step.turnCount} turns` : "",
-		step.toolCount !== undefined ? formatToolUseStat(step.toolCount) : "",
-		step.tokens?.total ? formatTokenStat(step.tokens.total) : "",
-		step.durationMs !== undefined ? formatDuration(step.durationMs) : "",
-	]);
-}
+import { MAX_SUBAGENT_NESTING_DEPTH, type NestedRunSummary, type NestedStepSummary } from "../shared/types.ts";
+import { runningPulseGlyph, type Theme, truncLine } from "./render-layout.ts";
+import { buildLiveStatusLine } from "./render-status-progress.ts";
 
 export function modelThinkingBadge(theme: Theme, model?: string, thinking?: string, fastMode?: boolean): string {
 	const label = formatModelThinking(model, thinking, fastMode);
 	return label ? theme.fg("dim", ` (${label})`) : "";
 }
 
-export function widgetStepActivityLine(
-	step: NonNullable<AsyncJobState["steps"]>[number],
-	width: number,
-	expanded: boolean,
-	snapshotNow?: number,
-): string {
-	const toolLine = formatCurrentToolLine(step, width, expanded, snapshotNow);
-	if (toolLine) return toolLine;
-	const activity = buildLiveStatusLine(step, snapshotNow);
-	if (activity) return activity;
-	if (step.status === "running") return "thinking…";
-	return "";
-}
-
 export function nestedRunName(run: NestedRunSummary): string {
 	if (run.agent) return run.agent;
-	if (run.agents?.length) return formatWidgetAgents(run.agents);
+	if (run.agents?.length) return run.agents.join(", ");
 	return run.id;
 }
 

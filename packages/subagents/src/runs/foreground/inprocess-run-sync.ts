@@ -317,7 +317,7 @@ export async function runSingleInProcess(
 		},
 		{ fastModeForModel },
 	);
-	if (options.onUpdate && !options.backgroundContinuation) {
+	if (options.onUpdate) {
 		const launchModel = running.currentModel ?? candidate;
 		spec.onProgress?.({
 			index: options.index ?? 0,
@@ -340,78 +340,6 @@ export async function runSingleInProcess(
 		modelId: candidate,
 		thinkingLevel: spec.thinkingLevel,
 	});
-	if (options.backgroundContinuation) {
-		control.continueInBackground(running, "async-requested");
-		void running.promise.then(
-			async (backgroundOutcome) => {
-				const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths, {
-					cwd,
-					settings: fastModeSettings,
-					scope: fastModeScope,
-				});
-				await control.deliverChildResult(
-					{
-						path: backgroundOutcome.path,
-						status: backgroundOutcome.status,
-						...(backgroundOutcome.status === "error" ? { cause: backgroundOutcome.cause } : {}),
-						stats: backgroundOutcome.stats,
-						envelope: backgroundOutcome.envelope,
-						...(recovered.model === undefined ? {} : { model: recovered.model }),
-						...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
-						...(recovered.fastMode ? { fastMode: true } : {}),
-						sessionFile: backgroundOutcome.sessionFile,
-						timestamp: Date.now(),
-						artifactsDir: options.artifactsDir,
-					},
-					{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
-				);
-				const delivered = control.getDeliveredResult(backgroundOutcome.path);
-				if (delivered) {
-					recovered.envelope = delivered.envelope;
-					recovered.finalOutput = delivered.envelope;
-				}
-				options.onDetachedExit?.(recovered);
-			},
-			() => undefined,
-		);
-		const continuedModel = running.currentModel ?? candidate;
-		const continuedFastMode = fastModeForModel(continuedModel);
-		const continuedThinking = running.currentThinking;
-		const continuedResult: SingleResult = {
-			agent: agent.name,
-			task,
-			status: "continued",
-			path: admission.admitted.identity.path,
-			envelope: "Child continued in background.",
-			detached: true,
-			detachedReason: "async-requested",
-			messages: [],
-			usage: emptyUsage(),
-			...(continuedModel === undefined ? {} : { model: continuedModel }),
-			...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
-			...(continuedFastMode ? { fastMode: true } : {}),
-			progress: {
-				index: options.index ?? 0,
-				agent: agent.name,
-				status: "running",
-				task,
-				...(continuedModel === undefined ? {} : { model: continuedModel }),
-				...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
-				...(continuedFastMode ? { fastMode: true } : {}),
-				recentTools: [],
-				recentOutput: [],
-				toolCount: 0,
-				tokens: 0,
-				durationMs: Math.max(0, Date.now() - startedAt),
-				lastActivityAt: Date.now(),
-			},
-		};
-		options.onUpdate?.({
-			content: [{ type: "text", text: continuedResult.envelope ?? "" }],
-			details: { mode: "single", runId: options.runId, results: [continuedResult] } satisfies Details,
-		});
-		return continuedResult;
-	}
 	let detached = false;
 	let resolveContinuation!: () => void;
 	const continuation = new Promise<void>((resolve) => {
@@ -423,7 +351,7 @@ export async function runSingleInProcess(
 		detach: () => {
 			if (detached) return;
 			detached = true;
-			control.continueInBackground(running, "intercom-coordination");
+			control.continueDetached(running, "intercom-coordination");
 			resolveContinuation();
 		},
 	});
@@ -431,29 +359,29 @@ export async function runSingleInProcess(
 	const winner = await Promise.race([terminal, continuation.then(() => ({ kind: "continued" as const }))]);
 	if (winner.kind === "continued") {
 		detachCleanup();
-		void running.promise.then(async (backgroundOutcome) => {
-			const recovered = resultFromOutcome(agent, task, backgroundOutcome, startedAt, artifactPaths, {
+		void running.promise.then(async (continuedOutcome) => {
+			const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths, {
 				cwd,
 				settings: fastModeSettings,
 				scope: fastModeScope,
 			});
 			await control.deliverChildResult(
 				{
-					path: backgroundOutcome.path,
-					status: backgroundOutcome.status,
-					...(backgroundOutcome.status === "error" ? { cause: backgroundOutcome.cause } : {}),
-					stats: backgroundOutcome.stats,
-					envelope: backgroundOutcome.envelope,
+					path: continuedOutcome.path,
+					status: continuedOutcome.status,
+					...(continuedOutcome.status === "error" ? { cause: continuedOutcome.cause } : {}),
+					stats: continuedOutcome.stats,
+					envelope: continuedOutcome.envelope,
 					...(recovered.model === undefined ? {} : { model: recovered.model }),
 					...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
 					...(recovered.fastMode ? { fastMode: true } : {}),
-					sessionFile: backgroundOutcome.sessionFile,
+					sessionFile: continuedOutcome.sessionFile,
 					timestamp: Date.now(),
 					artifactsDir: options.artifactsDir,
 				},
 				{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
 			);
-			const delivered = control.getDeliveredResult(backgroundOutcome.path);
+			const delivered = control.getDeliveredResult(continuedOutcome.path);
 			if (delivered) {
 				recovered.envelope = delivered.envelope;
 				recovered.finalOutput = delivered.envelope;
@@ -468,7 +396,7 @@ export async function runSingleInProcess(
 			task,
 			status: "continued",
 			path: admission.admitted.identity.path,
-			envelope: "Child continued in background.",
+			envelope: "Child detached for intercom coordination.",
 			detached: true,
 			detachedReason: "intercom-coordination",
 			messages: [],

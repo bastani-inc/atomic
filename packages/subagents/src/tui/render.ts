@@ -21,5 +21,3 @@ export {
 	clearResultAnimationTimer,
 	stopResultAnimations,
 } from "./render-result-animation.ts";
-export { widgetRenderKey } from "./render-stable-output.ts";
-export { buildWidgetLines, renderWidget, stopWidgetAnimation } from "./render-widget.ts";

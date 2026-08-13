@@ -149,35 +149,6 @@ describe("native bash PTY execution", () => {
 		expect(result.content[0]?.text).toContain("tty");
 	});
 
-	it("honors pty:true for async tool calls", async () => {
-		if (process.platform === "win32") return;
-		const bash = createBashToolDefinition(testDir, { asyncEnabled: true });
-		const started = await bash.execute(
-			"async-pty",
-			{ command: "if [ -t 1 ]; then echo tty; else echo no; fi", pty: true, async: true },
-			undefined,
-			undefined,
-			{} as never,
-		);
-		if (started.content[0]?.text?.includes("Native PTY package")) return;
-		const jobId = started.details?.async?.jobId;
-		expect(jobId).toBeTruthy();
-		let output = "";
-		for (let attempt = 0; attempt < 20; attempt++) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const polled = await bash.execute(
-				"async-pty-poll",
-				{ command: `__atomic_bash_job ${jobId}` },
-				undefined,
-				undefined,
-				{} as never,
-			);
-			output = polled.content[0]?.text ?? "";
-			if (output.includes("completed")) break;
-		}
-		expect(output).toContain("tty");
-	});
-
 	it("checks bashInterceptor before commandPrefix is prepended", async () => {
 		const bash = createBashToolDefinition(testDir, {
 			commandPrefix: "echo setup",

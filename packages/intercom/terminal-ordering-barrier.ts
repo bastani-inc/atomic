@@ -20,7 +20,7 @@ export interface TerminalOrderingBarrier {
   runId: string;
   terminalId: string;
   terminalAt: number;
-  source: "background-notify" | "result-relay";
+  source: "detached-notify" | "result-relay";
   owner?: object;
   sourceSessionTargets: string[];
   dispatch?(prefix: OrderedTerminalPreludeMessage[]): unknown;
@@ -39,7 +39,7 @@ function parseBarrier(value: unknown): TerminalOrderingBarrier | null {
   const record = value as Record<string, unknown>;
   if (typeof record.runId !== "string" || !record.runId) return null;
   if (typeof record.terminalAt !== "number" || !Number.isFinite(record.terminalAt)) return null;
-  if (record.source !== "background-notify" && record.source !== "result-relay") return null;
+  if (record.source !== "detached-notify" && record.source !== "result-relay") return null;
   if (!Array.isArray(record.sourceSessionTargets)) return null;
   const sourceSessionTargets = record.sourceSessionTargets
     .filter((target): target is string => typeof target === "string")

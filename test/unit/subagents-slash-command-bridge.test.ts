@@ -154,7 +154,7 @@ describe("human subagent slash command bridge", () => {
 		await withSlashHarness(async ({ invoke }) => {
 			const params = await invoke(
 				"run",
-				"slash-alpha[output=reports/run.md,outputMode=file-only,reads=notes.md+spec.md,model=test/model,skills=tdd+tmux] fix the bug --bg --fork",
+				"slash-alpha[output=reports/run.md,outputMode=file-only,reads=notes.md+spec.md,model=test/model,skills=tdd+tmux] fix the bug --fork",
 			);
 
 			assert.deepEqual(params, {
@@ -166,7 +166,6 @@ describe("human subagent slash command bridge", () => {
 				outputMode: "file-only",
 				skill: ["tdd", "tmux"],
 				model: "test/model",
-				async: true,
 				context: "fork",
 			});
 		});
@@ -392,7 +391,7 @@ describe("human subagent slash command bridge", () => {
 		await withSlashHarness(async ({ invoke }) => {
 			const params = await invoke(
 				"parallel",
-				'slash-alpha[output=false,progress=false] "inspect alpha" -> slash-beta[reads=one.md+two.md,model=test/beta] "inspect beta" --bg --fork',
+				'slash-alpha[output=false,progress=false] "inspect alpha" -> slash-beta[reads=one.md+two.md,model=test/beta] "inspect beta" --fork',
 			);
 
 			assert.deepEqual(params, {
@@ -401,7 +400,6 @@ describe("human subagent slash command bridge", () => {
 					{ agent: "slash-beta", task: "inspect beta", reads: ["one.md", "two.md"], model: "test/beta" },
 				],
 				agentScope: "both",
-				async: true,
 				context: "fork",
 			});
 		});

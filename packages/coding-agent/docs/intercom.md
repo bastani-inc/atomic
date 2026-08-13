@@ -16,14 +16,14 @@ Atomic bundles `@bastani/intercom`, a first-party extension for direct 1:1 messa
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
 - **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
 - **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
-- **Run notifications** - Workflows and subagents deliver async results and control notices to a parent session over Intercom
+- **Run notifications** - Workflows and subagents deliver run results and control notices to a parent session over Intercom
 - **Bundled skill** - `/skill:intercom` provides planner-worker, group, and escalation-handling patterns
 
 **Example use cases:**
 - Planner–worker splits across two terminals
 - Research → implementation context handoffs
 - Supervisor decisions and structured interviews for delegated subagents
-- Async workflow/subagent completion and needs-attention notices
+- Pair debugging between sessions
 - Pair debugging between sessions
 
 ## Table of Contents
@@ -254,7 +254,7 @@ When Atomic's [subagent runtime](/subagents) admits a delegated child, the child
 
 `contact_supervisor` is registered from the typed admission record. The record binds the supervisor target, canonical child identity, child index, session name, and any broker-issued capability to that in-process child session; none of those values are inherited from environment variables. If the parent did not grant supervisor coordination, the session receives only the regular `intercom` tool.
 
-The child identity remains stable across foreground continuation, `async: true`, interruption, and cold resume. Intercom detach uses the same in-process continuation as async work, so the jobs widget and the eventual bounded terminal envelope retain one canonical path.
+The child identity remains stable across foreground continuation, interruption, and cold resume. Intercom detach uses the same in-process continuation as foreground coordination, so the jobs widget and terminal envelope retain one canonical path.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -338,16 +338,16 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 ## Workflow and Subagent Notifications
 
-Intercom is also the delivery channel for async run results and control notices from [workflows](/workflows) and [subagents](/subagents).
+Intercom is also the delivery channel for workflow run results and subagent control notices from [workflows](/workflows) and [subagents](/subagents).
 
 ### Workflow Delivery Modes
 
-Programmatic `workflow()` calls accept an `intercom` option that controls how async direct-run results and control notices reach a parent session:
+Programmatic `workflow()` calls accept an `intercom` option that controls how asynchronous direct-run results and control notices reach a parent session:
 
 ```typescript
 workflow({
   tasks: [{ agent: "worker", task: "..." }],
-  async: true,
+  intercom: { delivery: "result" },
   intercom: { delivery: "result" },
 })
 ```
@@ -359,25 +359,22 @@ workflow({
 | `parentSession` | string | Target session for delivery; resolved from args or the Intercom port when omitted |
 | `notifyOn` | array | Control events to deliver: `"active_long_running"`, `"needs_attention"`, `"completed"`, `"failed"` |
 
-When neither `enabled` nor `delivery` is set, async direct `parallel` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from async direct runs as user-visible workflow output.
+When neither `enabled` nor `delivery` is set, direct `parallel` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from direct runs as user-visible workflow output.
 
 While a workflow stage generation is open, incoming Intercom messages are admitted through the stage session's native steering/follow-up queue. If that stage is busy running a foreground subagent, Atomic synchronously reserves the message in the stage generation before starting the exact child's probe/commit detach handshake. Model-visible queue insertion waits inside that reservation until detach is acknowledged or the owner is unclaimed/disappears, so terminal stage close cannot overtake and silently drop the message. The stage drains the admitted delivery before publishing its terminal snapshot. A destination-side admission failure returns a correlated actionable error to a blocking asker instead of waiting for the 10-minute reply timeout.
+
 ### Subagent Control Notices
 
 The `subagent` tool's `control` options select which control events notify the parent and over which channels:
 
 - **`notifyOn`** — defaults to `["active_long_running", "needs_attention"]`
-- **`notifyChannels`** — defaults to `["event", "async", "intercom"]` (all that are available)
+- **`notifyChannels`** — defaults to `["event", "intercom"]` (all that are available)
 
-Async subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `subagent({ action: "doctor" })` reports Intercom bridge availability and whether Intercom is enabled in config.
-
+Detached subagent result delivery over Intercom is confirmation-based and preserves a successful delivery phase across watcher replacement. Each delegated child gets a deterministic Intercom target derived from its run/agent/index identity, and run results report those targets ("Run intercom target" / "Previous intercom target"; targets may be inactive after completion). `subagent({ action: "doctor" })` reports Intercom bridge availability and whether Intercom is enabled in config.
 If live child-to-parent coordination is needed, invoke `intercom({ action: "status" })` in the parent before launching; the child connects on its first `contact_supervisor` or `intercom` call. Fresh child sessions receive the bundled Intercom wrapper through normal package discovery unless an explicit `extensions` allowlist excludes it.
-
 ### Delivery Ordering
-
 During a foreground subagent run, Atomic probes for the exact live foreground owner before delivery: the matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before messages enter the parent's model-visible steering queue. A commit accepted by one member of a foreground parallel group releases supervision for all active siblings while retaining their in-process session ownership, allowing the aggregate tool call to return. If the owner disappears between probe and commit, a still-current receiver uses its ordinary fallback route rather than dropping the broker-delivered message. Blocking calls stay alive until the exact threaded reply; generation cancellation or replacement invalidates stale handshakes.
-
-For delegated background children, queued messages and terminal lifecycle notices are ordered per child: pre-terminal messages are admitted FIFO and atomically together with the paused, completed, or failed notice, exact terminal-identity deduplication prevents double admission, failed dispatches remain retryable, and correlated ask replies bypass unrelated queued sends. See [Subagents](/subagents) for the full coordination contract.
+For delegated children, queued messages and terminal lifecycle notices are ordered per child: pre-terminal messages are admitted FIFO and atomically together with the paused, completed, or failed notice, exact terminal-identity deduplication prevents double admission, failed dispatches remain retryable, and correlated ask replies bypass unrelated queued sends. See [Subagents](/subagents) for the full coordination contract.
 
 ## Configuration
 
@@ -499,6 +496,6 @@ Use a shared-room messenger for multi-agent swarms working on one shared task. U
 ## Related Docs
 
 - [Subagents](/subagents) for delegated child runs, foreground coordination, and result delivery.
-- [Workflows](/workflows) for multi-stage automation and async run notifications.
+- [Workflows](/workflows) for multi-stage automation and run notifications.
 - [Skills](/skills) for reusable instructions like `/skill:intercom`.
 - [Usage](/usage) for environment variables and the bundled-extension overview.

@@ -82,28 +82,16 @@ function makeContext(cwd: string, onCustom: () => never): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-function makeExecutor(
-	cwd: string,
-	agents: AgentConfig[],
-	runtime: Partial<SubagentExecutorRuntimeDeps>,
-	asyncByDefault = false,
-) {
+function makeExecutor(cwd: string, agents: AgentConfig[], runtime: Partial<SubagentExecutorRuntimeDeps>) {
 	const state: ExecutorDeps["state"] = {
 		baseCwd: "",
 		currentSessionId: null,
-		asyncJobs: new Map(),
 		subagentInProgress: false,
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
 		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 	return createSubagentExecutor({
 		pi: {
@@ -111,8 +99,7 @@ function makeExecutor(
 			getSessionName: () => "parent",
 		} as unknown as ExecutorDeps["pi"],
 		state,
-		config: { asyncByDefault, maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
-		asyncByDefault,
+		config: { maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
 		tempArtifactsDir: join(cwd, "artifacts"),
 		getSubagentSessionRoot: () => join(cwd, "sessions"),
 		expandTilde: (value) => value,
@@ -146,7 +133,7 @@ test("list action returns the available agent catalogue", async () => {
 	}
 });
 
-test("root single reads are schema-valid, cwd-correct, and identical in foreground and async modes", async () => {
+test("root single reads are schema-valid and cwd-correct", async () => {
 	const parentCwd = mkdtempSync(join(tmpdir(), "atomic-subagent-root-reads-"));
 	try {
 		const childCwd = join(parentCwd, "child");
@@ -155,44 +142,25 @@ test("root single reads are schema-valid, cwd-correct, and identical in foregrou
 		assert.equal(Value.Check(SubagentParams, { agent: "worker", task: "fix it", cwd: "child", reads }), true);
 		assert.equal(Value.Check(SubagentParams, { agent: "worker", task: "fix it", reads: true }), false);
 		const captured: string[] = [];
-		const foreground = makeExecutor(parentCwd, [makeAgent("worker")], {
+		const executor = makeExecutor(parentCwd, [makeAgent("worker")], {
 			runSync: async (_cwd, _agents, agent, task) => {
 				captured.push(task);
 				return makeResult(agent, task);
 			},
 		});
-		const background = makeExecutor(
-			parentCwd,
-			[makeAgent("worker")],
-			{
-				isAsyncAvailable: () => true,
-				executeAsyncSingle: (_id, params) => {
-					captured.push(params.task ?? "");
-					return { content: [{ type: "text", text: "launched" }], details: { mode: "single", results: [] } };
-				},
-			},
-			true,
-		);
 		const context = makeContext(parentCwd, () => {
 			throw new Error("unexpected prompt");
 		});
-		await foreground.execute(
+		await executor.execute(
 			"fg",
 			{ agent: "worker", task: "fix it", cwd: "child", reads },
 			new AbortController().signal,
 			undefined,
 			context,
 		);
-		await background.execute(
-			"bg",
-			{ agent: "worker", task: "fix it", cwd: "child", reads },
-			new AbortController().signal,
-			undefined,
-			context,
-		);
 		const expected = `[Read from: ${join(childCwd, "docs/a.md")}, ${join(parentCwd, "shared.md")}, ${absoluteRead}]\n\nfix it`;
-		assert.deepEqual(captured, [expected, expected]);
-		await foreground.execute(
+		assert.deepEqual(captured, [expected]);
+		await executor.execute(
 			"disabled",
 			{ agent: "worker", task: "plain", reads: false },
 			new AbortController().signal,
@@ -201,7 +169,7 @@ test("root single reads are schema-valid, cwd-correct, and identical in foregrou
 		);
 		assert.equal(captured.at(-1), "plain");
 
-		const invalid = await foreground.execute(
+		const invalid = await executor.execute(
 			"bad",
 			{ agent: "worker", task: "fix it", reads: ["ok", 3] as never },
 			new AbortController().signal,
@@ -259,73 +227,6 @@ describe("programmatic subagent tool boundary", () => {
 			assert.equal(result.isError, undefined);
 			assert.deepEqual(runCalls, [{ agent: "worker", task: "fix it" }]);
 			assert.equal(customCalls, 0);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
-	test("asyncByDefault dispatches omitted async in the background without UI", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-async-default-"));
-		try {
-			let customCalls = 0;
-			let foregroundCalls = 0;
-			const backgroundCalls: Array<{ agent: string; task: string }> = [];
-			const executor = makeExecutor(
-				cwd,
-				[makeAgent("worker")],
-				{
-					isAsyncAvailable: () => true,
-					executeAsyncSingle: (_id, params) => {
-						assert.ok(typeof params.task === "string");
-						backgroundCalls.push({ agent: params.agent, task: params.task });
-						return {
-							content: [{ type: "text", text: "background started" }],
-							details: { mode: "single", results: [] },
-						};
-					},
-					runSync: async (_cwd, _agents, agent, task) => {
-						foregroundCalls += 1;
-						return makeResult(agent, task);
-					},
-				},
-				true,
-			);
-			const result = await executor.execute(
-				"async-default",
-				{ agent: "worker", task: "fix it" },
-				new AbortController().signal,
-				undefined,
-				makeContext(cwd, () => {
-					customCalls += 1;
-					throw new Error("unexpected UI prompt");
-				}),
-			);
-
-			assert.equal(result.content[0]?.type === "text" ? result.content[0].text : "", "background started");
-			assert.deepEqual(backgroundCalls, [{ agent: "worker", task: "fix it" }]);
-			assert.equal(foregroundCalls, 0);
-			assert.equal(customCalls, 0);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
-	test("async parallel execution rejects more than 50 expanded tasks before dispatch", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-async-limit-"));
-		try {
-			const executor = makeExecutor(cwd, [makeAgent("worker")], { isAsyncAvailable: () => true });
-			const result = await executor.execute(
-				"async-parallel-limit",
-				{ tasks: [{ agent: "worker", task: "repeat", count: 51 }], async: true },
-				new AbortController().signal,
-				undefined,
-				makeContext(cwd, () => {
-					throw new Error("unexpected UI prompt");
-				}),
-			);
-
-			assert.equal(result.isError, true);
-			assert.equal(result.content[0]?.type === "text" ? result.content[0].text : "", "Max 50 tasks");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -401,51 +302,6 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("async single and parallel launches stay non-interactive", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-async-"));
-		try {
-			let customCalls = 0;
-			const asyncSingle: Array<{ agent: string; task: string }> = [];
-			const runCalls: Array<{ agent: string; task: string }> = [];
-			const executor = makeExecutor(cwd, [makeAgent("alpha"), makeAgent("beta")], {
-				isAsyncAvailable: () => true,
-				executeAsyncSingle: (_id, params) => {
-					asyncSingle.push({ agent: params.agent, task: params.task ?? "" });
-					return { content: [{ type: "text", text: "single started" }], details: { mode: "single", results: [] } };
-				},
-				runSync: async (_cwd, _agents, agent, task) => {
-					runCalls.push({ agent, task });
-					return makeResult(agent, task);
-				},
-			});
-			const ctx = makeContext(cwd, () => {
-				customCalls += 1;
-				throw new Error("unexpected UI prompt");
-			});
-			const signal = new AbortController().signal;
-
-			await executor.execute("async-single", { agent: "alpha", task: "one", async: true }, signal, undefined, ctx);
-			const parallel = await executor.execute(
-				"async-parallel",
-				{
-					tasks: [
-						{ agent: "alpha", task: "one" },
-						{ agent: "beta", task: "two" },
-					],
-					async: true,
-				},
-				signal,
-				undefined,
-				ctx,
-			);
-			assert.equal(customCalls, 0);
-			assert.deepEqual(asyncSingle, [{ agent: "alpha", task: "one" }]);
-			assert.equal(parallel.details.results[0]?.status, "continued");
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
 	test("parent registration exposes the non-interactive tool and preserves slash commands", async () => {
 		let registered: ToolDefinition | undefined;
 		const commands: string[] = [];
@@ -488,12 +344,9 @@ describe("programmatic subagent tool boundary", () => {
 		assert.deepEqual(commands.filter((name) => ["run", "parallel"].includes(name)).sort(), ["parallel", "run"]);
 
 		const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
-		for (const args of [
-			{ agent: "worker", async: true },
-			{ tasks: [{ agent: "worker", task: "one" }], async: true },
-		]) {
+		for (const args of [{ agent: "worker" }, { tasks: [{ agent: "worker", task: "one" }] }]) {
 			const component = registered.renderCall?.(args as never, theme, {} as never);
-			assert.match(component?.render(120).join("\n") ?? "", /\[async\]/);
+			assert.doesNotMatch(component?.render(120).join("\n") ?? "", /\[async\]/);
 		}
 		for (const shutdown of handlers.get("session_shutdown") ?? []) shutdown();
 	});
@@ -521,11 +374,11 @@ describe("programmatic subagent tool boundary", () => {
 
 		events.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
 			requestId: "slash-parallel",
-			params: { tasks: [{ agent: "worker", task: "one" }], async: true },
+			params: { tasks: [{ agent: "worker", task: "one" }] },
 		});
 		await response;
 
-		assert.deepEqual(received, { tasks: [{ agent: "worker", task: "one" }], async: true });
+		assert.deepEqual(received, { tasks: [{ agent: "worker", task: "one" }] });
 		bridge.dispose();
 	});
 });

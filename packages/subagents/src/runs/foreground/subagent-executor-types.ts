@@ -12,12 +12,6 @@ import type {
 	SubagentState,
 	SubagentToolResult,
 } from "../../shared/types.ts";
-import type {
-	AsyncExecutionResult,
-	AsyncSingleParams,
-	formatAsyncStartedMessage,
-	isAsyncAvailable,
-} from "../inprocess/background.ts";
 import type { ChildModePolicy } from "../inprocess/child-policy.ts";
 import type { runSync } from "./execution.ts";
 
@@ -39,7 +33,6 @@ export interface SubagentParamsLike {
 	action?: (typeof SUBAGENT_ACTIONS)[number];
 	id?: string;
 	runId?: string;
-	dir?: string;
 	index?: number;
 	agent?: string;
 	task?: string;
@@ -49,7 +42,6 @@ export interface SubagentParamsLike {
 	concurrency?: number;
 	worktree?: boolean;
 	context?: "fresh" | "fork";
-	async?: boolean;
 	share?: boolean;
 	control?: ControlConfig;
 	sessionDir?: string;
@@ -69,16 +61,12 @@ export interface SubagentParamsLike {
 
 export interface SubagentExecutorRuntimeDeps {
 	runSync: typeof runSync;
-	executeAsyncSingle: (id: string, params: AsyncSingleParams) => AsyncExecutionResult | Promise<AsyncExecutionResult>;
-	isAsyncAvailable: typeof isAsyncAvailable;
-	formatAsyncStartedMessage: typeof formatAsyncStartedMessage;
 }
 
 export interface ExecutorDeps {
 	pi: ExtensionAPI;
 	state: SubagentState;
 	config: import("../../shared/types.ts").ExtensionConfig;
-	asyncByDefault: boolean;
 	tempArtifactsDir: string;
 	getSubagentSessionRoot: (parentSessionFile: string | null) => string;
 	expandTilde: (p: string) => string;
@@ -115,7 +103,6 @@ export interface ExecutionContextData {
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
 	parentDepth?: number;
-	effectiveAsync: boolean;
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;
 	nestedRoute?: NestedRouteInfo;

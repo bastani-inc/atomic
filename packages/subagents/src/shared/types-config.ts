@@ -5,7 +5,7 @@
 import type { SessionWorkflowMetadata } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { CandidateModelResolver } from "./model-resolution.ts";
-import type { NestedRouteInfo } from "./types-async.ts";
+import type { NestedRouteInfo } from "./types-nested.ts";
 import type {
 	ArtifactConfig,
 	ControlConfig,
@@ -42,9 +42,8 @@ export interface IntercomEventBus {
 }
 
 export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
+export const SUBAGENT_COMPLETE_EVENT = "subagent:complete";
 export const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
-export const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
-export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -60,8 +59,6 @@ export interface RunSyncOptions {
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;
 	allowIntercomDetach?: boolean;
-	/** Start the admitted child and settle this call with a continued result immediately. */
-	backgroundContinuation?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onDetachedExit?: (result: SingleResult) => void;
 	/** Shared foreground-group signal used to release sibling supervision after one exact child commits Intercom detach. */
@@ -88,8 +85,6 @@ export interface RunSyncOptions {
 	index?: number;
 	sessionDir?: string;
 	sessionFile?: string;
-	/** Override the Atomic CLI entrypoint used by foreground child processes. */
-	piArgv1?: string;
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;
@@ -152,8 +147,6 @@ interface TopLevelParallelConfig {
 }
 
 export interface ExtensionConfig {
-	asyncByDefault?: boolean;
-	forceTopLevelAsync?: boolean;
 	defaultSessionDir?: string;
 	maxSubagentDepth?: number;
 	control?: ControlConfig;

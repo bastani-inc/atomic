@@ -125,7 +125,7 @@ function readHeader(path: string): Record<string, unknown> {
 
 describe("workflow subagent persisted session classification", () => {
 	test("foreground fresh child persists classification through the real executor handoff", async () => {
-		await withChildCli(async (root, scriptPath) => {
+		await withChildCli(async (root, _scriptPath) => {
 			const sessionDir = join(root, "custom-sessions");
 			const sessionFile = join(sessionDir, "fresh.jsonl");
 			runForegroundInBun(
@@ -135,7 +135,6 @@ describe("workflow subagent persisted session classification", () => {
 					runId: "foreground-fresh",
 					sessionDir,
 					sessionFile,
-					piArgv1: scriptPath,
 					workflowStageSubagentGuard: true,
 					workflowSessionMetadata: workflow,
 				},
@@ -150,7 +149,7 @@ describe("workflow subagent persisted session classification", () => {
 	});
 
 	test("same-cwd fork child stays classified through fork resolver and foreground executor", async () => {
-		await withChildCli(async (root, scriptPath) => {
+		await withChildCli(async (root, _scriptPath) => {
 			const sessionDir = join(root, "fork-sessions");
 			const parent = SessionManager.create(root, sessionDir, { internal: true, workflow });
 			parent.appendMessage({ role: "user", content: "parent task", timestamp: Date.now() });
@@ -166,7 +165,6 @@ describe("workflow subagent persisted session classification", () => {
 					cwd: root,
 					runId: "foreground-fork",
 					sessionFile: forkFile,
-					piArgv1: scriptPath,
 					workflowStageSubagentGuard: true,
 					taskText: "Continue fork",
 				},

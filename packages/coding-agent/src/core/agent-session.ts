@@ -35,8 +35,6 @@ import type {
 	InterruptQueueHold,
 	ToolDefinitionEntry,
 } from "./agent-session-types.ts";
-import type { AsyncJobManager } from "./async/job-manager.js";
-import { createSessionAsyncJobManager } from "./async/session-manager.js";
 import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ExtensionCommandContextActions,
@@ -166,8 +164,6 @@ class AgentSessionBase {
 	protected _systemPromptTransform?: (prompt: string) => string;
 	protected _systemPromptOverride?: string;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
-	protected _asyncJobManager: AsyncJobManager;
-	protected _asyncJobManagerSessionId: symbol;
 	/** Protection claim on this session's temp tree and tool-results directory. */
 	protected _tempStorageLease: ProtectedPathLease | undefined;
 	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
@@ -232,9 +228,6 @@ class AgentSessionBase {
 			// Temp-storage housekeeping must never block session construction.
 		}
 		const internals = this as unknown as AgentSessionInternalSurface;
-		const asyncJobManagerHandle = createSessionAsyncJobManager(internals);
-		this._asyncJobManager = asyncJobManagerHandle.manager;
-		this._asyncJobManagerSessionId = asyncJobManagerHandle.sessionId;
 		internals._handleAgentEvent = internals._handleAgentEvent.bind(this);
 		this._unsubscribeAgent = this.agent.subscribe(internals._handleAgentEvent);
 		internals._installAgentToolHooks();

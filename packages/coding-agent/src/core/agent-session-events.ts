@@ -17,7 +17,6 @@ import {
 	isSingleGenericAbortTextContent,
 	replacementAbortContent,
 } from "./agent-session-types.ts";
-import { disposeSessionAsyncJobManager } from "./async/session-manager.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
 import type {
 	MessageEndEvent,
@@ -521,13 +520,10 @@ export function dispose(this: AgentSession): void {
 	// reconciliation before invalidation can discard its recovery state.
 	prepareProtectedStreamingCustomMessagesForDisposal(this);
 	this._extensionRunner.invalidate(STALE_EXTENSION_CONTEXT_MESSAGE);
-	disposeSessionAsyncJobManager(this._asyncJobManager, this._asyncJobManagerSessionId);
 	this._disconnectFromAgent();
 	this._eventListeners = [];
 	cleanupSessionResources(this.sessionId);
-	// Last: an async spill writer started by this session holds its own lease, so
-	// releasing here stops protecting a tree nothing is using without cutting a
-	// writer that outlived the session object.
+	// Releasing the session lease stops protecting a tree that is no longer in use.
 	this._tempStorageLease?.release();
 	this._tempStorageLease = undefined;
 }

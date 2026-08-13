@@ -15,9 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import type { AsyncJobState } from "../../packages/subagents/src/shared/types.js";
 import { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
-import { widgetStats } from "../../packages/subagents/src/tui/render-event-formatting.js";
 import { type AgentToolResult, type Details, theme } from "./subagents-render-stability-helpers.js";
 
 function parallelChild(
@@ -95,40 +93,4 @@ test("parallel result rows keep each child's model and thinking metadata", () =>
 	assert.match(rendered, /alpha.*gpt-5\.1-codex · thinking high · fast/);
 	assert.match(rendered, /beta.*claude-sonnet-4 · thinking low/);
 	assert.doesNotMatch(rendered, /claude-sonnet-4 · thinking low · fast/);
-});
-
-describe("async parallel widget stats gate on active state, not mode", () => {
-	function job(overrides: Partial<AsyncJobState>): AsyncJobState {
-		return {
-			asyncId: "run-1",
-			asyncDir: "/tmp/run-1",
-			status: "running",
-			mode: "parallel",
-			agents: ["alpha", "beta"],
-			stepsTotal: 2,
-			startedAt: 0,
-			updatedAt: 0,
-			...overrides,
-		} as AsyncJobState;
-	}
-
-	test("a launched parallel job with no active group reads the step total", () => {
-		const stats = widgetStats(job({}), theme);
-		assert.match(stats, /steps 2/);
-		assert.doesNotMatch(stats, /agent running/);
-		assert.doesNotMatch(stats, /0\/2 done/);
-	});
-
-	test("an active parallel group reads running and done counts", () => {
-		const stats = widgetStats(job({ activeParallelGroup: true, runningSteps: 1, completedSteps: 0 }), theme);
-		assert.match(stats, /1 agent running/);
-		assert.match(stats, /0\/2 done/);
-		assert.doesNotMatch(stats, /steps 2/);
-	});
-
-	test("a single-agent job is unaffected", () => {
-		const stats = widgetStats(job({ mode: "single", agents: ["alpha"], stepsTotal: 1 }), theme);
-		assert.doesNotMatch(stats, /steps 1/);
-		assert.doesNotMatch(stats, /agent running/);
-	});
 });

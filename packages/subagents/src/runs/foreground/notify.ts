@@ -5,7 +5,7 @@
 import { type ExtensionAPI, isStaleExtensionContextError } from "@bastani/atomic";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
-	SUBAGENT_ASYNC_COMPLETE_EVENT,
+	SUBAGENT_COMPLETE_EVENT,
 	SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT,
 	type SubagentAttemptStatus,
 } from "../../shared/types.ts";
@@ -170,7 +170,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			runId,
 			...(terminalId ? { terminalId } : {}),
 			terminalAt: Number.isFinite(result.timestamp) ? result.timestamp : Date.now(),
-			source: "background-notify" as const,
+			source: "detached-notify" as const,
 			sourceSessionTargets,
 			...(barrierDispatch ? { dispatch: barrierDispatch } : {}),
 		};
@@ -238,7 +238,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 		const noticeLabel =
 			typeof result.noticeLabel === "string" && result.noticeLabel.trim()
 				? result.noticeLabel.trim()
-				: "Background task";
+				: "Subagent task";
 		let sessionLabel: string | undefined;
 		let sessionValue: string | undefined;
 		if (sessionLine) {
@@ -281,7 +281,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			inFlight.delete(key);
 			ownership.reject(error);
 			result.acknowledge?.(false);
-			console.error("Failed to deliver async subagent completion notification:", error);
+			console.error("Failed to deliver subagent completion notification:", error);
 		};
 		const observe = (delivery: PromiseLike<void>): void => {
 			result.defer?.();
@@ -314,7 +314,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	};
 	let unsubscribe: () => void;
 	try {
-		unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+		unsubscribe = pi.events.on(SUBAGENT_COMPLETE_EVENT, handleComplete);
 	} catch (error) {
 		if (!isStaleExtensionContextError(error)) throw error;
 		// A stale API cannot accept a new subscription; keep the prior one usable.

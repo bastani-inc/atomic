@@ -4,8 +4,16 @@
 
 ### Fixed
 
-- Fixed a fork-context subagent ignoring its agent's configured model. The selected model candidate was only ever a `provider/model[:thinking]` string, so nothing was handed to the child session's `model` argument and the session fell back to the model persisted in the session file — which, for a fork, is the parent's. A child declaring `openai-codex/gpt-5.6-luna:max` therefore ran every turn on the parent's model, and an explicit `model:` override lost its first attempt the same way. The selected candidate is now resolved against the model registry and applied to the child session, together with the thinking level carried in the candidate's suffix, for both fresh and fork contexts and across the single, parallel, async/background, and resume paths. A candidate that names no usable model still starts the run instead of failing it.
+- Fixed a fork-context subagent ignoring its agent's configured model. The selected model candidate was only ever a `provider/model[:thinking]` string, so nothing was handed to the child session's `model` argument and the session fell back to the model persisted in the session file — which, for a fork, is the parent's. A child declaring `openai-codex/gpt-5.6-luna:max` therefore ran every turn on the parent's model, and an explicit `model:` override lost its first attempt the same way. The selected candidate is now resolved against the model registry and applied to the child session, together with the thinking level carried in the candidate's suffix, for both fresh and fork contexts and across single, parallel, and resume paths. A candidate that names no usable model still starts the run instead of failing it.
 - Fixed subagent progress and status lines stripping the provider prefix from the model name, so a child rendered as `claude-fable-5` where the main chat shows `anthropic/claude-fable-5`. The full model id is now displayed, including every segment of a routed id such as `openrouter/anthropic/claude-fable-5`; known thinking suffixes are still split off into the `thinking <level>` label.
+
+### Breaking Changes
+
+- The `subagent` tool no longer accepts `async: true`, `/run --bg` and related background slash flags are gone, and the `asyncByDefault` and `forceTopLevelAsync` settings have been removed. Remove those settings keys from user configuration; subagent calls now run in the foreground.
+
+### Removed
+
+- Removed subagent async/background execution and its process-era job, widget, schema, configuration, and slash-command surfaces. `subagent` calls and `/run` or `/parallel` now execute in the foreground and return their results directly; foreground Intercom coordination and resumable interrupt/resume controls remain available.
 
 ## [0.9.13-alpha.2] - 2026-08-12
 

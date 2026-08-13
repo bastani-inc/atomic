@@ -25,7 +25,7 @@ function result(index: number): SingleResult {
 		task: `task-${index}`,
 		status: "continued",
 		path: `child-${index}`,
-		envelope: "Child continued in background.",
+		envelope: "Child detached for intercom coordination.",
 		detached: true,
 		messages: [],
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },

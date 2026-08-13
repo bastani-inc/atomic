@@ -185,7 +185,7 @@ describe("subagent retry metadata reasoning seams", () => {
 		]);
 	});
 
-	test("async/background status mapping carries suffix level and falls back to legacy thinking", () => {
+	test("foreground status mapping carries suffix level and falls back to legacy thinking", () => {
 		const agentThinking = "xhigh";
 		const candidates = buildModelCandidates("claude-sonnet-4:high", ["gpt-5"], models, "anthropic");
 

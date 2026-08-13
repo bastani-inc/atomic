@@ -1,7 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinitionEntry } from "./agent-session-types.ts";
-import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
 import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
@@ -143,13 +142,6 @@ export function _buildRuntime(
 					shellPath,
 					interceptorEnabled: () => this.settingsManager.getBashInterceptorEnabled(),
 					availableTools: activeBuiltinTools,
-					asyncJobManager: this._asyncJobManager,
-					asyncJobDeliveryHandler: createSessionAsyncDeliveryHandler(
-						this,
-						this._asyncJobManager,
-						this._asyncJobManagerSessionId,
-					),
-					asyncJobSessionId: this._asyncJobManagerSessionId,
 					// Resolved per execution so bash spill files follow the live
 					// transcript session across fork/branch/resume.
 					sessionTempDir: () => resolveSessionTempDirPath(this.sessionManager.getSessionId()),

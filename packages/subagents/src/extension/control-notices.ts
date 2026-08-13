@@ -6,8 +6,7 @@ export const SUBAGENT_CONTROL_MESSAGE_TYPE = "subagent_control_notice";
 
 export interface SubagentControlMessageDetails {
 	event: ControlEvent;
-	source?: "foreground" | "async";
-	asyncDir?: string;
+	source?: "foreground";
 	childIntercomTarget?: string;
 	noticeText?: string;
 }
@@ -52,7 +51,7 @@ function deliverControlNotice(input: {
 			display: true,
 			details: { ...input.details, childIntercomTarget, noticeText },
 		},
-		{ triggerTurn: input.details.source !== "foreground" },
+		{ triggerTurn: false },
 	);
 }
 

@@ -1,4 +1,4 @@
-import type { SubagentNotifyDetails } from "../runs/background/notify.ts";
+import type { SubagentNotifyDetails } from "../runs/foreground/notify.ts";
 
 const HEADER_STATUSES = ["completed", "failed", "paused"] as const;
 
