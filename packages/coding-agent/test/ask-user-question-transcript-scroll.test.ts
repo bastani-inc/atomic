@@ -34,7 +34,7 @@ import {
 	isFullscreenViewportAction,
 	shouldHandleFullscreenViewportInput,
 } from "../src/modes/interactive/interactive-mode-base.ts";
-import { createInteractiveTui, isMouseWheelInput } from "../src/modes/interactive/interactive-tui.ts";
+import { createFullscreenTui, isMouseWheelInput } from "../src/modes/interactive/interactive-tui.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import {
 	type InteractiveEngineMessage,
@@ -1504,12 +1504,12 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 				focusedIsOverlay,
 				keybindings,
 			);
-		tui = createInteractiveTui({
+		tui = createFullscreenTui({
 			showHardwareCursor: false,
 			logDirectory: "/tmp",
 			terminal,
 			shouldHandleViewportInput,
-		}) as TuiAltScreen;
+		});
 
 		const transcript = new ScrollView(
 			new Text(

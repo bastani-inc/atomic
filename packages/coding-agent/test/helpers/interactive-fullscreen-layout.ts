@@ -11,7 +11,7 @@ import { ENV_OFFLINE } from "../../src/config.ts";
 import { KeybindingsManager } from "../../src/core/keybindings.ts";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
 import { shouldHandleFullscreenViewportInput } from "../../src/modes/interactive/interactive-mode-base.ts";
-import { createInteractiveTui } from "../../src/modes/interactive/interactive-tui.ts";
+import { createFullscreenTui } from "../../src/modes/interactive/interactive-tui.ts";
 import { initTheme } from "../../src/modes/interactive/theme/theme.ts";
 
 export class RecordingTerminal implements Terminal {
@@ -138,10 +138,11 @@ export function createProductionFullscreenContext(
 	// A bare `TuiAltScreen` misses Atomic's `viewportInputGate`, and since
 	// pi-tui 0.84.2 defers viewport keys to a focused overlay on its own, a bare
 	// instance answers input routing questions this fixture claims to answer for
-	// production.
+	// production. `createFullscreenTui` rather than `createInteractiveTui`,
+	// because the latter falls back to `TuiMainScreen` under `TERM=dumb`.
 	const keybindings = new KeybindingsManager();
 	const editor = new Text("editor", 0, 0);
-	const tui = createInteractiveTui({
+	const tui = createFullscreenTui({
 		showHardwareCursor: false,
 		logDirectory: tmpdir(),
 		terminal,
@@ -154,7 +155,7 @@ export function createProductionFullscreenContext(
 				focusedIsOverlay,
 				keybindings,
 			),
-	}) as TuiAltScreen;
+	});
 	const headerContainer = new Container();
 	const documentContainer = new Container();
 	for (let index = 1; index <= (options.transcriptLines ?? 20); index += 1) {

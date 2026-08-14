@@ -11,7 +11,7 @@ import {
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { shouldHandleFullscreenViewportInput } from "../src/modes/interactive/interactive-mode-base.ts";
-import { createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";
+import { createFullscreenTui, createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 
@@ -65,7 +65,7 @@ function mountFocusedOverlay(): Fixture {
 
 	const editor = new Text("editor", 0, 0);
 	let tui!: TuiAltScreen;
-	tui = createInteractiveTui({
+	tui = createFullscreenTui({
 		showHardwareCursor: false,
 		logDirectory: tmpdir(),
 		terminal,
@@ -78,7 +78,7 @@ function mountFocusedOverlay(): Fixture {
 				focusedIsOverlay,
 				keybindings,
 			),
-	}) as TuiAltScreen;
+	});
 
 	const transcript = new ScrollView(
 		new Text(Array.from({ length: TRANSCRIPT_LINES }, (_, index) => `transcript line ${index + 1}`).join("\n"), 0, 0),
@@ -166,6 +166,72 @@ describe("pi-tui 0.84.2 overlay viewport deferral", () => {
 			).toBe(false);
 		} finally {
 			stop();
+		}
+	});
+});
+
+/**
+ * `shouldUseFullscreenTui` returns the `TuiMainScreen` fallback under
+ * `TERM=dumb` even when a terminal is injected, so a fixture that reaches
+ * fullscreen through `createInteractiveTui` silently loses its layout, its
+ * gate, and every assertion above whenever the suite runs in that environment.
+ */
+describe("fullscreen fixtures do not depend on TERM", () => {
+	test("createFullscreenTui builds the gated renderer while createInteractiveTui falls back", () => {
+		const previousTerm = process.env.TERM;
+		process.env.TERM = "dumb";
+		try {
+			const fullscreen = createFullscreenTui({
+				showHardwareCursor: false,
+				logDirectory: tmpdir(),
+				terminal: new RecordingTerminal(),
+			});
+			try {
+				expect(fullscreen).toBeInstanceOf(TuiAltScreen);
+				expect(typeof (fullscreen as { setLayoutRoot?: unknown }).setLayoutRoot).toBe("function");
+				// The gate is what makes it Atomic's renderer rather than pi-tui's.
+				expect(
+					(
+						fullscreen as unknown as { shouldDeferViewportInputToOverlay(): boolean }
+					).shouldDeferViewportInputToOverlay(),
+				).toBe(false);
+			} finally {
+				fullscreen.stop();
+			}
+
+			const selected = createInteractiveTui({
+				showHardwareCursor: false,
+				logDirectory: tmpdir(),
+				terminal: new RecordingTerminal(),
+			});
+			expect(selected).not.toBeInstanceOf(TuiAltScreen);
+		} finally {
+			if (previousTerm === undefined) delete process.env.TERM;
+			else process.env.TERM = previousTerm;
+		}
+	});
+
+	test("a focused overlay that declines PAGE_UP still pages the transcript under TERM=dumb", () => {
+		const previousTerm = process.env.TERM;
+		process.env.TERM = "dumb";
+		try {
+			const { tui, terminal, transcript, stop } = mountFocusedOverlay();
+			try {
+				transcript.scrollToEnd();
+				tui.renderNow();
+				const before = transcript.scrollTop;
+				const page = Math.max(1, transcript.viewportHeight - PAGE_SCROLL_OVERLAP);
+				expect(page).toBeGreaterThan(1);
+
+				terminal.input(PAGE_UP);
+				tui.renderNow();
+				expect(before - transcript.scrollTop).toBe(page);
+			} finally {
+				stop();
+			}
+		} finally {
+			if (previousTerm === undefined) delete process.env.TERM;
+			else process.env.TERM = previousTerm;
 		}
 	});
 });

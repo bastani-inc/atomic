@@ -419,17 +419,17 @@ function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
 	return process.stdin.isTTY === true && process.stdout.isTTY === true && !isCiEnvironment(process.env.CI);
 }
 
-/** Creates the fullscreen renderer for interactive TTY sessions. */
-export function createInteractiveTui(options: InteractiveTuiOptions): InteractiveTui {
-	const usesInjectedTerminal = options.terminal !== undefined;
-	const terminal = options.terminal ?? new ProcessTerminal();
-	if (!shouldUseFullscreenTui(usesInjectedTerminal)) {
-		// The normal CLI never reaches the interactive mode without a TTY. Keep a
-		// main-screen renderer for internal harnesses and guarded fallback paths.
-		return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
-	}
+/**
+ * Build Atomic's fullscreen renderer, `viewportInputGate` included, without
+ * consulting the environment. `createInteractiveTui` calls this whenever
+ * fullscreen applies; fixtures that assert fullscreen behavior call it
+ * directly, because `shouldUseFullscreenTui` returns the main-screen fallback
+ * under `TERM=dumb` even for an injected terminal and would otherwise hand
+ * those tests a renderer with no layout and no gate.
+ */
+export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScreen {
 	return new AtomicTuiAltScreen(
-		terminal,
+		options.terminal ?? new ProcessTerminal(),
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
@@ -444,6 +444,18 @@ export function createInteractiveTui(options: InteractiveTuiOptions): Interactiv
 		options.shouldHandleViewportInput,
 		options.onOverlayUnhandledInput,
 	);
+}
+
+/** Creates the fullscreen renderer for interactive TTY sessions. */
+export function createInteractiveTui(options: InteractiveTuiOptions): InteractiveTui {
+	const usesInjectedTerminal = options.terminal !== undefined;
+	const terminal = options.terminal ?? new ProcessTerminal();
+	if (!shouldUseFullscreenTui(usesInjectedTerminal)) {
+		// The normal CLI never reaches the interactive mode without a TTY. Keep a
+		// main-screen renderer for internal harnesses and guarded fallback paths.
+		return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
+	}
+	return createFullscreenTui({ ...options, terminal });
 }
 
 /** Keeps existing components pointed at the renderer selected at runtime. */
