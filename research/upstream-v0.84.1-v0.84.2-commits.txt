@@ -1,0 +1,137 @@
+310411ba Add [Unreleased] section for next cycle
+10266795 docs(agent): unreserve R3
+9d090bc5 fix(agent): reject conflicting JSONL session creation
+f2794177 fix(agent): read JSONL headers when listing sessions
+80ef7ff0 fix(agent): populate session types with doc comments from design doc
+f562a1a4 docs(agent): clarify branch query helpers
+87644c7b docs(agent): clarify branch query start requirement
+10474bd6 fix(agent): refactor jsonl codec
+e0900a6e docs(agent): clarify record query semantics
+709aa031 docs(agent): add j6 typebox validation (#7768)
+f0feecd7 fix(ai): update OpenCode completions fixture
+958c13f2 docs(agent): restart checkpoint after auto-compaction
+4bf1bba2 docs(agent): reserve I2
+14ad9801 feat(agent): add harness events subscription interface
+4a0e2f11 fix(agent): complete JSONL crash and corruption handling
+fe10558e fix(ai): retry upstream request buffer failures
+7aca0d7b fix(agent): make JSONL decode errors explicit
+1dd23540 feat(agent): add buffered harness event watches
+d1a30561 feat(agent): add direct harness event listeners
+e7fb8eb2 fix: no ctes in sqlite, delete indexes
+541ed488 docs(agent): remove legacy leaf entry requirements
+c3e7bc60 feat(ai): preserve Codex end_turn for debugging (#7766)
+ac4ac9ea feat(coding-agent): configure fullscreen exit output
+5cfa30cc docs(agent): add required fromHook to v4 summary entries
+4fbdc63c docs: require clear concrete explanations
+02bd2d1c fix(ai): preserve Responses tool-call namespaces
+e47b8e37 feat(ai): use additional_tools for deferred tools
+9dd90a49 fix(ai): replace Mistral SDK with native transport
+18dee5f0 fix(tui): stop recompositing full-width rows in the alt-screen painter
+f8746767 fix: handle npm 12 pack --json object output in local release script
+5ac91336 fix: refresh nanoid to 3.3.17 in root lockfile
+6809fabb docs(agent): allow clearing session names
+368e013d chore(docs): fix ascii alignment in compaction docs
+c185d412 fix(ai): send max_tokens to DeepSeek APIs
+7bdb16c2 feat(agent): support clearing session names
+025957c2 docs(agent): reconcile durable harness design
+4181f66e docs(agent): tighten durable harness design
+45fac5bd docs(agent): add explicit-state harness redesign
+157aa19c docs(agent): clarify explicit operation records
+936aff00 docs(agent): complete explicit-state harness design
+47610217 chore(docs): change 'reloads' phrasing in compaction docs
+31b513e3 chore(docs): change a bullet point in compaction docs
+3059b813 docs(agent): add durable harness implementation spec
+afae6a1a fix(ai): update stale Gemini test model
+6a214fab chore: approve contributors from issue #7748
+3709bef7 docs(agent): clarify durable storage terminology
+caf8fa6b chore: approve contributors from issue #7828
+0db3d387 chore: approve contributors from issue #7830
+c1a4e86c chore: approve contributors from issue #7838
+85b1efa1 chore: approve contributors from issue #7847
+f858ae3e chore: approve contributors from issue #7867
+52771a07 chore: approve contributors from issue #7876
+c2b06f09 chore: approve contributors from issue #7886
+3dd4623e Fix prompt formatting for current working directory (#7887)
+24c3b5e4 docs(agent): add storage and retention redesign proposal
+98145a6c fix(ai): sanitize empty Bedrock tool argument keys (#7882)
+7a6a1c2d docs(agent): add harness-v3 skeleton merging spec and storage redesign
+87142a8d docs(agent): write harness-v3 parts 0-2
+dea1b248 docs(agent): write harness-v3 part 3
+28657a2f docs(agent): write harness-v3 parts 4-5
+ec317e4e docs(agent): write harness-v3 parts 6-7
+cd6852a1 docs(agent): complete harness-v3 parts 8-9 and appendices
+2f9e9298 docs(agent): remove superseded harness design documents
+8431bfbe docs(agent): fix harness-v3 cold-read audit findings
+cf5f3521 docs(agent): record open harness-v3 audit findings
+9cb7f493 docs(coding-agent): document AI_AGENT process marker
+75c7fd66 fix(ai): declare Cloudflare Responses strict tools (#7934)
+a4453b79 fix: sqlite time to number
+b647d187 fix(ai): detect DeepSeek base URLs case-insensitively (#7933)
+00121ed9 feat(tui): add fullscreen transcript search (#7913)
+24047f5d docs(agent): strip partitioning to informative section, finish audit fixes
+1279952d feat(tui): add unbound single-line transcript scrolling actions (#7903)
+23002907 feat(ai): AI Gateway transport over the Cloudflare AI binding (#7901)
+06ed8716 fix(tui): prevent split Alt+Enter from interrupting (#7899)
+e3798ca9 fix(coding-agent): inherit subagent session config (#7897)
+4a879dd7 fix(tui): avoid repainting idle fullscreen sessions on focus loss (#7892)
+b987ead3 feat(agent): expose `expandPromptTemplates` in `sendUserMessage` (#7857)
+2f8b4b42 fix(ai): expose low reasoning effort for native DeepSeek V4 Flash (#7807)
+c0468b92 chore: approve contributors from issue #7908
+536eb717 chore: approve contributors from issue #7912
+00eb2d15 chore: approve contributors from issue #7919
+f8c71c6a docs: fix security policy typos
+9c53c47f fix indent
+7915cdac feat(ai): add strict tool schema conversion
+452923b5 fix(tui): parse multiline LaTeX arguments
+2a95ef70 fix(tui): apply PI_TUI_ESC_TIMEOUT only to lone ESC
+43b4e057 docs(agent): fix implementation-readiness review findings
+9c75cd2f docs(agent): add transaction traces to orientation examples
+f1328456 docs(agent): introduce the three stores before the worked examples
+b75be04d refactor: search (#7797)
+f98629b3 docs(agent): fix broken code fence in crash example
+638ac112 docs(agent): resolve providers and tools at dispatch, drop lease machinery
+bcd056a8 docs(agent): drop historical placement-payload rationale
+01701fd3 docs(agent): clarify register references vs immutable snapshots
+b8349db8 docs(agent): re-mint legacy ids at import, drop redundant register paragraph
+e1b444ba docs(agent): tighten identity section
+2862eb4e docs(agent): reword cancellation triage note
+a348560b docs(agent): drop historical changes appendix
+e33e7445 docs(agent): replace historical rationale with direct statements
+b3edf017 fix(ai): bound Copilot policy update concurrency
+25455853 docs(agent): one sqlite file per session, search becomes external
+47b021a6 docs(agent): add seq-ranged usage ledger scan
+8d8c60da docs(agent): specify optional pull-based search service
+b6557f43 docs(agent): make search a standalone service, open metadata-filter question
+51b45bc5 docs(agent): restructure build order into parallel storage and runtime tracks
+85a20608 docs(agent): consolidate harness spec into harness.md
+40a3d855 docs(agent): add table of contents
+2a9b4ebc docs: document terminal-specific fullscreen mouse behavior (#7965)
+534bcbff fix(tui): handle LaTeX control spaces across line endings
+2e4d2395 fix(tui): give focused fullscreen overlays wheel and viewport keys
+6d520c58 chore(docs): fix ascii alignment in compaction docs
+47b5119d fix: trigger turn false should not start turn (#8022)
+4d9aa837 feat(coding-agent): add configurable default tools
+541045ae fix(coding-agent): preserve extension tools with defaults
+9795d602 feat(coding-agent): add per-run theme selection (#7722)
+c93ea6cc fix(coding-agent): preserve usage in streaming events (#7982)
+581d75a8 docs(coding-agent): document model catalog refresh
+7d8c11d3 fix(coding-agent): share concurrent model catalog refreshes
+46bb9a2c docs(coding-agent): clarify Windows paths in settings
+6f707eb3 fix(coding-agent): show managed-tool startup status in TUI
+9d2ec7ff fix(ai): use pi user agent for Kimi Coding requests
+5f7195c5 fix(coding-agent): update Cloudflare compat test model
+d268454e fix(examples): accept array-form `tools` in the subagent example (#7598)
+721e2768 chore: approve contributors from issue #7973
+66336183 fix(coding-agent): update vulnerable nanoid dependency
+83aed2ba fix(tui): handle generic SGR mouse releases
+e14afc64 fix(coding-agent): collapse fallback tool output closes #7979
+0589435e chore: approve contributors from issue #8007
+f3c406a9 chore: approve contributors from issue #8018
+c5b7cd2a chore: approve contributors from issue #8063
+5093641a fix(ai): preserve Google length stops with tool calls
+ab0dc51f fix(coding-agent): use APP_NAME in user-facing messages (#8067)
+48bd3f42 chore: approve contributors from issue #8092
+4caa3c44 fix(tui): route selection copy through the host clipboard (#8110)
+d10c974b docs: audit changelogs since v0.84.1
+9b4adc82 docs: audit changelogs since v0.84.1
+914cf147 Release v0.84.2

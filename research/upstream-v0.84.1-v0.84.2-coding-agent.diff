@@ -1,0 +1,3720 @@
+diff --git a/packages/coding-agent/CHANGELOG.md b/packages/coding-agent/CHANGELOG.md
+index 6f4aeb3d..dc2c6e4a 100644
+--- a/packages/coding-agent/CHANGELOG.md
++++ b/packages/coding-agent/CHANGELOG.md
+@@ -1,5 +1,61 @@
+ # Changelog
+ 
++## [0.84.2] - 2026-08-14
++
++### New Features
++
++- **Fullscreen transcript search** — Search and navigate matches in fullscreen mode. See [TUI Fullscreen Viewport](docs/keybindings.md#tui-fullscreen-viewport).
++- **Configurable default tools** — Choose startup built-in tools globally or per project. See [Tools](docs/settings.md#tools).
++- **Configurable fullscreen exit output** — Print the transcript or only a resume hint on exit. See [Interactive Mode](docs/usage.md#interactive-mode).
++
++### Added
++
++- Added fullscreen transcript search with `Ctrl+Shift+F`, incremental match highlighting, configurable search match theme colors, and next/previous navigation with `Enter`/`Ctrl+G` and `Shift+Enter`/`Ctrl+Shift+G`.
++- Added experimental strict JSON-schema constrained sampling for the default `read`, `bash`, `edit`, and `write` tools under `PI_EXPERIMENTAL=1`.
++- Added a fullscreen exit output setting to choose between printing the final transcript and only a session resume hint.
++- Added the `defaultTools` setting for configuring the initial built-in tool selection globally or per project.
++- Added `--use-theme <name[/name]>` to choose an initial per-run interactive theme without changing saved settings ([#7722](https://github.com/earendil-works/pi/pull/7722) by [@rwachtler](https://github.com/rwachtler)).
++- Added `expandPromptTemplates` to extension `pi.sendUserMessage()` options for explicitly dispatching commands and expanding skills and prompt templates. See [`pi.sendUserMessage()`](docs/extensions.md#pisendusermessagecontent-options) ([#7857](https://github.com/earendil-works/pi/pull/7857) by [@mrexodia](https://github.com/mrexodia)).
++- Added inherited `createGatewayBindingFetch()` for routing Cloudflare AI Gateway requests through a Workers AI binding without an API token ([#7901](https://github.com/earendil-works/pi/pull/7901) by [@Maximo-Guk](https://github.com/Maximo-Guk)).
++- Added inherited `AssistantMessage.endTurn` to preserve OpenAI Codex's terminal `end_turn` signal for diagnostics ([#7766](https://github.com/earendil-works/pi/pull/7766)).
++- Added inherited unbound single-line transcript scrolling actions for fullscreen mode. See [TUI Fullscreen Viewport](docs/keybindings.md#tui-fullscreen-viewport) ([#7903](https://github.com/earendil-works/pi/pull/7903) by [@midastruth](https://github.com/midastruth)).
++
++### Changed
++
++- Changed inherited Kimi Coding requests to use pi's runtime `User-Agent` header.
++- Replaced the inherited Mistral SDK transport with a native Chat Completions HTTP stream, eliminating its generated client and schema runtime overhead.
++- Documented the generic `AI_AGENT=pi` process marker and how it differs from `PI_CODING_AGENT=true` ([#7747](https://github.com/earendil-works/pi/issues/7747)).
++- Changed inherited OpenAI Responses deferred tool loading to prefer message-anchored `additional_tools` where supported while retaining tool-search and top-level fallbacks ([#7709](https://github.com/earendil-works/pi/issues/7709)).
++- Reduced inherited fullscreen rendering allocation churn by painting full-width layout rows directly instead of recompositing them on every frame.
++
++### Fixed
++
++- Fixed managed-tool downloads delaying TUI startup and hiding diagnostics in fullscreen mode by mounting the TUI first and showing download progress and warnings inside it.
++- Fixed opening a model selector immediately after startup cancelling and restarting the in-progress model catalog refresh.
++- Fixed inherited GitHub Copilot login triggering API rate limits while enabling model policies by limiting concurrent policy updates ([#6187](https://github.com/earendil-works/pi/issues/6187)).
++- Fixed fullscreen transcript search snapping back to the current match during manual scrolling and fragmented mouse input leaking into the search query.
++- Fixed inherited required LaTeX arguments starting on a new line being parsed as empty ([#7760](https://github.com/earendil-works/pi/issues/7760)).
++- Updated the transitive `nanoid` development dependency to address a denial-of-service vulnerability.
++- Fixed fallback rendering for extension tool results to collapse long output and honor tool expansion ([#7979](https://github.com/earendil-works/pi/issues/7979)).
++- Fixed JSON and RPC `message_update` events dropping cumulative usage during streaming. See [JSON Event Mode](docs/json.md) and [RPC `message_update`](docs/rpc.md#message_update-streaming) ([#7982](https://github.com/earendil-works/pi/pull/7982) by [@christianklotz](https://github.com/christianklotz)).
++- Fixed `pi.sendMessage(..., { triggerTurn: false })` steering an active run instead of only recording the custom message ([#8022](https://github.com/earendil-works/pi/pull/8022) by [@cristinaponcela](https://github.com/cristinaponcela)).
++- Fixed the `defaultTools` setting dropping extension and SDK custom tools when selecting built-in defaults.
++- Fixed the subagent example rejecting YAML array syntax for the `tools` frontmatter field ([#7598](https://github.com/earendil-works/pi/pull/7598) by [@alexsavio](https://github.com/alexsavio)).
++- Fixed the subagent example dropping parent session model, thinking, and tool configuration ([#7897](https://github.com/earendil-works/pi/pull/7897) by [@virtuald](https://github.com/virtuald)).
++- Fixed custom system prompts concatenating the current working directory with later appended prompt content ([#7887](https://github.com/earendil-works/pi/pull/7887) by [@distributedlock](https://github.com/distributedlock)).
++- Fixed inherited OpenAI Responses function and custom tool calls losing namespaces during streaming, proxying, and replay ([#7709](https://github.com/earendil-works/pi/issues/7709)).
++- Fixed inherited upstream request buffer failures not triggering automatic assistant retries.
++- Fixed inherited built-in and custom DeepSeek API models sending output limits through an unsupported field.
++- Fixed inherited Amazon Bedrock replay rejecting tool arguments that contain empty object keys while preserving all valid nested values ([#7882](https://github.com/earendil-works/pi/pull/7882) by [@muyiyr](https://github.com/muyiyr)).
++- Fixed inherited DeepSeek compatibility detection for base URLs whose hostname contains uppercase letters ([#7933](https://github.com/earendil-works/pi/pull/7933) by [@yearth](https://github.com/yearth)).
++- Fixed inherited Google Generative AI and Vertex AI responses with tool calls incorrectly treating output-limit or provider-error stops as normal tool use ([#8059](https://github.com/earendil-works/pi/issues/8059)).
++- Fixed inherited fullscreen mouse drag selection and OSC 8 link activation in terminals that report generic SGR mouse release button codes ([#7963](https://github.com/earendil-works/pi/issues/7963)).
++- Fixed inherited focused fullscreen overlays not receiving mouse wheel or viewport scroll keys such as PageUp and PageDown ([#7894](https://github.com/earendil-works/pi/issues/7894)).
++- Fixed inherited LaTeX control spaces split across line endings causing complete expressions to fall back to raw source.
++- Fixed split `Alt+Enter` input over SSH being misread as Escape, added `PI_TUI_ESC_TIMEOUT` for high-latency terminals, and limited that timeout to lone Escape input ([#7899](https://github.com/earendil-works/pi/pull/7899) by [@powerfooI](https://github.com/powerfooI)).
++- Fixed inherited idle fullscreen sessions repainting and clearing text selection when the terminal loses focus ([#7892](https://github.com/earendil-works/pi/pull/7892) by [@terrorobe](https://github.com/terrorobe)).
++- Fixed fullscreen selection copy to use the host clipboard and report failure instead of claiming success when OSC 52 is unsupported ([#8110](https://github.com/earendil-works/pi/pull/8110) by [@Panoplos](https://github.com/Panoplos)).
++
+ ## [0.84.1] - 2026-08-07
+ 
+ ### New Features
+diff --git a/packages/coding-agent/README.md b/packages/coding-agent/README.md
+index e4e76e29..e6e43c2e 100644
+--- a/packages/coding-agent/README.md
++++ b/packages/coding-agent/README.md
+@@ -609,6 +609,7 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
+ | `--system-prompt <text>` | Replace default prompt (context files and skills still appended) |
+ | `--append-system-prompt <text>` | Append to system prompt |
+ | `--tui-mode <mode>` | TUI mode: `regular` (default) or experimental `fullscreen` |
++| `--use-theme <name[/name]>` | Set the initial interactive theme for this run without changing settings |
+ | `--verbose` | Force verbose startup |
+ | `-a`, `--approve` | Trust project-local files for this run |
+ | `-na`, `--no-approve` | Ignore project-local files for this run |
+diff --git a/packages/coding-agent/docs/compaction.md b/packages/coding-agent/docs/compaction.md
+index de9d02d4..9595ca54 100644
+--- a/packages/coding-agent/docs/compaction.md
++++ b/packages/coding-agent/docs/compaction.md
+@@ -1,6 +1,6 @@
+ # Compaction & Branch Summarization
+ 
+-LLMs have limited context windows. When conversations grow too long, pi uses compaction to summarize older content while preserving recent work. This page covers both auto-compaction and branch summarization.
++LLMs have limited context windows. When conversations grow too long, Pi uses compaction to summarize older content while preserving recent work. This page covers both auto-compaction and branch summarization.
+ 
+ **Source files** ([pi-mono](https://github.com/earendil-works/pi-mono)):
+ - [`packages/coding-agent/src/core/compaction/compaction.ts`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) - Auto-compaction logic
+@@ -42,13 +42,13 @@ You can also trigger manually with `/compact [instructions]`, where optional ins
+ 2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
+ 3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
+ 4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
+-5. **Reload**: Session reloads, using summary + messages from `firstKeptEntryId` onwards
++5. **Rebuilds context**: Session rebuilds the context for the next request, using summary + messages from `firstKeptEntryId` onwards
+ 
+ ```
+ Before compaction:
+ 
+   entry:  0     1     2     3      4     5     6      7      8     9
+-        ┌─────┬─────┬─────┬─────┬──────┬─────┬─────┬──────┬──────┬─────┐
++        ┌─────┬─────┬─────┬──────┬─────┬─────┬──────┬──────┬─────┬─────┐
+         │ hdr │ usr │ ass │ tool │ usr │ ass │ tool │ tool │ ass │ tool│
+         └─────┴─────┴─────┴──────┴─────┴─────┴──────┴──────┴─────┴─────┘
+                 └────────┬───────┘ └──────────────┬──────────────┘
+@@ -59,7 +59,7 @@ Before compaction:
+ After compaction (new entry appended):
+ 
+   entry:  0     1     2     3      4     5     6      7      8     9     10
+-        ┌─────┬─────┬─────┬─────┬──────┬─────┬─────┬──────┬──────┬─────┬─────┐
++        ┌─────┬─────┬─────┬──────┬─────┬─────┬──────┬──────┬─────┬─────┬─────┐
+         │ hdr │ usr │ ass │ tool │ usr │ ass │ tool │ tool │ ass │ tool│ cmp │
+         └─────┴─────┴─────┴──────┴─────┴─────┴──────┴──────┴─────┴─────┴─────┘
+                └──────────┬──────┘ └──────────────────────┬───────────────────┘
+@@ -102,7 +102,7 @@ Split turn (one huge turn exceeds budget):
+   turnPrefixMessages = [usr, ass, tool, ass, tool, tool]
+ ```
+ 
+-For split turns, pi generates two summaries and merges them:
++For split turns, Pi generates two summaries and merges them:
+ 1. **History summary**: Previous context (if any)
+ 2. **Turn prefix summary**: The early part of the split turn
+ 
+@@ -149,7 +149,7 @@ See [`prepareCompaction()`](https://github.com/earendil-works/pi-mono/blob/main/
+ 
+ ### When It Triggers
+ 
+-When you use `/tree` to navigate to a different branch, pi offers to summarize the work you're leaving. This injects context from the left branch into the new branch.
++When you use `/tree` to navigate to a different branch, Pi offers to summarize the work you're leaving. This injects context from the left branch into the new branch.
+ 
+ ### How It Works
+ 
+diff --git a/packages/coding-agent/docs/custom-provider.md b/packages/coding-agent/docs/custom-provider.md
+index 027aa611..858b992e 100644
+--- a/packages/coding-agent/docs/custom-provider.md
++++ b/packages/coding-agent/docs/custom-provider.md
+@@ -227,7 +227,7 @@ The `api` field determines which streaming implementation is used:
+ | `openai-responses` | OpenAI Responses API |
+ | `azure-openai-responses` | Azure OpenAI Responses API |
+ | `openai-codex-responses` | OpenAI Codex Responses API |
+-| `mistral-conversations` | Mistral SDK Conversations/Chat streaming |
++| `mistral-conversations` | Native Mistral Chat Completions streaming |
+ | `google-generative-ai` | Google Generative AI API |
+ | `google-vertex` | Google Vertex AI API |
+ | `bedrock-converse-stream` | Amazon Bedrock Converse API |
+diff --git a/packages/coding-agent/docs/environment-variables.md b/packages/coding-agent/docs/environment-variables.md
+index 072744ca..29c324f6 100644
+--- a/packages/coding-agent/docs/environment-variables.md
++++ b/packages/coding-agent/docs/environment-variables.md
+@@ -3,14 +3,19 @@
+ Pi uses environment variables in three ways:
+ 
+ - Variables such as `PI_OFFLINE` configure the Pi process.
+-- Pi sets `PI_CODING_AGENT` so child processes can detect that they run inside Pi.
++- Pi sets process markers so child processes can identify Pi as the launching agent.
+ - Commands run by the LLM-callable bash tool receive `PI_*` variables describing the current session.
+ 
+ Provider API-key variables are documented separately in [Providers](providers.md#environment-variables-or-auth-file).
+ 
+ ## Process Marker
+ 
+-The CLI and RPC entry points set `PI_CODING_AGENT=true`. Child processes inherit it and can use it to detect that they run inside Pi. It is not session-specific and is not set automatically when Pi is embedded through the SDK.
++The CLI and RPC entry points set two process markers:
++
++- `AI_AGENT=pi` is a generic marker that lets tooling identify Pi as the agent that launched the process.
++- `PI_CODING_AGENT=true` is Pi-specific and lets child processes detect that they run inside Pi.
++
++Child processes inherit both markers. They are not session-specific and are not set automatically when Pi is embedded through the SDK.
+ 
+ ## Bash Tool Session Environment
+ 
+@@ -82,6 +87,7 @@ These variables are read by Pi itself:
+ | `PI_CACHE_RETENTION` | Set to `long` for extended provider prompt caching where supported |
+ | `PI_SHARE_VIEWER_URL` | Override the base URL used by `/share` |
+ | `PI_HARDWARE_CURSOR` | Set to `1` to show the hardware cursor; see [Terminal setup](terminal-setup.md) |
++| `PI_TUI_ESC_TIMEOUT` | How long to wait after a lone ESC before treating it as Escape, in milliseconds; defaults to `100` over SSH and `10` otherwise. Increase if Alt-key input is misread as Escape |
+ | `VISUAL`, `EDITOR` | External editor fallback when `externalEditor` is unset |
+ | `HTTP_PROXY`, `HTTPS_PROXY` | Proxy outbound HTTP requests |
+ 
+diff --git a/packages/coding-agent/docs/extensions.md b/packages/coding-agent/docs/extensions.md
+index 00e92a1d..9ec65f89 100644
+--- a/packages/coding-agent/docs/extensions.md
++++ b/packages/coding-agent/docs/extensions.md
+@@ -1426,12 +1426,16 @@ pi.sendUserMessage([
+ // During streaming - must specify delivery mode
+ pi.sendUserMessage("Focus on error handling", { deliverAs: "steer" });
+ pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
++
++// Opt in to extension command dispatch and skill/prompt template expansion
++pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
+ ```
+ 
+ **Options:**
+ - `deliverAs` - Required when agent is streaming:
+   - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
+   - `"followUp"` - Waits for agent to finish all tools
++- `expandPromptTemplates` - Dispatch extension commands and expand skill commands and prompt templates. Defaults to `false`.
+ 
+ When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
+ 
+diff --git a/packages/coding-agent/docs/json.md b/packages/coding-agent/docs/json.md
+index f497f340..ddb9cb30 100644
+--- a/packages/coding-agent/docs/json.md
++++ b/packages/coding-agent/docs/json.md
+@@ -19,6 +19,7 @@ type JsonAgentSessionEvent =
+   | Exclude<AgentSessionEvent, { type: "message_update" }>
+   | {
+       type: "message_update";
++      usage: Usage;
+       assistantMessageEvent: WithoutPartial<AssistantMessageEvent>;
+     };
+ ```
+@@ -73,16 +74,17 @@ Followed by events as they occur:
+ {"type":"agent_start"}
+ {"type":"turn_start"}
+ {"type":"message_start","message":{"role":"assistant","content":[],...}}
+-{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
++{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+ {"type":"message_end","message":{...}}
+ {"type":"turn_end","message":{...},"toolResults":[]}
+ {"type":"agent_end","messages":[...]}
+ ```
+ 
+ `message_update` records are delta-only. They omit both the cumulative `message` field and
+-`assistantMessageEvent.partial` to keep stream size linear. Use `contentIndex` and `delta`
+-to assemble live text, thinking, or tool-call arguments if needed. `message_end` contains
+-the final authoritative message.
++`assistantMessageEvent.partial` to keep stream size linear. The top-level `usage` field contains
++the latest cumulative provider-reported usage and may remain zero when a provider only reports
++usage at completion. Use `contentIndex` and `delta` to assemble live text, thinking, or tool-call
++arguments if needed. `message_end` contains the final authoritative message.
+ 
+ ## Example
+ 
+diff --git a/packages/coding-agent/docs/keybindings.md b/packages/coding-agent/docs/keybindings.md
+index 97e5365a..2f833dc5 100644
+--- a/packages/coding-agent/docs/keybindings.md
++++ b/packages/coding-agent/docs/keybindings.md
+@@ -86,7 +86,7 @@ The dedicated history actions always change history entries, regardless of the c
+ 
+ ### TUI Fullscreen Viewport
+ 
+-These actions apply when interactive mode uses `--tui-mode fullscreen` and target the primary transcript scroll region. Two-finger trackpad and mouse-wheel input scroll the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects text and copies it to the clipboard; holding at the transcript's top or bottom edge auto-scrolls into off-screen content.
++These actions apply when interactive mode uses `--tui-mode fullscreen` and target the primary transcript scroll region. Two-finger trackpad and mouse-wheel input scroll the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects text and copies it to the clipboard; holding at the transcript's top or bottom edge auto-scrolls into off-screen content. See [Terminal setup](terminal-setup.md) for terminal-specific mouse and trackpad behavior.
+ 
+ Fullscreen transcript bindings take precedence over editor bindings. The default unmodified navigation keys therefore control the transcript in fullscreen mode, while their `ctrl` variants continue to control the editor. Outside fullscreen mode, both variants control the editor.
+ 
+@@ -97,7 +97,7 @@ Fullscreen transcript bindings take precedence over editor bindings. The default
+ | `pageUp`, `pageDown` | Editor | Transcript |
+ | `ctrl+pageUp`, `ctrl+pageDown` | Editor | Editor |
+ 
+-This routing remains configurable through the ordinary action bindings. For example, `"tui.altScreen.pageUp": "ctrl+pageUp"` makes `pageUp` control the editor and `ctrl+pageUp` control the transcript in fullscreen mode. Bind `tui.altScreen.halfPageUp` and `tui.altScreen.halfPageDown` for smaller transcript steps while keeping the full-page bindings. Setting `"tui.altScreen.pageUp": []` disables that transcript shortcut entirely. User bindings replace the defaults for that action.
++This routing remains configurable through the ordinary action bindings. For example, `"tui.altScreen.pageUp": "ctrl+pageUp"` makes `pageUp` control the editor and `ctrl+pageUp` control the transcript in fullscreen mode. Bind `tui.altScreen.halfPageUp` and `tui.altScreen.halfPageDown` for half-page steps, or bind `tui.altScreen.lineUp` and `tui.altScreen.lineDown` for single-line steps. Setting `"tui.altScreen.pageUp": []` disables that transcript shortcut entirely. User bindings replace the defaults for that action.
+ 
+ | Keybinding id | Default | Description |
+ |--------|---------|-------------|
+@@ -105,8 +105,14 @@ This routing remains configurable through the ordinary action bindings. For exam
+ | `tui.altScreen.pageDown` | `pageDown` | Scroll the transcript down by one page |
+ | `tui.altScreen.halfPageUp` | *(none)* | Scroll the transcript up by half a page |
+ | `tui.altScreen.halfPageDown` | *(none)* | Scroll the transcript down by half a page |
++| `tui.altScreen.lineUp` | *(none)* | Scroll the transcript up by one line |
++| `tui.altScreen.lineDown` | *(none)* | Scroll the transcript down by one line |
+ | `tui.altScreen.previousPrompt` | `ctrl+shift+up` | Jump to the previous marked message |
+ | `tui.altScreen.nextPrompt` | `ctrl+shift+down` | Jump to the next marked message |
++| `tui.altScreen.search` | `ctrl+shift+f` | Search the rendered transcript |
++| `tui.altScreen.searchNext` | `enter`, `ctrl+g` | Select the next search match while searching |
++| `tui.altScreen.searchPrevious` | `shift+enter`, `ctrl+shift+g` | Select the previous search match while searching |
++| `tui.altScreen.searchClose` | `escape` | Close transcript search |
+ | `tui.altScreen.top` | `home` | Scroll to the beginning of the transcript |
+ | `tui.altScreen.bottom` | `end` | Scroll to the transcript end and follow new output |
+ 
+diff --git a/packages/coding-agent/docs/rpc.md b/packages/coding-agent/docs/rpc.md
+index 499ca673..fc4c6986 100644
+--- a/packages/coding-agent/docs/rpc.md
++++ b/packages/coding-agent/docs/rpc.md
+@@ -919,6 +919,14 @@ Emitted during streaming of assistant messages. Contains a delta event without a
+ ```json
+ {
+   "type": "message_update",
++  "usage": {
++    "input": 100,
++    "output": 1,
++    "cacheRead": 0,
++    "cacheWrite": 0,
++    "totalTokens": 101,
++    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}
++  },
+   "assistantMessageEvent": {
+     "type": "text_delta",
+     "contentIndex": 0,
+@@ -943,12 +951,15 @@ The `assistantMessageEvent` field contains one of these delta types:
+ 
+ Example streaming a text response:
+ ```json
+-{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+-{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+-{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}
+-{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world"}}
++{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}
++{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
++{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}
++{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world"}}
+ ```
+ 
++The top-level `usage` field contains the latest cumulative provider-reported usage. It may remain
++zero until completion when a provider does not report usage during streaming.
++
+ `message_update` intentionally omits the former cumulative `message` field and
+ `assistantMessageEvent.partial`. Clients that need a live partial message must assemble it
+ from `message_start` and subsequent events using `contentIndex`. Treat `message_end.message`
+diff --git a/packages/coding-agent/docs/sdk.md b/packages/coding-agent/docs/sdk.md
+index edced918..a4e4f227 100644
+--- a/packages/coding-agent/docs/sdk.md
++++ b/packages/coding-agent/docs/sdk.md
+@@ -372,6 +372,13 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+ 
+ const modelRuntime = await ModelRuntime.create();
+ 
++// create() restores cached catalogs but does not refresh them from pi.dev by default.
++// Opt in to a create-time network refresh and bound how long it may take:
++const refreshedRuntime = await ModelRuntime.create({
++  allowModelNetwork: true,
++  modelRefreshTimeoutMs: 15_000,
++});
++
+ // Find specific built-in model (doesn't check if API key exists)
+ const opus = getModel("anthropic", "claude-opus-4-5");
+ if (!opus) throw new Error("Model not found");
+@@ -402,6 +409,8 @@ If no model is provided:
+ 2. Uses default from settings
+ 3. Falls back to first available model
+ 
++Remote catalogs are persisted locally so later runtimes can restore them without a network request. The default file is `~/.pi/agent/models-store.json`; set `modelsStorePath` to choose another location, or inject `modelsStore` to control persistence. Network refreshes are throttled to once per provider every four hours unless forced. To force an immediate refresh, call `await modelRuntime.refresh({ allowNetwork: true, force: true, signal })`. Setting `PI_OFFLINE` disables model network access.
++
+ To match CLI model parsing, use the exported resolver helpers:
+ 
+ ```typescript
+diff --git a/packages/coding-agent/docs/settings.md b/packages/coding-agent/docs/settings.md
+index 761a1941..58516080 100644
+--- a/packages/coding-agent/docs/settings.md
++++ b/packages/coding-agent/docs/settings.md
+@@ -66,6 +66,7 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
+ | `autocompleteMaxVisible` | number | `5` | Max visible items in autocomplete dropdown (3-20) |
+ | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
+ | `tuiMode` | string | `"regular"` | Interactive TUI mode: `"regular"` or experimental `"fullscreen"`. Changes from `/settings` apply immediately; `--tui-mode` overrides this setting at startup |
++| `fullscreenExitOutput` | string | `"transcript"` | Fullscreen exit output: `"transcript"` prints the final transcript and resume hint, while `"resume-hint"` restores the previous screen and prints only the resume hint. Has no effect in regular TUI mode |
+ | `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost column and keeps it visible, and `"hidden"` hides it. Has no effect in regular TUI mode |
+ 
+ For VS Code, include `--wait` so pi resumes after the editor exits:
+@@ -191,6 +192,20 @@ Keep `retry.provider.maxRetries` at `0` unless provider-level retries are explic
+ | `shellCommandPrefix` | string | - | Prefix for every bash command (e.g., `"shopt -s expand_aliases"`) |
+ | `npmCommand` | string[] | - | Command argv used for npm package lookup/install operations (e.g., `["mise", "exec", "node@20", "--", "npm"]`) |
+ 
++Windows paths in JSON must use forward slashes or escaped backslashes:
++
++```json
++{
++  "shellPath": "C:/Program Files/Git/bin/bash.exe"
++}
++```
++
++```json
++{
++  "shellPath": "C:\\Program Files\\Git\\bin\\bash.exe"
++}
++```
++
+ ```json
+ {
+   "npmCommand": ["mise", "exec", "node@20", "--", "npm"]
+@@ -199,6 +214,22 @@ Keep `retry.provider.maxRetries` at `0` unless provider-level retries are explic
+ 
+ `npmCommand` is used for all npm package-manager operations, including installs, uninstalls, and dependency installs inside git packages. User-scoped npm packages install under `~/.pi/agent/npm/`; project-scoped npm packages install under `.pi/npm/`. Use argv-style entries exactly as the process should be launched. When `npmCommand` is configured, git package dependency installs use plain `install` to avoid npm-specific flags in wrappers or alternate package managers.
+ 
++### Tools
++
++| Setting | Type | Default | Description |
++|---------|------|---------|-------------|
++| `defaultTools` | string[] | - | Built-in tools enabled initially. When omitted, Pi uses its standard defaults |
++
++`defaultTools` selects the built-in tools enabled at startup. Extension and SDK custom tools remain enabled:
++
++```json
++{
++  "defaultTools": ["bash", "edit", "write"]
++}
++```
++
++An empty array starts with no built-in tools while preserving extension and SDK custom tools. `--tools` replaces this behavior with a strict allowlist for all tools, `--no-tools` disables all tools, and `--no-builtin-tools` disables the built-in defaults. `--exclude-tools` filters the resulting list. A project `defaultTools` array replaces the global array.
++
+ ### Sessions
+ 
+ | Setting | Type | Default | Description |
+diff --git a/packages/coding-agent/docs/terminal-setup.md b/packages/coding-agent/docs/terminal-setup.md
+index d2a8fb92..08839256 100644
+--- a/packages/coding-agent/docs/terminal-setup.md
++++ b/packages/coding-agent/docs/terminal-setup.md
+@@ -2,9 +2,26 @@
+ 
+ Pi uses the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) for reliable modifier key detection. Most modern terminals support this protocol, but some require configuration.
+ 
+-## Kitty, iTerm2
++## Kitty
+ 
+-Work out of the box.
++Works out of the box.
++
++## iTerm2
++
++### Regular TUI mode
++
++Works out of the box.
++
++### Fullscreen TUI mode
++
++Pi owns the viewport, so iTerm2 sends mouse-wheel reports instead of scrolling its native scrollback. With iTerm2's default fast-trackpad behavior, those reports can lose most of an accelerated wheel delta, making fullscreen scrolling much slower than regular scrolling.
++
++If fast mouse-wheel gestures move only about one line at a time in fullscreen mode:
++
++1. Open **iTerm2 → Settings → Advanced**.
++2. Search for **Trackpad scrolls fast?** and set it to **No**.
++
++This is an iTerm2-wide workaround and may also change native trackpad scrolling. The underlying behavior is tracked in [iTerm2 issue 9619](https://gitlab.com/gnachman/iterm2/-/work_items/9619).
+ 
+ ## Apple Terminal
+ 
+@@ -32,6 +49,10 @@ If Claude Code 2.x or newer is the only reason you added that mapping, you can r
+ 
+ Pi binds `Ctrl+J` as a default newline alias, so `Shift+Enter` keeps working in tmux via that remap without extra pi configuration.
+ 
++### Fullscreen TUI mode
++
++In fullscreen mode, links remain clickable, but Ghostty does not show its hover underline or lower-left URL preview while pi captures mouse input. Hold `Shift+Command` on macOS or `Shift+Ctrl` on Linux to use Ghostty's native link handling.
++
+ ## WezTerm
+ 
+ WezTerm usually works out of the box for `Shift+Enter` via xterm modifyOtherKeys. To use the Kitty keyboard protocol explicitly, create `~/.wezterm.lua`:
+diff --git a/packages/coding-agent/docs/themes.md b/packages/coding-agent/docs/themes.md
+index 2a00dee3..99a2b949 100644
+--- a/packages/coding-agent/docs/themes.md
++++ b/packages/coding-agent/docs/themes.md
+@@ -39,6 +39,23 @@ Select a theme via `/settings` or in `settings.json`:
+ 
+ On first run, pi detects your terminal background and defaults to `dark` or `light`.
+ 
++### Initial Theme
++
++Start an interactive run with a theme without changing the saved setting:
++
++```bash
++pi --use-theme light
++```
++
++To follow terminal appearance, use `lightTheme/darkTheme` syntax:
++
++```bash
++pi --use-theme light/dark
++```
++
++The CLI value is the initial theme for that run. Choosing another theme later in `/settings` applies it immediately
++and saves it normally.
++
+ ## Creating a Custom Theme
+ 
+ 1. Create a theme file:
+@@ -72,6 +89,8 @@ vim ~/.pi/agent/themes/my-theme.json
+     "thinkingText": "secondary",
+     "selectedBg": "#2d2d30",
+     "scrollbarThumb": "#555566",
++    "searchMatchBg": "#2d2d30",
++    "searchMatchText": "",
+     "userMessageBg": "#2d2d30",
+     "userMessageText": "",
+     "customMessageBg": "#2d2d30",
+@@ -141,13 +160,13 @@ vim ~/.pi/agent/themes/my-theme.json
+ 
+ - `name` is required, must be unique, and must not contain `/`.
+ - `vars` is optional. Define reusable colors here, then reference them in `colors`.
+-- `colors` must define all 51 required tokens. `thinkingMax` is optional and falls back to `thinkingXhigh`; `scrollbarThumb` is optional and falls back to `selectedBg`.
++- `colors` must define all 51 required tokens. `thinkingMax`, `scrollbarThumb`, and the two search highlight tokens are optional and use the fallbacks listed below.
+ 
+ The `$schema` field enables editor auto-completion and validation.
+ 
+ ## Color Tokens
+ 
+-Every theme must define all 51 required color tokens. `thinkingMax` and `scrollbarThumb` are optional for compatibility with existing themes; when omitted, they use `thinkingXhigh` and `selectedBg`, respectively.
++Every theme must define all 51 required color tokens. The optional tokens preserve compatibility with existing themes: `thinkingMax` falls back to `thinkingXhigh`, `scrollbarThumb` and `searchMatchBg` fall back to `selectedBg`, and `searchMatchText` falls back to `text`. Other search matches use `searchMatchText` on `searchMatchBg` with an underline; the current match reverses that foreground/background pair and uses bold text.
+ 
+ ### Core UI (11 colors)
+ 
+@@ -165,12 +184,14 @@ Every theme must define all 51 required color tokens. `thinkingMax` and `scrollb
+ | `text` | Default text (usually `""`) |
+ | `thinkingText` | Thinking block text |
+ 
+-### Backgrounds & Content (11 required, 1 optional)
++### Backgrounds & Content (11 required, 3 optional)
+ 
+ | Token | Purpose |
+ |-------|---------|
+ | `selectedBg` | Selected line background |
+ | `scrollbarThumb` | Fullscreen scrollbar thumb background; optional, falls back to `selectedBg` |
++| `searchMatchBg` | Transcript search match background and current-match text; optional, falls back to `selectedBg` |
++| `searchMatchText` | Transcript search match text and current-match background; optional, falls back to `text` |
+ | `userMessageBg` | User message background |
+ | `userMessageText` | User message text |
+ | `customMessageBg` | Extension message background |
+diff --git a/packages/coding-agent/docs/tui.md b/packages/coding-agent/docs/tui.md
+index d9f78929..31dbf58b 100644
+--- a/packages/coding-agent/docs/tui.md
++++ b/packages/coding-agent/docs/tui.md
+@@ -431,7 +431,7 @@ renderResult(result, options, theme, context) {
+ 
+ | Category | Colors |
+ |----------|--------|
+-| General | `text`, `accent`, `muted`, `dim` |
++| General | `text`, `accent`, `muted`, `dim`, `searchMatchText` |
+ | Status | `success`, `error`, `warning` |
+ | Borders | `border`, `borderAccent`, `borderMuted` |
+ | Messages | `userMessageText`, `customMessageText`, `customMessageLabel` |
+@@ -444,7 +444,7 @@ renderResult(result, options, theme, context) {
+ 
+ **Background colors** (`theme.bg(color, text)`):
+ 
+-`selectedBg`, `userMessageBg`, `customMessageBg`, `toolPendingBg`, `toolSuccessBg`, `toolErrorBg`
++`selectedBg`, `searchMatchBg`, `userMessageBg`, `customMessageBg`, `toolPendingBg`, `toolSuccessBg`, `toolErrorBg`
+ 
+ **For Markdown**, use `getMarkdownTheme()`:
+ 
+diff --git a/packages/coding-agent/docs/usage.md b/packages/coding-agent/docs/usage.md
+index d09e37f8..41a5c37d 100644
+--- a/packages/coding-agent/docs/usage.md
++++ b/packages/coding-agent/docs/usage.md
+@@ -242,15 +242,16 @@ pi --no-extensions -e ./my-extension.ts
+ | `--system-prompt <text>` | Replace default prompt; context files and skills are still appended |
+ | `--append-system-prompt <text>` | Append to system prompt |
+ | `--tui-mode <mode>` | TUI mode: `regular` (default) or experimental `fullscreen` |
++| `--use-theme <name[/name]>` | Set the initial interactive theme for this run without changing settings |
+ | `--verbose` | Force verbose startup |
+ | `-a`, `--approve` | Trust project-local files for this run |
+ | `-na`, `--no-approve` | Ignore project-local files for this run |
+ | `-h`, `--help` | Show help |
+ | `-v`, `--version` | Show version |
+ 
+-In `fullscreen` mode, the transcript scrolls inside the terminal viewport while queued messages, working status, extension widgets, editor, and footer remain fixed at the bottom. Mouse/trackpad input scrolls the region under the pointer; keyboard viewport actions always remain available. Inline images work in terminals that support the Kitty graphics protocol, including Kitty and Ghostty. In iTerm2 they render as text placeholders because its inline-image protocol cannot delete or crop placements during application-owned scrolling. In `regular` mode, pi uses the main screen and terminal-owned scrollback, and iTerm2 inline images continue to render normally.
++In `fullscreen` mode, the transcript scrolls inside the terminal viewport while queued messages, working status, extension widgets, editor, and footer remain fixed at the bottom. Mouse/trackpad input scrolls the region under the pointer; keyboard viewport actions always remain available. Inline images work in terminals that support the Kitty graphics protocol, including Kitty and Ghostty. In iTerm2 they render as text placeholders because its inline-image protocol cannot delete or crop placements during application-owned scrolling. In `regular` mode, pi uses the main screen and terminal-owned scrollback, and iTerm2 inline images continue to render normally. See [Terminal setup](terminal-setup.md) for terminal-specific settings and workarounds.
+ 
+-Set **TUI mode** in `/settings` to switch between `regular` and `fullscreen` immediately and choose the default for future sessions.
++Set **TUI mode** in `/settings` to switch between `regular` and `fullscreen` immediately and choose the default for future sessions. **Fullscreen exit output** controls whether exiting fullscreen prints the final transcript or restores the previous screen and prints only the session resume hint.
+ 
+ ### File Arguments
+ 
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+index 40ac536e..272f0fcb 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "pi-extension-custom-provider",
+-  "version": "0.84.1",
++  "version": "0.84.2",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "pi-extension-custom-provider",
+-      "version": "0.84.1",
++      "version": "0.84.2",
+       "dependencies": {
+         "@anthropic-ai/sdk": "^0.52.0"
+       }
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+index e4760cc1..7c823163 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-custom-provider-anthropic",
+   "private": true,
+-  "version": "0.84.1",
++  "version": "0.84.2",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json b/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+index a13a3a8c..9a8e14ff 100644
+--- a/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
++++ b/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-custom-provider-gitlab-duo",
+   "private": true,
+-  "version": "0.84.1",
++  "version": "0.84.2",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/gondolin/package-lock.json b/packages/coding-agent/examples/extensions/gondolin/package-lock.json
+index 5ba0c2d8..df80c87f 100644
+--- a/packages/coding-agent/examples/extensions/gondolin/package-lock.json
++++ b/packages/coding-agent/examples/extensions/gondolin/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+ 	"name": "pi-extension-gondolin",
+-	"version": "0.84.1",
++	"version": "0.84.2",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "pi-extension-gondolin",
+-			"version": "0.84.1",
++			"version": "0.84.2",
+ 			"dependencies": {
+ 				"@earendil-works/gondolin": "0.12.0"
+ 			}
+diff --git a/packages/coding-agent/examples/extensions/gondolin/package.json b/packages/coding-agent/examples/extensions/gondolin/package.json
+index 83019c1d..450c74f6 100644
+--- a/packages/coding-agent/examples/extensions/gondolin/package.json
++++ b/packages/coding-agent/examples/extensions/gondolin/package.json
+@@ -1,7 +1,7 @@
+ {
+ 	"name": "pi-extension-gondolin",
+ 	"private": true,
+-	"version": "0.84.1",
++	"version": "0.84.2",
+ 	"type": "module",
+ 	"scripts": {
+ 		"clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/sandbox/package-lock.json b/packages/coding-agent/examples/extensions/sandbox/package-lock.json
+index 450c0460..22d48511 100644
+--- a/packages/coding-agent/examples/extensions/sandbox/package-lock.json
++++ b/packages/coding-agent/examples/extensions/sandbox/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+ 	"name": "pi-extension-sandbox",
+-	"version": "1.14.1",
++	"version": "1.14.2",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "pi-extension-sandbox",
+-			"version": "1.14.1",
++			"version": "1.14.2",
+ 			"dependencies": {
+ 				"@anthropic-ai/sandbox-runtime": "^0.0.26"
+ 			}
+diff --git a/packages/coding-agent/examples/extensions/sandbox/package.json b/packages/coding-agent/examples/extensions/sandbox/package.json
+index 7e028f28..57ba99af 100644
+--- a/packages/coding-agent/examples/extensions/sandbox/package.json
++++ b/packages/coding-agent/examples/extensions/sandbox/package.json
+@@ -1,7 +1,7 @@
+ {
+ 	"name": "pi-extension-sandbox",
+ 	"private": true,
+-	"version": "1.14.1",
++	"version": "1.14.2",
+ 	"type": "module",
+ 	"scripts": {
+ 		"clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/examples/extensions/subagent/README.md b/packages/coding-agent/examples/extensions/subagent/README.md
+index f98b6458..9290342d 100644
+--- a/packages/coding-agent/examples/extensions/subagent/README.md
++++ b/packages/coding-agent/examples/extensions/subagent/README.md
+@@ -137,6 +137,8 @@ model: claude-haiku-4-5
+ System prompt for the agent goes here.
+ ```
+ 
++When `model` is omitted, the subagent inherits the dispatching session's active model and thinking level.
++
+ **Locations:**
+ - `~/.pi/agent/agents/*.md` - User-level (always loaded)
+ - `.pi/agents/*.md` - Project-level (only with `agentScope: "project"` or `"both"`)
+diff --git a/packages/coding-agent/examples/extensions/subagent/agents.ts b/packages/coding-agent/examples/extensions/subagent/agents.ts
+index c41ef579..b8a36598 100644
+--- a/packages/coding-agent/examples/extensions/subagent/agents.ts
++++ b/packages/coding-agent/examples/extensions/subagent/agents.ts
+@@ -23,6 +23,42 @@ export interface AgentDiscoveryResult {
+ 	projectAgentsDir: string | null;
+ }
+ 
++/**
++ * Raw agent frontmatter. Values are `unknown` because `parseFrontmatter` runs a
++ * real YAML parser, so any scalar or collection can appear here.
++ *
++ * A type alias rather than an interface: `parseFrontmatter` constrains its
++ * parameter to `Record<string, unknown>`, and only an alias picks up the
++ * implicit index signature that satisfies it.
++ */
++type AgentFrontmatter = {
++	name?: unknown;
++	description?: unknown;
++	tools?: unknown;
++	model?: unknown;
++};
++
++/**
++ * Normalize a frontmatter `tools` value to a list of tool names.
++ *
++ * Both spellings are valid YAML and both are in use:
++ *
++ *     tools: read, bash        # string
++ *     tools: [read, bash]      # array
++ *
++ * so accept either. Anything else (a number, a map, a nested list) yields no
++ * tools rather than throwing: this runs inside agent discovery, where a single
++ * bad file must not take down every other agent in the same directory.
++ */
++function parseToolList(value: unknown): string[] | undefined {
++	const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
++	const tools = raw
++		.filter((t): t is string => typeof t === "string")
++		.map((t) => t.trim())
++		.filter(Boolean);
++	return tools.length > 0 ? tools : undefined;
++}
++
+ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
+ 	const agents: AgentConfig[] = [];
+ 
+@@ -49,22 +85,17 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
+ 			continue;
+ 		}
+ 
+-		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
++		const { frontmatter, body } = parseFrontmatter<AgentFrontmatter>(content);
+ 
+-		if (!frontmatter.name || !frontmatter.description) {
++		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
+ 			continue;
+ 		}
+ 
+-		const tools = frontmatter.tools
+-			?.split(",")
+-			.map((t: string) => t.trim())
+-			.filter(Boolean);
+-
+ 		agents.push({
+ 			name: frontmatter.name,
+ 			description: frontmatter.description,
+-			tools: tools && tools.length > 0 ? tools : undefined,
+-			model: frontmatter.model,
++			tools: parseToolList(frontmatter.tools),
++			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+ 			systemPrompt: body,
+ 			source,
+ 			filePath,
+diff --git a/packages/coding-agent/examples/extensions/subagent/index.ts b/packages/coding-agent/examples/extensions/subagent/index.ts
+index 832dcc74..fa3b09e3 100644
+--- a/packages/coding-agent/examples/extensions/subagent/index.ts
++++ b/packages/coding-agent/examples/extensions/subagent/index.ts
+@@ -16,7 +16,7 @@ import { spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
++import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import type { Message } from "@earendil-works/pi-ai";
+ import { StringEnum } from "@earendil-works/pi-ai";
+ import {
+@@ -264,8 +264,14 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
+ 
+ type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+ 
++interface DispatchDefaults {
++	model?: string;
++	thinkingLevel?: ThinkingLevel;
++}
++
+ async function runSingleAgent(
+ 	defaultCwd: string,
++	dispatchDefaults: DispatchDefaults,
+ 	agents: AgentConfig[],
+ 	agentName: string,
+ 	task: string,
+@@ -292,7 +298,12 @@ async function runSingleAgent(
+ 	}
+ 
+ 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+-	if (agent.model) args.push("--model", agent.model);
++	const inheritsDispatchConfig = !agent.model;
++	const model = agent.model ?? dispatchDefaults.model;
++	if (model) args.push("--model", model);
++	if (inheritsDispatchConfig && dispatchDefaults.thinkingLevel) {
++		args.push("--thinking", dispatchDefaults.thinkingLevel);
++	}
+ 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+ 
+ 	let tmpPromptDir: string | null = null;
+@@ -306,7 +317,7 @@ async function runSingleAgent(
+ 		messages: [],
+ 		stderr: "",
+ 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+-		model: agent.model,
++		model,
+ 		step,
+ 	};
+ 
+@@ -471,6 +482,10 @@ export default function (pi: ExtensionAPI) {
+ 
+ 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+ 			const agentScope: AgentScope = params.agentScope ?? "user";
++			const dispatchDefaults: DispatchDefaults = {
++				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
++				thinkingLevel: ctx.thinkingLevel,
++			};
+ 			const discovery = discoverAgents(ctx.cwd, agentScope);
+ 			const agents = discovery.agents;
+ 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
+@@ -552,6 +567,7 @@ export default function (pi: ExtensionAPI) {
+ 
+ 					const result = await runSingleAgent(
+ 						ctx.cwd,
++						dispatchDefaults,
+ 						agents,
+ 						step.agent,
+ 						taskWithContext,
+@@ -624,6 +640,7 @@ export default function (pi: ExtensionAPI) {
+ 				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
+ 					const result = await runSingleAgent(
+ 						ctx.cwd,
++						dispatchDefaults,
+ 						agents,
+ 						t.agent,
+ 						t.task,
+@@ -666,6 +683,7 @@ export default function (pi: ExtensionAPI) {
+ 			if (params.agent && params.task) {
+ 				const result = await runSingleAgent(
+ 					ctx.cwd,
++					dispatchDefaults,
+ 					agents,
+ 					params.agent,
+ 					params.task,
+diff --git a/packages/coding-agent/examples/extensions/with-deps/package-lock.json b/packages/coding-agent/examples/extensions/with-deps/package-lock.json
+index 963fb84a..fc39ce64 100644
+--- a/packages/coding-agent/examples/extensions/with-deps/package-lock.json
++++ b/packages/coding-agent/examples/extensions/with-deps/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "pi-extension-with-deps",
+-  "version": "0.84.1",
++  "version": "0.84.2",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "pi-extension-with-deps",
+-      "version": "0.84.1",
++      "version": "0.84.2",
+       "dependencies": {
+         "ms": "^2.1.3"
+       },
+diff --git a/packages/coding-agent/examples/extensions/with-deps/package.json b/packages/coding-agent/examples/extensions/with-deps/package.json
+index 08a30f33..907d96bc 100644
+--- a/packages/coding-agent/examples/extensions/with-deps/package.json
++++ b/packages/coding-agent/examples/extensions/with-deps/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pi-extension-with-deps",
+   "private": true,
+-  "version": "0.84.1",
++  "version": "0.84.2",
+   "type": "module",
+   "scripts": {
+     "clean": "echo 'nothing to clean'",
+diff --git a/packages/coding-agent/install-lock/package-lock.json b/packages/coding-agent/install-lock/package-lock.json
+index 32536f4a..5f43256d 100644
+--- a/packages/coding-agent/install-lock/package-lock.json
++++ b/packages/coding-agent/install-lock/package-lock.json
+@@ -1,14 +1,14 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent-install",
+-	"version": "0.84.1",
++	"version": "0.84.2",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "@earendil-works/pi-coding-agent-install",
+-			"version": "0.84.1",
++			"version": "0.84.2",
+ 			"dependencies": {
+-				"@earendil-works/pi-coding-agent": "0.84.1"
++				"@earendil-works/pi-coding-agent": "0.84.2"
+ 			},
+ 			"engines": {
+ 				"node": ">=22.19.0"
+@@ -450,12 +450,12 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-agent-core": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-ai": "^0.84.1",
+-				"@earendil-works/pi-telemetry": "^0.84.1",
++				"@earendil-works/pi-ai": "^0.84.2",
++				"@earendil-works/pi-telemetry": "^0.84.2",
+ 				"diff": "8.0.4",
+ 				"ignore": "7.0.5",
+ 				"typebox": "1.3.7",
+@@ -466,20 +466,19 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-ai": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"@anthropic-ai/sdk": "0.91.1",
+ 				"@aws-sdk/client-bedrock-runtime": "3.1048.0",
+-				"@earendil-works/pi-telemetry": "^0.84.1",
++				"@earendil-works/pi-telemetry": "^0.84.2",
+ 				"@google/genai": "1.52.0",
+-				"@mistralai/mistralai": "2.2.6",
+ 				"@opentelemetry/api": "1.9.0",
+ 				"@smithy/node-http-handler": "4.7.3",
+ 				"http-proxy-agent": "7.0.2",
+ 				"https-proxy-agent": "7.0.6",
+-				"openai": "6.26.0",
++				"openai": "6.40.0",
+ 				"partial-json": "0.1.7",
+ 				"typebox": "1.3.7"
+ 			},
+@@ -491,26 +490,26 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-client": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-protocol": "^0.84.1"
++				"@earendil-works/pi-protocol": "^0.84.2"
+ 			},
+ 			"engines": {
+ 				"node": ">=22.19.0"
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-coding-agent": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-agent-core": "^0.84.1",
+-				"@earendil-works/pi-ai": "^0.84.1",
+-				"@earendil-works/pi-client": "^0.84.1",
+-				"@earendil-works/pi-protocol": "^0.84.1",
+-				"@earendil-works/pi-tui": "^0.84.1",
++				"@earendil-works/pi-agent-core": "^0.84.2",
++				"@earendil-works/pi-ai": "^0.84.2",
++				"@earendil-works/pi-client": "^0.84.2",
++				"@earendil-works/pi-protocol": "^0.84.2",
++				"@earendil-works/pi-tui": "^0.84.2",
+ 				"@silvia-odwyer/photon-node": "0.3.4",
+ 				"chalk": "5.6.2",
+ 				"cross-spawn": "7.0.6",
+@@ -539,8 +538,8 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-protocol": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"typebox": "1.3.7"
+@@ -550,16 +549,16 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-telemetry": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"engines": {
+ 				"node": ">=22.19.0"
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-tui": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"get-east-asian-width": "1.6.0",
+@@ -772,26 +771,6 @@
+ 			],
+ 			"optional": true
+ 		},
+-		"node_modules/@mistralai/mistralai": {
+-			"version": "2.2.6",
+-			"resolved": "https://registry.npmjs.org/@mistralai/mistralai/-/mistralai-2.2.6.tgz",
+-			"integrity": "sha512-W8pX7zHxjJvMIpw8JMxeJEleapXX0Q9NPszdNzqkM3MIEoIGPObdodujj+WHteXEvGfaP/AMwlNyRfEzSY6dQQ==",
+-			"license": "Apache-2.0",
+-			"dependencies": {
+-				"@opentelemetry/semantic-conventions": "^1.40.0",
+-				"ws": "^8.18.0",
+-				"zod": "^3.25.0 || ^4.0.0",
+-				"zod-to-json-schema": "^3.25.0"
+-			},
+-			"peerDependencies": {
+-				"@opentelemetry/api": "^1.9.0"
+-			},
+-			"peerDependenciesMeta": {
+-				"@opentelemetry/api": {
+-					"optional": true
+-				}
+-			}
+-		},
+ 		"node_modules/@nodable/entities": {
+ 			"version": "2.1.0",
+ 			"resolved": "https://registry.npmjs.org/@nodable/entities/-/entities-2.1.0.tgz",
+@@ -813,15 +792,6 @@
+ 				"node": ">=8.0.0"
+ 			}
+ 		},
+-		"node_modules/@opentelemetry/semantic-conventions": {
+-			"version": "1.41.1",
+-			"resolved": "https://registry.npmjs.org/@opentelemetry/semantic-conventions/-/semantic-conventions-1.41.1.tgz",
+-			"integrity": "sha512-/UhIkaZgPutTFmQ7RnIJGgDXZmtEJ7Dvi86xNTFWcnRxVRNk/aotsqDJYeEvDP+FSMB2SdW+pQzNMcWP0rwuNA==",
+-			"license": "Apache-2.0",
+-			"engines": {
+-				"node": ">=14"
+-			}
+-		},
+ 		"node_modules/@protobufjs/aspromise": {
+ 			"version": "1.1.2",
+ 			"resolved": "https://registry.npmjs.org/@protobufjs/aspromise/-/aspromise-1.1.2.tgz",
+@@ -1541,9 +1511,9 @@
+ 			}
+ 		},
+ 		"node_modules/openai": {
+-			"version": "6.26.0",
+-			"resolved": "https://registry.npmjs.org/openai/-/openai-6.26.0.tgz",
+-			"integrity": "sha512-zd23dbWTjiJ6sSAX6s0HrCZi41JwTA1bQVs0wLQPZ2/5o2gxOJA5wh7yOAUgwYybfhDXyhwlpeQf7Mlgx8EOCA==",
++			"version": "6.40.0",
++			"resolved": "https://registry.npmjs.org/openai/-/openai-6.40.0.tgz",
++			"integrity": "sha512-MWtTjd/gQt4jpbji61NTgFWJLoY/PdRJ6wG9/ZDRMYNMlBKrCrSlkLI+KgHP1vR1qT6LKSAyAqIxno6lcK9JiA==",
+ 			"license": "Apache-2.0",
+ 			"peerDependencies": {
+ 				"ws": "^8.18.0",
+@@ -1556,9 +1526,6 @@
+ 				"zod": {
+ 					"optional": true
+ 				}
+-			},
+-			"bin": {
+-				"openai": "bin/cli"
+ 			}
+ 		},
+ 		"node_modules/p-retry": {
+@@ -1856,24 +1823,6 @@
+ 			"funding": {
+ 				"url": "https://github.com/sponsors/eemeli"
+ 			}
+-		},
+-		"node_modules/zod": {
+-			"version": "3.25.76",
+-			"resolved": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
+-			"integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==",
+-			"license": "MIT",
+-			"funding": {
+-				"url": "https://github.com/sponsors/colinhacks"
+-			}
+-		},
+-		"node_modules/zod-to-json-schema": {
+-			"version": "3.25.2",
+-			"resolved": "https://registry.npmjs.org/zod-to-json-schema/-/zod-to-json-schema-3.25.2.tgz",
+-			"integrity": "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==",
+-			"license": "ISC",
+-			"peerDependencies": {
+-				"zod": "^3.25.28 || ^4"
+-			}
+ 		}
+ 	}
+ }
+diff --git a/packages/coding-agent/install-lock/package.json b/packages/coding-agent/install-lock/package.json
+index a761b0bd..4c35a51e 100644
+--- a/packages/coding-agent/install-lock/package.json
++++ b/packages/coding-agent/install-lock/package.json
+@@ -1,10 +1,10 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent-install",
+-	"version": "0.84.1",
++	"version": "0.84.2",
+ 	"private": true,
+ 	"description": "Lockfile root used by the Pi installer and updater.",
+ 	"dependencies": {
+-		"@earendil-works/pi-coding-agent": "0.84.1"
++		"@earendil-works/pi-coding-agent": "0.84.2"
+ 	},
+ 	"overrides": {
+ 		"protobufjs": "7.6.5",
+diff --git a/packages/coding-agent/npm-shrinkwrap.json b/packages/coding-agent/npm-shrinkwrap.json
+index ea3af110..2f2c309b 100644
+--- a/packages/coding-agent/npm-shrinkwrap.json
++++ b/packages/coding-agent/npm-shrinkwrap.json
+@@ -1,19 +1,19 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent",
+-	"version": "0.84.1",
++	"version": "0.84.2",
+ 	"lockfileVersion": 3,
+ 	"requires": true,
+ 	"packages": {
+ 		"": {
+ 			"name": "@earendil-works/pi-coding-agent",
+-			"version": "0.84.1",
++			"version": "0.84.2",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-agent-core": "^0.84.1",
+-				"@earendil-works/pi-ai": "^0.84.1",
+-				"@earendil-works/pi-client": "^0.84.1",
+-				"@earendil-works/pi-protocol": "^0.84.1",
+-				"@earendil-works/pi-tui": "^0.84.1",
++				"@earendil-works/pi-agent-core": "^0.84.2",
++				"@earendil-works/pi-ai": "^0.84.2",
++				"@earendil-works/pi-client": "^0.84.2",
++				"@earendil-works/pi-protocol": "^0.84.2",
++				"@earendil-works/pi-tui": "^0.84.2",
+ 				"@silvia-odwyer/photon-node": "0.3.4",
+ 				"chalk": "5.6.2",
+ 				"cross-spawn": "7.0.6",
+@@ -477,12 +477,12 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-agent-core": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-ai": "^0.84.1",
+-				"@earendil-works/pi-telemetry": "^0.84.1",
++				"@earendil-works/pi-ai": "^0.84.2",
++				"@earendil-works/pi-telemetry": "^0.84.2",
+ 				"diff": "8.0.4",
+ 				"ignore": "7.0.5",
+ 				"typebox": "1.3.7",
+@@ -493,20 +493,19 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-ai": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"@anthropic-ai/sdk": "0.91.1",
+ 				"@aws-sdk/client-bedrock-runtime": "3.1048.0",
+-				"@earendil-works/pi-telemetry": "^0.84.1",
++				"@earendil-works/pi-telemetry": "^0.84.2",
+ 				"@google/genai": "1.52.0",
+-				"@mistralai/mistralai": "2.2.6",
+ 				"@opentelemetry/api": "1.9.0",
+ 				"@smithy/node-http-handler": "4.7.3",
+ 				"http-proxy-agent": "7.0.2",
+ 				"https-proxy-agent": "7.0.6",
+-				"openai": "6.26.0",
++				"openai": "6.40.0",
+ 				"partial-json": "0.1.7",
+ 				"typebox": "1.3.7"
+ 			},
+@@ -518,19 +517,19 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-client": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-client/-/pi-client-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+-				"@earendil-works/pi-protocol": "^0.84.1"
++				"@earendil-works/pi-protocol": "^0.84.2"
+ 			},
+ 			"engines": {
+ 				"node": ">=22.19.0"
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-protocol": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-protocol/-/pi-protocol-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"typebox": "1.3.7"
+@@ -540,16 +539,16 @@
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-telemetry": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"engines": {
+ 				"node": ">=22.19.0"
+ 			}
+ 		},
+ 		"node_modules/@earendil-works/pi-tui": {
+-			"version": "0.84.1",
+-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.84.1.tgz",
++			"version": "0.84.2",
++			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.84.2.tgz",
+ 			"license": "MIT",
+ 			"dependencies": {
+ 				"get-east-asian-width": "1.6.0",
+@@ -762,26 +761,6 @@
+ 			],
+ 			"optional": true
+ 		},
+-		"node_modules/@mistralai/mistralai": {
+-			"version": "2.2.6",
+-			"resolved": "https://registry.npmjs.org/@mistralai/mistralai/-/mistralai-2.2.6.tgz",
+-			"integrity": "sha512-W8pX7zHxjJvMIpw8JMxeJEleapXX0Q9NPszdNzqkM3MIEoIGPObdodujj+WHteXEvGfaP/AMwlNyRfEzSY6dQQ==",
+-			"license": "Apache-2.0",
+-			"dependencies": {
+-				"@opentelemetry/semantic-conventions": "^1.40.0",
+-				"ws": "^8.18.0",
+-				"zod": "^3.25.0 || ^4.0.0",
+-				"zod-to-json-schema": "^3.25.0"
+-			},
+-			"peerDependencies": {
+-				"@opentelemetry/api": "^1.9.0"
+-			},
+-			"peerDependenciesMeta": {
+-				"@opentelemetry/api": {
+-					"optional": true
+-				}
+-			}
+-		},
+ 		"node_modules/@nodable/entities": {
+ 			"version": "2.1.0",
+ 			"resolved": "https://registry.npmjs.org/@nodable/entities/-/entities-2.1.0.tgz",
+@@ -803,15 +782,6 @@
+ 				"node": ">=8.0.0"
+ 			}
+ 		},
+-		"node_modules/@opentelemetry/semantic-conventions": {
+-			"version": "1.41.1",
+-			"resolved": "https://registry.npmjs.org/@opentelemetry/semantic-conventions/-/semantic-conventions-1.41.1.tgz",
+-			"integrity": "sha512-/UhIkaZgPutTFmQ7RnIJGgDXZmtEJ7Dvi86xNTFWcnRxVRNk/aotsqDJYeEvDP+FSMB2SdW+pQzNMcWP0rwuNA==",
+-			"license": "Apache-2.0",
+-			"engines": {
+-				"node": ">=14"
+-			}
+-		},
+ 		"node_modules/@protobufjs/aspromise": {
+ 			"version": "1.1.2",
+ 			"resolved": "https://registry.npmjs.org/@protobufjs/aspromise/-/aspromise-1.1.2.tgz",
+@@ -1531,9 +1501,9 @@
+ 			}
+ 		},
+ 		"node_modules/openai": {
+-			"version": "6.26.0",
+-			"resolved": "https://registry.npmjs.org/openai/-/openai-6.26.0.tgz",
+-			"integrity": "sha512-zd23dbWTjiJ6sSAX6s0HrCZi41JwTA1bQVs0wLQPZ2/5o2gxOJA5wh7yOAUgwYybfhDXyhwlpeQf7Mlgx8EOCA==",
++			"version": "6.40.0",
++			"resolved": "https://registry.npmjs.org/openai/-/openai-6.40.0.tgz",
++			"integrity": "sha512-MWtTjd/gQt4jpbji61NTgFWJLoY/PdRJ6wG9/ZDRMYNMlBKrCrSlkLI+KgHP1vR1qT6LKSAyAqIxno6lcK9JiA==",
+ 			"license": "Apache-2.0",
+ 			"peerDependencies": {
+ 				"ws": "^8.18.0",
+@@ -1546,9 +1516,6 @@
+ 				"zod": {
+ 					"optional": true
+ 				}
+-			},
+-			"bin": {
+-				"openai": "bin/cli"
+ 			}
+ 		},
+ 		"node_modules/p-retry": {
+@@ -1846,24 +1813,6 @@
+ 			"funding": {
+ 				"url": "https://github.com/sponsors/eemeli"
+ 			}
+-		},
+-		"node_modules/zod": {
+-			"version": "3.25.76",
+-			"resolved": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
+-			"integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==",
+-			"license": "MIT",
+-			"funding": {
+-				"url": "https://github.com/sponsors/colinhacks"
+-			}
+-		},
+-		"node_modules/zod-to-json-schema": {
+-			"version": "3.25.2",
+-			"resolved": "https://registry.npmjs.org/zod-to-json-schema/-/zod-to-json-schema-3.25.2.tgz",
+-			"integrity": "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==",
+-			"license": "ISC",
+-			"peerDependencies": {
+-				"zod": "^3.25.28 || ^4"
+-			}
+ 		}
+ 	}
+ }
+diff --git a/packages/coding-agent/package.json b/packages/coding-agent/package.json
+index f6fc21a3..58d9dd64 100644
+--- a/packages/coding-agent/package.json
++++ b/packages/coding-agent/package.json
+@@ -1,6 +1,6 @@
+ {
+ 	"name": "@earendil-works/pi-coding-agent",
+-	"version": "0.84.1",
++	"version": "0.84.2",
+ 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
+ 	"type": "module",
+ 	"piConfig": {
+@@ -43,11 +43,11 @@
+ 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
+ 	},
+ 	"dependencies": {
+-		"@earendil-works/pi-agent-core": "^0.84.1",
+-		"@earendil-works/pi-ai": "^0.84.1",
+-		"@earendil-works/pi-client": "^0.84.1",
+-		"@earendil-works/pi-protocol": "^0.84.1",
+-		"@earendil-works/pi-tui": "^0.84.1",
++		"@earendil-works/pi-agent-core": "^0.84.2",
++		"@earendil-works/pi-ai": "^0.84.2",
++		"@earendil-works/pi-client": "^0.84.2",
++		"@earendil-works/pi-protocol": "^0.84.2",
++		"@earendil-works/pi-tui": "^0.84.2",
+ 		"@silvia-odwyer/photon-node": "0.3.4",
+ 		"chalk": "5.6.2",
+ 		"cross-spawn": "7.0.6",
+diff --git a/packages/coding-agent/src/cli/args.ts b/packages/coding-agent/src/cli/args.ts
+index 5ea1ee8f..3c0e01b3 100644
+--- a/packages/coding-agent/src/cli/args.ts
++++ b/packages/coding-agent/src/cli/args.ts
+@@ -42,6 +42,7 @@ export interface Args {
+ 	promptTemplates?: string[];
+ 	noPromptTemplates?: boolean;
+ 	themes?: string[];
++	useTheme?: string;
+ 	noThemes?: boolean;
+ 	noContextFiles?: boolean;
+ 	listModels?: string | true;
+@@ -162,6 +163,14 @@ export function parseArgs(args: string[]): Args {
+ 		} else if (arg === "--theme" && i + 1 < args.length) {
+ 			result.themes = result.themes ?? [];
+ 			result.themes.push(args[++i]);
++		} else if (arg === "--use-theme") {
++			const themeName = args[i + 1];
++			if (themeName === undefined || themeName.startsWith("-")) {
++				result.diagnostics.push({ type: "error", message: "--use-theme requires a theme name" });
++			} else {
++				result.useTheme = themeName;
++				i++;
++			}
+ 		} else if (arg === "--no-skills" || arg === "-ns") {
+ 			result.noSkills = true;
+ 		} else if (arg === "--no-prompt-templates" || arg === "-np") {
+@@ -283,6 +292,7 @@ ${chalk.bold("Options:")}
+   --prompt-template <path>       Load a prompt template file or directory (can be used multiple times)
+   --no-prompt-templates, -np     Disable prompt template discovery and loading
+   --theme <path>                 Load a theme file or directory (can be used multiple times)
++  --use-theme <name[/name]>      Set the initial interactive theme for this run
+   --no-themes                    Disable theme discovery and loading
+   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
+   --export <file>                Export session file to HTML and exit
+diff --git a/packages/coding-agent/src/cli/auth-command.ts b/packages/coding-agent/src/cli/auth-command.ts
+index a0e58d14..9ee80460 100644
+--- a/packages/coding-agent/src/cli/auth-command.ts
++++ b/packages/coding-agent/src/cli/auth-command.ts
+@@ -1,4 +1,5 @@
+ import type { AuthResult } from "@earendil-works/pi-ai";
++import { APP_NAME } from "../config.ts";
+ import type { Args } from "./args.ts";
+ 
+ export type AuthCommandKind = "check" | "api_key" | "bearer_token";
+@@ -15,9 +16,9 @@ export interface AuthCommand {
+ export class AuthCommandError extends Error {}
+ 
+ const AUTH_COMMAND_USAGE: Record<AuthCommandKind, string> = {
+-	check: "pi auth check --provider <provider> [--json] [--credentials] [--no-refresh]",
+-	api_key: "pi auth print-api-key --provider <provider> [--model <model>]",
+-	bearer_token: "pi auth print-bearer-token --provider <provider> [--model <model>] [--min-expiry <duration>]",
++	check: `${APP_NAME} auth check --provider <provider> [--json] [--credentials] [--no-refresh]`,
++	api_key: `${APP_NAME} auth print-api-key --provider <provider> [--model <model>]`,
++	bearer_token: `${APP_NAME} auth print-bearer-token --provider <provider> [--model <model>] [--min-expiry <duration>]`,
+ };
+ 
+ export function getAuthCommandName(kind: AuthCommandKind): string {
+@@ -57,7 +58,7 @@ export function parseAuthCommand(args: string[]): AuthCommand | undefined {
+ 					: undefined;
+ 	if (!kind) {
+ 		throw new AuthCommandError(
+-			`Unknown auth command "${args[1] ?? ""}". Use "pi auth print-api-key", "pi auth print-bearer-token", or "pi auth check".`,
++			`Unknown auth command "${args[1] ?? ""}". Use "${APP_NAME} auth print-api-key", "${APP_NAME} auth print-bearer-token", or "${APP_NAME} auth check".`,
+ 		);
+ 	}
+ 
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index b210c5ac..1a1228d0 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -238,7 +238,7 @@ export interface ExtensionBindings {
+ 
+ /** Options for AgentSession.prompt() */
+ export interface PromptOptions {
+-	/** Whether to expand file-based prompt templates (default: true) */
++	/** Whether to dispatch extension commands and expand skill commands and prompt templates (default: true) */
+ 	expandPromptTemplates?: boolean;
+ 	/** Image attachments */
+ 	images?: ImageContent[];
+@@ -1449,7 +1449,7 @@ export class AgentSession {
+ 		} satisfies CustomMessage<T>;
+ 		if (options?.deliverAs === "nextTurn") {
+ 			this._pendingNextTurnMessages.push(appMessage);
+-		} else if (this.isStreaming) {
++		} else if (this.isStreaming && options?.triggerTurn !== false) {
+ 			if (options?.deliverAs === "followUp") {
+ 				this.agent.followUp(appMessage);
+ 			} else {
+@@ -1476,10 +1476,11 @@ export class AgentSession {
+ 	 *
+ 	 * @param content User message content (string or content array)
+ 	 * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
++	 * @param options.expandPromptTemplates Whether to dispatch extension commands and expand skill commands and prompt templates. Default: false.
+ 	 */
+ 	async sendUserMessage(
+ 		content: string | (TextContent | ImageContent)[],
+-		options?: { deliverAs?: "steer" | "followUp" },
++		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+ 	): Promise<void> {
+ 		// Normalize content to text string + optional images
+ 		let text: string;
+@@ -1501,9 +1502,8 @@ export class AgentSession {
+ 			if (images.length === 0) images = undefined;
+ 		}
+ 
+-		// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
+ 		await this.prompt(text, {
+-			expandPromptTemplates: false,
++			expandPromptTemplates: options?.expandPromptTemplates ?? false,
+ 			streamingBehavior: options?.deliverAs,
+ 			images,
+ 			source: "extension",
+@@ -3220,11 +3220,13 @@ export class AgentSession {
+ 	/**
+ 	 * Export session to HTML.
+ 	 * @param outputPath Optional output path (defaults to session directory)
++	 * @param options Optional export presentation settings
+ 	 * @returns Path to exported file
+ 	 */
+-	async exportToHtml(outputPath?: string): Promise<string> {
+-		const configuredThemeName = this.settingsManager.getTheme();
+-		const themeName = configuredThemeName && getThemeByName(configuredThemeName) ? configuredThemeName : undefined;
++	async exportToHtml(outputPath?: string, options: { themeName?: string } = {}): Promise<string> {
++		const themeName = [options.themeName, this.settingsManager.getTheme()].find(
++			(candidate) => candidate !== undefined && getThemeByName(candidate) !== undefined,
++		);
+ 
+ 		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
+ 		const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({
+diff --git a/packages/coding-agent/src/core/experimental.ts b/packages/coding-agent/src/core/experimental.ts
+index 12d33c74..77a7b5d2 100644
+--- a/packages/coding-agent/src/core/experimental.ts
++++ b/packages/coding-agent/src/core/experimental.ts
+@@ -1,3 +1,9 @@
++const PREFER_STRICT_TOOL_SAMPLING = { type: "json_schema", strict: "prefer" } as const;
++
+ export function areExperimentalFeaturesEnabled(): boolean {
+ 	return process.env.PI_EXPERIMENTAL === "1";
+ }
++
++export function getExperimentalToolSampling() {
++	return areExperimentalFeaturesEnabled() ? PREFER_STRICT_TOOL_SAMPLING : undefined;
++}
+diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
+index a87322ce..db0ebaca 100644
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -399,7 +399,7 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
+ 
+ 	sendUserMessage(
+ 		content: string | (TextContent | ImageContent)[],
+-		options?: { deliverAs?: "steer" | "followUp" },
++		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+ 	): Promise<void>;
+ }
+ 
+@@ -1307,10 +1307,11 @@ export interface ExtensionAPI {
+ 	/**
+ 	 * Send a user message to the agent. Always triggers a turn.
+ 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
++	 * Set expandPromptTemplates to dispatch extension commands and expand skill commands and prompt templates.
+ 	 */
+ 	sendUserMessage(
+ 		content: string | (TextContent | ImageContent)[],
+-		options?: { deliverAs?: "steer" | "followUp" },
++		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+ 	): void;
+ 
+ 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
+@@ -1560,7 +1561,7 @@ export type SendMessageHandler = <T = unknown>(
+ 
+ export type SendUserMessageHandler = (
+ 	content: string | (TextContent | ImageContent)[],
+-	options?: { deliverAs?: "steer" | "followUp" },
++	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+ ) => void;
+ 
+ export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+diff --git a/packages/coding-agent/src/core/model-config.ts b/packages/coding-agent/src/core/model-config.ts
+index 7f679a49..7ea12cbe 100644
+--- a/packages/coding-agent/src/core/model-config.ts
++++ b/packages/coding-agent/src/core/model-config.ts
+@@ -117,6 +117,7 @@ const OpenAIResponsesCompatSchema = Type.Object({
+ 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
+ 	supportsStrictMode: Type.Optional(Type.Boolean()),
+ 	supportsOpenAIGrammarTools: Type.Optional(Type.Boolean()),
++	supportsAdditionalTools: Type.Optional(Type.Boolean()),
+ 	supportsToolSearch: Type.Optional(Type.Boolean()),
+ });
+ 
+diff --git a/packages/coding-agent/src/core/project-trust.ts b/packages/coding-agent/src/core/project-trust.ts
+index 2521ad5d..b9ece17e 100644
+--- a/packages/coding-agent/src/core/project-trust.ts
++++ b/packages/coding-agent/src/core/project-trust.ts
+@@ -1,4 +1,4 @@
+-import { CONFIG_DIR_NAME } from "../config.ts";
++import { APP_NAME, CONFIG_DIR_NAME } from "../config.ts";
+ import { emitProjectTrustEvent } from "./extensions/runner.ts";
+ import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/types.ts";
+ import type { DefaultProjectTrust } from "./settings-manager.ts";
+@@ -22,7 +22,7 @@ export interface ResolveProjectTrustedOptions {
+ }
+ 
+ function formatProjectTrustPrompt(cwd: string): string {
+-	return `Trust project folder?\n${cwd}\n\nThis allows pi to load ${CONFIG_DIR_NAME} settings and resources, install missing project packages, and execute project extensions.`;
++	return `Trust project folder?\n${cwd}\n\nThis allows ${APP_NAME} to load ${CONFIG_DIR_NAME} settings and resources, install missing project packages, and execute project extensions.`;
+ }
+ 
+ async function selectProjectTrustOption(
+diff --git a/packages/coding-agent/src/core/sdk.ts b/packages/coding-agent/src/core/sdk.ts
+index 7f662d33..a9a26641 100644
+--- a/packages/coding-agent/src/core/sdk.ts
++++ b/packages/coding-agent/src/core/sdk.ts
+@@ -62,9 +62,11 @@ export interface CreateAgentSessionOptions {
+ 	/**
+ 	 * Optional allowlist of tool names.
+ 	 *
+-	 * When omitted, pi enables the default built-in tools (read, bash, edit, write)
+-	 * and leaves extension/custom tools enabled unless `noTools` changes that default.
+-	 * When provided, only the listed tool names are enabled.
++	 * When omitted, pi uses the `defaultTools` setting for the initial built-in
++	 * selection when configured. Otherwise it enables the default built-in tools
++	 * (read, bash, edit, write). Extension/custom tools remain enabled unless
++	 * `noTools` changes that default. When provided, only the listed tool names are
++	 * enabled.
+ 	 */
+ 	tools?: string[];
+ 	/** Optional denylist of tool names to disable. Applies after `tools` when both are provided. */
+@@ -243,11 +245,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 	}
+ 
+ 	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "write"];
++	const configuredDefaultToolNames = settingsManager.getDefaultTools();
+ 	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
+ 	const excludedToolNames = options.excludeTools;
+ 	const excludedToolNameSet = excludedToolNames ? new Set(excludedToolNames) : undefined;
+-	const initialActiveToolNames: string[] = (
+-		options.tools ? [...options.tools] : options.noTools ? [] : defaultActiveToolNames
++	const initialActiveToolNames = (
++		options.tools ?? (options.noTools ? [] : (configuredDefaultToolNames ?? defaultActiveToolNames))
+ 	).filter((name) => !excludedToolNameSet?.has(name));
+ 
+ 	let agent: Agent;
+diff --git a/packages/coding-agent/src/core/session-manager.ts b/packages/coding-agent/src/core/session-manager.ts
+index 70d39216..cd9d2f43 100644
+--- a/packages/coding-agent/src/core/session-manager.ts
++++ b/packages/coding-agent/src/core/session-manager.ts
+@@ -17,7 +17,7 @@ import { readdir, stat } from "fs/promises";
+ import { join, resolve } from "path";
+ import { createInterface } from "readline";
+ import { StringDecoder } from "string_decoder";
+-import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
++import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
+ import { normalizePath, resolvePath } from "../utils/paths.ts";
+ import {
+ 	type BashExecutionMessage,
+@@ -902,7 +902,7 @@ export class SessionManager {
+ 			if (this.fileEntries.length === 0) {
+ 				const explicitPath = this.sessionFile;
+ 				if (statSync(explicitPath).size > 0) {
+-					throw new Error(`Session file is not a valid pi session: ${explicitPath}`);
++					throw new Error(`Session file is not a valid ${APP_NAME} session: ${explicitPath}`);
+ 				}
+ 				this.newSession();
+ 				this.sessionFile = explicitPath;
+diff --git a/packages/coding-agent/src/core/settings-manager.ts b/packages/coding-agent/src/core/settings-manager.ts
+index 4a8c8bc4..9a744f02 100644
+--- a/packages/coding-agent/src/core/settings-manager.ts
++++ b/packages/coding-agent/src/core/settings-manager.ts
+@@ -34,6 +34,7 @@ export interface RetrySettings {
+ }
+ 
+ export type TuiMode = RendererTuiMode;
++export type FullscreenExitOutput = "transcript" | "resume-hint";
+ 
+ export interface TerminalSettings {
+ 	showImages?: boolean; // default: true (only relevant if terminal supports images)
+@@ -119,6 +120,7 @@ export interface Settings {
+ 	terminal?: TerminalSettings;
+ 	images?: ImageSettings;
+ 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
++	defaultTools?: string[]; // Initial built-in tool selection
+ 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
+ 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
+ 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
+@@ -133,6 +135,7 @@ export interface Settings {
+ 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
+ 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
+ 	tuiMode?: TuiMode; // default: "regular"
++	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
+ 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
+ }
+ 
+@@ -1135,6 +1138,16 @@ export class SettingsManager {
+ 		this.save();
+ 	}
+ 
++	getFullscreenExitOutput(): FullscreenExitOutput {
++		return this.settings.fullscreenExitOutput === "resume-hint" ? "resume-hint" : "transcript";
++	}
++
++	setFullscreenExitOutput(output: FullscreenExitOutput): void {
++		this.globalSettings.fullscreenExitOutput = output;
++		this.markModified("fullscreenExitOutput");
++		this.save();
++	}
++
+ 	getFullscreenScrollbar(): ScrollViewScrollbar {
+ 		const mode = this.settings.fullscreenScrollbar;
+ 		return mode === "always" || mode === "hidden" ? mode : "auto";
+@@ -1176,6 +1189,11 @@ export class SettingsManager {
+ 		return this.settings.enabledModels;
+ 	}
+ 
++	getDefaultTools(): string[] | undefined {
++		const tools = this.settings.defaultTools;
++		return tools ? [...tools] : undefined;
++	}
++
+ 	setEnabledModels(patterns: string[] | undefined): void {
+ 		this.globalSettings.enabledModels = patterns;
+ 		this.markModified("enabledModels");
+diff --git a/packages/coding-agent/src/core/system-prompt.ts b/packages/coding-agent/src/core/system-prompt.ts
+index 35f4ca40..3b1aa633 100644
+--- a/packages/coding-agent/src/core/system-prompt.ts
++++ b/packages/coding-agent/src/core/system-prompt.ts
+@@ -66,7 +66,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
+ 			prompt += formatSkillsForPrompt(skills);
+ 		}
+ 
+-		prompt += `\nCurrent working directory: ${promptCwd}`;
++		prompt += `\nCurrent working directory: ${promptCwd}\n`;
+ 
+ 		return prompt;
+ 	}
+diff --git a/packages/coding-agent/src/core/tools/bash.ts b/packages/coding-agent/src/core/tools/bash.ts
+index d1c80487..9c745df5 100644
+--- a/packages/coding-agent/src/core/tools/bash.ts
++++ b/packages/coding-agent/src/core/tools/bash.ts
+@@ -15,6 +15,7 @@ import {
+ 	trackDetachedChildPid,
+ 	untrackDetachedChildPid,
+ } from "../../utils/shell.ts";
++import { getExperimentalToolSampling } from "../experimental.ts";
+ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+ import { OutputAccumulator } from "./output-accumulator.ts";
+ import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
+@@ -333,6 +334,7 @@ export function createBashToolDefinition(
+ 		promptSnippet: bashToolSystemPromptContribution.snippet,
+ 		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
+ 		parameters: bashSchema,
++		constrainedSampling: getExperimentalToolSampling(),
+ 		async execute(
+ 			_toolCallId,
+ 			{ command, timeout }: { command: string; timeout?: number },
+diff --git a/packages/coding-agent/src/core/tools/edit.ts b/packages/coding-agent/src/core/tools/edit.ts
+index 01fd4145..45281c25 100644
+--- a/packages/coding-agent/src/core/tools/edit.ts
++++ b/packages/coding-agent/src/core/tools/edit.ts
+@@ -5,6 +5,7 @@ import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile }
+ import { type Static, Type } from "typebox";
+ import { renderDiff } from "../../modes/interactive/components/diff.ts";
+ import type { Theme } from "../../modes/interactive/theme/theme.ts";
++import { getExperimentalToolSampling } from "../experimental.ts";
+ import type { ToolDefinition } from "../extensions/types.ts";
+ import {
+ 	applyEditsToNormalizedContent,
+@@ -307,6 +308,7 @@ export function createEditToolDefinition(
+ 		promptSnippet: editToolSystemPromptContribution.snippet,
+ 		promptGuidelines: [...editToolSystemPromptContribution.guidelines],
+ 		parameters: editSchema,
++		constrainedSampling: getExperimentalToolSampling(),
+ 		renderShell: "self",
+ 		prepareArguments: prepareEditArguments,
+ 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
+diff --git a/packages/coding-agent/src/core/tools/find.ts b/packages/coding-agent/src/core/tools/find.ts
+index a14f327e..f3228ef7 100644
+--- a/packages/coding-agent/src/core/tools/find.ts
++++ b/packages/coding-agent/src/core/tools/find.ts
+@@ -222,7 +222,7 @@ export function createFindToolDefinition(
+ 						}
+ 
+ 						// Default implementation uses fd.
+-						const fdPath = await ensureTool("fd", true);
++						const fdPath = await ensureTool("fd");
+ 						if (signal?.aborted) {
+ 							settle(() => reject(new Error("Operation aborted")));
+ 							return;
+diff --git a/packages/coding-agent/src/core/tools/grep.ts b/packages/coding-agent/src/core/tools/grep.ts
+index 2274e706..a65cab9d 100644
+--- a/packages/coding-agent/src/core/tools/grep.ts
++++ b/packages/coding-agent/src/core/tools/grep.ts
+@@ -174,7 +174,7 @@ export function createGrepToolDefinition(
+ 
+ 				(async () => {
+ 					try {
+-						const rgPath = await ensureTool("rg", true);
++						const rgPath = await ensureTool("rg");
+ 						if (!rgPath) {
+ 							settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
+ 							return;
+diff --git a/packages/coding-agent/src/core/tools/read.ts b/packages/coding-agent/src/core/tools/read.ts
+index 130e6a2e..1f766610 100644
+--- a/packages/coding-agent/src/core/tools/read.ts
++++ b/packages/coding-agent/src/core/tools/read.ts
+@@ -11,6 +11,7 @@ import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/inte
+ import { processImage } from "../../utils/image-process.ts";
+ import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
+ import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
++import { getExperimentalToolSampling } from "../experimental.ts";
+ import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+ import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
+ import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
+@@ -218,6 +219,7 @@ export function createReadToolDefinition(
+ 		promptSnippet: readToolSystemPromptContribution.snippet,
+ 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
+ 		parameters: readSchema,
++		constrainedSampling: getExperimentalToolSampling(),
+ 		async execute(
+ 			_toolCallId,
+ 			{ path, offset, limit }: { path: string; offset?: number; limit?: number },
+diff --git a/packages/coding-agent/src/core/tools/write.ts b/packages/coding-agent/src/core/tools/write.ts
+index 876aa6d8..d25435b0 100644
+--- a/packages/coding-agent/src/core/tools/write.ts
++++ b/packages/coding-agent/src/core/tools/write.ts
+@@ -5,6 +5,7 @@ import { dirname } from "path";
+ import { type Static, Type } from "typebox";
+ import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
+ import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
++import { getExperimentalToolSampling } from "../experimental.ts";
+ import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+ import { withFileMutationQueue } from "./file-mutation-queue.ts";
+ import { resolveToCwd } from "./path-utils.ts";
+@@ -196,6 +197,7 @@ export function createWriteToolDefinition(
+ 		promptSnippet: writeToolSystemPromptContribution.snippet,
+ 		promptGuidelines: [...writeToolSystemPromptContribution.guidelines],
+ 		parameters: writeSchema,
++		constrainedSampling: getExperimentalToolSampling(),
+ 		async execute(
+ 			_toolCallId,
+ 			{ path, content }: { path: string; content: string },
+diff --git a/packages/coding-agent/src/index.ts b/packages/coding-agent/src/index.ts
+index 3d05c2af..6d64d70c 100644
+--- a/packages/coding-agent/src/index.ts
++++ b/packages/coding-agent/src/index.ts
+@@ -252,6 +252,7 @@ export {
+ export {
+ 	type CompactionSettings,
+ 	type DefaultProjectTrust,
++	type FullscreenExitOutput,
+ 	type ImageSettings,
+ 	type PackageSource,
+ 	type RetrySettings,
+diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
+index 8db96a67..c6a66251 100644
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -67,7 +67,7 @@ import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli
+ import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
+ import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
+ 
+-const EXTENSION_LOAD_FAILURE_HINT = 'Hint: Start without extensions using "pi -ne".';
++const EXTENSION_LOAD_FAILURE_HINT = `Hint: Start without extensions using "${APP_NAME} -ne".`;
+ 
+ /**
+  * Read all content from piped stdin.
+@@ -665,6 +665,10 @@ export async function main(args: string[], options?: MainOptions) {
+ 		time("firstTimeSetup");
+ 	}
+ 
++	if (appMode === "interactive" && parsed.useTheme !== undefined) {
++		startupSettingsManager.applyOverrides({ theme: parsed.useTheme });
++	}
++
+ 	// Decide the final runtime cwd before creating cwd-bound runtime services.
+ 	// --session and --resume may select a session from another project, so project-local
+ 	// settings, resources, provider registrations, and models must be resolved only after
+@@ -933,6 +937,7 @@ export async function main(args: string[], options?: MainOptions) {
+ 			initialMessages: parsed.messages,
+ 			verbose: parsed.verbose,
+ 			tuiMode: parsed.tuiMode,
++			initialThemeSetting: parsed.useTheme,
+ 		});
+ 		if (startupBenchmark) {
+ 			await interactiveMode.init();
+diff --git a/packages/coding-agent/src/modes/interactive/components/model-selector.ts b/packages/coding-agent/src/modes/interactive/components/model-selector.ts
+index 6f2668a4..1d5e58b1 100644
+--- a/packages/coding-agent/src/modes/interactive/components/model-selector.ts
++++ b/packages/coding-agent/src/modes/interactive/components/model-selector.ts
+@@ -11,6 +11,7 @@ import {
+ } from "@earendil-works/pi-tui";
+ import type { ModelRuntime } from "../../../core/model-runtime.ts";
+ import type { SettingsManager } from "../../../core/settings-manager.ts";
++import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
+ import { getModelSelectorSearchText } from "../model-search.ts";
+ import { theme } from "../theme/theme.ts";
+ import { DynamicBorder } from "./dynamic-border.ts";
+@@ -167,7 +168,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
+ 			this.refreshAbortController.abort();
+ 		}, timeoutMs);
+ 		try {
+-			const result = await this.modelRuntime.refresh({ signal: this.refreshAbortController.signal });
++			const result = await refreshModelCatalogs(this.modelRuntime, this.refreshAbortController.signal);
+ 			if (this.closed) return;
+ 			this.refreshStatusMessage = "";
+ 			if (result.aborted && timedOut) {
+diff --git a/packages/coding-agent/src/modes/interactive/components/settings-selector.ts b/packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+index c0c49f54..20c6b758 100644
+--- a/packages/coding-agent/src/modes/interactive/components/settings-selector.ts
++++ b/packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+@@ -16,6 +16,7 @@ import {
+ import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
+ import type {
+ 	DefaultProjectTrust,
++	FullscreenExitOutput,
+ 	MermaidRenderingMode,
+ 	TuiMode,
+ 	WarningSettings,
+@@ -87,6 +88,7 @@ export interface SettingsConfig {
+ 	clearOnShrink: boolean;
+ 	showTerminalProgress: boolean;
+ 	tuiMode: TuiMode;
++	fullscreenExitOutput: FullscreenExitOutput;
+ 	fullscreenScrollbar: ScrollViewScrollbar;
+ 	warnings: WarningSettings;
+ }
+@@ -121,6 +123,7 @@ export interface SettingsCallbacks {
+ 	onClearOnShrinkChange: (enabled: boolean) => void;
+ 	onShowTerminalProgressChange: (enabled: boolean) => void;
+ 	onTuiModeChange: (mode: TuiMode) => void;
++	onFullscreenExitOutputChange: (output: FullscreenExitOutput) => void;
+ 	onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
+ 	onWarningsChange: (warnings: WarningSettings) => void;
+ 	onCancel: () => void;
+@@ -636,6 +639,13 @@ export class SettingsSelectorComponent extends Container {
+ 				currentValue: config.tuiMode,
+ 				values: ["regular", "fullscreen"],
+ 			},
++			{
++				id: "fullscreen-exit-output",
++				label: "Fullscreen exit output",
++				description: "Print the transcript or only a session resume hint when exiting fullscreen mode",
++				currentValue: config.fullscreenExitOutput,
++				values: ["transcript", "resume-hint"],
++			},
+ 			{
+ 				id: "fullscreen-scrollbar",
+ 				label: "Fullscreen scrollbar",
+@@ -858,6 +868,9 @@ export class SettingsSelectorComponent extends Container {
+ 					case "tui-mode":
+ 						callbacks.onTuiModeChange(newValue as TuiMode);
+ 						break;
++					case "fullscreen-exit-output":
++						callbacks.onFullscreenExitOutputChange(newValue as FullscreenExitOutput);
++						break;
+ 					case "fullscreen-scrollbar":
+ 						callbacks.onFullscreenScrollbarChange(newValue as ScrollViewScrollbar);
+ 						break;
+diff --git a/packages/coding-agent/src/modes/interactive/components/tool-execution.ts b/packages/coding-agent/src/modes/interactive/components/tool-execution.ts
+index ad84f441..b1420b36 100644
+--- a/packages/coding-agent/src/modes/interactive/components/tool-execution.ts
++++ b/packages/coding-agent/src/modes/interactive/components/tool-execution.ts
+@@ -4,6 +4,9 @@ import { createAllToolDefinitions, type ToolName } from "../../../core/tools/ind
+ import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+ import { convertToPng } from "../../../utils/image-convert.ts";
+ import { theme } from "../theme/theme.ts";
++import { keyHint } from "./keybinding-hints.ts";
++
++const FALLBACK_PREVIEW_LINES = 10;
+ 
+ export interface ToolExecutionOptions {
+ 	showImages?: boolean;
+@@ -141,7 +144,15 @@ export class ToolExecutionComponent extends Container {
+ 		if (!output) {
+ 			return undefined;
+ 		}
+-		return new Text(theme.fg("toolOutput", output), 0, 0);
++
++		const lines = output.split("\n");
++		const displayLines = this.expanded ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
++		const remaining = lines.length - displayLines.length;
++		let text = displayLines.map((line) => theme.fg("toolOutput", line)).join("\n");
++		if (remaining > 0) {
++			text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
++		}
++		return new Text(text, 0, 0);
+ 	}
+ 
+ 	updateArgs(args: any): void {
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index 720f9b0f..6d5e6b88 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -92,7 +92,7 @@ import { DefaultPackageManager } from "../../core/package-manager.ts";
+ import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
+ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
+ import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
+-import type { TuiMode } from "../../core/settings-manager.ts";
++import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
+ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
+ import type { SourceInfo } from "../../core/source-info.ts";
+ import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+@@ -107,7 +107,7 @@ import { openBrowser } from "../../utils/open-browser.ts";
+ import { getCwdRelativePath } from "../../utils/paths.ts";
+ import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
+ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+-import { ensureTool } from "../../utils/tools-manager.ts";
++import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
+ import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
+ import { ArminComponent } from "./components/armin.ts";
+ import { AssistantMessageComponent } from "./components/assistant-message.ts";
+@@ -152,6 +152,7 @@ import { TrustSelectorComponent } from "./components/trust-selector.ts";
+ import { UserMessageComponent } from "./components/user-message.ts";
+ import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+ import { editInExternalEditor } from "./external-editor.ts";
++import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
+ import { getModelSearchText } from "./model-search.ts";
+ import {
+ 	getAvailableThemes,
+@@ -329,6 +330,8 @@ export interface InteractiveModeOptions {
+ 	verbose?: boolean;
+ 	/** TUI layout mode. */
+ 	tuiMode?: TuiMode;
++	/** Initial interactive theme setting for this invocation. */
++	initialThemeSetting?: string;
+ }
+ 
+ interface InteractiveTuiOptions {
+@@ -343,9 +346,20 @@ interface InteractiveTuiOptions {
+ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScreen | TuiAltScreen {
+ 	const terminal = options.terminal ?? new ProcessTerminal();
+ 	if (options.tuiMode === "fullscreen") {
++		const styleSearchMatch = (text: string) => theme.bg("searchMatchBg", theme.fg("searchMatchText", text));
+ 		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, {
++			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
++			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
+ 			openUrl: openBrowser,
+ 			onRightClickPaste: options.onRightClickPaste,
++			copySelection: async (text) => {
++				try {
++					await copyToClipboard(text);
++					return true;
++				} catch {
++					return false;
++				}
++			},
+ 		});
+ 	}
+ 	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
+@@ -430,6 +444,7 @@ export class InteractiveMode {
+ 	// Status line tracking (for mutating immediately-sequential status updates)
+ 	private lastStatusSpacer: Spacer | undefined = undefined;
+ 	private lastStatusText: Text | undefined = undefined;
++	private managedToolStatusStarted = false;
+ 
+ 	// Streaming message tracking
+ 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
+@@ -535,6 +550,7 @@ export class InteractiveMode {
+ 		});
+ 		this.runtimeHost.setRebindSession(async () => {
+ 			await this.rebindCurrentSession({ renderBeforeBind: true });
++			await this.themeController.applyFromSettings();
+ 		});
+ 		this.version = VERSION;
+ 		this.renderer = createInteractiveTui({
+@@ -579,12 +595,12 @@ export class InteractiveMode {
+ 
+ 		// Register themes from resource loader and initialize
+ 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+-		this.themeController = new InteractiveThemeController(
+-			this.ui,
+-			this.settingsManager,
+-			(message) => this.showError(message),
+-			() => this.updateEditorBorderColor(),
+-		);
++		this.themeController = new InteractiveThemeController(this.ui, {
++			getSettingsManager: () => this.settingsManager,
++			showError: (message) => this.showError(message),
++			onChanged: () => this.updateEditorBorderColor(),
++			initialThemeSetting: options.initialThemeSetting,
++		});
+ 	}
+ 
+ 	private getAutocompleteSourceTag(sourceInfo?: SourceInfo): string | undefined {
+@@ -776,13 +792,13 @@ export class InteractiveMode {
+ 		}
+ 	}
+ 
+-	private stopInteractiveTui(): void {
+-		if (this.renderer.mode === "fullscreen") {
++	private stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
++		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
+ 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
+ 			this.switchTuiMode("regular", false, false);
+ 			this.renderer.renderNow();
+ 		}
+-		this.ui.stop();
++		this.ui.stop({ preserveScreen: this.renderer.mode === "fullscreen" });
+ 	}
+ 
+ 	private switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): boolean {
+@@ -844,11 +860,6 @@ export class InteractiveMode {
+ 		// Load changelog (only show new entries, skip for resumed sessions)
+ 		this.changelogMarkdown = this.getChangelogForDisplay();
+ 
+-		// Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
+-		// Both are needed: fd for autocomplete, rg for grep tool and bash commands
+-		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
+-		this.fdPath = fdPath;
+-
+ 		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
+ 			const modelList = this.session.scopedModels
+ 				.map((sm) => {
+@@ -894,11 +905,12 @@ export class InteractiveMode {
+ 			this.widgetContainerBelow,
+ 			this.footerContainer,
+ 		]);
++		// Accept text while startup completes, but only enable interrupt, exit, and submission feedback.
++		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
++		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
++		this.defaultEditor.onSubmit = (text) => this.handleStartupSubmit(text);
+ 		this.ui.setFocus(this.editor);
+ 
+-		this.setupKeyHandlers();
+-		this.setupEditorSubmitHandler();
+-
+ 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
+ 		this.ui.start();
+ 		this.isInitialized = true;
+@@ -967,6 +979,20 @@ export class InteractiveMode {
+ 		}
+ 		this.ui.requestRender();
+ 
++		// Ensure fd and rg are available after mounting the TUI (downloads if missing, adds to PATH via getBinDir)
++		// so slow downloads do not make startup appear frozen.
++		// Both are needed: fd for autocomplete, rg for grep tool and bash commands.
++		const [fdPath] = await Promise.all([
++			ensureTool("fd", (status) => this.showManagedToolStatus(status)),
++			ensureTool("rg", (status) => this.showManagedToolStatus(status)),
++		]);
++		this.fdPath = fdPath;
++
++		// Enable the remaining input handlers only after managed-tool setup completes.
++		this.setupKeyHandlers();
++		this.setupEditorSubmitHandler();
++		this.ui.requestRender();
++
+ 		// Initialize extensions first so resources are shown before messages
+ 		await this.rebindCurrentSession();
+ 
+@@ -1012,8 +1038,7 @@ export class InteractiveMode {
+ 		if (!process.env.PI_OFFLINE) {
+ 			const controller = new AbortController();
+ 			const timeout = setTimeout(() => controller.abort(), 15_000);
+-			void this.session.modelRuntime
+-				.refresh({ signal: controller.signal })
++			void refreshModelCatalogs(this.session.modelRuntime, controller.signal)
+ 				.then(() => this.updateAvailableProviderCount())
+ 				.catch(() => {})
+ 				.finally(() => clearTimeout(timeout));
+@@ -1950,7 +1975,7 @@ export class InteractiveMode {
+ 		const message = error instanceof Error ? error.message : String(error);
+ 		this.showError(`${prefix}: ${message}`);
+ 		stopThemeWatcher();
+-		this.stop();
++		this.stop("transcript");
+ 		process.exit(1);
+ 	}
+ 
+@@ -2867,6 +2892,11 @@ export class InteractiveMode {
+ 		}
+ 	}
+ 
++	private handleStartupSubmit(text: string): void {
++		this.editor.setText(text);
++		this.showStatus("Startup is still in progress");
++	}
++
+ 	private setupEditorSubmitHandler(): void {
+ 		this.defaultEditor.onSubmit = async (text: string) => {
+ 			text = text.trim();
+@@ -3402,6 +3432,20 @@ export class InteractiveMode {
+ 		return textBlocks.map((c) => (c as { text: string }).text).join("");
+ 	}
+ 
++	/** Show a managed-tool status update in the chat. */
++	private showManagedToolStatus(status: ToolStatus): void {
++		if (!this.managedToolStatusStarted) {
++			this.chatContainer.addChild(new Spacer(1));
++			this.managedToolStatusStarted = true;
++		}
++		const message = status.type === "warning" ? `Warning: ${status.message}` : status.message;
++		const color = status.type === "warning" ? "warning" : "dim";
++		this.chatContainer.addChild(new Text(theme.fg(color, message), 1, 0));
++		this.lastStatusSpacer = undefined;
++		this.lastStatusText = undefined;
++		this.ui.requestRender();
++	}
++
+ 	/**
+ 	 * Show a status message in the chat.
+ 	 *
+@@ -3847,7 +3891,7 @@ export class InteractiveMode {
+ 		try {
+ 			this.ui.stop();
+ 		} catch {}
+-		console.error("pi exiting due to uncaughtException:");
++		console.error(`${APP_NAME} exiting due to uncaughtException:`);
+ 		console.error(error);
+ 		process.exit(1);
+ 	}
+@@ -4390,7 +4434,7 @@ export class InteractiveMode {
+ 					httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
+ 					thinkingLevel: this.session.thinkingLevel,
+ 					availableThinkingLevels: this.session.getAvailableThinkingLevels(),
+-					currentTheme: this.settingsManager.getThemeSetting() || "dark",
++					currentTheme: this.themeController.getThemeSelection() || "dark",
+ 					terminalTheme: this.themeController.getTerminalTheme(),
+ 					availableThemes: getAvailableThemes(),
+ 					hideThinkingBlock: this.hideThinkingBlock,
+@@ -4409,6 +4453,7 @@ export class InteractiveMode {
+ 					clearOnShrink: this.settingsManager.getClearOnShrink(),
+ 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
+ 					tuiMode: this.ui.mode,
++					fullscreenExitOutput: this.settingsManager.getFullscreenExitOutput(),
+ 					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
+ 					warnings: this.settingsManager.getWarnings(),
+ 				},
+@@ -4465,7 +4510,7 @@ export class InteractiveMode {
+ 					},
+ 					onThemeChange: (themeSetting) => {
+ 						this.settingsManager.setTheme(themeSetting);
+-						void this.themeController.applyFromSettings();
++						void this.themeController.setThemeSetting(themeSetting);
+ 					},
+ 					onThemePreview: (themeName) => this.themeController.preview(themeName),
+ 					onHideThinkingBlockChange: (hidden) => {
+@@ -4565,6 +4610,9 @@ export class InteractiveMode {
+ 						if (!this.activeStatusIndicator) this.statusContainer.clear();
+ 						this.showStatus(`TUI mode: ${mode}`);
+ 					},
++					onFullscreenExitOutputChange: (output) => {
++						this.settingsManager.setFullscreenExitOutput(output);
++					},
+ 					onFullscreenScrollbarChange: (mode) => {
+ 						this.settingsManager.setFullscreenScrollbar(mode);
+ 						this.applyFullscreenScrollbarSetting();
+@@ -4622,7 +4670,7 @@ export class InteractiveMode {
+ 			controller.abort();
+ 		}, 15_000);
+ 		try {
+-			const result = await this.session.modelRuntime.refresh({ signal: controller.signal });
++			const result = await refreshModelCatalogs(this.session.modelRuntime, controller.signal);
+ 			if (result.aborted && timedOut) {
+ 				this.showWarning("Model refresh timed out; searching cached models.");
+ 			} else if (result.errors.size > 0) {
+@@ -4719,7 +4767,7 @@ export class InteractiveMode {
+ 					trustStore.setMany(selection.updates);
+ 					done();
+ 					this.showStatus(
+-						`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart pi for this to take effect.`,
++						`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+ 					);
+ 				},
+ 				onCancel: () => {
+@@ -4838,8 +4886,7 @@ export class InteractiveMode {
+ 					},
+ 				},
+ 			);
+-			void this.session.modelRuntime
+-				.refresh({ signal: controller.signal })
++			void refreshModelCatalogs(this.session.modelRuntime, controller.signal)
+ 				.then((result) => {
+ 					if (disposed) return;
+ 					availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
+@@ -5498,7 +5545,11 @@ export class InteractiveMode {
+ 			providerOption.name,
+ 			`${providerOption.name} setup`,
+ 		);
+-		dialog.showInfo(`${providerOption.method?.name ?? "Authentication"} is configured outside pi.`, [], true);
++		dialog.showInfo(
++			`${providerOption.method?.name ?? "Authentication"} is configured outside ${APP_NAME}.`,
++			[],
++			true,
++		);
+ 
+ 		this.editorContainer.clear();
+ 		this.editorContainer.addChild(dialog);
+@@ -5771,7 +5822,9 @@ export class InteractiveMode {
+ 				const filePath = this.session.exportToJsonl(outputPath);
+ 				this.showStatus(`Session exported to: ${filePath}`);
+ 			} else {
+-				const filePath = await this.session.exportToHtml(outputPath);
++				const filePath = await this.session.exportToHtml(outputPath, {
++					themeName: theme.name,
++				});
+ 				this.showStatus(`Session exported to: ${filePath}`);
+ 			}
+ 		} catch (error: unknown) {
+@@ -5868,7 +5921,7 @@ export class InteractiveMode {
+ 		// Export to a temp file
+ 		const tmpFile = path.join(os.tmpdir(), "session.html");
+ 		try {
+-			await this.session.exportToHtml(tmpFile);
++			await this.session.exportToHtml(tmpFile, { themeName: theme.name });
+ 		} catch (error: unknown) {
+ 			this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+ 			return;
+@@ -6373,7 +6426,7 @@ export class InteractiveMode {
+ 		}
+ 	}
+ 
+-	stop(): void {
++	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
+ 		this.disposeActiveSelector();
+ 		if (this.settingsManager.getShowTerminalProgress()) {
+ 			this.ui.terminal.setProgress(false);
+@@ -6387,7 +6440,7 @@ export class InteractiveMode {
+ 			this.unsubscribe();
+ 		}
+ 		if (this.isInitialized) {
+-			this.stopInteractiveTui();
++			this.stopInteractiveTui(fullscreenExitOutput);
+ 			this.isInitialized = false;
+ 		}
+ 		this.unregisterSignalHandlers();
+diff --git a/packages/coding-agent/src/modes/interactive/model-catalog-refresh.ts b/packages/coding-agent/src/modes/interactive/model-catalog-refresh.ts
+new file mode 100644
+index 00000000..e5915ff4
+--- /dev/null
++++ b/packages/coding-agent/src/modes/interactive/model-catalog-refresh.ts
+@@ -0,0 +1,51 @@
++import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
++import type { ModelRuntime } from "../../core/model-runtime.ts";
++import { raceWithAbortSignal } from "../../utils/abort.ts";
++
++type ModelCatalogRuntime = Pick<ModelRuntime, "refresh">;
++
++interface ActiveModelCatalogRefresh {
++	controller: AbortController;
++	promise: Promise<ModelsRefreshResult>;
++	waiters: number;
++}
++
++class ModelCatalogRefreshCoordinator {
++	private readonly activeByRuntime = new WeakMap<ModelCatalogRuntime, ActiveModelCatalogRefresh>();
++
++	refresh(modelRuntime: ModelCatalogRuntime, signal: AbortSignal): Promise<ModelsRefreshResult> {
++		signal.throwIfAborted();
++		let active = this.activeByRuntime.get(modelRuntime);
++		if (!active) {
++			const controller = new AbortController();
++			let created!: ActiveModelCatalogRefresh;
++			const operation = modelRuntime.refresh({ signal: controller.signal });
++			const promise = raceWithAbortSignal(operation, controller.signal).finally(() => {
++				if (this.activeByRuntime.get(modelRuntime) === created) {
++					this.activeByRuntime.delete(modelRuntime);
++				}
++			});
++			created = { controller, promise, waiters: 0 };
++			active = created;
++			this.activeByRuntime.set(modelRuntime, active);
++		}
++
++		active.waiters++;
++		return raceWithAbortSignal(active.promise, signal).finally(() => {
++			active.waiters--;
++			if (active.waiters === 0 && this.activeByRuntime.get(modelRuntime) === active) {
++				active.controller.abort();
++			}
++		});
++	}
++}
++
++const modelCatalogRefreshCoordinator = new ModelCatalogRefreshCoordinator();
++
++/** Share concurrent interactive all-catalog refreshes while keeping each caller's cancellation independent. */
++export function refreshModelCatalogs(
++	modelRuntime: ModelCatalogRuntime,
++	signal: AbortSignal,
++): Promise<ModelsRefreshResult> {
++	return modelCatalogRefreshCoordinator.refresh(modelRuntime, signal);
++}
+diff --git a/packages/coding-agent/src/modes/interactive/theme/dark.json b/packages/coding-agent/src/modes/interactive/theme/dark.json
+index 9db9cbd8..01d1e02a 100644
+--- a/packages/coding-agent/src/modes/interactive/theme/dark.json
++++ b/packages/coding-agent/src/modes/interactive/theme/dark.json
+@@ -34,6 +34,8 @@
+ 
+ 		"selectedBg": "selectedBg",
+ 		"scrollbarThumb": "selectedBg",
++		"searchMatchBg": "selectedBg",
++		"searchMatchText": "text",
+ 		"userMessageBg": "userMsgBg",
+ 		"userMessageText": "text",
+ 		"customMessageBg": "customMsgBg",
+diff --git a/packages/coding-agent/src/modes/interactive/theme/light.json b/packages/coding-agent/src/modes/interactive/theme/light.json
+index 74ef3d1c..0fde42b8 100644
+--- a/packages/coding-agent/src/modes/interactive/theme/light.json
++++ b/packages/coding-agent/src/modes/interactive/theme/light.json
+@@ -33,6 +33,8 @@
+ 
+ 		"selectedBg": "selectedBg",
+ 		"scrollbarThumb": "selectedBg",
++		"searchMatchBg": "selectedBg",
++		"searchMatchText": "text",
+ 		"userMessageBg": "userMsgBg",
+ 		"userMessageText": "text",
+ 		"customMessageBg": "customMsgBg",
+diff --git a/packages/coding-agent/src/modes/interactive/theme/theme-controller.ts b/packages/coding-agent/src/modes/interactive/theme/theme-controller.ts
+index 6d99b0de..0684ecae 100644
+--- a/packages/coding-agent/src/modes/interactive/theme/theme-controller.ts
++++ b/packages/coding-agent/src/modes/interactive/theme/theme-controller.ts
+@@ -17,20 +17,33 @@ type ThemeResult = { success: boolean; error?: string };
+ 
+ export class InteractiveThemeController {
+ 	private readonly ui: TUI;
+-	private readonly settingsManager: SettingsManager;
++	private readonly getSettingsManager: () => SettingsManager;
+ 	private readonly showError: (message: string) => void;
+ 	private readonly onChanged: () => void;
++	private currentThemeSetting: string | undefined;
+ 	private terminalTheme: TerminalTheme = detectTerminalBackgroundFromEnv().theme;
+ 	private activeThemeName: string | undefined;
+ 	private autoSyncEnabled = false;
+ 	private terminalColorSchemeUnsubscribe: (() => void) | undefined;
+ 
+-	constructor(ui: TUI, settingsManager: SettingsManager, showError: (message: string) => void, onChanged: () => void) {
++	constructor(
++		ui: TUI,
++		options: {
++			getSettingsManager: () => SettingsManager;
++			showError: (message: string) => void;
++			onChanged: () => void;
++			initialThemeSetting?: string;
++		},
++	) {
+ 		this.ui = ui;
+-		this.settingsManager = settingsManager;
+-		this.showError = showError;
+-		this.onChanged = onChanged;
+-		this.activeThemeName = resolveThemeSetting(this.settingsManager.getThemeSetting(), this.terminalTheme);
++		this.getSettingsManager = options.getSettingsManager;
++		this.showError = options.showError;
++		this.onChanged = options.onChanged;
++		this.currentThemeSetting = options.initialThemeSetting;
++		this.activeThemeName = resolveThemeSetting(
++			this.currentThemeSetting ?? this.getSettingsManager().getThemeSetting(),
++			this.terminalTheme,
++		);
+ 		initTheme(this.activeThemeName, true);
+ 		this.bindTerminalColorSchemeListener();
+ 	}
+@@ -42,7 +55,8 @@ export class InteractiveThemeController {
+ 	}
+ 
+ 	async applyFromSettings(): Promise<void> {
+-		const themeSetting = this.settingsManager.getThemeSetting();
++		const settingsManager = this.getSettingsManager();
++		const themeSetting = this.currentThemeSetting ?? settingsManager.getThemeSetting();
+ 		const autoTheme = parseAutoThemeSetting(themeSetting);
+ 		if (autoTheme) {
+ 			this.terminalTheme = await detectTerminalThemeForAuto({ ui: this.ui, timeoutMs: 100 });
+@@ -61,14 +75,27 @@ export class InteractiveThemeController {
+ 		this.terminalTheme = detection.theme;
+ 		if (!this.applyThemeName(detection.theme).success) return;
+ 		if (detection.confidence === "high") {
+-			this.settingsManager.setTheme(detection.theme);
+-			await this.settingsManager.flush();
++			settingsManager.setTheme(detection.theme);
++			await settingsManager.flush();
+ 		}
+ 	}
+ 
++	getThemeSelection(): string | undefined {
++		return this.currentThemeSetting ?? this.getSettingsManager().getThemeSetting() ?? this.activeThemeName;
++	}
++
+ 	setThemeName(themeName: string, showError = false): ThemeResult {
+ 		this.setAutoSync(false);
+-		return this.applyThemeName(themeName, showError);
++		const result = this.applyThemeName(themeName, showError);
++		if (result.success) {
++			this.currentThemeSetting = themeName;
++		}
++		return result;
++	}
++
++	async setThemeSetting(themeSetting: string): Promise<void> {
++		this.currentThemeSetting = themeSetting;
++		await this.applyFromSettings();
+ 	}
+ 
+ 	setThemeInstance(themeInstance: Theme): ThemeResult {
+@@ -126,7 +153,7 @@ export class InteractiveThemeController {
+ 	private applyTerminalTheme(terminalTheme: TerminalTheme): void {
+ 		if (!this.autoSyncEnabled) return;
+ 		this.terminalTheme = terminalTheme;
+-		const autoTheme = parseAutoThemeSetting(this.settingsManager.getThemeSetting());
++		const autoTheme = parseAutoThemeSetting(this.currentThemeSetting ?? this.getSettingsManager().getThemeSetting());
+ 		if (!autoTheme) {
+ 			this.setAutoSync(false);
+ 			return;
+diff --git a/packages/coding-agent/src/modes/interactive/theme/theme-schema.json b/packages/coding-agent/src/modes/interactive/theme/theme-schema.json
+index 039bdc15..5348ab7d 100644
+--- a/packages/coding-agent/src/modes/interactive/theme/theme-schema.json
++++ b/packages/coding-agent/src/modes/interactive/theme/theme-schema.json
+@@ -34,7 +34,7 @@
+ 		},
+ 		"colors": {
+ 			"type": "object",
+-			"description": "Theme color definitions (thinkingMax and scrollbarThumb are optional and use compatible fallbacks)",
++			"description": "Theme color definitions (thinkingMax, scrollbarThumb, and search highlight colors are optional and use compatible fallbacks)",
+ 			"required": [
+ 				"accent",
+ 				"border",
+@@ -141,6 +141,14 @@
+ 					"$ref": "#/$defs/colorValue",
+ 					"description": "Fullscreen scrollbar thumb background (falls back to selectedBg when omitted)"
+ 				},
++				"searchMatchBg": {
++					"$ref": "#/$defs/colorValue",
++					"description": "Transcript search match background and current-match text (falls back to selectedBg when omitted)"
++				},
++				"searchMatchText": {
++					"$ref": "#/$defs/colorValue",
++					"description": "Transcript search match text and current-match background (falls back to text when omitted)"
++				},
+ 				"userMessageBg": {
+ 					"$ref": "#/$defs/colorValue",
+ 					"description": "User message background"
+diff --git a/packages/coding-agent/src/modes/interactive/theme/theme.ts b/packages/coding-agent/src/modes/interactive/theme/theme.ts
+index c6bb899d..6fa0c8c9 100644
+--- a/packages/coding-agent/src/modes/interactive/theme/theme.ts
++++ b/packages/coding-agent/src/modes/interactive/theme/theme.ts
+@@ -45,9 +45,11 @@ const ThemeJsonSchema = Type.Object({
+ 		dim: ColorValueSchema,
+ 		text: ColorValueSchema,
+ 		thinkingText: ColorValueSchema,
+-		// Backgrounds & Content Text (11 required, 1 optional)
++		// Backgrounds & Content Text (11 required, 3 optional)
+ 		selectedBg: ColorValueSchema,
+ 		scrollbarThumb: Type.Optional(ColorValueSchema),
++		searchMatchBg: Type.Optional(ColorValueSchema),
++		searchMatchText: Type.Optional(ColorValueSchema),
+ 		userMessageBg: ColorValueSchema,
+ 		userMessageText: ColorValueSchema,
+ 		customMessageBg: ColorValueSchema,
+@@ -119,6 +121,7 @@ export type ThemeColor =
+ 	| "dim"
+ 	| "text"
+ 	| "thinkingText"
++	| "searchMatchText"
+ 	| "userMessageText"
+ 	| "customMessageText"
+ 	| "customMessageLabel"
+@@ -158,12 +161,16 @@ export type ThemeColor =
+ export type ThemeBg =
+ 	| "selectedBg"
+ 	| "scrollbarThumb"
++	| "searchMatchBg"
+ 	| "userMessageBg"
+ 	| "customMessageBg"
+ 	| "toolPendingBg"
+ 	| "toolSuccessBg"
+ 	| "toolErrorBg";
+ 
++type OptionalThemeColor = "thinkingMax" | "searchMatchText";
++type OptionalThemeBg = "scrollbarThumb" | "searchMatchBg";
++
+ type ColorMode = "truecolor" | "256color";
+ 
+ // ============================================================================
+@@ -321,13 +328,18 @@ function resolveThemeColors<T extends Record<string, ColorValue>>(
+ 	return resolved as Record<keyof T, string | number>;
+ }
+ 
+-function withThemeColorFallbacks(
+-	colors: ThemeJson["colors"],
+-): ThemeJson["colors"] & { thinkingMax: ColorValue; scrollbarThumb: ColorValue } {
++function withThemeColorFallbacks(colors: ThemeJson["colors"]): ThemeJson["colors"] & {
++	thinkingMax: ColorValue;
++	scrollbarThumb: ColorValue;
++	searchMatchBg: ColorValue;
++	searchMatchText: ColorValue;
++} {
+ 	return {
+ 		...colors,
+ 		thinkingMax: colors.thinkingMax ?? colors.thinkingXhigh,
+ 		scrollbarThumb: colors.scrollbarThumb ?? colors.selectedBg,
++		searchMatchBg: colors.searchMatchBg ?? colors.selectedBg,
++		searchMatchText: colors.searchMatchText ?? colors.text,
+ 	};
+ }
+ 
+@@ -344,9 +356,10 @@ export class Theme {
+ 	private mode: ColorMode;
+ 
+ 	constructor(
+-		fgColors: Record<ThemeColor, string | number>,
+-		bgColors: Record<Exclude<ThemeBg, "scrollbarThumb">, string | number> &
+-			Partial<Record<"scrollbarThumb", string | number>>,
++		fgColors: Record<Exclude<ThemeColor, OptionalThemeColor>, string | number> &
++			Partial<Record<OptionalThemeColor, string | number>>,
++		bgColors: Record<Exclude<ThemeBg, OptionalThemeBg>, string | number> &
++			Partial<Record<OptionalThemeBg, string | number>>,
+ 		mode: ColorMode,
+ 		options: { name?: string; sourcePath?: string; sourceInfo?: SourceInfo } = {},
+ 	) {
+@@ -355,7 +368,11 @@ export class Theme {
+ 		this.sourceInfo = options.sourceInfo;
+ 		this.mode = mode;
+ 		this.fgColors = new Map();
+-		const colors = { ...fgColors, thinkingMax: fgColors.thinkingMax ?? fgColors.thinkingXhigh };
++		const colors = {
++			...fgColors,
++			thinkingMax: fgColors.thinkingMax ?? fgColors.thinkingXhigh,
++			searchMatchText: fgColors.searchMatchText ?? fgColors.text,
++		};
+ 		for (const [key, value] of Object.entries(colors) as [ThemeColor, string | number][]) {
+ 			this.fgColors.set(key, fgAnsi(value, mode));
+ 		}
+@@ -363,6 +380,7 @@ export class Theme {
+ 		const backgrounds = {
+ 			...bgColors,
+ 			scrollbarThumb: bgColors.scrollbarThumb ?? bgColors.selectedBg,
++			searchMatchBg: bgColors.searchMatchBg ?? bgColors.selectedBg,
+ 		};
+ 		for (const [key, value] of Object.entries(backgrounds) as [ThemeBg, string | number][]) {
+ 			this.bgColors.set(key, bgAnsi(value, mode));
+@@ -615,6 +633,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
+ 	const bgColorKeys: Set<string> = new Set([
+ 		"selectedBg",
+ 		"scrollbarThumb",
++		"searchMatchBg",
+ 		"userMessageBg",
+ 		"customMessageBg",
+ 		"toolPendingBg",
+diff --git a/packages/coding-agent/src/modes/json-event.ts b/packages/coding-agent/src/modes/json-event.ts
+index 6cff8ebf..f300b17a 100644
+--- a/packages/coding-agent/src/modes/json-event.ts
++++ b/packages/coding-agent/src/modes/json-event.ts
+@@ -1,3 +1,4 @@
++import type { Usage } from "@earendil-works/pi-ai";
+ import type { AgentSessionEvent } from "../core/agent-session.ts";
+ 
+ type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T;
+@@ -8,6 +9,7 @@ type ToJsonEvent<T> = T extends {
+ }
+ 	? {
+ 			type: "message_update";
++			usage: Usage;
+ 			assistantMessageEvent: WithoutPartial<TAssistantMessageEvent>;
+ 		}
+ 	: T;
+@@ -21,7 +23,8 @@ type JsonMessageUpdateEvent = Extract<JsonAgentSessionEvent, { type: "message_up
+ /**
+  * Remove cumulative assistant snapshots from streaming wire events.
+  * `message_start` provides the initial message, deltas build it, and
+- * `message_end` provides the final authoritative message.
++ * `message_end` provides the final authoritative message. Cumulative usage
++ * remains available because its size is constant.
+  */
+ export function toJsonEvent(event: MessageUpdateEvent): JsonMessageUpdateEvent;
+ export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent;
+@@ -29,12 +32,15 @@ export function toJsonEvent(event: AgentSessionEvent): JsonAgentSessionEvent {
+ 	if (event.type !== "message_update") {
+ 		return event;
+ 	}
++	if (event.message.role !== "assistant") {
++		throw new Error("message_update message is not an assistant message");
++	}
+ 
+ 	const assistantMessageEvent = event.assistantMessageEvent;
+ 	if (!("partial" in assistantMessageEvent)) {
+-		return { type: "message_update", assistantMessageEvent };
++		return { type: "message_update", usage: event.message.usage, assistantMessageEvent };
+ 	}
+ 
+ 	const { partial: _partial, ...deltaEvent } = assistantMessageEvent;
+-	return { type: "message_update", assistantMessageEvent: deltaEvent };
++	return { type: "message_update", usage: event.message.usage, assistantMessageEvent: deltaEvent };
+ }
+diff --git a/packages/coding-agent/src/package-manager-cli.ts b/packages/coding-agent/src/package-manager-cli.ts
+index aedfdf0b..0a05f315 100644
+--- a/packages/coding-agent/src/package-manager-cli.ts
++++ b/packages/coding-agent/src/package-manager-cli.ts
+@@ -432,7 +432,7 @@ function printSelfUpdateUnavailable(
+ 	const entrypoint = process.argv[1];
+ 	if (entrypoint) {
+ 		console.error("");
+-		console.error(`Location of pi executable: ${entrypoint}`);
++		console.error(`Location of ${APP_NAME} executable: ${entrypoint}`);
+ 	}
+ }
+ 
+diff --git a/packages/coding-agent/src/server/create-harness.ts b/packages/coding-agent/src/server/create-harness.ts
+index 80294fec..3ad0bad2 100644
+--- a/packages/coding-agent/src/server/create-harness.ts
++++ b/packages/coding-agent/src/server/create-harness.ts
+@@ -11,6 +11,7 @@ import {
+ 	type HarnessTool,
+ } from "@earendil-works/pi-agent-core";
+ import type { Static, TSchema } from "typebox";
++import { getExperimentalToolSampling } from "../core/experimental.ts";
+ import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
+ import { bashToolSystemPromptContribution } from "../core/tools/bash.ts";
+ import { editToolSystemPromptContribution } from "../core/tools/edit.ts";
+@@ -30,6 +31,7 @@ function createCodingAgentHarnessTool<TParameters extends TSchema, TDetails>(
+ 	return {
+ 		...tool,
+ 		...prompt,
++		constrainedSampling: getExperimentalToolSampling(),
+ 		execute: (toolCallId, params, signal, onUpdate) =>
+ 			tool.execute(toolCallId, params as Static<TParameters>, signal, onUpdate, context),
+ 	};
+diff --git a/packages/coding-agent/src/utils/tools-manager.ts b/packages/coding-agent/src/utils/tools-manager.ts
+index a177b4f6..23a71b5a 100644
+--- a/packages/coding-agent/src/utils/tools-manager.ts
++++ b/packages/coding-agent/src/utils/tools-manager.ts
+@@ -1,4 +1,3 @@
+-import chalk from "chalk";
+ import { type SpawnSyncReturns, spawnSync } from "child_process";
+ import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
+ import { arch, platform } from "os";
+@@ -323,9 +322,20 @@ const TERMUX_PACKAGES: Record<string, string> = {
+ 	rg: "ripgrep",
+ };
+ 
+-// Ensure a tool is available, downloading if necessary
+-// Returns the path to the tool, or null if unavailable
+-export async function ensureTool(tool: "fd" | "rg", silent: boolean = false): Promise<string | undefined> {
++export interface ToolStatus {
++	type: "info" | "warning";
++	message: string;
++}
++
++/**
++ * Ensure a tool is available, downloading if necessary.
++ * Reports progress through `onStatus`; status messages are otherwise silent.
++ * Returns the tool path, or undefined if unavailable.
++ */
++export async function ensureTool(
++	tool: "fd" | "rg",
++	onStatus?: (status: ToolStatus) => void,
++): Promise<string | undefined> {
+ 	const existingPath = getToolPath(tool);
+ 	if (existingPath) {
+ 		return existingPath;
+@@ -335,9 +345,7 @@ export async function ensureTool(tool: "fd" | "rg", silent: boolean = false): Pr
+ 	if (!config) return undefined;
+ 
+ 	if (isOfflineModeEnabled()) {
+-		if (!silent) {
+-			console.log(chalk.yellow(`${config.name} not found. Offline mode enabled, skipping download.`));
+-		}
++		onStatus?.({ type: "warning", message: `${config.name} not found. Offline mode enabled, skipping download.` });
+ 		return undefined;
+ 	}
+ 
+@@ -345,27 +353,22 @@ export async function ensureTool(tool: "fd" | "rg", silent: boolean = false): Pr
+ 	// Users must install via pkg.
+ 	if (platform() === "android") {
+ 		const pkgName = TERMUX_PACKAGES[tool] ?? tool;
+-		if (!silent) {
+-			console.log(chalk.yellow(`${config.name} not found. Install with: pkg install ${pkgName}`));
+-		}
++		onStatus?.({ type: "warning", message: `${config.name} not found. Install with: pkg install ${pkgName}` });
+ 		return undefined;
+ 	}
+ 
+ 	// Tool not found - download it
+-	if (!silent) {
+-		console.log(chalk.dim(`${config.name} not found. Downloading...`));
+-	}
++	onStatus?.({ type: "info", message: `${config.name} not found. Downloading...` });
+ 
+ 	try {
+ 		const path = await downloadTool(tool);
+-		if (!silent) {
+-			console.log(chalk.dim(`${config.name} installed to ${path}`));
+-		}
++		onStatus?.({ type: "info", message: `${config.name} installed to ${path}` });
+ 		return path;
+ 	} catch (e) {
+-		if (!silent) {
+-			console.log(chalk.yellow(`Failed to download ${config.name}: ${e instanceof Error ? e.message : e}`));
+-		}
++		onStatus?.({
++			type: "warning",
++			message: `Failed to download ${config.name}: ${e instanceof Error ? e.message : e}`,
++		});
+ 		return undefined;
+ 	}
+ }
+diff --git a/packages/coding-agent/test/args.test.ts b/packages/coding-agent/test/args.test.ts
+index 575d3666..a8be4f8e 100644
+--- a/packages/coding-agent/test/args.test.ts
++++ b/packages/coding-agent/test/args.test.ts
+@@ -260,6 +260,20 @@ describe("parseArgs", () => {
+ 		});
+ 	});
+ 
++	describe("--use-theme flag", () => {
++		test("parses --use-theme", () => {
++			const result = parseArgs(["--use-theme", "light"]);
++			expect(result.useTheme).toBe("light");
++		});
++
++		test("reports when the theme name value is missing", () => {
++			const result = parseArgs(["--use-theme", "--print"]);
++			expect(result.useTheme).toBeUndefined();
++			expect(result.print).toBe(true);
++			expect(result.diagnostics).toEqual([{ type: "error", message: "--use-theme requires a theme name" }]);
++		});
++	});
++
+ 	describe("--no-skills flag", () => {
+ 		test("parses --no-skills flag", () => {
+ 			const result = parseArgs(["--no-skills"]);
+diff --git a/packages/coding-agent/test/default-tools-setting.test.ts b/packages/coding-agent/test/default-tools-setting.test.ts
+new file mode 100644
+index 00000000..69adbceb
+--- /dev/null
++++ b/packages/coding-agent/test/default-tools-setting.test.ts
+@@ -0,0 +1,150 @@
++import { existsSync, mkdirSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { getModel } from "@earendil-works/pi-ai/compat";
++import { Type } from "typebox";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
++import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
++import { type CreateAgentSessionOptions, createAgentSession, type InlineExtension } from "../src/core/sdk.ts";
++import { SessionManager } from "../src/core/session-manager.ts";
++import { SettingsManager } from "../src/core/settings-manager.ts";
++
++type ToolOptions = Pick<CreateAgentSessionOptions, "tools" | "excludeTools" | "noTools" | "customTools">;
++
++describe("defaultTools setting", () => {
++	let tempDir: string;
++	let agentDir: string;
++
++	beforeEach(() => {
++		tempDir = join(tmpdir(), `pi-default-tools-${Date.now()}-${Math.random().toString(36).slice(2)}`);
++		agentDir = join(tempDir, "agent");
++		mkdirSync(agentDir, { recursive: true });
++	});
++
++	afterEach(() => {
++		if (tempDir && existsSync(tempDir)) {
++			rmSync(tempDir, { recursive: true, force: true });
++		}
++	});
++
++	async function createSession(
++		defaultTools: string[],
++		options: ToolOptions = {},
++		extensionFactories: InlineExtension[] = [],
++	) {
++		const settingsManager = SettingsManager.inMemory({ defaultTools });
++		const resourceLoader = new DefaultResourceLoader({
++			cwd: tempDir,
++			agentDir,
++			settingsManager,
++			extensionFactories,
++		});
++		await resourceLoader.reload();
++
++		return (
++			await createAgentSession({
++				cwd: tempDir,
++				agentDir,
++				model: getModel("anthropic", "claude-sonnet-4-5")!,
++				settingsManager,
++				sessionManager: SessionManager.inMemory(tempDir),
++				resourceLoader,
++				...options,
++			})
++		).session;
++	}
++
++	it("uses the configured list as the initial built-in selection", async () => {
++		const session = await createSession(["grep", "find"]);
++
++		expect(
++			session
++				.getAllTools()
++				.map((tool) => tool.name)
++				.sort(),
++		).toEqual(["bash", "edit", "find", "grep", "ls", "read", "write"]);
++		expect(session.getActiveToolNames()).toEqual(["grep", "find"]);
++		expect(session.systemPrompt).toContain("- grep:");
++		expect(session.systemPrompt).not.toContain("- read:");
++		session.dispose();
++	});
++
++	it("keeps extension and SDK custom tools enabled", async () => {
++		const session = await createSession(
++			["grep"],
++			{
++				customTools: [
++					{
++						name: "sdk_tool",
++						label: "SDK Tool",
++						description: "SDK custom tool",
++						parameters: Type.Object({}),
++						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
++					},
++				],
++			},
++			[
++				(pi) => {
++					pi.registerTool({
++						name: "static_tool",
++						label: "Static Tool",
++						description: "Statically registered extension tool",
++						parameters: Type.Object({}),
++						execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
++					});
++					pi.on("session_start", () => {
++						pi.registerTool({
++							name: "dynamic_tool",
++							label: "Dynamic Tool",
++							description: "Dynamically registered extension tool",
++							parameters: Type.Object({}),
++							execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
++						});
++					});
++				},
++			],
++		);
++		await session.bindExtensions({});
++
++		expect(session.getActiveToolNames().sort()).toEqual(["dynamic_tool", "grep", "sdk_tool", "static_tool"]);
++		expect(session.getAllTools().map((tool) => tool.name)).toEqual(
++			expect.arrayContaining(["read", "dynamic_tool", "sdk_tool", "static_tool"]),
++		);
++		session.dispose();
++	});
++
++	it("preserves explicit tool option precedence", async () => {
++		const allowlistedSession = await createSession(["grep"], { tools: ["read"] });
++		expect(allowlistedSession.getActiveToolNames()).toEqual(["read"]);
++		allowlistedSession.dispose();
++
++		const excludedSession = await createSession(["read", "grep"], { excludeTools: ["read"] });
++		expect(excludedSession.getActiveToolNames()).toEqual(["grep"]);
++		excludedSession.dispose();
++
++		const toolLessSession = await createSession(["read"], { noTools: "all" });
++		expect(toolLessSession.getAllTools()).toEqual([]);
++		expect(toolLessSession.getActiveToolNames()).toEqual([]);
++		toolLessSession.dispose();
++	});
++
++	it("applies through service-based session creation", async () => {
++		const settingsManager = SettingsManager.inMemory({ defaultTools: ["ls"] });
++		const services = await createAgentSessionServices({ cwd: tempDir, agentDir, settingsManager });
++		const { session } = await createAgentSessionFromServices({
++			services,
++			sessionManager: SessionManager.inMemory(tempDir),
++			model: getModel("anthropic", "claude-sonnet-4-5")!,
++		});
++
++		expect(
++			session
++				.getAllTools()
++				.map((tool) => tool.name)
++				.sort(),
++		).toEqual(["bash", "edit", "find", "grep", "ls", "read", "write"]);
++		expect(session.getActiveToolNames()).toEqual(["ls"]);
++		session.dispose();
++	});
++});
+diff --git a/packages/coding-agent/test/experimental-tool-strict-mode.test.ts b/packages/coding-agent/test/experimental-tool-strict-mode.test.ts
+new file mode 100644
+index 00000000..07a00d94
+--- /dev/null
++++ b/packages/coding-agent/test/experimental-tool-strict-mode.test.ts
+@@ -0,0 +1,38 @@
++import { afterEach, describe, expect, it } from "vitest";
++import {
++	createBashToolDefinition,
++	createEditToolDefinition,
++	createReadToolDefinition,
++	createWriteToolDefinition,
++} from "../src/core/tools/index.ts";
++
++function createBuiltInTools() {
++	return [
++		createReadToolDefinition(process.cwd()),
++		createBashToolDefinition(process.cwd()),
++		createEditToolDefinition(process.cwd()),
++		createWriteToolDefinition(process.cwd()),
++	];
++}
++
++describe("experimental strict built-in tools", () => {
++	const originalPiExperimental = process.env.PI_EXPERIMENTAL;
++
++	afterEach(() => {
++		if (originalPiExperimental === undefined) delete process.env.PI_EXPERIMENTAL;
++		else process.env.PI_EXPERIMENTAL = originalPiExperimental;
++	});
++
++	it("only enables strict-prefer sampling in experimental mode", () => {
++		delete process.env.PI_EXPERIMENTAL;
++		const normalTools = createBuiltInTools();
++		process.env.PI_EXPERIMENTAL = "1";
++		const experimentalTools = createBuiltInTools();
++
++		for (const [index, tool] of experimentalTools.entries()) {
++			expect(tool.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
++			expect(tool.parameters).toEqual(normalTools[index]?.parameters);
++			expect(normalTools[index]?.constrainedSampling).toBeUndefined();
++		}
++	});
++});
+diff --git a/packages/coding-agent/test/interactive-mode-startup-input.test.ts b/packages/coding-agent/test/interactive-mode-startup-input.test.ts
+index b784f376..28a0f48b 100644
+--- a/packages/coding-agent/test/interactive-mode-startup-input.test.ts
++++ b/packages/coding-agent/test/interactive-mode-startup-input.test.ts
+@@ -23,7 +23,13 @@ type InputContext = {
+ 	pendingUserInputs: string[];
+ };
+ 
++type StartupSubmitContext = {
++	editor: { setText: (text: string) => void };
++	showStatus: (message: string) => void;
++};
++
+ type InteractiveModePrivate = {
++	handleStartupSubmit(this: StartupSubmitContext, text: string): void;
+ 	setupEditorSubmitHandler(this: SubmitContext): void;
+ 	getUserInput(this: InputContext): Promise<string>;
+ };
+@@ -49,6 +55,18 @@ function createSubmitContext(): SubmitContext {
+ }
+ 
+ describe("InteractiveMode startup input", () => {
++	it("restores a prompt submitted while managed-tool setup is running", () => {
++		const context: StartupSubmitContext = {
++			editor: { setText: vi.fn() },
++			showStatus: vi.fn(),
++		};
++
++		interactiveModePrototype.handleStartupSubmit.call(context, "early prompt");
++
++		expect(context.editor.setText).toHaveBeenCalledWith("early prompt");
++		expect(context.showStatus).toHaveBeenCalledWith("Startup is still in progress");
++	});
++
+ 	it("queues a normal prompt submitted before the input callback is installed", async () => {
+ 		const context = createSubmitContext();
+ 		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+diff --git a/packages/coding-agent/test/interactive-mode-status.test.ts b/packages/coding-agent/test/interactive-mode-status.test.ts
+index d422d8f3..a4aaa48c 100644
+--- a/packages/coding-agent/test/interactive-mode-status.test.ts
++++ b/packages/coding-agent/test/interactive-mode-status.test.ts
+@@ -118,6 +118,30 @@ describe("InteractiveMode.showStatus", () => {
+ 	});
+ });
+ 
++describe("InteractiveMode.showManagedToolStatus", () => {
++	beforeAll(() => initTheme("dark"));
++
++	test("renders tool updates as one contiguous group", () => {
++		const fakeThis: any = {
++			chatContainer: new Container(),
++			ui: { requestRender: vi.fn() },
++			managedToolStatusStarted: false,
++			lastStatusSpacer: undefined,
++			lastStatusText: undefined,
++		};
++		const showManagedToolStatus = (InteractiveMode as any).prototype.showManagedToolStatus;
++
++		showManagedToolStatus.call(fakeThis, { type: "info", message: "fd downloading" });
++		showManagedToolStatus.call(fakeThis, { type: "info", message: "rg downloading" });
++		showManagedToolStatus.call(fakeThis, { type: "warning", message: "rg failed" });
++
++		expect(fakeThis.chatContainer.children).toHaveLength(4);
++		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toBe(
++			"fd downloading\n rg downloading\n Warning: rg failed",
++		);
++	});
++});
++
+ describe("InteractiveMode.setToolsExpanded", () => {
+ 	test("applies expansion state to the active header and chat entries", () => {
+ 		const header = { setExpanded: vi.fn() };
+diff --git a/packages/coding-agent/test/interactive-tui.test.ts b/packages/coding-agent/test/interactive-tui.test.ts
+index 82a29edc..a4a0408d 100644
+--- a/packages/coding-agent/test/interactive-tui.test.ts
++++ b/packages/coding-agent/test/interactive-tui.test.ts
+@@ -2,7 +2,7 @@ import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
+ import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
+ import { beforeEach, describe, expect, it, vi } from "vitest";
+ import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+-import type { TuiMode } from "../src/core/settings-manager.ts";
++import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
+ import {
+ 	createInteractiveTui,
+ 	createInteractiveTuiReference,
+@@ -68,7 +68,7 @@ describe("createInteractiveTui", () => {
+ 		altTui.stop();
+ 	});
+ 
+-	it("replaces the renderer while preserving components and focus", async () => {
++	it("replaces the renderer and restores the previous screen for resume-hint exits", async () => {
+ 		const terminal = new RecordingTerminal(40, 8);
+ 		const renderer = createInteractiveTui({
+ 			tuiMode: "regular",
+@@ -105,7 +105,7 @@ describe("createInteractiveTui", () => {
+ 		stableUi = createInteractiveTuiReference(() => context.renderer);
+ 		context.ui = stableUi;
+ 		const { stopInteractiveTui, switchTuiMode } = InteractiveMode.prototype as unknown as {
+-			stopInteractiveTui(this: SwitchContext): void;
++			stopInteractiveTui(this: SwitchContext, fullscreenExitOutput: FullscreenExitOutput): void;
+ 			switchTuiMode(this: SwitchContext, mode: TuiMode, restoreProgress?: boolean): boolean;
+ 		};
+ 
+@@ -121,10 +121,10 @@ describe("createInteractiveTui", () => {
+ 		expect(invalidatedModes).toEqual(["fullscreen"]);
+ 		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 1]);
+ 
+-		stopInteractiveTui.call(context);
++		stopInteractiveTui.call(context, "resume-hint");
+ 
+-		expect(stableUi.mode).toBe("regular");
+-		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 3]);
++		expect(stableUi.mode).toBe("fullscreen");
++		expect([terminal.startCount, terminal.stopCount]).toEqual([2, 2]);
+ 	});
+ });
+ 
+diff --git a/packages/coding-agent/test/model-catalog-refresh.test.ts b/packages/coding-agent/test/model-catalog-refresh.test.ts
+new file mode 100644
+index 00000000..0250026f
+--- /dev/null
++++ b/packages/coding-agent/test/model-catalog-refresh.test.ts
+@@ -0,0 +1,81 @@
++import type { ModelsRefreshOptions, ModelsRefreshResult } from "@earendil-works/pi-ai";
++import { describe, expect, it, vi } from "vitest";
++import { refreshModelCatalogs } from "../src/modes/interactive/model-catalog-refresh.ts";
++
++interface Deferred<T> {
++	promise: Promise<T>;
++	resolve(value: T): void;
++}
++
++function createDeferred<T>(): Deferred<T> {
++	let resolvePromise!: (value: T) => void;
++	const promise = new Promise<T>((resolve) => {
++		resolvePromise = resolve;
++	});
++	return { promise, resolve: resolvePromise };
++}
++
++function successfulRefresh(): ModelsRefreshResult {
++	return { aborted: false, errors: new Map() };
++}
++
++describe("interactive model catalog refresh", () => {
++	it("shares one runtime refresh between concurrent callers", async () => {
++		const deferred = createDeferred<ModelsRefreshResult>();
++		const runtime = { refresh: vi.fn((_options?: ModelsRefreshOptions) => deferred.promise) };
++		const firstController = new AbortController();
++		const secondController = new AbortController();
++
++		const first = refreshModelCatalogs(runtime, firstController.signal);
++		const second = refreshModelCatalogs(runtime, secondController.signal);
++
++		expect(runtime.refresh).toHaveBeenCalledOnce();
++		deferred.resolve(successfulRefresh());
++		await expect(first).resolves.toEqual(successfulRefresh());
++		await expect(second).resolves.toEqual(successfulRefresh());
++	});
++
++	it("keeps the shared refresh alive when one caller stops waiting", async () => {
++		const deferred = createDeferred<ModelsRefreshResult>();
++		let refreshSignal: AbortSignal | undefined;
++		const runtime = {
++			refresh: vi.fn((options?: ModelsRefreshOptions) => {
++				refreshSignal = options?.signal;
++				return deferred.promise;
++			}),
++		};
++		const firstController = new AbortController();
++		const secondController = new AbortController();
++		const first = refreshModelCatalogs(runtime, firstController.signal);
++		const second = refreshModelCatalogs(runtime, secondController.signal);
++
++		firstController.abort();
++		await expect(first).rejects.toMatchObject({ name: "AbortError" });
++		expect(refreshSignal?.aborted).toBe(false);
++
++		deferred.resolve(successfulRefresh());
++		await expect(second).resolves.toEqual(successfulRefresh());
++	});
++
++	it("aborts an abandoned refresh and allows a later refresh to start", async () => {
++		const refreshSignals: AbortSignal[] = [];
++		const runtime = {
++			refresh: vi.fn((options?: ModelsRefreshOptions) => {
++				if (options?.signal) refreshSignals.push(options.signal);
++				return new Promise<ModelsRefreshResult>(() => {});
++			}),
++		};
++		const firstController = new AbortController();
++		const first = refreshModelCatalogs(runtime, firstController.signal);
++
++		firstController.abort();
++		await expect(first).rejects.toMatchObject({ name: "AbortError" });
++		await vi.waitFor(() => expect(refreshSignals[0]?.aborted).toBe(true));
++
++		const secondController = new AbortController();
++		const second = refreshModelCatalogs(runtime, secondController.signal);
++		expect(runtime.refresh).toHaveBeenCalledTimes(2);
++		secondController.abort();
++		await expect(second).rejects.toMatchObject({ name: "AbortError" });
++	});
++});
+diff --git a/packages/coding-agent/test/model-runtime-cloudflare-compat.test.ts b/packages/coding-agent/test/model-runtime-cloudflare-compat.test.ts
+index 8a0afcab..6e9c4518 100644
+--- a/packages/coding-agent/test/model-runtime-cloudflare-compat.test.ts
++++ b/packages/coding-agent/test/model-runtime-cloudflare-compat.test.ts
+@@ -59,7 +59,7 @@ async function createCloudflareRuntime(): Promise<{ modelRuntime: ModelRuntime;
+ describe("ModelRegistry Cloudflare compat streaming", () => {
+ 	it("materializes the Cloudflare endpoint through ModelRuntime streaming", async () => {
+ 		const { modelRuntime } = await createCloudflareRuntime();
+-		const model = modelRuntime.getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
++		const model = modelRuntime.getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
+ 		expect(model).toBeDefined();
+ 
+ 		resetApiProviders();
+@@ -75,7 +75,7 @@ describe("ModelRegistry Cloudflare compat streaming", () => {
+ 
+ 	it("materializes the Cloudflare endpoint after extension-style auth resolution", async () => {
+ 		const { modelRegistry } = await createCloudflareRuntime();
+-		const model = modelRegistry.find("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
++		const model = modelRegistry.find("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
+ 		expect(model).toBeDefined();
+ 
+ 		resetApiProviders();
+diff --git a/packages/coding-agent/test/scrollbar-theme.test.ts b/packages/coding-agent/test/scrollbar-theme.test.ts
+index 01dbdbcc..f07bb9c8 100644
+--- a/packages/coding-agent/test/scrollbar-theme.test.ts
++++ b/packages/coding-agent/test/scrollbar-theme.test.ts
+@@ -27,7 +27,7 @@ afterEach(() => {
+ 	}
+ });
+ 
+-describe("scrollbar theme color", () => {
++describe("optional fullscreen theme colors", () => {
+ 	it("falls back to selectedBg when scrollbarThumb is omitted", () => {
+ 		const themeJson = loadDarkTheme();
+ 		themeJson.name = "legacy-scrollbar-theme";
+@@ -45,4 +45,26 @@ describe("scrollbar theme color", () => {
+ 		const loadedTheme = loadThemeFromPath(writeTheme(themeJson), "truecolor");
+ 		expect(loadedTheme.getBgAnsi("scrollbarThumb")).toBe("\x1b[48;2;18;52;86m");
+ 	});
++
++	it("falls back to existing selection and text colors for search highlights", () => {
++		const themeJson = loadDarkTheme();
++		themeJson.name = "legacy-search-theme";
++		delete themeJson.colors.searchMatchBg;
++		delete themeJson.colors.searchMatchText;
++
++		const loadedTheme = loadThemeFromPath(writeTheme(themeJson), "truecolor");
++		expect(loadedTheme.getBgAnsi("searchMatchBg")).toBe(loadedTheme.getBgAnsi("selectedBg"));
++		expect(loadedTheme.getFgAnsi("searchMatchText")).toBe(loadedTheme.getFgAnsi("text"));
++	});
++
++	it("uses explicitly configured search highlight colors", () => {
++		const themeJson = loadDarkTheme();
++		themeJson.name = "custom-search-theme";
++		themeJson.colors.searchMatchBg = "#112233";
++		themeJson.colors.searchMatchText = "#223344";
++
++		const loadedTheme = loadThemeFromPath(writeTheme(themeJson), "truecolor");
++		expect(loadedTheme.getBgAnsi("searchMatchBg")).toBe("\x1b[48;2;17;34;51m");
++		expect(loadedTheme.getFgAnsi("searchMatchText")).toBe("\x1b[38;2;34;51;68m");
++	});
+ });
+diff --git a/packages/coding-agent/test/settings-manager.test.ts b/packages/coding-agent/test/settings-manager.test.ts
+index 799da202..638a70f2 100644
+--- a/packages/coding-agent/test/settings-manager.test.ts
++++ b/packages/coding-agent/test/settings-manager.test.ts
+@@ -428,16 +428,25 @@ describe("SettingsManager", () => {
+ 		});
+ 	});
+ 
+-	it("validates and persists the fullscreen scrollbar mode", async () => {
++	it("validates and persists fullscreen settings", async () => {
+ 		const manager = SettingsManager.create(projectDir, agentDir);
++		expect(manager.getFullscreenExitOutput()).toBe("transcript");
+ 		expect(manager.getFullscreenScrollbar()).toBe("auto");
+ 
++		manager.setFullscreenExitOutput("resume-hint");
+ 		manager.setFullscreenScrollbar("hidden");
+ 		await manager.flush();
+-		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")).fullscreenScrollbar).toBe("hidden");
+-
+-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ fullscreenScrollbar: "sometimes" }));
+-		expect(SettingsManager.create(projectDir, agentDir).getFullscreenScrollbar()).toBe("auto");
++		const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
++		expect(savedSettings.fullscreenExitOutput).toBe("resume-hint");
++		expect(savedSettings.fullscreenScrollbar).toBe("hidden");
++
++		writeFileSync(
++			join(agentDir, "settings.json"),
++			JSON.stringify({ fullscreenExitOutput: "nothing", fullscreenScrollbar: "sometimes" }),
++		);
++		const reloadedManager = SettingsManager.create(projectDir, agentDir);
++		expect(reloadedManager.getFullscreenExitOutput()).toBe("transcript");
++		expect(reloadedManager.getFullscreenScrollbar()).toBe("auto");
+ 	});
+ 
+ 	describe("outputPad", () => {
+@@ -517,6 +526,23 @@ describe("SettingsManager", () => {
+ 		});
+ 	});
+ 
++	describe("defaultTools", () => {
++		it("loads global defaults and lets project settings replace them", () => {
++			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
++
++			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["read", "bash"]);
++
++			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["grep"] }));
++
++			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual(["grep"]);
++		});
++
++		it("preserves an empty tool list", () => {
++			expect(SettingsManager.inMemory({ defaultTools: [] }).getDefaultTools()).toEqual([]);
++			expect(SettingsManager.inMemory().getDefaultTools()).toBeUndefined();
++		});
++	});
++
+ 	describe("getSessionDir", () => {
+ 		it("should return undefined when not set", () => {
+ 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
+diff --git a/packages/coding-agent/test/settings-selector.test.ts b/packages/coding-agent/test/settings-selector.test.ts
+index d8f3c1e2..e658223b 100644
+--- a/packages/coding-agent/test/settings-selector.test.ts
++++ b/packages/coding-agent/test/settings-selector.test.ts
+@@ -14,24 +14,30 @@ describe("SettingsSelectorComponent", () => {
+ 		setKeybindings(new KeybindingsManager());
+ 	});
+ 
+-	it("cycles through fullscreen scrollbar modes", () => {
+-		const onChange = vi.fn();
+-		const selector = new SettingsSelectorComponent(
+-			{
+-				fullscreenScrollbar: "auto",
+-				warnings: {},
+-				availableThinkingLevels: [],
+-				availableThemes: [],
+-			} as unknown as SettingsConfig,
+-			{ onFullscreenScrollbarChange: onChange } as unknown as SettingsCallbacks,
+-		);
+-		const settingsList = selector.getSettingsList();
++	it("cycles through fullscreen settings", () => {
++		const onExitOutputChange = vi.fn();
++		const onScrollbarChange = vi.fn();
++		const config = {
++			fullscreenExitOutput: "transcript",
++			fullscreenScrollbar: "auto",
++			warnings: {},
++			availableThinkingLevels: [],
++			availableThemes: [],
++		} as unknown as SettingsConfig;
++		const callbacks = {
++			onFullscreenExitOutputChange: onExitOutputChange,
++			onFullscreenScrollbarChange: onScrollbarChange,
++		} as unknown as SettingsCallbacks;
+ 
+-		for (const character of "Fullscreen scrollbar") settingsList.handleInput(character);
+-		settingsList.handleInput("\r");
+-		settingsList.handleInput("\r");
+-		settingsList.handleInput("\r");
++		const cycle = (label: string, count: number) => {
++			const list = new SettingsSelectorComponent(config, callbacks).getSettingsList();
++			for (const character of label) list.handleInput(character);
++			for (let i = 0; i < count; i++) list.handleInput("\r");
++		};
+ 
+-		expect(onChange.mock.calls.flat()).toEqual(["always", "hidden", "auto"]);
++		cycle("Fullscreen exit output", 2);
++		expect(onExitOutputChange.mock.calls.flat()).toEqual(["resume-hint", "transcript"]);
++		cycle("Fullscreen scrollbar", 3);
++		expect(onScrollbarChange.mock.calls.flat()).toEqual(["always", "hidden", "auto"]);
+ 	});
+ });
+diff --git a/packages/coding-agent/test/suite/agent-session-prompt.test.ts b/packages/coding-agent/test/suite/agent-session-prompt.test.ts
+index 0e9c587f..1fa23fbe 100644
+--- a/packages/coding-agent/test/suite/agent-session-prompt.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-prompt.test.ts
+@@ -5,7 +5,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
+ import { fauxAssistantMessage, fauxToolCall, type Model } from "@earendil-works/pi-ai";
+ import { Type } from "typebox";
+ import { afterEach, describe, expect, it } from "vitest";
+-import type { InputEvent } from "../../src/core/extensions/index.ts";
++import type { ExtensionAPI, InputEvent } from "../../src/core/extensions/index.ts";
+ import type { PromptTemplate } from "../../src/core/prompt-templates.ts";
+ import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
+ import { createTestResourceLoader } from "../utilities.ts";
+@@ -224,6 +224,39 @@ describe("AgentSession prompt characterization", () => {
+ 		expect(expandedPrompt).toBe("Review this code: src/index.ts");
+ 	});
+ 
++	it("sendUserMessage can opt into prompt template expansion", async () => {
++		const template: PromptTemplate = {
++			name: "review",
++			description: "Review template",
++			content: "Review this code: $1",
++			filePath: "/virtual/review.md",
++			sourceInfo: createSyntheticSourceInfo("/virtual/review.md", {
++				source: "local",
++				scope: "temporary",
++				origin: "top-level",
++			}),
++		};
++		const resourceLoader = {
++			...createTestResourceLoader(),
++			getPrompts: () => ({ prompts: [template], diagnostics: [] }),
++		};
++		const harness = await createHarness({ resourceLoader });
++		harnesses.push(harness);
++		let expandedPrompt = "";
++
++		harness.setResponses([
++			(context) => {
++				const user = context.messages.find((message) => message.role === "user");
++				expandedPrompt = user ? getMessageText(user) : "";
++				return fauxAssistantMessage("ok");
++			},
++		]);
++
++		await harness.session.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
++
++		expect(expandedPrompt).toBe("Review this code: src/index.ts");
++	});
++
+ 	it("dispatches extension commands without consuming a provider response", async () => {
+ 		const commandRuns: string[] = [];
+ 		const harness = await createHarness({
+@@ -248,6 +281,35 @@ describe("AgentSession prompt characterization", () => {
+ 		expect(harness.getPendingResponseCount()).toBe(1);
+ 	});
+ 
++	it("extension sendUserMessage can opt into extension command dispatch", async () => {
++		let extensionApi: ExtensionAPI | undefined;
++		let resolveCommandRun: (args: string) => void = () => {};
++		const commandRun = new Promise<string>((resolve) => {
++			resolveCommandRun = resolve;
++		});
++		const harness = await createHarness({
++			extensionFactories: [
++				(pi) => {
++					extensionApi = pi;
++					pi.registerCommand("testcmd", {
++						description: "Test command",
++						handler: async (args) => {
++							resolveCommandRun(args);
++						},
++					});
++				},
++			],
++		});
++		harnesses.push(harness);
++		expect(extensionApi).toBeDefined();
++
++		extensionApi?.sendUserMessage("/testcmd hello world", { expandPromptTemplates: true });
++
++		await expect(commandRun).resolves.toBe("hello world");
++		expect(harness.session.messages).toEqual([]);
++		expect(harness.getPendingResponseCount()).toBe(0);
++	});
++
+ 	it("sendUserMessage while idle triggers a turn", async () => {
+ 		const harness = await createHarness();
+ 		harnesses.push(harness);
+diff --git a/packages/coding-agent/test/suite/regressions/7153-scoped-models-refresh.test.ts b/packages/coding-agent/test/suite/regressions/7153-scoped-models-refresh.test.ts
+index 0fb55a30..dccdc9d8 100644
+--- a/packages/coding-agent/test/suite/regressions/7153-scoped-models-refresh.test.ts
++++ b/packages/coding-agent/test/suite/regressions/7153-scoped-models-refresh.test.ts
+@@ -101,7 +101,7 @@ describe("issue #7153 scoped models refresh", () => {
+ 
+ 		expect(refresh.refreshSignal).toBeDefined();
+ 		refresh.selector.handleInput("\x1b");
+-		expect(refresh.refreshSignal?.aborted).toBe(true);
++		await vi.waitFor(() => expect(refresh.refreshSignal?.aborted).toBe(true));
+ 		expect(refresh.done).toHaveBeenCalledOnce();
+ 	});
+ });
+diff --git a/packages/coding-agent/test/suite/regressions/7911-json-stream-usage.test.ts b/packages/coding-agent/test/suite/regressions/7911-json-stream-usage.test.ts
+new file mode 100644
+index 00000000..b014a91a
+--- /dev/null
++++ b/packages/coding-agent/test/suite/regressions/7911-json-stream-usage.test.ts
+@@ -0,0 +1,32 @@
++import { fauxAssistantMessage } from "@earendil-works/pi-ai";
++import { afterEach, describe, expect, it } from "vitest";
++import { toJsonEvent } from "../../../src/modes/json-event.ts";
++import { createHarness, type Harness } from "../harness.ts";
++
++describe("regression #7911: JSON message updates retain usage", () => {
++	let harness: Harness | undefined;
++
++	afterEach(() => {
++		harness?.cleanup();
++	});
++
++	it("includes cumulative usage without cumulative message snapshots", async () => {
++		harness = await createHarness();
++		harness.setResponses([fauxAssistantMessage("hello")]);
++
++		await harness.session.prompt("respond");
++
++		// #7290's delta-only wire projection dropped this fixed-size metadata with the snapshots.
++		const update = harness
++			.eventsOfType("message_update")
++			.find((event) => event.message.role === "assistant" && event.message.usage.totalTokens > 0);
++		if (!update || update.message.role !== "assistant") {
++			throw new Error("Expected an assistant update with populated usage");
++		}
++
++		const wireUpdate = toJsonEvent(update);
++		expect(wireUpdate.usage).toEqual(update.message.usage);
++		expect(wireUpdate).not.toHaveProperty("message");
++		expect(wireUpdate.assistantMessageEvent).not.toHaveProperty("partial");
++	});
++});
+diff --git a/packages/coding-agent/test/test-theme-colors.ts b/packages/coding-agent/test/test-theme-colors.ts
+index 70da7b18..4e7181f3 100644
+--- a/packages/coding-agent/test/test-theme-colors.ts
++++ b/packages/coding-agent/test/test-theme-colors.ts
+@@ -222,6 +222,9 @@ function cmdTheme(themeName: string): void {
+ 
+ 	console.log("\n--- Backgrounds ---");
+ 	console.log("userMessageBg:", theme.bg("userMessageBg", " Sample "));
++	const searchMatch = theme.bg("searchMatchBg", theme.fg("searchMatchText", " Sample "));
++	console.log("searchMatch:", theme.underline(searchMatch));
++	console.log("searchCurrentMatch:", theme.bold(theme.inverse(searchMatch)));
+ 	console.log("toolPendingBg:", theme.bg("toolPendingBg", " Sample "));
+ 	console.log("toolSuccessBg:", theme.bg("toolSuccessBg", " Sample "));
+ 	console.log("toolErrorBg:", theme.bg("toolErrorBg", " Sample "));
+diff --git a/packages/coding-agent/test/theme-controller.test.ts b/packages/coding-agent/test/theme-controller.test.ts
+new file mode 100644
+index 00000000..a20009d5
+--- /dev/null
++++ b/packages/coding-agent/test/theme-controller.test.ts
+@@ -0,0 +1,125 @@
++import type { TUI } from "@earendil-works/pi-tui";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { SettingsManager } from "../src/core/settings-manager.ts";
++import { initTheme, type TerminalTheme, theme } from "../src/modes/interactive/theme/theme.ts";
++import { InteractiveThemeController } from "../src/modes/interactive/theme/theme-controller.ts";
++
++function createUi() {
++	const queryTerminalBackgroundColor = vi.fn();
++	const queryTerminalColorScheme = vi.fn();
++	const setTerminalColorSchemeNotifications = vi.fn();
++	let terminalColorSchemeListener: ((terminalTheme: TerminalTheme) => void) | undefined;
++	const ui = {
++		invalidate: vi.fn(),
++		requestRender: vi.fn(),
++		setTerminalColorSchemeNotifications,
++		onTerminalColorSchemeChange: vi.fn((listener: (terminalTheme: TerminalTheme) => void) => {
++			terminalColorSchemeListener = listener;
++			return vi.fn();
++		}),
++		queryTerminalBackgroundColor,
++		queryTerminalColorScheme,
++	} as unknown as TUI;
++	return {
++		ui,
++		queryTerminalBackgroundColor,
++		queryTerminalColorScheme,
++		setTerminalColorSchemeNotifications,
++		emitTerminalColorScheme: (terminalTheme: TerminalTheme) => terminalColorSchemeListener?.(terminalTheme),
++	};
++}
++
++function createController(ui: TUI, getSettingsManager: () => SettingsManager, initialThemeSetting?: string) {
++	return new InteractiveThemeController(ui, {
++		getSettingsManager,
++		showError: vi.fn(),
++		onChanged: vi.fn(),
++		initialThemeSetting,
++	});
++}
++
++afterEach(() => {
++	initTheme("dark");
++	vi.unstubAllEnvs();
++});
++
++describe("InteractiveThemeController", () => {
++	it("uses the initial theme without persisting it", async () => {
++		const { ui, queryTerminalBackgroundColor } = createUi();
++		const manager = SettingsManager.inMemory({ theme: "dark" });
++		const setTheme = vi.spyOn(manager, "setTheme");
++		const flush = vi.spyOn(manager, "flush");
++		const controller = createController(ui, () => manager, "light");
++
++		expect(theme.name).toBe("light");
++		expect(controller.getThemeSelection()).toBe("light");
++		await controller.applyFromSettings();
++
++		expect(queryTerminalBackgroundColor).not.toHaveBeenCalled();
++		expect(setTheme).not.toHaveBeenCalled();
++		expect(flush).not.toHaveBeenCalled();
++	});
++
++	it("resolves a theme pair and follows terminal appearance changes", async () => {
++		vi.stubEnv("COLORFGBG", "15;0");
++		const { ui, queryTerminalColorScheme, setTerminalColorSchemeNotifications, emitTerminalColorScheme } = createUi();
++		queryTerminalColorScheme.mockResolvedValue("light");
++		const manager = SettingsManager.inMemory({ theme: "dark/light" });
++		const controller = createController(ui, () => manager, "light/dark");
++
++		expect(theme.name).toBe("dark");
++		await controller.applyFromSettings();
++		expect(theme.name).toBe("light");
++		expect(setTerminalColorSchemeNotifications).toHaveBeenCalledWith(true);
++
++		emitTerminalColorScheme("dark");
++		expect(theme.name).toBe("dark");
++	});
++
++	it("detects the current terminal appearance when selecting a theme pair", async () => {
++		vi.stubEnv("COLORFGBG", "");
++		const { ui, queryTerminalColorScheme } = createUi();
++		queryTerminalColorScheme.mockResolvedValue("light");
++		const manager = SettingsManager.inMemory({ theme: "dark" });
++		const controller = createController(ui, () => manager);
++
++		expect(theme.name).toBe("dark");
++		await controller.setThemeSetting("light/dark");
++		expect(theme.name).toBe("light");
++		expect(queryTerminalColorScheme).toHaveBeenCalledOnce();
++	});
++
++	it("lets an explicit selection replace the initial theme", async () => {
++		const { ui } = createUi();
++		const firstManager = SettingsManager.inMemory({ theme: "dark" });
++		const secondManager = SettingsManager.inMemory({ theme: "light" });
++		let manager = firstManager;
++		const controller = createController(ui, () => manager, "light");
++		await controller.applyFromSettings();
++
++		expect(controller.setThemeName("dark")).toEqual({ success: true });
++		manager = secondManager;
++		await controller.applyFromSettings();
++
++		expect(controller.getThemeSelection()).toBe("dark");
++		expect(theme.name).toBe("dark");
++	});
++
++	it("reloads theme settings when no initial theme was supplied", async () => {
++		const { ui } = createUi();
++		const firstManager = SettingsManager.inMemory({ theme: "dark" });
++		const secondManager = SettingsManager.inMemory({ theme: "light" });
++		let manager = firstManager;
++		const controller = createController(ui, () => manager);
++		await controller.applyFromSettings();
++
++		firstManager.applyOverrides({ theme: "light" });
++		await controller.applyFromSettings();
++		expect(theme.name).toBe("light");
++
++		secondManager.applyOverrides({ theme: "dark" });
++		manager = secondManager;
++		await controller.applyFromSettings();
++		expect(theme.name).toBe("dark");
++	});
++});
+diff --git a/packages/coding-agent/test/tool-execution-component.test.ts b/packages/coding-agent/test/tool-execution-component.test.ts
+index 49b3754a..14d3b3f0 100644
+--- a/packages/coding-agent/test/tool-execution-component.test.ts
++++ b/packages/coding-agent/test/tool-execution-component.test.ts
+@@ -344,7 +344,7 @@ describe("ToolExecutionComponent parity", () => {
+ 		expect(rendered).toContain("arg:bar");
+ 	});
+ 
+-	test("falls back when custom renderers are absent", () => {
++	test("collapses fallback results until expanded", () => {
+ 		const toolDefinition: ToolDefinition = {
+ 			...createBaseToolDefinition(),
+ 		};
+@@ -358,10 +358,20 @@ describe("ToolExecutionComponent parity", () => {
+ 			createFakeTui(),
+ 			process.cwd(),
+ 		);
+-		component.updateResult({ content: [{ type: "text", text: "done" }], details: {}, isError: false }, false);
+-		const rendered = stripAnsi(component.render(120).join("\n"));
+-		expect(rendered).toContain("custom_tool");
+-		expect(rendered).toContain("done");
++		const output = Array.from({ length: 15 }, (_, index) => `line-${index + 1}`).join("\n");
++		component.updateResult({ content: [{ type: "text", text: output }], details: {}, isError: false }, false);
++
++		const collapsed = stripAnsi(component.render(120).join("\n"));
++		expect(collapsed).toContain("custom_tool");
++		expect(collapsed).toContain("line-10");
++		expect(collapsed).not.toContain("line-11");
++		expect(collapsed).toContain("5 more lines");
++		expect(collapsed).toContain("to expand");
++
++		component.setExpanded(true);
++		const expanded = stripAnsi(component.render(120).join("\n"));
++		expect(expanded).toContain("line-15");
++		expect(expanded).not.toContain("more lines");
+ 	});
+ 
+ 	test("trims trailing blank display lines from write previews", () => {
+diff --git a/packages/coding-agent/test/tools-manager.test.ts b/packages/coding-agent/test/tools-manager.test.ts
+new file mode 100644
+index 00000000..fb53baad
+--- /dev/null
++++ b/packages/coding-agent/test/tools-manager.test.ts
+@@ -0,0 +1,47 @@
++import type * as ChildProcess from "node:child_process";
++import type * as Fs from "node:fs";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { ensureTool, type ToolStatus } from "../src/utils/tools-manager.ts";
++
++const originalOffline = process.env.PI_OFFLINE;
++
++vi.mock("fs", async (importOriginal) => {
++	const actual = await importOriginal<typeof Fs>();
++	return {
++		...actual,
++		existsSync: vi.fn(() => false),
++	};
++});
++
++vi.mock("child_process", async (importOriginal) => {
++	const actual = await importOriginal<typeof ChildProcess>();
++	return {
++		...actual,
++		spawnSync: vi.fn(() => ({ error: new Error("not found") })),
++	};
++});
++
++afterEach(() => {
++	if (originalOffline === undefined) delete process.env.PI_OFFLINE;
++	else process.env.PI_OFFLINE = originalOffline;
++});
++
++describe("ensureTool", () => {
++	it("reports status through a callback without writing to the console", async () => {
++		process.env.PI_OFFLINE = "1";
++		const statuses: ToolStatus[] = [];
++		const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
++
++		const result = await ensureTool("fd", (status) => statuses.push(status));
++
++		expect(result).toBeUndefined();
++		expect(statuses).toEqual([
++			{
++				type: "warning",
++				message: "fd not found. Offline mode enabled, skipping download.",
++			},
++		]);
++		expect(consoleLog).not.toHaveBeenCalled();
++		consoleLog.mockRestore();
++	});
++});

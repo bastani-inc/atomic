@@ -1,0 +1,696 @@
+=== 310411ba Add [Unreleased] section for next cycle
+
+packages/agent/CHANGELOG.md
+packages/ai/CHANGELOG.md
+packages/client/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/protocol/CHANGELOG.md
+packages/server/CHANGELOG.md
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/telemetry/CHANGELOG.md
+packages/tui/CHANGELOG.md
+=== 10266795 docs(agent): unreserve R3
+
+packages/agent/docs/harness-v2.md
+=== 9d090bc5 fix(agent): reject conflicting JSONL session creation
+
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/test/harness/session/jsonl.test.ts
+=== f2794177 fix(agent): read JSONL headers when listing sessions
+
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/src/harness/session/jsonl/types.ts
+=== 80ef7ff0 fix(agent): populate session types with doc comments from design doc
+
+packages/agent/src/harness/session/types.ts
+=== f562a1a4 docs(agent): clarify branch query helpers
+
+packages/agent/src/harness/session/session.ts
+=== 87644c7b docs(agent): clarify branch query start requirement
+
+packages/agent/src/harness/session/types.ts
+=== 10474bd6 fix(agent): refactor jsonl codec
+
+packages/agent/src/harness/session/jsonl/codec.ts
+=== e0900a6e docs(agent): clarify record query semantics
+
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/session/types.ts
+=== 709aa031 docs(agent): add j6 typebox validation (#7768)
+
+packages/agent/docs/harness-v2.md
+=== f0feecd7 fix(ai): update OpenCode completions fixture
+
+packages/ai/test/openai-completions-tool-choice.test.ts
+=== 958c13f2 docs(agent): restart checkpoint after auto-compaction
+
+packages/agent/docs/harness-v2.md
+=== 4bf1bba2 docs(agent): reserve I2
+
+packages/agent/docs/harness-v2.md
+=== 14ad9801 feat(agent): add harness events subscription interface
+
+packages/agent/src/harness/events.ts
+=== 4a0e2f11 fix(agent): complete JSONL crash and corruption handling
+
+packages/agent/docs/harness-v2-test-matrix.md
+packages/agent/docs/harness-v2.md
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/test/harness/session/jsonl.test.ts
+=== fe10558e fix(ai): retry upstream request buffer failures
+
+packages/ai/CHANGELOG.md
+packages/ai/src/utils/retry.ts
+packages/ai/test/retry.test.ts
+=== 7aca0d7b fix(agent): make JSONL decode errors explicit
+
+packages/agent/src/harness/session/jsonl/codec.ts
+packages/agent/src/harness/session/jsonl/errors.ts
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/src/harness/session/jsonl/storage.ts
+packages/agent/test/harness/session/jsonl-codec.test.ts
+packages/agent/test/harness/session/jsonl.test.ts
+=== 1dd23540 feat(agent): add buffered harness event watches
+
+packages/agent/src/harness/events.ts
+packages/agent/test/harness/events.test.ts
+=== d1a30561 feat(agent): add direct harness event listeners
+
+packages/agent/src/harness/events.ts
+packages/agent/test/harness/events.test.ts
+=== e7fb8eb2 fix: no ctes in sqlite, delete indexes
+
+packages/agent/docs/harness-v2.md
+packages/session-backends/sqlite-node/src/sqlite/migrations/001_initial.sql
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/facts.ts
+packages/session-backends/sqlite-node/test/migrations.test.ts
+=== 541ed488 docs(agent): remove legacy leaf entry requirements
+
+packages/agent/docs/harness-v2.md
+=== c3e7bc60 feat(ai): preserve Codex end_turn for debugging (#7766)
+
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/src/types.ts
+packages/ai/test/openai-codex-stream.test.ts
+packages/server/src/protocol.ts
+=== ac4ac9ea feat(coding-agent): configure fullscreen exit output
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/src/index.ts
+packages/coding-agent/src/modes/interactive/components/settings-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/test/interactive-tui.test.ts
+packages/coding-agent/test/settings-manager.test.ts
+packages/coding-agent/test/settings-selector.test.ts
+=== 5cfa30cc docs(agent): add required fromHook to v4 summary entries
+
+packages/agent/docs/harness-v2.md
+=== 4fbdc63c docs: require clear concrete explanations
+
+AGENTS.md
+=== 02bd2d1c fix(ai): preserve Responses tool-call namespaces
+
+packages/agent/CHANGELOG.md
+packages/agent/src/proxy.ts
+packages/agent/test/proxy.test.ts
+packages/ai/CHANGELOG.md
+packages/ai/src/api/openai-responses-shared.ts
+packages/ai/src/types.ts
+packages/ai/test/openai-responses-namespace.test.ts
+packages/server/src/protocol.ts
+=== e47b8e37 feat(ai): use additional_tools for deferred tools
+
+package-lock.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/src/api/openai-responses-shared.ts
+packages/ai/src/api/openai-responses.ts
+packages/ai/src/types.ts
+packages/ai/test/deferred-tools.test.ts
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/src/core/model-config.ts
+=== 9dd90a49 fix(ai): replace Mistral SDK with native transport
+
+package-lock.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/ai/src/api/mistral-conversations.ts
+packages/ai/test/lazy-module-load.test.ts
+packages/ai/test/mistral-http-transport.test.ts
+packages/ai/test/mistral-raw-stop-reason.test.ts
+packages/ai/test/stream.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/custom-provider.md
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/npm-shrinkwrap.json
+=== 18dee5f0 fix(tui): stop recompositing full-width rows in the alt-screen painter
+
+packages/tui/CHANGELOG.md
+packages/tui/src/layout.ts
+packages/tui/test/render-churn-bench.ts
+packages/tui/test/tui-alt-screen.test.ts
+=== f8746767 fix: handle npm 12 pack --json object output in local release script
+
+scripts/local-release.mjs
+=== 5ac91336 fix: refresh nanoid to 3.3.17 in root lockfile
+
+package-lock.json
+=== 6809fabb docs(agent): allow clearing session names
+
+packages/agent/docs/harness-v2.md
+=== 368e013d chore(docs): fix ascii alignment in compaction docs
+
+packages/coding-agent/docs/compaction.md
+=== c185d412 fix(ai): send max_tokens to DeepSeek APIs
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+=== 7bdb16c2 feat(agent): support clearing session names
+
+packages/agent/src/harness/session/jsonl/codec.ts
+packages/agent/src/harness/session/jsonl/storage.ts
+packages/agent/src/harness/session/memory.ts
+packages/agent/src/harness/session/session.ts
+packages/agent/src/harness/session/state.ts
+packages/agent/src/harness/session/testing/conformance.ts
+packages/agent/src/harness/session/types.ts
+packages/agent/test/harness/session/jsonl-codec.test.ts
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/sessions.ts
+packages/session-backends/sqlite-node/test/repository.test.ts
+packages/session-backends/sqlite-node/test/search.test.ts
+=== 025957c2 docs(agent): reconcile durable harness design
+
+packages/agent/docs/harness-v2.md
+=== 4181f66e docs(agent): tighten durable harness design
+
+packages/agent/docs/harness-v2.md
+=== 45fac5bd docs(agent): add explicit-state harness redesign
+
+packages/agent/docs/harness-v2-state-machine.md
+=== 157aa19c docs(agent): clarify explicit operation records
+
+packages/agent/docs/harness-v2-state-machine.md
+=== 936aff00 docs(agent): complete explicit-state harness design
+
+packages/agent/docs/harness-v2-state-machine.md
+=== 47610217 chore(docs): change 'reloads' phrasing in compaction docs
+
+packages/coding-agent/docs/compaction.md
+=== 31b513e3 chore(docs): change a bullet point in compaction docs
+
+packages/coding-agent/docs/compaction.md
+=== 3059b813 docs(agent): add durable harness implementation spec
+
+packages/agent/docs/agent-harness-spec.md
+=== afae6a1a fix(ai): update stale Gemini test model
+
+packages/ai/test/context-overflow.test.ts
+packages/ai/test/total-tokens.test.ts
+=== 6a214fab chore: approve contributors from issue #7748
+
+.github/APPROVED_CONTRIBUTORS
+=== 3709bef7 docs(agent): clarify durable storage terminology
+
+packages/agent/docs/agent-harness-spec.md
+=== caf8fa6b chore: approve contributors from issue #7828
+
+.github/APPROVED_CONTRIBUTORS
+=== 0db3d387 chore: approve contributors from issue #7830
+
+.github/APPROVED_CONTRIBUTORS
+=== c1a4e86c chore: approve contributors from issue #7838
+
+.github/APPROVED_CONTRIBUTORS
+=== 85b1efa1 chore: approve contributors from issue #7847
+
+.github/APPROVED_CONTRIBUTORS
+=== f858ae3e chore: approve contributors from issue #7867
+
+.github/APPROVED_CONTRIBUTORS
+=== 52771a07 chore: approve contributors from issue #7876
+
+.github/APPROVED_CONTRIBUTORS
+=== c2b06f09 chore: approve contributors from issue #7886
+
+.github/APPROVED_CONTRIBUTORS
+=== 3dd4623e Fix prompt formatting for current working directory (#7887)
+
+packages/coding-agent/src/core/system-prompt.ts
+=== 24c3b5e4 docs(agent): add storage and retention redesign proposal
+
+packages/agent/docs/agent-harness-storage-redesign.md
+=== 98145a6c fix(ai): sanitize empty Bedrock tool argument keys (#7882)
+
+packages/ai/src/api/bedrock-converse-stream.ts
+packages/ai/test/bedrock-convert-messages.test.ts
+=== 7a6a1c2d docs(agent): add harness-v3 skeleton merging spec and storage redesign
+
+packages/agent/docs/harness-v3.md
+=== 87142a8d docs(agent): write harness-v3 parts 0-2
+
+packages/agent/docs/harness-v3.md
+=== dea1b248 docs(agent): write harness-v3 part 3
+
+packages/agent/docs/harness-v3.md
+=== 28657a2f docs(agent): write harness-v3 parts 4-5
+
+packages/agent/docs/harness-v3.md
+=== ec317e4e docs(agent): write harness-v3 parts 6-7
+
+packages/agent/docs/harness-v3.md
+=== cd6852a1 docs(agent): complete harness-v3 parts 8-9 and appendices
+
+packages/agent/docs/harness-v3.md
+=== 2f9e9298 docs(agent): remove superseded harness design documents
+
+packages/agent/docs/agent-harness-storage-redesign.md
+packages/agent/docs/harness-v2-state-machine.md
+=== 8431bfbe docs(agent): fix harness-v3 cold-read audit findings
+
+packages/agent/docs/harness-v3.md
+=== cf5f3521 docs(agent): record open harness-v3 audit findings
+
+packages/agent/docs/harness-v3-audit-findings.md
+=== 9cb7f493 docs(coding-agent): document AI_AGENT process marker
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/environment-variables.md
+=== 75c7fd66 fix(ai): declare Cloudflare Responses strict tools (#7934)
+
+packages/ai/scripts/generate-models.ts
+packages/ai/test/openai-responses-compat.test.ts
+=== a4453b79 fix: sqlite time to number
+
+packages/agent/src/harness/session/search.ts
+packages/session-backends/sqlite-node/src/sqlite/migrations/001_initial.sql
+packages/session-backends/sqlite-node/src/sqlite/repo.ts
+packages/session-backends/sqlite-node/src/sqlite/search-backend.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/branch-entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/entries.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/records.ts
+packages/session-backends/sqlite-node/src/sqlite/storage/sessions.ts
+packages/session-backends/sqlite-node/test/search.test.ts
+=== b647d187 fix(ai): detect DeepSeek base URLs case-insensitively (#7933)
+
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/test/openai-completions-tool-choice.test.ts
+=== 00121ed9 feat(tui): add fullscreen transcript search (#7913)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/keybindings.md
+packages/coding-agent/docs/themes.md
+packages/coding-agent/docs/tui.md
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/interactive/theme/dark.json
+packages/coding-agent/src/modes/interactive/theme/light.json
+packages/coding-agent/src/modes/interactive/theme/theme-schema.json
+packages/coding-agent/src/modes/interactive/theme/theme.ts
+packages/coding-agent/test/scrollbar-theme.test.ts
+packages/coding-agent/test/test-theme-colors.ts
+packages/tui/CHANGELOG.md
+packages/tui/README.md
+packages/tui/src/alt-screen-search.ts
+packages/tui/src/components/scroll-view.ts
+packages/tui/src/index.ts
+packages/tui/src/keybindings.ts
+packages/tui/src/stdin-buffer.ts
+packages/tui/src/terminal.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/keybindings.test.ts
+packages/tui/test/stdin-buffer.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+=== 24047f5d docs(agent): strip partitioning to informative section, finish audit fixes
+
+packages/agent/docs/harness-v3-audit-findings.md
+packages/agent/docs/harness-v3.md
+=== 1279952d feat(tui): add unbound single-line transcript scrolling actions (#7903)
+
+packages/coding-agent/docs/keybindings.md
+packages/tui/CHANGELOG.md
+packages/tui/src/keybindings.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/keybindings.test.ts
+packages/tui/test/tui-alt-screen.test.ts
+=== 23002907 feat(ai): AI Gateway transport over the Cloudflare AI binding (#7901)
+
+packages/ai/src/api/cloudflare-gateway-binding.ts
+packages/ai/test/cloudflare-gateway-binding.test.ts
+=== 06ed8716 fix(tui): prevent split Alt+Enter from interrupting (#7899)
+
+packages/coding-agent/docs/environment-variables.md
+packages/tui/src/terminal.ts
+packages/tui/test/stdin-buffer.test.ts
+packages/tui/test/terminal.test.ts
+=== e3798ca9 fix(coding-agent): inherit subagent session config (#7897)
+
+packages/coding-agent/examples/extensions/subagent/README.md
+packages/coding-agent/examples/extensions/subagent/index.ts
+=== 4a879dd7 fix(tui): avoid repainting idle fullscreen sessions on focus loss (#7892)
+
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/tui-alt-screen.test.ts
+=== b987ead3 feat(agent): expose `expandPromptTemplates` in `sendUserMessage` (#7857)
+
+packages/coding-agent/docs/extensions.md
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/core/extensions/types.ts
+packages/coding-agent/test/suite/agent-session-prompt.test.ts
+=== 2f8b4b42 fix(ai): expose low reasoning effort for native DeepSeek V4 Flash (#7807)
+
+packages/ai/scripts/generate-models.ts
+packages/ai/test/supports-xhigh.test.ts
+=== c0468b92 chore: approve contributors from issue #7908
+
+.github/APPROVED_CONTRIBUTORS
+=== 536eb717 chore: approve contributors from issue #7912
+
+.github/APPROVED_CONTRIBUTORS
+=== 00eb2d15 chore: approve contributors from issue #7919
+
+.github/APPROVED_CONTRIBUTORS
+=== f8c71c6a docs: fix security policy typos
+
+SECURITY.md
+=== 9c53c47f fix indent
+
+packages/tui/test/stdin-buffer.test.ts
+=== 7915cdac feat(ai): add strict tool schema conversion
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/api/bedrock-converse-stream.ts
+packages/ai/src/api/constrained-sampling.ts
+packages/ai/src/api/google-generative-ai.ts
+packages/ai/src/api/google-shared.ts
+packages/ai/src/api/google-vertex.ts
+packages/ai/src/api/mistral-conversations.ts
+packages/ai/src/api/openai-completions.ts
+packages/ai/src/api/openai-responses-shared.ts
+packages/ai/src/utils/validation.ts
+packages/ai/test/anthropic-eager-tool-input-compat.test.ts
+packages/ai/test/constrained-sampling.test.ts
+packages/ai/test/validation.test.ts
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/experimental.ts
+packages/coding-agent/src/core/tools/bash.ts
+packages/coding-agent/src/core/tools/edit.ts
+packages/coding-agent/src/core/tools/read.ts
+packages/coding-agent/src/core/tools/write.ts
+packages/coding-agent/src/server/create-harness.ts
+packages/coding-agent/test/experimental-tool-strict-mode.test.ts
+=== 452923b5 fix(tui): parse multiline LaTeX arguments
+
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+packages/tui/src/latex.ts
+packages/tui/test/latex.test.ts
+=== 2a95ef70 fix(tui): apply PI_TUI_ESC_TIMEOUT only to lone ESC
+
+packages/coding-agent/docs/environment-variables.md
+packages/tui/src/stdin-buffer.ts
+packages/tui/src/terminal.ts
+packages/tui/test/stdin-buffer.test.ts
+packages/tui/test/terminal.test.ts
+=== 43b4e057 docs(agent): fix implementation-readiness review findings
+
+packages/agent/docs/harness-v3.md
+=== 9c75cd2f docs(agent): add transaction traces to orientation examples
+
+packages/agent/docs/harness-v3.md
+=== f1328456 docs(agent): introduce the three stores before the worked examples
+
+packages/agent/docs/harness-v3.md
+=== b75be04d refactor: search (#7797)
+
+packages/agent/docs/search.md
+packages/agent/src/harness/session/jsonl/repo.ts
+packages/agent/src/harness/session/search.ts
+packages/agent/src/index.ts
+packages/agent/src/search/index.ts
+packages/agent/src/search/scanning.ts
+packages/agent/test/harness/session/search.test.ts
+packages/session-backends/sqlite-node/README.md
+packages/session-backends/sqlite-node/src/index.ts
+packages/session-backends/sqlite-node/src/sqlite/search-backend.ts
+packages/session-backends/sqlite-node/src/sqlite/sql.ts
+packages/session-backends/sqlite-node/src/sqlite/types.ts
+packages/session-backends/sqlite-node/test/repository.test.ts
+packages/session-backends/sqlite-node/test/search.test.ts
+=== f98629b3 docs(agent): fix broken code fence in crash example
+
+packages/agent/docs/harness-v3.md
+=== 638ac112 docs(agent): resolve providers and tools at dispatch, drop lease machinery
+
+packages/agent/docs/harness-v3.md
+=== bcd056a8 docs(agent): drop historical placement-payload rationale
+
+packages/agent/docs/harness-v3.md
+=== 01701fd3 docs(agent): clarify register references vs immutable snapshots
+
+packages/agent/docs/harness-v3.md
+=== b8349db8 docs(agent): re-mint legacy ids at import, drop redundant register paragraph
+
+packages/agent/docs/harness-v3.md
+=== e1b444ba docs(agent): tighten identity section
+
+packages/agent/docs/harness-v3.md
+=== 2862eb4e docs(agent): reword cancellation triage note
+
+packages/agent/docs/harness-v3.md
+=== a348560b docs(agent): drop historical changes appendix
+
+packages/agent/docs/harness-v3.md
+=== e33e7445 docs(agent): replace historical rationale with direct statements
+
+packages/agent/docs/harness-v3.md
+=== b3edf017 fix(ai): bound Copilot policy update concurrency
+
+packages/ai/CHANGELOG.md
+packages/ai/src/auth/oauth/github-copilot.ts
+packages/ai/test/github-copilot-oauth.test.ts
+packages/coding-agent/CHANGELOG.md
+=== 25455853 docs(agent): one sqlite file per session, search becomes external
+
+packages/agent/docs/harness-v3.md
+=== 47b021a6 docs(agent): add seq-ranged usage ledger scan
+
+packages/agent/docs/harness-v3.md
+=== 8d8c60da docs(agent): specify optional pull-based search service
+
+packages/agent/docs/harness-v3.md
+=== b6557f43 docs(agent): make search a standalone service, open metadata-filter question
+
+packages/agent/docs/harness-v3.md
+=== 51b45bc5 docs(agent): restructure build order into parallel storage and runtime tracks
+
+packages/agent/docs/harness-v3.md
+=== 85a20608 docs(agent): consolidate harness spec into harness.md
+
+packages/agent/docs/agent-harness-spec.md
+packages/agent/docs/harness-v2-test-matrix.md
+packages/agent/docs/harness-v2.md
+packages/agent/docs/harness.md
+=== 40a3d855 docs(agent): add table of contents
+
+packages/agent/docs/harness.md
+=== 2a9b4ebc docs: document terminal-specific fullscreen mouse behavior (#7965)
+
+packages/coding-agent/docs/keybindings.md
+packages/coding-agent/docs/terminal-setup.md
+packages/coding-agent/docs/usage.md
+=== 534bcbff fix(tui): handle LaTeX control spaces across line endings
+
+packages/tui/CHANGELOG.md
+packages/tui/src/latex.ts
+packages/tui/test/latex.test.ts
+=== 2e4d2395 fix(tui): give focused fullscreen overlays wheel and viewport keys
+
+packages/tui/CHANGELOG.md
+packages/tui/src/tui-alt-screen.ts
+packages/tui/src/tui.ts
+packages/tui/test/tui-alt-screen.test.ts
+=== 6d520c58 chore(docs): fix ascii alignment in compaction docs
+
+packages/coding-agent/docs/compaction.md
+=== 47b5119d fix: trigger turn false should not start turn (#8022)
+
+packages/coding-agent/src/core/agent-session.ts
+=== 4d9aa837 feat(coding-agent): add configurable default tools
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/src/core/sdk.ts
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/test/default-tools-setting.test.ts
+packages/coding-agent/test/settings-manager.test.ts
+=== 541045ae fix(coding-agent): preserve extension tools with defaults
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/docs/settings.md
+packages/coding-agent/src/core/sdk.ts
+packages/coding-agent/src/core/settings-manager.ts
+packages/coding-agent/test/default-tools-setting.test.ts
+=== 9795d602 feat(coding-agent): add per-run theme selection (#7722)
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/README.md
+packages/coding-agent/docs/themes.md
+packages/coding-agent/docs/usage.md
+packages/coding-agent/src/cli/args.ts
+packages/coding-agent/src/core/agent-session.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/interactive/theme/theme-controller.ts
+packages/coding-agent/test/args.test.ts
+packages/coding-agent/test/theme-controller.test.ts
+=== c93ea6cc fix(coding-agent): preserve usage in streaming events (#7982)
+
+packages/coding-agent/docs/json.md
+packages/coding-agent/docs/rpc.md
+packages/coding-agent/src/modes/json-event.ts
+packages/coding-agent/test/suite/regressions/7911-json-stream-usage.test.ts
+=== 581d75a8 docs(coding-agent): document model catalog refresh
+
+packages/coding-agent/docs/sdk.md
+=== 7d8c11d3 fix(coding-agent): share concurrent model catalog refreshes
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/components/model-selector.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/modes/interactive/model-catalog-refresh.ts
+packages/coding-agent/test/model-catalog-refresh.test.ts
+packages/coding-agent/test/suite/regressions/7153-scoped-models-refresh.test.ts
+=== 46bb9a2c docs(coding-agent): clarify Windows paths in settings
+
+packages/coding-agent/docs/settings.md
+=== 6f707eb3 fix(coding-agent): show managed-tool startup status in TUI
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/core/tools/find.ts
+packages/coding-agent/src/core/tools/grep.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/utils/tools-manager.ts
+packages/coding-agent/test/interactive-mode-startup-input.test.ts
+packages/coding-agent/test/interactive-mode-status.test.ts
+packages/coding-agent/test/tools-manager.test.ts
+=== 9d2ec7ff fix(ai): use pi user agent for Kimi Coding requests
+
+packages/ai/CHANGELOG.md
+packages/ai/scripts/generate-models.ts
+packages/ai/src/api/anthropic-messages.ts
+packages/ai/src/api/openai-codex-responses.ts
+packages/ai/src/utils/pi-user-agent.ts
+packages/ai/test/anthropic-auth-token.test.ts
+packages/ai/test/openai-codex-stream.test.ts
+packages/coding-agent/CHANGELOG.md
+=== 5f7195c5 fix(coding-agent): update Cloudflare compat test model
+
+packages/coding-agent/test/model-runtime-cloudflare-compat.test.ts
+=== d268454e fix(examples): accept array-form `tools` in the subagent example (#7598)
+
+packages/coding-agent/examples/extensions/subagent/agents.ts
+=== 721e2768 chore: approve contributors from issue #7973
+
+.github/APPROVED_CONTRIBUTORS
+=== 66336183 fix(coding-agent): update vulnerable nanoid dependency
+
+package-lock.json
+packages/coding-agent/CHANGELOG.md
+=== 83aed2ba fix(tui): handle generic SGR mouse releases
+
+packages/tui/CHANGELOG.md
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/tui-alt-screen.test.ts
+=== e14afc64 fix(coding-agent): collapse fallback tool output closes #7979
+
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/src/modes/interactive/components/tool-execution.ts
+packages/coding-agent/test/tool-execution-component.test.ts
+=== 0589435e chore: approve contributors from issue #8007
+
+.github/APPROVED_CONTRIBUTORS
+=== f3c406a9 chore: approve contributors from issue #8018
+
+.github/APPROVED_CONTRIBUTORS
+=== c5b7cd2a chore: approve contributors from issue #8063
+
+.github/APPROVED_CONTRIBUTORS
+=== 5093641a fix(ai): preserve Google length stops with tool calls
+
+packages/ai/CHANGELOG.md
+packages/ai/src/api/google-generative-ai.ts
+packages/ai/src/api/google-vertex.ts
+packages/ai/test/google-raw-stop-reason.test.ts
+=== ab0dc51f fix(coding-agent): use APP_NAME in user-facing messages (#8067)
+
+packages/coding-agent/src/cli/auth-command.ts
+packages/coding-agent/src/core/project-trust.ts
+packages/coding-agent/src/core/session-manager.ts
+packages/coding-agent/src/main.ts
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/coding-agent/src/package-manager-cli.ts
+=== 48bd3f42 chore: approve contributors from issue #8092
+
+.github/APPROVED_CONTRIBUTORS
+=== 4caa3c44 fix(tui): route selection copy through the host clipboard (#8110)
+
+packages/coding-agent/src/modes/interactive/interactive-mode.ts
+packages/tui/src/tui-alt-screen.ts
+packages/tui/test/tui-alt-screen.test.ts
+=== d10c974b docs: audit changelogs since v0.84.1
+
+packages/ai/CHANGELOG.md
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+=== 9b4adc82 docs: audit changelogs since v0.84.1
+
+packages/coding-agent/CHANGELOG.md
+packages/tui/CHANGELOG.md
+=== 914cf147 Release v0.84.2
+
+package-lock.json
+packages/agent/CHANGELOG.md
+packages/agent/package.json
+packages/ai/CHANGELOG.md
+packages/ai/package.json
+packages/ai/src/image-models.generated.ts
+packages/client/CHANGELOG.md
+packages/client/package.json
+packages/coding-agent/CHANGELOG.md
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package-lock.json
+packages/coding-agent/examples/extensions/custom-provider-anthropic/package.json
+packages/coding-agent/examples/extensions/custom-provider-gitlab-duo/package.json
+packages/coding-agent/examples/extensions/gondolin/package-lock.json
+packages/coding-agent/examples/extensions/gondolin/package.json
+packages/coding-agent/examples/extensions/sandbox/package-lock.json
+packages/coding-agent/examples/extensions/sandbox/package.json
+packages/coding-agent/examples/extensions/with-deps/package-lock.json
+packages/coding-agent/examples/extensions/with-deps/package.json
+packages/coding-agent/install-lock/package-lock.json
+packages/coding-agent/install-lock/package.json
+packages/coding-agent/npm-shrinkwrap.json
+packages/coding-agent/package.json
+packages/evals/package.json
+packages/protocol/CHANGELOG.md
+packages/protocol/package.json
+packages/server/CHANGELOG.md
+packages/server/package.json
+packages/session-backends/sqlite-node/CHANGELOG.md
+packages/session-backends/sqlite-node/package.json
+packages/telemetry/CHANGELOG.md
+packages/telemetry/package.json
+packages/tui/CHANGELOG.md
+packages/tui/package.json
