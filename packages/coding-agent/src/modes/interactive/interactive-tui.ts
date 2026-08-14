@@ -46,7 +46,7 @@ interface TuiAltScreenMouseInternals {
 
 /** pi-tui 0.84.2 keeps its overlay-deferral predicate private (tui-alt-screen.d.ts:84). */
 interface TuiAltScreenViewportDeferral {
-	shouldDeferViewportInputToOverlay(): boolean;
+	shouldDeferViewportInputToOverlay?(): boolean;
 }
 
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
@@ -146,6 +146,8 @@ const viewportInputGates = new WeakMap<
 	(data: string, isMouseInput: boolean, focusedIsOverlay: boolean) => boolean
 >();
 const overlayUnhandledInputHandlers = new WeakMap<AtomicTuiAltScreen, (data: string) => boolean>();
+/** Instances currently replaying overlay-declined input into pi-tui's viewport listener. */
+const viewportInputReplays = new WeakSet<AtomicTuiAltScreen>();
 interface ViewportInputSubscription {
 	viewportUnsubscribe: () => void;
 	routeListener: TuiInputListener;
@@ -244,16 +246,18 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		if (viewportInputGate) viewportInputGates.set(this, viewportInputGate);
 		if (onOverlayUnhandledInput) overlayUnhandledInputHandlers.set(this, onOverlayUnhandledInput);
 		// pi-tui 0.84.2 added `shouldDeferViewportInputToOverlay()`, which drops
-		// every viewport key and wheel report while an overlay holds focus
-		// (upstream #7894). Atomic answers that question earlier, and answers it
-		// the other way: `viewportInputGate` offers the input to the focused
-		// overlay first and only replays it into pi-tui's viewport listener once
-		// the overlay has declined it (#2378 / PR #2381). A second deferral inside
-		// pi-tui therefore discards exactly the input Atomic's gate forwarded on
-		// purpose, freezing the transcript behind an open dialog. Neutralize the
-		// native check per instance so the gate stays the single owner of that
-		// decision.
-		(this as unknown as TuiAltScreenViewportDeferral).shouldDeferViewportInputToOverlay = () => false;
+		// viewport keys and wheel reports while an overlay holds focus (upstream
+		// #7894). Atomic's gate offers that input to the focused overlay first and
+		// replays only what the overlay declined (#2378 / PR #2381); pi-tui then
+		// defers the replay a second time and the transcript freezes behind an
+		// open dialog. Suppress the native answer for the replay alone. Input the
+		// gate never routed through the overlay — every action outside
+		// `FULLSCREEN_VIEWPORT_ACTIONS`, including a user-bound
+		// `tui.altScreen.lineUp` — keeps pi-tui's own routing and still reaches
+		// the focused component first.
+		const deferral = this as unknown as TuiAltScreenViewportDeferral;
+		const deferToOverlay = deferral.shouldDeferViewportInputToOverlay?.bind(this);
+		deferral.shouldDeferViewportInputToOverlay = () => !viewportInputReplays.has(this) && deferToOverlay?.() === true;
 	}
 
 	/**
@@ -340,8 +344,18 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			if (isLeftMouseButton(sequence)) viewportListener(sequence.data);
 		}
 	}
+	/**
+	 * Replay input the focused overlay declined. pi-tui's native overlay
+	 * deferral is suppressed for the duration, because this chunk has already
+	 * been offered to the overlay it would defer to.
+	 */
 	private replayViewportInput(viewportListener: TuiInputListener, data: string): void {
-		replayMouseInput(viewportListener, data);
+		viewportInputReplays.add(this);
+		try {
+			replayMouseInput(viewportListener, data);
+		} finally {
+			viewportInputReplays.delete(this);
+		}
 	}
 	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
 		const gate = viewportInputGates.get(this);

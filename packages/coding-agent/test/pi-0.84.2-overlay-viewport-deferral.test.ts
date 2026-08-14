@@ -5,11 +5,13 @@ import {
 	ScrollView,
 	setKeybindings,
 	Text,
+	TUI_KEYBINDINGS,
 	TuiAltScreen,
+	KeybindingsManager as TuiKeybindingsManager,
 	VStack,
 } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { KEYBINDINGS, type KeybindingsConfig, KeybindingsManager } from "../src/core/keybindings.ts";
 import { shouldHandleFullscreenViewportInput } from "../src/modes/interactive/interactive-mode-base.ts";
 import { createFullscreenTui, createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -19,6 +21,9 @@ const PAGE_UP = "\x1b[5~";
 const PAGE_DOWN = "\x1b[6~";
 /** SGR wheel reports at row 2, column 10. */
 const WHEEL_UP = "\x1b[<64;10;2M";
+const CTRL_Y = "\x19";
+/** Kitty-protocol `ctrl+shift+f`, pi-tui 0.84.2's default `tui.altScreen.search` key. */
+const CTRL_SHIFT_F = "\x1b[102;6u";
 /** pi-tui's `PAGE_SCROLL_OVERLAP`: a page moves `viewportHeight` minus this. */
 const PAGE_SCROLL_OVERLAP = 4;
 const TRANSCRIPT_LINES = 120;
@@ -33,16 +38,19 @@ afterEach(() => {
 	setKeybindings(initialKeybindings);
 });
 
-/** An overlay that takes focus and declines every key, like a mounted dialog does with viewport keys. */
-class DecliningOverlay implements Component {
-	handledInputs: string[] = [];
+/** An overlay that takes focus and records every key it is offered. */
+class RecordingOverlay implements Component {
+	readonly handledInputs: string[] = [];
+	/** Whether the overlay claims the input, the way a dialog claims its selection keys. */
+	consumes = false;
 
 	render(): string[] {
 		return ["dialog"];
 	}
 
-	handleInput(data: string): void {
+	handleInput(data: string): boolean {
 		this.handledInputs.push(data);
+		return this.consumes;
 	}
 
 	invalidate(): void {}
@@ -52,13 +60,27 @@ interface Fixture {
 	tui: TuiAltScreen;
 	terminal: RecordingTerminal;
 	transcript: ScrollView;
-	overlay: DecliningOverlay;
+	overlay: RecordingOverlay;
+	editor: Text;
 	stop: () => void;
 }
 
-function mountFocusedOverlay(): Fixture {
-	setKeybindings(new KeybindingsManager());
-	const keybindings = new KeybindingsManager();
+interface FixtureOptions {
+	/** Whether the focused overlay consumes what it is offered. Default: declines. */
+	consumes?: boolean;
+	/** User keybindings, applied to both the global manager and the gate's manager. */
+	userBindings?: KeybindingsConfig;
+	/** Default true. When false the editor keeps focus and no overlay is mounted. */
+	mountOverlay?: boolean;
+}
+
+function createFixture(options: FixtureOptions = {}): Fixture {
+	const userBindings = options.userBindings ?? {};
+	// pi-tui reads the global manager inside `handleViewportInput`; Atomic's gate
+	// reads the one handed to `shouldHandleFullscreenViewportInput`. Both must
+	// see the same bindings or the two halves of the routing disagree.
+	setKeybindings(new KeybindingsManager(userBindings));
+	const keybindings = new KeybindingsManager(userBindings);
 	const terminal = new RecordingTerminal();
 	terminal.columns = 100;
 	terminal.rows = 40;
@@ -94,12 +116,26 @@ function mountFocusedOverlay(): Fixture {
 	tui.start();
 	tui.renderNow();
 
-	const overlay = new DecliningOverlay();
-	tui.showOverlay(overlay, { anchor: "bottom-center", width: "100%" });
-	tui.renderNow();
-	expect(tui.getFocusedComponent()).toBe(overlay);
+	const overlay = new RecordingOverlay();
+	overlay.consumes = options.consumes === true;
+	if (options.mountOverlay !== false) {
+		tui.showOverlay(overlay, { anchor: "bottom-center", width: "100%" });
+		tui.renderNow();
+		expect(tui.getFocusedComponent()).toBe(overlay);
+	} else {
+		expect(tui.getFocusedComponent()).toBe(editor);
+	}
 
-	return { tui, terminal, transcript, overlay, stop: () => tui.stop() };
+	return { tui, terminal, transcript, overlay, editor, stop: () => tui.stop() };
+}
+
+/** Scroll to the bottom and report the resulting `scrollTop` plus a page's worth of rows. */
+function anchorAtEnd(fixture: Fixture): { top: number; page: number } {
+	fixture.transcript.scrollToEnd();
+	fixture.tui.renderNow();
+	const page = Math.max(1, fixture.transcript.viewportHeight - PAGE_SCROLL_OVERLAP);
+	expect(page).toBeGreaterThan(1);
+	return { top: fixture.transcript.scrollTop, page };
 }
 
 /**
@@ -107,65 +143,163 @@ function mountFocusedOverlay(): Fixture {
  * which drops viewport keys and wheel reports whenever an overlay holds focus.
  * Atomic decided the opposite in issue #2378 / PR #2381: the focused overlay is
  * offered the input first, and whatever it declines still scrolls the
- * transcript. The two policies contradict each other, and the dependency bump
- * put pi-tui's on top of Atomic's.
+ * transcript. The bump put pi-tui's answer on top of Atomic's, so the replay
+ * Atomic performs after a decline was deferred a second time and discarded.
+ *
+ * The suppression is scoped to that replay. Everything the gate does not route
+ * through the overlay keeps pi-tui's own routing, which `docs/keybindings.md`
+ * promises for custom `tui.altScreen.*` bindings.
  */
 describe("pi-tui 0.84.2 overlay viewport deferral", () => {
 	test("a focused overlay that declines PAGE_UP still pages the transcript", () => {
-		const { tui, terminal, transcript, overlay, stop } = mountFocusedOverlay();
+		const fixture = createFixture();
 		try {
-			transcript.scrollToEnd();
-			tui.renderNow();
-			const before = transcript.scrollTop;
-			const page = Math.max(1, transcript.viewportHeight - PAGE_SCROLL_OVERLAP);
-			expect(page).toBeGreaterThan(1);
+			const { top, page } = anchorAtEnd(fixture);
 
-			terminal.input(PAGE_UP);
-			tui.renderNow();
-			expect(before - transcript.scrollTop).toBe(page);
+			fixture.terminal.input(PAGE_UP);
+			fixture.tui.renderNow();
+			expect(top - fixture.transcript.scrollTop).toBe(page);
 			// The overlay is still offered the key it declined; the gate does not
 			// hide input from it.
-			expect(overlay.handledInputs).toContain(PAGE_UP);
+			expect(fixture.overlay.handledInputs).toContain(PAGE_UP);
 
-			terminal.input(PAGE_DOWN);
-			tui.renderNow();
-			expect(transcript.scrollTop).toBe(before);
+			fixture.terminal.input(PAGE_DOWN);
+			fixture.tui.renderNow();
+			expect(fixture.transcript.scrollTop).toBe(top);
 		} finally {
-			stop();
+			fixture.stop();
 		}
 	});
 
 	test("a focused overlay that declines a wheel report still scrolls the transcript", () => {
-		const { tui, terminal, transcript, stop } = mountFocusedOverlay();
+		const fixture = createFixture();
 		try {
-			transcript.scrollToEnd();
-			tui.renderNow();
-			const before = transcript.scrollTop;
+			const { top } = anchorAtEnd(fixture);
 
-			terminal.input(WHEEL_UP);
-			tui.renderNow();
-			expect(transcript.scrollTop).toBe(before - 1);
+			fixture.terminal.input(WHEEL_UP);
+			fixture.tui.renderNow();
+			expect(fixture.transcript.scrollTop).toBe(top - 1);
 		} finally {
-			stop();
+			fixture.stop();
 		}
 	});
 
-	test("Atomic's renderer neutralizes pi-tui's native overlay deferral", () => {
-		const { tui, stop } = mountFocusedOverlay();
+	test("a focused overlay that consumes PAGE_UP leaves the transcript alone", () => {
+		const fixture = createFixture({ consumes: true });
 		try {
-			// Read both predicates in the same state: pi-tui's own would defer,
-			// Atomic's instance must not. Without this contrast the two behavioral
-			// tests above would keep passing if pi-tui quietly dropped the deferral.
-			const native = Reflect.get(TuiAltScreen.prototype, "shouldDeferViewportInputToOverlay") as
-				| (() => boolean)
-				| undefined;
-			expect(typeof native).toBe("function");
-			expect(native?.call(tui)).toBe(true);
-			expect(
-				(tui as unknown as { shouldDeferViewportInputToOverlay(): boolean }).shouldDeferViewportInputToOverlay(),
-			).toBe(false);
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			fixture.tui.renderNow();
+			expect(fixture.overlay.handledInputs).toEqual([PAGE_UP]);
+			expect(fixture.transcript.scrollTop).toBe(top);
 		} finally {
-			stop();
+			fixture.stop();
+		}
+	});
+
+	test("a focused overlay that consumes a wheel report leaves the transcript alone", () => {
+		const fixture = createFixture({ consumes: true });
+		try {
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(WHEEL_UP);
+			fixture.tui.renderNow();
+			expect(fixture.overlay.handledInputs).toEqual([WHEEL_UP]);
+			expect(fixture.transcript.scrollTop).toBe(top);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	/**
+	 * `tui.altScreen.lineUp` is deliberately absent from
+	 * `FULLSCREEN_VIEWPORT_ACTIONS`, so Atomic's gate never offers it to the
+	 * overlay and never replays it. pi-tui's native deferral therefore decides,
+	 * and a focused component sees the key first — what `docs/keybindings.md`
+	 * documents for a custom `tui.altScreen.*` binding.
+	 */
+	test("a viewport action outside Atomic's gate reaches a consuming focused overlay", () => {
+		const fixture = createFixture({ consumes: true, userBindings: { "tui.altScreen.lineUp": "ctrl+y" } });
+		try {
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(CTRL_Y);
+			fixture.tui.renderNow();
+			expect(fixture.overlay.handledInputs).toEqual([CTRL_Y]);
+			expect(fixture.transcript.scrollTop).toBe(top);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("the same binding scrolls the transcript when no overlay is focused", () => {
+		const fixture = createFixture({ mountOverlay: false, userBindings: { "tui.altScreen.lineUp": "ctrl+y" } });
+		try {
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(CTRL_Y);
+			fixture.tui.renderNow();
+			expect(fixture.transcript.scrollTop).toBe(top - 1);
+			expect(fixture.overlay.handledInputs).toEqual([]);
+		} finally {
+			fixture.stop();
+		}
+	});
+});
+
+/**
+ * pi-tui 0.84.2 binds transcript search by default and matches
+ * `tui.altScreen.search` *before* it defers input to a focused overlay. Atomic's
+ * gate does not list the search actions and nothing themes or scopes them yet,
+ * so an inherited default would open an unthemed search over the main transcript
+ * from inside a focused overlay and take its focus.
+ */
+describe("pi-tui 0.84.2 transcript search defaults", () => {
+	test("Atomic ships the four transcript-search actions unbound", () => {
+		for (const action of [
+			"tui.altScreen.search",
+			"tui.altScreen.searchNext",
+			"tui.altScreen.searchPrevious",
+			"tui.altScreen.searchClose",
+		] as const) {
+			expect(TUI_KEYBINDINGS[action].defaultKeys, `pi-tui still binds ${action}`).not.toEqual([]);
+			expect(KEYBINDINGS[action].defaultKeys, `${action} is bound by default`).toEqual([]);
+			expect(KEYBINDINGS[action].description).toBe(TUI_KEYBINDINGS[action].description);
+		}
+
+		// The same byte sequence matches under pi-tui's defaults, which is what
+		// proves the assertion above is about Atomic's suppression rather than an
+		// unrecognized key.
+		expect(new TuiKeybindingsManager(TUI_KEYBINDINGS, {}).matches(CTRL_SHIFT_F, "tui.altScreen.search")).toBe(true);
+		expect(new KeybindingsManager().matches(CTRL_SHIFT_F, "tui.altScreen.search")).toBe(false);
+	});
+
+	test("ctrl+shift+f reaches the focused overlay instead of opening a transcript search", () => {
+		const fixture = createFixture({ consumes: true });
+		try {
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(CTRL_SHIFT_F);
+			fixture.tui.renderNow();
+
+			expect(fixture.overlay.handledInputs).toEqual([CTRL_SHIFT_F]);
+			expect(fixture.tui.getFocusedComponent()).toBe(fixture.overlay);
+			expect(fixture.transcript.scrollTop).toBe(top);
+			expect((fixture.tui as unknown as { activeSearch?: unknown }).activeSearch).toBeUndefined();
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("ctrl+shift+f opens no search over the main transcript either", () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			fixture.terminal.input(CTRL_SHIFT_F);
+			fixture.tui.renderNow();
+			expect((fixture.tui as unknown as { activeSearch?: unknown }).activeSearch).toBeUndefined();
+		} finally {
+			fixture.stop();
 		}
 	});
 });
@@ -177,7 +311,7 @@ describe("pi-tui 0.84.2 overlay viewport deferral", () => {
  * gate, and every assertion above whenever the suite runs in that environment.
  */
 describe("fullscreen fixtures do not depend on TERM", () => {
-	test("createFullscreenTui builds the gated renderer while createInteractiveTui falls back", () => {
+	test("createFullscreenTui builds the alt-screen renderer while createInteractiveTui falls back", () => {
 		const previousTerm = process.env.TERM;
 		process.env.TERM = "dumb";
 		try {
@@ -189,12 +323,6 @@ describe("fullscreen fixtures do not depend on TERM", () => {
 			try {
 				expect(fullscreen).toBeInstanceOf(TuiAltScreen);
 				expect(typeof (fullscreen as { setLayoutRoot?: unknown }).setLayoutRoot).toBe("function");
-				// The gate is what makes it Atomic's renderer rather than pi-tui's.
-				expect(
-					(
-						fullscreen as unknown as { shouldDeferViewportInputToOverlay(): boolean }
-					).shouldDeferViewportInputToOverlay(),
-				).toBe(false);
 			} finally {
 				fullscreen.stop();
 			}
@@ -215,19 +343,15 @@ describe("fullscreen fixtures do not depend on TERM", () => {
 		const previousTerm = process.env.TERM;
 		process.env.TERM = "dumb";
 		try {
-			const { tui, terminal, transcript, stop } = mountFocusedOverlay();
+			const fixture = createFixture();
 			try {
-				transcript.scrollToEnd();
-				tui.renderNow();
-				const before = transcript.scrollTop;
-				const page = Math.max(1, transcript.viewportHeight - PAGE_SCROLL_OVERLAP);
-				expect(page).toBeGreaterThan(1);
+				const { top, page } = anchorAtEnd(fixture);
 
-				terminal.input(PAGE_UP);
-				tui.renderNow();
-				expect(before - transcript.scrollTop).toBe(page);
+				fixture.terminal.input(PAGE_UP);
+				fixture.tui.renderNow();
+				expect(top - fixture.transcript.scrollTop).toBe(page);
 			} finally {
-				stop();
+				fixture.stop();
 			}
 		} finally {
 			if (previousTerm === undefined) delete process.env.TERM;
