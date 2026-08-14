@@ -351,33 +351,36 @@ describe("herdr extension end to end", () => {
 		assert.deepEqual(paneStates(fixture.requests), ["idle"]);
 	});
 
-	it("stands down at activation when a file integration loaded after the factory ran", async () => {
-		// Factory-time the loaded set is clean, so listeners register; the file
-		// integration lands afterwards, and the builtin must never become the
-		// second writer for the pane.
+	it("keeps reporting when a file integration path lands after the factory ran", async () => {
+		// Supersession is a load-time decision now: inside a Herdr pane the
+		// resource loader never loads `herdr-agent-state` files (see
+		// herdr-supersession.test.ts), so a loaded-path entry with that basename
+		// must not silence the builtin — blind deferral is what left the pane
+		// reported by nobody when the installed asset loaded but silently failed.
 		const built = await buildRunner("tui", noOpUIContext);
 		setLoadedFileExtensionPaths(["/home/u/.atomic/agent/extensions/herdr-agent-state.ts"]);
 
 		await built.emit({ type: "session_start", reason: "startup" });
-		await built.emit({ type: "agent_start" });
-		await built.emit({ type: "agent_settled" });
-		await built.emit({ type: "session_shutdown", reason: "quit" });
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await fixture.waitForRequests(2);
+		assert.equal(fixture.requests[0]?.method, "pane.report_agent_session");
+		assert.deepEqual(paneStates(fixture.requests), ["idle"]);
 
-		assert.equal(fixture.connectionCount(), 0);
-		assert.equal(fixture.requests.length, 0);
+		await built.emit({ type: "session_shutdown", reason: "quit" });
+		await fixture.waitForRequests(3);
+		assert.equal(fixture.requests.at(-1)?.method, "pane.release_agent");
 	});
 
-	it("registers nothing at all when the file integration loaded before the factory ran", async () => {
+	it("keeps reporting when the file integration path loaded before the factory ran", async () => {
 		setLoadedFileExtensionPaths(["/home/u/.atomic/agent/extensions/herdr-agent-state.js"]);
 		const built = await buildRunner("tui", noOpUIContext);
 
 		await built.emit({ type: "session_start", reason: "startup" });
+		await fixture.waitForRequests(2);
 		await built.emit({ type: "agent_start" });
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await fixture.waitForRequests(3);
 
-		assert.equal(fixture.connectionCount(), 0);
-		assert.equal(fixture.requests.length, 0);
+		assert.equal(fixture.requests[0]?.method, "pane.report_agent_session");
+		assert.deepEqual(paneStates(fixture.requests), ["idle", "working"]);
 	});
 
 	it("ends idle when a block opens and closes while activation is still pending", async () => {

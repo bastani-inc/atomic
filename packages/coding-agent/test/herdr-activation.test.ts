@@ -117,23 +117,28 @@ describe("herdr activation gate", () => {
 		]);
 	});
 
-	it("stands down when a file-based herdr integration loaded this cycle", () => {
+	it("keeps reporting even when a file-based herdr integration path loaded this cycle", () => {
+		// Supersession happens at load time now: the resource loader skips the
+		// installed `herdr-agent-state` files inside a Herdr pane (see
+		// herdr-supersession.test.ts), so the builtin never defers to one. A
+		// loaded-path entry with that basename — however it got there — must not
+		// silence the only reporter the pane has.
 		enableHerdrEnv();
 		setLoadedFileExtensionPaths(["/home/u/.atomic/agent/extensions/herdr-agent-state.ts"]);
 		const { host, events } = createRecordingHost();
 		herdrExtension(host);
-		assert.deepEqual(events, []);
+		assert.equal(events.length, 7);
 	});
 
-	it("stands down for a compiled file-based integration too", () => {
+	it("keeps reporting for a compiled file-based integration path too", () => {
 		enableHerdrEnv();
 		setLoadedFileExtensionPaths(["/home/u/.atomic/agent/extensions/herdr-agent-state.js"]);
 		const { host, events } = createRecordingHost();
 		herdrExtension(host);
-		assert.deepEqual(events, []);
+		assert.equal(events.length, 7);
 	});
 
-	it("does not stand down for an unrelated extension that merely loaded", () => {
+	it("registers for an unrelated extension that merely loaded", () => {
 		enableHerdrEnv();
 		setLoadedFileExtensionPaths([
 			"/home/u/.atomic/agent/extensions/herdr-agent-state-notes.ts",
@@ -144,9 +149,9 @@ describe("herdr activation gate", () => {
 		assert.equal(events.length, 7);
 	});
 
-	it("reads presence of a file integration from loaded paths, not from disk", () => {
-		// The same basename decides it, wherever it loaded from; and an empty
-		// loaded set never defers, even though the file may exist somewhere.
+	it("still answers whether a loaded-path set carries a file integration", () => {
+		// The predicate survives as the historical basename check the loader-side
+		// skip is keyed on; the builtin itself no longer consults it.
 		assert.equal(fileIntegrationLoaded([]), false);
 		assert.equal(fileIntegrationLoaded(["/anywhere/herdr-agent-state.ts"]), true);
 		assert.equal(fileIntegrationLoaded(["/anywhere/herdr-agent-state.mjs"]), false);

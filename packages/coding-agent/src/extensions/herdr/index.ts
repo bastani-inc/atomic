@@ -9,16 +9,18 @@
  *
  * Outside a Herdr TUI pane it does nothing at all. It opens no socket, starts
  * no timer, and registers no listener unless `HERDR_ENV=1` arrives together
- * with `HERDR_PANE_ID` and `HERDR_SOCKET_PATH`, and it stands down entirely
- * when a file-based `herdr-agent-state` integration loaded in the same cycle.
+ * with `HERDR_PANE_ID` and `HERDR_SOCKET_PATH`. Inside one, it is the pane's
+ * only writer: the resource loader skips Herdr's installed `herdr-agent-state`
+ * file integration at load time (see
+ * `core/extensions/herdr-file-integration.ts`), so this builtin reports
+ * whenever it is active and never shares the pane with a second reporter.
  */
 
-import { basename } from "node:path";
 import type { EventBus } from "../../core/event-bus.ts";
 import {
-	captureLoadedFileExtensionPathCycle,
-	loadedFileExtensionPathsOf,
-} from "../../core/extensions/loaded-extension-paths.js";
+	herdrPaneEnvironmentPresent,
+	isHerdrFileIntegrationPath,
+} from "../../core/extensions/herdr-file-integration.js";
 import type {
 	AgentBlockedEvent,
 	AgentEndEvent,
@@ -57,17 +59,16 @@ export interface HerdrExtensionApi {
 	events?: Pick<EventBus, "on">;
 }
 
-/** File-based Herdr integrations this builtin defers to. */
-const FILE_INTEGRATION_BASENAMES = new Set(["herdr-agent-state.ts", "herdr-agent-state.js"]);
-
 /**
- * Whether a file-based Herdr integration loaded in this cycle.
+ * Whether a file-based Herdr integration appears in a loaded-path set.
  *
- * Loaded, not present: a path on disk can be disabled, shadowed, or fail to
- * load, and standing down for one of those would leave the pane unreported.
+ * Retained as the historical predicate over the same basenames the loader now
+ * skips (`herdr-agent-state.ts`/`.js`), wherever such a path loaded from. The
+ * builtin no longer defers to one: supersession happens at load time, in
+ * `core/extensions/herdr-file-integration.ts`.
  */
 export function fileIntegrationLoaded(paths: readonly string[]): boolean {
-	return paths.some((path) => FILE_INTEGRATION_BASENAMES.has(basename(path)));
+	return paths.some(isHerdrFileIntegrationPath);
 }
 
 /**
@@ -77,11 +78,8 @@ export function fileIntegrationLoaded(paths: readonly string[]): boolean {
  * can load sessions after the pane environment has changed.
  */
 export function readHerdrEnv(env: NodeJS.ProcessEnv = process.env): HerdrEnv | undefined {
-	if (env.HERDR_ENV !== "1") return undefined;
-	const paneId = env.HERDR_PANE_ID;
-	const socketPath = env.HERDR_SOCKET_PATH;
-	if (!paneId || !socketPath) return undefined;
-	return { paneId, socketEndpoint: resolveSocketEndpoint(socketPath) };
+	if (!herdrPaneEnvironmentPresent(env)) return undefined;
+	return { paneId: env.HERDR_PANE_ID!, socketEndpoint: resolveSocketEndpoint(env.HERDR_SOCKET_PATH!) };
 }
 
 /**
@@ -112,13 +110,6 @@ export function turnFailureMessage(event: AgentEndEvent): string | undefined {
 export default function herdrExtension(pi: HerdrExtensionApi): void {
 	const env = readHerdrEnv();
 	if (!env) return;
-	// Captured, not re-read later from module scope. Loading yields between
-	// inline factories and one process can run overlapping loaders, so a global
-	// read at activation time could answer with a different cycle's file set —
-	// and stand down for a cycle that has no file integration, or fail to stand
-	// down for one that does.
-	const loadCycle = captureLoadedFileExtensionPathCycle();
-	if (fileIntegrationLoaded(loadedFileExtensionPathsOf(loadCycle))) return;
 
 	const reporter = new HerdrReporter({ paneId: env.paneId, transport: createSocketTransport(env.socketEndpoint) });
 
@@ -126,10 +117,9 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 	 * Activation state.
 	 *
 	 * `pending` means the reporter has not yet seen a lifecycle event proving
-	 * this is a TUI session; `standDown` means a file-based integration owns the
-	 * pane and this instance must never write.
+	 * this is a TUI session.
 	 */
-	let activation: "pending" | "active" | "stand-down" = "pending";
+	let activation: "pending" | "active" = "pending";
 
 	/** Latched at shutdown so a late detached callback cannot revive this instance. */
 	let closed = false;
@@ -149,12 +139,6 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 	 * the runner that was detached during a reload. Without the snapshot a pane
 	 * with a dialog already open would report idle.
 	 *
-	 * The stand-down check runs again here, not only in the factory. File
-	 * extensions load before inline factories today, but a deferred or lazily
-	 * discovered `herdr-agent-state` could land after this one; re-reading the
-	 * cycle's loaded paths at activation means the pane can never end up with two
-	 * writers regardless of load order.
-	 *
 	 * This is synchronous on purpose, and must stay that way. The runner
 	 * publishes block changes with a detached `emit`, so the open and close
 	 * handlers for one dialog run concurrently. If activation could suspend, the
@@ -166,13 +150,9 @@ export default function herdrExtension(pi: HerdrExtensionApi): void {
 	 */
 	let unsubscribeWorkflowLifecycle: (() => void) | undefined;
 	function ensureActivated(ctx: ExtensionContext): boolean {
-		if (closed || activation === "stand-down") return false;
+		if (closed) return false;
 		if (ctx.mode !== "tui") return false;
 		if (activation === "active") return true;
-		if (fileIntegrationLoaded(loadedFileExtensionPathsOf(loadCycle))) {
-			activation = "stand-down";
-			return false;
-		}
 		activation = "active";
 		const workflowSnapshot = pi.events === undefined ? [] : getWorkflowLifecycleBridgeSnapshot(pi.events);
 		unsubscribeWorkflowLifecycle = pi.events?.on(WORKFLOW_LIFECYCLE_EVENT, (payload) => {

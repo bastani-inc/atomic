@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath } from "../utils/paths.ts";
+import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.js";
 import { withLoadedFileExtensionPathCycle } from "./extensions/loaded-extension-paths.js";
 import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
@@ -116,9 +117,13 @@ async function loadProjectTrustExtensionsInCycle(loader: DefaultResourceLoader):
 	state.workflowResources = workflowResources;
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
-	const extensionPaths = state.noExtensions
-		? cliEnabledExtensions
-		: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
+	// The builtin Herdr reporter supersedes the installed file integration in a
+	// Herdr pane; see extensions/herdr-file-integration.ts.
+	const extensionPaths = filterSupersededHerdrIntegrationPaths(
+		state.noExtensions
+			? cliEnabledExtensions
+			: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]),
+	);
 	const extensionsResult = await loadExtensionsCached(
 		extensionPaths,
 		state.cwd,
@@ -267,9 +272,13 @@ async function reloadDefaultResourceLoaderInCycle(
 	state.workflowResources = workflowResources;
 	const workflowResourceProvider = createWorkflowResourceProvider(loader);
 
-	const extensionPaths = state.noExtensions
-		? cliEnabledExtensions
-		: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
+	// The builtin Herdr reporter supersedes the installed file integration in a
+	// Herdr pane; see extensions/herdr-file-integration.ts.
+	const extensionPaths = filterSupersededHerdrIntegrationPaths(
+		state.noExtensions
+			? cliEnabledExtensions
+			: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]),
+	);
 
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	const extensionsResult: LoadExtensionsResult = options?.deferExtensions
