@@ -38,7 +38,7 @@ uv sync --reinstall-package datacurve-pier
 | Path | Remote | Why |
 |---|---|---|
 | `evals/deep-swe` | [`datacurve-ai/deep-swe`](https://github.com/datacurve-ai/deep-swe) | The Deep SWE task corpus: 113 tasks, each with a `[[verifier.collect]]` hook that writes `/logs/artifacts/model.patch`. |
-| `evals/vendor/pier` | [`bastani-inc/pier`](https://github.com/bastani-inc/pier) | Org-owned fork of [`datacurve-ai/pier`](https://github.com/datacurve-ai/pier). Pinned to upstream `v0.3.1` plus one Atomic commit that sets `extra="forbid"` on the task-config models, so a `task.toml` key pier cannot model raises a `ValidationError` naming it instead of being silently dropped. |
+| `evals/vendor/pier` | [`bastani-inc/pier`](https://github.com/bastani-inc/pier) | Org-owned fork of [`datacurve-ai/pier`](https://github.com/datacurve-ai/pier), branch `atomic/v0.3.1-extra-forbid`. Pinned to upstream `v0.3.1` plus Atomic commits that (a) set `extra="forbid"` on the task-config models, so a `task.toml` key pier cannot model raises a `ValidationError` naming it instead of being silently dropped, and (b) fail a trial whose declared artifact never arrived, or whose `model.patch` arrived empty, instead of recording it as a completed trial. |
 
 Both are pinned by SHA. Read a pin from the superproject gitlink:
 
@@ -73,9 +73,21 @@ uv run python -c 'from prerequisites import run_preflight; r = run_preflight(); 
 ```
 
 It parses every `task.toml` with the standard library's `tomllib` (so it still works when
-`vendor/pier` is missing) and asserts 113 tasks, one `[[verifier.collect]]` hook per task, and zero
-compose files. A missing corpus is a **skip**; a mis-shaped corpus, an unreachable Docker daemon, or
-a total absence of provider credentials is a **failure**.
+`vendor/pier` is missing) and asserts 113 tasks, 113 `[[verifier.collect]]` hooks — counted per
+hook, not per task — and zero compose files. It also checks that each submodule's checked-out SHA
+matches its recorded gitlink, so a working tree that drifted off the pin is reported instead of
+silently benchmarked.
+
+A corpus is a **skip** only while `evals/deep-swe` is **uninitialized** — decided from the
+submodule's own state, so a checked-out corpus whose `tasks/` directory is missing fails rather
+than skipping. A corpus that is present but empty or mis-shaped, a submodule that drifted, an
+unreachable Docker daemon, or the absence of any usable provider credential is a **failure**.
+
+A credential means a satisfied provider from the adapter's provider map, or an `auth.json` holding
+a valid `api_key`/`oauth` entry — an empty `{}` file does not count. Most providers are satisfied
+by any one of their keys (`anthropic` takes an API key *or* an OAuth token); `amazon-bedrock` needs
+**both** of its keys, so a lone `AWS_ACCESS_KEY_ID` fails and the message names the companion key
+still missing.
 
 The same numbers are checkable by hand:
 
@@ -107,9 +119,27 @@ Each trial directory carries three things worth reading after a run:
   `missing-atomic.txt` or `malformed-session-jsonl` instead of leaving a dead trial looking
   complete.
 - `artifacts/model.patch` — written by the task's `[[verifier.collect]]` hook. A missing or empty
-  patch is a **failed** trial.
+  patch fails the trial **in the run path** on the Pier side: the pinned pier records a
+  `MissingArtifactError` in `TrialResult.exception_info`, so `result.json` reports
+  `n_errored_trials: 1` and lists the trial under `exception_stats`, rather than counting it as an
+  ordinary completed trial. Emptiness is fatal for `model.patch` only — any other declared artifact
+  that arrives empty is recorded as `empty` in the artifacts manifest and left informational,
+  because a task may legitimately declare a log a given run leaves empty. A download that *failed*
+  is fatal whatever it was fetching. On the **Harbor** path this enforcement does not exist; run
+  `audit_job` as shown in the Harbor section and read its exit code instead.
 - `agent/atomic-manifest.json` — run ID, seed, model, resolved Atomic version, deep-swe SHA, and
-  Pier SHA.
+  Pier SHA. Both adapters write it, `atomic_pier:Atomic` and `atomic_harbor:Atomic`. Every field
+  records what actually **ran**, not what was asked for:
+  - the two SHAs are the commits checked out inside each submodule, falling back to the gitlink when
+    a submodule is uninitialized, so a run against a drifted working tree records the code it used;
+  - `model` is the provider/model that answered, read from the agent's own stream, falling back to
+    the candidate the session launched on and then to the requested `--model` — a fallback run does
+    not silently record the model it was asked for;
+  - `atomic_version` is what the container reported after install, so a moving `--agent-kwarg
+    version=next` cannot make two different builds compare as equal.
+
+  If the manifest cannot be written, `atomic-status.json` records `manifest-not-written` and the
+  trial fails: a run that cannot be compared with another is not a usable result.
 
 Audit a finished job, and compare two runs:
 
@@ -124,10 +154,16 @@ print("comparable")
 '
 ```
 
-`compare_manifests` raises `ManifestMismatchError` naming every field two runs disagree on. Runs
-recorded against different corpus SHAs, Pier SHAs, models, seeds, or Atomic versions are not
-comparable — including runs from before `network_mode` was honored, which had unrestricted agent
-internet access.
+`compare_manifests` raises `ManifestMismatchError` naming every field two runs disagree on. It
+first raises `IncompleteManifestError` when either side is absent, unreadable, or missing a
+required field, so two empty manifests can never compare as equal. Runs recorded against different
+corpus SHAs, Pier SHAs, models, seeds, or Atomic versions are not comparable — including runs from
+before `network_mode` was honored, which had unrestricted agent internet access.
+
+Harbor has no seed concept at all (`harbor run` has no `--sample-seed`, and its `JobConfig`
+declares no seed field), so a Harbor manifest records `seed: null` and two Harbor runs refuse to
+compare, naming `seed`. An unrecorded seed cannot be proven equal. `pier_sha` in a Harbor manifest
+is the pier checkout this repository pins, not a claim that Harbor used pier.
 
 ## Run Pier with Atomic
 
@@ -181,7 +217,24 @@ Add `--n-attempts <k>` for pass@k-style repeats. Sizing `--n-concurrent`: each t
 
 `atomic_harbor:Atomic` is the Harbor twin of the Pier adapter. Harbor is installed as a transitive
 dependency of pier, so no extra setup is needed. Harbor takes the adapter as `-a/--agent`, not
-`--agent-import-path`, and it has **no `--sample-seed`** — that flag is Pier's:
+`--agent-import-path`, and it has **no `--sample-seed`** — that flag is Pier's.
+
+Two Harbor-specific facts decide the shape of the command below.
+
+**Harbor has no adapter-side allowlist.** Its `BaseInstalledAgent` exposes no `network_allowlist`
+hook, so nothing corresponds to the Squid overlay Pier builds from the Pier adapter's provider
+domains. Harbor resolves each Deep SWE task to a `public` environment baseline with a
+**`no-network` agent-phase override**, and applies that phase policy only around `agent.run()` —
+so the Atomic install still has network, but the agent's provider call has none. The remedy is
+`--allow-agent-host`, which Harbor merges into the agent-phase allowlist (turning the phase policy
+into `allowlist` mode). Pass every provider host the run may reach; the list below mirrors the
+domains the Pier adapter allows.
+
+**Harbor cannot enforce the `model.patch` contract in its run path.** Harbor is a PyPI dependency,
+not a submodule, and offers no post-collect adapter hook, so its `result.json` will report a trial
+as completed even when the patch is missing. Harbor's trial layout is the same
+`trial_dir/{agent,artifacts}` as Pier's, so run the host-side audit as part of the command and
+treat *its* exit code as the verdict.
 
 ```bash
 uv run harbor run \
@@ -192,15 +245,29 @@ uv run harbor run \
   --agent-kwarg disallowed_subscriptions=github-copilot \
   --agent-timeout-multiplier 16 \
   --job-name atomic-harbor-smoke \
+  --allow-agent-host api.openai.com \
+  --allow-agent-host chatgpt.com \
+  --allow-agent-host auth.openai.com \
+  --allow-agent-host api.anthropic.com \
+  --allow-agent-host console.anthropic.com \
+  --allow-agent-host openrouter.ai \
+  --allow-agent-host api.githubcopilot.com \
   -l 1 \
   -n 1 \
   --force-build \
   --no-delete \
-  --debug
+  --debug \
+&& uv run python -c 'from trial_audit import audit_job; import pathlib; a = audit_job(pathlib.Path("jobs/atomic-harbor-smoke")); print(a.describe()); raise SystemExit(0 if a.ok else 1)'
 ```
 
 `-l/--n-tasks` bounds the task count and `-k/--n-attempts` sets pass@k repeats. The provider
-configuration below applies unchanged.
+configuration below applies unchanged; add an `--allow-agent-host` for any provider host it
+introduces.
+
+> **Unexecuted.** This Harbor command has not been run end to end on this host. The flags and the
+> policy behavior above were read from Harbor 0.16's sources (`trial/trial.py`,
+> `trial/network_policy.py`, `cli/jobs.py`) and from a static parse of a corpus task; the Pier
+> commands in this file are the ones with live evidence behind them.
 
 ## Providers
 
