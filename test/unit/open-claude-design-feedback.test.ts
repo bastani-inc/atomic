@@ -348,6 +348,25 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		assert.equal(feedback.decision, "revise");
 		assert.equal(feedback.userNotes, "Fix the masthead contrast.");
 
+		// A structured entry that merely reads like a prose placeholder is still a
+		// non-empty entry the stage chose to return: it is captured work, so the
+		// approval is still a contradiction and must not be dropped.
+		const placeholderish = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: { text: "", structured: { decision: "approve", user_notes: ["pending"], live_changes: [] } },
+		});
+		assert.equal(placeholderish.decision, "revise");
+		assert.equal(placeholderish.userNotes, "pending");
+
+		const liveOnly = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: { text: "", structured: { decision: "approve", user_notes: [], live_changes: ["none"] } },
+		});
+		assert.equal(liveOnly.decision, "revise");
+		assert.equal(liveOnly.liveChanges, "none");
+
 		const clean = toPreviewFeedback({
 			iteration: 2,
 			stageName: "user-feedback-2",
@@ -421,6 +440,20 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			}).decision,
 			"revise",
 		);
+
+		// Only the contract's canonical `approve` approves: any other spelling is
+		// indeterminate rather than an approval guessed from prose.
+		for (const spelling of ["approved", "approve-with-notes", "looks good", "ship it"]) {
+			assert.equal(
+				toPreviewFeedback({
+					iteration: 1,
+					stageName: "user-feedback-1",
+					result: { text: `decision: ${spelling}` },
+				}).decision,
+				"indeterminate",
+				`decision: ${spelling} must not approve`,
+			);
+		}
 	});
 
 	test("decorated labels parse without over-capturing the next field", () => {
@@ -487,21 +520,94 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			stageName: "user-feedback-3",
 		});
 		assert.deepEqual(loadedIndeterminate, indeterminate);
+
+		// A note that spans several lines survives as one entry: the artifact keeps
+		// one entry per note and the reload is not lossy.
+		const multiline = toPreviewFeedback({
+			iteration: 4,
+			stageName: "user-feedback-4",
+			result: {
+				text: CONTINUATION_WRAP_UP,
+				structured: {
+					decision: "revise",
+					user_notes: ["First line\n\nSecond line", "A second note."],
+					live_changes: ["Accepted variant 2.\nKept the tighter density."],
+				},
+			},
+		});
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: multiline });
+		const persisted = JSON.parse(readFileSync(feedbackArtifactPath(dir, 4), "utf8"));
+		assert.deepEqual(persisted.user_notes, ["First line\n\nSecond line", "A second note."]);
+		assert.deepEqual(persisted.live_changes, ["Accepted variant 2.\nKept the tighter density."]);
+		const loadedMultiline = loadPreviewFeedback({ artifactDir: dir, iteration: 4, stageName: "user-feedback-4" });
+		assert.deepEqual(loadedMultiline, multiline);
 	});
 
 	test("loadPreviewFeedback returns undefined for a missing or malformed artifact", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
 		tempDirs.push(dir);
-		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" }), undefined);
+		const load = (iteration: number) =>
+			loadPreviewFeedback({ artifactDir: dir, iteration, stageName: `user-feedback-${iteration}` });
+		assert.equal(load(1), undefined);
 
 		mkdirSync(join(dir, "feedback"), { recursive: true });
-		writeFileSync(feedbackArtifactPath(dir, 1), "{ not json");
-		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" }), undefined);
+		const meta = {
+			iteration: 1,
+			stage_name: "user-feedback-1",
+			captured_at: new Date().toISOString(),
+			source: "structured",
+			text: "",
+		};
+		const malformed: readonly (readonly [string, string | object])[] = [
+			["invalid JSON", "{ not json"],
+			["a scalar top level", "7"],
+			["an unknown decision", { decision: "maybe", user_notes: [], live_changes: [], meta }],
+			["a missing decision", { user_notes: [], live_changes: [], meta }],
+			// The reported bypass: a bare approval with no schema fields and no
+			// metadata must never read back as a clean approval.
+			["a bare decision only", { decision: "approve" }],
+			["missing user_notes", { decision: "approve", live_changes: [], meta }],
+			["missing live_changes", { decision: "approve", user_notes: [], meta }],
+			["a scalar user_notes", { decision: "revise", user_notes: "not-an-array", live_changes: [], meta }],
+			["a non-string entry", { decision: "revise", user_notes: [3], live_changes: [], meta }],
+			[
+				"a non-string annotated_snapshot",
+				{ decision: "approve", user_notes: [], live_changes: [], annotated_snapshot: 5, meta },
+			],
+			["missing meta", { decision: "approve", user_notes: [], live_changes: [] }],
+			["a scalar meta", { decision: "approve", user_notes: [], live_changes: [], meta: "user-feedback-1" }],
+			[
+				"meta missing captured_at",
+				{
+					decision: "approve",
+					user_notes: [],
+					live_changes: [],
+					meta: { iteration: 1, stage_name: "user-feedback-1", source: "structured", text: "" },
+				},
+			],
+			[
+				"meta with an unknown source",
+				{ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, source: "guessed" } },
+			],
+			[
+				"meta naming another round",
+				{ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, iteration: 9 } },
+			],
+			[
+				"meta naming another stage",
+				{ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, stage_name: "user-feedback-9" } },
+			],
+		];
+		for (const [label, body] of malformed) {
+			writeFileSync(feedbackArtifactPath(dir, 1), typeof body === "string" ? body : JSON.stringify(body));
+			assert.equal(load(1), undefined, `${label} must not load`);
+		}
 
-		writeFileSync(feedbackArtifactPath(dir, 2), JSON.stringify({ decision: "maybe", user_notes: [] }));
-		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 2, stageName: "user-feedback-2" }), undefined);
-
-		writeFileSync(feedbackArtifactPath(dir, 3), JSON.stringify({ decision: "revise", user_notes: "not-an-array" }));
-		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 3, stageName: "user-feedback-3" }), undefined);
+		// The same body with every required field present does load.
+		writeFileSync(
+			feedbackArtifactPath(dir, 1),
+			JSON.stringify({ decision: "approve", user_notes: [], live_changes: [], meta }),
+		);
+		assert.equal(load(1)?.decision, "approve");
 	});
 });

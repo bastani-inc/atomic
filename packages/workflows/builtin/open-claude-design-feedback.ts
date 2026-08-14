@@ -57,6 +57,12 @@ export type PreviewFeedbackDecision = "approve" | "revise" | "indeterminate";
 /** Whether the round was read from the structured payload or parsed from prose. */
 export type PreviewFeedbackSource = "structured" | "text";
 
+/** Per-entry captured values plus the joined block consumers read. */
+type CapturedEntries = {
+  readonly entries: readonly string[];
+  readonly joined: string;
+};
+
 /** A single captured user-feedback round. */
 export type PreviewFeedback = {
   /** 1..N for generate/user-feedback loop iterations. */
@@ -71,10 +77,18 @@ export type PreviewFeedback = {
   readonly source: PreviewFeedbackSource;
   /** Extracted user annotation notes when the user actually annotated. */
   readonly userNotes?: string;
+  /**
+   * One entry per note, exactly as captured; `userNotes` is these joined. Kept
+   * separately so a note that spans several lines survives the artifact
+   * round-trip as one entry. cross-ref: issue #2401.
+   */
+  readonly userNoteEntries?: readonly string[];
   /** Extracted annotated-snapshot artifact path when one was captured. */
   readonly annotatedSnapshot?: string;
   /** Extracted summary of the variants/edits the user accepted in the live QA session. */
   readonly liveChanges?: string;
+  /** One entry per accepted change; `liveChanges` is these joined. */
+  readonly liveChangeEntries?: readonly string[];
   /** ISO timestamp when the feedback was captured. */
   readonly capturedAt: string;
 };
@@ -217,11 +231,40 @@ export function extractLiveChanges(text: string): string | undefined {
   return extractField(text, "live_changes");
 }
 
-/** Non-empty, non-placeholder entries of a structured string array, joined into one block. */
-function joinPayloadEntries(entries: readonly string[]): string | undefined {
-  const kept = entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0 && !isPlaceholderValue(entry));
+/**
+ * Keep every non-empty entry of a captured field, one entry per note.
+ *
+ * Structured entries are NOT placeholder-filtered: the stage declared the
+ * schema, so a non-empty entry it returned is captured work, and dropping it
+ * here would let `{ decision: "approve", user_notes: ["pending"] }` slip past
+ * the approval-contradiction rule. cross-ref: issue #2401 item A.3.
+ */
+function captureEntries(entries: readonly string[]): CapturedEntries | undefined {
+  const kept = entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
   if (kept.length === 0) return undefined;
-  return kept.join("\n");
+  return { entries: kept, joined: kept.join("\n") };
+}
+
+/** A parsed prose block is one entry: prose gives no reliable per-note split. */
+function captureBlock(value: string | undefined): CapturedEntries | undefined {
+  return value === undefined ? undefined : captureEntries([value]);
+}
+
+type CapturedFields = Pick<
+  PreviewFeedback,
+  "userNotes" | "userNoteEntries" | "annotatedSnapshot" | "liveChanges" | "liveChangeEntries"
+>;
+
+function capturedFields(args: {
+  readonly notes: CapturedEntries | undefined;
+  readonly changes: CapturedEntries | undefined;
+  readonly annotatedSnapshot: string | undefined;
+}): CapturedFields {
+  return {
+    ...(args.notes !== undefined ? { userNotes: args.notes.joined, userNoteEntries: args.notes.entries } : {}),
+    ...(args.annotatedSnapshot !== undefined ? { annotatedSnapshot: args.annotatedSnapshot } : {}),
+    ...(args.changes !== undefined ? { liveChanges: args.changes.joined, liveChangeEntries: args.changes.entries } : {}),
+  };
 }
 
 /** The structured stage payload when it validates against the declared schema. */
@@ -230,12 +273,15 @@ function readStructuredPayload(value: WorkflowSerializableValue | undefined): Pr
   return Value.Check(previewFeedbackSchema, value) ? value : undefined;
 }
 
-/** Whether a labeled `decision` / `review_decision` value states approval. */
+/**
+ * Whether a labeled `decision` / `review_decision` value states approval.
+ * Only the contract's canonical `approve` counts; any other spelling leaves the
+ * round indeterminate rather than approving on a guess. cross-ref: issue #2401.
+ */
 function textDecisionApproves(text: string): boolean {
   const raw = extractField(text, "decision") ?? extractField(text, "review_decision");
   if (raw === undefined) return false;
-  const canonical = canonicalLabel(raw);
-  return canonical === "approve" || canonical === "approved";
+  return canonicalLabel(raw) === "approve";
 }
 
 /**
@@ -261,27 +307,27 @@ export function toPreviewFeedback(input: {
 
   const payload = readStructuredPayload(input.result?.structured);
   if (payload !== undefined) {
-    const userNotes = joinPayloadEntries(payload.user_notes);
-    const liveChanges = joinPayloadEntries(payload.live_changes);
+    const notes = captureEntries(payload.user_notes);
+    const changes = captureEntries(payload.live_changes);
     const snapshot = payload.annotated_snapshot?.trim();
-    const annotatedSnapshot = snapshot !== undefined && snapshot.length > 0 ? snapshot : undefined;
     // `approve` alongside captured work is a contradiction: the user asked for
     // something, so exporting now would discard it. Revise instead.
-    const captured = userNotes !== undefined || liveChanges !== undefined;
+    const captured = notes !== undefined || changes !== undefined;
     return {
       ...base,
       decision: payload.decision === "approve" && captured ? "revise" : payload.decision,
       source: "structured",
-      ...(userNotes !== undefined ? { userNotes } : {}),
-      ...(annotatedSnapshot !== undefined ? { annotatedSnapshot } : {}),
-      ...(liveChanges !== undefined ? { liveChanges } : {}),
+      ...capturedFields({
+        notes,
+        changes,
+        annotatedSnapshot: snapshot !== undefined && snapshot.length > 0 ? snapshot : undefined,
+      }),
     };
   }
 
-  const userNotes = extractUserNotes(text);
-  const annotatedSnapshot = extractAnnotatedSnapshot(text);
-  const liveChanges = extractLiveChanges(text);
-  const captured = userNotes !== undefined || liveChanges !== undefined;
+  const notes = captureBlock(extractUserNotes(text));
+  const changes = captureBlock(extractLiveChanges(text));
+  const captured = notes !== undefined || changes !== undefined;
   const decision: PreviewFeedbackDecision = captured
     ? "revise"
     : textDecisionApproves(text)
@@ -291,9 +337,7 @@ export function toPreviewFeedback(input: {
     ...base,
     decision,
     source: "text",
-    ...(userNotes !== undefined ? { userNotes } : {}),
-    ...(annotatedSnapshot !== undefined ? { annotatedSnapshot } : {}),
-    ...(liveChanges !== undefined ? { liveChanges } : {}),
+    ...capturedFields({ notes, changes, annotatedSnapshot: extractAnnotatedSnapshot(text) }),
   };
 }
 
@@ -467,17 +511,23 @@ type PreviewFeedbackArtifact = {
   };
 };
 
-/** Split a joined feedback block back into the schema's per-entry array. */
-function toEntries(value: string | undefined): string[] {
-  if (value === undefined) return [];
-  return value.split(/\r?\n/).filter((line) => line.trim().length > 0);
+/**
+ * The schema's per-entry array for a captured field. The per-entry values are
+ * authoritative when present, so a note spanning several lines stays one entry;
+ * a record carrying only the joined block persists as that single entry rather
+ * than being split on newlines. cross-ref: issue #2401.
+ */
+function toEntries(entries: readonly string[] | undefined, joined: string | undefined): readonly string[] {
+  if (entries !== undefined) return entries;
+  const value = joined?.trim() ?? "";
+  return value.length > 0 ? [value] : [];
 }
 
 function toArtifact(feedback: PreviewFeedback): PreviewFeedbackArtifact {
   return {
     decision: feedback.decision,
-    user_notes: toEntries(feedback.userNotes),
-    live_changes: toEntries(feedback.liveChanges),
+    user_notes: toEntries(feedback.userNoteEntries, feedback.userNotes),
+    live_changes: toEntries(feedback.liveChangeEntries, feedback.liveChanges),
     ...(feedback.annotatedSnapshot !== undefined ? { annotated_snapshot: feedback.annotatedSnapshot } : {}),
     meta: {
       iteration: feedback.iteration,
@@ -524,25 +574,58 @@ function isDecision(value: WorkflowSerializableValue | undefined): value is Prev
   return value === "approve" || value === "revise" || value === "indeterminate";
 }
 
-function readEntries(value: WorkflowSerializableValue | undefined): string | undefined {
-  if (value === undefined) return undefined;
+/** The schema's per-entry array, rejecting anything that is not an array of strings. */
+function readEntries(value: WorkflowSerializableValue | undefined): CapturedEntries | undefined {
   if (!Array.isArray(value)) return undefined;
   const entries: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string") return undefined;
-    if (entry.trim().length > 0) entries.push(entry);
+    const trimmed = entry.trim();
+    if (trimmed.length > 0) entries.push(trimmed);
   }
-  return entries.length > 0 ? entries.join("\n") : undefined;
+  return { entries, joined: entries.join("\n") };
 }
 
 function readString(value: WorkflowSerializableValue | undefined): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+type PreviewFeedbackMeta = {
+  readonly iteration: number;
+  readonly stageName: string;
+  readonly capturedAt: string;
+  readonly source: PreviewFeedbackSource;
+  readonly text: string;
+};
+
+/**
+ * The artifact's `meta` block, or undefined when any required field is absent
+ * or the wrong type. Metadata is required: a file without it did not come from
+ * `persistPreviewFeedback` and must not be read as a round's outcome.
+ */
+function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedbackMeta | undefined {
+  if (value === undefined || !isRecord(value)) return undefined;
+  const iteration = value.iteration;
+  const stageName = readString(value.stage_name);
+  const capturedAt = readString(value.captured_at);
+  const source = value.source;
+  const text = value.text;
+  if (typeof iteration !== "number" || !Number.isFinite(iteration)) return undefined;
+  if (stageName === undefined || capturedAt === undefined) return undefined;
+  if (source !== "structured" && source !== "text") return undefined;
+  if (typeof text !== "string") return undefined;
+  return { iteration, stageName, capturedAt, source, text };
+}
+
 /**
  * Read the durable per-round artifact back into a `PreviewFeedback`. Returns
  * undefined when the file is missing or malformed; never throws, so the caller
  * decides what an unreadable deliverable means. cross-ref: issue #2401.
+ *
+ * Fail-closed: every declared field and every metadata field must be present
+ * and well-typed, and the artifact must name the round the caller asked for.
+ * A partial file — `{"decision":"approve"}`, say — is malformed, not an
+ * approval. cross-ref: issue #2401 item A.6.
  */
 export function loadPreviewFeedback(input: {
   readonly artifactDir: string;
@@ -554,23 +637,28 @@ export function loadPreviewFeedback(input: {
     if (!existsSync(path)) return undefined;
     const parsed = JSON.parse(readFileSync(path, "utf8")) as WorkflowSerializableValue;
     if (!isRecord(parsed) || !isDecision(parsed.decision)) return undefined;
-    if (parsed.user_notes !== undefined && !Array.isArray(parsed.user_notes)) return undefined;
-    if (parsed.live_changes !== undefined && !Array.isArray(parsed.live_changes)) return undefined;
-    const meta: { readonly [key: string]: WorkflowSerializableValue } = isRecord(parsed.meta) ? parsed.meta : {};
-    const userNotes = readEntries(parsed.user_notes);
-    const liveChanges = readEntries(parsed.live_changes);
-    const annotatedSnapshot = readString(parsed.annotated_snapshot);
-    const source = meta.source === "structured" ? "structured" : "text";
+    const notes = readEntries(parsed.user_notes);
+    const changes = readEntries(parsed.live_changes);
+    if (notes === undefined || changes === undefined) return undefined;
+    const rawSnapshot = parsed.annotated_snapshot;
+    const annotatedSnapshot = rawSnapshot === undefined ? undefined : readString(rawSnapshot);
+    if (rawSnapshot !== undefined && annotatedSnapshot === undefined) return undefined;
+    const meta = readMeta(parsed.meta);
+    if (meta === undefined) return undefined;
+    if (meta.iteration !== input.iteration) return undefined;
+    if (meta.stageName.trim() !== input.stageName.trim()) return undefined;
     return {
-      iteration: typeof meta.iteration === "number" ? meta.iteration : input.iteration,
-      stageName: readString(meta.stage_name) ?? input.stageName,
-      text: typeof meta.text === "string" ? meta.text : "",
+      iteration: meta.iteration,
+      stageName: meta.stageName,
+      text: meta.text,
       decision: parsed.decision,
-      source,
-      capturedAt: readString(meta.captured_at) ?? "",
-      ...(userNotes !== undefined ? { userNotes } : {}),
-      ...(annotatedSnapshot !== undefined ? { annotatedSnapshot } : {}),
-      ...(liveChanges !== undefined ? { liveChanges } : {}),
+      source: meta.source,
+      capturedAt: meta.capturedAt,
+      ...capturedFields({
+        notes: notes.entries.length > 0 ? notes : undefined,
+        changes: changes.entries.length > 0 ? changes : undefined,
+        annotatedSnapshot,
+      }),
     };
   } catch {
     return undefined;
