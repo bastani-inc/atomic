@@ -2,6 +2,54 @@
 
 Utilities and adapters for running Atomic against evaluation suites such as Deep SWE through Pier.
 
+## Setup from a fresh clone
+
+Every command in this file runs from this `evals/` directory unless it says otherwise. A fresh
+clone has both submodules **uninitialized** — `evals/deep-swe/` and `evals/vendor/pier/` are empty
+directories — and nothing here works until they are checked out.
+
+```bash
+# from the repository root
+git submodule sync --recursive        # only needed when a submodule URL changed
+git submodule update --init --recursive
+
+cd evals
+uv sync
+uv run python -c 'import pier, pathlib; print(pathlib.Path(pier.__file__).resolve())'
+uv run pier --help
+```
+
+The `import pier` line must print `…/evals/vendor/pier/src/pier/__init__.py`. If it prints a path
+under `site-packages`, the editable install is stale — see below.
+
+`git submodule sync --recursive` matters after a pull that changes a submodule's URL: an existing
+clone keeps the old URL in `.git/config`, and `git submodule update` silently keeps fetching from
+it. `evals/vendor/pier` moved to `bastani-inc/pier` (see [Submodules](#submodules)), so run it once.
+
+After any change to a submodule pointer, or any local edit inside `evals/vendor/pier`, refresh the
+editable install:
+
+```bash
+uv sync --reinstall-package datacurve-pier
+```
+
+## Submodules
+
+| Path | Remote | Why |
+|---|---|---|
+| `evals/deep-swe` | [`datacurve-ai/deep-swe`](https://github.com/datacurve-ai/deep-swe) | The Deep SWE task corpus: 113 tasks, each with a `[[verifier.collect]]` hook that writes `/logs/artifacts/model.patch`. |
+| `evals/vendor/pier` | [`bastani-inc/pier`](https://github.com/bastani-inc/pier) | Org-owned fork of [`datacurve-ai/pier`](https://github.com/datacurve-ai/pier). Pinned to upstream `v0.3.1` plus one Atomic commit that sets `extra="forbid"` on the task-config models, so a `task.toml` key pier cannot model raises a `ValidationError` naming it instead of being silently dropped. |
+
+Both are pinned by SHA. Read a pin from the superproject gitlink:
+
+```bash
+git -C .. rev-parse HEAD:evals/deep-swe
+git -C .. rev-parse HEAD:evals/vendor/pier
+```
+
+Do **not** use `git -C evals/deep-swe rev-parse HEAD` to check a pin: in an uninitialized submodule
+it prints the *superproject* SHA rather than failing, so it silently reports the wrong corpus.
+
 ## Tests
 
 Run the eval bootstrap and adapter regression tests from this directory:
@@ -12,6 +60,74 @@ uv run pytest
 
 The shell-level bootstrap tests execute the generated NVM setup command with
 isolated fake NVM installations, so they do not modify the host Node setup.
+
+Tests that need the Deep SWE corpus **skip** with an explicit message when `evals/deep-swe` is
+uninitialized, so the suite passes in a fresh clone for contributors who never touch evals.
+
+## Preflight
+
+Before a long run, check the corpus, the submodules, Docker, and credentials:
+
+```bash
+uv run python -c 'from prerequisites import run_preflight; r = run_preflight(); print(r.describe()); raise SystemExit(0 if r.ok else 1)'
+```
+
+It parses every `task.toml` with the standard library's `tomllib` (so it still works when
+`vendor/pier` is missing) and asserts 113 tasks, one `[[verifier.collect]]` hook per task, and zero
+compose files. A missing corpus is a **skip**; a mis-shaped corpus, an unreachable Docker daemon, or
+a total absence of provider credentials is a **failure**.
+
+The same numbers are checkable by hand:
+
+```bash
+find deep-swe/tasks -name task.toml | wc -l                  # 113
+grep -rl '\[\[verifier.collect\]\]' deep-swe/tasks | wc -l   # 113
+grep -rh 'network_mode' deep-swe/tasks --include='*.toml' | sort | uniq -c   # 226 no-network
+find deep-swe/tasks -iname 'docker-compose.y*ml' | wc -l     # 0
+uv run python -c "from pier.models.task.config import VerifierConfig; print('collect' in VerifierConfig.model_fields)"
+```
+
+## Network policy
+
+Every Deep SWE task declares `network_mode = "no-network"` under both `[agent]` and `[verifier]`,
+which pier resolves onto `allow_internet=False`. The agent keeps filtered egress through a Squid
+overlay built from the adapter's allowlist; the verifier gets none.
+
+That overlay is only applied while the allowlist is **non-empty**. An empty one silently falls back
+to the no-network overlay, and the model call then fails as a generic connection error that reads
+like a bad credential. The adapter therefore raises `EmptyEgressAllowlistError`
+(`evals/network_policy.py`) instead of returning an empty allowlist. If you see it, pass `--model`
+as `provider/model`.
+
+## Run status, artifacts, and manifests
+
+Each trial directory carries three things worth reading after a run:
+
+- `agent/atomic-status.json` — the adapter's own verdict. `failed` names a reason such as
+  `missing-atomic.txt` or `malformed-session-jsonl` instead of leaving a dead trial looking
+  complete.
+- `artifacts/model.patch` — written by the task's `[[verifier.collect]]` hook. A missing or empty
+  patch is a **failed** trial.
+- `agent/atomic-manifest.json` — run ID, seed, model, resolved Atomic version, deep-swe SHA, and
+  Pier SHA.
+
+Audit a finished job, and compare two runs:
+
+```bash
+uv run python -c 'from trial_audit import audit_job; import pathlib; a = audit_job(pathlib.Path("jobs/atomic-smoke")); print(a.describe()); raise SystemExit(0 if a.ok else 1)'
+
+uv run python -c '
+from run_manifest import compare_manifests, read_manifest
+import pathlib
+compare_manifests(read_manifest(pathlib.Path("jobs/run-a/<trial>/agent")), read_manifest(pathlib.Path("jobs/run-b/<trial>/agent")))
+print("comparable")
+'
+```
+
+`compare_manifests` raises `ManifestMismatchError` naming every field two runs disagree on. Runs
+recorded against different corpus SHAs, Pier SHAs, models, seeds, or Atomic versions are not
+comparable — including runs from before `network_mode` was honored, which had unrestricted agent
+internet access.
 
 ## Run Pier with Atomic
 
@@ -60,6 +176,31 @@ Inspect the results under `jobs/atomic-smoke/`: each trial directory contains th
 Run every Deep SWE task (omit `--n-tasks` to run all tasks in the path):
 
 Add `--n-attempts <k>` for pass@k-style repeats. Sizing `--n-concurrent`: each trial's containers are capped at 2 CPUs / 8 GB but typically peak at 2–4 GB, so give the Docker VM at least **4 GB of memory and 2 CPUs per concurrent trial** (e.g. `--n-concurrent 4` wants a ≥ 16 GB / 8-CPU Docker VM); Pier does not schedule against host capacity, and overcommitting memory surfaces as confusing mid-run OOM kills. A single Copilot token also tends to rate-limit beyond ~4–6 concurrent agents. Interrupted jobs resume where they left off: re-run the same command with the same `--job-name` (the config must match), or use `uv run pier job resume -p jobs/atomic-deep-swe`.
+
+## Run Harbor with Atomic
+
+`atomic_harbor:Atomic` is the Harbor twin of the Pier adapter. Harbor is installed as a transitive
+dependency of pier, so no extra setup is needed. Harbor takes the adapter as `-a/--agent`, not
+`--agent-import-path`, and it has **no `--sample-seed`** — that flag is Pier's:
+
+```bash
+uv run harbor run \
+  -p deep-swe/tasks \
+  -a atomic_harbor:Atomic \
+  -m openai-codex/gpt-5.6-sol \
+  --agent-kwarg thinking=xhigh \
+  --agent-kwarg disallowed_subscriptions=github-copilot \
+  --agent-timeout-multiplier 16 \
+  --job-name atomic-harbor-smoke \
+  -l 1 \
+  -n 1 \
+  --force-build \
+  --no-delete \
+  --debug
+```
+
+`-l/--n-tasks` bounds the task count and `-k/--n-attempts` sets pass@k repeats. The provider
+configuration below applies unchanged.
 
 ## Providers
 
