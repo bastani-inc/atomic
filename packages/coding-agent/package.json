@@ -87,7 +87,7 @@
     "@dbos-inc/dbos-sdk": "4.24.16",
     "@earendil-works/pi-agent-core": "^0.84.1",
     "@earendil-works/pi-ai": "^0.84.1",
-    "@earendil-works/pi-client": "^0.84.1",
+    "@earendil-works/pi-client": "^0.84.2",
     "@earendil-works/pi-protocol": "^0.84.1",
     "@earendil-works/pi-tui": "^0.84.1",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
