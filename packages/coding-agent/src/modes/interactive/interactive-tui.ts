@@ -39,9 +39,14 @@ interface TuiOverlayInternals {
 	clearOverlayFocusRestore(): void;
 	requestImmediateRender(): void;
 }
-/** pi-tui 0.84.1 keeps this canonical mouse predicate private (tui-alt-screen.d.ts:93). */
+/** pi-tui 0.84.2 keeps this canonical mouse predicate private (tui-alt-screen.d.ts:114). */
 interface TuiAltScreenMouseInternals {
 	isMouseSequence(data: string): boolean;
+}
+
+/** pi-tui 0.84.2 keeps its overlay-deferral predicate private (tui-alt-screen.d.ts:84). */
+interface TuiAltScreenViewportDeferral {
+	shouldDeferViewportInputToOverlay(): boolean;
 }
 
 export type InteractiveTui = TuiMainScreen | TuiAltScreen;
@@ -220,9 +225,9 @@ function replayMouseInput(viewportListener: TuiInputListener, data: string): voi
 }
 
 /**
- * The first `addInputListener` call is load-bearing: pi-tui 0.84.1 registers
+ * The first `addInputListener` call is load-bearing: pi-tui 0.84.2 registers
  * its viewport listener from `TuiAltScreen`'s constructor
- * (`dist/tui-alt-screen.js:77`). Keep the viewport wrapper first so mouse,
+ * (`dist/tui-alt-screen.js:85`). Keep the viewport wrapper first so mouse,
  * selection, and focus cleanup retain pi-tui's ordering. Put the focused-input
  * route last so application listeners still receive deferred viewport keys.
  */
@@ -238,6 +243,17 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		super(terminal, showHardwareCursor, logDirectory, options);
 		if (viewportInputGate) viewportInputGates.set(this, viewportInputGate);
 		if (onOverlayUnhandledInput) overlayUnhandledInputHandlers.set(this, onOverlayUnhandledInput);
+		// pi-tui 0.84.2 added `shouldDeferViewportInputToOverlay()`, which drops
+		// every viewport key and wheel report while an overlay holds focus
+		// (upstream #7894). Atomic answers that question earlier, and answers it
+		// the other way: `viewportInputGate` offers the input to the focused
+		// overlay first and only replays it into pi-tui's viewport listener once
+		// the overlay has declined it (#2378 / PR #2381). A second deferral inside
+		// pi-tui therefore discards exactly the input Atomic's gate forwarded on
+		// purpose, freezing the transcript behind an open dialog. Neutralize the
+		// native check per instance so the gate stays the single owner of that
+		// decision.
+		(this as unknown as TuiAltScreenViewportDeferral).shouldDeferViewportInputToOverlay = () => false;
 	}
 
 	/**

@@ -25,6 +25,7 @@ const PROVIDERS: readonly ProviderCase[] = [
 		modelIds: [
 			"deepseek-ai/DeepSeek-V4-Flash-0731",
 			"deepseek-ai/DeepSeek-V4-Pro",
+			"deepseek-ai/DeepSeek-V4-Pro-0813",
 			"moonshotai/Kimi-K2.5",
 			"moonshotai/Kimi-K2.6",
 			"moonshotai/Kimi-K2.7-Code",
