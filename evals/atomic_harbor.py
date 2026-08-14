@@ -576,9 +576,13 @@ class Atomic(BaseInstalledAgent):
                         try:
                             entry = json.loads(line)
                         except json.JSONDecodeError:
-                            self._malformed_jsonl_lines[str(session_file)] = (
-                                self._malformed_jsonl_lines.get(str(session_file), 0) + 1
-                            )
+                            # Only a line that opens a JSON value and does not
+                            # finish it is a truncated record; Atomic also writes
+                            # plain-text diagnostics to the same stream.
+                            if line.startswith(("{", "[")):
+                                self._malformed_jsonl_lines[str(session_file)] = (
+                                    self._malformed_jsonl_lines.get(str(session_file), 0) + 1
+                                )
                             continue
                         if not isinstance(entry, dict) or entry.get("type") != "message":
                             continue
@@ -597,9 +601,10 @@ class Atomic(BaseInstalledAgent):
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
-                self._malformed_jsonl_lines[str(output_file)] = (
-                    self._malformed_jsonl_lines.get(str(output_file), 0) + 1
-                )
+                if line.startswith(("{", "[")):
+                    self._malformed_jsonl_lines[str(output_file)] = (
+                        self._malformed_jsonl_lines.get(str(output_file), 0) + 1
+                    )
                 continue
             if not isinstance(event, dict) or event.get("type") != "message_end":
                 continue

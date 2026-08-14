@@ -95,6 +95,19 @@ def test_job_identity_falls_back_to_the_directory_name(tmp_path: Path) -> None:
     assert job_identity(job_dir) == ("atomic-smoke", None)
 
 
+def test_job_identity_reads_the_seed_from_a_dataset_entry(tmp_path: Path) -> None:
+    """Pier writes sample_seed on the dataset entry, not at the top level."""
+    job_dir = tmp_path / "jobs" / "atomic-smoke"
+    job_dir.mkdir(parents=True)
+    (job_dir / "config.json").write_text(
+        json.dumps({"job_name": "atomic-smoke", "datasets": [{"path": "deep-swe/tasks", "sample_seed": 0}]}),
+        encoding="utf-8",
+    )
+    (job_dir / "result.json").write_text(json.dumps({"id": "job-uuid"}), encoding="utf-8")
+
+    assert job_identity(job_dir) == ("job-uuid", 0)
+
+
 def test_manifest_for_agent_logs_dir_derives_run_id_and_seed(tmp_path: Path) -> None:
     job_dir = _job(tmp_path, seed=3)
     logs_dir = job_dir / "trial-1" / "agent"

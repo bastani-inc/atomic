@@ -109,6 +109,27 @@ def build_manifest(
     )
 
 
+def _seed_from_job_config(config: object) -> int | None:
+    """Read ``sample_seed`` from a pier job config.
+
+    Pier writes the seed on each dataset entry (``datasets[].sample_seed``), not
+    at the top level — observed in a real ``jobs/<name>/config.json``. The
+    top-level lookup is kept for configs that carry it there.
+    """
+    if not isinstance(config, dict):
+        return None
+    candidates: list[object] = [config.get("sample_seed")]
+    datasets = config.get("datasets")
+    if isinstance(datasets, list):
+        candidates.extend(
+            dataset.get("sample_seed") for dataset in datasets if isinstance(dataset, dict)
+        )
+    for candidate in candidates:
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            return candidate
+    return None
+
+
 def job_identity(job_dir: Path) -> tuple[str | None, int | None]:
     """Return ``(run_id, seed)`` read from a pier job directory.
 
@@ -122,13 +143,7 @@ def job_identity(job_dir: Path) -> tuple[str | None, int | None]:
     if run_id is None and job_dir.name:
         run_id = job_dir.name
 
-    seed: int | None = None
-    config = _read_json(job_dir / "config.json")
-    if isinstance(config, dict):
-        candidate = config.get("sample_seed")
-        if isinstance(candidate, int) and not isinstance(candidate, bool):
-            seed = candidate
-    return run_id, seed
+    return run_id, _seed_from_job_config(_read_json(job_dir / "config.json"))
 
 
 def manifest_for_agent_logs_dir(

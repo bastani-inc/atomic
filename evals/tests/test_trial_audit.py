@@ -241,6 +241,52 @@ def test_adapter_flags_a_truncated_session_jsonl(
     assert status.details["malformed_jsonl_lines"]
 
 
+def test_adapter_tolerates_atomics_plain_text_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Atomic writes human-readable warnings into the same stream as its JSON.
+
+    Observed in a live Deep SWE trial: one such banner in a 3.3 MB atomic.txt.
+    Counting it as corruption would fail every healthy trial.
+    """
+    agent = _agent(tmp_path, monkeypatch)
+    (tmp_path / "agent" / "atomic.txt").write_text(
+        "atomic-workflows: durable backend unavailable — continuing NON-DURABLY "
+        "with an in-memory backend.\n"
+        + json.dumps({"type": "message_end", "message": {"role": "assistant"}})
+        + "\n",
+        encoding="utf-8",
+    )
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    status = read_agent_status(tmp_path / "agent")
+    assert status is not None
+    assert status.status == STATUS_OK
+    assert status.reasons == ()
+
+
+def test_adapter_flags_a_truncated_line_in_atomic_txt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = _agent(tmp_path, monkeypatch)
+    (tmp_path / "agent" / "atomic.txt").write_text(
+        json.dumps({"type": "message_end", "message": {"role": "assistant"}})
+        + "\n"
+        + '{"type":"message_end","message":{"role":"assist',
+        encoding="utf-8",
+    )
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    status = read_agent_status(tmp_path / "agent")
+    assert status is not None
+    assert status.status == STATUS_FAILED
+    assert REASON_MALFORMED_SESSION_LOG in status.reasons
+
+
 def test_adapter_tolerates_blank_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     agent = _agent(tmp_path, monkeypatch)
     (tmp_path / "agent" / "atomic.txt").write_text(

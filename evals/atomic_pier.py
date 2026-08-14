@@ -688,23 +688,32 @@ class Atomic(BaseInstalledAgent):
         return f"{message_fingerprint}:{usage_fingerprint}"
 
     def _read_jsonl(self, path: Path) -> list[JsonObject]:
-        """Parse a JSONL log, recording malformed lines instead of hiding them.
+        """Parse a JSONL log, recording truncated records instead of hiding them.
 
-        Blank lines stay tolerated — Atomic's writers emit them. A line that is
-        present but does not parse means a truncated or corrupted log, which
-        silently degraded metrics before this counter existed.
+        Two kinds of unparsable line show up in a real ``atomic.txt``, and only
+        one is a defect:
+
+        * a line that opens a JSON value and does not finish it — a truncated or
+          corrupted record, which used to degrade metrics with no signal;
+        * a plain-text line, because Atomic also writes human-readable
+          diagnostics to the same stream. Observed live, so treating it as
+          corruption would fail every healthy trial.
+
+        Blank lines stay tolerated.
         """
         entries: list[JsonObject] = []
         try:
             for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
+                stripped = line.strip()
+                if not stripped:
                     continue
                 try:
-                    entry = cast(object, json.loads(line))
+                    entry = cast(object, json.loads(stripped))
                 except json.JSONDecodeError:
-                    self._malformed_jsonl_lines[str(path)] = (
-                        self._malformed_jsonl_lines.get(str(path), 0) + 1
-                    )
+                    if stripped.startswith(("{", "[")):
+                        self._malformed_jsonl_lines[str(path)] = (
+                            self._malformed_jsonl_lines.get(str(path), 0) + 1
+                        )
                     continue
                 if entry_object := _json_object(entry):
                     entries.append(entry_object)
