@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Value } from "typebox/value";
 import { afterEach, describe, test } from "vitest";
 import {
 	assertUserAnnotationsThreaded,
@@ -18,6 +19,12 @@ import {
 	toPreviewFeedback,
 	userAnnotationsBlock,
 } from "../../packages/workflows/builtin/open-claude-design-feedback.js";
+
+/** The artifact's top level minus `meta` — the value the declared schema owns. */
+function declaredTopLevel(artifactPath: string): Record<string, unknown> {
+	const { meta: _meta, ...declared } = JSON.parse(readFileSync(artifactPath, "utf8"));
+	return declared;
+}
 
 describe("open-claude-design feedback threading (#1464)", () => {
 	const tempDirs: string[] = [];
@@ -204,7 +211,21 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: noNotes });
 		assert.ok(existsSync(join(dir, "feedback", "iteration-1.md")));
 		const indeterminate = JSON.parse(readFileSync(feedbackArtifactPath(dir, 1), "utf8"));
-		assert.equal(indeterminate.decision, "indeterminate");
+		// The declared schema admits only `approve` and `revise`, so an
+		// indeterminate round persists the fail-closed `revise` at the top level
+		// and records the truth in `meta.decision`.
+		assert.equal(indeterminate.decision, "revise");
+		assert.equal(indeterminate.meta.decision, "indeterminate");
+
+		// The persisted top level IS the declared schema: strip `meta` and the
+		// remainder validates. Every round, whatever its outcome.
+		for (const iteration of [0, 1]) {
+			assert.equal(
+				Value.Check(previewFeedbackSchema, declaredTopLevel(feedbackArtifactPath(dir, iteration))),
+				true,
+				`iteration ${iteration} top level must validate against previewFeedbackSchema`,
+			);
+		}
 	});
 
 	test("persistPreviewFeedback persists live_changes-only feedback", () => {
@@ -507,6 +528,34 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		assert.equal(extractLiveChanges(fencedAnnotated), "Accepted the committed accent.");
 	});
 
+	test("a repeated label terminates the value it repeats", () => {
+		// The reported over-capture: the second `user_notes` label is a label like
+		// any other, so it ends the first occurrence's value instead of being
+		// swallowed by it.
+		const repeated = ["user_notes:", "First note.", "**user_notes:** Second note."].join("\n");
+		assert.equal(extractUserNotes(repeated), "First note.");
+
+		const repeatedLive = [
+			"live_changes:",
+			"Accepted variant 2.",
+			"- `live_changes` (verbatim):",
+			"Accepted the tighter density.",
+		].join("\n");
+		assert.equal(extractLiveChanges(repeatedLive), "Accepted variant 2.");
+
+		// A repeat that follows the captured field still cannot leak into it.
+		const repeatAcrossFields = [
+			"user_notes:",
+			"First note.",
+			"live_changes:",
+			"Accepted variant 2.",
+			"user_notes:",
+			"Second note.",
+		].join("\n");
+		assert.equal(extractUserNotes(repeatAcrossFields), "First note.");
+		assert.equal(extractLiveChanges(repeatAcrossFields), "Accepted variant 2.");
+	});
+
 	test("persist/load round-trips revise, approve, and indeterminate rounds", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
 		tempDirs.push(dir);
@@ -548,6 +597,16 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			stageName: "user-feedback-3",
 		});
 		assert.deepEqual(loadedIndeterminate, indeterminate);
+		assert.equal(loadedIndeterminate?.decision, "indeterminate");
+		// Every persisted round's top level is the declared schema, so the loop
+		// never reads a decision the stage could not have returned.
+		for (const iteration of [1, 2, 3]) {
+			assert.equal(
+				Value.Check(previewFeedbackSchema, declaredTopLevel(feedbackArtifactPath(dir, iteration))),
+				true,
+				`iteration ${iteration} top level must validate against previewFeedbackSchema`,
+			);
+		}
 
 		// A note that spans several lines survives as one entry: the artifact keeps
 		// one entry per note and the reload is not lossy.
@@ -640,6 +699,13 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 				"an approval carrying live changes",
 				{ decision: "approve", user_notes: [], live_changes: ["Accepted variant 2."], meta },
 			],
+			// `indeterminate` is not a value the declared schema admits, so a record
+			// carrying it at the top level did not come from this module.
+			["a top-level indeterminate decision", { decision: "indeterminate", user_notes: [], live_changes: [], meta }],
+			[
+				"meta with an unknown decision",
+				{ decision: "revise", user_notes: [], live_changes: [], meta: { ...meta, decision: "maybe" } },
+			],
 		];
 		for (const [label, body] of malformed) {
 			writeFileSync(feedbackArtifactPath(dir, 1), typeof body === "string" ? body : JSON.stringify(body));
@@ -652,6 +718,20 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			JSON.stringify({ decision: "approve", user_notes: [], live_changes: [], meta }),
 		);
 		assert.equal(load(1)?.decision, "approve");
+
+		// An indeterminate round persists the fail-closed `revise` at the top level
+		// and its real outcome in `meta.decision`, and reloads as `indeterminate`
+		// so the loop still refuses to approve it.
+		writeFileSync(
+			feedbackArtifactPath(dir, 1),
+			JSON.stringify({
+				decision: "revise",
+				user_notes: [],
+				live_changes: [],
+				meta: { ...meta, decision: "indeterminate" },
+			}),
+		);
+		assert.equal(load(1)?.decision, "indeterminate");
 	});
 
 	test("persistPreviewFeedback throws instead of leaving a stale round readable", () => {

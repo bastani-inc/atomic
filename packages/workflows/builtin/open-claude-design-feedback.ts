@@ -196,6 +196,12 @@ function isHorizontalRule(line: string): boolean {
  * Extract the value of a labeled field (e.g. `user_notes`) from a user-feedback
  * markdown blob, tolerating heading / bullet / bold / backtick label styles and
  * multi-line values that run until the next known field label or a rule.
+ *
+ * ANY later recognized label ends the value, including a repeat of the target
+ * label: `user_notes:\nFirst note.\n**user_notes:** Second note.` yields only
+ * `First note.`. Letting the target through would make the first occurrence
+ * swallow the second label line and everything under it.
+ * cross-ref: issue #2401 item 4.
  */
 export function extractField(text: string, field: string): string | undefined {
   if (text.trim().length === 0) return undefined;
@@ -206,7 +212,7 @@ export function extractField(text: string, field: string): string | undefined {
   for (const line of lines) {
     if (collecting) {
       const label = labelOf(line);
-      if (label !== undefined && label !== target && FIELD_LABELS.has(label)) break;
+      if (label !== undefined && FIELD_LABELS.has(label)) break;
       if (isHorizontalRule(line)) break;
       collected.push(line);
       continue;
@@ -496,20 +502,23 @@ export function feedbackArtifactPath(artifactDir: string, iteration: number): st
 }
 
 /**
- * The persisted artifact shape: the declared schema at the top level (with
- * `decision` widened to carry `indeterminate`, which the schema's union cannot
- * express but an unrecoverable round must record) plus run metadata.
+ * The persisted artifact shape: exactly the declared schema at the top level,
+ * plus one nested `meta` block. Stripping `meta` leaves a value that validates
+ * against `previewFeedbackSchema`, which is what makes the deliverable the
+ * schema's own shape rather than a look-alike.
+ *
+ * The schema admits only `approve` and `revise`, so `indeterminate` cannot sit
+ * at the top level. An unrecoverable round persists the fail-closed `revise`
+ * there and records its real outcome in `meta.decision`, which is what
+ * `loadPreviewFeedback` restores. cross-ref: issue #2401 items A.5 and A.6.
  */
-type PreviewFeedbackArtifact = {
-  readonly decision: PreviewFeedbackDecision;
-  readonly user_notes: readonly string[];
-  readonly live_changes: readonly string[];
-  readonly annotated_snapshot?: string;
+type PreviewFeedbackArtifact = PreviewFeedbackPayload & {
   readonly meta: {
     readonly iteration: number;
     readonly stage_name: string;
     readonly captured_at: string;
     readonly source: PreviewFeedbackSource;
+    readonly decision: PreviewFeedbackDecision;
     readonly text: string;
   };
 };
@@ -520,15 +529,15 @@ type PreviewFeedbackArtifact = {
  * a record carrying only the joined block persists as that single entry rather
  * than being split on newlines. cross-ref: issue #2401.
  */
-function toEntries(entries: readonly string[] | undefined, joined: string | undefined): readonly string[] {
-  if (entries !== undefined) return entries;
+function toEntries(entries: readonly string[] | undefined, joined: string | undefined): string[] {
+  if (entries !== undefined) return [...entries];
   const value = joined?.trim() ?? "";
   return value.length > 0 ? [value] : [];
 }
 
 function toArtifact(feedback: PreviewFeedback): PreviewFeedbackArtifact {
   return {
-    decision: feedback.decision,
+    decision: feedback.decision === "approve" ? "approve" : "revise",
     user_notes: toEntries(feedback.userNoteEntries, feedback.userNotes),
     live_changes: toEntries(feedback.liveChangeEntries, feedback.liveChanges),
     ...(feedback.annotatedSnapshot !== undefined ? { annotated_snapshot: feedback.annotatedSnapshot } : {}),
@@ -537,6 +546,7 @@ function toArtifact(feedback: PreviewFeedback): PreviewFeedbackArtifact {
       stage_name: feedback.stageName,
       captured_at: feedback.capturedAt,
       source: feedback.source,
+      decision: feedback.decision,
       text: feedback.text,
     },
   };
@@ -602,31 +612,6 @@ function isDecision(value: WorkflowSerializableValue | undefined): value is Prev
   return value === "approve" || value === "revise" || value === "indeterminate";
 }
 
-/**
- * The only keys the artifact's top level may carry: the declared schema plus
- * `meta`. A record with anything else did not come from this module, so its
- * `decision` is not this round's outcome. cross-ref: issue #2401 item A.5.
- */
-const ARTIFACT_KEYS: ReadonlySet<string> = new Set([
-  "decision",
-  "user_notes",
-  "live_changes",
-  "annotated_snapshot",
-  "meta",
-]);
-
-/** The schema's per-entry array, rejecting anything that is not an array of strings. */
-function readEntries(value: WorkflowSerializableValue | undefined): CapturedEntries | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const entries: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string") return undefined;
-    const trimmed = entry.trim();
-    if (trimmed.length > 0) entries.push(trimmed);
-  }
-  return { entries, joined: entries.join("\n") };
-}
-
 function readString(value: WorkflowSerializableValue | undefined): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -636,13 +621,17 @@ type PreviewFeedbackMeta = {
   readonly stageName: string;
   readonly capturedAt: string;
   readonly source: PreviewFeedbackSource;
+  /** The round's real outcome; absent in a record written before it was kept. */
+  readonly decision?: PreviewFeedbackDecision;
   readonly text: string;
 };
 
 /**
  * The artifact's `meta` block, or undefined when any required field is absent
  * or the wrong type. Metadata is required: a file without it did not come from
- * `persistPreviewFeedback` and must not be read as a round's outcome.
+ * `persistPreviewFeedback` and must not be read as a round's outcome. A
+ * `decision` that is present but not a decision this module writes makes the
+ * whole record malformed rather than falling back to the top level.
  */
 function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedbackMeta | undefined {
   if (value === undefined || !isRecord(value)) return undefined;
@@ -650,12 +639,21 @@ function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedback
   const stageName = readString(value.stage_name);
   const capturedAt = readString(value.captured_at);
   const source = value.source;
+  const decision = value.decision;
   const text = value.text;
   if (typeof iteration !== "number" || !Number.isFinite(iteration)) return undefined;
   if (stageName === undefined || capturedAt === undefined) return undefined;
   if (source !== "structured" && source !== "text") return undefined;
+  if (decision !== undefined && !isDecision(decision)) return undefined;
   if (typeof text !== "string") return undefined;
-  return { iteration, stageName, capturedAt, source, text };
+  return {
+    iteration,
+    stageName,
+    capturedAt,
+    source,
+    ...(decision === undefined ? {} : { decision }),
+    text,
+  };
 }
 
 /**
@@ -664,11 +662,17 @@ function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedback
  * decides what an unreadable deliverable means. cross-ref: issue #2401.
  *
  * Fail-closed on the whole record, not on the fields it happens to read: the
- * top level must carry exactly the declared schema plus `meta`, every declared
- * and metadata field must be present and well-typed, and the artifact must name
- * the round the caller asked for. A partial file — `{"decision":"approve"}`,
- * say — is malformed, not an approval, and so is a record that smuggles an
- * extra top-level field past the schema.
+ * top level minus `meta` must itself validate against `previewFeedbackSchema`,
+ * every metadata field must be present and well-typed, and the artifact must
+ * name the round the caller asked for. Because the schema declares
+ * `additionalProperties: false`, an unknown top-level key, a missing declared
+ * field, and a decision outside the union are each rejected by that one check:
+ * a partial file — `{"decision":"approve"}`, say — is malformed, not an
+ * approval, and so is a record that smuggles an extra top-level field.
+ *
+ * The restored decision is `meta.decision`, so a round that was indeterminate
+ * reloads as `indeterminate` rather than as the fail-closed `revise` the schema
+ * forced onto the top level.
  *
  * An `approve` record carrying notes or live changes is malformed too:
  * `toPreviewFeedback` coerces that contradiction to `revise` before it is ever
@@ -684,31 +688,28 @@ export function loadPreviewFeedback(input: {
     const path = feedbackArtifactPath(input.artifactDir, input.iteration);
     if (!existsSync(path)) return undefined;
     const parsed = JSON.parse(readFileSync(path, "utf8")) as WorkflowSerializableValue;
-    if (!isRecord(parsed) || !isDecision(parsed.decision)) return undefined;
-    if (Object.keys(parsed).some((key) => !ARTIFACT_KEYS.has(key))) return undefined;
-    const notes = readEntries(parsed.user_notes);
-    const changes = readEntries(parsed.live_changes);
-    if (notes === undefined || changes === undefined) return undefined;
-    const captured = notes.entries.length > 0 || changes.entries.length > 0;
-    if (parsed.decision === "approve" && captured) return undefined;
-    const rawSnapshot = parsed.annotated_snapshot;
-    const annotatedSnapshot = rawSnapshot === undefined ? undefined : readString(rawSnapshot);
-    if (rawSnapshot !== undefined && annotatedSnapshot === undefined) return undefined;
-    const meta = readMeta(parsed.meta);
+    if (!isRecord(parsed)) return undefined;
+    const { meta: rawMeta, ...declared } = parsed;
+    if (!Value.Check(previewFeedbackSchema, declared)) return undefined;
+    const notes = captureEntries(declared.user_notes);
+    const changes = captureEntries(declared.live_changes);
+    if (declared.decision === "approve" && (notes !== undefined || changes !== undefined)) return undefined;
+    const meta = readMeta(rawMeta);
     if (meta === undefined) return undefined;
     if (meta.iteration !== input.iteration) return undefined;
     if (meta.stageName.trim() !== input.stageName.trim()) return undefined;
+    const snapshot = declared.annotated_snapshot?.trim();
     return {
       iteration: meta.iteration,
       stageName: meta.stageName,
       text: meta.text,
-      decision: parsed.decision,
+      decision: meta.decision ?? declared.decision,
       source: meta.source,
       capturedAt: meta.capturedAt,
       ...capturedFields({
-        notes: notes.entries.length > 0 ? notes : undefined,
-        changes: changes.entries.length > 0 ? changes : undefined,
-        annotatedSnapshot,
+        notes,
+        changes,
+        annotatedSnapshot: snapshot !== undefined && snapshot.length > 0 ? snapshot : undefined,
       }),
     };
   } catch {
