@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
+import type { OverlayHandle } from "@earendil-works/pi-tui";
 import { afterEach, describe, it } from "vitest";
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
@@ -750,6 +751,132 @@ describe("ctx.ui block wrapping", () => {
 		const ctx = contextOver(outerUi.ui);
 		assert.equal(await ctx.ui.select("Outer?", ["outer"]), "outer");
 		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+});
+
+describe("ctx.ui.custom overlay-handle visibility", () => {
+	afterEach(() => {
+		assert.deepEqual(getOpenUserBlocks(), [], "no block may outlive its dialog");
+	});
+
+	type CustomFactory = Parameters<ExtensionUIContext["custom"]>[0];
+	type CustomOptions = Parameters<ExtensionUIContext["custom"]>[1];
+
+	/**
+	 * A host `custom()` in the real TUI's shape: the promise stays pending until
+	 * `done`, and the caller receives an `OverlayHandle` through
+	 * `options.onHandle` — which is how an overlay caller hides the dialog
+	 * without unmounting it.
+	 */
+	function overlayHost() {
+		let hostHidden = false;
+		let done: (() => void) | undefined;
+		let received: CustomOptions;
+		const ui: ExtensionUIContext = {
+			...noOpUIContext,
+			custom: <T>(_factory: CustomFactory, options?: CustomOptions) =>
+				new Promise<T>((resolve) => {
+					received = options;
+					done = () => resolve("done" as T);
+					options?.onHandle?.({
+						hide: () => {
+							hostHidden = true;
+						},
+						setHidden: (hidden: boolean) => {
+							hostHidden = hidden;
+						},
+						isHidden: () => hostHidden,
+						focus: () => undefined,
+						unfocus: () => undefined,
+						isFocused: () => !hostHidden,
+					});
+				}),
+		};
+		return {
+			ui,
+			settle: () => done?.(),
+			hostHidden: () => hostHidden,
+			receivedOptions: () => received,
+		};
+	}
+
+	it("releases the block while the overlay is hidden and re-mints it when shown", async () => {
+		const host = overlayHost();
+		const ctx = contextOver(host.ui);
+		let handle: OverlayHandle | undefined;
+
+		const pending = ctx.ui.custom(() => ({ render: () => [] }), {
+			overlay: true,
+			onHandle: (received) => {
+				handle = received;
+			},
+		});
+		assert.equal(getOpenUserBlocks().length, 1, "the mounted overlay is a real wait");
+		assert.ok(handle, "the caller still receives a handle through onHandle");
+
+		handle.setHidden(true);
+		assert.equal(host.hostHidden(), true, "the host's own handle was driven");
+		assert.deepEqual(getOpenUserBlocks(), [], "a hidden overlay is not a wait");
+
+		handle.setHidden(false);
+		assert.equal(getOpenUserBlocks().length, 1, "a re-shown overlay is a wait again");
+		assert.equal(getOpenUserBlocks()[0]?.label, "Custom dialog");
+
+		handle.setHidden(true);
+		host.settle();
+		assert.equal(await pending, "done");
+		assert.deepEqual(getOpenUserBlocks(), [], "settling while hidden leaks nothing");
+
+		// A visibility call landing after settlement mints no new block.
+		handle.setHidden(false);
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("releases the block on handle.hide() even though the promise stays pending", async () => {
+		const host = overlayHost();
+		const ctx = contextOver(host.ui);
+		let handle: OverlayHandle | undefined;
+
+		const pending = ctx.ui.custom(() => ({ render: () => [] }), {
+			overlay: true,
+			onHandle: (received) => {
+				handle = received;
+			},
+		});
+		assert.equal(getOpenUserBlocks().length, 1);
+
+		// The workflows overlay adapter's close() path: hide() without done().
+		handle?.hide();
+		assert.deepEqual(getOpenUserBlocks(), [], "a permanently removed overlay is not a wait");
+
+		host.settle();
+		assert.equal(await pending, "done");
+	});
+
+	it("still ends the block at settlement while visible, exactly once", async () => {
+		const host = overlayHost();
+		const ctx = contextOver(host.ui);
+
+		const pending = ctx.ui.custom(() => ({ render: () => [] }), {
+			overlay: true,
+			onHandle: () => undefined,
+		});
+		assert.equal(getOpenUserBlocks().length, 1);
+		host.settle();
+		assert.equal(await pending, "done");
+		assert.deepEqual(getOpenUserBlocks(), []);
+	});
+
+	it("passes the caller's options object through untouched when no handle is requested", async () => {
+		const host = overlayHost();
+		const ctx = contextOver(host.ui);
+		const options: CustomOptions = { overlay: true };
+
+		const pending = ctx.ui.custom(() => ({ render: () => [] }), options);
+		assert.equal(host.receivedOptions(), options, "without onHandle the exact options object reaches the host");
+		assert.equal(getOpenUserBlocks().length, 1);
+		host.settle();
+		assert.equal(await pending, "done");
 	});
 });
 

@@ -11,6 +11,7 @@
  * block too.
  */
 
+import type { OverlayHandle } from "@earendil-works/pi-tui";
 import type { UserBlock } from "./block-types.js";
 import { observeSettlement } from "./settlement-observer.js";
 import type { ExtensionUIContext } from "./ui-types.ts";
@@ -51,6 +52,66 @@ function blockLabel<M extends BlockingUiMethod>(method: M, args: BlockingUiArgs<
 	return typeof title === "string" ? title : method;
 }
 
+/** How a dialog reports its visibility back to the block bookkeeping. */
+interface DialogBlockHooks {
+	/** The dialog left the screen without settling; the person is not waiting on it. */
+	onHidden(): void;
+	/** A hidden dialog came back; the person is waiting on it again. */
+	onShown(): void;
+}
+
+type CustomUiArgs = BlockingUiArgs<"custom">;
+
+/**
+ * Interpose on a `custom()` overlay's handle so hide and show move the block.
+ *
+ * `ctx.ui.custom` is the one dialog whose caller can keep the promise pending
+ * while the dialog is not on screen: an overlay caller receives an
+ * `OverlayHandle` through `options.onHandle` and may `setHidden(true)` to
+ * return the user to the chat without unmounting — the workflows graph viewer
+ * does exactly that to survive reopening without scrollback pollution. A block
+ * keyed only on settlement then reports the pane as blocked for the life of
+ * the mounted-but-hidden overlay, which is a wait nobody is actually in.
+ *
+ * The caller therefore gets a handle whose visibility calls notify the block
+ * bookkeeping after the host call succeeds. Everything else forwards to the
+ * host's own handle on the host's own object. Args are only substituted when
+ * the caller asked for a handle; without one it cannot hide the overlay, so
+ * the original arguments pass through untouched.
+ */
+function interposeCustomOverlayHandle(args: CustomUiArgs, hooks: DialogBlockHooks): CustomUiArgs {
+	const options = args[1];
+	const callerOnHandle = options?.onHandle;
+	if (options === undefined || typeof callerOnHandle !== "function") return args;
+	return [
+		args[0],
+		{
+			...options,
+			onHandle: (handle: OverlayHandle) => callerOnHandle(visibilityReportingHandle(handle, hooks)),
+		},
+	];
+}
+
+function visibilityReportingHandle(handle: OverlayHandle, hooks: DialogBlockHooks): OverlayHandle {
+	return {
+		hide(): void {
+			// `hide()` permanently removes the overlay; whether or not the host
+			// ever settles the dialog's promise, nobody is waiting on it now.
+			handle.hide();
+			hooks.onHidden();
+		},
+		setHidden(hidden: boolean): void {
+			handle.setHidden(hidden);
+			if (hidden) hooks.onHidden();
+			else hooks.onShown();
+		},
+		isHidden: () => handle.isHidden(),
+		focus: () => handle.focus(),
+		unfocus: (options) => handle.unfocus(options),
+		isFocused: () => handle.isFocused(),
+	};
+}
+
 /**
  * Wrap one blocking dialog so it mints a block for its duration.
  *
@@ -58,6 +119,12 @@ function blockLabel<M extends BlockingUiMethod>(method: M, args: BlockingUiArgs<
  * keys per-instance state off its own object identity — a `WeakMap`, a private
  * field — would otherwise see a different receiver after wrapping and silently
  * change behavior, which is exactly what wrapping must not do.
+ *
+ * "Its duration" means the time a person is actually being asked: for a
+ * `custom()` overlay whose caller holds an `OverlayHandle`, hiding the overlay
+ * releases the current block and re-showing it opens a new one, because a
+ * mounted-but-hidden overlay leaves the user free in the chat. Settlement
+ * always ends the bookkeeping for good.
  */
 function wrapBlockingMethod<M extends BlockingUiMethod>(
 	method: M,
@@ -65,19 +132,43 @@ function wrapBlockingMethod<M extends BlockingUiMethod>(
 	original: BlockingUiFunction<M>,
 ): BlockingUiFunction<M> {
 	const wrapped = (...args: BlockingUiArgs<M>): BlockingUiResult<M> => {
-		let block: UserBlock;
-		try {
-			block = openUserBlock(blockLabel(method, args), "dialog");
-		} catch {
-			// The block door must never be the reason a dialog fails to open.
+		const label = blockLabel(method, args);
+		let settled = false;
+		let block: UserBlock | undefined;
+		const openBlock = (): boolean => {
+			if (settled || block !== undefined) return block !== undefined;
+			try {
+				block = openUserBlock(label, "dialog");
+				return true;
+			} catch {
+				// The block door must never be the reason a dialog fails to open.
+				return false;
+			}
+		};
+		const releaseBlock = (): void => {
+			const current = block;
+			block = undefined;
+			current?.release();
+		};
+
+		if (!openBlock()) {
 			return Reflect.apply(original, host, args) as BlockingUiResult<M>;
 		}
 
+		const callArgs =
+			method === "custom"
+				? (interposeCustomOverlayHandle(args as CustomUiArgs, {
+						onHidden: releaseBlock,
+						onShown: () => void openBlock(),
+					}) as BlockingUiArgs<M>)
+				: args;
+
 		let result: BlockingUiResult<M>;
 		try {
-			result = Reflect.apply(original, host, args) as BlockingUiResult<M>;
+			result = Reflect.apply(original, host, callArgs) as BlockingUiResult<M>;
 		} catch (error) {
-			block.release();
+			settled = true;
+			releaseBlock();
 			throw error;
 		}
 
@@ -91,9 +182,13 @@ function wrapBlockingMethod<M extends BlockingUiMethod>(
 		// inside the guard too: an error there used to reach the caller with the
 		// block still open, stranding the pane in `blocked` forever.
 		try {
-			return observeSettlement(result, () => block.release());
+			return observeSettlement(result, () => {
+				settled = true;
+				releaseBlock();
+			});
 		} catch (error) {
-			block.release();
+			settled = true;
+			releaseBlock();
 			throw error;
 		}
 	};
