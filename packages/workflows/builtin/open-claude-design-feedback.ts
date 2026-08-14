@@ -6,10 +6,56 @@
  * for that feedback: it parses the feedback-stage output, persists it as a
  * workflow artifact, and renders the user annotations that the next `generate-*`
  * stage must honor. cross-ref: issue #1464.
+ *
+ * The stage declares `previewFeedbackSchema` as its structured output, so the
+ * feedback round finalizes as a schema-validated value rather than as prose a
+ * later resume-continuation turn can replace. Every round is persisted as
+ * `<artifactDir>/feedback/iteration-N.json`, and that artifact — not the
+ * stage's final message — is the source of truth for the refinement loop.
+ * cross-ref: issue #2401.
  */
 
-import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, dirname, join, resolve, sep } from "node:path";
+import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
+import type { WorkflowSerializableValue } from "../src/shared/types.js";
+
+/**
+ * The structured final answer the `user-feedback-*` stages must return. Used as
+ * the stage `schema`, which both finalizes the stage result and shapes the
+ * durable per-round artifact.
+ */
+export const previewFeedbackSchema = Type.Object(
+  {
+    decision: Type.Union([Type.Literal("approve"), Type.Literal("revise")], {
+      description:
+        "`revise` whenever the user asked for anything at all; `approve` only when the user wants the preview exported unchanged.",
+    }),
+    user_notes: Type.Array(Type.String(), {
+      description: "Every note the user typed or dictated, verbatim, one entry per note. Empty when the user typed nothing.",
+    }),
+    live_changes: Type.Array(Type.String(), {
+      description: "Every variant or edit the user accepted during the live review, one entry per accepted change.",
+    }),
+    annotated_snapshot: Type.Optional(
+      Type.String({ description: "Path to the annotated screenshot captured during the review, when one exists." }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/** The validated structured payload a `user-feedback-*` stage returns. */
+export type PreviewFeedbackPayload = Static<typeof previewFeedbackSchema>;
+
+/**
+ * Round outcome. `indeterminate` means the round produced neither a usable
+ * structured payload nor parseable feedback: it is never approval.
+ */
+export type PreviewFeedbackDecision = "approve" | "revise" | "indeterminate";
+
+/** Whether the round was read from the structured payload or parsed from prose. */
+export type PreviewFeedbackSource = "structured" | "text";
 
 /** A single captured user-feedback round. */
 export type PreviewFeedback = {
@@ -19,6 +65,10 @@ export type PreviewFeedback = {
   readonly stageName: string;
   /** Full markdown result text emitted by the user-feedback stage. */
   readonly text: string;
+  /** Explicit round outcome; drives the refinement loop. */
+  readonly decision: PreviewFeedbackDecision;
+  /** Where the fields below came from. */
+  readonly source: PreviewFeedbackSource;
   /** Extracted user annotation notes when the user actually annotated. */
   readonly userNotes?: string;
   /** Extracted annotated-snapshot artifact path when one was captured. */
@@ -29,7 +79,10 @@ export type PreviewFeedback = {
   readonly capturedAt: string;
 };
 
-type PreviewResultLike = { readonly text?: string };
+type PreviewResultLike = {
+  readonly text?: string;
+  readonly structured?: WorkflowSerializableValue;
+};
 
 /**
  * Field labels the user-feedback stages are instructed to emit, stored in
@@ -46,6 +99,8 @@ const FIELD_LABELS = new Set<string>([
   "nextactionhint",
   "manualopeninstructions",
   "specpath",
+  "decision",
+  "reviewdecision",
 ]);
 
 const PLACEHOLDER_TOKENS = new Set<string>([
@@ -80,7 +135,16 @@ function canonicalLabel(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-/** Normalize a candidate label line into a canonical key (or undefined). */
+/**
+ * Normalize a candidate label line into a canonical key (or undefined).
+ *
+ * Labels arrive decorated: fenced (```` ```user_notes``` ````), bolded
+ * (`**live_changes:**`), bulleted and backticked (`` - `user_notes`: ``), and
+ * annotated (`` - `user_notes` (verbatim): ``). Canonicalizing to lowercase
+ * alphanumerics handles the decoration; a trailing parenthetical is an
+ * annotation on the label rather than part of it, so it is dropped when the
+ * remainder is a label we know. cross-ref: issue #2401 item 4.
+ */
 function labelOf(line: string): string | undefined {
   const stripped = line
     .replace(/^\s*#{1,6}\s+/, "")
@@ -89,7 +153,11 @@ function labelOf(line: string): string | undefined {
   const colonIdx = stripped.indexOf(":");
   const candidate = colonIdx >= 0 ? stripped.slice(0, colonIdx) : stripped;
   const key = canonicalLabel(candidate);
-  return key.length > 0 ? key : undefined;
+  if (key.length === 0) return undefined;
+  if (FIELD_LABELS.has(key)) return key;
+  const withoutAnnotation = canonicalLabel(candidate.replace(/\s*\([^)]*\)\s*$/, ""));
+  if (withoutAnnotation.length > 0 && FIELD_LABELS.has(withoutAnnotation)) return withoutAnnotation;
+  return key;
 }
 
 /** Inline value following a `label:` on the same line. */
@@ -149,21 +217,80 @@ export function extractLiveChanges(text: string): string | undefined {
   return extractField(text, "live_changes");
 }
 
-/** Build a PreviewFeedback record from a (possibly missing) stage result. */
+/** Non-empty, non-placeholder entries of a structured string array, joined into one block. */
+function joinPayloadEntries(entries: readonly string[]): string | undefined {
+  const kept = entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0 && !isPlaceholderValue(entry));
+  if (kept.length === 0) return undefined;
+  return kept.join("\n");
+}
+
+/** The structured stage payload when it validates against the declared schema. */
+function readStructuredPayload(value: WorkflowSerializableValue | undefined): PreviewFeedbackPayload | undefined {
+  if (value === undefined || value === null) return undefined;
+  return Value.Check(previewFeedbackSchema, value) ? value : undefined;
+}
+
+/** Whether a labeled `decision` / `review_decision` value states approval. */
+function textDecisionApproves(text: string): boolean {
+  const raw = extractField(text, "decision") ?? extractField(text, "review_decision");
+  if (raw === undefined) return false;
+  const canonical = canonicalLabel(raw);
+  return canonical === "approve" || canonical === "approved";
+}
+
+/**
+ * Build a PreviewFeedback record from a (possibly missing) stage result.
+ *
+ * The structured payload wins: it is the schema-validated value the stage
+ * finalized, so a later resume-continuation turn cannot replace it. Prose
+ * parsing remains as the fallback for a stage that produced no structured
+ * value, and that fallback never invents approval. cross-ref: issue #2401.
+ */
 export function toPreviewFeedback(input: {
   readonly iteration: number;
   readonly stageName: string;
   readonly result: PreviewResultLike | undefined;
 }): PreviewFeedback {
   const text = (input.result?.text ?? "").trim();
-  const userNotes = extractUserNotes(text);
-  const annotatedSnapshot = extractAnnotatedSnapshot(text);
-  const liveChanges = extractLiveChanges(text);
-  return {
+  const base = {
     iteration: input.iteration,
     stageName: input.stageName,
     text,
     capturedAt: new Date().toISOString(),
+  };
+
+  const payload = readStructuredPayload(input.result?.structured);
+  if (payload !== undefined) {
+    const userNotes = joinPayloadEntries(payload.user_notes);
+    const liveChanges = joinPayloadEntries(payload.live_changes);
+    const snapshot = payload.annotated_snapshot?.trim();
+    const annotatedSnapshot = snapshot !== undefined && snapshot.length > 0 ? snapshot : undefined;
+    // `approve` alongside captured work is a contradiction: the user asked for
+    // something, so exporting now would discard it. Revise instead.
+    const captured = userNotes !== undefined || liveChanges !== undefined;
+    return {
+      ...base,
+      decision: payload.decision === "approve" && captured ? "revise" : payload.decision,
+      source: "structured",
+      ...(userNotes !== undefined ? { userNotes } : {}),
+      ...(annotatedSnapshot !== undefined ? { annotatedSnapshot } : {}),
+      ...(liveChanges !== undefined ? { liveChanges } : {}),
+    };
+  }
+
+  const userNotes = extractUserNotes(text);
+  const annotatedSnapshot = extractAnnotatedSnapshot(text);
+  const liveChanges = extractLiveChanges(text);
+  const captured = userNotes !== undefined || liveChanges !== undefined;
+  const decision: PreviewFeedbackDecision = captured
+    ? "revise"
+    : textDecisionApproves(text)
+      ? "approve"
+      : "indeterminate";
+  return {
+    ...base,
+    decision,
+    source: "text",
     ...(userNotes !== undefined ? { userNotes } : {}),
     ...(annotatedSnapshot !== undefined ? { annotatedSnapshot } : {}),
     ...(liveChanges !== undefined ? { liveChanges } : {}),
@@ -316,11 +443,57 @@ function copyAnnotationArtifacts(
   }
 }
 
+/** Path of the durable per-round feedback artifact. */
+export function feedbackArtifactPath(artifactDir: string, iteration: number): string {
+  return join(artifactDir, "feedback", `iteration-${iteration}.json`);
+}
+
 /**
- * Persist captured annotations as durable workflow artifacts under
- * `<artifactDir>/feedback/`. Only writes when the user actually provided
- * annotations (notes or an annotated snapshot). Best-effort: never throws.
- * cross-ref: issue #1464 fix (5).
+ * The persisted artifact shape: the declared schema at the top level (with
+ * `decision` widened to carry `indeterminate`, which the schema's union cannot
+ * express but an unrecoverable round must record) plus run metadata.
+ */
+type PreviewFeedbackArtifact = {
+  readonly decision: PreviewFeedbackDecision;
+  readonly user_notes: readonly string[];
+  readonly live_changes: readonly string[];
+  readonly annotated_snapshot?: string;
+  readonly meta: {
+    readonly iteration: number;
+    readonly stage_name: string;
+    readonly captured_at: string;
+    readonly source: PreviewFeedbackSource;
+    readonly text: string;
+  };
+};
+
+/** Split a joined feedback block back into the schema's per-entry array. */
+function toEntries(value: string | undefined): string[] {
+  if (value === undefined) return [];
+  return value.split(/\r?\n/).filter((line) => line.trim().length > 0);
+}
+
+function toArtifact(feedback: PreviewFeedback): PreviewFeedbackArtifact {
+  return {
+    decision: feedback.decision,
+    user_notes: toEntries(feedback.userNotes),
+    live_changes: toEntries(feedback.liveChanges),
+    ...(feedback.annotatedSnapshot !== undefined ? { annotated_snapshot: feedback.annotatedSnapshot } : {}),
+    meta: {
+      iteration: feedback.iteration,
+      stage_name: feedback.stageName,
+      captured_at: feedback.capturedAt,
+      source: feedback.source,
+      text: feedback.text,
+    },
+  };
+}
+
+/**
+ * Persist the round as durable workflow artifacts under `<artifactDir>/feedback/`.
+ * Written on every round — approvals and indeterminate rounds included — because
+ * the artifact, not the stage's prose, is what the refinement loop reads back.
+ * Best-effort: never throws. cross-ref: issue #1464 fix (5), issue #2401.
  */
 export function persistPreviewFeedback(input: {
   readonly artifactDir: string;
@@ -328,32 +501,78 @@ export function persistPreviewFeedback(input: {
   readonly feedback: PreviewFeedback;
 }): void {
   const { feedback } = input;
-  if (
-    !hasMeaningfulUserNotes(feedback) &&
-    !hasMeaningfulLiveChanges(feedback) &&
-    feedback.annotatedSnapshot === undefined
-  ) {
-    return;
-  }
   try {
     const feedbackDir = join(input.artifactDir, "feedback");
     mkdirSync(feedbackDir, { recursive: true });
     const slug = `iteration-${feedback.iteration}`;
     writeFileSync(join(feedbackDir, `${slug}.md`), `${feedback.text}\n`);
     writeFileSync(
-      join(feedbackDir, `${slug}.json`),
-      `${JSON.stringify(
-        {
-          ...feedback,
-          hasUserNotes: hasMeaningfulUserNotes(feedback),
-          hasLiveChanges: hasMeaningfulLiveChanges(feedback),
-        },
-        null,
-        2,
-      )}\n`,
+      feedbackArtifactPath(input.artifactDir, feedback.iteration),
+      `${JSON.stringify(toArtifact(feedback), null, 2)}\n`,
     );
     copyAnnotationArtifacts(feedbackDir, slug, feedback, input.workflowCwd);
   } catch {
     /* best-effort durability; never block the workflow */
+  }
+}
+
+function isRecord(value: WorkflowSerializableValue): value is { readonly [key: string]: WorkflowSerializableValue } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDecision(value: WorkflowSerializableValue | undefined): value is PreviewFeedbackDecision {
+  return value === "approve" || value === "revise" || value === "indeterminate";
+}
+
+function readEntries(value: WorkflowSerializableValue | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return undefined;
+  const entries: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") return undefined;
+    if (entry.trim().length > 0) entries.push(entry);
+  }
+  return entries.length > 0 ? entries.join("\n") : undefined;
+}
+
+function readString(value: WorkflowSerializableValue | undefined): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Read the durable per-round artifact back into a `PreviewFeedback`. Returns
+ * undefined when the file is missing or malformed; never throws, so the caller
+ * decides what an unreadable deliverable means. cross-ref: issue #2401.
+ */
+export function loadPreviewFeedback(input: {
+  readonly artifactDir: string;
+  readonly iteration: number;
+  readonly stageName: string;
+}): PreviewFeedback | undefined {
+  try {
+    const path = feedbackArtifactPath(input.artifactDir, input.iteration);
+    if (!existsSync(path)) return undefined;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as WorkflowSerializableValue;
+    if (!isRecord(parsed) || !isDecision(parsed.decision)) return undefined;
+    if (parsed.user_notes !== undefined && !Array.isArray(parsed.user_notes)) return undefined;
+    if (parsed.live_changes !== undefined && !Array.isArray(parsed.live_changes)) return undefined;
+    const meta: { readonly [key: string]: WorkflowSerializableValue } = isRecord(parsed.meta) ? parsed.meta : {};
+    const userNotes = readEntries(parsed.user_notes);
+    const liveChanges = readEntries(parsed.live_changes);
+    const annotatedSnapshot = readString(parsed.annotated_snapshot);
+    const source = meta.source === "structured" ? "structured" : "text";
+    return {
+      iteration: typeof meta.iteration === "number" ? meta.iteration : input.iteration,
+      stageName: readString(meta.stage_name) ?? input.stageName,
+      text: typeof meta.text === "string" ? meta.text : "",
+      decision: parsed.decision,
+      source,
+      capturedAt: readString(meta.captured_at) ?? "",
+      ...(userNotes !== undefined ? { userNotes } : {}),
+      ...(annotatedSnapshot !== undefined ? { annotatedSnapshot } : {}),
+      ...(liveChanges !== undefined ? { liveChanges } : {}),
+    };
+  } catch {
+    return undefined;
   }
 }

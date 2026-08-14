@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -11,7 +11,10 @@ import {
 	extractAnnotatedSnapshot,
 	extractLiveChanges,
 	extractUserNotes,
+	feedbackArtifactPath,
+	loadPreviewFeedback,
 	persistPreviewFeedback,
+	previewFeedbackSchema,
 	toPreviewFeedback,
 	userAnnotationsBlock,
 } from "../../packages/workflows/builtin/open-claude-design-feedback.js";
@@ -171,7 +174,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		);
 	});
 
-	test("persistPreviewFeedback writes durable artifacts only when notes exist", () => {
+	test("persistPreviewFeedback writes the durable artifact on every round", () => {
 		const dir = mkdtempSync(join(tmpdir(), "ocd-feedback-"));
 		tempDirs.push(dir);
 		const withNotes = toPreviewFeedback({
@@ -181,20 +184,27 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		});
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: withNotes });
 		const mdPath = join(dir, "feedback", "iteration-0.md");
-		const jsonPath = join(dir, "feedback", "iteration-0.json");
 		assert.ok(existsSync(mdPath));
 		assert.match(readFileSync(mdPath, "utf8"), /simplify the hero background/);
-		const json = JSON.parse(readFileSync(jsonPath, "utf8"));
-		assert.equal(json.hasUserNotes, true);
+		const json = JSON.parse(readFileSync(feedbackArtifactPath(dir, 0), "utf8"));
+		// Top level is the declared schema shape; run metadata is nested under `meta`.
+		assert.deepEqual(json.user_notes, ["simplify the hero background"]);
+		assert.deepEqual(json.live_changes, []);
+		assert.equal(json.decision, "revise");
+		assert.equal(json.meta.stage_name, "user-feedback-1");
+		assert.equal(json.meta.source, "text");
 
-		// No-notes feedback writes nothing.
+		// A round with nothing parseable is still persisted (#2401): the loop reads
+		// the artifact, and a missing file must not be confused with an empty one.
 		const noNotes = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
 			result: { text: "display_method: manual fallback" },
 		});
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: noNotes });
-		assert.equal(existsSync(join(dir, "feedback", "iteration-1.md")), false);
+		assert.ok(existsSync(join(dir, "feedback", "iteration-1.md")));
+		const indeterminate = JSON.parse(readFileSync(feedbackArtifactPath(dir, 1), "utf8"));
+		assert.equal(indeterminate.decision, "indeterminate");
 	});
 
 	test("persistPreviewFeedback persists live_changes-only feedback", () => {
@@ -212,11 +222,11 @@ describe("open-claude-design feedback threading (#1464)", () => {
 			},
 		});
 		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: liveOnly });
-		const jsonPath = join(dir, "feedback", "iteration-2.json");
+		const jsonPath = feedbackArtifactPath(dir, 2);
 		assert.ok(existsSync(jsonPath));
 		const json = JSON.parse(readFileSync(jsonPath, "utf8"));
-		assert.equal(json.hasLiveChanges, true);
-		assert.equal(json.hasUserNotes, false);
+		assert.deepEqual(json.live_changes, ["Accepted variant 1 for the pricing table."]);
+		assert.deepEqual(json.user_notes, []);
 	});
 
 	test("persistPreviewFeedback copies the annotated snapshot artifact", () => {
@@ -255,5 +265,243 @@ describe("open-claude-design feedback threading (#1464)", () => {
 		assert.equal(existsSync(join(dir, "feedback", "iteration-0-annotations.png")), false);
 		// ...but the notes themselves are still persisted.
 		assert.ok(existsSync(join(dir, "feedback", "iteration-0.md")));
+	});
+});
+
+/**
+ * The user-feedback stage returns a schema-validated structured value, and the
+ * workflow drives the loop from the durable artifact rather than from the
+ * stage's final prose. cross-ref: issue #2401.
+ */
+describe("open-claude-design structured feedback deliverable (#2401)", () => {
+	const tempDirs: string[] = [];
+	afterEach(() => {
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	/** The labeled report `user-feedback-1` emitted before the continuation turn. */
+	const LABELED_REPORT = [
+		"display_method: live",
+		"preview_path: /tmp/preview.html",
+		"user_notes:",
+		"- The hero background is too busy.",
+		"live_changes:",
+		"- Accepted variant 2 for the pricing table.",
+		"next_action_hint: refine",
+	].join("\n");
+
+	/** The short wrap-up the synthetic continuation turn produced 15 ms later. */
+	const CONTINUATION_WRAP_UP = "All set — the live review session is closed and the preview is ready.";
+
+	test("declares the structured final-answer schema the stage must return", () => {
+		assert.equal(previewFeedbackSchema.additionalProperties, false);
+		assert.deepEqual(Object.keys(previewFeedbackSchema.properties).sort(), [
+			"annotated_snapshot",
+			"decision",
+			"live_changes",
+			"user_notes",
+		]);
+		for (const property of Object.values(previewFeedbackSchema.properties)) {
+			assert.equal(typeof property.description, "string");
+		}
+		assert.deepEqual(previewFeedbackSchema.required, ["decision", "user_notes", "live_changes"]);
+	});
+
+	test("prefers a valid structured payload over the stage text", () => {
+		const feedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: {
+				text: CONTINUATION_WRAP_UP,
+				structured: {
+					decision: "revise",
+					user_notes: ["The hero background is too busy."],
+					live_changes: ["Accepted variant 2 for the pricing table."],
+					annotated_snapshot: ".playwright-cli/annotations-1.png",
+				},
+			},
+		});
+		assert.equal(feedback.source, "structured");
+		assert.equal(feedback.decision, "revise");
+		assert.equal(feedback.userNotes, "The hero background is too busy.");
+		assert.equal(feedback.liveChanges, "Accepted variant 2 for the pricing table.");
+		assert.equal(feedback.annotatedSnapshot, ".playwright-cli/annotations-1.png");
+	});
+
+	test("coerces a structured approval that still carries captured work to revise", () => {
+		const feedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: {
+				text: CONTINUATION_WRAP_UP,
+				structured: {
+					decision: "approve",
+					user_notes: ["Fix the masthead contrast."],
+					live_changes: [],
+				},
+			},
+		});
+		// Approval never silently discards work the user asked for.
+		assert.equal(feedback.decision, "revise");
+		assert.equal(feedback.userNotes, "Fix the masthead contrast.");
+
+		const clean = toPreviewFeedback({
+			iteration: 2,
+			stageName: "user-feedback-2",
+			result: { text: "", structured: { decision: "approve", user_notes: [], live_changes: [] } },
+		});
+		assert.equal(clean.decision, "approve");
+	});
+
+	test("the issue transcript order keeps the labeled feedback when structured output exists", () => {
+		// Transcript: labeled report -> synthetic continuation turn -> unlabeled
+		// wrap-up returned as `result.text`. The structured value was finalized
+		// with the report, so the wrap-up cannot erase it.
+		const feedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: {
+				text: CONTINUATION_WRAP_UP,
+				structured: {
+					decision: "revise",
+					user_notes: [extractUserNotes(LABELED_REPORT) ?? ""],
+					live_changes: [extractLiveChanges(LABELED_REPORT) ?? ""],
+				},
+			},
+		});
+		assert.equal(feedback.decision, "revise");
+		assert.match(feedback.userNotes ?? "", /hero background is too busy/);
+		assert.match(feedback.liveChanges ?? "", /Accepted variant 2 for the pricing table/);
+	});
+
+	test("the same transcript without structured output is indeterminate, never approved", () => {
+		const feedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: { text: CONTINUATION_WRAP_UP },
+		});
+		assert.equal(feedback.source, "text");
+		assert.equal(feedback.decision, "indeterminate");
+		assert.equal(feedback.userNotes, undefined);
+
+		// Empty text is indeterminate too.
+		assert.equal(
+			toPreviewFeedback({ iteration: 1, stageName: "user-feedback-1", result: { text: "" } }).decision,
+			"indeterminate",
+		);
+		// A malformed structured payload falls back to text without approving.
+		assert.equal(
+			toPreviewFeedback({
+				iteration: 1,
+				stageName: "user-feedback-1",
+				result: { text: CONTINUATION_WRAP_UP, structured: { decision: "yes", notes: "everything is fine" } },
+			}).decision,
+			"indeterminate",
+		);
+	});
+
+	test("an explicit labeled approval with no captured work approves", () => {
+		const feedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: { text: ["decision: approve", "user_notes: none", "live_changes: none"].join("\n") },
+		});
+		assert.equal(feedback.decision, "approve");
+		assert.equal(feedback.source, "text");
+
+		// The same label with notes present is a revision, not an approval.
+		assert.equal(
+			toPreviewFeedback({
+				iteration: 1,
+				stageName: "user-feedback-1",
+				result: { text: ["review_decision: approve", "user_notes: tighten the footer"].join("\n") },
+			}).decision,
+			"revise",
+		);
+	});
+
+	test("decorated labels parse without over-capturing the next field", () => {
+		const decorated = [
+			"```user_notes```",
+			"- The hero background is too busy.",
+			"**live_changes:**",
+			"- Accepted variant 2 for the pricing table.",
+			"- `annotated_snapshot` (verbatim):",
+			".playwright-cli/annotations-1.png",
+		].join("\n");
+		assert.equal(extractUserNotes(decorated), "- The hero background is too busy.");
+		assert.equal(extractLiveChanges(decorated), "- Accepted variant 2 for the pricing table.");
+		assert.equal(extractAnnotatedSnapshot(decorated), ".playwright-cli/annotations-1.png");
+
+		const bulletedBacktick = [
+			"- `user_notes`:",
+			"Simplify the hero.",
+			"- `live_changes` (verbatim):",
+			"Accepted the tighter density.",
+		].join("\n");
+		assert.equal(extractUserNotes(bulletedBacktick), "Simplify the hero.");
+		assert.equal(extractLiveChanges(bulletedBacktick), "Accepted the tighter density.");
+	});
+
+	test("persist/load round-trips revise, approve, and indeterminate rounds", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
+		tempDirs.push(dir);
+
+		const revise = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: {
+				text: CONTINUATION_WRAP_UP,
+				structured: {
+					decision: "revise",
+					user_notes: ["The hero background is too busy.", "Tighten the footer."],
+					live_changes: ["Accepted variant 2 for the pricing table."],
+				},
+			},
+		});
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: revise });
+		const loadedRevise = loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" });
+		assert.deepEqual(loadedRevise, revise);
+
+		const approve = toPreviewFeedback({
+			iteration: 2,
+			stageName: "user-feedback-2",
+			result: { text: "decision: approve", structured: { decision: "approve", user_notes: [], live_changes: [] } },
+		});
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: approve });
+		const loadedApprove = loadPreviewFeedback({ artifactDir: dir, iteration: 2, stageName: "user-feedback-2" });
+		assert.deepEqual(loadedApprove, approve);
+
+		const indeterminate = toPreviewFeedback({
+			iteration: 3,
+			stageName: "user-feedback-3",
+			result: { text: CONTINUATION_WRAP_UP },
+		});
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: indeterminate });
+		const loadedIndeterminate = loadPreviewFeedback({
+			artifactDir: dir,
+			iteration: 3,
+			stageName: "user-feedback-3",
+		});
+		assert.deepEqual(loadedIndeterminate, indeterminate);
+	});
+
+	test("loadPreviewFeedback returns undefined for a missing or malformed artifact", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
+		tempDirs.push(dir);
+		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" }), undefined);
+
+		mkdirSync(join(dir, "feedback"), { recursive: true });
+		writeFileSync(feedbackArtifactPath(dir, 1), "{ not json");
+		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" }), undefined);
+
+		writeFileSync(feedbackArtifactPath(dir, 2), JSON.stringify({ decision: "maybe", user_notes: [] }));
+		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 2, stageName: "user-feedback-2" }), undefined);
+
+		writeFileSync(feedbackArtifactPath(dir, 3), JSON.stringify({ decision: "revise", user_notes: "not-an-array" }));
+		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 3, stageName: "user-feedback-3" }), undefined);
 	});
 });

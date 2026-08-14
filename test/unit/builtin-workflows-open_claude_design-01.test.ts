@@ -375,8 +375,8 @@ describe("open-claude-design", () => {
 		assert.ok(existsSync(mdPath));
 		assert.match(readFileSync(mdPath, "utf8"), /I don't like this background/);
 		const persisted = JSON.parse(readFileSync(jsonPath, "utf8"));
-		assert.equal(persisted.hasUserNotes, true);
-		assert.match(persisted.userNotes, /Apple website/);
+		assert.equal(persisted.decision, "revise");
+		assert.match(persisted.user_notes.join("\n"), /Apple website/);
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
@@ -395,12 +395,15 @@ describe("open-claude-design", () => {
 
 		const result = await d.run(ctx);
 
-		// No notes means no second generate stage and no feedback artifacts.
+		// No notes means no second generate stage, but the round is still
+		// persisted as a durable artifact (#2401).
 		assert.equal(ctx.calls.task.includes("generate-2"), false);
 		assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
 		assert.equal(typeof result.handoff, "string");
 		const artifactDir = result.artifact_dir as string;
-		assert.equal(existsSync(join(artifactDir, "feedback")), false);
+		const persisted = JSON.parse(readFileSync(join(artifactDir, "feedback", "iteration-1.json"), "utf8"));
+		assert.deepEqual(persisted.user_notes, []);
+		assert.deepEqual(persisted.live_changes, []);
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
