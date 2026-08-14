@@ -5,10 +5,17 @@ which corpus, which pier, which Atomic build, which model, or which seed
 produced a number. The manifest records all six, and :func:`compare_manifests`
 refuses to compare two runs that did not share them.
 
-The submodule SHAs come from the superproject's gitlink
-(``git rev-parse HEAD:evals/deep-swe``). ``git -C evals/deep-swe rev-parse HEAD``
-is not equivalent: in an uninitialized submodule it silently prints the
-*superproject* SHA, which would record a wrong corpus with no error.
+The submodule SHAs are the revisions that actually **ran**: the commit checked
+out inside each submodule, falling back to the superproject's gitlink when the
+submodule is uninitialized. A manifest exists to say which corpus and which pier
+produced a number, so a working tree sitting off its pin must be recorded as
+what it is rather than as the pin it drifted from.
+
+Note what is *not* used: ``git -C evals/deep-swe rev-parse HEAD``. In an
+uninitialized submodule that silently prints the *superproject* SHA, which would
+record a wrong corpus with no error. :func:`prerequisites.submodule_worktree_head`
+verifies the repository's own toplevel before trusting a HEAD, so it answers
+``None`` there and the gitlink fallback applies.
 """
 
 from __future__ import annotations
@@ -18,9 +25,31 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from prerequisites import DEEP_SWE_SUBMODULE_PATH, PIER_SUBMODULE_PATH, submodule_pin
+from prerequisites import (
+    DEEP_SWE_SUBMODULE_PATH,
+    PIER_SUBMODULE_PATH,
+    submodule_pin,
+    submodule_worktree_head,
+)
 
 MANIFEST_FILENAME = "atomic-manifest.json"
+
+REQUIRED_FIELDS: tuple[str, ...] = (
+    "run_id",
+    "seed",
+    "model",
+    "atomic_version",
+    "deep_swe_sha",
+    "pier_sha",
+)
+"""Every field a manifest must record before two runs may be compared.
+
+Harbor has no seed concept at all — ``harbor.models.job.config.JobConfig``
+declares no seed-like field and ``harbor run`` has no ``--sample-seed`` — so a
+Harbor manifest's ``seed`` is ``None`` and two Harbor runs refuse to compare,
+naming ``seed``. That is the honest answer: an unrecorded seed cannot be proven
+equal.
+"""
 
 COMPARABLE_FIELDS: tuple[str, ...] = (
     "model",
@@ -30,7 +59,6 @@ COMPARABLE_FIELDS: tuple[str, ...] = (
     "pier_sha",
 )
 """Fields two runs must share to be comparable. ``run_id`` differs by design."""
-
 
 @dataclass(frozen=True)
 class RunManifest:
@@ -68,6 +96,12 @@ class RunManifest:
         )
 
 
+def missing_fields(manifest: RunManifest) -> tuple[str, ...]:
+    """Return every required field this manifest does not record."""
+    payload = manifest.to_json()
+    return tuple(field for field in REQUIRED_FIELDS if payload.get(field) is None)
+
+
 class ManifestMismatchError(RuntimeError):
     """Raised when two run manifests describe incompatible runs."""
 
@@ -77,6 +111,25 @@ class ManifestMismatchError(RuntimeError):
         super().__init__(
             "Refusing to compare runs recorded under different conditions — " + rendered
         )
+
+
+class IncompleteManifestError(ManifestMismatchError):
+    """Raised when a manifest is absent, unreadable, or missing required fields.
+
+    A manifest that records nothing cannot prove two runs measured the same
+    thing, so it must refuse rather than compare as equal. Subclasses
+    :class:`ManifestMismatchError` so a caller that already refuses mismatches
+    refuses this too.
+    """
+
+    def __init__(self, *, side: str, fields: Sequence[str]) -> None:
+        self.side = side
+        self.fields = tuple(fields)
+        super(ManifestMismatchError, self).__init__(
+            f"Refusing to compare runs: the {side} manifest is absent or incomplete — "
+            f"missing {', '.join(self.fields) if self.fields else 'everything'}"
+        )
+        self.differences = ()
 
 
 def _as_str(value: object) -> str | None:
@@ -90,6 +143,18 @@ def _read_json(path: Path) -> object | None:
         return None
 
 
+def submodule_revision(path: str, *, repo_root: Path | None = None) -> str | None:
+    """The SHA that actually ran: the checked-out head, else the gitlink pin.
+
+    Preflight reports a drifted working tree as a failure; the manifest has to
+    record what that tree contained, because a number produced by drifted code
+    was not produced by the pin.
+    """
+    return submodule_worktree_head(path, repo_root=repo_root) or submodule_pin(
+        path, repo_root=repo_root
+    )
+
+
 def build_manifest(
     *,
     run_id: str | None = None,
@@ -98,14 +163,14 @@ def build_manifest(
     atomic_version: str | None = None,
     repo_root: Path | None = None,
 ) -> RunManifest:
-    """Build a manifest, reading both submodule SHAs from the gitlinks."""
+    """Build a manifest recording the submodule revisions that actually ran."""
     return RunManifest(
         run_id=run_id,
         seed=seed,
         model=model,
         atomic_version=atomic_version,
-        deep_swe_sha=submodule_pin(DEEP_SWE_SUBMODULE_PATH, repo_root=repo_root),
-        pier_sha=submodule_pin(PIER_SUBMODULE_PATH, repo_root=repo_root),
+        deep_swe_sha=submodule_revision(DEEP_SWE_SUBMODULE_PATH, repo_root=repo_root),
+        pier_sha=submodule_revision(PIER_SUBMODULE_PATH, repo_root=repo_root),
     )
 
 
@@ -200,13 +265,32 @@ def manifest_differences(
     )
 
 
-def compare_manifests(
-    left: RunManifest,
-    right: RunManifest,
-    *,
-    fields: Sequence[str] = COMPARABLE_FIELDS,
-) -> None:
-    """Raise :class:`ManifestMismatchError` unless two runs are comparable."""
-    differences = manifest_differences(left, right, fields=fields)
+def _require_complete(manifest: RunManifest | None, side: str) -> RunManifest:
+    if manifest is None:
+        raise IncompleteManifestError(side=side, fields=REQUIRED_FIELDS)
+    absent = missing_fields(manifest)
+    if absent:
+        raise IncompleteManifestError(side=side, fields=absent)
+    return manifest
+
+
+def compare_manifests(left: RunManifest | None, right: RunManifest | None) -> None:
+    """Raise unless two complete manifests describe comparable runs.
+
+    ``None`` means the manifest was absent or unreadable — which is what
+    ``read_manifest`` returns for a directory that has none — and an incomplete
+    manifest proves nothing either. Both refuse with
+    :class:`IncompleteManifestError` before any field is diffed, so two empty
+    manifests can never compare as equal.
+
+    The comparison is over :data:`COMPARABLE_FIELDS` and takes no ``fields``
+    argument: a caller passing ``fields=()`` could otherwise make two wholly
+    different runs compare clean, which is the one thing this function exists to
+    prevent. Narrowed diffs are available from :func:`manifest_differences`,
+    which reports rather than decides.
+    """
+    complete_left = _require_complete(left, "left")
+    complete_right = _require_complete(right, "right")
+    differences = manifest_differences(complete_left, complete_right)
     if differences:
         raise ManifestMismatchError(differences)

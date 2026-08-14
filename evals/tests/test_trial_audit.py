@@ -16,6 +16,7 @@ from pier.models.agent.context import AgentContext
 from atomic_pier import Atomic
 from trial_audit import (
     REASON_EMPTY_MODEL_PATCH,
+    REASON_MANIFEST_NOT_WRITTEN,
     REASON_EMPTY_OUTPUT,
     REASON_MALFORMED_SESSION_LOG,
     REASON_MISSING_MODEL_PATCH,
@@ -241,6 +242,72 @@ def test_adapter_flags_a_truncated_session_jsonl(
     assert status.details["malformed_jsonl_lines"]
 
 
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        '{"type":"message","message":{"role":"assist',
+        "not-json",
+        "<<<<<<< HEAD",
+        "\x00\x01garbage",
+    ],
+    ids=["truncated-object", "plain-text", "conflict-marker", "binary-noise"],
+)
+def test_any_undecodable_session_line_is_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_line: str
+) -> None:
+    """A session transcript is machine-written: corruption is corruption.
+
+    The first-byte heuristic that `atomic.txt` needs must not leak into session
+    logs, where a line that does not even start with `{` was skipped silently.
+    """
+    agent = _agent(tmp_path, monkeypatch)
+    (tmp_path / "agent" / "atomic.txt").write_text(
+        json.dumps({"type": "message_end", "message": {"role": "assistant"}}) + "\n",
+        encoding="utf-8",
+    )
+    sessions = tmp_path / "agent" / "atomic-sessions"
+    sessions.mkdir()
+    (sessions / "session.jsonl").write_text(
+        json.dumps({"type": "session", "internal": True}) + "\n" + bad_line + "\n",
+        encoding="utf-8",
+    )
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    status = read_agent_status(tmp_path / "agent")
+    assert status is not None
+    assert status.status == STATUS_FAILED
+    assert REASON_MALFORMED_SESSION_LOG in status.reasons
+
+
+def test_a_malformed_session_line_is_counted_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The header pass and the metrics pass read the same file; count once."""
+    agent = _agent(tmp_path, monkeypatch)
+    (tmp_path / "agent" / "atomic.txt").write_text(
+        json.dumps({"type": "message_end", "message": {"role": "assistant"}}) + "\n",
+        encoding="utf-8",
+    )
+    sessions = tmp_path / "agent" / "atomic-sessions"
+    sessions.mkdir()
+    session_file = sessions / "session.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "session", "internal": True}) + "\nnot-json\n",
+        encoding="utf-8",
+    )
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    status = read_agent_status(tmp_path / "agent")
+    assert status is not None
+    counts = status.details["malformed_jsonl_lines"]
+    assert isinstance(counts, dict)
+    assert counts[str(session_file)] == 1
+
+
 def test_adapter_tolerates_atomics_plain_text_diagnostics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -300,3 +367,91 @@ def test_adapter_tolerates_blank_lines(tmp_path: Path, monkeypatch: pytest.Monke
     status = read_agent_status(tmp_path / "agent")
     assert status is not None
     assert status.status == STATUS_OK
+
+
+# --- invalid UTF-8 in a session log (round 5) --------------------------------
+
+
+def test_invalid_utf8_in_a_session_log_is_reported_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated multibyte character used to escape as UnicodeDecodeError.
+
+    That is a ValueError, not an OSError, so it slipped past the reader's guard
+    and took the whole status write down with it: the trial ended with an
+    adapter traceback and no atomic-status.json at all.
+    """
+    agent = _agent(tmp_path, monkeypatch)
+    (tmp_path / "agent" / "atomic.txt").write_text(
+        json.dumps({"type": "message_end", "message": {"role": "assistant"}}) + "\n",
+        encoding="utf-8",
+    )
+    sessions = tmp_path / "agent" / "atomic-sessions"
+    sessions.mkdir()
+    (sessions / "session.jsonl").write_bytes(
+        json.dumps({"type": "session", "internal": True}).encode("utf-8") + b"\n\xff\xfe garbage\n"
+    )
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    status = read_agent_status(tmp_path / "agent")
+    assert status is not None
+    assert status.status == STATUS_FAILED
+    assert REASON_MALFORMED_SESSION_LOG in status.reasons
+
+
+def test_invalid_utf8_in_atomic_txt_is_reported_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = _agent(tmp_path, monkeypatch)
+    (tmp_path / "agent" / "atomic.txt").write_bytes(
+        json.dumps({"type": "message_end", "message": {"role": "assistant"}}).encode("utf-8")
+        + b"\n\xff\xfe\n"
+    )
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    status = read_agent_status(tmp_path / "agent")
+    assert status is not None
+    assert status.status == STATUS_FAILED
+    assert REASON_MALFORMED_SESSION_LOG in status.reasons
+
+
+# --- a manifest that could not be written (round 5) --------------------------
+
+
+def test_a_manifest_that_cannot_be_written_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run whose manifest was lost cannot be compared with another."""
+    agent = _agent(tmp_path, monkeypatch)
+    (tmp_path / "agent" / "atomic.txt").write_text(
+        json.dumps({"type": "message_end", "message": {"role": "assistant"}}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("atomic_pier.write_manifest", lambda directory, manifest: None)
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    status = read_agent_status(tmp_path / "agent")
+    assert status is not None
+    assert status.status == STATUS_FAILED
+    assert REASON_MANIFEST_NOT_WRITTEN in status.reasons
+
+
+def test_a_lost_manifest_is_reported_on_the_missing_output_path_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_record_run_manifest` runs before the early return, so the flag must survive it."""
+    agent = _agent(tmp_path, monkeypatch)
+    monkeypatch.setattr("atomic_pier.write_manifest", lambda directory, manifest: None)
+    context = AgentContext()
+
+    agent.populate_context_post_run(context)
+
+    status = read_agent_status(tmp_path / "agent")
+    assert status is not None
+    assert status.reasons == (REASON_MISSING_OUTPUT, REASON_MANIFEST_NOT_WRITTEN)

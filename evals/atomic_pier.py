@@ -38,14 +38,22 @@ from pier.utils.trajectory_utils import (
 )
 from network_policy import EmptyEgressAllowlistError, require_non_empty_allowlist
 from prerequisites import (
+    PROVIDER_AUTH_ENV_KEYS,
     agent_install_command,
     atomic_runtime_environment_command,
+    is_valid_provider_auth,
     root_install_command,
 )
-from run_manifest import RunManifest, manifest_for_agent_logs_dir, write_manifest
+from run_manifest import (
+    MANIFEST_FILENAME,
+    RunManifest,
+    manifest_for_agent_logs_dir,
+    write_manifest,
+)
 from trial_audit import (
     REASON_EMPTY_OUTPUT,
     REASON_MALFORMED_SESSION_LOG,
+    REASON_MANIFEST_NOT_WRITTEN,
     REASON_MISSING_OUTPUT,
     AgentRunStatus,
     explain,
@@ -111,27 +119,10 @@ class Atomic(BaseInstalledAgent):
         "zai": ("ZAI_API_KEY",),
         "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
     }
-    _PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
-        "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
-        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
-        "github-copilot": ("COPILOT_GITHUB_TOKEN",),
-        "google": (
-            "GEMINI_API_KEY",
-            "GOOGLE_GENERATIVE_AI_API_KEY",
-            "GOOGLE_APPLICATION_CREDENTIALS",
-            "GOOGLE_API_KEY",
-        ),
-        "groq": ("GROQ_API_KEY",),
-        "kimi-coding": ("KIMI_API_KEY",),
-        "mistral": ("MISTRAL_API_KEY",),
-        "moonshotai": ("MOONSHOT_API_KEY",),
-        "moonshotai-cn": ("MOONSHOT_API_KEY",),
-        "openai": ("OPENAI_API_KEY",),
-        "openrouter": ("OPENROUTER_API_KEY",),
-        "xai": ("XAI_API_KEY",),
-        "zai": ("ZAI_API_KEY",),
-        "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
-    }
+    # Single source of truth lives in prerequisites.py so the preflight checks
+    # exactly the providers this adapter forwards. The import direction is
+    # one-way: prerequisites must never import an adapter.
+    _PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = PROVIDER_AUTH_ENV_KEYS
     _BASE_URL_ENV_KEYS: tuple[str, ...] = (
         "ANTHROPIC_BASE_URL",
         "GEMINI_API_BASE",
@@ -208,6 +199,12 @@ class Atomic(BaseInstalledAgent):
             self._normalize_disallowed_subscriptions(disallowed_subscriptions)
         )
         self._malformed_jsonl_lines: dict[str, int] = {}
+        # The version the container actually installed, and the model that
+        # actually answered — both differ from what was requested when the
+        # request is a moving tag (`version=next`) or a fallback candidate runs.
+        self._resolved_version: str | None = None
+        self._selected_model: str | None = None
+        self._manifest_write_failed = False
         super().__init__(  # pyright: ignore[reportUnknownMemberType]
             logs_dir=logs_dir,
             prompt_template_path=prompt_template_path,
@@ -215,6 +212,32 @@ class Atomic(BaseInstalledAgent):
             extra_env=extra_env,
             **kwargs,
         )
+
+    @override
+    async def setup(self, environment: BaseEnvironment) -> None:
+        """Install as usual, then resolve the version the container really has.
+
+        Pier auto-detects a version only when none was requested, so a moving
+        tag such as ``version=next`` would be recorded verbatim in the manifest
+        and two runs of different builds would compare as equal. ``self._version``
+        stays the requested spec because ``install_spec()`` interpolates it into
+        ``npm install -g @bastani/atomic@<spec>``.
+        """
+        await super().setup(environment)  # pyright: ignore[reportUnknownMemberType]
+        version_command = self.get_version_command()
+        if not version_command:
+            return
+        try:
+            result = await environment.exec(command=version_command)
+        except Exception as exc:  # noqa: BLE001 - version detection is best-effort
+            self.logger.debug("Atomic version detection failed: %s", exc)
+            return
+        stdout = cast(str | None, getattr(result, "stdout", None))
+        if getattr(result, "return_code", 1) == 0 and stdout:
+            try:
+                self._resolved_version = self.parse_version(stdout)
+            except (IndexError, ValueError) as exc:
+                self.logger.debug("Could not parse Atomic version output: %s", exc)
 
     @staticmethod
     def _normalize_disallowed_subscriptions(value: object) -> frozenset[str]:
@@ -315,17 +338,9 @@ class Atomic(BaseInstalledAgent):
 
     @staticmethod
     def _is_valid_provider_auth(entry: object) -> bool:
-        auth = _json_object(entry)
-        if auth is None:
-            return False
-        credential_type = auth.get("type")
-        if credential_type == "api_key":
-            key = auth.get("key")
-            return isinstance(key, str) and bool(key)
-        if credential_type == "oauth":
-            access = auth.get("access")
-            return isinstance(access, str) and bool(access)
-        return False
+        # Same predicate the preflight applies, so "the preflight says I have a
+        # credential" and "the adapter will forward one" cannot disagree.
+        return is_valid_provider_auth(entry)
 
     def _load_provider_auths(self) -> dict[str, JsonObject]:
         merged: JsonObject = {}
@@ -535,6 +550,9 @@ class Atomic(BaseInstalledAgent):
         requested_provider, requested_model = self.model_name.split("/", 1)
         chain = self._model_chain(requested_provider, requested_model)
         provider, model = chain[0]
+        # The candidate the session actually launches on, which is not
+        # `self.model_name` when the requested provider has no credential here.
+        self._selected_model = f"{provider}/{model}"
         fallback_settings_command = self._fallback_settings_command(chain)
         # Forward credentials for every Atomic-supported provider, not just the
         # top-level Pier --model provider: nested workflow/subagent model
@@ -687,42 +705,61 @@ class Atomic(BaseInstalledAgent):
         )
         return f"{message_fingerprint}:{usage_fingerprint}"
 
-    def _read_jsonl(self, path: Path) -> list[JsonObject]:
-        """Parse a JSONL log, recording truncated records instead of hiding them.
+    def _read_jsonl(
+        self, path: Path, *, strict: bool = True, count_malformed: bool = True
+    ) -> list[JsonObject]:
+        """Parse a JSONL log, recording undecodable records instead of hiding them.
 
-        Two kinds of unparsable line show up in a real ``atomic.txt``, and only
-        one is a defect:
+        ``strict`` (the default, and what every session ``.jsonl`` uses) counts
+        **every** line that fails to parse: a session transcript is machine
+        written, so an undecodable line there is corruption however it starts.
 
-        * a line that opens a JSON value and does not finish it — a truncated or
-          corrupted record, which used to degrade metrics with no signal;
-        * a plain-text line, because Atomic also writes human-readable
-          diagnostics to the same stream. Observed live, so treating it as
-          corruption would fail every healthy trial.
+        ``strict=False`` is for ``atomic.txt`` alone, which interleaves Atomic's
+        human-readable diagnostics with its JSON event stream — one such banner
+        was observed in a live trial. There, only a line that *opens* a JSON
+        value and fails to finish it counts as truncation.
 
-        Blank lines stay tolerated.
+        Blank lines stay tolerated in both modes. ``count_malformed=False`` reads
+        without tallying, for a pass that re-reads a file the metrics pass also
+        walks, so one bad line is not counted twice.
+
+        Bytes that are not valid UTF-8 are replaced rather than raised: a log
+        truncated mid-multibyte-character used to escape as an uncategorized
+        ``UnicodeDecodeError`` — which is a ``ValueError``, not an ``OSError`` —
+        and took the whole status write down with it, so the trial ended with an
+        adapter traceback and no ``atomic-status.json`` at all. It is corruption,
+        and it is now reported as corruption.
         """
         entries: list[JsonObject] = []
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    entry = cast(object, json.loads(stripped))
-                except json.JSONDecodeError:
-                    if stripped.startswith(("{", "[")):
-                        self._malformed_jsonl_lines[str(path)] = (
-                            self._malformed_jsonl_lines.get(str(path), 0) + 1
-                        )
-                    continue
-                if entry_object := _json_object(entry):
-                    entries.append(entry_object)
+            raw = path.read_bytes()
         except OSError:
             return []
+        text = raw.decode("utf-8", errors="replace")
+        if count_malformed and "\ufffd" in text:
+            self._malformed_jsonl_lines[str(path)] = (
+                self._malformed_jsonl_lines.get(str(path), 0) + 1
+            )
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                entry = cast(object, json.loads(stripped))
+            except json.JSONDecodeError:
+                if count_malformed and (strict or stripped.startswith(("{", "["))):
+                    self._malformed_jsonl_lines[str(path)] = (
+                        self._malformed_jsonl_lines.get(str(path), 0) + 1
+                    )
+                continue
+            if entry_object := _json_object(entry):
+                entries.append(entry_object)
         return entries
 
     def _read_session_header(self, session_file: Path) -> JsonObject | None:
-        for entry in self._read_jsonl(session_file):
+        # Counted by the metrics pass over the same file; skip the tally here so
+        # one malformed line is not reported twice.
+        for entry in self._read_jsonl(session_file, count_malformed=False):
             return entry if entry.get("type") == "session" else None
         return None
 
@@ -1007,7 +1044,13 @@ class Atomic(BaseInstalledAgent):
         seen_fingerprints: set[str],
     ) -> Trajectory | None:
         output_file = self.logs_dir / self._OUTPUT_FILENAME
-        events = self._read_jsonl(output_file) if output_file.exists() else []
+        # atomic.txt is tallied once, by the metrics pass in
+        # populate_context_post_run; this trajectory pass re-reads it.
+        events = (
+            self._read_jsonl(output_file, strict=False, count_malformed=False)
+            if output_file.exists()
+            else []
+        )
         entries = [
             {"type": "message", "message": event.get("message")}
             for event in events
@@ -1059,7 +1102,10 @@ class Atomic(BaseInstalledAgent):
         summarization_count = 0
         if main_files:
             root, count = self._trajectory_from_entries(
-                self._read_jsonl(main_files[0]), None, seen_ids, seen_fingerprints
+                self._read_jsonl(main_files[0], count_malformed=False),
+                None,
+                seen_ids,
+                seen_fingerprints,
             )
             summarization_count += count
         if root is None:
@@ -1070,7 +1116,7 @@ class Atomic(BaseInstalledAgent):
         subagents: list[Trajectory] = []
         for index, session_file in enumerate(subagent_files, start=1):
             trajectory, count = self._trajectory_from_entries(
-                self._read_jsonl(session_file),
+                self._read_jsonl(session_file, count_malformed=False),
                 f"atomic-session-{index}",
                 seen_ids,
                 seen_fingerprints,
@@ -1124,7 +1170,14 @@ class Atomic(BaseInstalledAgent):
         ``populate_context_post_run`` from its cancel and outer-exception
         handlers, where raising would replace the in-flight exception. The
         post-run auditor turns a non-``ok`` status into a failed trial.
+
+        A manifest that could not be persisted is folded in here, on every path,
+        because ``_record_run_manifest`` runs first and cannot report anything
+        itself.
         """
+        if self._manifest_write_failed and REASON_MANIFEST_NOT_WRITTEN not in reasons:
+            reasons = [*reasons, REASON_MANIFEST_NOT_WRITTEN]
+            details = {**details, "manifest_path": str(self.logs_dir / MANIFEST_FILENAME)}
         status = AgentRunStatus.from_reasons(reasons, details)
         _ = write_agent_status(self.logs_dir, status)
         context.metadata = {**(context.metadata or {}), "atomic_status": status.to_json()}
@@ -1134,14 +1187,45 @@ class Atomic(BaseInstalledAgent):
             )
         return status
 
+    def _observed_model(self) -> str | None:
+        """The provider/model that actually answered, read from the agent stream.
+
+        Every assistant message in ``atomic.txt`` carries ``provider`` and
+        ``model``. The last one is what produced the trial's final work, which
+        is not the requested model when the session fell back mid-run.
+        """
+        output_file = self.logs_dir / self._OUTPUT_FILENAME
+        if not output_file.exists():
+            return None
+        observed: str | None = None
+        for event in self._read_jsonl(output_file, strict=False, count_malformed=False):
+            message = _json_object(event.get("message"))
+            if message is None or message.get("role") != "assistant":
+                continue
+            provider = message.get("provider")
+            model = message.get("model")
+            if isinstance(provider, str) and provider and isinstance(model, str) and model:
+                observed = f"{provider}/{model}"
+        return observed
+
     def _record_run_manifest(self, context: AgentContext) -> RunManifest:
-        """Record which corpus, pier, Atomic build, model, and seed produced this run."""
+        """Record which corpus, pier, Atomic build, model, and seed produced this run.
+
+        Model precedence: what answered (from the stream) > the candidate the
+        session launched on > the requested ``--model``. Version precedence: what
+        the container reported after install > the requested spec. Recording the
+        request would let two runs of different builds, or of different fallback
+        candidates, compare as equal.
+        """
         manifest = manifest_for_agent_logs_dir(
             self.logs_dir,
-            model=self.model_name,
-            atomic_version=self.version(),
+            model=self._observed_model() or self._selected_model or self.model_name,
+            atomic_version=self._resolved_version or self.version(),
         )
-        _ = write_manifest(self.logs_dir, manifest)
+        written = write_manifest(self.logs_dir, manifest)
+        # write_manifest never raises — it also runs on pier's cancel and
+        # outer-except paths — so the caller has to notice the failure instead.
+        self._manifest_write_failed = written is None
         context.metadata = {**(context.metadata or {}), "atomic_manifest": manifest.to_json()}
         return manifest
 
@@ -1210,6 +1294,9 @@ class Atomic(BaseInstalledAgent):
                 seen_message_fingerprints.add(fingerprint)
 
         def read_session_messages(session_file: Path, *, count_usage: bool) -> None:
+            # Session transcripts are machine-written: any undecodable line is
+            # corruption, whatever byte it starts with. Each file is read once
+            # here (the two loops below are disjoint), so counts do not double.
             for entry in self._read_jsonl(session_file):
                 if entry.get("type") != "message":
                     continue
@@ -1219,7 +1306,7 @@ class Atomic(BaseInstalledAgent):
                 else:
                     mark_assistant_message_seen(message, entry.get("id"))
 
-        for event in self._read_jsonl(output_file):
+        for event in self._read_jsonl(output_file, strict=False):
             if event.get("type") == "message_end":
                 add_assistant_message_usage(event.get("message") or {})
 

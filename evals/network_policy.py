@@ -24,6 +24,11 @@ class EmptyEgressAllowlistError(RuntimeError):
     An empty allowlist under restricted egress leaves the sandbox with no
     reachable provider host, which surfaces downstream as a provider connection
     failure. This error names the sandbox and the model that produced it.
+
+    It fires for every task, not only restricted ones: pier evaluates
+    ``agent.network_allowlist()`` while creating the environment, before any
+    ``allow_internet`` branch. Switching a task to ``network_mode='public'``
+    therefore does not clear it, which is why the message does not suggest that.
     """
 
     def __init__(self, *, model_name: str | None, scope: str = "agent") -> None:
@@ -36,8 +41,7 @@ class EmptyEgressAllowlistError(RuntimeError):
             "removes the filtered-egress proxy overlay, so the sandbox has no route to "
             "any provider host and the run fails as a generic connection error that "
             "looks like a credential problem. Pass --model as 'provider/model' so the "
-            "provider domains can be resolved, or run the task with "
-            "network_mode='public'."
+            "provider domains can be resolved."
         )
 
 

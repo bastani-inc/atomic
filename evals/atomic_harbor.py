@@ -18,9 +18,16 @@ from prerequisites import (
     atomic_runtime_environment_command,
     root_install_command,
 )
+from run_manifest import (
+    MANIFEST_FILENAME,
+    RunManifest,
+    manifest_for_agent_logs_dir,
+    write_manifest,
+)
 from trial_audit import (
     REASON_EMPTY_OUTPUT,
     REASON_MALFORMED_SESSION_LOG,
+    REASON_MANIFEST_NOT_WRITTEN,
     REASON_MISSING_OUTPUT,
     AgentRunStatus,
     write_agent_status,
@@ -499,15 +506,72 @@ class Atomic(BaseInstalledAgent):
     def _record_agent_status(
         self, context: AgentContext, reasons: list[str], details: dict[str, object]
     ) -> AgentRunStatus:
-        """Persist an explicit run status and stamp it onto the agent context."""
+        """Persist an explicit run status and stamp it onto the agent context.
+
+        A manifest that could not be persisted is folded in here, on every path,
+        because `_record_run_manifest` runs first and cannot report it itself.
+        """
+        if getattr(self, "_manifest_write_failed", False) and (
+            REASON_MANIFEST_NOT_WRITTEN not in reasons
+        ):
+            reasons = [*reasons, REASON_MANIFEST_NOT_WRITTEN]
+            details = {**details, "manifest_path": str(self.logs_dir / MANIFEST_FILENAME)}
         status = AgentRunStatus.from_reasons(reasons, details)
         write_agent_status(self.logs_dir, status)
         context.metadata = {**(context.metadata or {}), "atomic_status": status.to_json()}
         return status
 
+    def _observed_model(self) -> str | None:
+        """The provider/model that actually answered, read from the agent stream."""
+        output_file = self.logs_dir / self._OUTPUT_FILENAME
+        if not output_file.exists():
+            return None
+        observed: str | None = None
+        try:
+            text = output_file.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            return None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("{"):
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            message = event.get("message") if isinstance(event, dict) else None
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            provider = message.get("provider")
+            model = message.get("model")
+            if isinstance(provider, str) and provider and isinstance(model, str) and model:
+                observed = f"{provider}/{model}"
+        return observed
+
+    def _record_run_manifest(self, context: AgentContext) -> RunManifest:
+        """Record which corpus, pier checkout, Atomic build, and model ran.
+
+        Harbor's trial layout matches Pier's (``trial_dir/{agent,artifacts}``)
+        and its job directory carries ``config.json``/``result.json``, so the
+        same reader works. Harbor has no seed concept at all, so ``seed`` is
+        recorded as ``null`` and two Harbor runs refuse to compare on it.
+
+        The model recorded is the one that answered when the stream says so,
+        falling back to the requested ``--model``.
+        """
+        manifest = manifest_for_agent_logs_dir(
+            self.logs_dir,
+            model=self._observed_model() or self.model_name,
+            atomic_version=getattr(self, "_resolved_version", None) or self.version(),
+        )
+        self._manifest_write_failed = write_manifest(self.logs_dir, manifest) is None
+        context.metadata = {**(context.metadata or {}), "atomic_manifest": manifest.to_json()}
+        return manifest
+
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
         self._malformed_jsonl_lines: dict[str, int] = {}
+        self._record_run_manifest(context)
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
             # An absent atomic.txt means the agent produced no output at all.
@@ -567,34 +631,49 @@ class Atomic(BaseInstalledAgent):
                 seen_message_fingerprints.add(fingerprint)
 
         def read_session_messages(session_file: Path, *, count_usage: bool) -> None:
+            # Decode defensively: invalid UTF-8 is corruption, and raising
+            # UnicodeDecodeError here (a ValueError, not an OSError) used to take
+            # the whole status write down with it.
             try:
-                with session_file.open(encoding="utf-8") as handle:
-                    for line in handle:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                        except json.JSONDecodeError:
-                            # Only a line that opens a JSON value and does not
-                            # finish it is a truncated record; Atomic also writes
-                            # plain-text diagnostics to the same stream.
-                            if line.startswith(("{", "[")):
-                                self._malformed_jsonl_lines[str(session_file)] = (
-                                    self._malformed_jsonl_lines.get(str(session_file), 0) + 1
-                                )
-                            continue
-                        if not isinstance(entry, dict) or entry.get("type") != "message":
-                            continue
-                        message = entry.get("message")
-                        if count_usage:
-                            add_assistant_message_usage(message, entry.get("id"))
-                        else:
-                            mark_assistant_message_seen(message, entry.get("id"))
+                text = session_file.read_bytes().decode("utf-8", errors="replace")
             except OSError:
                 return
+            if "\ufffd" in text:
+                self._malformed_jsonl_lines[str(session_file)] = (
+                    self._malformed_jsonl_lines.get(str(session_file), 0) + 1
+                )
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    # Session transcripts are machine-written: any undecodable
+                    # line is corruption, whatever byte it starts with.
+                    # (atomic.txt below keeps the first-byte tolerance, because
+                    # Atomic interleaves plain-text diagnostics there.)
+                    self._malformed_jsonl_lines[str(session_file)] = (
+                        self._malformed_jsonl_lines.get(str(session_file), 0) + 1
+                    )
+                    continue
+                if not isinstance(entry, dict) or entry.get("type") != "message":
+                    continue
+                message = entry.get("message")
+                if count_usage:
+                    add_assistant_message_usage(message, entry.get("id"))
+                else:
+                    mark_assistant_message_seen(message, entry.get("id"))
 
-        for line in output_file.read_text().splitlines():
+        try:
+            output_text = output_file.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            output_text = ""
+        if "\ufffd" in output_text:
+            self._malformed_jsonl_lines[str(output_file)] = (
+                self._malformed_jsonl_lines.get(str(output_file), 0) + 1
+            )
+        for line in output_text.splitlines():
             line = line.strip()
             if not line:
                 continue

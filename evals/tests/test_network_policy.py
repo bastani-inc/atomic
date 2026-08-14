@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from pier.models.agent.network import NetworkAllowlist
 from pier.models.task.config import NetworkMode, TaskConfig
 
@@ -80,6 +81,54 @@ def test_allowlist_mode_is_rejected_at_parse_time() -> None:
     assert "allowlist" in str(excinfo.value)
 
 
+# --- unknown task-config keys ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("task_toml", "location"),
+    [
+        (
+            '[environment]\ndocker_image = "example/image:tag"\nbogus_key = 1\n',
+            "environment.bogus_key",
+        ),
+        ('schema_version = "1.3"\nbogus_top = true\n', "bogus_top"),
+        (
+            '[agent]\nnetwork_mode = "no-network"\nbogus_agent_key = "x"\n',
+            "agent.bogus_agent_key",
+        ),
+        (
+            '[[verifier.collect]]\ncommand = "true"\nbogus_hook_key = 2\n',
+            "verifier.collect.0.bogus_hook_key",
+        ),
+    ],
+    ids=["environment", "top-level", "agent", "collect-hook"],
+)
+def test_an_unknown_task_config_key_raises_naming_it(task_toml: str, location: str) -> None:
+    """The pinned pier sets extra="forbid"; an unmodelled key must fail loudly.
+
+    Without this, a key pier cannot model — which is exactly how `network_mode`
+    and `[[verifier.collect]]` were dropped — parses clean and runs outside its
+    intended sandbox.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        TaskConfig.model_validate_toml(task_toml)
+
+    errors = excinfo.value.errors()
+    assert any(error["type"] == "extra_forbidden" for error in errors), errors
+    assert any(
+        ".".join(str(part) for part in error["loc"]) == location for error in errors
+    ), errors
+    assert location.rsplit(".", 1)[-1] in str(excinfo.value)
+
+
+def test_a_known_key_still_parses() -> None:
+    """Forbidding the unknown must not reject the corpus's own shape."""
+    cfg = TaskConfig.model_validate_toml(DEEP_SWE_STYLE)
+
+    assert cfg.agent.network_mode is NetworkMode.NO_NETWORK
+    assert cfg.metadata == {}
+
+
 # --- empty allowlist ---------------------------------------------------------
 
 
@@ -98,6 +147,22 @@ def test_require_non_empty_allowlist_raises_named_error() -> None:
     assert "anthropic/opus" in message
     assert excinfo.value.scope == "agent"
     assert excinfo.value.model_name == "anthropic/opus"
+
+
+def test_the_error_only_suggests_a_remedy_that_works() -> None:
+    """Switching the task to `public` does not clear this error.
+
+    Pier evaluates `agent.network_allowlist()` while creating the environment,
+    before any `allow_internet` branch, so a public task with the same
+    unqualified model raises identically. Suggesting it sent operators down a
+    path that cannot work.
+    """
+    with pytest.raises(EmptyEgressAllowlistError) as excinfo:
+        require_non_empty_allowlist(NetworkAllowlist(), model_name="opus-without-provider")
+
+    message = str(excinfo.value)
+    assert "provider/model" in message
+    assert "network_mode='public'" not in message
 
 
 @pytest.mark.parametrize("model_name", [None, "", "opus-without-provider"])

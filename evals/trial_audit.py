@@ -43,6 +43,7 @@ REASON_EMPTY_OUTPUT = "empty-atomic.txt"
 REASON_MALFORMED_SESSION_LOG = "malformed-session-jsonl"
 REASON_MISSING_MODEL_PATCH = "missing-model.patch"
 REASON_EMPTY_MODEL_PATCH = "empty-model.patch"
+REASON_MANIFEST_NOT_WRITTEN = "manifest-not-written"
 
 _REASON_TEXT: Mapping[str, str] = {
     REASON_MISSING_OUTPUT: "the agent produced no atomic.txt",
@@ -52,6 +53,9 @@ _REASON_TEXT: Mapping[str, str] = {
         "no artifacts/model.patch: the [[verifier.collect]] hook did not run or wrote nothing"
     ),
     REASON_EMPTY_MODEL_PATCH: "artifacts/model.patch is empty: the agent changed nothing",
+    REASON_MANIFEST_NOT_WRITTEN: (
+        "the run manifest could not be written, so this run cannot be compared with another"
+    ),
 }
 
 

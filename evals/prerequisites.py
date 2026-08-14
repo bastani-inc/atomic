@@ -17,6 +17,8 @@ most needs the diagnostic.
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import os
 import re
 import subprocess
@@ -148,13 +150,58 @@ DEEP_SWE_SUBMODULE_PATH = "evals/deep-swe"
 PIER_SUBMODULE_PATH = "evals/vendor/pier"
 
 _COMPOSE_GLOB = "docker-compose.y*ml"
-_CREDENTIAL_ENV_KEYS: tuple[str, ...] = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_OAUTH_TOKEN",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "COPILOT_GITHUB_TOKEN",
+
+PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
+    "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
+    "github-copilot": ("COPILOT_GITHUB_TOKEN",),
+    "google": (
+        "GEMINI_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_API_KEY",
+    ),
+    "groq": ("GROQ_API_KEY",),
+    "kimi-coding": ("KIMI_API_KEY",),
+    "mistral": ("MISTRAL_API_KEY",),
+    "moonshotai": ("MOONSHOT_API_KEY",),
+    "moonshotai-cn": ("MOONSHOT_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "xai": ("XAI_API_KEY",),
+    "zai": ("ZAI_API_KEY",),
+    "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
+}
+"""Canonical provider → credential env keys for the **Pier** run path.
+
+``atomic_pier.Atomic._PROVIDER_AUTH_ENV_KEYS`` *is* this dict, so the preflight
+and the Pier adapter cannot disagree. The import direction is one-way — the
+adapters import this module, so this module must never import an adapter.
+
+``atomic_harbor.Atomic`` keeps its own literal, which diverges in both
+directions: it carries ``huggingface: ("HF_TOKEN",)`` and omits the Kimi,
+Moonshot and ZAI providers. That divergence is deliberate and left alone.
+``huggingface`` is not added here because the Pier adapter's ``_PROVIDER_DOMAINS``
+deliberately disables it under restricted egress (huggingface.co also serves git
+repos and datasets), so admitting the credential would imply an egress rule the
+adapter refuses to grant. The credential preflight exists for the Deep SWE run
+path, which is Pier's.
+"""
+
+CREDENTIAL_ENV_KEYS: tuple[str, ...] = tuple(
+    sorted({key for keys in PROVIDER_AUTH_ENV_KEYS.values() for key in keys})
 )
+
+ALL_OF_PROVIDERS: frozenset[str] = frozenset({"amazon-bedrock"})
+"""Providers whose env credential is only usable when *every* key is present.
+
+Bedrock needs an access-key id and its secret together; one alone authenticates
+nothing. Every other provider offers alternatives — ``anthropic`` takes an API
+key *or* an OAuth token, ``google`` four different ones — so any single key
+satisfies it. This mirrors the rule
+``atomic_pier.Atomic._provision_subscription_auth`` already applies when it
+decides whether to forward environment auth.
+"""
 
 OK = "ok"
 SKIPPED = "skipped"
@@ -244,10 +291,39 @@ def submodule_pin(path: str, *, repo_root: Path | None = None) -> str | None:
     return completed.stdout.strip() or None
 
 
-def is_submodule_initialized(path: str, *, repo_root: Path | None = None) -> bool:
-    """True when the submodule working tree at ``path`` has been checked out."""
+def submodule_worktree_head(path: str, *, repo_root: Path | None = None) -> str | None:
+    """Return the SHA checked out *inside* the submodule, or ``None``.
+
+    A bare ``(root / path / ".git").exists()`` probe is not enough: any file
+    named ``.git`` passes it, and a plain ``git -C <path> rev-parse HEAD`` in an
+    empty directory walks up and answers with the *superproject's* HEAD. So the
+    repository's own toplevel must equal the submodule path before its HEAD is
+    trusted.
+    """
     root = repo_root or repository_root()
-    return (root / path / ".git").exists()
+    target = root / path
+    if not target.is_dir():
+        return None
+    toplevel = _run(["git", "rev-parse", "--show-toplevel"], cwd=target)
+    if toplevel.returncode != 0:
+        return None
+    reported = toplevel.stdout.strip()
+    if not reported:
+        return None
+    try:
+        if Path(reported).resolve() != target.resolve():
+            return None
+    except OSError:
+        return None
+    head = _run(["git", "rev-parse", "HEAD"], cwd=target)
+    if head.returncode != 0:
+        return None
+    return head.stdout.strip() or None
+
+
+def is_submodule_initialized(path: str, *, repo_root: Path | None = None) -> bool:
+    """True when ``path`` holds a real checked-out submodule working tree."""
+    return submodule_worktree_head(path, repo_root=repo_root) is not None
 
 
 def corpus_tasks_dir(repo_root: Path | None = None) -> Path:
@@ -255,20 +331,50 @@ def corpus_tasks_dir(repo_root: Path | None = None) -> Path:
     return root / DEEP_SWE_SUBMODULE_PATH / "tasks"
 
 
+def _compose_files_under(directory: Path) -> list[str]:
+    """Return every compose file under ``directory``, matched case-insensitively.
+
+    ``Path.rglob`` is case-sensitive on Linux, so a task shipping
+    ``Docker-Compose.YML`` slipped past the check while still being a compose
+    file to Docker on a case-insensitive filesystem. This walks each entry once
+    and filters on the lowercased basename, which returns exactly the same set
+    as the issue's ``find -iname 'docker-compose.y*ml'`` and cannot double count
+    the way a union of two globs would.
+    """
+    return sorted(
+        str(path)
+        for path in directory.rglob("*")
+        if path.is_file() and fnmatch.fnmatchcase(path.name.lower(), _COMPOSE_GLOB)
+    )
+
+
 def check_corpus(
     tasks_dir: Path | None = None,
     *,
     expected_tasks: int = EXPECTED_TASK_COUNT,
+    expected_collect_hooks: int | None = None,
     repo_root: Path | None = None,
 ) -> CheckResult:
     """Parse every ``task.toml`` and assert the corpus shape.
 
-    Skips — never fails — when ``evals/deep-swe`` is uninitialized, because
-    ``uv run pytest`` runs for contributors who never touch evals.
+    Skips — never fails — when ``evals/deep-swe`` is *uninitialized*, because
+    ``uv run pytest`` runs for contributors who never touch evals. Once it is
+    initialized every shape problem **fails**, including a missing ``tasks/``
+    directory: at that point the contributor has the corpus and it is wrong,
+    which is exactly what the preflight exists to say.
+
+    Initialization is decided first, and only from the submodule's own state. A
+    checked-out corpus whose ``tasks/`` directory is absent used to short-circuit
+    into the skip and report ``ok``, which is the loudest possible way to say
+    nothing. An explicit ``tasks_dir`` counts as initialized: the caller pointed
+    at a corpus, so its absence is a defect rather than a fresh clone.
     """
     tasks = tasks_dir or corpus_tasks_dir(repo_root)
-    task_files = sorted(tasks.glob("*/task.toml")) if tasks.is_dir() else []
-    if not task_files:
+    expected_hooks = expected_tasks if expected_collect_hooks is None else expected_collect_hooks
+    initialized = tasks_dir is not None or is_submodule_initialized(
+        DEEP_SWE_SUBMODULE_PATH, repo_root=repo_root
+    )
+    if not initialized:
         return CheckResult(
             name="deep-swe corpus",
             status=SKIPPED,
@@ -280,8 +386,22 @@ def check_corpus(
             details={"tasks_dir": str(tasks)},
         )
 
+    if not tasks.is_dir():
+        return CheckResult(
+            name="deep-swe corpus",
+            status=FAILED,
+            message=(
+                f"deep-swe is initialized but its corpus directory is missing: {tasks} "
+                f"does not exist. Expected the pinned corpus layout ({expected_tasks} "
+                "tasks under tasks/<name>/task.toml)."
+            ),
+            details={"tasks_dir": str(tasks), "initialized": True},
+        )
+
+    task_files = sorted(tasks.glob("*/task.toml"))
     problems: list[str] = []
-    with_collect = 0
+    collect_blocks = 0
+    tasks_without_collect = 0
     compose_files: list[str] = []
     for task_file in task_files:
         try:
@@ -292,21 +412,27 @@ def check_corpus(
         verifier = config.get("verifier")
         collect = verifier.get("collect") if isinstance(verifier, dict) else None
         if isinstance(collect, list) and collect:
-            with_collect += 1
+            # Count hooks, not tasks: two tasks carrying two hooks each is not
+            # the same corpus as 113 tasks carrying one hook each.
+            collect_blocks += len(collect)
         else:
+            tasks_without_collect += 1
             problems.append(f"{task_file}: no [[verifier.collect]] hook")
-        compose_files.extend(
-            str(path) for path in sorted(task_file.parent.rglob(_COMPOSE_GLOB))
-        )
+        compose_files.extend(_compose_files_under(task_file.parent))
 
     if len(task_files) != expected_tasks:
         problems.append(f"expected {expected_tasks} tasks, found {len(task_files)}")
+    if collect_blocks != expected_hooks:
+        problems.append(
+            f"expected {expected_hooks} [[verifier.collect]] hooks, found {collect_blocks}"
+        )
     if compose_files:
         problems.append(f"expected 0 compose files, found {len(compose_files)}: {compose_files[:3]}")
 
     details: dict[str, object] = {
         "tasks": len(task_files),
-        "collect_hooks": with_collect,
+        "collect_hooks": collect_blocks,
+        "tasks_without_collect": tasks_without_collect,
         "compose_files": len(compose_files),
         "tasks_dir": str(tasks),
     }
@@ -322,24 +448,45 @@ def check_corpus(
         name="deep-swe corpus",
         status=OK,
         message=(
-            f"{len(task_files)} tasks, {with_collect} collect hooks, {len(compose_files)} compose files"
+            f"{len(task_files)} tasks, {collect_blocks} collect hooks, {len(compose_files)} compose files"
         ),
         details=details,
     )
 
 
 def check_submodules(*, repo_root: Path | None = None) -> CheckResult:
-    """Report the recorded gitlink pins and whether each working tree exists."""
+    """Prove the gitlink pin and the checked-out working tree agree.
+
+    ``FAILED`` when any submodule is checked out at a commit other than its
+    pin — drift the run must not silently benchmark against. ``SKIPPED`` only
+    when nothing drifted and a submodule is genuinely uninitialized, which is a
+    fresh clone. Drift is evaluated **first**: a report that skipped on one
+    uninitialized submodule used to swallow another submodule's drift, and a
+    skip never makes ``PreflightReport.ok`` false.
+    """
     root = repo_root or repository_root()
     details: dict[str, object] = {}
     missing: list[str] = []
+    drifted: list[str] = []
     for path in (DEEP_SWE_SUBMODULE_PATH, PIER_SUBMODULE_PATH):
-        details[path] = {
-            "pin": submodule_pin(path, repo_root=root),
-            "initialized": is_submodule_initialized(path, repo_root=root),
-        }
-        if not is_submodule_initialized(path, repo_root=root):
+        pin = submodule_pin(path, repo_root=root)
+        head = submodule_worktree_head(path, repo_root=root)
+        details[path] = {"pin": pin, "head": head, "initialized": head is not None}
+        if head is None:
             missing.append(path)
+        elif pin is not None and head != pin:
+            drifted.append(f"{path}: pinned {pin}, checked out {head}")
+    if drifted:
+        message = (
+            "submodule working tree does not match its pin — "
+            + "; ".join(drifted)
+            + ". Run `git submodule update --init --recursive` to return to the pin."
+        )
+        if missing:
+            # Keep the fresh-clone guidance in the same message rather than
+            # losing it behind the failure.
+            message += f" Also uninitialized: {', '.join(missing)}."
+        return CheckResult(name="submodules", status=FAILED, message=message, details=details)
     if missing:
         return CheckResult(
             name="submodules",
@@ -353,7 +500,7 @@ def check_submodules(*, repo_root: Path | None = None) -> CheckResult:
     return CheckResult(
         name="submodules",
         status=OK,
-        message="evals/deep-swe and evals/vendor/pier are initialized",
+        message="evals/deep-swe and evals/vendor/pier match their pinned SHAs",
         details=details,
     )
 
@@ -384,36 +531,132 @@ def check_docker(runner: CommandRunner | None = None) -> CheckResult:
     )
 
 
+def is_valid_provider_auth(entry: object) -> bool:
+    """True when an ``auth.json`` entry actually carries a usable credential.
+
+    Mirrors ``atomic_pier.Atomic._is_valid_provider_auth``, which delegates
+    here. A file existing is not a credential: ``{}`` has none, and an
+    ``api_key`` entry with an empty ``key`` has none either.
+    """
+    if not isinstance(entry, dict):
+        return False
+    credential_type = entry.get("type")
+    if credential_type == "api_key":
+        key = entry.get("key")
+        return isinstance(key, str) and bool(key)
+    if credential_type == "oauth":
+        access = entry.get("access")
+        return isinstance(access, str) and bool(access)
+    return False
+
+
+def _valid_auth_providers(path: Path) -> list[str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    return sorted(
+        provider
+        for provider, entry in payload.items()
+        if isinstance(provider, str) and is_valid_provider_auth(entry)
+    )
+
+
+def provider_env_auth_satisfied(provider: str, environ: Mapping[str, str]) -> bool:
+    """True when ``environ`` carries a usable credential for ``provider``.
+
+    All-of for the providers in :data:`ALL_OF_PROVIDERS`, any-of otherwise. An
+    empty key group can never be satisfied — ``all(())`` is ``True``, which would
+    otherwise bless a provider that needs no credential at all.
+    """
+    keys = PROVIDER_AUTH_ENV_KEYS.get(provider, ())
+    if not keys:
+        return False
+    present = [key for key in keys if (environ.get(key) or "").strip()]
+    if provider in ALL_OF_PROVIDERS:
+        return len(present) == len(keys)
+    return bool(present)
+
+
+def _missing_all_of_keys(provider: str, environ: Mapping[str, str]) -> tuple[str, ...]:
+    """Keys an all-of provider still needs, when it is partially configured."""
+    keys = PROVIDER_AUTH_ENV_KEYS.get(provider, ())
+    present = [key for key in keys if (environ.get(key) or "").strip()]
+    if not present or len(present) == len(keys):
+        return ()
+    return tuple(key for key in keys if key not in present)
+
+
 def check_credentials(
     env: Mapping[str, str] | None = None,
     *,
     auth_paths: Sequence[Path] | None = None,
 ) -> CheckResult:
-    """Check that at least one provider credential is reachable."""
+    """Check that at least one provider credential is actually reachable.
+
+    A key alone is not a credential: ``amazon-bedrock`` needs both of its keys,
+    so a lone ``AWS_ACCESS_KEY_ID`` authenticates nothing and must not pass.
+    """
     environ = env if env is not None else os.environ
-    present = [key for key in _CREDENTIAL_ENV_KEYS if (environ.get(key) or "").strip()]
+    present = [key for key in CREDENTIAL_ENV_KEYS if (environ.get(key) or "").strip()]
+    satisfied = [
+        provider
+        for provider in sorted(PROVIDER_AUTH_ENV_KEYS)
+        if provider_env_auth_satisfied(provider, environ)
+    ]
+    incomplete = {
+        provider: missing
+        for provider in sorted(ALL_OF_PROVIDERS)
+        if (missing := _missing_all_of_keys(provider, environ))
+    }
     paths = (
         list(auth_paths)
         if auth_paths is not None
         else [Path.home() / ".atomic" / "agent" / "auth.json", Path.home() / ".pi" / "agent" / "auth.json"]
     )
-    subscriptions = [str(path) for path in paths if path.is_file()]
-    if not present and not subscriptions:
+    subscriptions = {
+        str(path): providers
+        for path in paths
+        if path.is_file() and (providers := _valid_auth_providers(path))
+    }
+    if not satisfied and not subscriptions:
+        message = (
+            "no provider credential found: none of "
+            f"{', '.join(CREDENTIAL_ENV_KEYS)} is set and no local auth.json "
+            "holds a valid api_key or oauth entry"
+        )
+        if incomplete:
+            # Saying "none is set" would be false when half a Bedrock pair is
+            # present, so name what is still missing instead.
+            message += "; incomplete: " + "; ".join(
+                f"{provider} also needs {', '.join(missing)}"
+                for provider, missing in incomplete.items()
+            )
         return CheckResult(
             name="credentials",
             status=FAILED,
-            message=(
-                "no provider credential found: none of "
-                f"{', '.join(_CREDENTIAL_ENV_KEYS)} is set and no local auth.json exists"
-            ),
+            message=message,
+            details={
+                "env_keys": present,
+                "providers": satisfied,
+                "incomplete_providers": {p: list(m) for p, m in incomplete.items()},
+            },
         )
     return CheckResult(
         name="credentials",
         status=OK,
         message=(
-            f"{len(present)} credential env var(s), {len(subscriptions)} local subscription file(s)"
+            f"{len(satisfied)} provider(s) from {len(present)} credential env var(s), "
+            f"{len(subscriptions)} local subscription file(s) with a valid entry"
         ),
-        details={"env_keys": present, "auth_files": subscriptions},
+        details={
+            "env_keys": present,
+            "providers": satisfied,
+            "incomplete_providers": {p: list(m) for p, m in incomplete.items()},
+            "auth_files": subscriptions,
+        },
     )
 
 
