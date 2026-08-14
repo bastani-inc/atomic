@@ -1,10 +1,12 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { describe, test } from "vitest";
+import { feedbackArtifactPath } from "../../packages/workflows/builtin/open-claude-design-feedback.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
-import { makeMockCtx } from "./builtin-workflows-helpers.js";
+import { makeMockCtx, readPathEndsWith } from "./builtin-workflows-helpers.js";
 
 /**
  * The structured final answer a `user-feedback-*` stage returns when the user
@@ -327,6 +329,93 @@ describe("open-claude-design — rejected feedback stage is not approval (#2123)
 			() => d.run(ctx),
 			/user-feedback-1: the round returned neither a schema-validated structured answer nor parseable feedback labels.*feedback[/\\]iteration-1\.json/s,
 		);
+		assert.equal(ctx.calls.task.includes("exporter"), false);
+		assert.equal(ctx.calls.task.includes("final-display"), false);
+	});
+});
+
+/**
+ * The reported failure: the feedback stage emitted a labeled report, a
+ * synthetic resume-continuation turn followed, and the stage's final text
+ * became a short unlabeled wrap-up. The structured answer the stage finalized
+ * is what the loop reads, so the wrap-up cannot approve a stale preview.
+ * cross-ref: issue #2401.
+ */
+describe("open-claude-design — structured feedback deliverable (#2401)", () => {
+	const STRUCTURED_REVISION = {
+		decision: "revise",
+		user_notes: ["The hero background is too busy; simplify it to a black-to-grey gradient."],
+		live_changes: ["Accepted variant 2 for the pricing table."],
+	};
+	const CONTINUATION_WRAP_UP = "All set — the live review session is closed and the preview is ready.";
+
+	test("a revise round starts generate-2 even when a continuation replaced the final text", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Redesign the Atomic website", max_refinements: 2 },
+			{
+				task: (name) => {
+					if (name === "user-feedback-1") {
+						return { text: CONTINUATION_WRAP_UP, structured: STRUCTURED_REVISION };
+					}
+					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
+					return undefined;
+				},
+			},
+		);
+
+		const result = await d.run(ctx);
+
+		// The requested revision runs another round rather than exporting the
+		// preview the user asked to change.
+		assert.ok(ctx.calls.task.includes("generate-2"));
+		assert.equal(result.approved_for_export, true);
+		assert.ok(ctx.calls.task.includes("exporter"));
+
+		const artifactDir = result.artifact_dir as string;
+		const artifactPath = feedbackArtifactPath(artifactDir, 1);
+		const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+		assert.equal(artifact.decision, "revise");
+		assert.deepEqual(artifact.user_notes, STRUCTURED_REVISION.user_notes);
+		assert.deepEqual(artifact.live_changes, STRUCTURED_REVISION.live_changes);
+		// The displaced wrap-up survives as transcript metadata and nothing more.
+		assert.equal(artifact.meta.text, CONTINUATION_WRAP_UP);
+
+		// generate-2 reads the durable deliverable and quotes the captured work.
+		const generatePrompt = ctx.calls.prompts["generate-2"]?.[0] ?? "";
+		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.user_notes[0]));
+		assert.ok(generatePrompt.includes(STRUCTURED_REVISION.live_changes[0]));
+		assert.ok(generatePrompt.includes(artifactPath));
+		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
+		rmSync(artifactDir, { recursive: true, force: true });
+	});
+
+	test("a structured payload the schema rejects stops the run instead of exporting", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Redesign the Atomic website", max_refinements: 2 },
+			{
+				task: (name) => {
+					// `maybe` is not a decision the schema admits, so the payload is
+					// discarded and the unlabeled wrap-up parses to nothing.
+					if (name === "user-feedback-1") {
+						return {
+							text: CONTINUATION_WRAP_UP,
+							structured: { decision: "maybe", user_notes: [], live_changes: [] },
+						};
+					}
+					return undefined;
+				},
+			},
+		);
+
+		await assert.rejects(
+			() => d.run(ctx),
+			/user-feedback-1: the round returned neither a schema-validated structured answer nor parseable feedback labels/,
+		);
+		assert.equal(ctx.calls.task.includes("generate-2"), false);
 		assert.equal(ctx.calls.task.includes("exporter"), false);
 		assert.equal(ctx.calls.task.includes("final-display"), false);
 	});
