@@ -18,6 +18,7 @@ from pier.models.task.config import NetworkMode, TaskConfig
 
 from atomic_pier import Atomic
 from network_policy import EmptyEgressAllowlistError, require_non_empty_allowlist
+from prerequisites import EXPECTED_TASK_COUNT, corpus_tasks_dir
 
 DEEP_SWE_STYLE = """
 schema_version = "1.3"
@@ -127,6 +128,28 @@ def test_a_known_key_still_parses() -> None:
 
     assert cfg.agent.network_mode is NetworkMode.NO_NETWORK
     assert cfg.metadata == {}
+
+
+def test_every_pinned_corpus_task_resolves_to_no_internet() -> None:
+    """The corpus itself, not a hand-written sample, must resolve to no egress."""
+    corpus = corpus_tasks_dir()
+    task_files = sorted(corpus.glob("*/task.toml")) if corpus.is_dir() else []
+    if not task_files:
+        pytest.skip(
+            f"deep-swe corpus is not initialized (no task.toml under {corpus}); "
+            "run `git submodule update --init --recursive`"
+        )
+
+    offenders: list[str] = []
+    for task_file in task_files:
+        cfg = TaskConfig.model_validate_toml(task_file.read_text(encoding="utf-8"))
+        if cfg.environment.allow_internet is not False:
+            offenders.append(f"{task_file.parent.name}: environment")
+        if cfg.verifier.environment is not None and cfg.verifier.environment.allow_internet is not False:
+            offenders.append(f"{task_file.parent.name}: verifier")
+
+    assert len(task_files) == EXPECTED_TASK_COUNT
+    assert offenders == []
 
 
 # --- empty allowlist ---------------------------------------------------------

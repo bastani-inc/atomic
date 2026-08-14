@@ -328,6 +328,18 @@ def test_corpus_check_fails_for_a_real_initialized_but_empty_submodule(tmp_path:
     assert f"expected {EXPECTED_TASK_COUNT} tasks, found 0" in result.message
 
 
+def test_the_real_corpus_matches_the_pinned_shape() -> None:
+    """113 tasks, 113 collect hooks, 0 compose files — or a clear skip."""
+    result = check_corpus()
+
+    if result.skipped:
+        pytest.skip(result.message)
+    assert result.ok, result.message
+    assert result.details["tasks"] == EXPECTED_TASK_COUNT
+    assert result.details["collect_hooks"] == EXPECTED_TASK_COUNT
+    assert result.details["compose_files"] == 0
+
+
 # --- submodules --------------------------------------------------------------
 
 
