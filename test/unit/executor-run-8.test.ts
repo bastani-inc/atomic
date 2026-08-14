@@ -229,6 +229,82 @@ describe("executor.run", () => {
 		assert.deepEqual(continuedAfter.parentIds, [replayedPrompt.id]);
 	});
 
+	test("invalid historical primitive answers still finalize replayed prompt stages", async () => {
+		const st = createStore();
+		const def = workflow({
+			name: "resume-invalid-prompt-answer-wf",
+			description: "",
+			inputs: {},
+			outputs: {
+				proceed: Type.Optional(Type.Any()),
+			},
+			run: async (ctx) => {
+				const proceed = await ctx.ui.confirm("continue?");
+				await ctx.stage("after").prompt("after");
+				return { proceed };
+			},
+		});
+
+		const firstRunPromise = run(
+			def,
+			{},
+			{
+				store: st,
+				usePromptNodesForUi: true,
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							if (text === "after") throw new Error("first run boundary");
+							return "unused";
+						},
+					},
+				},
+			},
+		);
+		const firstPrompt = await waitForExecutorStagePendingPrompt(st);
+		st.resolveStagePendingPrompt(firstPrompt.runId, firstPrompt.stageId, firstPrompt.promptId, true);
+		const firstRun = await firstRunPromise;
+		assert.equal(firstRun.status, "failed");
+
+		const source = st.runs().find((candidate) => candidate.id === firstRun.runId)!;
+		const sourcePrompt = source.stages.find((stage) => stage.name === "confirm")!;
+		const storedAnswer = st.getStagePromptAnswer(source.id, sourcePrompt.id);
+		assert.ok(storedAnswer);
+		// Model/provider history could contain a raw answer from before kind-aware validation.
+		(storedAnswer as { value: unknown }).value = "maybe";
+
+		const stageStarts: string[] = [];
+		const stageEnds: Array<{ name: string; status: string }> = [];
+		const continuationPromptCalls: string[] = [];
+		const continued = await run(
+			def,
+			{},
+			{
+				store: st,
+				continuation: { source, resumeFromStageId: source.failedStageId! },
+				usePromptNodesForUi: true,
+				onStageStart: (_runId, stage) => stageStarts.push(stage.name),
+				onStageEnd: (_runId, stage) => stageEnds.push({ name: stage.name, status: stage.status }),
+				adapters: {
+					prompt: {
+						prompt: async (text) => {
+							continuationPromptCalls.push(text);
+							return "should-not-run";
+						},
+					},
+				},
+			},
+		);
+
+		assert.equal(continued.status, "failed");
+		assert.deepEqual(continuationPromptCalls, []);
+		assert.deepEqual(stageStarts, ["confirm"]);
+		assert.deepEqual(stageEnds, [{ name: "confirm", status: "failed" }]);
+		const replayedPrompt = continued.stages.find((stage) => stage.name === "confirm")!;
+		assert.equal(replayedPrompt.status, "failed");
+		assert.equal(replayedPrompt.replayed, true);
+	});
+
 	test("continuation re-prompts completed ctx.ui prompt nodes when prior answer is unavailable", async () => {
 		const st = createStore();
 		const def = workflow({

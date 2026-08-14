@@ -54,15 +54,55 @@ describe("buildBackgroundUIAdapter — round-trip", () => {
 		assert.equal(activePrompt(store, "r1"), undefined);
 	});
 
-	test("confirm: records prompt, awaits, resolves to boolean", async () => {
+	test("confirm: preserves booleans and coerces every accepted text answer", async () => {
+		const cases: readonly [unknown, boolean][] = [
+			[true, true],
+			[false, false],
+			[" TRUE ", true],
+			["false", false],
+			["Yes", true],
+			["y", true],
+			[" NO ", false],
+			["n", false],
+			["approve", true],
+			["REJECT", false],
+			["confirm", true],
+			["DENY", false],
+		];
+		for (const [index, [response, expected]] of cases.entries()) {
+			const runId = `confirm-${index}`;
+			const store = createStore();
+			seedRun(store, runId);
+			const ui = buildBackgroundUIAdapter(store, runId);
+			const pending = ui.confirm("Proceed?");
+			const prompt = activePrompt(store, runId);
+			store.resolvePendingPrompt(runId, prompt!.id, response);
+			assert.equal(await pending, expected);
+		}
+	});
+
+	test("confirm: rejects an unrecognized text answer", async () => {
 		const store = createStore();
-		seedRun(store);
-		const ui = buildBackgroundUIAdapter(store, "r1");
+		seedRun(store, "confirm-invalid");
+		const ui = buildBackgroundUIAdapter(store, "confirm-invalid");
 		const pending = ui.confirm("Proceed?");
-		const prompt = activePrompt(store, "r1");
-		assert.equal(prompt?.kind, "confirm");
-		store.resolvePendingPrompt("r1", prompt!.id, true);
-		assert.equal(await pending, true);
+		const prompt = activePrompt(store, "confirm-invalid");
+		store.resolvePendingPrompt("confirm-invalid", prompt!.id, "maybe");
+		await assert.rejects(pending, /Invalid confirm prompt answer/);
+	});
+
+	test("select: accepts case-insensitive labels and 1-based indices", async () => {
+		const responses = ["  B  ", 2] as const;
+		for (const [index, response] of responses.entries()) {
+			const runId = `select-${index}`;
+			const store = createStore();
+			seedRun(store, runId);
+			const ui = buildBackgroundUIAdapter(store, runId);
+			const pending = ui.select("Pick", ["a", "b", "c"] as const);
+			const prompt = activePrompt(store, runId);
+			store.resolvePendingPrompt(runId, prompt!.id, response);
+			assert.equal(await pending, "b");
+		}
 	});
 
 	test("select: records choices + resolves to a typed option", async () => {
@@ -77,14 +117,14 @@ describe("buildBackgroundUIAdapter — round-trip", () => {
 		assert.equal(await pending, "b");
 	});
 
-	test("select: falls back to first option when response isn't a valid choice", async () => {
+	test("select: rejects a response that is not a valid choice", async () => {
 		const store = createStore();
-		seedRun(store);
-		const ui = buildBackgroundUIAdapter(store, "r1");
+		seedRun(store, "select-invalid");
+		const ui = buildBackgroundUIAdapter(store, "select-invalid");
 		const pending = ui.select("Pick", ["a", "b", "c"] as const);
-		const prompt = activePrompt(store, "r1");
-		store.resolvePendingPrompt("r1", prompt!.id, "not-a-choice");
-		assert.equal(await pending, "a");
+		const prompt = activePrompt(store, "select-invalid");
+		store.resolvePendingPrompt("select-invalid", prompt!.id, "not-a-choice");
+		await assert.rejects(pending, /Invalid select prompt answer/);
 	});
 
 	test("select: empty options rejects without recording a prompt", async () => {
@@ -108,14 +148,14 @@ describe("buildBackgroundUIAdapter — round-trip", () => {
 		assert.equal(await pending, "edited");
 	});
 
-	test("editor: defaults to `initial` when resolved with non-string", async () => {
+	test("editor: rejects a non-string answer", async () => {
 		const store = createStore();
 		seedRun(store);
 		const ui = buildBackgroundUIAdapter(store, "r1");
 		const pending = ui.editor("starter");
 		const prompt = activePrompt(store, "r1");
 		store.resolvePendingPrompt("r1", prompt!.id, undefined);
-		assert.equal(await pending, "starter");
+		await assert.rejects(pending, /Invalid editor prompt answer/);
 	});
 });
 

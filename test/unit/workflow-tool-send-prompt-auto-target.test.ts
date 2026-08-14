@@ -134,3 +134,70 @@ describe("workflow send — answering without naming a stage", () => {
 		assert.equal(result.message, "Answered prompt prompt-2.");
 	});
 });
+
+describe("workflow send — stage inference composes with primitive answer coercion", () => {
+	test("an uncoercible answer to the sole inferred prompt stays pending, with the same noop as an explicit stageId", async () => {
+		const runId = runWithStages("inferred-uncoercible", ["approve"]);
+		const confirm = { id: "prompt-1", kind: "confirm" as const, message: "ship it?", createdAt: 1 };
+		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve", confirm), true);
+
+		const inferred = await workflowSendAction({ runId, text: "maybe", delivery: "answer" });
+
+		assert.equal(inferred.status, "noop");
+		assert.equal(inferred.stageId, "stage-approve");
+		assert.match(inferred.message, /^Invalid answer for confirm prompt prompt-1\./);
+		// The rejection left the prompt pending: the inferred path must not
+		// resolve a prompt the coercion boundary refused.
+		const stage = store.runs().find((run) => run.id === runId)?.stages[0];
+		assert.equal(stage?.pendingPrompt?.id, "prompt-1");
+
+		const explicit = await workflowSendAction({ runId, stageId: "stage-approve", text: "maybe", delivery: "answer" });
+
+		// With or without a stageId, the same coercion boundary answers.
+		assert.equal(explicit.status, "noop");
+		assert.equal(explicit.message, inferred.message);
+		assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt?.id, "prompt-1");
+	});
+
+	test("a coercible answer to the sole inferred prompt records the normalized value, not the raw payload", async () => {
+		const runId = runWithStages("inferred-coerced", ["approve"]);
+		const confirm = { id: "prompt-1", kind: "confirm" as const, message: "ship it?", createdAt: 1 };
+		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve", confirm), true);
+
+		const result = await workflowSendAction({ runId, text: "yes", delivery: "answer" });
+
+		assert.equal(result.status, "ok");
+		assert.equal(result.stageId, "stage-approve");
+		assert.equal(result.message, "Answered prompt prompt-1.");
+		// "yes" reached the waiter as boolean true; raw passthrough on the
+		// inferred path was the pre-fix bug this pins.
+		assert.equal(store.getStagePromptAnswer(runId, "stage-approve")?.value, true);
+	});
+
+	test("a promptId-selected prompt among several still answers through coercion", async () => {
+		const runId = runWithStages("prompt-id-coerced", ["pick", "approve"]);
+		const select = {
+			id: "prompt-1",
+			kind: "select" as const,
+			message: "which?",
+			choices: ["alpha", "beta"],
+			createdAt: 1,
+		};
+		assert.equal(store.recordStagePendingPrompt(runId, "stage-pick", select), true);
+		const confirm = { id: "prompt-2", kind: "confirm" as const, message: "ship it?", createdAt: 1 };
+		assert.equal(store.recordStagePendingPrompt(runId, "stage-approve", confirm), true);
+
+		const rejectedAnswer = await workflowSendAction({ runId, promptId: "prompt-1", text: "gamma" });
+
+		assert.equal(rejectedAnswer.status, "noop");
+		assert.equal(rejectedAnswer.stageId, "stage-pick");
+		assert.match(rejectedAnswer.message, /^Invalid answer for select prompt prompt-1\. .*alpha, beta/);
+		assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.pendingPrompt?.id, "prompt-1");
+
+		const accepted = await workflowSendAction({ runId, promptId: "prompt-1", text: "2" });
+
+		assert.equal(accepted.status, "ok");
+		assert.equal(accepted.message, "Answered prompt prompt-1.");
+		assert.equal(store.getStagePromptAnswer(runId, "stage-pick")?.value, "beta");
+	});
+});

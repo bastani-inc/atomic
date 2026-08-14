@@ -10,6 +10,11 @@ import {
 	expandedStageLabel,
 	expandWorkflowGraph,
 } from "../shared/expanded-workflow-graph.js";
+import {
+	coercePrimitivePromptAnswer,
+	isPrimitivePrompt,
+	primitivePromptAnswerRejection,
+} from "../shared/prompt-answer.js";
 import { coerceStageInputAnswer, hasStageInputAnswerContent, type StageInputAnswer } from "../shared/stage-prompt.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { store } from "../shared/store.js";
@@ -287,7 +292,33 @@ export async function workflowSendAction(
 				`Input request ${promptId} was already answered.`,
 			);
 		}
-		const ok = store.resolveStagePendingPrompt(stageRunId, stage.stageId, promptId, promptPayloadFromArgs(args), {
+		const rawPayload = promptPayloadFromArgs(args);
+		const pendingPrompt = snapshot?.pendingPrompt;
+		const primitivePrompt =
+			pendingPrompt?.id === promptId && isPrimitivePrompt(pendingPrompt) ? pendingPrompt : undefined;
+		if (primitivePrompt !== undefined) {
+			const coercedPayload = coercePrimitivePromptAnswer(primitivePrompt, rawPayload);
+			if (!coercedPayload.ok) {
+				return workflowSendResult(
+					stageRunId,
+					stage.stageId,
+					"answer",
+					"noop",
+					primitivePromptAnswerRejection(promptId, primitivePrompt),
+				);
+			}
+			const ok = store.resolveStagePendingPrompt(stageRunId, stage.stageId, promptId, coercedPayload.value, {
+				answerSource: "workflow_tool",
+			});
+			return workflowSendResult(
+				stageRunId,
+				stage.stageId,
+				"answer",
+				ok ? "ok" : "noop",
+				ok ? `Answered prompt ${promptId}.` : `No matching pending prompt ${promptId}.`,
+			);
+		}
+		const ok = store.resolveStagePendingPrompt(stageRunId, stage.stageId, promptId, rawPayload, {
 			answerSource: "workflow_tool",
 		});
 		return workflowSendResult(

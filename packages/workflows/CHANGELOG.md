@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Hardened the synced Impeccable executables against shell-based browser launch, remote browser URLs, project-root and symlink escapes, unsafe persisted roots and injection journals, non-atomic generated writes, untrusted live instructions, read failures reported as clean, and unbounded or malformed live protocol values. The `open-claude-design` loop now handles 4.1.1 mount failures, preserves the full event payload, replies with the required event id and status, and fails on helper process errors ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
+- Fixed `workflow send` answers for primitive human-in-the-loop prompts. Confirm answers now preserve booleans and accept the documented yes/no labels, select answers resolve case-insensitive labels or 1-based indexes instead of silently choosing the first option, and unusable answers remain pending with a helpful no-op response ([#2417](https://github.com/bastani-inc/atomic/pull/2417) by [@makgunay](https://github.com/makgunay)).
 
 ### Removed
 

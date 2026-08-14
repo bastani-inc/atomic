@@ -1,5 +1,26 @@
 import { type Static, Type } from "typebox";
 
+/**
+ * Keep JSON primitive types visible to providers. `Type.Unknown()` emits `{}`
+ * in the tool schema, so a provider has no signal that `response: true` is a
+ * boolean and may serialize it as the string `"true"` before registration.
+ * String comes first so validation does not convert text answers to booleans.
+ */
+const WorkflowResponseSchema = Type.Union(
+	[
+		Type.String(),
+		Type.Boolean(),
+		Type.Number(),
+		Type.Null(),
+		Type.Array(Type.Unknown()),
+		Type.Record(Type.String(), Type.Unknown()),
+	],
+	{
+		description:
+			"Answer payload for a pending stage prompt. Primitive prompts accept text strings, booleans, or numeric select indexes according to the prompt kind; structured prompts may accept JSON arrays or objects.",
+	},
+);
+
 export const WorkflowParametersSchema = Type.Object(
 	{
 		workflow: Type.Optional(
@@ -114,11 +135,7 @@ export const WorkflowParametersSchema = Type.Object(
 				description: "Text to send to a stage for prompt answers, steering, follow-ups, or resume messages.",
 			}),
 		),
-		response: Type.Optional(
-			Type.Unknown({
-				description: "Structured response payload for answering a pending stage prompt.",
-			}),
-		),
+		response: Type.Optional(WorkflowResponseSchema),
 		delivery: Type.Optional(
 			Type.Union(
 				[
