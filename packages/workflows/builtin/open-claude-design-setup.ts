@@ -289,13 +289,20 @@ export function buildLivePreviewDisplayPrompt(args: {
         "Do NOT collect `user_notes` or `live_changes`: this final pass cannot apply them, so don't invite feedback that would go nowhere.",
       ].join("\n")
     : [
-        "Markdown with these exact labels so the refinement loop can parse the captured feedback:",
+        "Markdown with these exact labels so the review stays readable in the transcript:",
         "`display_method` (live | playwright-annotate | manual)",
         "`preview_path`",
         "`live_changes` (summary of every element/variant the user ACCEPTED in the live session; `none` when no live edits were made)",
         "`annotated_snapshot` (path to any annotated screenshot, if captured)",
         "`user_notes` (the user's verbatim notes/annotations for the next iteration; `none` when the user gave no notes)",
         "`next_action_hint`",
+        "",
+        "Then finish the stage with the STRUCTURED final answer this stage's schema declares — that structured value, not this message, is what the refinement loop reads (issue #2401):",
+        "`decision`: `revise` whenever the user asked for ANYTHING at all — any note, any accepted variant, any steer. `approve` only when the user wants this preview exported unchanged.",
+        "`user_notes`: one entry per note, verbatim; empty when the user gave none.",
+        "`live_changes`: one entry per variant/edit the user accepted; empty when there were none.",
+        "`annotated_snapshot`: the screenshot path when one was captured; omit it otherwise.",
+        "An `approve` carrying notes or live changes is a contradiction and is read as `revise`: approval never discards work the user asked for. Never approve merely to end the round — `approve` reports the user's actual approval and nothing else.",
       ].join("\n");
   return taggedPrompt([
     ["preview_path", args.previewPath],

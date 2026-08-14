@@ -15,7 +15,7 @@
  * cross-ref: issue #2401.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, dirname, join, resolve, sep } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
@@ -154,10 +154,13 @@ function canonicalLabel(value: string): string {
  *
  * Labels arrive decorated: fenced (```` ```user_notes``` ````), bolded
  * (`**live_changes:**`), bulleted and backticked (`` - `user_notes`: ``), and
- * annotated (`` - `user_notes` (verbatim): ``). Canonicalizing to lowercase
- * alphanumerics handles the decoration; a trailing parenthetical is an
- * annotation on the label rather than part of it, so it is dropped when the
- * remainder is a label we know. cross-ref: issue #2401 item 4.
+ * annotated (`` - **`live_changes` (verbatim)**: ``). Canonicalizing to
+ * lowercase alphanumerics handles the decoration. A parenthetical annotates the
+ * label rather than naming it, and decoration can trail that parenthetical, so
+ * parentheticals are dropped wherever they sit rather than only at the end of
+ * the candidate — otherwise `` - **`live_changes` (verbatim)**: `` reads as an
+ * unknown label and the preceding field swallows the whole block.
+ * cross-ref: issue #2401 item 4.
  */
 function labelOf(line: string): string | undefined {
   const stripped = line
@@ -169,8 +172,8 @@ function labelOf(line: string): string | undefined {
   const key = canonicalLabel(candidate);
   if (key.length === 0) return undefined;
   if (FIELD_LABELS.has(key)) return key;
-  const withoutAnnotation = canonicalLabel(candidate.replace(/\s*\([^)]*\)\s*$/, ""));
-  if (withoutAnnotation.length > 0 && FIELD_LABELS.has(withoutAnnotation)) return withoutAnnotation;
+  const withoutAnnotations = canonicalLabel(candidate.replace(/\([^)]*\)/g, " "));
+  if (withoutAnnotations.length > 0 && FIELD_LABELS.has(withoutAnnotations)) return withoutAnnotations;
   return key;
 }
 
@@ -540,10 +543,28 @@ function toArtifact(feedback: PreviewFeedback): PreviewFeedbackArtifact {
 }
 
 /**
+ * Drop a file a failed write left behind, so a stale round can never be read
+ * back as this round's outcome. cross-ref: issue #2401 item A.5.
+ */
+function discardStaleFile(path: string): void {
+  try {
+    if (existsSync(path)) rmSync(path, { force: true });
+  } catch {
+    /* the caller still reports the failed write */
+  }
+}
+
+/**
  * Persist the round as durable workflow artifacts under `<artifactDir>/feedback/`.
  * Written on every round — approvals and indeterminate rounds included — because
  * the artifact, not the stage's prose, is what the refinement loop reads back.
- * Best-effort: never throws. cross-ref: issue #1464 fix (5), issue #2401.
+ *
+ * The JSON deliverable is required, so a failed write throws after discarding
+ * whatever sits at the path. Swallowing the failure would leave an earlier
+ * round's record — an approval, say — for the next durable read to restore as
+ * this round's outcome. The markdown transcript copy and the annotated-snapshot
+ * copies stay best-effort, and a stale markdown copy is discarded the same way.
+ * cross-ref: issue #1464 fix (5), issue #2401 item A.5.
  */
 export function persistPreviewFeedback(input: {
   readonly artifactDir: string;
@@ -551,19 +572,26 @@ export function persistPreviewFeedback(input: {
   readonly feedback: PreviewFeedback;
 }): void {
   const { feedback } = input;
+  const feedbackDir = join(input.artifactDir, "feedback");
+  const slug = `iteration-${feedback.iteration}`;
+  const artifactPath = feedbackArtifactPath(input.artifactDir, feedback.iteration);
   try {
-    const feedbackDir = join(input.artifactDir, "feedback");
     mkdirSync(feedbackDir, { recursive: true });
-    const slug = `iteration-${feedback.iteration}`;
-    writeFileSync(join(feedbackDir, `${slug}.md`), `${feedback.text}\n`);
-    writeFileSync(
-      feedbackArtifactPath(input.artifactDir, feedback.iteration),
-      `${JSON.stringify(toArtifact(feedback), null, 2)}\n`,
+    writeFileSync(artifactPath, `${JSON.stringify(toArtifact(feedback), null, 2)}\n`);
+  } catch (error) {
+    discardStaleFile(artifactPath);
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `open-claude-design ${feedback.stageName}: failed to write the feedback deliverable at ${artifactPath}: ${reason}`,
     );
-    copyAnnotationArtifacts(feedbackDir, slug, feedback, input.workflowCwd);
-  } catch {
-    /* best-effort durability; never block the workflow */
   }
+  const markdownPath = join(feedbackDir, `${slug}.md`);
+  try {
+    writeFileSync(markdownPath, `${feedback.text}\n`);
+  } catch {
+    discardStaleFile(markdownPath);
+  }
+  copyAnnotationArtifacts(feedbackDir, slug, feedback, input.workflowCwd);
 }
 
 function isRecord(value: WorkflowSerializableValue): value is { readonly [key: string]: WorkflowSerializableValue } {
@@ -573,6 +601,19 @@ function isRecord(value: WorkflowSerializableValue): value is { readonly [key: s
 function isDecision(value: WorkflowSerializableValue | undefined): value is PreviewFeedbackDecision {
   return value === "approve" || value === "revise" || value === "indeterminate";
 }
+
+/**
+ * The only keys the artifact's top level may carry: the declared schema plus
+ * `meta`. A record with anything else did not come from this module, so its
+ * `decision` is not this round's outcome. cross-ref: issue #2401 item A.5.
+ */
+const ARTIFACT_KEYS: ReadonlySet<string> = new Set([
+  "decision",
+  "user_notes",
+  "live_changes",
+  "annotated_snapshot",
+  "meta",
+]);
 
 /** The schema's per-entry array, rejecting anything that is not an array of strings. */
 function readEntries(value: WorkflowSerializableValue | undefined): CapturedEntries | undefined {
@@ -622,10 +663,17 @@ function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedback
  * undefined when the file is missing or malformed; never throws, so the caller
  * decides what an unreadable deliverable means. cross-ref: issue #2401.
  *
- * Fail-closed: every declared field and every metadata field must be present
- * and well-typed, and the artifact must name the round the caller asked for.
- * A partial file — `{"decision":"approve"}`, say — is malformed, not an
- * approval. cross-ref: issue #2401 item A.6.
+ * Fail-closed on the whole record, not on the fields it happens to read: the
+ * top level must carry exactly the declared schema plus `meta`, every declared
+ * and metadata field must be present and well-typed, and the artifact must name
+ * the round the caller asked for. A partial file — `{"decision":"approve"}`,
+ * say — is malformed, not an approval, and so is a record that smuggles an
+ * extra top-level field past the schema.
+ *
+ * An `approve` record carrying notes or live changes is malformed too:
+ * `toPreviewFeedback` coerces that contradiction to `revise` before it is ever
+ * written, so on disk it means the record was rewritten. Approval never
+ * restores over captured work. cross-ref: issue #2401 items A.3 and A.6.
  */
 export function loadPreviewFeedback(input: {
   readonly artifactDir: string;
@@ -637,9 +685,12 @@ export function loadPreviewFeedback(input: {
     if (!existsSync(path)) return undefined;
     const parsed = JSON.parse(readFileSync(path, "utf8")) as WorkflowSerializableValue;
     if (!isRecord(parsed) || !isDecision(parsed.decision)) return undefined;
+    if (Object.keys(parsed).some((key) => !ARTIFACT_KEYS.has(key))) return undefined;
     const notes = readEntries(parsed.user_notes);
     const changes = readEntries(parsed.live_changes);
     if (notes === undefined || changes === undefined) return undefined;
+    const captured = notes.entries.length > 0 || changes.entries.length > 0;
+    if (parsed.decision === "approve" && captured) return undefined;
     const rawSnapshot = parsed.annotated_snapshot;
     const annotatedSnapshot = rawSnapshot === undefined ? undefined : readString(rawSnapshot);
     if (rawSnapshot !== undefined && annotatedSnapshot === undefined) return undefined;

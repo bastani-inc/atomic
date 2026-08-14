@@ -18,6 +18,14 @@ import {
 	readPathEndsWith,
 } from "./builtin-workflows-helpers.js";
 
+/**
+ * The structured final answer a `user-feedback-*` stage returns when the user
+ * approves the preview as-is. The stage declares `previewFeedbackSchema`, so
+ * the mock parses this into `result.structured` and the loop reads the durable
+ * artifact built from it. cross-ref: issue #2401.
+ */
+const STRUCTURED_APPROVAL = JSON.stringify({ decision: "approve", user_notes: [], live_changes: [] });
+
 describe("open-claude-design", () => {
 	test("loads and has correct shape", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
@@ -66,7 +74,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Design a landing page", max_refinements: 1 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -120,7 +128,7 @@ describe("open-claude-design", () => {
 				{ prompt: "Design a dashboard", max_refinements: 1 },
 				{
 					task: (name) => {
-						if (name.startsWith("user-feedback-")) return "user_notes: none";
+						if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 						return undefined;
 					},
 				},
@@ -156,7 +164,7 @@ describe("open-claude-design", () => {
 			},
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -174,7 +182,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Design a dashboard", max_refinements: 1 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -226,7 +234,7 @@ describe("open-claude-design", () => {
 							output_type: "component",
 							references: ["https://example.com/reference"],
 						});
-					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -252,11 +260,22 @@ describe("open-claude-design", () => {
 		assert.equal(ctx.calls.task.includes("forced-fix"), false);
 		assert.ok(ctx.calls.task.includes("exporter"));
 		assert.ok(ctx.calls.task.includes("final-display"));
+		// The feedback stage declares the structured-output schema, so its round
+		// finalizes as a schema-validated value a later continuation turn cannot
+		// replace, and the loop reads that value rather than the prose (#2401).
 		const feedbackOptions = ctx.calls.taskOptions["user-feedback-1"]?.[0];
-		assert.equal(feedbackOptions?.schema, undefined);
+		const feedbackSchema = feedbackOptions?.schema as { properties?: Record<string, unknown> } | undefined;
+		assert.notEqual(feedbackSchema, undefined);
+		assert.deepEqual(Object.keys(feedbackSchema?.properties ?? {}).sort(), [
+			"annotated_snapshot",
+			"decision",
+			"live_changes",
+			"user_notes",
+		]);
 		const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
 		assert.match(feedbackPrompt, /\/skill:impeccable live/);
 		assert.match(feedbackPrompt, /`user_notes`/);
+		assert.match(feedbackPrompt, /STRUCTURED final answer/);
 		assert.equal(result.output_type, "component");
 		assert.equal(typeof result.artifact, "string");
 		assert.equal(typeof result.handoff, "string");
@@ -269,7 +288,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Design a dashboard" },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -294,7 +313,7 @@ describe("open-claude-design", () => {
 							output_type: "page",
 							references: ["https://example.com/reference"],
 						});
-					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -351,7 +370,7 @@ describe("open-claude-design", () => {
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
-					if (name === "user-feedback-2") return "user_notes: none";
+					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -377,6 +396,12 @@ describe("open-claude-design", () => {
 		const persisted = JSON.parse(readFileSync(jsonPath, "utf8"));
 		assert.equal(persisted.decision, "revise");
 		assert.match(persisted.user_notes.join("\n"), /Apple website/);
+
+		// generate-2 consumes that artifact: it is in `reads` and the prompt names
+		// it as the authoritative record of the round (#2401).
+		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
+		assert.match(generatePrompt, /<user_feedback_record>/);
+		assert.ok(generatePrompt.includes(jsonPath));
 		rmSync(artifactDir, { recursive: true, force: true });
 	});
 
@@ -387,7 +412,7 @@ describe("open-claude-design", () => {
 			{ prompt: "Design a dashboard", max_refinements: 1 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},

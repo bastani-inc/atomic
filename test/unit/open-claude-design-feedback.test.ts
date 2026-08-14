@@ -477,6 +477,34 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		].join("\n");
 		assert.equal(extractUserNotes(bulletedBacktick), "Simplify the hero.");
 		assert.equal(extractLiveChanges(bulletedBacktick), "Accepted the tighter density.");
+
+		// The reported form: the annotation sits *inside* the bold decoration, so
+		// the parenthetical is not at the end of the candidate label. Before the
+		// fix this label was unrecognized, `user_notes` swallowed the whole
+		// live-changes block, and the round read as an approval.
+		const boldAnnotated = [
+			"- **`user_notes` (verbatim)**:",
+			"The hero background is too busy.",
+			"- **`live_changes` (verbatim)**:",
+			"Accepted variant 2 for the pricing table.",
+			"- **`annotated_snapshot` (verbatim)**: .playwright-cli/annotations-1.png",
+		].join("\n");
+		assert.equal(extractUserNotes(boldAnnotated), "The hero background is too busy.");
+		assert.equal(extractLiveChanges(boldAnnotated), "Accepted variant 2 for the pricing table.");
+		assert.equal(extractAnnotatedSnapshot(boldAnnotated), ".playwright-cli/annotations-1.png");
+
+		const boldAnnotatedFeedback = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: { text: boldAnnotated },
+		});
+		assert.equal(boldAnnotatedFeedback.decision, "revise");
+		assert.equal(boldAnnotatedFeedback.userNotes, "The hero background is too busy.");
+		assert.equal(boldAnnotatedFeedback.liveChanges, "Accepted variant 2 for the pricing table.");
+
+		// A fenced label may carry the same annotation.
+		const fencedAnnotated = ["```live_changes (verbatim)```", "Accepted the committed accent."].join("\n");
+		assert.equal(extractLiveChanges(fencedAnnotated), "Accepted the committed accent.");
 	});
 
 	test("persist/load round-trips revise, approve, and indeterminate rounds", () => {
@@ -597,6 +625,21 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 				"meta naming another stage",
 				{ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, stage_name: "user-feedback-9" } },
 			],
+			// A record whose top level carries anything beyond the declared schema
+			// plus `meta` did not come from this module: its `decision` is not this
+			// round's outcome, however well-formed the fields it shares look.
+			[
+				"an unknown top-level field",
+				{ decision: "approve", user_notes: [], live_changes: [], forgotten_work: ["Fix the hero"], meta },
+			],
+			// An approval carrying work is the contradiction `toPreviewFeedback`
+			// coerces to `revise` before persisting, so on disk it means the record
+			// was rewritten. It never restores as approval.
+			["an approval carrying notes", { decision: "approve", user_notes: ["Fix the hero"], live_changes: [], meta }],
+			[
+				"an approval carrying live changes",
+				{ decision: "approve", user_notes: [], live_changes: ["Accepted variant 2."], meta },
+			],
 		];
 		for (const [label, body] of malformed) {
 			writeFileSync(feedbackArtifactPath(dir, 1), typeof body === "string" ? body : JSON.stringify(body));
@@ -609,5 +652,48 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			JSON.stringify({ decision: "approve", user_notes: [], live_changes: [], meta }),
 		);
 		assert.equal(load(1)?.decision, "approve");
+	});
+
+	test("persistPreviewFeedback throws instead of leaving a stale round readable", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
+		tempDirs.push(dir);
+		const artifactPath = feedbackArtifactPath(dir, 1);
+
+		const approve = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: { text: "decision: approve", structured: { decision: "approve", user_notes: [], live_changes: [] } },
+		});
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: approve });
+		assert.equal(
+			loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" })?.decision,
+			"approve",
+		);
+
+		// Block the durable write for the next round. Swallowing the failure would
+		// leave the approval above as round 1's answer for the next durable read.
+		rmSync(artifactPath, { force: true });
+		mkdirSync(artifactPath, { recursive: true });
+		const revise = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: {
+				text: "",
+				structured: { decision: "revise", user_notes: ["The hero background is too busy."], live_changes: [] },
+			},
+		});
+		assert.throws(
+			() => persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: revise }),
+			(error: Error) =>
+				/failed to write the feedback deliverable/.test(error.message) &&
+				error.message.includes(artifactPath) &&
+				error.message.includes("user-feedback-1"),
+		);
+		assert.equal(loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" }), undefined);
+
+		// With the path clear the same round persists and reloads as the revision.
+		rmSync(artifactPath, { recursive: true, force: true });
+		persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: revise });
+		assert.deepEqual(loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" }), revise);
 	});
 });

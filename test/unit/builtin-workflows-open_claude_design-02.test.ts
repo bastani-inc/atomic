@@ -6,6 +6,13 @@ import { describe, test } from "vitest";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
+/**
+ * The structured final answer a `user-feedback-*` stage returns when the user
+ * approves the preview as-is. The stage declares `previewFeedbackSchema`, so
+ * the mock parses this into `result.structured`. cross-ref: issue #2401.
+ */
+const STRUCTURED_APPROVAL = JSON.stringify({ decision: "approve", user_notes: [], live_changes: [] });
+
 describe("open-claude-design — generate/user-feedback refinement loop (#1464)", () => {
 	const previewWithAnnotations = [
 		"display_method: playwright-cli interactive annotation",
@@ -25,7 +32,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
-					if (name === "user-feedback-2") return "user_notes: none";
+					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -63,7 +70,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
-					if (name === "user-feedback-2") return "user_notes: none";
+					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 				sessionFile: (name) => `/tmp/${name}.jsonl`,
@@ -94,7 +101,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
 					if (name === "user-feedback-2") return previewWithAnnotations;
-					if (name === "user-feedback-3") return "user_notes: none";
+					if (name === "user-feedback-3") return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 				sessionFile: (name) => (name.startsWith("generate-") ? `/tmp/${name}.jsonl` : undefined),
@@ -125,7 +132,7 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
 			{ prompt: "Design a dashboard", max_refinements: 2 },
 			{
 				task: (name) => {
-					if (name === "user-feedback-1") return "user_notes: none";
+					if (name === "user-feedback-1") return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -163,7 +170,7 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 			{
 				task: (name) => {
 					if (name === "user-feedback-1") return previewWithAnnotations;
-					if (name === "user-feedback-2") return "user_notes: none";
+					if (name === "user-feedback-2") return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -217,7 +224,7 @@ describe("open-claude-design — deterministic live-review gate (#2060)", () => 
 			{ prompt: "Design a dashboard", max_refinements: 2 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return "user_notes: none";
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 				uiSelect: () => {
@@ -278,14 +285,16 @@ describe("open-claude-design — rejected feedback stage is not approval (#2123)
 		assert.equal(ctx.calls.task.includes("final-display"), false);
 	});
 
-	test("a resolved degraded feedback report with no notes still approves", async () => {
+	test("a resolved degraded feedback round that declares approval still approves", async () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		const d = mod.default as unknown as WorkflowDefinition;
 		const ctx = makeMockCtx(
 			{ prompt: "Design a dashboard", max_refinements: 2 },
 			{
 				task: (name) => {
-					if (name.startsWith("user-feedback-")) return ["display_method: manual", "user_notes: none"].join("\n");
+					// A manual/degraded review still finalizes the declared structured
+					// answer; it is the `decision`, not the prose, that approves.
+					if (name.startsWith("user-feedback-")) return STRUCTURED_APPROVAL;
 					return undefined;
 				},
 			},
@@ -297,5 +306,28 @@ describe("open-claude-design — rejected feedback stage is not approval (#2123)
 		assert.ok(ctx.calls.task.includes("exporter"));
 		const artifactDir = result.artifact_dir as string;
 		rmSync(artifactDir, { recursive: true, force: true });
+	});
+
+	test("a feedback round that declares nothing fails the run instead of exporting", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const ctx = makeMockCtx(
+			{ prompt: "Design a dashboard", max_refinements: 2 },
+			{
+				task: (name) => {
+					// The issue's shape: a short unlabeled wrap-up with no structured
+					// answer. Its outcome is unknown, so it must never approve (#2401).
+					if (name.startsWith("user-feedback-")) return "All set — the live review session is closed.";
+					return undefined;
+				},
+			},
+		);
+
+		await assert.rejects(
+			() => d.run(ctx),
+			/user-feedback-1: the round returned neither a schema-validated structured answer nor parseable feedback labels.*feedback[/\\]iteration-1\.json/s,
+		);
+		assert.equal(ctx.calls.task.includes("exporter"), false);
+		assert.equal(ctx.calls.task.includes("final-display"), false);
 	});
 });
