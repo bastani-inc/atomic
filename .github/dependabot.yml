@@ -4,11 +4,14 @@
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
 # Every ecosystem below declares `cooldown`. `npm ci` installs package-lock.json
-# verbatim, so the `min-release-age=2` gate in the committed .npmrc only binds
-# when the lockfile is *updated*. Without a matching cooldown here an automated
-# bump could open a PR against a release younger than the local gate would ever
-# install, and merging it would write that version into the lockfile. The two
-# controls express the same policy from opposite sides and must stay in step.
+# verbatim, so the `min-release-age` gate in the committed .npmrc only binds when
+# the lockfile is *updated*. The two controls express the same policy from
+# opposite sides and must stay in step.
+#
+# Both are now 0: Atomic adopts pi releases the same day they publish, so a
+# release-age cooldown is not a control this repository can hold. See .npmrc for
+# what that gives up. If you restore `min-release-age` there, restore
+# `default-days` on every ecosystem here in the same change.
 
 version: 2
 updates:
@@ -18,7 +21,7 @@ updates:
       schedule:
           interval: "weekly"
       cooldown:
-          default-days: 2
+          default-days: 0
       commit-message:
           prefix: "ci"
       labels:
@@ -31,7 +34,7 @@ updates:
       schedule:
           interval: "weekly"
       cooldown:
-          default-days: 2
+          default-days: 0
       commit-message:
           prefix: "deps"
       labels:
@@ -54,7 +57,7 @@ updates:
       schedule:
           interval: "weekly"
       cooldown:
-          default-days: 2
+          default-days: 0
       commit-message:
           prefix: "deps"
       labels:
@@ -67,7 +70,7 @@ updates:
       schedule:
           interval: "weekly"
       cooldown:
-          default-days: 2
+          default-days: 0
       commit-message:
           prefix: "deps"
       labels:
