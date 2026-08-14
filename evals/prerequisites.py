@@ -1,8 +1,29 @@
-"""Shared eval-sandbox provisioning for Atomic, tmux, and playwright-cli."""
+"""Shared eval-sandbox provisioning and host preflight for the Atomic evals.
+
+Two concerns live here:
+
+1. The shell-string builders that provision an eval sandbox (Atomic, tmux,
+   playwright-cli).
+2. The preflight gate that checks the Deep SWE corpus, the submodule pins, and
+   the host environment *before* a benchmark run, so a mis-shaped corpus or an
+   uninitialized submodule is reported as itself instead of as a mid-run
+   failure.
+
+The preflight parses ``task.toml`` with the standard library's :mod:`tomllib`
+rather than pier's models on purpose: it has to keep working when
+``evals/vendor/pier`` is uninitialized, which is exactly when a contributor
+most needs the diagnostic.
+"""
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import tomllib
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
 
 
 def root_install_command(*, harbor: bool = False) -> str:
@@ -116,3 +137,310 @@ def agent_install_command(version_spec: str) -> str:
         f"npm install -g @bastani/atomic{version_spec} @playwright/cli; "
         f"{browser_setup}"
     )
+
+
+# --- preflight ---------------------------------------------------------------
+
+EXPECTED_TASK_COUNT = 113
+"""Deep SWE task count at the pinned corpus. A drift is a finding, not a detail."""
+
+DEEP_SWE_SUBMODULE_PATH = "evals/deep-swe"
+PIER_SUBMODULE_PATH = "evals/vendor/pier"
+
+_COMPOSE_GLOB = "docker-compose.y*ml"
+_CREDENTIAL_ENV_KEYS: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "COPILOT_GITHUB_TOKEN",
+)
+
+OK = "ok"
+SKIPPED = "skipped"
+FAILED = "failed"
+
+type CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+
+
+class PreflightError(RuntimeError):
+    """Raised by :func:`require_preflight` when a preflight check fails."""
+
+    def __init__(self, report: PreflightReport) -> None:
+        self.report = report
+        super().__init__(report.describe())
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    """One preflight check: ``ok``, ``skipped``, or ``failed``, with a reason."""
+
+    name: str
+    status: str
+    message: str
+    details: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == OK
+
+    @property
+    def skipped(self) -> bool:
+        return self.status == SKIPPED
+
+    @property
+    def failed(self) -> bool:
+        return self.status == FAILED
+
+
+@dataclass(frozen=True)
+class PreflightReport:
+    """The aggregate of every check that ran."""
+
+    checks: tuple[CheckResult, ...]
+
+    @property
+    def failures(self) -> tuple[CheckResult, ...]:
+        return tuple(check for check in self.checks if check.failed)
+
+    @property
+    def skips(self) -> tuple[CheckResult, ...]:
+        return tuple(check for check in self.checks if check.skipped)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failures
+
+    def describe(self) -> str:
+        return "\n".join(f"[{check.status}] {check.name}: {check.message}" for check in self.checks)
+
+
+def _run(command: Sequence[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed argv, no shell
+        list(command),
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def repository_root(start: Path | None = None) -> Path:
+    """Return the superproject root that owns ``evals/``."""
+    return (start or Path(__file__).resolve().parent).parent
+
+
+def submodule_pin(path: str, *, repo_root: Path | None = None) -> str | None:
+    """Return the gitlink SHA recorded for ``path`` in the superproject's HEAD.
+
+    Read from the gitlink (``git rev-parse HEAD:<path>``) rather than from
+    ``git -C <path> rev-parse HEAD``, which silently prints the *superproject*
+    SHA when the submodule is uninitialized.
+    """
+    root = repo_root or repository_root()
+    completed = _run(["git", "rev-parse", f"HEAD:{path}"], cwd=root)
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def is_submodule_initialized(path: str, *, repo_root: Path | None = None) -> bool:
+    """True when the submodule working tree at ``path`` has been checked out."""
+    root = repo_root or repository_root()
+    return (root / path / ".git").exists()
+
+
+def corpus_tasks_dir(repo_root: Path | None = None) -> Path:
+    root = repo_root or repository_root()
+    return root / DEEP_SWE_SUBMODULE_PATH / "tasks"
+
+
+def check_corpus(
+    tasks_dir: Path | None = None,
+    *,
+    expected_tasks: int = EXPECTED_TASK_COUNT,
+    repo_root: Path | None = None,
+) -> CheckResult:
+    """Parse every ``task.toml`` and assert the corpus shape.
+
+    Skips — never fails — when ``evals/deep-swe`` is uninitialized, because
+    ``uv run pytest`` runs for contributors who never touch evals.
+    """
+    tasks = tasks_dir or corpus_tasks_dir(repo_root)
+    task_files = sorted(tasks.glob("*/task.toml")) if tasks.is_dir() else []
+    if not task_files:
+        return CheckResult(
+            name="deep-swe corpus",
+            status=SKIPPED,
+            message=(
+                f"deep-swe corpus is not initialized (no task.toml under {tasks}). "
+                "Run `git submodule update --init --recursive` from the repository "
+                "root to enable corpus preflight. Skipping corpus checks."
+            ),
+            details={"tasks_dir": str(tasks)},
+        )
+
+    problems: list[str] = []
+    with_collect = 0
+    compose_files: list[str] = []
+    for task_file in task_files:
+        try:
+            config = tomllib.loads(task_file.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as error:
+            problems.append(f"{task_file}: malformed TOML: {error}")
+            continue
+        verifier = config.get("verifier")
+        collect = verifier.get("collect") if isinstance(verifier, dict) else None
+        if isinstance(collect, list) and collect:
+            with_collect += 1
+        else:
+            problems.append(f"{task_file}: no [[verifier.collect]] hook")
+        compose_files.extend(
+            str(path) for path in sorted(task_file.parent.rglob(_COMPOSE_GLOB))
+        )
+
+    if len(task_files) != expected_tasks:
+        problems.append(f"expected {expected_tasks} tasks, found {len(task_files)}")
+    if compose_files:
+        problems.append(f"expected 0 compose files, found {len(compose_files)}: {compose_files[:3]}")
+
+    details: dict[str, object] = {
+        "tasks": len(task_files),
+        "collect_hooks": with_collect,
+        "compose_files": len(compose_files),
+        "tasks_dir": str(tasks),
+    }
+    if problems:
+        return CheckResult(
+            name="deep-swe corpus",
+            status=FAILED,
+            message="; ".join(problems[:5])
+            + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""),
+            details=details,
+        )
+    return CheckResult(
+        name="deep-swe corpus",
+        status=OK,
+        message=(
+            f"{len(task_files)} tasks, {with_collect} collect hooks, {len(compose_files)} compose files"
+        ),
+        details=details,
+    )
+
+
+def check_submodules(*, repo_root: Path | None = None) -> CheckResult:
+    """Report the recorded gitlink pins and whether each working tree exists."""
+    root = repo_root or repository_root()
+    details: dict[str, object] = {}
+    missing: list[str] = []
+    for path in (DEEP_SWE_SUBMODULE_PATH, PIER_SUBMODULE_PATH):
+        details[path] = {
+            "pin": submodule_pin(path, repo_root=root),
+            "initialized": is_submodule_initialized(path, repo_root=root),
+        }
+        if not is_submodule_initialized(path, repo_root=root):
+            missing.append(path)
+    if missing:
+        return CheckResult(
+            name="submodules",
+            status=SKIPPED,
+            message=(
+                f"uninitialized submodule(s): {', '.join(missing)}. "
+                "Run `git submodule update --init --recursive` from the repository root."
+            ),
+            details=details,
+        )
+    return CheckResult(
+        name="submodules",
+        status=OK,
+        message="evals/deep-swe and evals/vendor/pier are initialized",
+        details=details,
+    )
+
+
+def check_docker(runner: CommandRunner | None = None) -> CheckResult:
+    """Check that a Docker daemon answers. Failure here is a real failure."""
+    run = runner or (lambda command: _run(command))
+    try:
+        completed = run(["docker", "info", "--format", "{{.ServerVersion}}"])
+    except FileNotFoundError:
+        return CheckResult(
+            name="docker",
+            status=FAILED,
+            message="docker executable not found on PATH",
+        )
+    if completed.returncode != 0:
+        return CheckResult(
+            name="docker",
+            status=FAILED,
+            message=f"`docker info` exited {completed.returncode}: {(completed.stderr or '').strip()[:200]}",
+        )
+    version = (completed.stdout or "").strip()
+    return CheckResult(
+        name="docker",
+        status=OK,
+        message=f"docker server {version}",
+        details={"server_version": version},
+    )
+
+
+def check_credentials(
+    env: Mapping[str, str] | None = None,
+    *,
+    auth_paths: Sequence[Path] | None = None,
+) -> CheckResult:
+    """Check that at least one provider credential is reachable."""
+    environ = env if env is not None else os.environ
+    present = [key for key in _CREDENTIAL_ENV_KEYS if (environ.get(key) or "").strip()]
+    paths = (
+        list(auth_paths)
+        if auth_paths is not None
+        else [Path.home() / ".atomic" / "agent" / "auth.json", Path.home() / ".pi" / "agent" / "auth.json"]
+    )
+    subscriptions = [str(path) for path in paths if path.is_file()]
+    if not present and not subscriptions:
+        return CheckResult(
+            name="credentials",
+            status=FAILED,
+            message=(
+                "no provider credential found: none of "
+                f"{', '.join(_CREDENTIAL_ENV_KEYS)} is set and no local auth.json exists"
+            ),
+        )
+    return CheckResult(
+        name="credentials",
+        status=OK,
+        message=(
+            f"{len(present)} credential env var(s), {len(subscriptions)} local subscription file(s)"
+        ),
+        details={"env_keys": present, "auth_files": subscriptions},
+    )
+
+
+def run_preflight(
+    *,
+    repo_root: Path | None = None,
+    tasks_dir: Path | None = None,
+    expected_tasks: int = EXPECTED_TASK_COUNT,
+    docker_runner: CommandRunner | None = None,
+    env: Mapping[str, str] | None = None,
+    auth_paths: Sequence[Path] | None = None,
+    include_host_checks: bool = True,
+) -> PreflightReport:
+    """Run every preflight check and return the aggregate report."""
+    checks: list[CheckResult] = [
+        check_submodules(repo_root=repo_root),
+        check_corpus(tasks_dir, expected_tasks=expected_tasks, repo_root=repo_root),
+    ]
+    if include_host_checks:
+        checks.append(check_docker(docker_runner))
+        checks.append(check_credentials(env, auth_paths=auth_paths))
+    return PreflightReport(checks=tuple(checks))
+
+
+def require_preflight(**kwargs: object) -> PreflightReport:
+    """Run the preflight and raise :class:`PreflightError` if any check failed."""
+    report = run_preflight(**kwargs)  # pyright: ignore[reportArgumentType]
+    if not report.ok:
+        raise PreflightError(report)
+    return report

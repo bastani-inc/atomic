@@ -18,6 +18,13 @@ from prerequisites import (
     atomic_runtime_environment_command,
     root_install_command,
 )
+from trial_audit import (
+    REASON_EMPTY_OUTPUT,
+    REASON_MALFORMED_SESSION_LOG,
+    REASON_MISSING_OUTPUT,
+    AgentRunStatus,
+    write_agent_status,
+)
 
 
 class Atomic(BaseInstalledAgent):
@@ -489,10 +496,25 @@ class Atomic(BaseInstalledAgent):
             return True
         return session_file.parent != session_root
 
+    def _record_agent_status(
+        self, context: AgentContext, reasons: list[str], details: dict[str, object]
+    ) -> AgentRunStatus:
+        """Persist an explicit run status and stamp it onto the agent context."""
+        status = AgentRunStatus.from_reasons(reasons, details)
+        write_agent_status(self.logs_dir, status)
+        context.metadata = {**(context.metadata or {}), "atomic_status": status.to_json()}
+        return status
+
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
+        self._malformed_jsonl_lines: dict[str, int] = {}
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
+            # An absent atomic.txt means the agent produced no output at all.
+            # Returning silently here is what made a dead trial look complete.
+            self._record_agent_status(
+                context, [REASON_MISSING_OUTPUT], {"expected": str(output_file)}
+            )
             return
 
         total_input_tokens = 0
@@ -554,6 +576,9 @@ class Atomic(BaseInstalledAgent):
                         try:
                             entry = json.loads(line)
                         except json.JSONDecodeError:
+                            self._malformed_jsonl_lines[str(session_file)] = (
+                                self._malformed_jsonl_lines.get(str(session_file), 0) + 1
+                            )
                             continue
                         if not isinstance(entry, dict) or entry.get("type") != "message":
                             continue
@@ -572,6 +597,9 @@ class Atomic(BaseInstalledAgent):
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                self._malformed_jsonl_lines[str(output_file)] = (
+                    self._malformed_jsonl_lines.get(str(output_file), 0) + 1
+                )
                 continue
             if not isinstance(event, dict) or event.get("type") != "message_end":
                 continue
@@ -605,3 +633,12 @@ class Atomic(BaseInstalledAgent):
             **(context.metadata or {}),
             "n_agent_steps": total_agent_steps,
         }
+
+        reasons: list[str] = []
+        details: dict[str, object] = {"atomic_txt": str(output_file)}
+        if output_file.stat().st_size == 0:
+            reasons.append(REASON_EMPTY_OUTPUT)
+        if self._malformed_jsonl_lines:
+            reasons.append(REASON_MALFORMED_SESSION_LOG)
+            details["malformed_jsonl_lines"] = dict(self._malformed_jsonl_lines)
+        self._record_agent_status(context, reasons, details)

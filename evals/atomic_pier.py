@@ -36,10 +36,20 @@ from pier.models.trial.paths import EnvironmentPaths
 from pier.utils.trajectory_utils import (
     format_trajectory_json,  # pyright: ignore[reportUnknownVariableType]
 )
+from network_policy import EmptyEgressAllowlistError, require_non_empty_allowlist
 from prerequisites import (
     agent_install_command,
     atomic_runtime_environment_command,
     root_install_command,
+)
+from run_manifest import RunManifest, manifest_for_agent_logs_dir, write_manifest
+from trial_audit import (
+    REASON_EMPTY_OUTPUT,
+    REASON_MALFORMED_SESSION_LOG,
+    REASON_MISSING_OUTPUT,
+    AgentRunStatus,
+    explain,
+    write_agent_status,
 )
 
 
@@ -197,6 +207,7 @@ class Atomic(BaseInstalledAgent):
         self._disallowed_subscriptions: frozenset[str] = (
             self._normalize_disallowed_subscriptions(disallowed_subscriptions)
         )
+        self._malformed_jsonl_lines: dict[str, int] = {}
         super().__init__(  # pyright: ignore[reportUnknownMemberType]
             logs_dir=logs_dir,
             prompt_template_path=prompt_template_path,
@@ -261,7 +272,9 @@ class Atomic(BaseInstalledAgent):
     @override
     def network_allowlist(self) -> NetworkAllowlist:
         if not self.model_name or "/" not in self.model_name:
-            return NetworkAllowlist()
+            # An empty allowlist would silently drop the filtered-egress proxy
+            # overlay and leave the sandbox with no route to any provider.
+            raise EmptyEgressAllowlistError(model_name=self.model_name)
 
         provider, _ = self.model_name.split("/", 1)
         # Atomic workflows can select fallback models from providers other than
@@ -279,7 +292,10 @@ class Atomic(BaseInstalledAgent):
             # Atomic resolves a GHE tenant host from GITHUB_SERVER_URL on its
             # own, and copilot-api.<tenant>.ghe.com is outside _PROVIDER_DOMAINS.
             urls.append(self._copilot_ghe_tenant_url())
-        return allowlist_from_urls(urls, default_domains=sorted(defaults))
+        return require_non_empty_allowlist(
+            allowlist_from_urls(urls, default_domains=sorted(defaults)),
+            model_name=self.model_name,
+        )
 
     def _build_register_skills_command(self) -> str | None:
         if not self.skills_dir:
@@ -671,8 +687,13 @@ class Atomic(BaseInstalledAgent):
         )
         return f"{message_fingerprint}:{usage_fingerprint}"
 
-    @staticmethod
-    def _read_jsonl(path: Path) -> list[JsonObject]:
+    def _read_jsonl(self, path: Path) -> list[JsonObject]:
+        """Parse a JSONL log, recording malformed lines instead of hiding them.
+
+        Blank lines stay tolerated — Atomic's writers emit them. A line that is
+        present but does not parse means a truncated or corrupted log, which
+        silently degraded metrics before this counter existed.
+        """
         entries: list[JsonObject] = []
         try:
             for line in path.read_text(encoding="utf-8").splitlines():
@@ -681,6 +702,9 @@ class Atomic(BaseInstalledAgent):
                 try:
                     entry = cast(object, json.loads(line))
                 except json.JSONDecodeError:
+                    self._malformed_jsonl_lines[str(path)] = (
+                        self._malformed_jsonl_lines.get(str(path), 0) + 1
+                    )
                     continue
                 if entry_object := _json_object(entry):
                     entries.append(entry_object)
@@ -1082,10 +1106,49 @@ class Atomic(BaseInstalledAgent):
         except OSError as exc:
             self.logger.debug("Failed to write Atomic trajectory: %s", exc)
 
+    def _record_agent_status(
+        self, context: AgentContext, reasons: list[str], details: dict[str, object]
+    ) -> AgentRunStatus:
+        """Persist an explicit run status and stamp it onto the agent context.
+
+        Deliberately records rather than raises: pier also calls
+        ``populate_context_post_run`` from its cancel and outer-exception
+        handlers, where raising would replace the in-flight exception. The
+        post-run auditor turns a non-``ok`` status into a failed trial.
+        """
+        status = AgentRunStatus.from_reasons(reasons, details)
+        _ = write_agent_status(self.logs_dir, status)
+        context.metadata = {**(context.metadata or {}), "atomic_status": status.to_json()}
+        if not status.ok:
+            self.logger.error(
+                "Atomic run status: failed (%s)", ", ".join(explain(r) for r in status.reasons)
+            )
+        return status
+
+    def _record_run_manifest(self, context: AgentContext) -> RunManifest:
+        """Record which corpus, pier, Atomic build, model, and seed produced this run."""
+        manifest = manifest_for_agent_logs_dir(
+            self.logs_dir,
+            model=self.model_name,
+            atomic_version=self.version(),
+        )
+        _ = write_manifest(self.logs_dir, manifest)
+        context.metadata = {**(context.metadata or {}), "atomic_manifest": manifest.to_json()}
+        return manifest
+
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
+        self._malformed_jsonl_lines = {}
+        _ = self._record_run_manifest(context)
         output_file = self.logs_dir / self._OUTPUT_FILENAME
         if not output_file.exists():
+            # An absent atomic.txt means the agent produced no output at all.
+            # Returning silently here is what made a dead trial look complete.
+            _ = self._record_agent_status(
+                context,
+                [REASON_MISSING_OUTPUT],
+                {"expected": str(output_file)},
+            )
             return
 
         total_input_tokens = 0
@@ -1165,3 +1228,12 @@ class Atomic(BaseInstalledAgent):
         context.n_cache_tokens = total_cache_tokens
         context.cost_usd = total_cost if total_cost > 0 else None
         self._write_trajectory(context, classified)
+
+        reasons: list[str] = []
+        details: dict[str, object] = {"atomic_txt": str(output_file)}
+        if output_file.stat().st_size == 0:
+            reasons.append(REASON_EMPTY_OUTPUT)
+        if self._malformed_jsonl_lines:
+            reasons.append(REASON_MALFORMED_SESSION_LOG)
+            details["malformed_jsonl_lines"] = dict(self._malformed_jsonl_lines)
+        _ = self._record_agent_status(context, reasons, details)
