@@ -40,7 +40,7 @@
     "@bastani/atomic": "*",
     "@earendil-works/pi-agent-core": "^0.84.1",
     "@earendil-works/pi-ai": "^0.84.1",
-    "@earendil-works/pi-tui": "^0.84.1"
+    "@earendil-works/pi-tui": "0.84.2"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
