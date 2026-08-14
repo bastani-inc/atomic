@@ -54,6 +54,20 @@ describe("buildBackgroundUIAdapter — round-trip", () => {
 		assert.equal(activePrompt(store, "r1"), undefined);
 	});
 
+	test('confirm: the observed string "true" answer resolves to boolean true', async () => {
+		// Sink half of run 86dbfd4d-7123-4894-967c-7856227bc708, whose retained tool
+		// call answered a confirm prompt with the string "true" and got false back.
+		const store = createStore();
+		seedRun(store, "confirm-string-true");
+		const ui = buildBackgroundUIAdapter(store, "confirm-string-true");
+		const pending = ui.confirm("Approve this probe?");
+		const prompt = activePrompt(store, "confirm-string-true");
+		store.resolvePendingPrompt("confirm-string-true", prompt!.id, "true");
+		const answer = await pending;
+		assert.equal(answer, true);
+		assert.equal(typeof answer, "boolean");
+	});
+
 	test("confirm: preserves booleans and coerces every accepted text answer", async () => {
 		const cases: readonly [unknown, boolean][] = [
 			[true, true],

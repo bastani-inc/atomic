@@ -1,9 +1,16 @@
 import { type Static, Type } from "typebox";
 
 /**
- * Keep JSON primitive types visible to providers. `Type.Unknown()` emits `{}`
- * in the tool schema, so a provider has no signal that `response: true` is a
- * boolean and may serialize it as the string `"true"` before registration.
+ * Advertise the JSON value types accepted by workflow-send responses.
+ *
+ * `Type.Unknown()` emits `{}`, which tells a provider nothing about this
+ * property. A retained session shows an assistant tool call that answered a
+ * `ctx.ui.confirm` prompt with the string `"true"` rather than a boolean, so
+ * naming the accepted types is worth doing. It is not the runtime fix: no
+ * inspected host or pi-ai layer converts a boolean to a string, and prompt-kind
+ * normalization happens at the pending-prompt boundary, not in provider
+ * argument validation.
+ *
  * String comes first so validation does not convert text answers to booleans.
  */
 const WorkflowResponseSchema = Type.Union(

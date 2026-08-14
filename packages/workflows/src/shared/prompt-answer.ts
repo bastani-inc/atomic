@@ -78,7 +78,14 @@ function coerceSelect(choices: readonly string[], value: unknown): PrimitiveProm
 	return index === undefined ? rejected() : accepted(choices[index]!);
 }
 
-/** Normalize a raw answer for a primitive prompt, or reject it. */
+/**
+ * Normalize a raw answer for a primitive prompt, or reject it.
+ *
+ * The `default` branch is unreachable through the guarded call sites, which all
+ * exclude `custom` prompts. It exists so a malformed descriptor is rejected
+ * rather than falling through to `undefined`, which would make
+ * `requirePrimitivePromptAnswer` throw a bare `TypeError` on `result.ok`.
+ */
 export function coercePrimitivePromptAnswer(prompt: PrimitivePrompt, value: unknown): PrimitivePromptAnswerResult {
 	switch (prompt.kind) {
 		case "input":
@@ -88,6 +95,8 @@ export function coercePrimitivePromptAnswer(prompt: PrimitivePrompt, value: unkn
 			return coerceConfirm(value);
 		case "select":
 			return coerceSelect(prompt.choices ?? [], value);
+		default:
+			return rejected();
 	}
 }
 
@@ -110,6 +119,8 @@ export function primitivePromptAnswerExpectation(prompt: PrimitivePrompt): strin
 			return "Expected a boolean or a case-insensitive trimmed string: true/false, yes/y, no/n, approve/reject, or confirm/deny.";
 		case "select":
 			return `Expected an exact choice label (case-insensitive, trimmed) or a 1-based numeric index. Available choices: ${prompt.choices?.join(", ") || "(none)"}.`;
+		default:
+			return "Expected an answer matching the pending prompt kind.";
 	}
 }
 

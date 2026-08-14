@@ -118,6 +118,23 @@ describe("tool run-control actions", () => {
 		assert.equal(stage?.pendingPrompt, undefined);
 		assert.equal(store.getStagePromptAnswer(runId, "stage-prompt-1")?.answerSource, "workflow_tool");
 	});
+	test.sequential('makeExecuteWorkflowTool stores boolean true for the observed string "true" confirm answer', async () => {
+		// Reproduces run 86dbfd4d-7123-4894-967c-7856227bc708: the retained assistant
+		// tool call carried `response: "true"` (a JSON string), and the pre-fix sinks
+		// turned it into `confirmed: false`.
+		const runId = testRunId(`stage-tool-send-string-true-${Date.now()}`);
+		seedPendingPrimitivePrompt(runId, "confirm");
+		const handler = makeToolHandler();
+		const result = await handler(
+			{ action: "send", runId, stageId: "prompt", delivery: "answer", response: "true" },
+			{} as never,
+		);
+
+		assert.equal((result as { status: string }).status, "ok");
+		const stored = store.getStagePromptAnswer(runId, "stage-prompt-kind");
+		assert.equal(stored?.value, true);
+		assert.equal(typeof stored?.value, "boolean");
+	});
 	test.sequential("makeExecuteWorkflowTool coerces primitive prompt answers by kind", async () => {
 		const cases = [
 			{ kind: "confirm" as const, field: "text" as const, value: " YES ", expected: true },
