@@ -207,7 +207,7 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     if (durableFeedback === undefined || durableFeedback.decision === "indeterminate") {
       const reason = durableFeedback === undefined
         ? "the persisted feedback deliverable could not be read back (missing or malformed)"
-        : "the round returned neither a schema-validated structured answer nor parseable feedback labels";
+        : "the round returned no schema-validated structured answer, and its prose report carried no unambiguous feedback";
       throw new Error(
         `open-claude-design ${feedbackStageName}: ${reason}. Feedback deliverable: ${artifactPath}. Refusing to approve or export a preview whose review outcome is unknown (see issue #2401).`,
       );

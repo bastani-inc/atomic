@@ -443,16 +443,30 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 		);
 	});
 
-	test("an explicit labeled approval with no captured work approves", () => {
+	test("a labeled approval in prose never approves (amendment 1)", () => {
+		// Text can only ever say "revise" or "we do not know". Only a schema-valid
+		// structured payload — or the run-level skip choice, which never reaches
+		// this parser — can approve an export.
+		const approvalReport = ["decision: approve", "user_notes: none", "live_changes: none"].join("\n");
 		const feedback = toPreviewFeedback({
 			iteration: 1,
 			stageName: "user-feedback-1",
-			result: { text: ["decision: approve", "user_notes: none", "live_changes: none"].join("\n") },
+			result: { text: approvalReport },
 		});
-		assert.equal(feedback.decision, "approve");
 		assert.equal(feedback.source, "text");
+		assert.equal(feedback.decision, "indeterminate");
 
-		// The same label with notes present is a revision, not an approval.
+		// The other spelling of the label reads the same way.
+		assert.equal(
+			toPreviewFeedback({
+				iteration: 1,
+				stageName: "user-feedback-1",
+				result: { text: "review_decision: approve" },
+			}).decision,
+			"indeterminate",
+		);
+
+		// The same label with notes present is a revision: the notes are the work.
 		assert.equal(
 			toPreviewFeedback({
 				iteration: 1,
@@ -462,9 +476,7 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			"revise",
 		);
 
-		// Only the contract's canonical `approve` approves: any other spelling is
-		// indeterminate rather than an approval guessed from prose.
-		for (const spelling of ["approved", "approve-with-notes", "looks good", "ship it"]) {
+		for (const spelling of ["approve", "approved", "approve-with-notes", "looks good", "ship it"]) {
 			assert.equal(
 				toPreviewFeedback({
 					iteration: 1,
@@ -475,6 +487,81 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 				`decision: ${spelling} must not approve`,
 			);
 		}
+
+		// The structured answer for the same round is what approves.
+		assert.equal(
+			toPreviewFeedback({
+				iteration: 1,
+				stageName: "user-feedback-1",
+				result: { text: approvalReport, structured: { decision: "approve", user_notes: [], live_changes: [] } },
+			}).decision,
+			"approve",
+		);
+	});
+
+	test("conflicting decision labels are indeterminate (amendment 3)", () => {
+		// The reviewer's probe: a report that approves and revises at once. Taking
+		// the first value would have approved an export the same report refused.
+		const conflicting = ["decision: approve", "review_decision: revise"].join("\n");
+		assert.equal(
+			toPreviewFeedback({ iteration: 1, stageName: "user-feedback-1", result: { text: conflicting } }).decision,
+			"indeterminate",
+		);
+
+		// Two decision labels are a conflict even when they agree: the report was
+		// not written to the contract, so its outcome is not this parser's to fix.
+		assert.equal(
+			toPreviewFeedback({
+				iteration: 1,
+				stageName: "user-feedback-1",
+				result: {
+					text: ["decision: revise", "review_decision: revise", "user_notes: tighten the footer"].join("\n"),
+				},
+			}).decision,
+			"indeterminate",
+		);
+	});
+
+	test("a field label repeated with a different value is indeterminate (amendment 3)", () => {
+		// The reviewer's probe verbatim: a placeholder `user_notes` first, the real
+		// note filed under a repeat of the same label, and a prose approval over
+		// the top. Reading the first value approved an export that would have
+		// discarded "Fix the hero."
+		const probe = [
+			"decision: approve",
+			"user_notes: none",
+			"**user_notes:** Fix the hero.",
+			"live_changes: none",
+		].join("\n");
+		const feedback = toPreviewFeedback({ iteration: 1, stageName: "user-feedback-1", result: { text: probe } });
+		assert.equal(feedback.decision, "indeterminate");
+		// The round stops the run, and the report it captured keeps the note the
+		// parser refused to rank.
+		assert.match(feedback.text, /Fix the hero\./);
+
+		// A repeated `live_changes` reads the same way.
+		assert.equal(
+			toPreviewFeedback({
+				iteration: 1,
+				stageName: "user-feedback-1",
+				result: {
+					text: ["live_changes: Accepted variant 2.", "**live_changes:** Accepted the tighter density."].join(
+						"\n",
+					),
+				},
+			}).decision,
+			"indeterminate",
+		);
+
+		// A label repeated with the SAME value says one thing, so the round is the
+		// revision it captured.
+		const echoed = toPreviewFeedback({
+			iteration: 1,
+			stageName: "user-feedback-1",
+			result: { text: ["user_notes: Fix the hero.", "**user_notes:** Fix the hero."].join("\n") },
+		});
+		assert.equal(echoed.decision, "revise");
+		assert.equal(echoed.userNotes, "Fix the hero.");
 	});
 
 	test("decorated labels parse without over-capturing the next field", () => {
@@ -643,6 +730,7 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			stage_name: "user-feedback-1",
 			captured_at: new Date().toISOString(),
 			source: "structured",
+			decision: "approve",
 			text: "",
 		};
 		const malformed: readonly (readonly [string, string | object])[] = [
@@ -728,6 +816,35 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 				"meta with an unknown decision",
 				{ decision: "revise", user_notes: [], live_changes: [], meta: { ...meta, decision: "maybe" } },
 			],
+			// `meta.decision` is the round's outcome, so a record without it is not a
+			// round this module wrote and its top level is not an answer.
+			[
+				"meta lacking a decision",
+				{
+					decision: "approve",
+					user_notes: [],
+					live_changes: [],
+					meta: {
+						iteration: 1,
+						stage_name: "user-feedback-1",
+						captured_at: new Date().toISOString(),
+						source: "structured",
+						text: "",
+					},
+				},
+			],
+			// `toArtifact` writes `approve` at the top level for an approving round
+			// and the fail-closed `revise` for every other, so these pairings are
+			// ones this module could not have produced.
+			["meta approving a revised top level", { decision: "revise", user_notes: [], live_changes: [], meta }],
+			[
+				"meta revising an approving top level",
+				{ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, decision: "revise" } },
+			],
+			[
+				"meta leaving an approving top level indeterminate",
+				{ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, decision: "indeterminate" } },
+			],
 		];
 		for (const [label, body] of malformed) {
 			writeFileSync(feedbackArtifactPath(dir, 1), typeof body === "string" ? body : JSON.stringify(body));
@@ -754,6 +871,40 @@ describe("open-claude-design structured feedback deliverable (#2401)", () => {
 			}),
 		);
 		assert.equal(load(1)?.decision, "indeterminate");
+	});
+
+	test("a metadata block without a valid decision never loads (amendment 2)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-artifact-"));
+		tempDirs.push(dir);
+		mkdirSync(join(dir, "feedback"), { recursive: true });
+		const load = () => loadPreviewFeedback({ artifactDir: dir, iteration: 1, stageName: "user-feedback-1" });
+		const meta = {
+			iteration: 1,
+			stage_name: "user-feedback-1",
+			captured_at: new Date().toISOString(),
+			source: "structured",
+			text: "",
+		};
+		const write = (body: object): void => writeFileSync(feedbackArtifactPath(dir, 1), JSON.stringify(body));
+
+		// The reviewer's probe: a schema-valid top level that approves, over a
+		// `meta` block carrying no decision at all. There is no fall back to the
+		// top level, so the artifact is malformed rather than an approval.
+		write({ decision: "approve", user_notes: [], live_changes: [], meta });
+		assert.equal(load(), undefined);
+
+		// A decision outside the union is no better than a missing one.
+		write({ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, decision: "maybe" } });
+		assert.equal(load(), undefined);
+
+		// The impossible pairing `toArtifact` cannot write: a `revise` top level
+		// under an approving `meta`, with nothing captured to explain it.
+		write({ decision: "revise", user_notes: [], live_changes: [], meta: { ...meta, decision: "approve" } });
+		assert.equal(load(), undefined);
+
+		// With the decision present and the pair consistent, the same record loads.
+		write({ decision: "approve", user_notes: [], live_changes: [], meta: { ...meta, decision: "approve" } });
+		assert.equal(load()?.decision, "approve");
 	});
 
 	test("persistPreviewFeedback throws instead of leaving a stale round readable", () => {

@@ -327,7 +327,7 @@ describe("open-claude-design — rejected feedback stage is not approval (#2123)
 
 		await assert.rejects(
 			() => d.run(ctx),
-			/user-feedback-1: the round returned neither a schema-validated structured answer nor parseable feedback labels.*feedback[/\\]iteration-1\.json/s,
+			/user-feedback-1: the round returned no schema-validated structured answer, and its prose report carried no unambiguous feedback.*feedback[/\\]iteration-1\.json/s,
 		);
 		assert.equal(ctx.calls.task.includes("exporter"), false);
 		assert.equal(ctx.calls.task.includes("final-display"), false);
@@ -448,7 +448,7 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 
 		await assert.rejects(
 			() => d.run(ctx),
-			/user-feedback-1: the round returned neither a schema-validated structured answer nor parseable feedback labels/,
+			/user-feedback-1: the round returned no schema-validated structured answer, and its prose report carried no unambiguous feedback/,
 		);
 		assert.equal(ctx.calls.task.includes("generate-2"), false);
 		assert.equal(ctx.calls.task.includes("exporter"), false);

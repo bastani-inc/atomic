@@ -193,39 +193,68 @@ function isHorizontalRule(line: string): boolean {
 }
 
 /**
+ * Every occurrence of a labeled field, in document order, each trimmed to the
+ * value that followed its label. Empty and placeholder values are kept here:
+ * the caller decides what they mean, and a repeat that changes a field's value
+ * is a conflict no parser may resolve by picking one of them.
+ *
+ * A value runs until the next recognized label or a horizontal rule. ANY
+ * recognized label ends it, including a repeat of the target:
+ * `user_notes:\nFirst note.\n**user_notes:** Second note.` yields
+ * `["First note.", "Second note."]` rather than one value that swallowed the
+ * second label line. cross-ref: issue #2401 item 4 and amendment 3.
+ */
+function fieldOccurrences(text: string, field: string): readonly string[] {
+  if (text.trim().length === 0) return [];
+  const target = canonicalLabel(field);
+  const occurrences: string[] = [];
+  let collected: string[] | undefined;
+  const flush = (): void => {
+    if (collected === undefined) return;
+    occurrences.push(collected.join("\n").trim());
+    collected = undefined;
+  };
+  for (const line of text.split(/\r?\n/)) {
+    const label = labelOf(line);
+    const isLabel = label !== undefined && (FIELD_LABELS.has(label) || label === target);
+    if (!isLabel && !isHorizontalRule(line)) {
+      collected?.push(line);
+      continue;
+    }
+    flush();
+    if (label === target) {
+      const inline = inlineValueOf(line);
+      collected = inline.length > 0 ? [inline] : [];
+    }
+  }
+  flush();
+  return occurrences;
+}
+
+/** A captured value, or undefined when it is empty or stands in for "nothing". */
+function meaningfulValue(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || isPlaceholderValue(trimmed)) return undefined;
+  return trimmed;
+}
+
+/** Whether a field's repeated labels disagree about its value. */
+function hasConflictingOccurrences(occurrences: readonly string[]): boolean {
+  return occurrences.length > 1 && occurrences.some((value) => value !== occurrences[0]);
+}
+
+/**
  * Extract the value of a labeled field (e.g. `user_notes`) from a user-feedback
  * markdown blob, tolerating heading / bullet / bold / backtick label styles and
  * multi-line values that run until the next known field label or a rule.
  *
- * ANY later recognized label ends the value, including a repeat of the target
- * label: `user_notes:\nFirst note.\n**user_notes:** Second note.` yields only
- * `First note.`. Letting the target through would make the first occurrence
- * swallow the second label line and everything under it.
- * cross-ref: issue #2401 item 4.
+ * The FIRST occurrence is the field's value; a repeat is a separate occurrence
+ * that never merges into it. Whether a repeat makes the whole round unusable is
+ * decided in `toPreviewFeedback`, not here. cross-ref: issue #2401 item 4.
  */
 export function extractField(text: string, field: string): string | undefined {
-  if (text.trim().length === 0) return undefined;
-  const target = canonicalLabel(field);
-  const lines = text.split(/\r?\n/);
-  let collecting = false;
-  const collected: string[] = [];
-  for (const line of lines) {
-    if (collecting) {
-      const label = labelOf(line);
-      if (label !== undefined && FIELD_LABELS.has(label)) break;
-      if (isHorizontalRule(line)) break;
-      collected.push(line);
-      continue;
-    }
-    if (labelOf(line) === target) {
-      const inline = inlineValueOf(line);
-      if (inline.length > 0) collected.push(inline);
-      collecting = true;
-    }
-  }
-  const value = collected.join("\n").trim();
-  if (value.length === 0 || isPlaceholderValue(value)) return undefined;
-  return value;
+  return meaningfulValue(fieldOccurrences(text, field)[0]);
 }
 
 export function extractUserNotes(text: string): string | undefined {
@@ -283,14 +312,21 @@ function readStructuredPayload(value: WorkflowSerializableValue | undefined): Pr
 }
 
 /**
- * Whether a labeled `decision` / `review_decision` value states approval.
- * Only the contract's canonical `approve` counts; any other spelling leaves the
- * round indeterminate rather than approving on a guess. cross-ref: issue #2401.
+ * Whether the prose report contradicts itself: more than one
+ * `decision`/`review_decision` label, or a field label repeated with a
+ * different value. Neither is resolvable — taking the first value is exactly
+ * how a placeholder `user_notes: none` came to outrank a real note filed under
+ * a repeat of the same label — so the round is left unknown.
+ * cross-ref: issue #2401 amendment 3.
  */
-function textDecisionApproves(text: string): boolean {
-  const raw = extractField(text, "decision") ?? extractField(text, "review_decision");
-  if (raw === undefined) return false;
-  return canonicalLabel(raw) === "approve";
+function textIsConflicted(text: string): boolean {
+  const decisionLabels = fieldOccurrences(text, "decision").length + fieldOccurrences(text, "review_decision").length;
+  if (decisionLabels > 1) return true;
+  return (
+    hasConflictingOccurrences(fieldOccurrences(text, "user_notes")) ||
+    hasConflictingOccurrences(fieldOccurrences(text, "live_changes")) ||
+    hasConflictingOccurrences(fieldOccurrences(text, "annotated_snapshot"))
+  );
 }
 
 /**
@@ -334,14 +370,16 @@ export function toPreviewFeedback(input: {
     };
   }
 
+  // Prose can never approve (issue #2401 amendment 1). A stage that returned no
+  // schema-valid structured answer either captured work the next round must
+  // apply — `revise` — or left this round unknown. A labeled `decision:
+  // approve` in prose is NOT approval: only the structured payload, or the
+  // run-level skip choice, can end the review, so a report the parser cannot
+  // trust stops the run instead of exporting over the review.
   const notes = captureBlock(extractUserNotes(text));
   const changes = captureBlock(extractLiveChanges(text));
   const captured = notes !== undefined || changes !== undefined;
-  const decision: PreviewFeedbackDecision = captured
-    ? "revise"
-    : textDecisionApproves(text)
-      ? "approve"
-      : "indeterminate";
+  const decision: PreviewFeedbackDecision = captured && !textIsConflicted(text) ? "revise" : "indeterminate";
   return {
     ...base,
     decision,
@@ -616,17 +654,19 @@ type PreviewFeedbackMeta = {
   readonly stageName: string;
   readonly capturedAt: string;
   readonly source: PreviewFeedbackSource;
-  /** The round's real outcome; absent in a record written before it was kept. */
-  readonly decision?: PreviewFeedbackDecision;
+  /** The round's real outcome — the value the loop acts on. */
+  readonly decision: PreviewFeedbackDecision;
   readonly text: string;
 };
 
 /**
- * The artifact's `meta` block, or undefined when any required field is absent
- * or the wrong type. Metadata is required: a file without it did not come from
- * `persistPreviewFeedback` and must not be read as a round's outcome. A
- * `decision` that is present but not a decision this module writes makes the
- * whole record malformed rather than falling back to the top level.
+ * The artifact's `meta` block, or undefined when any field is absent or the
+ * wrong type. Metadata is required, `decision` included: a file without it did
+ * not come from `persistPreviewFeedback` and must not be read as a round's
+ * outcome. There is no fall back to the top-level decision — the top level
+ * carries the fail-closed `revise` an indeterminate round was forced to write,
+ * so reading it as the round's outcome would restore a decision the stage never
+ * reached. cross-ref: issue #2401 amendment 2.
  */
 function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedbackMeta | undefined {
   if (value === undefined || !isRecord(value)) return undefined;
@@ -639,16 +679,9 @@ function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedback
   if (typeof iteration !== "number" || !Number.isFinite(iteration)) return undefined;
   if (stageName === undefined || capturedAt === undefined) return undefined;
   if (source !== "structured" && source !== "text") return undefined;
-  if (decision !== undefined && !isDecision(decision)) return undefined;
+  if (!isDecision(decision)) return undefined;
   if (typeof text !== "string") return undefined;
-  return {
-    iteration,
-    stageName,
-    capturedAt,
-    source,
-    ...(decision === undefined ? {} : { decision }),
-    text,
-  };
+  return { iteration, stageName, capturedAt, source, decision, text };
 }
 
 /**
@@ -665,17 +698,20 @@ function readMeta(value: WorkflowSerializableValue | undefined): PreviewFeedback
  * a partial file — `{"decision":"approve"}`, say — is malformed, not an
  * approval, and so is a record that smuggles an extra top-level field.
  *
- * The restored decision is `meta.decision`, so a round that was indeterminate
- * reloads as `indeterminate` rather than as the fail-closed `revise` the schema
- * forced onto the top level.
+ * The restored decision is `meta.decision`, which is required, so a round that
+ * was indeterminate reloads as `indeterminate` rather than as the fail-closed
+ * `revise` the schema forced onto the top level.
+ *
+ * The two decisions must also pair the way `toArtifact` writes them: `approve`
+ * at the top level for an approving round, `revise` for every other. A record
+ * pairing them any other way — top-level `revise` under `meta.decision:
+ * "approve"`, say — is one this module could not have written, so it is
+ * malformed rather than an approval.
  *
  * An `approve` record carrying notes or live changes is malformed too:
  * `toPreviewFeedback` coerces that contradiction to `revise` before it is ever
- * written, so on disk it means the record was rewritten. That bar applies to
- * the restored decision, not only to the top level: `meta.decision` is what the
- * caller acts on, so metadata may not approve a round whose top level recorded
- * captured work. Approval never restores over captured work.
- * cross-ref: issue #2401 items A.3 and A.6.
+ * written, so on disk it means the record was rewritten. Approval never
+ * restores over captured work. cross-ref: issue #2401 items A.3 and A.6.
  */
 export function loadPreviewFeedback(input: {
   readonly artifactDir: string;
@@ -692,12 +728,12 @@ export function loadPreviewFeedback(input: {
     const notes = captureEntries(declared.user_notes);
     const changes = captureEntries(declared.live_changes);
     const captured = notes !== undefined || changes !== undefined;
-    if (declared.decision === "approve" && captured) return undefined;
     const meta = readMeta(rawMeta);
     if (meta === undefined) return undefined;
     if (meta.iteration !== input.iteration) return undefined;
     if (meta.stageName.trim() !== input.stageName.trim()) return undefined;
-    const decision = meta.decision ?? declared.decision;
+    const decision = meta.decision;
+    if (declared.decision !== (decision === "approve" ? "approve" : "revise")) return undefined;
     if (decision === "approve" && captured) return undefined;
     const snapshot = declared.annotated_snapshot?.trim();
     return {
