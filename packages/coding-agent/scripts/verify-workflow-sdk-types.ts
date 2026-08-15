@@ -55,7 +55,7 @@ export default workflow({
   run: async (ctx) => {
     const who: Name = ctx.inputs.name;
     await ctx.workflow(openClaudeDesignDefault, {
-      inputs: { prompt: \`design a greeting for \${who}\`, max_refinements: 1 },
+      inputs: { prompt: \`design a greeting for \${who}\` },
       stageName: "design",
     });
     await ctx.workflow(openClaudeDesign, { inputs: { prompt: "refine the greeting" } });

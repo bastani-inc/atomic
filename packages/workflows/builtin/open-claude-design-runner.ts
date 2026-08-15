@@ -1,12 +1,10 @@
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import {
-  DEFAULT_MAX_REFINEMENTS,
   REFERENCE_PRECEDENCE,
   buildPlaywrightCliBootstrapRules,
   discoveryDecisionSchema,
   ensurePlaywrightCli,
   joinResults,
-  positiveInteger,
   prepareArtifactDir,
   shouldEarlyExitForBrowser,
   taggedPrompt,
@@ -30,14 +28,14 @@ const DELEGATION_RULE =
 
 type OpenClaudeDesignOutputs = {
   readonly output_type?: string; readonly design_system?: string; readonly artifact?: string; readonly handoff?: string;
-  readonly approved_for_export?: boolean; readonly refinements_completed?: number; readonly import_context?: string; readonly run_id?: string;
+  readonly import_context?: string; readonly run_id?: string;
   readonly artifact_dir?: string; readonly preview_path?: string; readonly preview_file_url?: string; readonly spec_path?: string; readonly spec_file_url?: string;
   readonly playwright_cli_status?: string;
 };
 
 type OpenClaudeDesignContext = {
   readonly cwd?: string;
-  readonly inputs: { readonly prompt: string; readonly discover_references?: boolean; readonly max_refinements?: number };
+  readonly inputs: { readonly prompt: string; readonly discover_references?: boolean };
   exit?(options?: { readonly status?: string; readonly reason?: string; readonly outputs?: Partial<OpenClaudeDesignOutputs> }): never;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
@@ -57,10 +55,6 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   const inputs = designContext.inputs;
   const prompt = inputs.prompt;
   const discoverReferences = inputs.discover_references !== false;
-  const maxRefinements = positiveInteger(
-    inputs.max_refinements,
-    DEFAULT_MAX_REFINEMENTS,
-  );
 
   const workflowCwd = designContext.cwd ?? process.cwd();
   const { runId, artifactDir, previewPath, specPath } = prepareArtifactDir(
@@ -304,18 +298,12 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       ].join("\n")
     : "No user reference was provided; infer the design direction from the brief, project design context, research, and curated reference inspiration.";
 
-  let latestDesign = "";
-  let approvedForExport = false;
-  let refinementCount = 0;
-
   const refinement = await refineOpenClaudeDesign({
     designContext,
     prompt: designBrief,
     outputType,
-    maxRefinements,
     previewPath,
     previewFileUrl,
-    artifactDir,
     browserBootstrapRules,
     designContextFile,
     referencesFile,
@@ -324,9 +312,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     importContext,
     ui: designContext.ui,
   });
-  latestDesign = refinement.latestDesign;
-  approvedForExport = refinement.approvedForExport;
-  refinementCount = refinement.refinementCount;
+  const latestDesign = refinement.latestDesign;
 
   const exportResult = await exportOpenClaudeDesign({
     designContext,
@@ -342,7 +328,6 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     latestDesign,
     designModelConfig,
   });
-  latestDesign = exportResult.latestDesign;
   const handoff = exportResult.handoff;
 
   return {
@@ -350,8 +335,6 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     design_system: "project-derived design system",
     artifact: latestDesign,
     handoff: handoff.text,
-    approved_for_export: approvedForExport,
-    refinements_completed: refinementCount,
     import_context: importContext,
     run_id: runId,
     artifact_dir: artifactDir,

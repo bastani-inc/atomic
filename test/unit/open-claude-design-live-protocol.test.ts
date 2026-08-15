@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
 	buildLiveEventPrompt,
-	buildLiveSessionSummaryPrompt,
 	type LiveEvent,
 	needsModel,
 	parseLiveEvent,
@@ -127,12 +126,5 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 		assert.match(prompt, /three DISTINCT on-brand variants/);
 		assert.match(prompt, /Do not poll, do not reply, and do not exit/);
 		assert.match(prompt, /\/tmp\/run\/preview\.html/);
-	});
-
-	test("the summary prompt states the session already ended and asks only for the report", () => {
-		const prompt = buildLiveSessionSummaryPrompt({ previewPath: "/tmp/run/preview.html" });
-		assert.match(prompt, /The live session has ended/);
-		assert.match(prompt, /Do not re-open the browser, poll, or start another session/);
-		assert.match(prompt, /`decision`: `export`/);
 	});
 });

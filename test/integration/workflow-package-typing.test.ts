@@ -357,9 +357,7 @@ const typedFanOutOutputs: FanOutAndSynthesizeWorkflowOutputs = {
 };
 const typedFanOutInputs: FanOutAndSynthesizeWorkflowRunInputs = { prompt: "x", max_concurrency: 2 };
 const typedDesignOutputs: OpenClaudeDesignWorkflowOutputs = {
-  approved_for_export: true,
   preview_path: "preview.html",
-  refinements_completed: 1,
 };
 void typedFanOutOutputs;
 void typedFanOutInputs;
@@ -368,8 +366,8 @@ void typedDesignOutputs;
 run(openClaudeDesign, { prompt: "x", output_type: "prototype" });
 // @ts-expect-error builtin open-claude-design requires a prompt input.
 run(openClaudeDesign, {});
-// @ts-expect-error builtin open-claude-design max_refinements must be numeric.
-run(openClaudeDesignDefault, { prompt: "x", max_refinements: "two" });
+// @ts-expect-error builtin open-claude-design no longer accepts max_refinements.
+run(openClaudeDesignDefault, { prompt: "x", max_refinements: 1 });
 // @ts-expect-error WorkflowDefinition is non-structural; only workflow({...}) can produce it.
 const forgedWorkflow: WorkflowDefinition = { __piWorkflow: true, name: "forged", normalizedName: "forged", description: "forged", inputs: {}, run: () => ({}) };
 const forgedRunnable = { __piWorkflow: true, name: "forged", normalizedName: "forged", description: "forged", inputs: {}, run: () => ({}) } as const;

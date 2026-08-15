@@ -262,9 +262,9 @@ export type LiveReviewGateUi = {
 };
 
 /**
- * Choices for the deterministic gate raised before every `user-feedback-*`
- * stage. The first entry starts the live review session; the second accepts
- * the current design and skips straight to export.
+ * Choices for the deterministic gate raised before the live review session.
+ * The first entry starts the session; the second accepts the current design
+ * and skips straight to export.
  */
 export const LIVE_REVIEW_GATE_OPTIONS = [
   "Start live review",
@@ -272,20 +272,15 @@ export const LIVE_REVIEW_GATE_OPTIONS = [
 ] as const;
 
 /**
- * Message for the deterministic run-level prompt raised before each
- * `user-feedback-*` stage. The stage's browser long-poll never sets
- * `awaiting_input`, so without this gate the run is indistinguishable from
- * active compute while it waits on a human (issue #2060). Raising a `ctx.ui`
- * prompt sets the run-level pending prompt, which fires the needs-attention
- * badge and carries the preview URL to the root session deterministically.
- *
- * The session itself is unbounded, so the message counts sessions and states
- * the regeneration budget rather than pretending the review is capped
- * (issue #2411).
+ * Message for the deterministic run-level prompt raised before the live
+ * review session. The browser long-poll never sets `awaiting_input`, so
+ * without this gate the run is indistinguishable from active compute while it
+ * waits on a human (issue #2060). Raising a `ctx.ui` prompt sets the run-level
+ * pending prompt, which fires the needs-attention badge and carries the
+ * preview URL to the root session deterministically.
  */
 export function buildLiveReviewGateMessage(args: {
   readonly round: number;
-  readonly regenerationsLeft: number;
   readonly previewPath: string;
   readonly previewFileUrl: string;
 }): string {
@@ -295,10 +290,9 @@ export function buildLiveReviewGateMessage(args: {
     `Preview file: ${args.previewPath}`,
     `Preview URL: ${args.previewFileUrl}`,
     "",
-    `"${LIVE_REVIEW_GATE_OPTIONS[0]}" opens an interactive browser session; the user-feedback stage prints the live http:// review URL as soon as its server is up (attach with /workflow connect to see it, or open the preview URL above directly).`,
-    "The session is unbounded: pick elements, accept variants, and steer for as long as you like, and everything you accept lands in the preview as you go.",
-    `Asking for a fresh design from the brief instead ends the session and starts one more generate round; ${args.regenerationsLeft} of those are left.`,
-    `"${LIVE_REVIEW_GATE_OPTIONS[1]}" accepts the current design and proceeds to export.`,
+    `"${LIVE_REVIEW_GATE_OPTIONS[0]}" opens an interactive browser session; the session-start stage prints the live http:// review URL as soon as its server is up (attach with /workflow connect to see it, or open the preview URL above directly).`,
+    "The session ends when you leave it: pick elements, accept variants, and steer for as long as you like, and everything you accept lands in the preview as you go.",
+    `"${LIVE_REVIEW_GATE_OPTIONS[1]}" accepts the current design and proceeds to export without opening a session.`,
   ].join("\n");
 }
 

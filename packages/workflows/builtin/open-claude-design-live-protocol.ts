@@ -5,8 +5,7 @@
  * needs no ceremony because the user simply keeps talking. A workflow stage
  * boundary is a commit point, and the live contract's `"timeout" -> LOOP` is an
  * instruction to a model rather than a constraint: a stage that concludes on a
- * poll timeout returns a valid structured answer for a review the user never
- * finished, and the refinement loop routes on it.
+ * poll timeout would end a review the user never finished.
  *
  * So the workflow drives the protocol instead. Polling and replying are durable
  * `ctx.tool` nodes; the model is invoked only for the events that need it
@@ -255,29 +254,5 @@ export function buildLiveSessionStartPrompt(input: {
 			"</instructions>",
 		].join("\n"),
 		"<output_format>Under 120 words: the live review URL, the manual fallback path, and whether the browser opened.</output_format>",
-	].join("\n\n");
-}
-
-/** Prompt for the stage that reports a finished session as the structured deliverable. */
-export function buildLiveSessionSummaryPrompt(input: { readonly previewPath: string }): string {
-	return [
-		`<preview_path>${input.previewPath}</preview_path>`,
-		"<context>The live session has ended: the helper delivered `exit`, which is why you are being asked now. Every event in this session was handled in your own earlier turns.</context>",
-		"<role>You are an opinionated staff design engineer reporting a finished design review.</role>",
-		[
-			"<instructions>",
-			"Report the whole session from what actually happened in it. Do not re-open the browser, poll, or start another session.",
-			"Accepted variants and steered edits are already written into the preview; notes are the only thing still unapplied.",
-			"</instructions>",
-		].join("\n"),
-		[
-			"<output_format>",
-			"Markdown for the transcript with `display_method`, `preview_path`, `live_changes`, `annotated_snapshot`, and `user_notes`, then finish with the STRUCTURED final answer this stage's schema declares — that structured value, not the prose, is what the workflow reads (issue #2401):",
-			"`decision`: `export` when this preview should go to the exporter as it stands; `regenerate` when the user wants a fresh pass from the brief.",
-			"`user_notes`: one entry per note, verbatim; empty when there were none.",
-			"`live_changes`: one entry per variant or edit the user accepted; empty when there were none.",
-			"`annotated_snapshot`: the screenshot path when one was captured; omit it otherwise.",
-			"</output_format>",
-		].join("\n"),
 	].join("\n\n");
 }

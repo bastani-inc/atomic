@@ -5,22 +5,17 @@ export type OpenClaudeDesignOutputType = "prototype" | "wireframe" | "page" | "c
 export type OpenClaudeDesignWorkflowInputs = {
   readonly prompt: string;
   readonly discover_references: boolean;
-  readonly max_refinements: number;
 };
 
 export type OpenClaudeDesignWorkflowRunInputs = {
   readonly prompt: string;
   readonly discover_references?: boolean;
-  readonly max_refinements?: number;
 };
-
 export type OpenClaudeDesignWorkflowOutputs = WorkflowOutputValues & {
   readonly output_type?: string;
   readonly design_system?: string;
   readonly artifact?: string;
   readonly handoff?: string;
-  readonly approved_for_export?: boolean;
-  readonly refinements_completed?: number;
   readonly import_context?: string;
   readonly run_id?: string;
   readonly artifact_dir?: string;

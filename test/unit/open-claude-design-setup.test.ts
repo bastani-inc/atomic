@@ -150,16 +150,15 @@ describe("open-claude-design setup", () => {
 	});
 
 	describe("live review gate", () => {
-		test("live-review gate message names the preview, session, budget, and connect affordance", () => {
+		test("live-review gate message names the preview, session, and connect affordance", () => {
 			const message = buildLiveReviewGateMessage({
-				round: 2,
-				regenerationsLeft: 3,
+				round: 1,
 				previewPath: "/tmp/run/preview.html",
 				previewFileUrl: "file:///tmp/run/preview.html",
 			});
-			assert.match(message, /review session 2 /i);
-			assert.match(message, /unbounded/i);
-			assert.match(message, /3 of those are left/);
+			assert.match(message, /review session 1 /i);
+			assert.match(message, /ends when you leave/i);
+			assert.doesNotMatch(message, /regeneration|budget|max_refinements/i);
 			assert.ok(message.includes("/tmp/run/preview.html"));
 			assert.ok(message.includes("file:///tmp/run/preview.html"));
 			assert.ok(message.includes("/workflow connect"));
