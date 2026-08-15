@@ -19,7 +19,6 @@ const expectedBuiltinPackages = [
 	resolve("packages/subagents"),
 	resolve("packages/mcp"),
 	resolve("packages/web-access"),
-	resolve("packages/i-have-adhd"),
 	resolve("packages/intercom"),
 ];
 
@@ -28,7 +27,6 @@ const builtinPackageFixtures = [
 	{ packageName: "@bastani/subagents", dirname: "subagents", requiredEntry: join("src", "extension", "index.ts") },
 	{ packageName: "@bastani/mcp", dirname: "mcp", requiredEntry: "index.ts" },
 	{ packageName: "@bastani/web-access", dirname: "web-access", requiredEntry: "index.ts" },
-	{ packageName: "@bastani/i-have-adhd", dirname: "i-have-adhd", requiredEntry: "index.ts" },
 	{ packageName: "@bastani/intercom", dirname: "intercom", requiredEntry: "index.ts" },
 ] as const;
 
@@ -208,7 +206,6 @@ describe("coding-agent builtin resources", () => {
 				"packages/mcp/index.ts",
 				"packages/web-access/index.ts",
 				"packages/intercom/index.ts",
-				"packages/i-have-adhd/index.ts",
 			]) {
 				assert.ok(
 					extensionPaths.some((extensionPath) => extensionPath.endsWith(suffix)),
@@ -217,7 +214,7 @@ describe("coding-agent builtin resources", () => {
 			}
 
 			const skillNames = new Set(loader.getSkills().skills.map((skill) => skill.name));
-			for (const skillName of ["i-have-adhd", "subagent", "intercom"]) {
+			for (const skillName of ["subagent", "intercom"]) {
 				assert.ok(skillNames.has(skillName), `expected builtin skill ${skillName}`);
 			}
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the bundled `@bastani/i-have-adhd` package and its default-on ADHD-friendly response mode. The `/i-have-adhd` command, `--no-adhd` flag, `.i-have-adhd-off` marker, the "ADHD Mode" status badge, and the `stop adhd mode` / `normal mode` control phrases no longer exist; responses now use Atomic's default style.
+
 ## [0.9.14-alpha.1] - 2026-08-14
 
 ### Fixed
