@@ -3,6 +3,12 @@ import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
 import { APP_ACTION, isKeybindingsLike, matchesAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { defaultResponseFor, handlePromptCardInput, isPromptEscapeInput } from "./prompt-card.js";
+import {
+	closeStageChatSearch,
+	navigateStageChatSearch,
+	openStageChatSearch,
+	typeIntoStageChatSearch,
+} from "./stage-chat-search.js";
 import { releaseMountedCustomUi } from "./stage-chat-view-custom-ui.js";
 import { setComponentFocused, setEditorFocused } from "./stage-chat-view-render-helpers.js";
 import {
@@ -28,6 +34,9 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		return false;
 	}
 	if (matchesKey(data, Key.ctrl("x"))) {
+		// Leaving for the graph takes the find box with it: a chat reattached
+		// later opens on its transcript, not on someone's stale query.
+		closeStageChatSearch(ctx);
 		if (ctx.mountedCustomUi) releaseMountedCustomUi(ctx);
 		else {
 			const stage = currentStage(ctx);
@@ -38,6 +47,9 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		return true;
 	}
 	if (ctx.mountedCustomUi) {
+		// A mounted custom UI replaces the transcript body; a find box left open
+		// over it would search rows nobody can see.
+		closeStageChatSearch(ctx);
 		return handleMountedCustomUiInput(ctx, data);
 	}
 	const stage = currentStage(ctx);
@@ -45,6 +57,10 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 	const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
 
+	// A prompt card or a blocked stage swaps the transcript out of the body for
+	// the same reason, so the search goes with it.
+	if (ctx.search && (ctx.promptState || isBlocked(ctx))) closeStageChatSearch(ctx);
+	if (ctx.search) return handleStageChatSearchKeys(ctx, data);
 	if (ctx.promptState) {
 		if (handlePromptScrollInput(ctx, data, ctx.promptEditor === null)) return true;
 		handlePromptInput(ctx, data);
@@ -56,6 +72,10 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (handleStageChatJumpToBottom(ctx, data)) return true;
 	if (ctx.chatHost.handleScrollInput(data)) return true;
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearch) && !isBlocked(ctx)) {
+		openStageChatSearch(ctx);
+		return true;
+	}
 	if (matchesKey(data, Key.escape)) {
 		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
 			return ctx.chatHost.handleInput(data);
@@ -82,6 +102,51 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (blocked) return true;
 	return ctx.chatHost.handleInput(data);
+}
+
+/**
+ * Input while the find box is open.
+ *
+ * Escape is the contended key: the ladder below this function maps it to
+ * interrupt-the-stage or close-the-pane, and both are the wrong answer for a
+ * reader who just wants the find box gone. It is answered here, first, and only
+ * while a search is open — which is also why the literal key closes the search
+ * even for a host that wired no keybindings manager or bound `searchClose`
+ * elsewhere.
+ *
+ * Scrolling stays live underneath, matching the fullscreen surface: a reader
+ * can page through the transcript without dismissing the box. Everything else
+ * is query text.
+ */
+function handleStageChatSearchKeys(ctx: StageChatViewContext, data: string): boolean {
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	if (matchesKey(data, Key.escape) || matchesAction(keybindings, data, TUI_ACTION.altScreenSearchClose)) {
+		closeStageChatSearch(ctx);
+		return true;
+	}
+	if (matchesKey(data, Key.ctrl("c"))) {
+		closeStageChatSearch(ctx);
+		ctx.onClose();
+		return true;
+	}
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearchPrevious)) {
+		navigateStageChatSearch(ctx, -1);
+		return true;
+	}
+	// Enter advances even with no keybindings manager wired, so the box is
+	// navigable on a host that supplies none.
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearchNext) || matchesKey(data, Key.enter)) {
+		navigateStageChatSearch(ctx, 1);
+		return true;
+	}
+	if (matchesAction(keybindings, data, TUI_ACTION.altScreenSearch)) {
+		ctx.requestRender?.();
+		return true;
+	}
+	if (handleStageChatJumpToBottom(ctx, data)) return true;
+	if (ctx.chatHost.handleScrollInput(data)) return true;
+	typeIntoStageChatSearch(ctx, data);
+	return true;
 }
 
 function handleStageChatJumpToBottom(ctx: StageChatViewContext, data: string): boolean {

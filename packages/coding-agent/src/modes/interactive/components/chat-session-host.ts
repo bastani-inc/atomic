@@ -157,6 +157,23 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionBody(this.state, width, budget);
 	}
 
+	/**
+	 * Rows the body occupies at `width`, whether or not they are on screen.
+	 *
+	 * Pair with `renderBodyRows` to read the whole transcript — a stage-chat
+	 * search covers every row, not the window the reader is parked on. Both
+	 * measure the component stack the last `renderBody` installed, so call them
+	 * after at least one body render.
+	 */
+	bodyRowCount(width: number): number {
+		return this.state.bodyViewport.rowCount(width);
+	}
+
+	/** Body rows `startRow` (inclusive) to `endRow` (exclusive), unscrolled. */
+	renderBodyRows(width: number, startRow: number, endRow: number): string[] {
+		return this.state.bodyViewport.renderRows(width, startRow, endRow);
+	}
+
 	renderPendingMessages(width: number): string[] {
 		return renderChatSessionPendingMessages(this.state, width);
 	}
@@ -238,6 +255,15 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	scrollToBottom(): void {
 		this.state.bodyViewport.scrollToBottom();
+	}
+
+	/**
+	 * Park the body with absolute row `row` at the top of its window, clamped
+	 * to the last rendered layout. Used to reveal a search match the reader
+	 * cannot currently see.
+	 */
+	scrollBodyTo(row: number): void {
+		this.state.bodyViewport.scrollTo(row);
 	}
 
 	syncAnimationTick(): void {

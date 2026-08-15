@@ -305,6 +305,43 @@ export class ScrollableComponentViewport implements Component {
 		this.clampScroll();
 	}
 
+	/**
+	 * Park the viewport with `row` as its first visible row.
+	 *
+	 * The absolute counterpart of `scrollBy`, for a caller that already knows
+	 * which row it wants on screen — transcript search revealing a match it
+	 * found outside the current window. The target is clamped against the row
+	 * count of the **last render**, because that is the only layout this
+	 * viewport has measured; a caller that just changed the component stack
+	 * should render before scrolling to a row of the new content.
+	 */
+	scrollTo(row: number): void {
+		const target = Math.max(0, Math.min(this.maxScroll, Math.floor(row)));
+		this.scrollFromBottom = this.maxScroll - target;
+		this.clampScroll();
+	}
+
+	/**
+	 * Total rows the component stack occupies at `width`, on and off screen.
+	 *
+	 * This measures rather than paints: it is what lets a search read the whole
+	 * transcript instead of the window the reader happens to be parked on.
+	 */
+	rowCount(width: number): number {
+		return this.measureComponentRows(width).reduce((sum, rows) => sum + rows.rowCount, 0);
+	}
+
+	/**
+	 * Rows `startRow` (inclusive) through `endRow` (exclusive) of the whole
+	 * stack, independent of the current scroll offset. Deliberately not paired
+	 * with `supportsRowWindow`: a viewport is a scroll container rather than a
+	 * windowed component, and an enclosing viewport must keep measuring it by
+	 * its visible height.
+	 */
+	renderRows(width: number, startRow: number, endRow: number): string[] {
+		return this.renderVisibleRows(this.measureComponentRows(width), width, startRow, endRow);
+	}
+
 	handleInput(data: string): boolean {
 		const wheelDeltaRows = mouseWheelDeltaRows(data);
 		if (wheelDeltaRows !== 0) {

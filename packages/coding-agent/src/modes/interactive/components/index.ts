@@ -63,6 +63,15 @@ export { ThemeSelectorComponent } from "./theme-selector.ts";
 export { ThinkingSelectorComponent } from "./thinking-selector.ts";
 export { ToolExecutionComponent, type ToolExecutionOptions } from "./tool-execution.ts";
 export { TRANSCRIPT_JUMP_TO_END_URL, TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
+export {
+	findSearchMatches,
+	getSearchMatchKey,
+	highlightSearchMatchRow,
+	type TranscriptSearchHighlightRange,
+	type TranscriptSearchHighlightStyles,
+	type TranscriptSearchMatch,
+	type TranscriptSearchSegment,
+} from "./transcript-search.ts";
 export { TreeSelectorComponent } from "./tree-selector.ts";
 export { TrustSelectorComponent } from "./trust-selector.ts";
 export { UserMessageComponent } from "./user-message.ts";

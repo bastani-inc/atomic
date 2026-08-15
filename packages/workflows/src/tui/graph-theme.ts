@@ -272,3 +272,30 @@ export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 	}
 	return deriveGraphTheme(cleaned);
 }
+
+/** Foreground and background a search match is painted with. */
+export interface SearchMatchColors {
+	bg: string;
+	text: string;
+}
+
+/**
+ * Search-match colors for a stage chat, read from the host's live Pi theme.
+ *
+ * `searchMatchBg` and `searchMatchText` are the same two tokens the fullscreen
+ * transcript search paints with, so a stage-chat match looks identical to a
+ * transcript match under any theme. A theme that omits them resolves them from
+ * `selectedBg`/`text` inside Pi's own `Theme`; a host with no theme at all —
+ * or a token this terminal reports as a default reset — falls back to the
+ * overlay's own palette so the highlight is never invisible.
+ */
+export function searchMatchColors(piTheme: unknown, fallback: GraphTheme): SearchMatchColors {
+	if (!piTheme || typeof piTheme !== "object") {
+		return { bg: fallback.selection, text: fallback.text };
+	}
+	const t = piTheme as PiRuntimeTheme;
+	return {
+		bg: bgHex(t, "searchMatchBg") ?? bgHex(t, "selectedBg") ?? fallback.selection,
+		text: fgHex(t, "searchMatchText") ?? fgHex(t, "text") ?? fallback.text,
+	};
+}

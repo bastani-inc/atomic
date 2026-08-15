@@ -45,6 +45,15 @@ export const APP_ACTION = {
 
 export const TUI_ACTION = {
 	altScreenBottom: "tui.altScreen.bottom",
+	// Find-in-stage-chat. The same four actions pi-tui routes to the fullscreen
+	// transcript search: a focused stage chat claims them first (Atomic's
+	// fullscreen action allowlist defers them to the focused component), so the
+	// user searches the chat they are reading rather than the transcript behind
+	// it, under whatever keys they bound.
+	altScreenSearch: "tui.altScreen.search",
+	altScreenSearchNext: "tui.altScreen.searchNext",
+	altScreenSearchPrevious: "tui.altScreen.searchPrevious",
+	altScreenSearchClose: "tui.altScreen.searchClose",
 	editorCursorUp: "tui.editor.cursorUp",
 	editorCursorDown: "tui.editor.cursorDown",
 	editorCursorLeft: "tui.editor.cursorLeft",

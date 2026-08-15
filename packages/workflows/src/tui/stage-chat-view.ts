@@ -27,6 +27,12 @@ import { keyText, TranscriptFollowIndicator } from "@bastani/atomic";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
+	highlightStageChatSearchRows,
+	refreshStageChatSearch,
+	renderStageChatSearchBar,
+	STAGE_CHAT_SEARCH_ROWS,
+} from "./stage-chat-search.js";
+import {
 	renderBlockedBody,
 	renderPausedBody,
 	renderPromptBody,
@@ -93,6 +99,7 @@ export class StageChatView implements Component, Focusable {
 	private mountedCustomUi!: StageChatViewContext["mountedCustomUi"];
 	private mountingRequestId!: StageChatViewContext["mountingRequestId"];
 	private promptState!: StageChatViewContext["promptState"];
+	private search!: StageChatViewContext["search"];
 	private promptEditor!: StageChatViewContext["promptEditor"];
 	private promptEditorPromptId!: StageChatViewContext["promptEditorPromptId"];
 	private promptEditorSubmitFromEnter!: StageChatViewContext["promptEditorSubmitFromEnter"];
@@ -116,7 +123,10 @@ export class StageChatView implements Component, Focusable {
 		const stage = currentStage(ctx);
 		const blocked = isBlocked(ctx);
 
-		this.chatHost.focused = this.focused;
+		// The find box owns the caret while it is open, so the composer paints
+		// unfocused and only one component emits a cursor.
+		const searchActive = this.search !== null;
+		this.chatHost.focused = this.focused && !searchActive;
 		const headerLines = renderHeader(ctx, w, stage);
 		const sepLines = [sepRule(ctx, w)];
 		const customUiActive = this.mountedCustomUi !== null;
@@ -147,6 +157,7 @@ export class StageChatView implements Component, Focusable {
 			usageRows: usageLines.length,
 			editorRows: customUiActive ? customUiLines.length : editorLines.length,
 			footerRows: footerLines.length,
+			searchRows: searchActive ? STAGE_CHAT_SEARCH_ROWS : 0,
 		});
 		const visiblePendingLines = takeRows(pendingLines, plan.pendingRows);
 		const visibleWorkingLines = workingLines.slice(Math.max(0, workingLines.length - plan.workingRows));
@@ -180,18 +191,28 @@ export class StageChatView implements Component, Focusable {
 			);
 		} else {
 			transcriptBodyActive = true;
+			// Match before painting: the search reads every row of the transcript
+			// and may scroll the body to reveal one the window does not hold.
+			refreshStageChatSearch(ctx, w, bodyBudget);
 			bodyLines = this.chatHost.renderBody(w, bodyBudget);
+			bodyLines = highlightStageChatSearchRows(
+				ctx,
+				bodyLines,
+				Math.max(0, this.chatHost.bodyMaxScroll() - this.chatHost.bodyScrollFromBottom()),
+			);
 		}
 		const indicatorLines = transcriptBodyActive && bodyBudget > 1 ? indicator.render(w) : [];
 		const indicatorVisible = indicatorLines.length > 0;
 		const dropBodyRow = transcriptBodyActive && indicatorVisible && bodyLines.length >= bodyBudget;
 		const visibleBodyLines = bodyLines.slice(dropBodyRow ? 1 : 0, bodyBudget);
 
+		const searchLines = searchActive ? renderStageChatSearchBar(ctx, w).slice(0, plan.searchRows) : [];
 		const lines = [
 			...headerLines,
 			...sepLines,
 			...visibleBodyLines,
 			...indicatorLines,
+			...searchLines,
 			...visiblePendingLines,
 			...visibleWorkingLines,
 			...visibleUsageLines,
