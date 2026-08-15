@@ -7,6 +7,7 @@ import { ATOMIC_WORKING_FRAME_MS } from "../../packages/coding-agent/src/modes/i
 import { ANIMATION_FRAME_MS } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-utils.ts";
 import { setThemeInstance } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
+import { useAnsiColorEnvironment } from "../helpers/ansi-color-env.ts";
 import {
 	editorTheme,
 	installLifecycleFakeClock,
@@ -14,6 +15,9 @@ import {
 	rawWorkingLine,
 	workingLine,
 } from "./chat-session-host-working-lifecycle-fixture.ts";
+
+/** Every phase assertion below reads an escape sequence. */
+useAnsiColorEnvironment();
 
 const originalReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
 const pulseStyle = {
