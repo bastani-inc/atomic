@@ -63,19 +63,49 @@ import {
 	type InternalUiActionResult,
 } from "./interactive-tui.ts";
 
-const FULLSCREEN_VIEWPORT_ACTIONS = [
+/** Move the transcript and nothing else: what a reserving overlay may release. */
+const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
 	"tui.altScreen.pageUp",
 	"tui.altScreen.pageDown",
 	"tui.altScreen.halfPageUp",
 	"tui.altScreen.halfPageDown",
+	"tui.altScreen.lineUp",
+	"tui.altScreen.lineDown",
 	"tui.altScreen.previousPrompt",
 	"tui.altScreen.nextPrompt",
 	"tui.altScreen.top",
 	"tui.altScreen.bottom",
 ] as const;
 
+/** Open and drive pi-tui's find box over the transcript. */
+const FULLSCREEN_SEARCH_ACTIONS = [
+	"tui.altScreen.search",
+	"tui.altScreen.searchNext",
+	"tui.altScreen.searchPrevious",
+	"tui.altScreen.searchClose",
+] as const;
+
+const FULLSCREEN_VIEWPORT_ACTIONS = [...FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS, ...FULLSCREEN_SEARCH_ACTIONS] as const;
+
 export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
 	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
+}
+
+/**
+ * Whether a key scrolls the transcript, as opposed to driving a search over it.
+ * A reserving overlay — the `ask_user_question` dialog, an extension component
+ * with `reserveTranscriptRows` — declines these so the strip above it still
+ * pages and jumps (#2378), and keeps everything else.
+ *
+ * The search actions are deliberately excluded. Their default keys include
+ * `enter`, `shift+enter`, `escape`, and `ctrl+g`, which such a dialog owns for
+ * submit, cancel, and its own editing; and pi-tui acts on `searchNext`,
+ * `searchPrevious`, and `searchClose` only while its find box holds focus,
+ * which cannot be true while the dialog does. Releasing them would drop those
+ * keys into a viewport that ignores them.
+ */
+export function isFullscreenTranscriptScrollAction(data: string, keybindings: KeybindingsManager): boolean {
+	return FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS.some((action) => keybindings.matches(data, action));
 }
 
 /**
@@ -92,9 +122,14 @@ export function isFullscreenViewportAction(data: string, keybindings: Keybinding
  * and wheel reports are offered to the focused overlay, and
  * `AtomicTuiAltScreen` replays what it does not consume into pi-tui's viewport
  * listener. Atomic's answer stands, because a mounted dialog that keeps its
- * selection keys must not also freeze the transcript behind it. pi-tui keeps
- * every action this list omits, so a user-bound `tui.altScreen.lineUp` still
- * reaches the focused component first.
+ * selection keys must not also freeze the transcript behind it.
+ *
+ * **The list covers every `tui.altScreen.*` action pi-tui defines**, transcript
+ * search included. A focused overlay therefore gets first refusal on
+ * `ctrl+shift+f` as well as on the scroll keys, which is what keeps a search
+ * scoped to the surface the reader is looking at instead of opening a find box
+ * over the main transcript hidden behind it. An action a focused overlay
+ * declines still reaches the transcript, so the shortcut is never simply lost.
  *
  * **A focused overlay with no `handleInput` is still an overlay.** The handler
  * is optional — `ExtensionCustomComponent` marks it `handleInput?` and

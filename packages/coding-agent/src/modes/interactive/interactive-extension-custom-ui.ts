@@ -5,7 +5,7 @@ import {
 	transcriptOverlayIntersection,
 	type WrappedOverlayComponent,
 } from "./components/reserved-bottom-overlay.ts";
-import { InteractiveModeBase, isFullscreenViewportAction } from "./interactive-mode-base.ts";
+import { InteractiveModeBase, isFullscreenTranscriptScrollAction } from "./interactive-mode-base.ts";
 import {
 	type Component,
 	type KeybindingsManager,
@@ -224,7 +224,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 							() => this.ui.terminal.rows,
 							resolvedOverlayOptions?.margin,
 							resolvedOverlayOptions?.maxHeight,
-							(data) => isFullscreenViewportAction(data, this.keybindings) || isMouseWheelInput(data),
+							(data) => isFullscreenTranscriptScrollAction(data, this.keybindings) || isMouseWheelInput(data),
 							() => this.ui.requestRender(),
 						);
 						mountedComponent = bounded;

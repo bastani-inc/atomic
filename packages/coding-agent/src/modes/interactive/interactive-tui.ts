@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
+import { theme } from "./theme/theme.ts";
 
 interface TuiOverlayEntry {
 	component: Component;
@@ -298,10 +299,9 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		// replays only what the overlay declined (#2378 / PR #2381); pi-tui then
 		// defers the replay a second time and the transcript freezes behind an
 		// open dialog. Suppress the native answer for the replay alone. Input the
-		// gate never routed through the overlay — every action outside
-		// `FULLSCREEN_VIEWPORT_ACTIONS`, including a user-bound
-		// `tui.altScreen.lineUp` — keeps pi-tui's own routing and still reaches
-		// the focused component first.
+		// gate never routed through the overlay — anything the gate admits to the
+		// viewport, including every key while pi-tui's own find box holds focus —
+		// keeps pi-tui's routing and its own deferral.
 		const deferral = this as unknown as TuiAltScreenViewportDeferral;
 		const deferToOverlay = deferral.shouldDeferViewportInputToOverlay?.bind(this);
 		deferral.shouldDeferViewportInputToOverlay = () => !viewportInputReplays.has(this) && deferToOverlay?.() === true;
@@ -526,6 +526,15 @@ function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
 }
 
 /**
+ * Style a transcript search match. Read the theme at render time rather than at
+ * construction: the renderer is built before `initTheme` on some startup paths,
+ * and `/theme` swaps the instance under a running session.
+ */
+function styleSearchMatch(text: string): string {
+	return theme.bg("searchMatchBg", theme.fg("searchMatchText", text));
+}
+
+/**
  * Build Atomic's fullscreen renderer, `viewportInputGate` included, without
  * consulting the environment. `createInteractiveTui` calls this whenever
  * fullscreen applies; fixtures that assert fullscreen behavior call it
@@ -539,6 +548,8 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
+			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
+			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			openUrl: (url) =>
 				handleUrlActivation(url, {
 					onOverlayInternalUiAction: options.onOverlayInternalUiAction,

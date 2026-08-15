@@ -43,7 +43,7 @@ const CTRL_SHIFT_F = "\x1b[102;6u";
 /** pi-tui's `PAGE_SCROLL_OVERLAP`: a page moves `viewportHeight` minus this. */
 const PAGE_SCROLL_OVERLAP = 4;
 const TRANSCRIPT_LINES = 120;
-/** Atomic ships the search actions unbound; a user binding is how the find box opens today. */
+/** Pinned explicitly so these fixtures do not silently follow a change in pi-tui's default. */
 const SEARCH_BINDING: KeybindingsConfig = { "tui.altScreen.search": "ctrl+shift+f" };
 const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
 /** pi-tui's zero-width hardware-cursor marker (`dist/tui.js:21`). */
@@ -348,13 +348,12 @@ describe("pi-tui 0.84.2 overlay viewport deferral", () => {
 	});
 
 	/**
-	 * `tui.altScreen.lineUp` is deliberately absent from
-	 * `FULLSCREEN_VIEWPORT_ACTIONS`, so Atomic's gate never offers it to the
-	 * overlay and never replays it. pi-tui's native deferral therefore decides,
-	 * and a focused component sees the key first — what `docs/keybindings.md`
-	 * documents for a custom `tui.altScreen.*` binding.
+	 * `tui.altScreen.lineUp` is listed in `FULLSCREEN_VIEWPORT_ACTIONS` like
+	 * every other `tui.altScreen.*` action, so the focused overlay is offered it
+	 * first — what `docs/keybindings.md` documents for a custom
+	 * `tui.altScreen.*` binding — and a consuming overlay keeps it.
 	 */
-	test("a viewport action outside Atomic's gate reaches a consuming focused overlay", () => {
+	test("a single-line scroll binding reaches a consuming focused overlay", () => {
 		const fixture = createFixture({ consumes: true, userBindings: { "tui.altScreen.lineUp": "ctrl+y" } });
 		try {
 			const { top } = anchorAtEnd(fixture);
@@ -625,29 +624,29 @@ describe("an asynchronous overlay handler", () => {
 
 /**
  * pi-tui 0.84.2 binds transcript search by default and matches
- * `tui.altScreen.search` *before* it defers input to a focused overlay. Atomic's
- * gate does not list the search actions and nothing themes or scopes them yet,
- * so an inherited default would open an unthemed search over the main transcript
- * from inside a focused overlay and take its focus.
+ * `tui.altScreen.search` *before* it defers input to a focused overlay. Atomic
+ * inherits those defaults now that the actions are themed and listed in
+ * `FULLSCREEN_VIEWPORT_ACTIONS`: the gate offers `ctrl+shift+f` to a focused
+ * overlay first, so a search opens over the transcript the reader is actually
+ * looking at rather than the one hidden behind an open dialog.
  */
 describe("pi-tui 0.84.2 transcript search defaults", () => {
-	test("Atomic ships the four transcript-search actions unbound", () => {
+	test("Atomic inherits the four transcript-search bindings", () => {
 		for (const action of [
 			"tui.altScreen.search",
 			"tui.altScreen.searchNext",
 			"tui.altScreen.searchPrevious",
 			"tui.altScreen.searchClose",
 		] as const) {
-			expect(TUI_KEYBINDINGS[action].defaultKeys, `pi-tui still binds ${action}`).not.toEqual([]);
-			expect(KEYBINDINGS[action].defaultKeys, `${action} is bound by default`).toEqual([]);
+			expect(TUI_KEYBINDINGS[action].defaultKeys, `pi-tui no longer binds ${action}`).not.toEqual([]);
+			expect(KEYBINDINGS[action].defaultKeys, `${action} diverges from pi-tui`).toEqual(
+				TUI_KEYBINDINGS[action].defaultKeys,
+			);
 			expect(KEYBINDINGS[action].description).toBe(TUI_KEYBINDINGS[action].description);
 		}
 
-		// The same byte sequence matches under pi-tui's defaults, which is what
-		// proves the assertion above is about Atomic's suppression rather than an
-		// unrecognized key.
 		expect(new TuiKeybindingsManager(TUI_KEYBINDINGS, {}).matches(CTRL_SHIFT_F, "tui.altScreen.search")).toBe(true);
-		expect(new KeybindingsManager().matches(CTRL_SHIFT_F, "tui.altScreen.search")).toBe(false);
+		expect(new KeybindingsManager().matches(CTRL_SHIFT_F, "tui.altScreen.search")).toBe(true);
 	});
 
 	test("ctrl+shift+f reaches the focused overlay instead of opening a transcript search", () => {
@@ -667,12 +666,12 @@ describe("pi-tui 0.84.2 transcript search defaults", () => {
 		}
 	});
 
-	test("ctrl+shift+f opens no search over the main transcript either", () => {
+	test("ctrl+shift+f opens a search over the main transcript from the editor", () => {
 		const fixture = createFixture({ mountOverlay: false });
 		try {
 			fixture.terminal.input(CTRL_SHIFT_F);
 			fixture.tui.renderNow();
-			expect((fixture.tui as unknown as { activeSearch?: unknown }).activeSearch).toBeUndefined();
+			expect((fixture.tui as unknown as { activeSearch?: unknown }).activeSearch).toBeDefined();
 		} finally {
 			fixture.stop();
 		}

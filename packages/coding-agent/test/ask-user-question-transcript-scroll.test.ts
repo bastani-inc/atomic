@@ -31,6 +31,7 @@ import {
 	transcriptOverlayIntersection,
 } from "../src/modes/interactive/components/reserved-bottom-overlay.ts";
 import {
+	isFullscreenTranscriptScrollAction,
 	isFullscreenViewportAction,
 	shouldHandleFullscreenViewportInput,
 } from "../src/modes/interactive/interactive-mode-base.ts";
@@ -1473,7 +1474,7 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 			() => 24,
 			undefined,
 			undefined,
-			(data) => isFullscreenViewportAction(data, keybindings) || isMouseWheelInput(data),
+			(data) => isFullscreenTranscriptScrollAction(data, keybindings) || isMouseWheelInput(data),
 		);
 
 		for (const data of [PAGE_UP, PAGE_DOWN, HOME, END, WHEEL_UP, WHEEL_DOWN]) {
@@ -1546,7 +1547,7 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 				() => terminal.rows,
 				undefined,
 				undefined,
-				(data) => isFullscreenViewportAction(data, keybindings) || isMouseWheelInput(data),
+				(data) => isFullscreenTranscriptScrollAction(data, keybindings) || isMouseWheelInput(data),
 			);
 			tui.showOverlay(bounded, QUESTIONNAIRE_OVERLAY_OPTIONS);
 			tui.renderNow();

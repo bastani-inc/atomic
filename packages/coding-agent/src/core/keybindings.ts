@@ -62,19 +62,13 @@ declare module "@earendil-works/pi-tui" {
 
 export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
-	// pi-tui 0.84.2 ships transcript search bound by default (`ctrl+shift+f`,
-	// plus `enter`/`shift+enter`/`escape` while its find box is focused).
-	// Atomic routes fullscreen viewport actions through an explicit allowlist
-	// (`FULLSCREEN_VIEWPORT_ACTIONS`, `modes/interactive/interactive-mode-base.ts`)
-	// that does not list them, and pi-tui matches `tui.altScreen.search` *before*
-	// it defers input to a focused overlay — so the inherited default opens an
-	// unthemed search over the main transcript from inside a focused overlay and
-	// takes its focus. Ship the actions unbound until the layer that routes,
-	// themes, and scopes them lands.
-	"tui.altScreen.search": { ...TUI_KEYBINDINGS["tui.altScreen.search"], defaultKeys: [] },
-	"tui.altScreen.searchNext": { ...TUI_KEYBINDINGS["tui.altScreen.searchNext"], defaultKeys: [] },
-	"tui.altScreen.searchPrevious": { ...TUI_KEYBINDINGS["tui.altScreen.searchPrevious"], defaultKeys: [] },
-	"tui.altScreen.searchClose": { ...TUI_KEYBINDINGS["tui.altScreen.searchClose"], defaultKeys: [] },
+	// pi-tui 0.84.2's transcript-search defaults (`ctrl+shift+f`, plus
+	// `enter`/`shift+enter`/`ctrl+g`/`ctrl+shift+g`/`escape` while its find box
+	// is focused) are inherited as they ship. Atomic routes every
+	// `tui.altScreen.*` action through `FULLSCREEN_VIEWPORT_ACTIONS`
+	// (`modes/interactive/interactive-mode-base.ts`), so a focused overlay is
+	// offered `ctrl+shift+f` before the viewport opens a search behind it, and
+	// the matches are themed through `searchMatchBg`/`searchMatchText`.
 	"app.interrupt": { defaultKeys: "escape", description: "Cancel or abort" },
 	"app.clear": { defaultKeys: "ctrl+c", description: "Clear editor" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when editor is empty" },
