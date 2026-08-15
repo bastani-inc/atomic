@@ -1,7 +1,8 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import { feedbackArtifactPath } from "../../packages/workflows/builtin/open-claude-design-feedback.js";
@@ -396,5 +397,88 @@ describe("open-claude-design — structured feedback deliverable (#2401)", () =>
 		assert.ok(existsSync(feedbackArtifactPath(artifactDir, 2)));
 		assert.ok(readPathEndsWith(ctx.calls.taskOptions["generate-2"]?.[0], join("feedback", "iteration-1.json")));
 		rmSync(artifactDir, { recursive: true, force: true });
+	});
+});
+
+describe("open-claude-design — the workflow owns the live poll loop (#2401 follow-up)", () => {
+	const STRUCTURED_EXPORT_LOOP = JSON.stringify({ decision: "export", user_notes: [], live_changes: [] });
+
+	/** A project whose impeccable scripts resolve, so the live-driven path is taken. */
+	function makeLiveProject() {
+		const dir = mkdtempSync(join(tmpdir(), "ocd-live-"));
+		mkdirSync(join(dir, ".agents", "skills", "impeccable", "scripts"), { recursive: true });
+		writeFileSync(join(dir, ".agents", "skills", "impeccable", "scripts", "live-poll.mjs"), "#!/usr/bin/env node\n");
+		return dir;
+	}
+
+	test("polls, calls the model back per event, replies, and ends only on the helper's exit", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const cwd = makeLiveProject();
+		try {
+			const ctx = makeMockCtx(
+				{ prompt: "Redesign the Atomic website", max_refinements: 1 },
+				{
+					cwd,
+					task: (name) => (name === "user-feedback-1" ? STRUCTURED_EXPORT_LOOP : undefined),
+					tool: (name) => {
+						if (name === "live-poll-1-1")
+							return { type: "generate", id: "g1", raw: '{"type":"generate","id":"g1"}' };
+						if (name === "live-poll-1-2") return { type: "steer", id: "s1", raw: '{"type":"steer","id":"s1"}' };
+						if (name === "live-poll-1-3") return { type: "accept", id: "a1", raw: '{"type":"accept","id":"a1"}' };
+						if (name.startsWith("live-poll-")) return { type: "exit", raw: '{"type":"exit"}' };
+						if (name.startsWith("live-reply-")) return { code: 0, stdout: "", stderr: "" };
+						return undefined;
+					},
+				},
+			);
+
+			await d.run(ctx);
+
+			// The session opens, each model-facing event gets its own stage, and the
+			// structured deliverable is reported only after `exit`.
+			assert.equal(ctx.calls.task.includes("user-feedback-1-start"), true);
+			assert.equal(ctx.calls.task.includes("live-generate-1-1"), true);
+			assert.equal(ctx.calls.task.includes("live-steer-1-2"), true);
+			// `accept` is acknowledged by the poll script itself: no stage, no reply.
+			assert.equal(
+				ctx.calls.task.some((name) => name.startsWith("live-accept")),
+				false,
+			);
+			assert.equal(ctx.calls.tool.includes("live-reply-1-3"), false);
+			// Replies acknowledge exactly the two model-handled events.
+			assert.equal(ctx.calls.tool.includes("live-reply-1-1"), true);
+			assert.equal(ctx.calls.tool.includes("live-reply-1-2"), true);
+			// Four polls: generate, steer, accept, then exit.
+			assert.equal(ctx.calls.tool.filter((name) => name.startsWith("live-poll-")).length, 4);
+			assert.equal(ctx.calls.task.includes("user-feedback-1"), true);
+			assert.equal(ctx.calls.task.includes("exporter"), true);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("a project without the impeccable scripts falls back to the single review stage", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const d = mod.default as unknown as WorkflowDefinition;
+		const cwd = mkdtempSync(join(tmpdir(), "ocd-nolive-"));
+		try {
+			const ctx = makeMockCtx(
+				{ prompt: "Redesign the Atomic website", max_refinements: 1 },
+				{ cwd, task: (name) => (name === "user-feedback-1" ? STRUCTURED_EXPORT_LOOP : undefined) },
+			);
+
+			await d.run(ctx);
+
+			assert.equal(
+				ctx.calls.tool.some((name) => name.startsWith("live-poll-")),
+				false,
+			);
+			assert.equal(ctx.calls.task.includes("user-feedback-1-start"), false);
+			assert.equal(ctx.calls.task.includes("user-feedback-1"), true);
+			assert.equal(ctx.calls.task.includes("exporter"), true);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });

@@ -21,12 +21,29 @@ import {
   type LiveReviewGateUi,
 } from "./open-claude-design-setup.js";
 
+import {
+  buildLiveEventPrompt,
+  buildLiveSessionStartPrompt,
+  buildLiveSessionSummaryPrompt,
+  needsModel,
+  pollLiveEvent,
+  replyLiveEvent,
+  replyTokenFor,
+  resolveLiveScript,
+} from "./open-claude-design-live-protocol.js";
+
 const GROUNDED_REPORTING =
   "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.";
 
 type DesignContext = {
   task(name: string, options: object): Promise<WorkflowTaskResult>;
   parallel(steps: readonly object[], options: { readonly task: string }): Promise<WorkflowTaskResult[]>;
+  /**
+   * Durable tool node. Optional so the workflow still loads on a host that
+   * predates `ctx.tool`; the live review falls back to the single-stage path
+   * when it is missing.
+   */
+  tool?<T>(name: string, args: object, fn: (handle: { readonly signal: AbortSignal }) => Promise<T>): Promise<T>;
 };
 
 type ModelConfig = Record<string, object | string | readonly string[]>;
@@ -188,18 +205,20 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     // turn cannot displace (issue #2401).
     const round = generateRounds;
     const feedbackStageName = `user-feedback-${round}`;
-    const userFeedbackResult = await designContext.task(feedbackStageName, {
-      prompt: buildLivePreviewDisplayPrompt({
-        previewPath,
-        previewFileUrl,
-        browserBootstrapRules,
-        ...(round === 1 ? {} : { iteration: round }),
-      }),
-      schema: previewFeedbackSchema,
-      ...designModelConfig,
-      ...forkContinuationOptions(latestReviewSessionFile),
+    const userFeedbackResult = await runLiveReviewSession({
+      designContext,
+      round,
+      feedbackStageName,
+      previewPath,
+      previewFileUrl,
+      browserBootstrapRules,
+      designModelConfig,
+      workflowCwd,
+      sessionFile: latestReviewSessionFile,
+      onSessionFile: (file) => {
+        latestReviewSessionFile = file;
+      },
     });
-
     latestReviewSessionFile = userFeedbackResult.sessionFile ?? latestReviewSessionFile;
     const feedback = toPreviewFeedback({ iteration: round, stageName: feedbackStageName, result: userFeedbackResult });
     persistPreviewFeedback({ artifactDir, workflowCwd, feedback });
@@ -228,6 +247,100 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     approvedForExport,
     refinementCount: generateRounds,
   };
+}
+
+type LiveReviewSessionOptions = {
+  readonly designContext: DesignContext;
+  readonly round: number;
+  readonly feedbackStageName: string;
+  readonly previewPath: string;
+  readonly previewFileUrl: string;
+  readonly browserBootstrapRules: string;
+  readonly designModelConfig: ModelConfig;
+  readonly workflowCwd: string;
+  readonly sessionFile: string | undefined;
+  readonly onSessionFile: (sessionFile: string) => void;
+};
+
+/**
+ * Run one live review session and return its structured deliverable.
+ *
+ * The workflow owns the poll loop: `ctx.tool` polls and replies, and the model
+ * is called back only for the events that need it. Termination is the helper's
+ * `exit` event rather than a model's judgment that a review looked finished,
+ * which is what let a poll timeout end a review the user was still in.
+ *
+ * When the impeccable live scripts are not installed for this project, or the
+ * host predates `ctx.tool`, fall back to the model-driven single stage.
+ */
+async function runLiveReviewSession(options: LiveReviewSessionOptions): Promise<WorkflowTaskResult> {
+  const { designContext, round, feedbackStageName, previewPath, previewFileUrl, browserBootstrapRules, designModelConfig, workflowCwd } = options;
+  let sessionFile = options.sessionFile;
+  const remember = (result: WorkflowTaskResult): WorkflowTaskResult => {
+    if (result.sessionFile !== undefined) {
+      sessionFile = result.sessionFile;
+      options.onSessionFile(result.sessionFile);
+    }
+    return result;
+  };
+
+  const tool = designContext.tool;
+  const canDriveLive = tool !== undefined && resolveLiveScript(workflowCwd, "live-poll.mjs") !== undefined;
+
+  if (tool === undefined || !canDriveLive) {
+    return remember(
+      await designContext.task(feedbackStageName, {
+        prompt: buildLivePreviewDisplayPrompt({
+          previewPath,
+          previewFileUrl,
+          browserBootstrapRules,
+          ...(round === 1 ? {} : { iteration: round }),
+        }),
+        schema: previewFeedbackSchema,
+        ...designModelConfig,
+        ...forkContinuationOptions(sessionFile),
+      }),
+    );
+  }
+
+  remember(
+    await designContext.task(`${feedbackStageName}-start`, {
+      prompt: buildLiveSessionStartPrompt({ previewPath, previewFileUrl, browserBootstrapRules, round }),
+      ...designModelConfig,
+      ...forkContinuationOptions(sessionFile),
+    }),
+  );
+
+  for (let index = 1; ; index += 1) {
+    // `timeout` is absorbed inside the poll, so an idle hour costs no nodes and
+    // never looks like an ending.
+    const event = await tool(`live-poll-${round}-${index}`, { round, index }, async ({ signal }) =>
+      pollLiveEvent({ workflowCwd, signal }),
+    );
+    if (event.type === "exit") break;
+    // accept / discard / prefetch are acknowledged by the poll script itself.
+    if (!needsModel(event)) continue;
+    remember(
+      await designContext.task(`live-${event.type}-${round}-${index}`, {
+        prompt: buildLiveEventPrompt({ event, previewPath }),
+        ...designModelConfig,
+        ...forkContinuationOptions(sessionFile),
+      }),
+    );
+    const token = replyTokenFor(event);
+    await tool(`live-reply-${round}-${index}`, { round, index, token }, async ({ signal }) =>
+      replyLiveEvent({ workflowCwd, token, signal }),
+    );
+  }
+
+  return remember(
+    await designContext.task(feedbackStageName, {
+      prompt: buildLiveSessionSummaryPrompt({ previewPath }),
+      schema: previewFeedbackSchema,
+      ...designModelConfig,
+      ...forkContinuationOptions(sessionFile),
+    }),
+  );
 }
 
 function buildInitialGeneratePrompt(args: {
