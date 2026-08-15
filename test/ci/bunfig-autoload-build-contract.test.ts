@@ -13,26 +13,37 @@
  * ## What this contract covers, and what it does not
  *
  * It verifies that each of the three production build invocations passes
- * `--no-compile-autoload-bunfig` on the bun compile argv, and that removing it
- * at any site fails the test. It deliberately does not implement a POSIX shell,
- * so a hostile rewrite of a build script can still evade it; the guarantee is
- * against accidental refactor regression, not against a determined author.
+ * `--no-compile-autoload-bunfig` to the bun compile *as an option*, and that
+ * removing it at any site fails the test. It deliberately does not implement a
+ * POSIX shell, so a hostile rewrite of a build script can still evade it; the
+ * guarantee is against accidental refactor regression, not against a determined
+ * author.
  *
- * Within that boundary, the flag counts only where Bun reads it — in the tokens
- * the `bun build --compile` command itself receives. Two ways of writing the
- * flag where the shell never hands it to Bun are therefore excluded explicitly,
- * because both were used to make an earlier version of this file certify a
- * build whose compiled binary was wide open: a `#` comment (`npm run` puts a
- * package script through a shell too, so the same rule applies to both sources)
- * and a redirection operand, which the shell consumes as a filename.
+ * Within that boundary, the flag counts only where Bun reads it. Two ways of
+ * writing it that Bun never acts on are therefore excluded explicitly, because
+ * each one made an earlier version of this file certify a build whose compiled
+ * binary was wide open:
+ *
+ *   - The shell never hands the token to Bun: a `#` comment (`npm run` puts a
+ *     package script through a shell too, so the rule applies to package
+ *     scripts and `.sh` sources alike) or a redirection operand, which the
+ *     shell consumes as a filename.
+ *   - Bun receives the token but reads it as some other option's value.
+ *     `bun build` takes `--external=<val>`, and Bun accepts a separated value,
+ *     so `--external --no-compile-autoload-bunfig` compiles a binary that still
+ *     loads a caller's bunfig while the token sits in argv. Option arity comes
+ *     from `bun build --help` rather than a list maintained here, so a new
+ *     value-taking option cannot open the same hole silently.
  *
  * Three tests, because no one of them holds alone. The first says the flag is
- * in the argv of every `bun build --compile` this repository runs — that is the
- * part a refactor breaks. The second says the argv scan is bound to that one
- * command, so text the shell drops or eats cannot stand in for a flag Bun never
- * receives, and it replays both evasions against the real build sources. The
- * third says the flag still *does* what its name claims, measured against a
- * control build that has it removed; a flag nobody proves is a comment.
+ * an option of every `bun build --compile` this repository runs — that is the
+ * part a refactor breaks. The second says the scan is bound to that one command
+ * and to option position, so text the shell drops, text the shell eats, and
+ * text Bun reads as a filename cannot stand in for a guard; it replays each
+ * evasion against the real build sources. The third says the flag still *does*
+ * what its name claims, and it measures the option list each production site
+ * actually compiles with rather than a hand-written one, so an argv that only
+ * looks guarded fails here too.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -198,11 +209,87 @@ function bunCompileArgv(source: string): string[][] {
 	return found;
 }
 
+/**
+ * The `bun build` options that consume the *next* argv token as their value,
+ * read out of `bun build --help` (`  -e, --external=<val>   Exclude module…`).
+ *
+ * Read rather than listed, because a hard-coded list is exactly what goes stale:
+ * the hole this closes is that `--external --no-compile-autoload-bunfig`
+ * compiles an unguarded binary while the flag is plainly present in argv, and a
+ * value-taking option Bun adds after today would reopen it in silence.
+ */
+function parseValueTakingOptions(help: string): Set<string> {
+	const names = new Set<string>();
+	for (const line of help.split("\n")) {
+		if (!/^\s{2,}-/u.test(line)) continue;
+		const spec = line.trim().split(/\s{2,}/u)[0] as string;
+		if (!spec.includes("=<")) continue;
+		for (const part of spec.split(/[,\s]+/u)) {
+			if (part.startsWith("-")) names.add(part.split("=")[0] as string);
+		}
+	}
+	return names;
+}
+
+let cachedValueTakingOptions: Set<string> | undefined;
+
+/**
+ * `parseValueTakingOptions` against the installed Bun, with the sentinels the
+ * parse must get right.
+ *
+ * An empty or wrong set is the dangerous failure: it degrades every check below
+ * to "the token appears somewhere in argv", which is the bug this file was
+ * repaired to catch. So the accessor refuses to hand back a set that has lost
+ * the option arity it is consulted about.
+ */
+function bunBuildValueTakingOptions(): Set<string> {
+	if (cachedValueTakingOptions !== undefined) return cachedValueTakingOptions;
+	const help = spawnSyncCollect([bunExecutable(), "build", "--help"]);
+	assert.equal(help.exitCode, 0, `\`bun build --help\` failed: ${help.stderr.toString()}`);
+	const options = parseValueTakingOptions(help.stdout.toString());
+	for (const takesValue of ["-e", "--external", "--outfile", "--target"]) {
+		assert.ok(
+			options.has(takesValue),
+			`\`bun build --help\` no longer reports ${takesValue} as taking a value, so this contract can no longer tell an option from another option's value: ${[...options].join(", ")}`,
+		);
+	}
+	for (const boolean of [NO_AUTOLOAD, "--compile", "--bytecode"]) {
+		assert.ok(
+			!options.has(boolean),
+			`${boolean} was parsed as taking a value, which would make this contract skip the token after it`,
+		);
+	}
+	cachedValueTakingOptions = options;
+	return options;
+}
+
+/**
+ * The tokens of a compile argv that Bun reads as options, dropping entry points
+ * and every token consumed as a preceding option's value.
+ *
+ * Bun ends option parsing at `--`: `bun build --compile ./entry.js -- --no-compile-autoload-bunfig`
+ * reports `ModuleNotFound resolving "--no-compile-autoload-bunfig" (entry point)`,
+ * so tokens after it are positional and cannot guard anything either.
+ */
+function optionTokens(argv: readonly string[], valueTaking: ReadonlySet<string>): string[] {
+	const options: string[] = [];
+	// Index 0 is `bun` and index 1 is `build`; neither is an option.
+	for (let index = 2; index < argv.length; index += 1) {
+		const token = argv[index] as string;
+		if (token === "--") break;
+		if (!token.startsWith("-")) continue;
+		options.push(token);
+		if (!token.includes("=") && valueTaking.has(token)) index += 1;
+	}
+	return options;
+}
+
 /** The contract itself, in one place so the evasion test can require it to throw. */
 function assertCompilesGuarded(site: string, argvList: readonly string[][]): void {
+	const valueTaking = bunBuildValueTakingOptions();
 	for (const argv of argvList) {
 		assert.ok(
-			argv.includes(NO_AUTOLOAD),
+			optionTokens(argv, valueTaking).includes(NO_AUTOLOAD),
 			`${site} compiles a binary that would load bunfig.toml from the caller's working directory (upstream pi #7685): ${argv.join(" ")}`,
 		);
 	}
@@ -234,9 +321,12 @@ test("pi#7685: every bun --compile command disables bunfig autoload", async () =
 });
 
 /**
- * The flag counts only where Bun reads it: in the argv of the compile itself.
+ * The flag counts only where Bun reads it: as an option of the compile itself.
  * Each of these writes `--no-compile-autoload-bunfig` somewhere in the same
  * line or script, and in none of them does the compiled binary receive it.
+ *
+ * The first group never reaches Bun's argv at all. The second reaches argv and
+ * is read as something else — another option's value, or an entry point.
  */
 const OUT_OF_ARGV: [string, string][] = [
 	["after a `;`", `bun build --compile ./loader.js --outfile atomic; : ${NO_AUTOLOAD}`],
@@ -255,17 +345,32 @@ const OUT_OF_ARGV: [string, string][] = [
 	],
 ];
 
-/** The two evasions that made an earlier version of this file certify a vulnerable build. */
+const NOT_AN_OPTION: [string, string][] = [
+	["as the value of `--external`", `bun build --compile --external ${NO_AUTOLOAD} ./loader.js --outfile atomic`],
+	["as the value of `-e`", `bun build --compile -e ${NO_AUTOLOAD} ./loader.js --outfile atomic`],
+	["as the value of `--outfile`", `bun build --compile ./loader.js --outfile ${NO_AUTOLOAD}`],
+	["as the value of `--target`", `bun build --compile --target ${NO_AUTOLOAD} ./loader.js --outfile atomic`],
+	["as an entry point after `--`", `bun build --compile ./loader.js --outfile atomic -- ${NO_AUTOLOAD}`],
+];
+
+/** The evasions that made an earlier version of this file certify a vulnerable build. */
 const REAL_SOURCE_EVASIONS: [string, (source: string) => string][] = [
 	[
 		"commented out with `#`, rest of the command on the next line",
 		(source) => source.replaceAll(` ${NO_AUTOLOAD} `, ` # ${NO_AUTOLOAD}\n`),
 	],
 	["eaten as a `>` redirection target", (source) => source.replaceAll(` ${NO_AUTOLOAD} `, ` > ${NO_AUTOLOAD} `)],
+	[
+		"read by bun as the value of `--external`",
+		(source) => source.replaceAll(NO_AUTOLOAD, `--external ${NO_AUTOLOAD}`),
+	],
+	["read by bun as the value of `-e`", (source) => source.replaceAll(NO_AUTOLOAD, `-e ${NO_AUTOLOAD}`)],
 	["deleted outright", (source) => source.replaceAll(` ${NO_AUTOLOAD}`, "")],
 ];
 
-test("pi#7685: the compile argv scan counts only what the compile command receives", async () => {
+test("pi#7685: the guard counts only where bun reads it, as an option of the compile", async () => {
+	const valueTaking = bunBuildValueTakingOptions();
+
 	for (const [placement, source] of OUT_OF_ARGV) {
 		const argv = bunCompileArgv(source);
 		assert.equal(argv.length, 1, `expected exactly one compile command for the ${placement} case: ${source}`);
@@ -275,11 +380,25 @@ test("pi#7685: the compile argv scan counts only what the compile command receiv
 		);
 	}
 
+	for (const [placement, source] of NOT_AN_OPTION) {
+		const argv = bunCompileArgv(source);
+		assert.equal(argv.length, 1, `expected exactly one compile command for the ${placement} case: ${source}`);
+		assert.ok(
+			(argv[0] as string[]).includes(NO_AUTOLOAD),
+			`the ${placement} case must put the token in argv, or it tests the wrong thing: ${source}`,
+		);
+		assert.ok(
+			!optionTokens(argv[0] as string[], valueTaking).includes(NO_AUTOLOAD),
+			`bun reads ${NO_AUTOLOAD} written ${placement} as something other than an option, but the scan counted it as protection: ${source}`,
+		);
+	}
+
 	// The scan is not merely refusing everything: the real shape still reads as
 	// protected, a separator inside a quoted argument does not end the command,
-	// and an unrelated redirection does not eat a real argument.
+	// an unrelated redirection does not eat a real argument, and a value-taking
+	// option that carries its own `=` value swallows nothing.
 	const guarded = bunCompileArgv(
-		`bun build --compile --bytecode ${NO_AUTOLOAD} --target="bun-linux-x64" ./loader.js --outfile "out;dir/atomic" 2>&1\n`,
+		`bun build --compile --bytecode --external mupdf ${NO_AUTOLOAD} --target="bun-linux-x64" ./loader.js --outfile "out;dir/atomic" 2>&1\n`,
 	);
 	assert.equal(guarded.length, 1);
 	assert.deepEqual(guarded[0], [
@@ -287,14 +406,24 @@ test("pi#7685: the compile argv scan counts only what the compile command receiv
 		"build",
 		"--compile",
 		"--bytecode",
+		"--external",
+		"mupdf",
 		NO_AUTOLOAD,
 		"--target=bun-linux-x64",
 		"./loader.js",
 		"--outfile",
 		"out;dir/atomic",
 	]);
+	assert.deepEqual(optionTokens(guarded[0] as string[], valueTaking), [
+		"--compile",
+		"--bytecode",
+		"--external",
+		NO_AUTOLOAD,
+		"--target=bun-linux-x64",
+		"--outfile",
+	]);
 
-	// The same two evasions, applied to the build sources that actually ship.
+	// The same evasions, applied to the build sources that actually ship.
 	const sources: [string, string][] = [
 		[
 			PACKAGE_MANIFEST,
@@ -314,7 +443,7 @@ test("pi#7685: the compile argv scan counts only what the compile command receiv
 			assert.throws(
 				() => assertCompilesGuarded(site, argvList),
 				/pi #7685/u,
-				`a guard ${evasion} in ${site} never reaches bun, yet the contract accepted the build: ${argvList
+				`a guard ${evasion} in ${site} never protects the binary, yet the contract accepted the build: ${argvList
 					.map((argv) => argv.join(" "))
 					.join(" | ")}`,
 			);
@@ -323,9 +452,10 @@ test("pi#7685: the compile argv scan counts only what the compile command receiv
 });
 
 /**
- * Two standalone compiles (~63 MB each) plus two child executions. That cost is
- * structural — it is what proving the flag costs — rather than a slow test, so
- * it names its own budget instead of quietly eating the shared per-test one.
+ * Standalone compiles (~60 MB each) plus a child execution per binary. That
+ * cost is structural — it is what proving the flag costs — rather than a slow
+ * test, so it names its own budget instead of quietly eating the shared
+ * per-test one.
  */
 const BINARY_COMPILE_PROBE_TIMEOUT_MS = 90_000;
 
@@ -339,9 +469,63 @@ const PRELOAD = 'globalThis.__ATOMIC_BUNFIG_PRELOAD__ = "preloaded-from-cwd-bunf
 
 const BUNFIG = 'preload = ["./preload.js"]\n';
 
+/**
+ * Options naming the build's own input and output, which the probe replaces
+ * with its own. `--target` goes too: a cross-compiled release binary does not
+ * run on the machine running this test.
+ */
+const PROBE_SUPPLIES = new Set(["--outfile", "--outdir", "--target"]);
+
+/**
+ * A production compile argv, rewritten to build the probe's entry point and
+ * keeping every other option in place and in order.
+ *
+ * The point of deriving it is that the probe then compiles the option list a
+ * release actually uses. A guard that Bun reads as `--external`'s value is
+ * still `--external`'s value here, and the binary preloads from the caller's
+ * bunfig, so this test fails on the same argv the static scan rejects instead
+ * of proving a flag no production build passes.
+ */
+function probeArgv(argv: readonly string[], valueTaking: ReadonlySet<string>): string[] {
+	const kept: string[] = [];
+	for (let index = 2; index < argv.length; index += 1) {
+		const token = argv[index] as string;
+		if (token === "--") break;
+		if (!token.startsWith("-")) continue;
+		const separated = !token.includes("=") && valueTaking.has(token);
+		const name = token.split("=")[0] as string;
+		if (PROBE_SUPPLIES.has(name)) {
+			if (separated) index += 1;
+			continue;
+		}
+		kept.push(token);
+		if (separated) {
+			kept.push(argv[index + 1] as string);
+			index += 1;
+		}
+	}
+	return kept;
+}
+
 test(
-	"pi#7685: a cwd bunfig preload cannot reach a compiled binary",
+	"pi#7685: a cwd bunfig preload cannot reach a binary compiled the way a release is",
 	async () => {
+		const valueTaking = bunBuildValueTakingOptions();
+		const sites = await productionCompileSites();
+		assert.ok(sites.length > 0, "found no production compile to derive the probe from");
+
+		// Distinct option lists only: the two release targets differ from the
+		// package build by `--bytecode` and by the `--target` the probe drops.
+		// Keyed by the joined form, carried as tokens — a token may contain a
+		// space, and rebuilding argv by splitting the key would take a defined
+		// build apart.
+		const shapes = new Map<string, { site: string; flags: string[] }>();
+		for (const [site, argv] of sites) {
+			const flags = probeArgv(argv, valueTaking);
+			const key = flags.join(" ");
+			if (!shapes.has(key)) shapes.set(key, { site, flags });
+		}
+
 		const directory = makeTempDirectory("atomic-bunfig-autoload-");
 		try {
 			const entry = join(directory, "entry.js");
@@ -353,13 +537,13 @@ test(
 			await writeFileEnsuringDir(join(cwd, "bunfig.toml"), BUNFIG);
 
 			const suffix = process.platform === "win32" ? ".exe" : "";
-			const compile = (name: string, flags: readonly string[]): string => {
-				const outfile = join(directory, name + suffix);
-				const built = spawnSyncCollect(
-					[bunExecutable(), "build", "--compile", ...flags, entry, "--outfile", outfile],
-					{ cwd: directory },
-				);
-				assert.equal(built.exitCode, 0, `bun build --compile failed: ${built.stderr.toString()}`);
+			let built = 0;
+			const compile = (flags: readonly string[]): string => {
+				built += 1;
+				const outfile = join(directory, `probe-${built}${suffix}`);
+				const command = [bunExecutable(), "build", ...flags, entry, "--outfile", outfile];
+				const result = spawnSyncCollect(command, { cwd: directory });
+				assert.equal(result.exitCode, 0, `\`${command.join(" ")}\` failed: ${result.stderr.toString()}`);
 				return outfile;
 			};
 			const run = (binary: string): string => {
@@ -368,18 +552,24 @@ test(
 				return started.stdout.toString().trim();
 			};
 
-			const guarded = compile("guarded", [NO_AUTOLOAD]);
-			const control = compile("control", []);
+			for (const [shape, { site, flags }] of shapes) {
+				assert.equal(
+					run(compile(flags)),
+					"no-preload",
+					`a binary compiled with the options ${site} uses (bun build ${shape}) preloaded a module named by the caller's bunfig.toml (upstream pi #7685)`,
+				);
+			}
 
+			// One control, so a green run above cannot mean "Bun stopped reading a
+			// cwd bunfig at all". It removes the guard from the first production
+			// shape and nothing else.
+			const first = shapes.values().next().value as { site: string; flags: string[] };
+			const control = first.flags.filter((token) => token !== NO_AUTOLOAD);
+			assert.ok(!control.includes(NO_AUTOLOAD), "the control build kept the guard, so it controls for nothing");
 			assert.equal(
-				run(guarded),
-				"no-preload",
-				`${NO_AUTOLOAD} did not stop the compiled binary from preloading a module named by the caller's bunfig.toml (upstream pi #7685)`,
-			);
-			assert.equal(
-				run(control),
+				run(compile(control)),
 				"preloaded-from-cwd-bunfig",
-				"the control build no longer loads a cwd bunfig preload, so this probe measures nothing: Bun changed the default and the guarded assertion above is now vacuous",
+				"the control build no longer loads a cwd bunfig preload, so this probe measures nothing: Bun changed the default and the guarded assertions above are now vacuous",
 			);
 		} finally {
 			removeTempDirectory(directory);
