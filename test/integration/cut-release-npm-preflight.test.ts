@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -81,11 +91,41 @@ beforeAll(async () => {
 
 afterAll(async () => {
 	await Promise.all([missing.close(), mirror.close()]);
+	if (neutralGitHome) rmSync(neutralGitHome, { recursive: true, force: true });
 });
 
 /**
+ * A git configuration that says nothing, and a hook directory that holds
+ * nothing.
+ *
+ * Scrubbing `GIT_DIR` and its siblings is not enough on its own: git still
+ * reads the *global* and *system* configuration, and one line of it —
+ * `core.hooksPath` — hands every fixture `git commit`, `git checkout` and
+ * `git push` an arbitrary program to run, inside whatever repository the rest
+ * of the ambient environment points at. Both files are replaced with an empty
+ * one so no configuration this machine happens to carry reaches a fixture
+ * child or the release script it launches.
+ */
+let neutralGitHome: string | undefined;
+
+function neutralGitPaths(): { config: string; hooks: string } {
+	if (neutralGitHome === undefined) {
+		neutralGitHome = mkdtempSync(join(tmpdir(), "atomic-cut-release-git-neutral-"));
+		writeFileSync(join(neutralGitHome, "gitconfig"), "");
+		mkdirSync(join(neutralGitHome, "hooks"), { recursive: true });
+	}
+	return { config: join(neutralGitHome, "gitconfig"), hooks: join(neutralGitHome, "hooks") };
+}
+
+/** Git reads a config value literally, so a Windows path needs forward slashes. */
+function configPath(path: string): string {
+	return path.replace(/\\/gu, "/");
+}
+
+/**
  * Every git child this fixture spawns runs with the repository-local part of
- * the environment removed.
+ * the environment removed, and with the machine's own git configuration
+ * replaced by an empty one.
  *
  * Git hooks export `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
  * `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` and
@@ -97,34 +137,60 @@ afterAll(async () => {
  * did exactly that when it ran under the repository's own pre-push hook.
  *
  * `createGitEnvironment` is the repository's existing scrubber and mirrors
- * `git rev-parse --local-env-vars`, so it covers those six and the rest.
- * `git-fixture-cannot-reach-the-repository-under-test` is what proves the
- * scrub is wired to every spawn rather than merely available.
+ * `git rev-parse --local-env-vars`, so it covers those six and the rest. It
+ * deliberately keeps `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`, which the
+ * agent needs, so the fixture pins both at an empty file itself — otherwise an
+ * ambient `core.hooksPath` makes every fixture commit and push run someone
+ * else's program.
+ *
+ * `git-fixture-cannot-reach-the-repository-under-test` is what proves both are
+ * wired to every spawn rather than merely available.
  */
 function gitEnvironment(): NodeJS.ProcessEnv {
-	return createGitEnvironment();
+	const neutral = neutralGitPaths();
+	return createGitEnvironment({
+		GIT_CONFIG_GLOBAL: neutral.config,
+		GIT_CONFIG_SYSTEM: neutral.config,
+		// For a git too old to honor GIT_CONFIG_SYSTEM (< 2.32).
+		GIT_CONFIG_NOSYSTEM: "1",
+	});
 }
 
-function git(root: string, args: string[]): void {
-	const result = spawnSyncCollect(["git", "-C", root, ...args], {
+/**
+ * Git's own options, ahead of every fixture subcommand.
+ *
+ * `core.hooksPath` on the command line outranks every configuration file, so
+ * this holds even if a file the fixture does not control is read after all.
+ * `--no-optional-locks` keeps a read-only query from writing an index.
+ */
+function gitOptions(): string[] {
+	return ["--no-optional-locks", "-c", `core.hooksPath=${configPath(neutralGitPaths().hooks)}`];
+}
+
+function gitSpawn(args: string[]): { exitCode: number; stdout: string; stderr: string } {
+	const result = spawnSyncCollect(["git", ...gitOptions(), ...args], {
 		stdout: "pipe",
 		stderr: "pipe",
 		env: gitEnvironment(),
 	});
-	assert.equal(result.exitCode, 0, `git ${args.join(" ")}: ${result.stderr.toString()}`);
+	return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+}
+
+function git(root: string, args: string[]): void {
+	const result = gitSpawn(["-C", root, ...args]);
+	assert.equal(result.exitCode, 0, `git ${args.join(" ")}: ${result.stderr}`);
 }
 
 /** One git query, trimmed. Failures return "" so a snapshot can record them rather than throw. */
 function gitOutput(root: string, args: string[]): string {
-	return spawnSyncCollect(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe", env: gitEnvironment() })
-		.stdout.toString()
-		.trim();
+	return gitSpawn(["-C", root, ...args]).stdout.trim();
 }
 
 /**
  * Everything a stray git command would disturb in a repository that is not the
  * fixture: whether it is still a working checkout rather than a bare one, which
- * git dir it resolves to, what it has checked out, and its local configuration.
+ * git dir it resolves to, what it has checked out, its local configuration, and
+ * the state of its working tree.
  */
 function foreignRepositorySnapshot(root: string): Record<string, string> {
 	return {
@@ -132,12 +198,124 @@ function foreignRepositorySnapshot(root: string): Record<string, string> {
 		gitDir: gitOutput(root, ["rev-parse", "--absolute-git-dir"]),
 		head: gitOutput(root, ["rev-parse", "HEAD"]),
 		config: gitOutput(root, ["config", "--list", "--local"]),
+		// The working tree itself, tracked and untracked alike. Every field
+		// above is identical after a hook drops a marker file into the
+		// checkout, so without this the guard passes while the exploit lands.
+		status: gitOutput(root, ["status", "--porcelain", "--untracked-files=all"]),
 	};
 }
 
 /** The same, plus the refs — used for a repository this file owns outright. */
 function repositoryFingerprint(root: string): Record<string, string> {
 	return { ...foreignRepositorySnapshot(root), refs: gitOutput(root, ["show-ref"]) };
+}
+
+/**
+ * Hooks a fixture git child could trigger, on either side of a local push.
+ *
+ * `reference-transaction` is the broad one: git runs it for every ref update,
+ * so an init, a commit, a tag and a push all reach it.
+ */
+const CANARY_HOOKS = [
+	"pre-commit",
+	"prepare-commit-msg",
+	"commit-msg",
+	"post-commit",
+	"post-checkout",
+	"pre-push",
+	"reference-transaction",
+	"pre-receive",
+	"update",
+	"post-receive",
+] as const;
+
+interface HookCanary {
+	/** Removed wholesale by the test; holds the config, the hooks, and their markers. */
+	readonly stage: string;
+	/** A global/system git config that points `core.hooksPath` at the canary hooks. */
+	readonly config: string;
+	/** Which hooks ran, by name. */
+	fired(): string[];
+	reset(): void;
+}
+
+/**
+ * A global git configuration carrying `core.hooksPath`, and hooks that record
+ * that they ran.
+ *
+ * Scrubbing `GIT_DIR` alone leaves this open: `GIT_CONFIG_GLOBAL` (or a plain
+ * `~/.gitconfig`) can name a hook directory, and git then runs those programs
+ * for every fixture commit, checkout and push. Each hook writes a marker and
+ * exits 0, so nothing is prevented — the run proceeds exactly as it would
+ * have, and the marker is the evidence that it did.
+ */
+function createHookCanary(): HookCanary {
+	const stage = mkdtempSync(join(tmpdir(), "atomic-cut-release-hook-canary-"));
+	const hooks = join(stage, "hooks");
+	const markers = join(stage, "fired");
+	mkdirSync(hooks, { recursive: true });
+	mkdirSync(markers, { recursive: true });
+	for (const hook of CANARY_HOOKS) {
+		const path = join(hooks, hook);
+		writeFileSync(path, `#!/bin/sh\nprintf 'fired\\n' > "${configPath(markers)}/${hook}"\nexit 0\n`);
+		chmodSync(path, 0o755);
+	}
+	const config = join(stage, "gitconfig");
+	writeFileSync(config, `[core]\n\thooksPath = ${configPath(hooks)}\n`);
+	return {
+		stage,
+		config,
+		fired: () => readdirSync(markers).sort(),
+		reset: () => {
+			for (const marker of readdirSync(markers)) rmSync(join(markers, marker), { force: true });
+		},
+	};
+}
+
+/**
+ * Prove the canary can fire before trusting its silence.
+ *
+ * A hook that never runs under any circumstance — an unset executable bit, a
+ * platform that ignores the shebang — would make the guard assert nothing at
+ * all. So one throwaway repository is committed to with the canary config left
+ * in place and only the repository-local redirect scrubbed: precisely the
+ * environment this suite ran with before, which is what the guard now closes.
+ */
+function assertHookCanaryFires(canary: HookCanary): void {
+	const stage = mkdtempSync(join(tmpdir(), "atomic-cut-release-canary-control-"));
+	const root = join(stage, "checkout");
+	mkdirSync(root, { recursive: true });
+	// Deliberately NOT gitEnvironment(): the config and the hooks it names are
+	// left reachable. GIT_DIR and its siblings are still scrubbed, because a
+	// control that wrote into the ambient repository would be the very bug
+	// this file exists to prevent.
+	const armed = createGitEnvironment({ GIT_CONFIG_GLOBAL: canary.config, GIT_CONFIG_SYSTEM: canary.config });
+	const run = (args: string[]): void => {
+		const result = spawnSyncCollect(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe", env: armed });
+		assert.equal(result.exitCode, 0, `git ${args.join(" ")}: ${result.stderr.toString()}`);
+	};
+	try {
+		run(["init", "-b", "main"]);
+		writeFileSync(join(root, "tracked.txt"), "control\n");
+		run(["add", "-A"]);
+		run([
+			"-c",
+			"user.name=atomic-release-test",
+			"-c",
+			"user.email=atomic-release-test@users.noreply.github.com",
+			"-c",
+			"commit.gpgsign=false",
+			"commit",
+			"-m",
+			"control",
+		]);
+		assert.ok(
+			canary.fired().includes("pre-commit"),
+			`the hook canary never fired, so its silence proves nothing: [${canary.fired().join(", ")}]`,
+		);
+	} finally {
+		rmSync(stage, { recursive: true, force: true });
+	}
 }
 
 /**
@@ -251,12 +429,8 @@ function createFixture(options: FixtureOptions): Fixture {
 	git(root, ["init", "-b", "main"]);
 	commit(root, "fixture");
 	// The path argument, and only the path argument, decides what becomes bare.
-	const bare = spawnSyncCollect(["git", "init", "--bare", origin], {
-		stdout: "pipe",
-		stderr: "pipe",
-		env: gitEnvironment(),
-	});
-	assert.equal(bare.exitCode, 0, bare.stderr.toString());
+	const bare = gitSpawn(["init", "--bare", origin]);
+	assert.equal(bare.exitCode, 0, bare.stderr);
 	assert.equal(gitOutput(origin, ["rev-parse", "--is-bare-repository"]), "true", "the origin was not initialized");
 	git(root, ["remote", "add", "origin", origin]);
 	git(root, ["push", "origin", "main"]);
@@ -497,6 +671,28 @@ describe("cut-release npm registration preflight", () => {
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
 	);
 
+	test("the repository guard notices a file written into a working tree", () => {
+		// The guard below compares two snapshots, so what a snapshot omits it
+		// cannot claim. A hook that drops one untracked marker into a checkout
+		// changes no ref, no HEAD, no configuration and no bareness — every field
+		// the guard originally read comes back byte-identical, and only the
+		// working-tree field moves.
+		const sentinel = createSentinel();
+		try {
+			const before = repositoryFingerprint(sentinel.path);
+			writeFileSync(join(sentinel.path, "hook-marker.txt"), "written by something the test did not run\n");
+			const after = repositoryFingerprint(sentinel.path);
+
+			for (const field of ["bare", "gitDir", "head", "config", "refs"] as const) {
+				assert.equal(after[field], before[field], `${field} moved, so it is not the field under test`);
+			}
+			assert.notDeepEqual(after, before, "a marker file left every guarded field identical");
+			assert.match(after.status, /hook-marker\.txt/u);
+		} finally {
+			rmSync(sentinel.stage, { recursive: true, force: true });
+		}
+	});
+
 	test(
 		"git-fixture-cannot-reach-the-repository-under-test",
 		async () => {
@@ -505,16 +701,32 @@ describe("cut-release npm registration preflight", () => {
 			// top of — whichever repository the ambient environment names. Under
 			// this repository's own pre-push hook that repository is this checkout,
 			// which is a linked worktree: initializing it bare detaches all of them.
+			//
+			// The ambient *configuration* is the second half of the same hole:
+			// `GIT_CONFIG_GLOBAL` survives the local-variable scrub by design, and
+			// a `core.hooksPath` in it makes every fixture commit, checkout and
+			// push run a program this file never wrote, in a repository it does not
+			// own. So the hostile environment carries both, and the run has to come
+			// back with the hooks never fired.
+			const canary = createHookCanary();
 			const sentinel = createSentinel();
-			const sentinelBefore = repositoryFingerprint(sentinel.path);
-			const selfBefore = foreignRepositorySnapshot(repoRoot);
-			assert.equal(selfBefore.bare, "false", "the repository under test is already bare");
-
-			const saved = new Map(Object.keys(sentinel.hostile).map((key) => [key, process.env[key]] as const));
-			Object.assign(process.env, sentinel.hostile);
-
-			let fixture: Fixture | undefined;
 			try {
+				assertHookCanaryFires(canary);
+				canary.reset();
+
+				const sentinelBefore = repositoryFingerprint(sentinel.path);
+				const selfBefore = foreignRepositorySnapshot(repoRoot);
+				assert.equal(selfBefore.bare, "false", "the repository under test is already bare");
+
+				const hostile: Record<string, string> = {
+					...sentinel.hostile,
+					GIT_CONFIG_GLOBAL: canary.config,
+					GIT_CONFIG_SYSTEM: canary.config,
+				};
+				const saved = new Map(Object.keys(hostile).map((key) => [key, process.env[key]] as const));
+				Object.assign(process.env, hostile);
+
+				let fixture: Fixture | undefined;
 				try {
 					fixture = createFixture({ packages: fixturePackages, registry: missing.url });
 					const result = await runCutRelease(fixture, ["9.9.9", "--base", "main", "--yes"]);
@@ -533,7 +745,11 @@ describe("cut-release npm registration preflight", () => {
 					if (fixture) rmSync(fixture.stage, { recursive: true, force: true });
 				}
 
-				// Neither repository was initialized, committed into, or turned bare.
+				// Not one hook ran — not for a fixture git child, and not for a git
+				// child of the release script the fixture launched.
+				assert.deepEqual(canary.fired(), [], "an ambient core.hooksPath ran during the fixture run");
+				// Neither repository was initialized, committed into, turned bare,
+				// or written to in its working tree.
 				assert.deepEqual(
 					repositoryFingerprint(sentinel.path),
 					sentinelBefore,
@@ -542,6 +758,7 @@ describe("cut-release npm registration preflight", () => {
 				assert.deepEqual(foreignRepositorySnapshot(repoRoot), selfBefore, "the fixture wrote to this checkout");
 			} finally {
 				rmSync(sentinel.stage, { recursive: true, force: true });
+				rmSync(canary.stage, { recursive: true, force: true });
 			}
 		},
 		CUT_RELEASE_FIXTURE_TIMEOUT_MS,
