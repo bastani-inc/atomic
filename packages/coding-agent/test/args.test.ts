@@ -265,6 +265,40 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--use-theme flag", () => {
+		test("parses --use-theme", () => {
+			const result = parseArgs(["--use-theme", "light"]);
+			expect(result.useTheme).toBe("light");
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("parses a light/dark theme pair", () => {
+			const result = parseArgs(["--use-theme", "catppuccin-latte/dark"]);
+			expect(result.useTheme).toBe("catppuccin-latte/dark");
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("reports when the theme name value is missing", () => {
+			const result = parseArgs(["--use-theme", "--print"]);
+			expect(result.useTheme).toBeUndefined();
+			expect(result.print).toBe(true);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--use-theme requires a theme name" }]);
+		});
+
+		test("reports a value missing at the end of the arguments", () => {
+			const result = parseArgs(["--use-theme"]);
+			expect(result.useTheme).toBeUndefined();
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--use-theme requires a theme name" }]);
+		});
+
+		test("treats any dash-prefixed value as a flag rather than a theme name", () => {
+			const result = parseArgs(["--use-theme", "-p"]);
+			expect(result.useTheme).toBeUndefined();
+			expect(result.print).toBe(true);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--use-theme requires a theme name" }]);
+		});
+	});
+
 	describe("--no-skills flag", () => {
 		test("parses --no-skills flag", () => {
 			const result = parseArgs(["--no-skills"]);

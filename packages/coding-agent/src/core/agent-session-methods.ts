@@ -302,7 +302,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 
 	getSessionStats(): SessionStats;
 	getContextUsage(): ContextUsage | undefined;
-	exportToHtml(outputPath?: string): Promise<string>;
+	exportToHtml(outputPath?: string, options?: { themeName?: string }): Promise<string>;
 	exportToJsonl(outputPath?: string): string;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;

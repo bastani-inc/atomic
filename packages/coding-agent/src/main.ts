@@ -398,6 +398,14 @@ export async function main(argv: string[], options?: MainOptions) {
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
 
+	// --use-theme steers this run only: the override lives in the startup
+	// manager's effective settings and never reaches its global settings file.
+	// The interactive controller applies the same value through
+	// initialThemeSetting, so nothing here persists the selection.
+	if (appMode === "interactive" && parsed.useTheme !== undefined) {
+		startupSettingsManager.applyOverrides({ theme: parsed.useTheme });
+	}
+
 	// Decide the final runtime cwd before creating cwd-bound runtime services.
 	// --session and --resume may select a session from another project, so project-local
 	// settings, resources, provider registrations, and models must be resolved only after
@@ -736,6 +744,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			initialImages,
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
+			initialThemeSetting: parsed.useTheme,
 			deferredExtensionLoad,
 			startupInputCapture: startupEarlyInputCapture,
 			deferredModelScopePatterns: deferredExtensionLoad

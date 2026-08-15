@@ -95,7 +95,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				bashInterceptorEnabled: this.settingsManager.getBashInterceptorEnabled(),
 				thinkingLevel: this.session.thinkingLevel,
 				availableThinkingLevels: this.session.getAvailableThinkingLevels(),
-				currentTheme: this.settingsManager.getThemeSetting() || "dark",
+				currentTheme: this.themeController.getThemeSelection() || "dark",
 				terminalTheme: this.themeController.getTerminalTheme(),
 				availableThemes: getAvailableThemes(),
 				hideThinkingBlock: this.hideThinkingBlock,
@@ -173,7 +173,7 @@ InteractiveModeBase.prototype.showSettingsSelector = function (this: Interactive
 				},
 				onThemeChange: (themeSetting) => {
 					this.settingsManager.setTheme(themeSetting);
-					void this.themeController.applyFromSettings();
+					void this.themeController.setThemeSetting(themeSetting);
 				},
 				onThemePreview: (themeName) => this.themeController.preview(themeName),
 				onHideThinkingBlockChange: (hidden) => {

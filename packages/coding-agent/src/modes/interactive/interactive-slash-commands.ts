@@ -119,7 +119,7 @@ InteractiveModeBase.prototype.handleExportCommand = async function (
 			const filePath = this.session.exportToJsonl(outputPath);
 			this.showStatus(`Session exported to: ${filePath}`);
 		} else {
-			const filePath = await this.session.exportToHtml(outputPath);
+			const filePath = await this.session.exportToHtml(outputPath, { themeName: theme.name });
 			this.showStatus(`Session exported to: ${filePath}`);
 		}
 	} catch (error: unknown) {
@@ -238,7 +238,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 	// Export to a temp file
 	const tmpFile = path.join(os.tmpdir(), "session.html");
 	try {
-		await this.session.exportToHtml(tmpFile);
+		await this.session.exportToHtml(tmpFile, { themeName: theme.name });
 	} catch (error: unknown) {
 		this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		return;

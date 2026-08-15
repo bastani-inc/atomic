@@ -62,7 +62,11 @@ describe("InteractiveThemeController theme probes", () => {
 	it("starts the colour-scheme and background probes together for an automatic theme", async () => {
 		const probes = createProbeUi();
 		const manager = SettingsManager.inMemory({ theme: "light/dark" });
-		const controller = new InteractiveThemeController(probes.ui, manager, vi.fn(), vi.fn());
+		const controller = new InteractiveThemeController(probes.ui, {
+			getSettingsManager: () => manager,
+			showError: vi.fn(),
+			onChanged: vi.fn(),
+		});
 
 		const applied = controller.applyFromSettings();
 		// Both probes must be in flight before either settles: each resolver is
@@ -82,8 +86,11 @@ describe("InteractiveThemeController theme probes", () => {
 	it("queries only the background probe when no theme is configured", async () => {
 		const probes = createProbeUi();
 		const manager = SettingsManager.inMemory({});
-		const controller = new InteractiveThemeController(probes.ui, manager, vi.fn(), vi.fn());
-
+		const controller = new InteractiveThemeController(probes.ui, {
+			getSettingsManager: () => manager,
+			showError: vi.fn(),
+			onChanged: vi.fn(),
+		});
 		const applied = controller.applyFromSettings();
 		expect(probes.backgroundCallCount()).toBe(1);
 		expect(probes.colorSchemeCallCount()).toBe(0);

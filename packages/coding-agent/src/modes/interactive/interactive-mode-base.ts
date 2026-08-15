@@ -599,6 +599,9 @@ export class InteractiveModeBase {
 		});
 		this.runtimeHost.setRebindSession(async () => {
 			await this.rebindCurrentSession();
+			// A rebound session can carry a different settings manager; re-apply
+			// the theme so the live selection tracks the session that is current.
+			await this.themeController.applyFromSettings();
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
@@ -658,12 +661,12 @@ export class InteractiveModeBase {
 
 		// Register themes from resource loader and initialize
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-		this.themeController = new InteractiveThemeController(
-			this.ui,
-			this.settingsManager,
-			(message) => this.showError(message),
-			() => this.updateEditorBorderColor(),
-		);
+		this.themeController = new InteractiveThemeController(this.ui, {
+			getSettingsManager: () => this.settingsManager,
+			showError: (message) => this.showError(message),
+			onChanged: () => this.updateEditorBorderColor(),
+			initialThemeSetting: options.initialThemeSetting,
+		});
 		this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
 			runtimeHost,
 			this.createExtensionUIContext(),

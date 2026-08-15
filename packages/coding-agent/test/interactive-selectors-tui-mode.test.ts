@@ -62,7 +62,11 @@ function openSettingsSelector() {
 		renderer,
 		ui: undefined as unknown as TUI,
 		fullscreenLayoutRoot: { render: () => [], invalidate: () => {} },
-		themeController: { getTerminalTheme: () => "dark", rebindTui: () => {} },
+		themeController: {
+			getTerminalTheme: () => "dark",
+			getThemeSelection: () => undefined,
+			rebindTui: () => {},
+		},
 		tuiInputSubscriptions: new Set(),
 		tuiRendererChangeListeners: new Set(),
 		showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
