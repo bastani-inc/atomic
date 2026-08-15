@@ -2713,6 +2713,8 @@ Custom component `handleInput` methods must return `true` when they consume an i
 
 Custom component `handleInput` methods must return `true` when they consume an input and `false` or `undefined` when they do not. In fullscreen mode, an unhandled viewport key continues to the transcript; remote components also fall through on a failed or timed-out reply. Return `true` for a handled key so it is not applied twice.
 
+A handler that returns a promise is judged when it settles: only a resolved `true` consumes the key, while `false`, `undefined`, and a rejection fall through to the viewport. A component with no `handleInput` declines everything, so viewport keys still scroll the transcript behind it.
+
 Pass `{ handlesCtrlC: true }` when the component binds Ctrl+C itself (cancel, skip, close). In isolated interactive sessions the host otherwise closes a component that owns input on the first Ctrl+C, so that a component which never resolves cannot trap the keyboard. See [Interactive callback isolation](#interactive-callback-isolation).
 
 See [TUI components](/tui) for the full component API.

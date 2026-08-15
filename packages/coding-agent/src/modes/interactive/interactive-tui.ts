@@ -408,6 +408,36 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			viewportInputReplays.delete(this);
 		}
 	}
+	/** Dispatch a declined chunk to the host action the gated route owns. */
+	private handleOverlayUnhandledInput(data: string, focused: Component | null): boolean {
+		if (this.getFocusedComponent() !== focused || !this.isFocusedOverlay()) return false;
+		return overlayUnhandledInputHandlers.get(this)?.(data) === true;
+	}
+
+	/**
+	 * Finish a chunk a focused overlay's asynchronous handler declined.
+	 *
+	 * Every settled result other than `true` is a decline. The component
+	 * contract is `boolean | undefined | Promise<boolean | undefined>`
+	 * (`ExtensionCustomComponent`), and both `docs/tui.md` and
+	 * `docs/extensions.md` document `false` *and* `undefined` as viewport
+	 * fallthrough, so a promise resolving `undefined` has to replay exactly like
+	 * one resolving `false` — matching only literal `false` consumed the key and
+	 * froze the transcript. A rejection is a decline for the same reason: the
+	 * overlay produced no answer.
+	 *
+	 * The focus guard stays: input that moved focus while the promise was
+	 * pending belongs to whatever holds focus now, not to the transcript.
+	 */
+	private declineAsyncViewportInput(viewportListener: TuiInputListener, data: string, focused: Component): void {
+		if (this.getFocusedComponent() !== focused) return;
+		if (this.handleOverlayUnhandledInput(data, focused)) {
+			(this as unknown as TuiOverlayInternals).requestImmediateRender();
+			return;
+		}
+		this.replayViewportInput(viewportListener, data);
+	}
+
 	private routeViewportInput(viewportListener: TuiInputListener, data: string): ReturnType<TuiInputListener> {
 		const gate = viewportInputGates.get(this);
 		const isMouseInput = gate ? this.isPiTuiMouseSequence(data) : false;
@@ -419,10 +449,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		this.repairOverlayFocus();
 		const focused = this.getFocusedComponent();
 		const tui = this as unknown as TuiOverlayInternals;
-		const handleOverlayUnhandledInput = (): boolean => {
-			if (this.getFocusedComponent() !== focused || !this.isFocusedOverlay()) return false;
-			return overlayUnhandledInputHandlers.get(this)?.(data) === true;
-		};
 		if (focused?.handleInput && (!isKeyRelease(data) || focused.wantsKeyRelease === true)) {
 			const handleInput = focused.handleInput as (
 				data: string,
@@ -434,17 +460,11 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 						if (handled === true) {
 							this.forwardSelectionMouseInput(viewportListener, data, focused);
 							tui.requestImmediateRender();
-						} else if (handled === false && this.getFocusedComponent() === focused) {
-							if (handleOverlayUnhandledInput()) tui.requestImmediateRender();
-							else this.replayViewportInput(viewportListener, data);
+							return;
 						}
+						this.declineAsyncViewportInput(viewportListener, data, focused);
 					},
-					() => {
-						if (this.getFocusedComponent() === focused) {
-							if (handleOverlayUnhandledInput()) tui.requestImmediateRender();
-							else this.replayViewportInput(viewportListener, data);
-						}
-					},
+					() => this.declineAsyncViewportInput(viewportListener, data, focused),
 				);
 				return { consume: true };
 			}
@@ -455,7 +475,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			}
 		}
 
-		if (handleOverlayUnhandledInput()) {
+		if (this.handleOverlayUnhandledInput(data, focused)) {
 			tui.requestImmediateRender();
 			return { consume: true };
 		}

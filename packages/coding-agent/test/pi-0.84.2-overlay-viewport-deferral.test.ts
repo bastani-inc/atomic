@@ -71,6 +71,44 @@ class RecordingOverlay implements Component {
 	invalidate(): void {}
 }
 
+/**
+ * A focused overlay that only renders. `handleInput` is optional on a
+ * component — `ExtensionCustomComponent` declares `handleInput?` and
+ * `docs/tui.md` documents it as optional — so a notice, a spinner, or a
+ * progress panel is a supported shape rather than a malformed one. It declines
+ * every key by construction.
+ */
+class HandlerlessOverlay implements Component {
+	render(): string[] {
+		return ["notice"];
+	}
+
+	invalidate(): void {}
+}
+
+/** An overlay whose handler settles later, the way an async extension component does. */
+class AsyncOverlay implements Component {
+	readonly handledInputs: string[] = [];
+	/** What the returned promise settles to. `undefined` is a documented decline. */
+	settlesTo: boolean | undefined = undefined;
+	/** When set, the handler rejects instead of resolving. */
+	rejects = false;
+	/** Runs synchronously inside the handler, before the promise settles. */
+	onHandleInput?: () => void;
+
+	render(): string[] {
+		return ["async dialog"];
+	}
+
+	handleInput(data: string): Promise<boolean | undefined> {
+		this.handledInputs.push(data);
+		this.onHandleInput?.();
+		return this.rejects ? Promise.reject(new Error("handler failed")) : Promise.resolve(this.settlesTo);
+	}
+
+	invalidate(): void {}
+}
+
 interface Fixture {
 	tui: TuiAltScreen;
 	terminal: RecordingTerminal;
@@ -162,6 +200,20 @@ function anchorAtEnd(fixture: Fixture): { top: number; page: number } {
 	const page = Math.max(1, fixture.transcript.viewportHeight - PAGE_SCROLL_OVERLAP);
 	expect(page).toBeGreaterThan(1);
 	return { top: fixture.transcript.scrollTop, page };
+}
+
+/** Mount a component as a focused overlay, the way `createFixture` mounts its own. */
+function mountFocusedOverlay<T extends Component>(fixture: Fixture, component: T): T {
+	fixture.tui.showOverlay(component, { anchor: "bottom-center", width: "100%" });
+	fixture.tui.renderNow();
+	expect(fixture.tui.getFocusedComponent()).toBe(component);
+	return component;
+}
+
+/** Let a handler's promise settle, along with the replay its settlement schedules. */
+async function settle(fixture: Fixture): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	fixture.tui.renderNow();
 }
 
 /** pi-tui keeps its find box private (tui-alt-screen.d.ts:50, alt-screen-search.d.ts:12). */
@@ -319,6 +371,213 @@ describe("pi-tui 0.84.2 overlay viewport deferral", () => {
 			fixture.tui.renderNow();
 			expect(fixture.transcript.scrollTop).toBe(top - 1);
 			expect(fixture.overlay.handledInputs).toEqual([]);
+		} finally {
+			fixture.stop();
+		}
+	});
+});
+
+/**
+ * A focused overlay with no `handleInput` at all. pi-tui's
+ * `shouldDeferViewportInputToOverlay()` asks only whether an overlay holds
+ * focus (`dist/tui-alt-screen.js:378`), so answering "the viewport owns it" in
+ * Atomic's gate hands the key to pi-tui, which then drops it — the transcript
+ * freezes behind a component that never asked for the key, and Atomic's
+ * overlay-first / replay-on-decline policy is contradicted by the one overlay
+ * shape that cannot decline anything explicitly. Such an overlay takes the
+ * replay route instead.
+ */
+describe("a focused overlay with no input handler", () => {
+	test("a handler-less focused overlay still pages the transcript", () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			mountFocusedOverlay(fixture, new HandlerlessOverlay());
+			const { top, page } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			fixture.tui.renderNow();
+			expect(top - fixture.transcript.scrollTop).toBe(page);
+
+			fixture.terminal.input(PAGE_DOWN);
+			fixture.tui.renderNow();
+			expect(fixture.transcript.scrollTop).toBe(top);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a handler-less focused overlay still scrolls the transcript on a wheel report", () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			mountFocusedOverlay(fixture, new HandlerlessOverlay());
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(WHEEL_UP);
+			fixture.tui.renderNow();
+			expect(fixture.transcript.scrollTop).toBe(top - 1);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("the thinking toggle still runs under a handler-less focused overlay", () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			mountFocusedOverlay(fixture, new HandlerlessOverlay());
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(CTRL_T);
+			fixture.tui.renderNow();
+			expect(fixture.thinkingToggles).toEqual([CTRL_T]);
+			expect(fixture.transcript.scrollTop).toBe(top);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	/**
+	 * The route is widened for overlays only. A focused *non*-overlay without a
+	 * handler keeps pi-tui's own routing, because pi-tui defers nothing to it and
+	 * the replay would skip its post-listener phase for no gain.
+	 */
+	test("only an overlay takes the replay route when it cannot handle input", () => {
+		const keybindings = new KeybindingsManager();
+		const editor = new Text("editor", 0, 0);
+		const handlerless = new HandlerlessOverlay();
+
+		expect(shouldHandleFullscreenViewportInput(handlerless, editor, PAGE_UP, false, true, keybindings)).toBe(false);
+		expect(shouldHandleFullscreenViewportInput(handlerless, editor, WHEEL_UP, true, true, keybindings)).toBe(false);
+		expect(shouldHandleFullscreenViewportInput(handlerless, editor, PAGE_UP, false, false, keybindings)).toBe(true);
+		expect(shouldHandleFullscreenViewportInput(handlerless, editor, WHEEL_UP, true, false, keybindings)).toBe(true);
+		// The find box is still exempt, handler or not, and the editor and an
+		// unfocused tree keep the shortcut.
+		expect(shouldHandleFullscreenViewportInput(handlerless, editor, PAGE_UP, false, true, keybindings, true)).toBe(
+			true,
+		);
+		expect(shouldHandleFullscreenViewportInput(editor, editor, PAGE_UP, false, false, keybindings)).toBe(true);
+		expect(shouldHandleFullscreenViewportInput(null, editor, PAGE_UP, false, false, keybindings)).toBe(true);
+	});
+});
+
+/**
+ * The component contract is `boolean | undefined | Promise<boolean |
+ * undefined>` (`src/core/extensions/ui-types.ts`), and `docs/tui.md` plus
+ * `docs/extensions.md` document `false` *and* `undefined` as viewport
+ * fallthrough. So every settled result other than `true` is a decline: a
+ * handler that resolved `undefined` — the value an `async` function returns
+ * when it just falls off the end — must replay exactly like one that resolved
+ * `false`, rather than consuming the key and freezing the transcript.
+ */
+describe("an asynchronous overlay handler", () => {
+	test("a handler resolving undefined still pages the transcript", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new AsyncOverlay());
+			const { top, page } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			await settle(fixture);
+
+			// Offered once and replayed once: the overlay is not asked twice.
+			expect(overlay.handledInputs).toEqual([PAGE_UP]);
+			expect(top - fixture.transcript.scrollTop).toBe(page);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a handler resolving undefined still scrolls the transcript on a wheel report", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new AsyncOverlay());
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(WHEEL_UP);
+			await settle(fixture);
+
+			expect(overlay.handledInputs).toEqual([WHEEL_UP]);
+			expect(fixture.transcript.scrollTop).toBe(top - 1);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a handler resolving false still pages the transcript", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new AsyncOverlay());
+			overlay.settlesTo = false;
+			const { top, page } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			await settle(fixture);
+			expect(top - fixture.transcript.scrollTop).toBe(page);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a handler resolving true leaves the transcript alone", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new AsyncOverlay());
+			overlay.settlesTo = true;
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			await settle(fixture);
+			expect(overlay.handledInputs).toEqual([PAGE_UP]);
+			expect(fixture.transcript.scrollTop).toBe(top);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a rejected handler still pages the transcript", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new AsyncOverlay());
+			overlay.rejects = true;
+			const { top, page } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			await settle(fixture);
+			expect(top - fixture.transcript.scrollTop).toBe(page);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a handler resolving undefined still hands the thinking toggle to the host", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new AsyncOverlay());
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(CTRL_T);
+			await settle(fixture);
+
+			expect(overlay.handledInputs).toEqual([CTRL_T]);
+			expect(fixture.thinkingToggles).toEqual([CTRL_T]);
+			expect(fixture.transcript.scrollTop).toBe(top);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	/** The focus guard: a chunk that moved focus belongs to whoever holds it now. */
+	test("a handler that moves focus before it settles leaves the transcript alone", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const overlay = mountFocusedOverlay(fixture, new AsyncOverlay());
+			overlay.onHandleInput = () => fixture.tui.setFocus(fixture.editor);
+			const { top } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			await settle(fixture);
+
+			expect(overlay.handledInputs).toEqual([PAGE_UP]);
+			expect(fixture.transcript.scrollTop).toBe(top);
 		} finally {
 			fixture.stop();
 		}

@@ -28,6 +28,8 @@ interface Component {
 
 The installed pi-tui type still permits handlers that return `void`; Atomic treats a missing or `undefined` result as unhandled only for a matching fullscreen viewport key or a mouse event deferred to a focused overlay. Components that mutate state for such an input must return `true` so the viewport does not apply it a second time.
 
+Omitting `handleInput` altogether is the same answer as declining: a focused overlay with no handler still lets fullscreen viewport keys and mouse wheel reports reach the transcript, so a notice or progress panel does not freeze scrolling behind it. An asynchronous handler is judged when it settles — only a promise that resolves `true` consumes the input, while `false`, `undefined`, and a rejection all fall through to the viewport. Input that moved focus while such a promise was pending is left to whatever holds focus when it settles.
+
 The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered line. Styles do not carry across lines. If you emit multi-line text with styling, reapply styles per line or use `wrapTextWithAnsi()` so styles are preserved for each wrapped line.
 
 ## Focusable Interface (IME Support)

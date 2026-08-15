@@ -96,6 +96,17 @@ export function isFullscreenViewportAction(data: string, keybindings: Keybinding
  * every action this list omits, so a user-bound `tui.altScreen.lineUp` still
  * reaches the focused component first.
  *
+ * **A focused overlay with no `handleInput` is still an overlay.** The handler
+ * is optional — `ExtensionCustomComponent` marks it `handleInput?` and
+ * `docs/tui.md` documents it as optional — and a component that cannot answer
+ * declines by definition. Answering "the viewport owns it" for that shape
+ * would hand the key to pi-tui, whose native deferral then drops it because an
+ * overlay holds focus, so the transcript would freeze behind a component that
+ * never asked for the key. A handler-less overlay therefore takes the same
+ * route as one that returns `false`: nothing to offer, then replay. Only a
+ * focused component that is *not* an overlay keeps the shortcut, because
+ * pi-tui defers nothing to it.
+ *
  * **Exemption: pi-tui's find box.** `focusedIsViewportSearch` reports whether
  * the focused overlay is the transcript-search box pi-tui mounts itself, which
  * is viewport chrome rather than an application overlay. It gets no first
@@ -122,7 +133,8 @@ export function shouldHandleFullscreenViewportInput(
 	keybindings: KeybindingsManager,
 	focusedIsViewportSearch = false,
 ): boolean {
-	if (focused === editor || !focused?.handleInput) return true;
+	if (focused === editor || !focused) return true;
+	if (!focused.handleInput && !focusedIsOverlay) return true;
 	// The find box is exempt from mouse deferral too: a wheel report over the
 	// transcript scrolls it rather than reaching the query.
 	if (isMouseInput) return focusedIsViewportSearch || !focusedIsOverlay;
