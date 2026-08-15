@@ -52,7 +52,7 @@ import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeo
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
-import { resolveProjectTrusted } from "./core/project-trust.ts";
+import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
@@ -532,7 +532,7 @@ export async function main(argv: string[], options?: MainOptions) {
 									defaultProjectTrust: runtimeSettingsManager.getDefaultProjectTrust(),
 									extensionsResult,
 									projectTrustContext: getProjectTrustContext(),
-									promptMessage: `Trust extension source?\n${source}\n\nThis allows Atomic to load project-local .atomic/.pi resources and .agents/skills from this -e source, including extensions and workflows that can execute code.`,
+									promptMessage: formatBorrowedExtensionSourceTrustPrompt(source),
 									onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
 								});
 								borrowedExtensionSourceTrustByPath.set(source, trusted);
