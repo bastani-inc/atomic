@@ -1,6 +1,7 @@
 import { APP_TITLE, CONFIG_DIR_NAME } from "../config.ts";
 import { emitProjectTrustEvent } from "./extensions/runner.ts";
 import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/types.ts";
+import { openUserBlock } from "./extensions/user-blocks.js";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
 import {
 	getProjectTrustOptions,
@@ -32,10 +33,20 @@ async function selectProjectTrustOption(
 	promptMessage?: string,
 ): Promise<ProjectTrustOption | undefined> {
 	const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
-	const selected = await ctx.ui.select(
-		promptMessage ?? formatProjectTrustPrompt(cwd),
-		options.map((option) => option.label),
-	);
+	// The trust prompt runs before any ExtensionRunner exists, so its restricted
+	// ProjectTrustContext.ui never passes through the wrapped `ctx.ui` accessor.
+	// It mints its own block instead, with the label kept short and free of
+	// project content.
+	const block = openUserBlock("Trust project folder?", "project_trust");
+	let selected: string | undefined;
+	try {
+		selected = await ctx.ui.select(
+			promptMessage ?? formatProjectTrustPrompt(cwd),
+			options.map((option) => option.label),
+		);
+	} finally {
+		block.release();
+	}
 	return options.find((option) => option.label === selected);
 }
 

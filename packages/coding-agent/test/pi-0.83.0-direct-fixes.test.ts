@@ -10,8 +10,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, getAgentDir, getEnvNames, getLegacyAgentDir } from "../src/config.ts";
-import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
-import type { ExtensionScopedModels, ScopedModel as PublicScopedModel } from "../src/core/extensions/types.ts";
+import {
+	copyScopedModels,
+	createExtensionContext,
+	type ExtensionContextSource,
+} from "../src/core/extensions/runner-context.ts";
+import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
+import { withUserBlocks } from "../src/core/extensions/runner-ui-blocks.ts";
+import type {
+	ExtensionScopedModels,
+	ExtensionUIContext,
+	ScopedModel as PublicScopedModel,
+} from "../src/core/extensions/types.ts";
+import { getOpenUserBlocks } from "../src/core/extensions/user-blocks.ts";
 import type { ScopedModel } from "../src/core/model-resolver.ts";
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { loadProjectContextFiles } from "../src/core/resource-loader-context-files.ts";
@@ -340,7 +351,10 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 
 		const setup = Reflect.get(InteractiveModeBase.prototype, "setupExtensionShortcuts") as (
 			this: typeof context,
-			runner: { getShortcuts: () => Map<string, { handler: (ctx: unknown) => void }> },
+			runner: {
+				getShortcuts: () => Map<string, { handler: (ctx: unknown) => void }>;
+				createContext: () => unknown;
+			},
 		) => void;
 
 		setup.call(context, {
@@ -355,6 +369,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 						},
 					],
 				]),
+			createContext: () => ({ scopedModels: copyScopedModels(scopedModels) }),
 		});
 
 		expect(onExtensionShortcut).toBeTypeOf("function");
@@ -377,6 +392,60 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		}).toThrow();
 		expect(scopedModels).toHaveLength(1);
 		expect(scopedModels[0].thinkingLevel).toBe("high");
+	});
+
+	it("routes shortcut dialogs through the runner's block-wrapped UI context", async () => {
+		let resolveDialog: ((value: boolean) => void) | undefined;
+		let onExtensionShortcut: ((data: string) => boolean) | undefined;
+		const hostUi: ExtensionUIContext = {
+			...noOpUIContext,
+			confirm: () =>
+				new Promise<boolean>((resolve) => {
+					resolveDialog = resolve;
+				}),
+		};
+		const context = {
+			keybindings: { getEffectiveConfig: () => ({}) },
+			get defaultEditor() {
+				return {
+					set onExtensionShortcut(handler: (data: string) => boolean) {
+						onExtensionShortcut = handler;
+					},
+				};
+			},
+			showError: () => {},
+		};
+		const setup = Reflect.get(InteractiveModeBase.prototype, "setupExtensionShortcuts") as (
+			this: typeof context,
+			runner: {
+				getShortcuts: () => Map<string, { handler: (ctx: unknown) => void }>;
+				createContext: () => unknown;
+			},
+		) => void;
+
+		setup.call(context, {
+			getShortcuts: () =>
+				new Map([
+					[
+						"ctrl+g",
+						{
+							handler: async (ctx: unknown) => {
+								await (ctx as { ui: Pick<ExtensionUIContext, "confirm"> }).ui.confirm(
+									"Approve shortcut?",
+									"really",
+								);
+							},
+						},
+					],
+				]),
+			createContext: () => ({ ui: withUserBlocks(hostUi) }),
+		});
+
+		onExtensionShortcut?.("\x07");
+		assert.equal(getOpenUserBlocks().length, 1, "the shortcut dialog opens a user block");
+		resolveDialog?.(true);
+		for (let index = 0; index < 10 && getOpenUserBlocks().length > 0; index++) await Promise.resolve();
+		assert.deepEqual(getOpenUserBlocks(), []);
 	});
 
 	it("cced6a21: loads a nested linked worktree's context file once, not twice", () => {

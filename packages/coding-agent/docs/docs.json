@@ -74,6 +74,7 @@
           "windows",
           "termux",
           "tmux",
+          "herdr",
           "terminal-setup",
           "shell-aliases"
         ]

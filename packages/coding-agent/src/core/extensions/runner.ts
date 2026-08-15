@@ -91,6 +91,7 @@ import type {
 	UserBashEvent,
 	UserBashEventResult,
 } from "./types.ts";
+import { subscribeUserBlocks } from "./user-blocks.js";
 
 export type {
 	ExtensionErrorListener,
@@ -150,6 +151,7 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private unsubscribeUserBlocks: (() => void) | undefined;
 
 	constructor(
 		extensions: Extension[],
@@ -168,6 +170,17 @@ export class ExtensionRunner {
 		this.modelRegistry = modelRegistry;
 		this.orchestrationContext = orchestrationContext;
 		this.subagentPolicy = subagentPolicy;
+		// Block open/close is published as an ordinary lifecycle event so an
+		// extension observes it through `pi.on()` like any other. The notification
+		// is synchronous and must not be awaited by the dialog that opened the
+		// block, so the emit is deliberately detached.
+		this.unsubscribeUserBlocks = subscribeUserBlocks((change) => {
+			if (this.staleMessage) return;
+			void this.emit(change).catch(() => {
+				// runGenericHandlers already reports handler errors; a rejection here
+				// would otherwise become an unhandled rejection on a detached emit.
+			});
+		});
 	}
 
 	bindCore(
@@ -333,6 +346,17 @@ export class ExtensionRunner {
 			this.staleMessage = message;
 			this.runtime.invalidate(message);
 		}
+		this.detachUserBlocks();
+	}
+
+	/**
+	 * Stop publishing `agent_blocked`/`agent_unblocked` to this runner's
+	 * extensions. Idempotent. Called on invalidation, and by the session when a
+	 * reload replaces this runner without invalidating it.
+	 */
+	detachUserBlocks(): void {
+		this.unsubscribeUserBlocks?.();
+		this.unsubscribeUserBlocks = undefined;
 	}
 
 	private assertActive(): void {
