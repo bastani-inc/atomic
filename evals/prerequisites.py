@@ -507,7 +507,7 @@ def check_submodules(*, repo_root: Path | None = None) -> CheckResult:
 
 def check_docker(runner: CommandRunner | None = None) -> CheckResult:
     """Check that a Docker daemon answers. Failure here is a real failure."""
-    run = runner or (lambda command: _run(command))
+    run = runner or _run
     try:
         completed = run(["docker", "info", "--format", "{{.ServerVersion}}"])
     except FileNotFoundError:

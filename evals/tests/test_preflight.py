@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from prerequisites import (
-    ALL_OF_PROVIDERS,
     CREDENTIAL_ENV_KEYS,
     DEEP_SWE_SUBMODULE_PATH,
     EXPECTED_TASK_COUNT,

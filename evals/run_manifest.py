@@ -125,9 +125,10 @@ class IncompleteManifestError(ManifestMismatchError):
     def __init__(self, *, side: str, fields: Sequence[str]) -> None:
         self.side = side
         self.fields = tuple(fields)
-        super(ManifestMismatchError, self).__init__(
+        RuntimeError.__init__(
+            self,
             f"Refusing to compare runs: the {side} manifest is absent or incomplete — "
-            f"missing {', '.join(self.fields) if self.fields else 'everything'}"
+            f"missing {', '.join(self.fields) if self.fields else 'everything'}",
         )
         self.differences = ()
 
