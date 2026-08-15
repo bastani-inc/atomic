@@ -10,13 +10,29 @@
  * asserted it, so a refactor could drop the flag from either site and
  * reintroduce the defect with every check still green.
  *
+ * ## What this contract covers, and what it does not
+ *
+ * It verifies that each of the three production build invocations passes
+ * `--no-compile-autoload-bunfig` on the bun compile argv, and that removing it
+ * at any site fails the test. It deliberately does not implement a POSIX shell,
+ * so a hostile rewrite of a build script can still evade it; the guarantee is
+ * against accidental refactor regression, not against a determined author.
+ *
+ * Within that boundary, the flag counts only where Bun reads it — in the tokens
+ * the `bun build --compile` command itself receives. Two ways of writing the
+ * flag where the shell never hands it to Bun are therefore excluded explicitly,
+ * because both were used to make an earlier version of this file certify a
+ * build whose compiled binary was wide open: a `#` comment (`npm run` puts a
+ * package script through a shell too, so the same rule applies to both sources)
+ * and a redirection operand, which the shell consumes as a filename.
+ *
  * Three tests, because no one of them holds alone. The first says the flag is
  * in the argv of every `bun build --compile` this repository runs — that is the
  * part a refactor breaks. The second says the argv scan is bound to that one
- * command, so text sitting after a shell separator cannot stand in for a flag
- * Bun never receives. The third says the flag still *does* what its name
- * claims, measured against a control build that has it removed; a flag nobody
- * proves is a comment.
+ * command, so text the shell drops or eats cannot stand in for a flag Bun never
+ * receives, and it replays both evasions against the real build sources. The
+ * third says the flag still *does* what its name claims, measured against a
+ * control build that has it removed; a flag nobody proves is a comment.
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -36,6 +52,46 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 
 const NO_AUTOLOAD = "--no-compile-autoload-bunfig";
 
+const PACKAGE_MANIFEST = "packages/coding-agent/package.json";
+const RELEASE_SCRIPT = "scripts/build-binaries.sh";
+
+/**
+ * Skip a redirection — its operator and the word the shell consumes as the
+ * target — starting at the `<` or `>` at `index`. Returns the index of the last
+ * character consumed.
+ *
+ * Neither part is argv. `bun build --compile … > --no-compile-autoload-bunfig`
+ * creates a file with that name and leaves Bun unguarded, so counting the
+ * operand as an argument certifies exactly the build this file exists to
+ * reject.
+ */
+function skipRedirection(source: string, index: number): number {
+	let position = index + 1;
+	const next = source[position];
+	// `>>`, `>&`, `>|`, `<&`, `<<`, `<>`; a heredoc's `<<-` takes its dash too.
+	if (next === ">" || next === "<" || next === "&" || next === "|") position += 1;
+	if (source[position] === "-" && source[position - 1] === "<") position += 1;
+	while (source[position] === " " || source[position] === "\t") position += 1;
+	let quote: '"' | "'" | undefined;
+	for (; position < source.length; position += 1) {
+		const char = source[position] as string;
+		if (quote !== undefined) {
+			if (char === quote) quote = undefined;
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			quote = char;
+			continue;
+		}
+		if (char === "\\") {
+			position += 1;
+			continue;
+		}
+		if (" \t\r\n;&|<>".includes(char)) break;
+	}
+	return position - 1;
+}
+
 /**
  * Split a shell script or a package script into simple commands, each a token
  * list.
@@ -46,10 +102,15 @@ const NO_AUTOLOAD = "--no-compile-autoload-bunfig";
  * argument of the compile. Command boundaries are therefore every unquoted
  * `\n ; & |` (the two-character `&&` and `||` fall out of that, since empty
  * commands are dropped), quotes are honoured so a separator inside an argument
- * does not split, and in shell sources an unquoted `#` starting a word
- * comments out the rest of its line.
+ * does not split, an unquoted `#` starting a word comments out the rest of its
+ * line, and a redirection takes both its operator and its target out of the
+ * token list.
+ *
+ * Comments apply to package scripts as well as to `.sh` sources: `npm run`
+ * hands the script to a shell, which drops everything after an unquoted `#`
+ * exactly as it does in a script file.
  */
-function shellCommands(source: string, options: { readonly comments: boolean }): string[][] {
+function shellCommands(source: string): string[][] {
 	const commands: string[][] = [];
 	let tokens: string[] = [];
 	let token = "";
@@ -88,9 +149,20 @@ function shellCommands(source: string, options: { readonly comments: boolean }):
 			started = true;
 			continue;
 		}
-		if (options.comments && char === "#" && !started) {
+		if (char === "#" && !started) {
 			while (index < source.length && source[index] !== "\n") index += 1;
 			endCommand();
+			continue;
+		}
+		if (char === "<" || char === ">") {
+			// An IO number belongs to the redirection, not to argv: the `2` of
+			// `2>file` is not an argument any more than the filename is.
+			if (started && /^\d+$/u.test(token)) {
+				token = "";
+				started = false;
+			}
+			endToken();
+			index = skipRedirection(source, index);
 			continue;
 		}
 		if (char === "\n" || char === ";" || char === "&" || char === "|") {
@@ -115,9 +187,9 @@ function shellCommands(source: string, options: { readonly comments: boolean }):
  * `bun build` without `--compile` (`bundle:dev`) produces no standalone
  * executable and is out of scope.
  */
-function bunCompileArgv(source: string, options: { readonly comments: boolean }): string[][] {
+function bunCompileArgv(source: string): string[][] {
 	const found: string[][] = [];
-	for (const tokens of shellCommands(source, options)) {
+	for (const tokens of shellCommands(source)) {
 		const start = tokens.findIndex((value, index) => /(?:^|\/)bun$/u.test(value) && tokens[index + 1] === "build");
 		if (start === -1) continue;
 		const argv = tokens.slice(start);
@@ -126,34 +198,39 @@ function bunCompileArgv(source: string, options: { readonly comments: boolean })
 	return found;
 }
 
-test("pi#7685: every bun --compile command disables bunfig autoload", async () => {
-	const manifest = (await readJson(join(root, "packages/coding-agent/package.json"))) as {
-		scripts: Record<string, string>;
-	};
-	const sites: [string, string[]][] = Object.entries(manifest.scripts).flatMap(([name, command]) =>
-		bunCompileArgv(command, { comments: false }).map((argv): [string, string[]] => [
-			`packages/coding-agent/package.json (${name})`,
-			argv,
-		]),
-	);
-	assert.ok(
-		sites.length >= 1,
-		"no `bun build --compile` found in packages/coding-agent/package.json; the binary build moved and this contract stopped measuring it",
-	);
-
-	const shell = bunCompileArgv(await readText(join(root, "scripts/build-binaries.sh")), { comments: true });
-	assert.ok(
-		shell.length >= 2,
-		`scripts/build-binaries.sh compiles both release target paths (Windows standalone and bytecode); found ${shell.length}`,
-	);
-	for (const argv of shell) sites.push(["scripts/build-binaries.sh", argv]);
-
-	for (const [site, argv] of sites) {
+/** The contract itself, in one place so the evasion test can require it to throw. */
+function assertCompilesGuarded(site: string, argvList: readonly string[][]): void {
+	for (const argv of argvList) {
 		assert.ok(
 			argv.includes(NO_AUTOLOAD),
 			`${site} compiles a binary that would load bunfig.toml from the caller's working directory (upstream pi #7685): ${argv.join(" ")}`,
 		);
 	}
+}
+
+/** Every `bun build --compile` this repository runs, with the source it came from. */
+async function productionCompileSites(): Promise<[string, string[]][]> {
+	const manifest = await readJson<{ scripts: Record<string, string> }>(join(root, PACKAGE_MANIFEST));
+	const sites: [string, string[]][] = Object.entries(manifest.scripts).flatMap(([name, command]) =>
+		bunCompileArgv(command).map((argv): [string, string[]] => [`${PACKAGE_MANIFEST} (${name})`, argv]),
+	);
+	for (const argv of bunCompileArgv(await readText(join(root, RELEASE_SCRIPT)))) sites.push([RELEASE_SCRIPT, argv]);
+	return sites;
+}
+
+test("pi#7685: every bun --compile command disables bunfig autoload", async () => {
+	const sites = await productionCompileSites();
+
+	// One in the package build, two release target paths (Windows standalone and
+	// bytecode). A fourth compile is not covered by anything here until it is
+	// added deliberately, and a missing one means this contract stopped
+	// measuring a build that still ships.
+	assert.equal(
+		sites.length,
+		3,
+		`expected three \`bun build --compile\` invocations (one in ${PACKAGE_MANIFEST}, two in ${RELEASE_SCRIPT}); found ${sites.length}: ${sites.map(([site]) => site).join(", ")}`,
+	);
+	for (const [site, argv] of sites) assertCompilesGuarded(site, [argv]);
 });
 
 /**
@@ -161,22 +238,36 @@ test("pi#7685: every bun --compile command disables bunfig autoload", async () =
  * Each of these writes `--no-compile-autoload-bunfig` somewhere in the same
  * line or script, and in none of them does the compiled binary receive it.
  */
-const OUT_OF_ARGV: [string, string, { readonly comments: boolean }][] = [
-	["after a `;`", `bun build --compile ./loader.js --outfile atomic; : ${NO_AUTOLOAD}`, { comments: false }],
-	["after an `&&`", `bun build --compile ./loader.js --outfile atomic && echo ${NO_AUTOLOAD}`, { comments: false }],
-	["after a `|`", `bun build --compile ./loader.js --outfile atomic | grep ${NO_AUTOLOAD}`, { comments: false }],
-	["in a trailing comment", `bun build --compile ./loader.js --outfile atomic # ${NO_AUTOLOAD}`, { comments: true }],
-	["on the next line", `bun build --compile ./loader.js --outfile atomic\necho ${NO_AUTOLOAD}`, { comments: false }],
+const OUT_OF_ARGV: [string, string][] = [
+	["after a `;`", `bun build --compile ./loader.js --outfile atomic; : ${NO_AUTOLOAD}`],
+	["after an `&&`", `bun build --compile ./loader.js --outfile atomic && echo ${NO_AUTOLOAD}`],
+	["after a `|`", `bun build --compile ./loader.js --outfile atomic | grep ${NO_AUTOLOAD}`],
+	["in a trailing comment", `bun build --compile ./loader.js --outfile atomic # ${NO_AUTOLOAD}`],
+	["in a comment with the rest of the command on the next line", `bun build --compile # ${NO_AUTOLOAD}\n./loader.js`],
+	["on the next line", `bun build --compile ./loader.js --outfile atomic\necho ${NO_AUTOLOAD}`],
+	["as the target of a `>` redirection", `bun build --compile > ${NO_AUTOLOAD} ./loader.js --outfile atomic`],
+	["as the target of a `>>` redirection", `bun build --compile >> ${NO_AUTOLOAD} ./loader.js --outfile atomic`],
+	["as the target of a `2>` redirection", `bun build --compile 2> ${NO_AUTOLOAD} ./loader.js --outfile atomic`],
+	["as an unspaced `>` target", `bun build --compile >${NO_AUTOLOAD} ./loader.js --outfile atomic`],
 	[
 		"inside a quoted argument of a later command",
 		`bun build --compile ./loader.js --outfile atomic\nprintf '%s' "${NO_AUTOLOAD}"`,
-		{ comments: false },
 	],
 ];
 
-test("pi#7685: the compile argv scan stops at every shell command separator", () => {
-	for (const [placement, source, options] of OUT_OF_ARGV) {
-		const argv = bunCompileArgv(source, options);
+/** The two evasions that made an earlier version of this file certify a vulnerable build. */
+const REAL_SOURCE_EVASIONS: [string, (source: string) => string][] = [
+	[
+		"commented out with `#`, rest of the command on the next line",
+		(source) => source.replaceAll(` ${NO_AUTOLOAD} `, ` # ${NO_AUTOLOAD}\n`),
+	],
+	["eaten as a `>` redirection target", (source) => source.replaceAll(` ${NO_AUTOLOAD} `, ` > ${NO_AUTOLOAD} `)],
+	["deleted outright", (source) => source.replaceAll(` ${NO_AUTOLOAD}`, "")],
+];
+
+test("pi#7685: the compile argv scan counts only what the compile command receives", async () => {
+	for (const [placement, source] of OUT_OF_ARGV) {
+		const argv = bunCompileArgv(source);
 		assert.equal(argv.length, 1, `expected exactly one compile command for the ${placement} case: ${source}`);
 		assert.ok(
 			!(argv[0] as string[]).includes(NO_AUTOLOAD),
@@ -185,11 +276,10 @@ test("pi#7685: the compile argv scan stops at every shell command separator", ()
 	}
 
 	// The scan is not merely refusing everything: the real shape still reads as
-	// protected, and a separator inside a quoted argument does not end the
-	// command.
+	// protected, a separator inside a quoted argument does not end the command,
+	// and an unrelated redirection does not eat a real argument.
 	const guarded = bunCompileArgv(
-		`bun build --compile --bytecode ${NO_AUTOLOAD} --target="bun-linux-x64" ./loader.js --outfile "out;dir/atomic"\n`,
-		{ comments: true },
+		`bun build --compile --bytecode ${NO_AUTOLOAD} --target="bun-linux-x64" ./loader.js --outfile "out;dir/atomic" 2>&1\n`,
 	);
 	assert.equal(guarded.length, 1);
 	assert.deepEqual(guarded[0], [
@@ -203,6 +293,33 @@ test("pi#7685: the compile argv scan stops at every shell command separator", ()
 		"--outfile",
 		"out;dir/atomic",
 	]);
+
+	// The same two evasions, applied to the build sources that actually ship.
+	const sources: [string, string][] = [
+		[
+			PACKAGE_MANIFEST,
+			(await readJson<{ scripts: Record<string, string> }>(join(root, PACKAGE_MANIFEST))).scripts[
+				"build:binary"
+			] as string,
+		],
+		[RELEASE_SCRIPT, await readText(join(root, RELEASE_SCRIPT))],
+	];
+	for (const [site, source] of sources) {
+		for (const [evasion, hide] of REAL_SOURCE_EVASIONS) {
+			const argvList = bunCompileArgv(hide(source));
+			assert.ok(
+				argvList.length >= 1,
+				`the ${evasion} mutation of ${site} hid the compile itself, so it proves nothing`,
+			);
+			assert.throws(
+				() => assertCompilesGuarded(site, argvList),
+				/pi #7685/u,
+				`a guard ${evasion} in ${site} never reaches bun, yet the contract accepted the build: ${argvList
+					.map((argv) => argv.join(" "))
+					.join(" | ")}`,
+			);
+		}
+	}
 });
 
 /**
