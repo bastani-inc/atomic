@@ -19,7 +19,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildLiveScriptSrc } from '../live-inject.mjs';
+import { buildLiveScriptSrc } from './frameworks/script-src.mjs';
+import { resolveProjectPath, writeProjectFileAtomic } from './frameworks/detect-utils.mjs';
 
 export const TANSTACK_MARKER_OPEN = '{/* impeccable-live-tanstack-start */}';
 export const TANSTACK_MARKER_CLOSE = '{/* impeccable-live-tanstack-end */}';
@@ -60,8 +61,8 @@ export function applyTanStackLiveAdapter({ cwd = process.cwd(), port, token, pro
     throw new Error('TanStack Start live adapter requires a numeric port');
   }
 
-  // Write the managed mount component.
-  const componentAbs = path.join(cwd, project.componentFile);
+  // Write the managed mount component inside the canonical project root.
+  const componentAbs = resolveProjectPath(cwd, project.componentFile);
   const componentBody = buildTanStackLiveRootComponent(Number(port), token);
   const componentExisted = fs.existsSync(componentAbs);
   if (componentExisted && !isManagedComponent(fs.readFileSync(componentAbs, 'utf-8'))) {
@@ -72,15 +73,14 @@ export function applyTanStackLiveAdapter({ cwd = process.cwd(), port, token, pro
       hint: `${project.componentFile} already exists and is not managed by Impeccable Live`,
     };
   }
-  fs.mkdirSync(path.dirname(componentAbs), { recursive: true });
-  fs.writeFileSync(componentAbs, componentBody, 'utf-8');
+  writeProjectFileAtomic(cwd, project.componentFile, componentBody);
 
   // Patch the root document to import + render the mount component.
-  const rootAbs = path.join(cwd, project.rootRoute);
+  const rootAbs = resolveProjectPath(cwd, project.rootRoute, { mustExist: true, kind: 'file' });
   const before = fs.readFileSync(rootAbs, 'utf-8');
   const after = patchTanStackRoot(before, project.componentImport);
   const changed = after !== before;
-  if (changed) fs.writeFileSync(rootAbs, after, 'utf-8');
+  if (changed) writeProjectFileAtomic(cwd, project.rootRoute, after);
 
   return {
     file: project.rootRoute,
@@ -95,22 +95,22 @@ export function removeTanStackLiveAdapter({ cwd = process.cwd(), project = detec
   if (!project) return { error: 'tanstack_not_detected' };
   let removed = false;
 
-  const rootAbs = path.join(cwd, project.rootRoute);
+  const rootAbs = resolveProjectPath(cwd, project.rootRoute, { kind: 'file' });
   if (fs.existsSync(rootAbs)) {
     const before = fs.readFileSync(rootAbs, 'utf-8');
     const after = unpatchTanStackRoot(before);
     if (after !== before) {
-      fs.writeFileSync(rootAbs, after, 'utf-8');
+      writeProjectFileAtomic(cwd, project.rootRoute, after);
       removed = true;
     }
   }
 
-  const componentAbs = path.join(cwd, project.componentFile);
-  if (fs.existsSync(componentAbs)) {
+  const componentAbs = resolveProjectPath(cwd, project.componentFile, { kind: 'file' });
+  if (fs.existsSync(componentAbs) && isManagedComponent(fs.readFileSync(componentAbs, 'utf-8'))) {
     fs.rmSync(componentAbs, { force: true });
     removed = true;
   }
-  pruneEmptyDir(path.dirname(componentAbs), path.join(cwd, 'src'));
+  pruneEmptyDir(path.dirname(componentAbs), resolveProjectPath(cwd, 'src', { kind: 'directory' }));
 
   return {
     file: project.rootRoute,

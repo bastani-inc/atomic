@@ -26,10 +26,25 @@ const HIDDEN_SOURCE_DIRS = new Set(['.vitepress', '.vuepress', '.storybook']);
 const SCANNABLE_EXTENSIONS = new Set([
   '.html', '.htm', '.css', '.scss', '.sass', '.less',
   '.jsx', '.tsx', '.js', '.ts',
-  '.vue', '.svelte', '.astro',
+  '.vue', '.svelte', '.astro', '.blade.php',
 ]);
 
 const HTML_EXTENSIONS = new Set(['.html', '.htm']);
+
+function hasScannableExtension(filename) {
+  const lower = filename.toLowerCase();
+  if (SCANNABLE_EXTENSIONS.has(path.extname(lower))) return true;
+  for (const ext of SCANNABLE_EXTENSIONS) {
+    if (ext.indexOf('.', 1) !== -1 && lower.endsWith(ext)) return true;
+  }
+  return false;
+}
+
+const IMPORT_SPECIFIER_PATTERNS = [
+  /import\s+(?:[\s\S]*?from\s+)?['"]([^'"]+)['"]/g,
+  /@import\s+(?:url\(\s*)?['"]?([^'");\s]+)['"]?\s*\)?/g,
+  /@(?:use|forward)\s+['"]([^'"]+)['"]/g,
+];
 
 function walkDir(dir) {
   const files = [];
@@ -40,7 +55,7 @@ function walkDir(dir) {
     if (entry.isDirectory() && entry.name.startsWith('.') && !HIDDEN_SOURCE_DIRS.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) files.push(...walkDir(full));
-    else if (SCANNABLE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) files.push(full);
+    else if (hasScannableExtension(entry.name)) files.push(full);
   }
   return files;
 }
@@ -75,26 +90,11 @@ function buildImportGraph(files) {
     const dir = path.dirname(file);
     const imports = new Set();
 
-    // ES imports: import ... from '...' and import '...'
-    const esRe = /import\s+(?:[\s\S]*?from\s+)?['"]([^'"]+)['"]/g;
-    let m;
-    while ((m = esRe.exec(content)) !== null) {
-      const resolved = resolveImport(m[1], dir, fileSet);
-      if (resolved) imports.add(resolved);
-    }
-
-    // CSS @import
-    const cssRe = /@import\s+(?:url\(\s*)?['"]?([^'");\s]+)['"]?\s*\)?/g;
-    while ((m = cssRe.exec(content)) !== null) {
-      const resolved = resolveImport(m[1], dir, fileSet);
-      if (resolved) imports.add(resolved);
-    }
-
-    // SCSS @use / @forward
-    const scssRe = /@(?:use|forward)\s+['"]([^'"]+)['"]/g;
-    while ((m = scssRe.exec(content)) !== null) {
-      const resolved = resolveImport(m[1], dir, fileSet);
-      if (resolved) imports.add(resolved);
+    for (const pattern of IMPORT_SPECIFIER_PATTERNS) {
+      for (const match of content.matchAll(pattern)) {
+        const resolved = resolveImport(match[1], dir, fileSet);
+        if (resolved) imports.add(resolved);
+      }
     }
 
     graph.set(file, imports);
@@ -203,6 +203,7 @@ export {
   SKIP_DIRS,
   SCANNABLE_EXTENSIONS,
   HTML_EXTENSIONS,
+  hasScannableExtension,
   walkDir,
   resolveImport,
   buildImportGraph,

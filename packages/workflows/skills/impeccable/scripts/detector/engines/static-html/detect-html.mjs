@@ -28,6 +28,7 @@ import {
   checkCreamPalette,
   checkHtmlPatterns,
   checkKickerAboveHeadingFromDoc,
+  scopedIgnoreActive,
   checkNumberedSectionLabelsFromDoc,
   checkPageLayout,
   checkPageQualityFromDoc,
@@ -59,9 +60,6 @@ function checkStaticPageTypography(document, window) {
   }
   for (const font of overusedFound) {
     findings.push({ id: 'overused-font', snippet: `Primary font: ${font}` });
-  }
-  if (fonts.size === 1 && document.querySelectorAll('*').length >= 20) {
-    findings.push({ id: 'single-font', snippet: `only font used is ${[...fonts][0]}` });
   }
   const sizes = new Set();
   for (const el of document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, span, a, li, td, th, label, button, div')) {
@@ -141,9 +139,20 @@ async function detectHtml(filePath, options = {}) {
         domutils,
       };
     });
-  } catch {
-    return detectText(html, filePath, options);
+  } catch (err) {
+  if (!globalThis.__impeccableStaticHtmlWarned) {
+    globalThis.__impeccableStaticHtmlWarned = true;
+
+    process.stderr.write(
+  'impeccable detect: DEGRADED - HTML parser modules unavailable ' +
+  '(htmlparser2, css-select, css-tree, domutils).\n' +
+  'Falling back to regex matching. Custom properties, selector matching and computed ' +
+  'contrast are NOT evaluated; findings are an undercount, not a clean bill of health.\n'
+);
   }
+
+  return detectText(html, filePath, options);
+}
 
   const resolvedPath = path.resolve(filePath);
   const fileDir = path.dirname(resolvedPath);
@@ -174,6 +183,9 @@ async function detectHtml(filePath, options = {}) {
       const tag = el.tagName.toLowerCase();
       const style = window.getComputedStyle(el);
       for (const f of runElementCheck(rule.id, () => rule.run(el, tag, style, window, customPropMap))) {
+        // Element-scoped waivers: a data-impeccable-ignore ancestor suppresses
+        // matching findings for its subtree, same as the browser walk.
+        if (scopedIgnoreActive(el, f.id)) continue;
         findings.push(finding(f.id, filePath, f.snippet));
       }
     }
@@ -220,9 +232,38 @@ async function detectHtml(filePath, options = {}) {
     for (const f of runPageCheck('skipped-heading', () => checkPageQualityFromDoc(document))) {
       findings.push(finding(f.id, filePath, f.snippet));
     }
-    for (const f of runPageCheck('html-patterns', () => checkHtmlPatterns(html).filter(item =>
+    // Scoped corpora for the pattern checks (see buildHtmlPatternCorpora in
+    // rules/checks.mjs): CSS-property regexes must not fire on prose ABOUT
+    // css — `<code>background-clip: text</code>` in a changelog is
+    // documentation, not styling. cssText already carries the <style>
+    // blocks and any linked local stylesheets; style/class attributes come
+    // from the parsed document, so escaped code samples never contribute.
+    const styleAttrParts = [];
+    const classAttrParts = [];
+    for (const el of document.querySelectorAll('*')) {
+      const styleAttr = el.getAttribute('style');
+      if (styleAttr) styleAttrParts.push(`style="${styleAttr}"`);
+      const classAttr = el.getAttribute('class');
+      if (classAttr) classAttrParts.push(classAttr);
+    }
+    const patternCorpora = {
+      styleText: [cssText, ...styleAttrParts].join('\n'),
+      classText: classAttrParts.join('\n'),
+    };
+    for (const f of runPageCheck('html-patterns', () => checkHtmlPatterns(html, patternCorpora).filter(item =>
       item.id !== 'bounce-easing' && item.id !== 'layout-transition'
     ))) {
+      // Selector-backed page findings honor scoped waivers here too, matching
+      // the browser pass: resolve the selector and drop the finding when an
+      // ignoring ancestor covers a match. Unlike the browser, an unmatched
+      // selector keeps the finding — static scans see partial documents.
+      if (f.selector) {
+        let matches = null;
+        try {
+          matches = document.querySelectorAll(String(f.selector).replace(/::?[a-zA-Z-]+(\([^)]*\))?/g, '').trim());
+        } catch { matches = null; }
+        if (matches && matches.length > 0 && [...matches].every(el => scopedIgnoreActive(el, f.id))) continue;
+      }
       const item = finding(f.id, filePath, f.snippet);
       // Position-aware severity promotion: checks may attach a per-finding
       // severity (e.g. a pulsing dot inside a header/nav landmark) that

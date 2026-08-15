@@ -56,11 +56,19 @@ function fakeRunner(outputs: readonly string[]): {
 }
 
 describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
-	test("parses the last JSON line the helper printed", () => {
-		const event = parseLiveEvent('noise\n{"type":"steer","message":"tighten the hero","id":"e1"}');
-		assert.equal(event.type, "steer");
-		assert.equal(event.message, "tighten the hero");
+	test("parses the last JSON line and retains upstream mount/reply fields", () => {
+		const event = parseLiveEvent(
+			'noise\n{"type":"variant_mount_failed","id":"e1","variant":2,"url":"/live/v2.js","pageUrl":"/settings","error":"compile failed","file":"src/page.tsx","message":"repair","data":{"status":"error"}}',
+		);
+		assert.equal(event.type, "variant_mount_failed");
 		assert.equal(event.id, "e1");
+		assert.equal(event.variant, 2);
+		assert.equal(event.url, "/live/v2.js");
+		assert.equal(event.pageUrl, "/settings");
+		assert.equal(event.error, "compile failed");
+		assert.equal(event.file, "src/page.tsx");
+		assert.equal(event.message, "repair");
+		assert.deepEqual(event.data, { status: "error" });
 	});
 
 	test("unreadable output is a timeout, never an ending", () => {
@@ -78,6 +86,19 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 		assert.equal(runner.calls.length, 3, "polled through both timeouts");
 	});
 
+	test("nonzero poll helper exits fail instead of becoming another timeout", async () => {
+		const dir = makeProjectWithScripts();
+		await assert.rejects(
+			pollLiveEvent({
+				workflowCwd: dir,
+				deps: {
+					run: async () => ({ code: 1, stdout: "", stderr: "server unavailable" }),
+				},
+			}),
+			/server unavailable/u,
+		);
+	});
+
 	test("always resolves the skill bundled with this package, never a project copy", () => {
 		const resolved = liveScriptPath("live-poll.mjs");
 		assert.match(resolved, /skills[/\\]impeccable[/\\]scripts[/\\]live-poll\.mjs$/);
@@ -93,29 +114,81 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 		);
 	});
 
-	test("only generate, steer, and manual_edit_apply call the model back", () => {
+	test("only model events call the model; mount success stays journal-only", () => {
 		const of = (type: string): LiveEvent => ({ type, raw: "{}" });
 		assert.equal(needsModel(of("generate")), true);
 		assert.equal(needsModel(of("steer")), true);
 		assert.equal(needsModel(of("manual_edit_apply")), true);
+		assert.equal(needsModel(of("variant_mount_failed")), true);
+		assert.equal(needsModel(of("variant_mounted")), false);
 		for (const type of ["accept", "discard", "prefetch", "exit", "timeout"]) {
 			assert.equal(needsModel(of(type)), false, `${type} must not mint a model stage`);
 		}
 	});
 
-	test("steer acknowledges with steer_done, everything else with done", () => {
+	test("reply status follows the helper protocol", () => {
 		assert.equal(replyTokenFor({ type: "steer", raw: "{}" }), "steer_done");
 		assert.equal(replyTokenFor({ type: "generate", raw: "{}" }), "done");
 		assert.equal(replyTokenFor({ type: "manual_edit_apply", raw: "{}" }), "done");
+		assert.equal(replyTokenFor({ type: "variant_mount_failed", raw: "{}" }), "done");
 	});
 
-	test("replying passes --reply and the token to the poll script", async () => {
+	test("replying passes event id, status, and only required optional fields", async () => {
 		const dir = makeProjectWithScripts();
 		const runner = fakeRunner([""]);
 
-		await replyLiveEvent({ workflowCwd: dir, token: "steer_done", deps: { run: runner.run } });
+		await replyLiveEvent({
+			workflowCwd: dir,
+			event: { type: "steer", id: "e1", raw: "{}" },
+			deps: { run: runner.run },
+		});
 
-		assert.deepEqual(runner.calls[0]?.args, ["--reply", "steer_done"]);
+		assert.deepEqual(runner.calls[0]?.args, ["--reply", "e1", "steer_done"]);
+
+		const detailed = fakeRunner([""]);
+		await replyLiveEvent({
+			workflowCwd: dir,
+			event: { type: "manual_edit_apply", id: "m1", raw: "{}" },
+			file: "src/page.html",
+			message: "applied",
+			data: { status: "done", files: ["src/page.html"] },
+			deps: { run: detailed.run },
+		});
+		assert.deepEqual(detailed.calls[0]?.args, [
+			"--reply",
+			"m1",
+			"done",
+			"--file",
+			"src/page.html",
+			"--data",
+			'{"status":"done","files":["src/page.html"]}',
+			"applied",
+		]);
+	});
+
+	test("missing event ids and nonzero reply exits fail loudly", async () => {
+		const dir = makeProjectWithScripts();
+		const runner = fakeRunner([""]);
+		await assert.rejects(
+			replyLiveEvent({ workflowCwd: dir, event: { type: "generate", raw: "{}" }, deps: { run: runner.run } }),
+			/live event id is missing/u,
+		);
+		await assert.rejects(
+			replyLiveEvent({
+				workflowCwd: dir,
+				event: { type: "generate", id: "g1", raw: "{}" },
+				deps: { run: async () => ({ code: 2, stdout: "", stderr: "bad reply" }) },
+			}),
+			/bad reply/u,
+		);
+		await assert.rejects(
+			replyLiveEvent({
+				workflowCwd: dir,
+				event: { type: "generate", id: "done", raw: "{}" },
+				deps: { run: runner.run },
+			}),
+			/expected an event id/u,
+		);
 	});
 
 	test("an event prompt carries the raw event and forbids the stage from polling or exiting", () => {

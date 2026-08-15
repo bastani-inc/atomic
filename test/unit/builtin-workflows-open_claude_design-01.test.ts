@@ -86,10 +86,24 @@ describe("open-claude-design", () => {
 						if (name === "live-poll-1-2") return { type: "steer", id: "s1", raw: '{"type":"steer","id":"s1"}' };
 						if (name === "live-poll-1-3")
 							return { type: "manual_edit_apply", id: "m1", raw: '{"type":"manual_edit_apply","id":"m1"}' };
-						if (name === "live-poll-1-4") return { type: "accept", id: "a1", raw: '{"type":"accept","id":"a1"}' };
+						if (name === "live-poll-1-4")
+							return {
+								type: "variant_mounted",
+								id: "g1",
+								variant: 1,
+								raw: '{"type":"variant_mounted","id":"g1","variant":1}',
+							};
 						if (name === "live-poll-1-5")
+							return {
+								type: "variant_mount_failed",
+								id: "g1",
+								variant: 2,
+								raw: '{"type":"variant_mount_failed","id":"g1","variant":2}',
+							};
+						if (name === "live-poll-1-6") return { type: "accept", id: "a1", raw: '{"type":"accept","id":"a1"}' };
+						if (name === "live-poll-1-7")
 							return { type: "discard", id: "d1", raw: '{"type":"discard","id":"d1"}' };
-						if (name === "live-poll-1-6")
+						if (name === "live-poll-1-8")
 							return { type: "prefetch", id: "p1", raw: '{"type":"prefetch","id":"p1"}' };
 						return { type: "exit", raw: '{"type":"exit"}' };
 					},
@@ -105,6 +119,7 @@ describe("open-claude-design", () => {
 			assert.ok(ctx.calls.task.includes("live-generate-1-1"));
 			assert.ok(ctx.calls.task.includes("live-steer-1-2"));
 			assert.ok(ctx.calls.task.includes("live-manual_edit_apply-1-3"));
+			assert.ok(ctx.calls.task.includes("live-variant_mount_failed-1-5"));
 			assert.equal(ctx.calls.task.includes("user-feedback-1"), false);
 			assert.equal(
 				ctx.calls.task.some((name) => name.startsWith("generate-2")),
@@ -126,11 +141,13 @@ describe("open-claude-design", () => {
 					"live-poll-1-5",
 					"live-poll-1-6",
 					"live-poll-1-7",
+					"live-poll-1-8",
+					"live-poll-1-9",
 				],
 			);
 			assert.deepEqual(
 				ctx.calls.tool.filter((name) => name.startsWith("live-reply-")),
-				["live-reply-1-1", "live-reply-1-2", "live-reply-1-3"],
+				["live-reply-1-1", "live-reply-1-2", "live-reply-1-3", "live-reply-1-5"],
 			);
 			assert.equal(existsSync(join(result.artifact_dir as string, "feedback")), false);
 			assert.equal(typeof result.artifact, "string");

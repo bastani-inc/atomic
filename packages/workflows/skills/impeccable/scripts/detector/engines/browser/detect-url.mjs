@@ -34,7 +34,11 @@ async function launchBrowser(puppeteer, { headless = true, args = [] } = {}) {
   try {
     return await puppeteer.default.launch({ headless, args });
   } catch (err) {
-    if (channelError && err && err.cause === undefined) err.cause = channelError;
+    // Keep the original channel failure without risking a second TypeError if
+    // a nonstandard launcher rejects with a primitive instead of an Error.
+    if (channelError && err && (typeof err === 'object' || typeof err === 'function') && err.cause === undefined) {
+      err.cause = channelError;
+    }
     throw err;
   }
 }

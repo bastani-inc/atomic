@@ -9,15 +9,19 @@
  *
  * So the workflow drives the protocol instead. Polling and replying are durable
  * `ctx.tool` nodes; the model is invoked only for the events that need it
- * (`generate`, `steer`, `manual_edit_apply`). Termination stops being a
- * judgment and becomes the helper's own `exit` event.
+ * (`generate`, `steer`, `manual_edit_apply`, and mount failures). Termination
+ * stops being a judgment and becomes the helper's own `exit` event.
  *
  * `timeout` is absorbed here rather than surfaced, so an idle hour costs no
- * graph nodes.
+ * graph nodes. Every poll/reply invocation must, however, exit successfully;
+ * helper failures are surfaced instead of being mistaken for another timeout.
  */
 
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+/** JSON values emitted by the live helper. */
+export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
 /** Events the live helper delivers. Anything unknown is treated as ignorable. */
 export type LiveEventType =
@@ -27,30 +31,136 @@ export type LiveEventType =
 	| "discard"
 	| "prefetch"
 	| "manual_edit_apply"
+	| "variant_mounted"
+	| "variant_mount_failed"
 	| "timeout"
 	| "exit";
 
 export type LiveEvent = {
 	readonly type: LiveEventType | string;
 	readonly id?: string;
-	readonly message?: string;
+	readonly variant?: number;
+	readonly variantId?: string;
+	readonly url?: string;
 	readonly pageUrl?: string;
+	readonly error?: string;
+	readonly file?: string;
+	readonly sourceFile?: string;
+	readonly message?: string;
+	readonly data?: JsonValue;
 	readonly screenshot?: string;
-	/** Retained verbatim so an event stage sees exactly what the helper sent. */
 	readonly raw: string;
+	/** Preserve additional upstream event fields without narrowing their JSON shape. */
+	readonly [key: string]: JsonValue | undefined;
 };
 
 /** Events the model must handle before the loop may reply and poll again. */
-const MODEL_EVENTS = new Set<string>(["generate", "steer", "manual_edit_apply"]);
+const MODEL_EVENTS = new Set<string>(["generate", "steer", "manual_edit_apply", "variant_mount_failed"]);
 
 export function needsModel(event: LiveEvent): boolean {
 	return MODEL_EVENTS.has(event.type);
 }
 
-/** Reply token the contract expects for each model-handled event. */
+/** Reply status the helper expects for each model-handled event. */
 export function replyTokenFor(event: LiveEvent): string {
 	if (event.type === "steer") return "steer_done";
 	return "done";
+}
+
+const LEGACY_REPLY_STATUSES = new Set(["done", "error", "complete", "discard", "discarded"]);
+
+function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Last JSON object printed by a live script, which is the event payload. */
+export function parseLiveEvent(stdout: string): LiveEvent {
+	const lines = stdout.split(/\r?\n/).filter((line) => line.trim().startsWith("{"));
+	for (const line of [...lines].reverse()) {
+		try {
+			const parsed = JSON.parse(line) as JsonValue;
+			if (!isJsonObject(parsed) || typeof parsed.type !== "string") continue;
+			// Keep the complete JSON event, not only the fields known by the old
+			// protocol. 4.1.1 adds mount diagnostics and structured reply data.
+			return { ...parsed, type: parsed.type, raw: line } as LiveEvent;
+		} catch {
+			/* not the event line */
+		}
+	}
+	// An unreadable poll is not an ending. Treat it as a timeout so the caller
+	// polls again rather than concluding a review nobody finished.
+	return { type: "timeout", raw: stdout };
+}
+
+export type LivePollDeps = {
+	readonly run?: (scriptPath: string, args: readonly string[], cwd: string, signal?: AbortSignal) => Promise<ScriptResult>;
+};
+
+export type LiveReplyInput = {
+	readonly workflowCwd: string;
+	readonly event: LiveEvent;
+	readonly status?: string;
+	/** Source/manifest path accepted by generate and mount-failure replies. */
+	readonly file?: string;
+	/** The helper's positional message argument (there is no --message flag). */
+	readonly message?: string;
+	/** Structured result accepted by manual_edit_apply replies. */
+	readonly data?: JsonValue;
+	readonly signal?: AbortSignal;
+	readonly deps?: LivePollDeps;
+};
+
+function assertSuccessfulScript(result: ScriptResult, operation: string): ScriptResult {
+	if (result.code !== 0) {
+		const details = result.stderr.length > 0 ? `: ${result.stderr}` : "";
+		throw new Error(`${operation} failed with exit code ${result.code}${details}`);
+	}
+	return result;
+}
+
+/**
+ * Poll until the helper delivers an event that matters. `timeout` events and
+ * unreadable output loop internally, so callers only ever see substantive
+ * events or `exit`.
+ */
+export async function pollLiveEvent(input: {
+	readonly workflowCwd: string;
+	readonly signal?: AbortSignal;
+	readonly deps?: LivePollDeps;
+}): Promise<LiveEvent> {
+	const script = liveScriptPath("live-poll.mjs");
+	const run = input.deps?.run ?? runNodeScript;
+	for (;;) {
+		if (input.signal?.aborted === true) return { type: "exit", raw: "aborted" };
+		const result = assertSuccessfulScript(await run(script, [], input.workflowCwd, input.signal), "live poll");
+		const event = parseLiveEvent(result.stdout);
+		if (event.type !== "timeout") return event;
+	}
+}
+
+/** Acknowledge a model-handled event so the helper unblocks the overlay. */
+export async function replyLiveEvent(input: LiveReplyInput): Promise<ScriptResult> {
+	const id = input.event.id;
+	if (typeof id !== "string" || id.length === 0 || id.startsWith("--")) {
+		throw new Error(`Cannot reply to ${input.event.type}: live event id is missing`);
+	}
+	if (LEGACY_REPLY_STATUSES.has(id)) {
+		throw new Error(`Cannot reply to live event ${id}: expected an event id before the reply status`);
+	}
+	const status = input.status ?? replyTokenFor(input.event);
+	if (status.length === 0 || status.startsWith("--")) {
+		throw new Error(`Cannot reply to live event ${id}: reply status is missing`);
+	}
+	const args = ["--reply", id, status];
+	const file = input.file ?? input.event.file;
+	const message = input.message ?? input.event.message;
+	const data = input.data ?? input.event.data;
+	if (file !== undefined) args.push("--file", file);
+	if (data !== undefined) args.push("--data", JSON.stringify(data));
+	if (message !== undefined) args.push(message);
+	const script = liveScriptPath("live-poll.mjs");
+	const run = input.deps?.run ?? runNodeScript;
+	return assertSuccessfulScript(await run(script, args, input.workflowCwd, input.signal), "live reply");
 }
 
 /**
@@ -110,70 +220,6 @@ function runNodeScript(
 		});
 	});
 }
-
-/** Last JSON object printed by a live script, which is the event payload. */
-export function parseLiveEvent(stdout: string): LiveEvent {
-	const lines = stdout.split(/\r?\n/).filter((line) => line.trim().startsWith("{"));
-	for (const line of [...lines].reverse()) {
-		try {
-			const parsed: unknown = JSON.parse(line);
-			if (typeof parsed !== "object" || parsed === null) continue;
-			const record = parsed as Record<string, unknown>;
-			const type = typeof record.type === "string" ? record.type : undefined;
-			if (type === undefined) continue;
-			return {
-				type,
-				raw: line,
-				...(typeof record.id === "string" ? { id: record.id } : {}),
-				...(typeof record.message === "string" ? { message: record.message } : {}),
-				...(typeof record.pageUrl === "string" ? { pageUrl: record.pageUrl } : {}),
-				...(typeof record.screenshot === "string" ? { screenshot: record.screenshot } : {}),
-			};
-		} catch {
-			/* not the event line */
-		}
-	}
-	// An unreadable poll is not an ending. Treat it as a timeout so the caller
-	// polls again rather than concluding a review nobody finished.
-	return { type: "timeout", raw: stdout };
-}
-
-export type LivePollDeps = {
-	readonly run?: (scriptPath: string, args: readonly string[], cwd: string, signal?: AbortSignal) => Promise<ScriptResult>;
-};
-
-/**
- * Poll until the helper delivers an event that matters. `timeout` events and
- * unreadable output loop internally, so callers only ever see substantive
- * events or `exit`.
- */
-export async function pollLiveEvent(input: {
-	readonly workflowCwd: string;
-	readonly signal?: AbortSignal;
-	readonly deps?: LivePollDeps;
-}): Promise<LiveEvent> {
-	const script = liveScriptPath("live-poll.mjs");
-	const run = input.deps?.run ?? runNodeScript;
-	for (;;) {
-		if (input.signal?.aborted === true) return { type: "exit", raw: "aborted" };
-		const result = await run(script, [], input.workflowCwd, input.signal);
-		const event = parseLiveEvent(result.stdout);
-		if (event.type !== "timeout") return event;
-	}
-}
-
-/** Acknowledge a model-handled event so the helper unblocks the overlay. */
-export async function replyLiveEvent(input: {
-	readonly workflowCwd: string;
-	readonly token: string;
-	readonly signal?: AbortSignal;
-	readonly deps?: LivePollDeps;
-}): Promise<ScriptResult> {
-	const script = liveScriptPath("live-poll.mjs");
-	const run = input.deps?.run ?? runNodeScript;
-	return run(script, ["--reply", input.token], input.workflowCwd, input.signal);
-}
-
 /** Prompt for the stage that handles one live event. */
 export function buildLiveEventPrompt(input: {
 	readonly event: LiveEvent;
@@ -206,6 +252,16 @@ export function buildLiveEventPrompt(input: {
 				"Follow the live contract for a `steer` event: read the message and pageUrl, then do the work — page edits, navigation help, or a short answer.",
 				"Do not poll, do not reply, and do not exit the session: the workflow does that. Stop when the steer is handled.",
 				"</instructions>",
+			].join("\n"),
+		].join("\n\n");
+	}
+	if (input.event.type === "variant_mount_failed") {
+		return [
+			...shared,
+			[
+				"<instructions>",
+				"The browser could not mount the published variant. Inspect the reported variant source/module, fix the compile or runtime failure, and stop after the repair.",
+				"Do not poll, do not reply, and do not exit the session: the workflow does that.",
 			].join("\n"),
 		].join("\n\n");
 	}

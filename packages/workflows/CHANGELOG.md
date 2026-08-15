@@ -12,10 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Synchronized the complete bundled `impeccable` skill tree from upstream `skill-v4.0.3` (`68b1129634a1cdd9a0ba50b27376c71b4b083ae8`) to `skill-v4.1.1` (`5a149f3fdb1b5793f10567233b1dcab98fc305fd`), adding persisted Live roots, framework-aware injection, prompt embedding, CSS acceptance checks, Svelte AST support, mount verification, UI-surface contracts, and the latest detector and design guidance. The sync removes obsolete `scripts/live/ui-core.mjs`, keeps the Cursor-only `scripts/hook-before-edit.mjs` omitted, and retains Atomic's package-path and security adaptations ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
+- Impeccable concept rolls now include platform, grain, register, and card-kind fields, use a bounded `impeccable.style` fallback when no local catalog exists, and send an anonymous attended-choice ping unless `IMPECCABLE_NO_TELEMETRY` or `DO_NOT_TRACK` is set. The OpenAI image fallback supports reference-image edits and generated images only when `OPENAI_API_KEY` is present, warns about account spend, and embeds each prompt in the image or a sidecar ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
 - The `open-claude-design` run-level review gate and the session-start stage now state how a review ends — exit in the Impeccable overlay, closing the browser tab, or `exit live` — that the session waits indefinitely until then, and that ending it exports the design as it stands with no further round ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
-
-- The live review session is the final review boundary: the workflow-owned poll loop dispatches only `generate`, `steer`, and `manual_edit_apply` model stages, ends on the helper's `exit` event, and exports the preview as it stands without a summary, second opinion, decision, or later review session ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+- The live review session is the final review boundary: the workflow-owned poll loop dispatches `generate`, `steer`, `manual_edit_apply`, and failed variant mounts to model stages, keeps successful mounts journal-only, ends on the helper's `exit` event, and exports the preview as it stands without a summary, second opinion, decision, or later review session ([#2401](https://github.com/bastani-inc/atomic/issues/2401), [#2382](https://github.com/bastani-inc/atomic/issues/2382)).
 - The run-level gate retains `Start live review` and `Skip remaining review rounds and export as-is`; the skip choice exports immediately without opening the session ([#2401](https://github.com/bastani-inc/atomic/issues/2401)).
+
+### Fixed
+
+- Hardened the synced Impeccable executables against shell-based browser launch, remote browser URLs, project-root and symlink escapes, unsafe persisted roots and injection journals, non-atomic generated writes, untrusted live instructions, read failures reported as clean, and unbounded or malformed live protocol values. The `open-claude-design` loop now handles 4.1.1 mount failures, preserves the full event payload, replies with the required event id and status, and fails on helper process errors ([#2382](https://github.com/bastani-inc/atomic/issues/2382)).
 
 ### Removed
 

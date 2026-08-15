@@ -147,24 +147,30 @@ async function runLiveReviewSession(options: LiveReviewSessionOptions): Promise<
   sessionFile = start.sessionFile;
 
   for (let index = 1; ; index += 1) {
-    // `timeout` is absorbed inside the poll, so an idle hour costs no nodes and
-    // never looks like an ending.
-    const event = await designContext.tool(`live-poll-${round}-${index}`, { round, index }, async ({ signal }) =>
-      pollLiveEvent({ workflowCwd, signal }),
-    );
-    if (event.type === "exit") break;
-    // accept / discard / prefetch are acknowledged by the poll script itself.
-    if (!needsModel(event)) continue;
-    const response = await designContext.task(`live-${event.type}-${round}-${index}`, {
-      prompt: buildLiveEventPrompt({ event, previewPath }),
-      ...designModelConfig,
-      ...forkContinuationOptions(sessionFile),
-    });
-    sessionFile = response.sessionFile ?? sessionFile;
-    const token = replyTokenFor(event);
-    await designContext.tool(`live-reply-${round}-${index}`, { round, index, token }, async ({ signal }) =>
-      replyLiveEvent({ workflowCwd, token, signal }),
-    );
+		// `timeout` is absorbed inside the poll, so an idle hour costs no nodes and
+		// never looks like an ending.
+		const event = await designContext.tool(`live-poll-${round}-${index}`, { round, index }, async ({ signal }) =>
+			pollLiveEvent({ workflowCwd, signal }),
+		);
+		if (event.type === "exit") break;
+		// `variant_mounted` is journal-only. All other non-model events are
+		// acknowledged by the helper itself and do not mint a model stage.
+		if (!needsModel(event)) continue;
+		if (event.id === undefined || event.id.length === 0) {
+			throw new Error(`Live ${event.type} event is missing its id`);
+		}
+		const response = await designContext.task(`live-${event.type}-${round}-${index}`, {
+			prompt: buildLiveEventPrompt({ event, previewPath }),
+			...designModelConfig,
+			...forkContinuationOptions(sessionFile),
+		});
+		sessionFile = response.sessionFile ?? sessionFile;
+		const status = replyTokenFor(event);
+		await designContext.tool(
+			`live-reply-${round}-${index}`,
+			{ round, index, eventId: event.id, status },
+			async ({ signal }) => replyLiveEvent({ workflowCwd, event, status, signal }),
+		);
   }
 }
 
